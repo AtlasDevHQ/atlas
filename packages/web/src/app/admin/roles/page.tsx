@@ -15,13 +15,15 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+  FormDialog,
+  FormField,
+  FormItem,
+  FormLabel,
+  FormControl,
+  FormMessage,
+  FormDescription,
+} from "@/components/form-dialog";
+import { z } from "zod";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -94,6 +96,18 @@ function PermissionBadges({ permissions }: { permissions: string[] }) {
 
 // ── Create/Edit Dialog ───────────────────────────────────────────
 
+const roleCreateSchema = z.object({
+  name: z.string().min(1, "Role name is required"),
+  description: z.string(),
+  permissions: z.array(z.string()).min(1, "At least one permission is required"),
+});
+
+const roleEditSchema = z.object({
+  name: z.string(),
+  description: z.string(),
+  permissions: z.array(z.string()).min(1, "At least one permission is required"),
+});
+
 function RoleDialog({
   open,
   onOpenChange,
@@ -108,155 +122,136 @@ function RoleDialog({
   allPermissions: string[];
 }) {
   const isEditing = !!editingRole;
-  const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
-  const [selectedPerms, setSelectedPerms] = useState<Set<string>>(new Set());
-  const [validationError, setValidationError] = useState<string | null>(null);
-  const { mutate, saving, error, reset } = useAdminMutation({
+
+  const saveMutation = useAdminMutation({
     invalidates: onSaved,
   });
 
-  const displayError = validationError ?? error;
+  const schema = isEditing ? roleEditSchema : roleCreateSchema;
 
-  function handleOpen(next: boolean) {
-    if (next) {
-      if (editingRole) {
-        setName(editingRole.name);
-        setDescription(editingRole.description);
-        setSelectedPerms(new Set(editingRole.permissions));
-      } else {
-        setName("");
-        setDescription("");
-        setSelectedPerms(new Set());
-      }
-      setValidationError(null);
-      reset();
-    }
+  const defaultValues = isEditing && editingRole
+    ? { name: editingRole.name, description: editingRole.description, permissions: editingRole.permissions }
+    : { name: "", description: "", permissions: [] as string[] };
+
+  function handleOpenChange(next: boolean) {
+    if (next) saveMutation.reset();
     onOpenChange(next);
   }
 
-  function togglePermission(perm: string) {
-    setSelectedPerms((prev) => {
-      const next = new Set(prev);
-      if (next.has(perm)) {
-        next.delete(perm);
-      } else {
-        next.add(perm);
-      }
-      return next;
-    });
-  }
-
-  async function handleSave() {
-    setValidationError(null);
-    if (!isEditing && !name.trim()) {
-      setValidationError("Role name is required.");
-      return;
-    }
-    if (selectedPerms.size === 0) {
-      setValidationError("At least one permission is required.");
-      return;
-    }
-
+  async function handleSubmit(values: z.infer<typeof roleCreateSchema | typeof roleEditSchema>) {
     const path = isEditing
-      ? `/api/v1/admin/roles/${encodeURIComponent(editingRole.id)}`
+      ? `/api/v1/admin/roles/${encodeURIComponent(editingRole!.id)}`
       : `/api/v1/admin/roles`;
 
     const body = isEditing
-      ? { description, permissions: [...selectedPerms] }
-      : { name: name.trim(), description, permissions: [...selectedPerms] };
+      ? { description: values.description, permissions: values.permissions }
+      : { name: values.name.trim(), description: values.description, permissions: values.permissions };
 
-    const result = await mutate({
+    const result = await saveMutation.mutate({
       path,
       method: isEditing ? "PUT" : "POST",
       body,
     });
     if (result !== undefined) {
-      handleOpen(false);
+      onOpenChange(false);
     }
   }
 
   return (
-    <Dialog open={open} onOpenChange={handleOpen}>
-      <DialogContent className="max-w-lg">
-        <DialogHeader>
-          <DialogTitle>{isEditing ? "Edit Role" : "Create Role"}</DialogTitle>
-          <DialogDescription>
-            {isEditing
-              ? "Update the role's description and permissions."
-              : "Create a new custom role with specific permissions."}
-          </DialogDescription>
-        </DialogHeader>
+    <FormDialog
+      open={open}
+      onOpenChange={handleOpenChange}
+      title={isEditing ? "Edit Role" : "Create Role"}
+      description={
+        isEditing
+          ? "Update the role's description and permissions."
+          : "Create a new custom role with specific permissions."
+      }
+      schema={schema}
+      defaultValues={defaultValues}
+      onSubmit={handleSubmit}
+      submitLabel={isEditing ? "Save Changes" : "Create Role"}
+      saving={saveMutation.saving}
+      serverError={saveMutation.error}
+      className="max-w-lg"
+    >
+      {(form) => {
+        const selectedPerms = form.watch("permissions") ?? [];
 
-        <div className="space-y-4 py-2">
-          {!isEditing && (
-            <div className="space-y-1.5">
-              <label htmlFor="role-name" className="text-sm font-medium">Name</label>
-              <Input
-                id="role-name"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="e.g. data-engineer"
-                autoFocus
+        function togglePermission(perm: string) {
+          const current: string[] = form.getValues("permissions") ?? [];
+          if (current.includes(perm)) {
+            form.setValue("permissions", current.filter((p) => p !== perm), { shouldValidate: true });
+          } else {
+            form.setValue("permissions", [...current, perm], { shouldValidate: true });
+          }
+        }
+
+        return (
+          <>
+            {!isEditing && (
+              <FormField
+                control={form.control}
+                name="name"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Name</FormLabel>
+                    <FormControl>
+                      <Input placeholder="e.g. data-engineer" autoFocus {...field} />
+                    </FormControl>
+                    <FormDescription>
+                      Lowercase letters, numbers, hyphens, and underscores. 1-63 characters.
+                    </FormDescription>
+                    <FormMessage />
+                  </FormItem>
+                )}
               />
-              <p className="text-xs text-muted-foreground">
-                Lowercase letters, numbers, hyphens, and underscores. 1-63 characters.
-              </p>
-            </div>
-          )}
+            )}
 
-          <div className="space-y-1.5">
-            <label htmlFor="role-description" className="text-sm font-medium">Description</label>
-            <Input
-              id="role-description"
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              placeholder="What this role is for"
+            <FormField
+              control={form.control}
+              name="description"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Description</FormLabel>
+                  <FormControl>
+                    <Input placeholder="What this role is for" {...field} />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
             />
-          </div>
 
-          <div className="space-y-3">
-            <label className="text-sm font-medium">Permissions</label>
-            {Object.entries(PERMISSION_GROUPS).map(([group, perms]) => (
-              <div key={group} className="space-y-2">
-                <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{group}</p>
-                <div className="space-y-1.5">
-                  {perms.filter((p) => allPermissions.includes(p)).map((perm) => (
-                    <label
-                      key={perm}
-                      className="flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-muted/50 cursor-pointer"
-                    >
-                      <Checkbox
-                        checked={selectedPerms.has(perm)}
-                        onCheckedChange={() => togglePermission(perm)}
-                      />
-                      <span className="text-sm">{PERMISSION_LABELS[perm] ?? perm}</span>
-                      <span className="text-xs text-muted-foreground font-mono ml-auto">{perm}</span>
-                    </label>
-                  ))}
+            <div className="space-y-3">
+              <FormLabel>Permissions</FormLabel>
+              {Object.entries(PERMISSION_GROUPS).map(([group, perms]) => (
+                <div key={group} className="space-y-2">
+                  <p className="text-xs font-medium text-muted-foreground uppercase tracking-wider">{group}</p>
+                  <div className="space-y-1.5">
+                    {perms.filter((p) => allPermissions.includes(p)).map((perm) => (
+                      <label
+                        key={perm}
+                        className="flex items-center gap-2 rounded-md px-2 py-1.5 hover:bg-muted/50 cursor-pointer"
+                      >
+                        <Checkbox
+                          checked={selectedPerms.includes(perm)}
+                          onCheckedChange={() => togglePermission(perm)}
+                        />
+                        <span className="text-sm">{PERMISSION_LABELS[perm] ?? perm}</span>
+                        <span className="text-xs text-muted-foreground font-mono ml-auto">{perm}</span>
+                      </label>
+                    ))}
+                  </div>
                 </div>
-              </div>
-            ))}
-          </div>
-
-          {displayError && (
-            <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-              {displayError}
+              ))}
+              {form.formState.errors.permissions && (
+                <p className="text-sm text-destructive">{form.formState.errors.permissions.message}</p>
+              )}
             </div>
-          )}
-        </div>
-
-        <DialogFooter>
-          <Button variant="outline" onClick={() => handleOpen(false)}>
-            Cancel
-          </Button>
-          <Button onClick={handleSave} disabled={saving}>
-            {saving && <Loader2 className="mr-1 size-3 animate-spin" />}
-            {isEditing ? "Save Changes" : "Create Role"}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+          </>
+        );
+      }}
+    </FormDialog>
   );
 }
 

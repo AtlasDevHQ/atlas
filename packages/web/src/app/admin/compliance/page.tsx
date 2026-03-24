@@ -23,13 +23,14 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+  FormDialog,
+  FormField,
+  FormItem,
+  FormLabel,
+  FormControl,
+  FormMessage,
+} from "@/components/form-dialog";
+import { z } from "zod";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { LoadingState } from "@/ui/components/admin/loading-state";
@@ -169,6 +170,11 @@ function CompliancePageContent() {
   );
 }
 
+const classificationEditSchema = z.object({
+  category: z.string().min(1, "Category is required"),
+  maskingStrategy: z.string().min(1, "Strategy is required"),
+});
+
 // ── Classifications Tab ───────────────────────────────────────────
 
 function ClassificationsTab() {
@@ -178,10 +184,8 @@ function ClassificationsTab() {
   );
 
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [editCategory, setEditCategory] = useState<string>("");
-  const [editStrategy, setEditStrategy] = useState<string>("");
 
-  const { mutate, saving, error: actionError } = useAdminMutation({
+  const { mutate, saving, error: actionError, reset: resetAction } = useAdminMutation({
     method: "PUT",
     invalidates: refetch,
   });
@@ -192,12 +196,12 @@ function ClassificationsTab() {
 
   const classifications = data?.classifications ?? [];
 
-  async function handleUpdate(id: string) {
+  async function handleUpdate(id: string, values: { category: string; maskingStrategy: string }) {
     const result = await mutate({
       path: `/api/v1/admin/compliance/classifications/${id}`,
       body: {
-        category: editCategory || undefined,
-        maskingStrategy: editStrategy || undefined,
+        category: values.category,
+        maskingStrategy: values.maskingStrategy,
         reviewed: true,
       },
     });
@@ -336,11 +340,7 @@ function ClassificationsTab() {
                         <Button
                           size="sm"
                           variant="ghost"
-                          onClick={() => {
-                            setEditingId(cls.id);
-                            setEditCategory(cls.category);
-                            setEditStrategy(cls.maskingStrategy);
-                          }}
+                          onClick={() => setEditingId(cls.id)}
                         >
                           Edit
                         </Button>
@@ -364,55 +364,81 @@ function ClassificationsTab() {
       </Card>
 
       {/* Edit dialog */}
-      <Dialog open={!!editingId} onOpenChange={(open) => !open && setEditingId(null)}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Edit PII Classification</DialogTitle>
-            <DialogDescription>
-              {editingItem && `${editingItem.tableName}.${editingItem.columnName}`}
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4 py-4">
-            <div className="space-y-2">
-              <label className="text-sm font-medium">PII Category</label>
-              <Select value={editCategory} onValueChange={setEditCategory}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {PII_CATEGORIES.map((cat) => (
-                    <SelectItem key={cat} value={cat}>
-                      {CATEGORY_LABELS[cat]}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-2">
-              <label className="text-sm font-medium">Masking Strategy</label>
-              <Select value={editStrategy} onValueChange={setEditStrategy}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {MASKING_STRATEGIES.map((s) => (
-                    <SelectItem key={s} value={s}>
-                      {STRATEGY_LABELS[s]}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setEditingId(null)}>Cancel</Button>
-            <Button onClick={() => editingId && handleUpdate(editingId)} disabled={saving}>
-              {saving && <Loader2 className="mr-2 size-4 animate-spin" />}
-              Save Changes
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      <FormDialog
+        open={!!editingId}
+        onOpenChange={(open) => {
+          if (open) resetAction();
+          if (!open) setEditingId(null);
+        }}
+        title="Edit PII Classification"
+        description={editingItem ? `${editingItem.tableName}.${editingItem.columnName}` : ""}
+        schema={classificationEditSchema}
+        defaultValues={{
+          category: editingItem?.category ?? "",
+          maskingStrategy: editingItem?.maskingStrategy ?? "",
+        }}
+        onSubmit={async (values) => {
+          if (!editingId) throw new Error("No classification selected for editing");
+          await handleUpdate(editingId, values);
+        }}
+        submitLabel="Save Changes"
+        saving={saving}
+        serverError={actionError}
+      >
+        {(form) => (
+          <>
+            <FormField
+              control={form.control}
+              name="category"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>PII Category</FormLabel>
+                  <Select value={field.value} onValueChange={field.onChange}>
+                    <FormControl>
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                    </FormControl>
+                    <SelectContent>
+                      {PII_CATEGORIES.map((cat) => (
+                        <SelectItem key={cat} value={cat}>
+                          {CATEGORY_LABELS[cat]}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+
+            <FormField
+              control={form.control}
+              name="maskingStrategy"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Masking Strategy</FormLabel>
+                  <Select value={field.value} onValueChange={field.onChange}>
+                    <FormControl>
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                    </FormControl>
+                    <SelectContent>
+                      {MASKING_STRATEGIES.map((s) => (
+                        <SelectItem key={s} value={s}>
+                          {STRATEGY_LABELS[s]}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+          </>
+        )}
+      </FormDialog>
     </div>
   );
 }

@@ -4,14 +4,18 @@ import { describe, it, expect, beforeEach, mock } from "bun:test";
 
 let mockEnterpriseEnabled = false;
 let mockEnterpriseLicenseKey: string | undefined = "test-key";
+let mockGetConfigError: Error | null = null;
 
 mock.module("@atlas/api/lib/config", () => ({
-  getConfig: () => ({
-    enterprise: {
-      enabled: mockEnterpriseEnabled,
-      licenseKey: mockEnterpriseLicenseKey,
-    },
-  }),
+  getConfig: () => {
+    if (mockGetConfigError) throw mockGetConfigError;
+    return {
+      enterprise: {
+        enabled: mockEnterpriseEnabled,
+        licenseKey: mockEnterpriseLicenseKey,
+      },
+    };
+  },
 }));
 
 // Mock internal DB
@@ -81,6 +85,7 @@ function resetMocks() {
   capturedQueries.length = 0;
   mockEnterpriseEnabled = true;
   mockEnterpriseLicenseKey = "test-key";
+  mockGetConfigError = null;
 }
 
 function makeRuleRow(overrides: Partial<Record<string, unknown>> = {}): Record<string, unknown> {
@@ -261,6 +266,17 @@ describe("checkApprovalRequired", () => {
     expect(result.required).toBe(false);
   });
 
+  it("re-throws unexpected errors instead of returning false", async () => {
+    const original = new Error("DB connection failed");
+    mockGetConfigError = original;
+    try {
+      await checkApprovalRequired("org-1", ["users"], ["id"]);
+      expect.unreachable("should have thrown");
+    } catch (err) {
+      expect(err).toBe(original);
+    }
+  });
+
   it("returns false when no rules exist", async () => {
     mockRows.push([]); // empty rules
     const result = await checkApprovalRequired("org-1", ["users"], ["id"]);
@@ -395,6 +411,17 @@ describe("expireStaleRequests", () => {
     const result = await expireStaleRequests();
     expect(result).toBe(0);
   });
+
+  it("re-throws unexpected errors instead of returning 0", async () => {
+    const original = new Error("Config service unavailable");
+    mockGetConfigError = original;
+    try {
+      await expireStaleRequests();
+      expect.unreachable("should have thrown");
+    } catch (err) {
+      expect(err).toBe(original);
+    }
+  });
 });
 
 describe("getPendingCount", () => {
@@ -404,6 +431,17 @@ describe("getPendingCount", () => {
     mockEnterpriseEnabled = false;
     const result = await getPendingCount("org-1");
     expect(result).toBe(0);
+  });
+
+  it("re-throws unexpected errors instead of returning 0", async () => {
+    const original = new Error("Unexpected config failure");
+    mockGetConfigError = original;
+    try {
+      await getPendingCount("org-1");
+      expect.unreachable("should have thrown");
+    } catch (err) {
+      expect(err).toBe(original);
+    }
   });
 
   it("returns count from database", async () => {

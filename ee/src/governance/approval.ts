@@ -339,8 +339,8 @@ export interface ApprovalMatchResult {
  *
  * This function does NOT require enterprise — it gracefully returns
  * `{ required: false }` when enterprise is disabled or no internal DB exists.
- * The guard is intentionally omitted so the hot SQL execution path doesn't
- * throw when enterprise is not configured.
+ * However, unexpected errors from the enterprise check are re-thrown to avoid
+ * silently bypassing governance.
  */
 export async function checkApprovalRequired(
   orgId: string | undefined,
@@ -351,15 +351,16 @@ export async function checkApprovalRequired(
     return { required: false, matchedRules: [] };
   }
 
-  // Check if enterprise is enabled without throwing
+  // Check if enterprise is enabled — re-throw unexpected errors
   try {
     requireEnterprise("approval-workflows");
   } catch (err) {
-    if (!(err instanceof EnterpriseError)) {
-      const msg = err instanceof Error ? err.message : String(err);
-      log.warn({ err: msg }, "Unexpected error checking enterprise status in approval check");
+    if (err instanceof EnterpriseError) {
+      return { required: false, matchedRules: [] };
     }
-    return { required: false, matchedRules: [] };
+    const msg = err instanceof Error ? err.message : String(err);
+    log.warn({ err: msg }, "Unexpected error checking enterprise status in approval check — re-throwing");
+    throw err;
   }
 
   const rows = await internalQuery<ApprovalRuleRow>(
@@ -580,11 +581,12 @@ export async function expireStaleRequests(): Promise<number> {
   try {
     requireEnterprise("approval-workflows");
   } catch (err) {
-    if (!(err instanceof EnterpriseError)) {
-      const msg = err instanceof Error ? err.message : String(err);
-      log.warn({ err: msg }, "Unexpected error checking enterprise status in expireStaleRequests");
+    if (err instanceof EnterpriseError) {
+      return 0;
     }
-    return 0;
+    const msg = err instanceof Error ? err.message : String(err);
+    log.warn({ err: msg }, "Unexpected error checking enterprise status in expireStaleRequests — re-throwing");
+    throw err;
   }
 
   const rows = await internalQuery<{ id: string }>(
@@ -607,11 +609,12 @@ export async function getPendingCount(orgId: string): Promise<number> {
   try {
     requireEnterprise("approval-workflows");
   } catch (err) {
-    if (!(err instanceof EnterpriseError)) {
-      const msg = err instanceof Error ? err.message : String(err);
-      log.warn({ err: msg }, "Unexpected error checking enterprise status in getPendingCount");
+    if (err instanceof EnterpriseError) {
+      return 0;
     }
-    return 0;
+    const msg = err instanceof Error ? err.message : String(err);
+    log.warn({ err: msg }, "Unexpected error checking enterprise status in getPendingCount — re-throwing");
+    throw err;
   }
 
   const rows = await internalQuery<{ count: string }>(

@@ -293,6 +293,66 @@ Database errors that might expose connection details or internal state (password
 
 All queries — successful and failed — are recorded in the [audit log](/deployment/authentication#audit-logging) with user attribution, timing, and error details.
 
+## What this means for you
+
+<Callout type="info">
+This page covers content for **end users** (querying data), **operators** (configuring and auditing the pipeline), and **developers** (building on the SDK or plugins).
+</Callout>
+
+### For end users
+
+Your queries are safe. Every question you ask goes through 7 layers of validation before it reaches the database. You cannot accidentally delete, modify, or corrupt data — the pipeline only allows read-only SELECT queries.
+
+If a query is blocked, the agent will explain why and suggest an alternative approach. Common reasons include referencing a table that hasn't been added to the semantic layer, or using a keyword that looks like a data modification command (even inside a string literal).
+
+### For operators
+
+#### Configuration
+
+Three environment variables control the execution-time layers:
+
+| Variable | Default | What it controls |
+|----------|---------|-----------------|
+| `ATLAS_ROW_LIMIT` | `1000` | Maximum rows returned per query (layer 5) |
+| `ATLAS_QUERY_TIMEOUT` | `30000` (30s) | Query execution deadline in milliseconds (layer 6) |
+| `ATLAS_TABLE_WHITELIST` | `true` | Whether the table whitelist is enforced (layer 3) |
+
+The first four layers (0-3) are always active and cannot be disabled. This is intentional — they form the core security boundary.
+
+#### Testing the pipeline
+
+Validate a query without executing it using the SDK or REST API:
+
+```bash
+curl -X POST https://your-api.example.com/api/v1/validate-sql \
+  -H "Content-Type: application/json" \
+  -d '{"sql": "SELECT * FROM users"}'
+```
+
+This runs layers 0-3 and returns the validation result. Use this to test edge cases or verify that your semantic layer whitelist is correct.
+
+#### Security audit
+
+The pipeline follows a **fail-closed** threat model:
+
+| Threat | Mitigation | Layer |
+|--------|------------|-------|
+| SQL injection (piggybacked statements) | AST parse rejects multi-statement input | 2 |
+| Data exfiltration from undocumented tables | Table whitelist restricts to semantic layer | 3 |
+| Mutation via DML/DDL keywords | Regex guard + AST type check (SELECT only) | 1, 2 |
+| Comment-wrapped bypass attempts | Comments stripped before regex check | 1 |
+| Unparseable SQL used to evade validation | Reject-by-default on parse failure | 2 |
+| Resource exhaustion (full-table scans) | Auto LIMIT + statement timeout | 5, 6 |
+| Cross-tenant data access | RLS WHERE injection (fail-closed on missing claims) | 4 |
+
+All queries — successful and failed — are recorded in the [audit log](/deployment/authentication#audit-logging) with user attribution, timing, and error details. Use the Admin > Audit Log page to review query patterns and identify suspicious activity.
+
+### For developers
+
+If you're building plugins or custom tools, see [Plugin hooks](#plugin-hooks) above for how `beforeQuery`/`afterQuery` hooks and custom validators interact with the pipeline. Custom validators **completely replace** layers 0-3, so your validator must provide equivalent safety guarantees.
+
+---
+
 ## Test coverage
 
 The validation pipeline has ~103 unit tests covering edge cases including:

@@ -5,6 +5,10 @@ description: Isolate data per tenant using automatic WHERE clause injection base
 
 import { Callout } from "fumadocs-ui/components/callout";
 
+<Callout type="info">
+This page covers content for **workspace admins** (setting up RLS policies), **operators** (auth mode compatibility and claim resolution), and **end users** (understanding data access boundaries). Jump to the section relevant to your role, or read end-to-end for the full picture.
+</Callout>
+
 Row-Level Security (RLS) injects WHERE conditions into every SQL query based on the authenticated user's claims. This ensures tenants only see their own data -- without relying on the agent to add the right filters.
 
 <Callout type="warn">
@@ -340,6 +344,64 @@ ATLAS_LOG_LEVEL=debug
 Look for `"RLS conditions injected into SQL"` log messages to see the exact WHERE clauses applied to each query.
 
 See [Troubleshooting](/guides/troubleshooting#row-level-security) for more diagnostic steps.
+
+---
+
+## For workspace admins
+
+If you manage an Atlas workspace through the admin console, here is what you need to know about RLS:
+
+**Setting up RLS policies** requires access to `atlas.config.ts` or the environment variables listed in [Quick Start](#quick-start-environment-variables). Coordinate with your platform operator to configure policies that match your tenant column structure.
+
+**What to verify:**
+1. Every table your users query has a tenant column (e.g. `org_id`, `tenant_id`, `workspace_id`)
+2. The JWT claims from your identity provider include the corresponding claim path
+3. Test with `ATLAS_LOG_LEVEL=debug` to confirm injection — look for `"RLS conditions injected into SQL"` log messages
+
+**Admin console visibility:** RLS rejections appear in Admin > Audit Log as failed queries. Filter by error messages containing "RLS" to monitor policy enforcement.
+
+---
+
+## For operators
+
+### Auth mode compatibility
+
+RLS depends on user claims being available at query time. Choose your auth mode carefully:
+
+- **`byot` (Bring Your Own Token)** is the primary use case — JWT claims from your identity provider drive RLS policies
+- **`managed` (Better Auth)** works well — session data includes user claims
+- **`api-key`** requires static claims via `ATLAS_RLS_CLAIMS` (a JSON string parsed at startup). Suitable for service-to-service scenarios with a fixed tenant context
+- **`none`** is incompatible — all queries will be blocked because there is no user context to resolve claims from
+
+### Claim resolution
+
+Claims are resolved from the authenticated user's context using dot-delimited paths (e.g. `app_metadata.tenant`). The resolution order is:
+
+1. Extract the full claims object from the auth context
+2. Walk the dot-delimited path to find the value
+3. If the value is an array, generate `IN (...)` instead of `=`
+4. If the value is `null`, `undefined`, or an empty array, **block the query**
+
+Non-string values are coerced to strings before injection. Claim values are SQL-escaped (single quotes doubled).
+
+### Custom validator bypass
+
+If a connection uses a custom validator (via `ConnectionPluginMeta.validate`), RLS injection is **skipped entirely**. Custom validators for SOQL, GraphQL, or other non-SQL languages must implement their own row-level filtering.
+
+---
+
+## For end users
+
+When RLS is enabled, you will only see data that belongs to your organization or tenant. This happens automatically — you do not need to add any filters to your questions.
+
+**What this means in practice:**
+- If you ask "Show all orders," you see only your organization's orders
+- Aggregate queries (counts, sums, averages) only include your data
+- The agent does not know about other tenants' data — the filtering happens at the database level
+
+**If queries return no data:**
+- Your account may not have the expected claim value — contact your workspace admin
+- The column name in the RLS policy may not match the actual database column — this is a configuration issue, not a data issue
 
 ---
 

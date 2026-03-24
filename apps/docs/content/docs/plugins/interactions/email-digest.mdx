@@ -5,9 +5,15 @@ description: Subscribe users to scheduled metric summary emails delivered daily 
 
 import { Callout } from "fumadocs-ui/components/callout";
 
+<Callout type="info">
+This page covers content for **developers** (plugin installation and configuration) and **end users** (subscribing to and managing digests). Jump to [Plugin Setup](#plugin-setup-developer) for installation or [Subscription API](#subscription-api-end-user) for managing subscriptions.
+</Callout>
+
 The Email Digest interaction plugin enables users to subscribe to metric digests — formatted email summaries of key metrics delivered on a daily or weekly schedule. Each digest includes metric values, trend indicators, and optional data tables.
 
-## Installation
+## Plugin Setup (Developer)
+
+### Installation
 
 ```bash
 bun add @useatlas/email-digest
@@ -19,7 +25,7 @@ bun add @useatlas/email-digest
 - A SendGrid API key for email delivery
 - An `executeMetric` callback wired to the Atlas agent
 
-## Configuration
+### Configuration
 
 ```typescript
 import { defineConfig } from "@atlas/api/lib/config";
@@ -40,7 +46,7 @@ export default defineConfig({
 });
 ```
 
-### Options
+#### Options
 
 | Option | Type | Required | Description |
 |--------|------|----------|-------------|
@@ -50,7 +56,7 @@ export default defineConfig({
 | `publicUrl` | `string` | No | Base URL for unsubscribe/management links. |
 | `executeMetric` | `function` | Yes | Callback that runs a metric query and returns `MetricResult`. |
 
-### MetricResult Shape
+#### MetricResult Shape
 
 The `executeMetric` callback should return a `MetricResult`:
 
@@ -65,7 +71,7 @@ interface MetricResult {
 }
 ```
 
-## Subscription API
+## Subscription API (End User)
 
 All routes are mounted under the plugin's base path (typically `/api/plugins/email-digest-interaction/`). All routes require the `X-Atlas-User-Id` header for authentication.
 

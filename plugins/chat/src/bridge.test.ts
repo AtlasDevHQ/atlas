@@ -2940,3 +2940,229 @@ describe("chat plugin Linear lifecycle", () => {
     ).rejects.toThrow(/webhookSecret/i);
   });
 });
+
+// ---------------------------------------------------------------------------
+// WhatsApp adapter config validation
+// ---------------------------------------------------------------------------
+
+describe("chatPlugin WhatsApp adapter config", () => {
+  const mockExecuteQueryFn = async () => ({
+    answer: "test",
+    sql: [] as string[],
+    data: [] as { columns: string[]; rows: Record<string, unknown>[] }[],
+    steps: 1,
+    usage: { totalTokens: 10 },
+  });
+
+  const validWhatsAppConfig = {
+    phoneNumberId: "123456789",
+    accessToken: "EAABsbCS1iHgBO...",
+    verifyToken: "my-verify-token",
+    appSecret: "abc123def456",
+  };
+
+  it("accepts valid config with all required fields", async () => {
+    const { chatPlugin } = await import("./index");
+
+    const plugin = chatPlugin({
+      adapters: { whatsapp: validWhatsAppConfig },
+      executeQuery: mockExecuteQueryFn,
+    });
+
+    expect(plugin.id).toBe("chat-interaction");
+    expect(plugin.types).toEqual(["interaction"]);
+  });
+
+  it("accepts config with optional userName and apiVersion", async () => {
+    const { chatPlugin } = await import("./index");
+
+    const plugin = chatPlugin({
+      adapters: {
+        whatsapp: {
+          ...validWhatsAppConfig,
+          userName: "atlas-bot",
+          apiVersion: "v21.0",
+        },
+      },
+      executeQuery: mockExecuteQueryFn,
+    });
+
+    expect(plugin.id).toBe("chat-interaction");
+  });
+
+  it("rejects config with empty phoneNumberId", async () => {
+    const { chatPlugin } = await import("./index");
+
+    expect(() =>
+      chatPlugin({
+        adapters: {
+          whatsapp: { ...validWhatsAppConfig, phoneNumberId: "" },
+        },
+        executeQuery: mockExecuteQueryFn,
+      }),
+    ).toThrow(/phoneNumberId/i);
+  });
+
+  it("rejects config with empty accessToken", async () => {
+    const { chatPlugin } = await import("./index");
+
+    expect(() =>
+      chatPlugin({
+        adapters: {
+          whatsapp: { ...validWhatsAppConfig, accessToken: "" },
+        },
+        executeQuery: mockExecuteQueryFn,
+      }),
+    ).toThrow(/accessToken/i);
+  });
+
+  it("rejects config with empty verifyToken", async () => {
+    const { chatPlugin } = await import("./index");
+
+    expect(() =>
+      chatPlugin({
+        adapters: {
+          whatsapp: { ...validWhatsAppConfig, verifyToken: "" },
+        },
+        executeQuery: mockExecuteQueryFn,
+      }),
+    ).toThrow(/verifyToken/i);
+  });
+
+  it("rejects config with empty appSecret", async () => {
+    const { chatPlugin } = await import("./index");
+
+    expect(() =>
+      chatPlugin({
+        adapters: {
+          whatsapp: { ...validWhatsAppConfig, appSecret: "" },
+        },
+        executeQuery: mockExecuteQueryFn,
+      }),
+    ).toThrow(/appSecret/i);
+  });
+
+  it("rejects invalid apiVersion format", async () => {
+    const { chatPlugin } = await import("./index");
+
+    expect(() =>
+      chatPlugin({
+        adapters: {
+          whatsapp: { ...validWhatsAppConfig, apiVersion: "21.0" },
+        },
+        executeQuery: mockExecuteQueryFn,
+      }),
+    ).toThrow(/apiVersion/i);
+  });
+
+  it("rejects apiVersion without minor version", async () => {
+    const { chatPlugin } = await import("./index");
+
+    expect(() =>
+      chatPlugin({
+        adapters: {
+          whatsapp: { ...validWhatsAppConfig, apiVersion: "v21" },
+        },
+        executeQuery: mockExecuteQueryFn,
+      }),
+    ).toThrow(/apiVersion/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WhatsApp adapter factory
+// ---------------------------------------------------------------------------
+
+describe("createWhatsAppAdapter", () => {
+  it("creates adapter with correct name", async () => {
+    const { createWhatsAppAdapter: createAdapter } = await import("./adapters/whatsapp");
+
+    const adapter = createAdapter({
+      phoneNumberId: "123456789",
+      accessToken: "test-token",
+      verifyToken: "test-verify",
+      appSecret: "test-secret",
+    });
+    expect(adapter).toBeDefined();
+    expect(adapter.name).toBe("whatsapp");
+  });
+
+  it("creates adapter with optional fields", async () => {
+    const { createWhatsAppAdapter: createAdapter } = await import("./adapters/whatsapp");
+
+    const adapter = createAdapter({
+      phoneNumberId: "123456789",
+      accessToken: "test-token",
+      verifyToken: "test-verify",
+      appSecret: "test-secret",
+      userName: "atlas-bot",
+      apiVersion: "v18.0",
+    });
+    expect(adapter).toBeDefined();
+    expect(adapter.name).toBe("whatsapp");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WhatsApp webhook route guard
+// ---------------------------------------------------------------------------
+
+describe("whatsapp webhook route guard", () => {
+  it("GET webhook returns 503 before initialization", async () => {
+    const { buildChatPlugin } = require("./index");
+    const { Hono } = require("hono");
+
+    const plugin = buildChatPlugin({
+      adapters: {
+        whatsapp: {
+          phoneNumberId: "123456789",
+          accessToken: "test-token",
+          verifyToken: "test-verify",
+          appSecret: "test-secret",
+        },
+      },
+      executeQuery: async () => ({
+        answer: "test",
+        sql: [],
+        data: [],
+        steps: 1,
+        usage: { totalTokens: 10 },
+      }),
+    });
+
+    const app = new Hono();
+    plugin.routes(app);
+
+    const res = await app.request("/webhooks/whatsapp", { method: "GET" });
+    expect(res.status).toBe(503);
+  });
+
+  it("POST webhook returns 503 before initialization", async () => {
+    const { buildChatPlugin } = require("./index");
+    const { Hono } = require("hono");
+
+    const plugin = buildChatPlugin({
+      adapters: {
+        whatsapp: {
+          phoneNumberId: "123456789",
+          accessToken: "test-token",
+          verifyToken: "test-verify",
+          appSecret: "test-secret",
+        },
+      },
+      executeQuery: async () => ({
+        answer: "test",
+        sql: [],
+        data: [],
+        steps: 1,
+        usage: { totalTokens: 10 },
+      }),
+    });
+
+    const app = new Hono();
+    plugin.routes(app);
+
+    const res = await app.request("/webhooks/whatsapp", { method: "POST" });
+    expect(res.status).toBe(503);
+  });
+});

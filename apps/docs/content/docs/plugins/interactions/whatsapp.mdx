@@ -1,0 +1,193 @@
+---
+title: WhatsApp Bot
+description: Integrate WhatsApp as an interaction surface for Atlas — users message the bot directly to get data answers as formatted text.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+The WhatsApp interaction is provided via the [`@useatlas/chat`](/plugins/interactions/chat) Chat SDK bridge plugin. Users send messages directly to the WhatsApp Business number to query data. The bot replies with formatted text containing the answer, SQL in code fences, and data as a table.
+
+All WhatsApp conversations are 1:1 DMs between the business phone number and the user. There is no concept of channels or group threads.
+
+## Prerequisites
+
+- A [WhatsApp Business Platform](https://business.whatsapp.com/) account
+- A Meta App with WhatsApp product enabled
+- A WhatsApp Business phone number registered in the Cloud API
+- A publicly accessible HTTPS URL for webhook delivery
+
+## Setup
+
+### 1. Create a Meta App
+
+1. Go to [Meta for Developers](https://developers.facebook.com/) > **My Apps** > **Create App**
+2. Select **Business** as the app type
+3. Add the **WhatsApp** product to your app
+
+### 2. Get Credentials
+
+From the **WhatsApp** > **API Setup** page in your Meta App dashboard:
+
+1. Note the **Phone number ID** (not the phone number itself) — save as `WHATSAPP_PHONE_NUMBER_ID`
+2. Generate a **Permanent System User access token** with `whatsapp_business_messaging` permission — save as `WHATSAPP_ACCESS_TOKEN`
+3. Choose a **Verify token** (any secret string you define) — save as `WHATSAPP_VERIFY_TOKEN`
+4. From **App Settings** > **Basic**, copy the **App Secret** — save as `WHATSAPP_APP_SECRET`
+
+<Callout type="warn">
+The access token and app secret grant full access to your WhatsApp Business API. Store them securely and never commit them to source control. Use a System User token (not a temporary token) for production.
+</Callout>
+
+### 3. Configure the Webhook
+
+1. Go to **WhatsApp** > **Configuration** in your Meta App dashboard
+2. Click **Edit** under **Webhook**
+3. Set the **Callback URL** to:
+   ```
+   https://your-atlas-api.example.com/api/plugins/chat-interaction/webhooks/whatsapp
+   ```
+4. Set the **Verify token** to the same value as `WHATSAPP_VERIFY_TOKEN`
+5. Click **Verify and Save**
+6. Under **Webhook fields**, subscribe to:
+   - **messages** — for incoming user messages
+
+<Callout type="info">
+The webhook URL must be publicly accessible over HTTPS before you configure it in Meta. Meta sends a GET verification challenge to the URL during setup — Atlas handles this automatically.
+</Callout>
+
+## Configuration
+
+```typescript
+import { defineConfig } from "@atlas/api/lib/config";
+import { executeAgentQuery } from "@atlas/api/lib/agent-query";
+import { chatPlugin } from "@useatlas/chat";
+
+export default defineConfig({
+  plugins: [
+    chatPlugin({
+      adapters: {
+        whatsapp: {
+          phoneNumberId: process.env.WHATSAPP_PHONE_NUMBER_ID!,
+          accessToken: process.env.WHATSAPP_ACCESS_TOKEN!,
+          verifyToken: process.env.WHATSAPP_VERIFY_TOKEN!,
+          appSecret: process.env.WHATSAPP_APP_SECRET!,
+        },
+      },
+      executeQuery: executeAgentQuery,
+    }),
+  ],
+});
+```
+
+### Options
+
+| Option | Type | Required | Description |
+|--------|------|----------|-------------|
+| `phoneNumberId` | `string` | Yes | WhatsApp Business phone number ID from the API Setup page. |
+| `accessToken` | `string` | Yes | System User access token with `whatsapp_business_messaging` permission. |
+| `verifyToken` | `string` | Yes | Verify token for webhook challenge-response — must match the value configured in Meta. |
+| `appSecret` | `string` | Yes | Meta App Secret for HMAC-SHA256 webhook signature verification. |
+| `userName` | `string` | No | Bot display name used for identification. |
+| `apiVersion` | `string` | No | Meta Graph API version (default: `"v21.0"`). |
+
+## Mounted Routes
+
+The Chat SDK bridge mounts the following routes for WhatsApp:
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/webhooks/whatsapp` | Meta webhook verification challenge-response |
+| `POST` | `/webhooks/whatsapp` | Incoming message events from WhatsApp |
+
+## How It Works
+
+### Direct Messages
+
+1. A user sends a message to the WhatsApp Business number
+2. Meta sends a webhook event to the `/webhooks/whatsapp` endpoint
+3. The adapter verifies the HMAC-SHA256 signature using the App Secret
+4. The `executeQuery` callback runs the Atlas agent
+5. Results are sent back as a formatted text message
+
+### Conversation Threading
+
+WhatsApp conversations are inherently 1:1 — all messages between the business number and a specific user form a single conversation. The Chat SDK state adapter tracks conversation history, so follow-up messages include prior context for multi-turn analysis.
+
+### Streaming
+
+When `executeQueryStream` is configured, the adapter buffers the full streamed response and sends it as a single message once complete. WhatsApp does not support message editing, so there are no progressive updates — the `chunkIntervalMs` setting has no effect.
+
+### Actions and Buttons
+
+WhatsApp supports interactive messages (button replies and list menus), but the current adapter renders query results as plain text. Approval prompts (pending actions) are not rendered on this platform. If your workflow requires approval flows, use a platform that supports interactive cards (Slack, Teams, Discord).
+
+### Response Format
+
+Responses are rendered as plain text using the Chat SDK markdown fallback:
+
+- **Answer text** as plain text
+- **SQL queries** wrapped in triple-backtick fences (WhatsApp renders these as monospace)
+- **Data tables** as text-aligned tables
+- **Reactions** supported (emoji reactions on messages)
+- **Read receipts** sent automatically when messages are received
+
+<Callout type="info">
+WhatsApp supports limited formatting: *bold*, _italic_, ~strikethrough~, and \`monospace\`. Full markdown (headers, links, bullet lists) is not rendered — it appears as plain text.
+</Callout>
+
+WhatsApp has a 4096-character message limit. Long responses are automatically split across multiple messages, breaking on paragraph boundaries when possible.
+
+### 24-Hour Messaging Window
+
+WhatsApp enforces a 24-hour messaging window. You can only send messages to users who have messaged you within the last 24 hours. After the window expires, you must use approved [Message Templates](https://developers.facebook.com/docs/whatsapp/message-templates) to re-initiate the conversation.
+
+<Callout type="warn">
+If a user asks a question but the agent takes longer than 24 hours to respond (unlikely but possible in edge cases), the response will fail due to the messaging window restriction.
+</Callout>
+
+## Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `WHATSAPP_PHONE_NUMBER_ID` | WhatsApp Business phone number ID |
+| `WHATSAPP_ACCESS_TOKEN` | System User access token for Cloud API calls |
+| `WHATSAPP_VERIFY_TOKEN` | Verify token for webhook challenge-response |
+| `WHATSAPP_APP_SECRET` | Meta App Secret for HMAC-SHA256 signature verification |
+
+## Troubleshooting
+
+### Webhook verification fails
+
+1. Ensure the **Verify token** in your Atlas config matches exactly what you entered in the Meta webhook configuration
+2. Verify the webhook URL is publicly accessible over HTTPS
+3. Check Atlas logs for verification challenge details
+
+### Messages not arriving
+
+1. In Meta App Dashboard > **WhatsApp** > **Configuration**, verify the **messages** webhook field is subscribed
+2. Check the webhook health in Meta — failed deliveries are shown with error details
+3. Ensure the app is in **Live** mode (not Development) for production use
+
+### Signature verification failures
+
+The adapter verifies every incoming POST using HMAC-SHA256 with the App Secret. Ensure `WHATSAPP_APP_SECRET` matches the **App Secret** from your Meta App's Basic Settings (not the verify token).
+
+### Rate limiting
+
+WhatsApp enforces strict rate limits per phone number:
+- **Business-initiated messages**: Tiered limits based on account quality (1K, 10K, 100K/day)
+- **User-initiated messages**: No limit within the 24-hour window
+- **API calls**: Standard Meta Graph API rate limits apply
+
+If you hit rate limits, the Chat SDK adapter surfaces the error. Consider upgrading your messaging tier in the WhatsApp Business Manager.
+
+### Bot replies not reaching users
+
+Ensure the phone number is verified and registered for the WhatsApp Cloud API. Test numbers (from the API Setup sandbox) can only message numbers added to the allowlist.
+
+## Reference
+
+- [WhatsApp Business Cloud API documentation](https://developers.facebook.com/docs/whatsapp/cloud-api)
+- [WhatsApp webhook setup guide](https://developers.facebook.com/docs/whatsapp/cloud-api/guides/set-up-webhooks)
+- [WhatsApp message types reference](https://developers.facebook.com/docs/whatsapp/cloud-api/messages)
+- [Chat SDK Bridge plugin](/plugins/interactions/chat)
+- [Chat SDK documentation](https://chat-sdk.dev/docs)

@@ -355,6 +355,7 @@
         "@chat-adapter/state-memory": "4.20.2",
         "@chat-adapter/teams": "4.20.2",
         "@chat-adapter/telegram": "4.20.2",
+        "@chat-adapter/whatsapp": "4.21.0",
         "chat": "4.20.2",
       },
       "devDependencies": {
@@ -919,6 +920,8 @@
     "@chat-adapter/teams": ["@chat-adapter/teams@4.20.2", "", { "dependencies": { "@azure/identity": "^4.13.0", "@chat-adapter/shared": "4.20.2", "botbuilder": "^4.23.1", "botframework-connector": "^4.23.3", "chat": "4.20.2" } }, "sha512-6mi8ju0WWmohTfY0WEmiNWkasBFBlav/Nk3UQxsZ2j7/z2oXMbeuIwpXqZL7f1TT8MKBy1kfnsxtlqdpXhgxyA=="],
 
     "@chat-adapter/telegram": ["@chat-adapter/telegram@4.20.2", "", { "dependencies": { "@chat-adapter/shared": "4.20.2", "chat": "4.20.2" } }, "sha512-TiQwGhZIzZmZ7IkSSxzYw95Gw/2GjP8Qu4ingbSp7fN8fUxVyOzaihNU23DCP+JWdHtc7j5uF6kLgvEtF6VXMw=="],
+
+    "@chat-adapter/whatsapp": ["@chat-adapter/whatsapp@4.21.0", "", { "dependencies": { "@chat-adapter/shared": "4.21.0", "chat": "4.21.0" } }, "sha512-H2HKbqQ0vnpDu5g3ORJAQFp8byvkQdNTMIavoQOEQuYP+qimxQ41exNWmNhbGds/TgHbTN73MM7ewyKRZEAUhw=="],
 
     "@chevrotain/cst-dts-gen": ["@chevrotain/cst-dts-gen@10.5.0", "", { "dependencies": { "@chevrotain/gast": "10.5.0", "@chevrotain/types": "10.5.0", "lodash": "4.17.21" } }, "sha512-lhmC/FyqQ2o7pGK4Om+hzuDrm9rhFYIJ/AXoQBeongmn870Xeb0L6oGEiuR8nohFNL5sMaQEJWCxr1oIVIVXrw=="],
 
@@ -3945,6 +3948,10 @@
     "@babel/helper-compilation-targets/semver": ["semver@6.3.1", "", { "bin": { "semver": "bin/semver.js" } }, "sha512-BR7VvDCVHO+q2xBEWskxS6DJE1qRnb7DxzUrogb71CWoSficBxYsiAGd+Kl0mmq/MprG9yArRkyrQxTO6XjMzA=="],
 
     "@babel/helper-create-class-features-plugin/semver": ["semver@6.3.1", "", { "bin": { "semver": "bin/semver.js" } }, "sha512-BR7VvDCVHO+q2xBEWskxS6DJE1qRnb7DxzUrogb71CWoSficBxYsiAGd+Kl0mmq/MprG9yArRkyrQxTO6XjMzA=="],
+
+    "@chat-adapter/whatsapp/@chat-adapter/shared": ["@chat-adapter/shared@4.21.0", "", { "dependencies": { "chat": "4.21.0" } }, "sha512-7Tog6z7FOWp3/Ok+N7QFb8OkhKCua/TlGm9iHFNofBf3XumGG/j2IdgZQWo/0X89HJl4K0NrDfDcTtzQkvkKLA=="],
+
+    "@chat-adapter/whatsapp/chat": ["chat@4.21.0", "", { "dependencies": { "@workflow/serde": "4.1.0-beta.2", "mdast-util-to-string": "^4.0.0", "remark-gfm": "^4.0.0", "remark-parse": "^11.0.0", "remark-stringify": "^11.0.0", "remend": "^1.2.1", "unified": "^11.0.5" } }, "sha512-rhWVU0pjpf6sQGhW/yx6h4cKYhwoxInQbZH0MnAKM4CfKi20LX90OgHvPWtk3PghiSc9t9v0eu+pGeDnayAndA=="],
 
     "@chevrotain/cst-dts-gen/lodash": ["lodash@4.17.21", "", {}, "sha512-v2kDEe57lecTulaDIuNTPy3Ry4gLGJ6Z1O3vE1krgXZNrsQ+LFTGHVxVjcXPs17LhbZVGedAJv8XZ1tvj5FvSg=="],
 

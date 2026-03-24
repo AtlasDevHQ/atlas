@@ -3,7 +3,7 @@
  *
  * Bridges vercel/chat (Chat SDK) into the Atlas plugin system as a unified
  * interaction layer. Supports Slack, Teams, Discord, Google Chat, Telegram,
- * GitHub, and Linear; additional platforms will be added as Chat SDK adapters.
+ * GitHub, Linear, and WhatsApp.
  *
  * Replaces the standalone `@useatlas/slack` and `@useatlas/teams` plugins
  * with a unified Chat SDK adapter approach. See the migration guide in README.md.
@@ -45,6 +45,12 @@
  *           apiKey: process.env.LINEAR_API_KEY!,
  *           webhookSecret: process.env.LINEAR_WEBHOOK_SECRET!,
  *         },
+ *         whatsapp: {
+ *           phoneNumberId: process.env.WHATSAPP_PHONE_NUMBER_ID!,
+ *           accessToken: process.env.WHATSAPP_ACCESS_TOKEN!,
+ *           verifyToken: process.env.WHATSAPP_VERIFY_TOKEN!,
+ *           appSecret: process.env.WHATSAPP_APP_SECRET!,
+ *         },
  *       },
  *       executeQuery: myQueryFunction,
  *     }),
@@ -61,6 +67,8 @@ import type { GoogleChatAdapter } from "@chat-adapter/gchat";
 import type { TelegramAdapter } from "@chat-adapter/telegram";
 import type { GitHubAdapter } from "@chat-adapter/github";
 import type { LinearAdapter } from "@chat-adapter/linear";
+import type { WhatsAppAdapter } from "@chat-adapter/whatsapp";
+import type { Context } from "hono";
 import { createPlugin } from "@useatlas/plugin-sdk";
 import type {
   AtlasInteractionPlugin,
@@ -79,6 +87,7 @@ import { createGoogleChatAdapter } from "./adapters/gchat";
 import { createTelegramAdapter } from "./adapters/telegram";
 import { createGitHubAdapter } from "./adapters/github";
 import { createLinearAdapter } from "./adapters/linear";
+import { createWhatsAppAdapter } from "./adapters/whatsapp";
 import { createStateAdapter } from "./state";
 
 // Re-export types for host wiring convenience
@@ -97,6 +106,7 @@ export type {
   TelegramAdapterConfig,
   GitHubAdapterConfig,
   LinearAdapterConfig,
+  WhatsAppAdapterConfig,
   StreamingConfig,
   StreamingQueryResult,
   FileUploadConfig,
@@ -140,6 +150,7 @@ function buildChatPlugin(
   let telegramAdapterInstance: TelegramAdapter | null = null;
   let githubAdapterInstance: GitHubAdapter | null = null;
   let linearAdapterInstance: LinearAdapter | null = null;
+  let whatsappAdapterInstance: WhatsAppAdapter | null = null;
   let log: PluginLogger | null = null;
   let initialized = false;
 
@@ -477,6 +488,45 @@ function buildChatPlugin(
           }
         });
       }
+
+      if (config.adapters.whatsapp) {
+        // WhatsApp needs both GET (Meta verification challenge) and POST (events).
+        // The Chat SDK adapter's handleWebhook() dispatches on HTTP method internally.
+        const handleWhatsApp = async (c: Context) => {
+          if (!bridge) {
+            return c.json({ error: "Chat plugin not yet initialized" }, 503);
+          }
+
+          const handler = bridge.webhooks.whatsapp;
+          if (!handler) {
+            return c.json({ error: "WhatsApp adapter not configured" }, 404);
+          }
+
+          const requestId = crypto.randomUUID();
+          try {
+            const response = await handler(c.req.raw, {
+              waitUntil: (task: Promise<unknown>) => {
+                task.catch((err: unknown) => {
+                  (log ?? console).error(
+                    { err: err instanceof Error ? err : new Error(String(err)), requestId, adapter: "whatsapp" },
+                    "Chat SDK WhatsApp webhook background task failed",
+                  );
+                });
+              },
+            });
+            return response;
+          } catch (err) {
+            (log ?? console).error(
+              { err: err instanceof Error ? err : new Error(String(err)), requestId, adapter: "whatsapp" },
+              "WhatsApp webhook handler threw unexpectedly",
+            );
+            return c.json({ error: "Webhook processing failed", requestId }, 500);
+          }
+        };
+
+        app.get("/webhooks/whatsapp", handleWhatsApp);
+        app.post("/webhooks/whatsapp", handleWhatsApp);
+      }
     },
 
     async initialize(ctx: AtlasPluginContext) {
@@ -505,6 +555,7 @@ function buildChatPlugin(
         telegram?: TelegramAdapter | null;
         github?: GitHubAdapter | null;
         linear?: LinearAdapter | null;
+        whatsapp?: WhatsAppAdapter | null;
       } = {};
       try {
         if (config.adapters.slack) {
@@ -545,6 +596,10 @@ function buildChatPlugin(
           linearAdapterInstance = createLinearAdapter(config.adapters.linear) as LinearAdapter;
           adapterInstances.linear = linearAdapterInstance;
         }
+        if (config.adapters.whatsapp) {
+          whatsappAdapterInstance = createWhatsAppAdapter(config.adapters.whatsapp) as WhatsAppAdapter;
+          adapterInstances.whatsapp = whatsappAdapterInstance;
+        }
 
         bridge = createChatBridge(config, ctx.logger, stateAdapter, adapterInstances);
       } catch (err) {
@@ -569,6 +624,7 @@ function buildChatPlugin(
         telegramAdapterInstance = null;
         githubAdapterInstance = null;
         linearAdapterInstance = null;
+        whatsappAdapterInstance = null;
         throw err;
       }
 
@@ -657,6 +713,7 @@ function buildChatPlugin(
       telegramAdapterInstance = null;
       githubAdapterInstance = null;
       linearAdapterInstance = null;
+      whatsappAdapterInstance = null;
       log = null;
       initialized = false;
     },
@@ -681,6 +738,7 @@ function buildChatPlugin(
  *     telegram: { botToken: "..." },
  *     github: { appId: "...", privateKey: "...", webhookSecret: "..." },
  *     linear: { apiKey: "...", webhookSecret: "..." },
+ *     whatsapp: { phoneNumberId: "...", accessToken: "...", verifyToken: "...", appSecret: "..." },
  *   },
  *   executeQuery: myQueryFunction,
  * })]

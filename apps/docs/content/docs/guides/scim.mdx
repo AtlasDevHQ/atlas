@@ -5,12 +5,16 @@ description: Automate user provisioning from enterprise identity providers via S
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-Atlas supports SCIM 2.0 (RFC 7643/7644) for automated user provisioning from enterprise identity providers like Okta, Azure AD (Entra ID), and OneLogin. When users are added, updated, or deactivated in your corporate directory, changes are automatically synced to Atlas. SCIM is part of the Atlas Enterprise (`/ee`) module and is powered by the Better Auth SCIM plugin.
+Atlas supports SCIM 2.0 (RFC 7643/7644) for automated user provisioning from enterprise identity providers like Okta, Azure AD (Entra ID), and OneLogin. When users are added, updated, or deactivated in your corporate directory, changes are automatically synced to Atlas.
+
+<Callout type="info" title="SaaS Feature">
+  SCIM directory sync is available on [app.useatlas.dev](https://app.useatlas.dev) Enterprise plans. Self-hosted deployments do not include enterprise features.
+</Callout>
 
 <Callout title="Prerequisites">
 - [Managed auth](/deployment/authentication#managed-auth) enabled
 - Internal database configured (`DATABASE_URL`)
-- Enterprise license (the `/ee` module must be available)
+- Active Enterprise plan on [app.useatlas.dev](https://app.useatlas.dev)
 - [SSO configured](/guides/enterprise-sso) (recommended but not required)
 - [Custom roles](/guides/custom-roles) configured (for group mapping)
 </Callout>

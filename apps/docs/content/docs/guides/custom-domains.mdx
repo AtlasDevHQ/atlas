@@ -5,10 +5,14 @@ description: Configure custom domains for enterprise workspaces so users access 
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-Custom domains let enterprise workspaces use their own URL (e.g. `data.acme.com`) instead of the default `app.useatlas.dev`. Atlas integrates with Railway's custom domain API for provisioning and automatic TLS certificate management via Let's Encrypt.
+Custom domains let workspaces use their own URL (e.g. `data.acme.com`) instead of the default `app.useatlas.dev`. Atlas integrates with Railway's custom domain API for provisioning and automatic TLS certificate management via Let's Encrypt.
+
+<Callout type="info" title="SaaS Feature">
+  Custom domains are available on [app.useatlas.dev](https://app.useatlas.dev) Enterprise plans. Self-hosted deployments configure domains directly in their hosting provider.
+</Callout>
 
 <Callout title="Prerequisites">
-- Enterprise features enabled (`ATLAS_ENTERPRISE_ENABLED=true` + license key)
+- Active Enterprise plan on [app.useatlas.dev](https://app.useatlas.dev)
 - Internal database configured (`DATABASE_URL`)
 - Platform admin role for dashboard access
 - Railway deployment with API token configured

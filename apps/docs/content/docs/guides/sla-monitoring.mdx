@@ -7,8 +7,12 @@ import { Callout } from "fumadocs-ui/components/callout";
 
 Atlas provides built-in SLA monitoring that tracks per-workspace query performance and reliability metrics. Platform operators can view latency percentiles (p50/p95/p99), error rates, and uptime — with configurable alerting when thresholds are breached.
 
+<Callout type="info" title="SaaS Feature">
+  SLA monitoring is available on [app.useatlas.dev](https://app.useatlas.dev) Enterprise plans. Self-hosted deployments can use their own monitoring infrastructure.
+</Callout>
+
 <Callout title="Prerequisites">
-- Enterprise features enabled (`ATLAS_ENTERPRISE_ENABLED=true` + license key)
+- Active Enterprise plan on [app.useatlas.dev](https://app.useatlas.dev)
 - Internal database configured (`DATABASE_URL`)
 - Platform admin role for dashboard access
 </Callout>
@@ -75,8 +79,6 @@ Set `ATLAS_SLA_WEBHOOK_URL` to receive alert notifications via HTTP POST:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ATLAS_ENTERPRISE_ENABLED` | `false` | Enable enterprise features including SLA monitoring |
-| `ATLAS_ENTERPRISE_LICENSE_KEY` | — | Enterprise license key |
 | `ATLAS_SLA_LATENCY_P99_MS` | `5000` | Default P99 latency alert threshold (ms) |
 | `ATLAS_SLA_ERROR_RATE_PCT` | `5` | Default error rate alert threshold (%) |
 | `ATLAS_SLA_WEBHOOK_URL` | — | Webhook URL for alert delivery |

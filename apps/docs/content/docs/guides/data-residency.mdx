@@ -5,10 +5,14 @@ description: Assign workspaces to geographic regions and route data to region-sp
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-Atlas data residency controls let enterprise operators assign workspaces to geographic regions (e.g. `eu-west`, `us-east`). Each region maps to a dedicated database, ensuring tenant data stays in the correct jurisdiction.
+Atlas data residency controls let operators assign workspaces to geographic regions (e.g. `eu-west`, `us-east`). Each region maps to a dedicated database, ensuring tenant data stays in the correct jurisdiction.
+
+<Callout type="info" title="SaaS Feature">
+  Data residency is available on [app.useatlas.dev](https://app.useatlas.dev) Enterprise plans. Self-hosted deployments manage database routing directly.
+</Callout>
 
 <Callout title="Prerequisites">
-- Enterprise features enabled (`ATLAS_ENTERPRISE_ENABLED=true` + license key)
+- Active Enterprise plan on [app.useatlas.dev](https://app.useatlas.dev)
 - Internal database configured (`DATABASE_URL`)
 - Platform admin role for dashboard access
 - At least one region configured in `atlas.config.ts`

@@ -5,12 +5,16 @@ description: Configure SAML or OIDC single sign-on with domain-based auto-provis
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-Atlas supports enterprise SSO via SAML 2.0 and OpenID Connect (OIDC). Admins register identity providers through the admin API, map email domains to providers, and users are auto-provisioned on first login. SSO is part of the Atlas Enterprise (`/ee`) module.
+Atlas supports enterprise SSO via SAML 2.0 and OpenID Connect (OIDC). Admins register identity providers through the admin API, map email domains to providers, and users are auto-provisioned on first login.
+
+<Callout type="info" title="SaaS Feature">
+  Enterprise SSO is available on [app.useatlas.dev](https://app.useatlas.dev) Enterprise plans. Self-hosted deployments do not include enterprise features.
+</Callout>
 
 <Callout title="Prerequisites">
 - [Managed auth](/deployment/authentication#managed-auth) enabled
 - Internal database configured (`DATABASE_URL`)
-- Enterprise license (the `/ee` module must be available)
+- Active Enterprise plan on [app.useatlas.dev](https://app.useatlas.dev)
 - Admin role required for all SSO management endpoints
 </Callout>
 

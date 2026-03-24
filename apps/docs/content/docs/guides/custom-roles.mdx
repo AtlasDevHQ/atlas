@@ -5,12 +5,16 @@ description: Define granular roles with permission flags beyond the default admi
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-Atlas supports custom role definitions with granular permission flags. Move beyond the default admin/member/owner hierarchy by creating named roles with specific permission sets. Custom roles are part of the Atlas Enterprise (`/ee`) module.
+Atlas supports custom role definitions with granular permission flags. Move beyond the default admin/member/owner hierarchy by creating named roles with specific permission sets.
+
+<Callout type="info" title="SaaS Feature">
+  Custom roles are available on [app.useatlas.dev](https://app.useatlas.dev) Enterprise plans. Self-hosted deployments use the built-in admin/member roles.
+</Callout>
 
 <Callout title="Prerequisites">
 - [Managed auth](/deployment/authentication#managed-auth) enabled
 - Internal database configured (`DATABASE_URL`)
-- Enterprise license (the `/ee` module must be available)
+- Active Enterprise plan on [app.useatlas.dev](https://app.useatlas.dev)
 - Admin role required for all role management endpoints
 </Callout>
 

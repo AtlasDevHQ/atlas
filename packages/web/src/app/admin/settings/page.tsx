@@ -309,14 +309,14 @@ function BrandColorCard({
       method: "PUT",
       body: { value },
     });
-    if (result !== undefined) {
+    if (result.ok) {
       applyBrandColor(value);
     }
   }
 
   async function handleReset() {
     const result = await mutate({ method: "DELETE" });
-    if (result !== undefined) {
+    if (result.ok) {
       setValue(DEFAULT_BRAND_COLOR);
       applyBrandColor(DEFAULT_BRAND_COLOR);
     }

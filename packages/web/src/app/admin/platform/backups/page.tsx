@@ -172,7 +172,7 @@ function BackupsPageContent() {
   async function saveConfig() {
     if (!editConfig) return;
     const result = await configMutate({ body: editConfig as unknown as Record<string, unknown> });
-    if (result !== undefined) {
+    if (result.ok) {
       setConfigDialogOpen(false);
     }
   }

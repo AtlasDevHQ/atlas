@@ -187,7 +187,7 @@ function ApprovalPageContent() {
         enabled: true,
       },
     });
-    if (result !== undefined) {
+    if (result.ok) {
       ruleForm.reset();
       setShowCreateForm(false);
     }
@@ -215,7 +215,7 @@ function ApprovalPageContent() {
       body: { action, comment: reviewComments[requestId] || undefined },
       itemId: requestId,
     });
-    if (result !== undefined) {
+    if (result.ok) {
       setReviewComments((prev) => { const next = { ...prev }; delete next[requestId]; return next; });
     }
   }

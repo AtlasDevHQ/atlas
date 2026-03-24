@@ -100,7 +100,7 @@ function ResidencyPageContent() {
       method: "POST",
       body: { region: selectedRegion },
     });
-    if (result !== undefined) {
+    if (result.ok) {
       setAssignDialog(null);
       setSelectedRegion("");
     }

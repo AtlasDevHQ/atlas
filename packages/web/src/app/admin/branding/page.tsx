@@ -94,14 +94,14 @@ export default function BrandingPage() {
         hideAtlasBranding: values.hideAtlasBranding,
       },
     });
-    if (result === undefined) {
+    if (!result.ok) {
       throw new Error("Save failed");
     }
   }
 
   async function handleReset() {
     const result = await mutate({ method: "DELETE" });
-    if (result !== undefined) {
+    if (result.ok) {
       form.reset({ logoUrl: "", logoText: "", primaryColor: "", faviconUrl: "", hideAtlasBranding: false });
     }
   }

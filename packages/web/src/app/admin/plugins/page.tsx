@@ -313,7 +313,7 @@ export default function PluginsPage() {
       itemId: id,
       onSuccess: () => refetch(),
     });
-    if (result === undefined) {
+    if (!result.ok) {
       setMutationError(`Health check failed for "${id}"`);
     }
   }
@@ -326,7 +326,7 @@ export default function PluginsPage() {
       itemId: id,
       onSuccess: () => refetch(),
     });
-    if (result === undefined) {
+    if (!result.ok) {
       setMutationError(`Failed to ${action} plugin "${id}"`);
     }
   }

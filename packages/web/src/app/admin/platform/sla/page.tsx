@@ -202,7 +202,7 @@ function SLAPageContent() {
   async function saveThresholds() {
     if (!editThresholds) return;
     const result = await thresholdMutate({ body: editThresholds as unknown as Record<string, unknown> });
-    if (result !== undefined) {
+    if (result.ok) {
       setThresholdDialogOpen(false);
     }
   }

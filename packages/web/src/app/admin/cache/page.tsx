@@ -114,8 +114,8 @@ export default function CachePage() {
     if (flushing) return;
     setFlushMessage(null);
     const result = await flush();
-    if (result) {
-      const count = result.flushed ?? 0;
+    if (result.ok && result.data) {
+      const count = result.data.flushed ?? 0;
       setFlushMessage(`Flushed ${count} ${count === 1 ? "entry" : "entries"}`);
     }
   }

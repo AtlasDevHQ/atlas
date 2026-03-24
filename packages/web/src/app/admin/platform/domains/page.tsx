@@ -136,7 +136,7 @@ function DomainsPageContent() {
       method: "POST",
       body: { workspaceId: newWorkspaceId, domain: newDomain },
     });
-    if (result !== undefined) {
+    if (result.ok) {
       setAddDialog(false);
       setNewDomain("");
       setNewWorkspaceId("");
@@ -157,7 +157,7 @@ function DomainsPageContent() {
       path: `/api/v1/platform/domains/${domainId}`,
       method: "DELETE",
     });
-    if (result !== undefined) {
+    if (result.ok) {
       setDeleteConfirm(null);
     }
   }

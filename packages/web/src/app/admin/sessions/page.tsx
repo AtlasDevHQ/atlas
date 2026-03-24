@@ -66,7 +66,7 @@ export default function SessionsPage() {
       path: `/api/v1/admin/sessions/${sessionId}`,
       itemId: sessionId,
     });
-    if (result !== undefined) {
+    if (result.ok) {
       setFetchKey((k) => k + 1);
     }
   }

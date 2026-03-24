@@ -205,7 +205,7 @@ function ClassificationsTab() {
         reviewed: true,
       },
     });
-    if (result !== undefined) {
+    if (result.ok) {
       setEditingId(null);
     }
   }

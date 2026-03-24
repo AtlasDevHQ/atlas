@@ -154,8 +154,8 @@ export function RetentionPanel() {
     const result = await saveMutate({
       body: { retentionDays, hardDeleteDelayDays: hardDeleteDelay },
     });
-    if (result !== undefined) {
-      setPolicy(result.policy);
+    if (result.ok && result.data) {
+      setPolicy(result.data.policy);
       setSaveSuccess(true);
       setTimeout(() => setSaveSuccess(false), 3000);
     }
@@ -199,8 +199,8 @@ export function RetentionPanel() {
   async function handlePurge() {
     setPurgeResult(null);
     const result = await purgeMutate();
-    if (result !== undefined) {
-      const total = result.results.reduce((sum, r) => sum + r.softDeletedCount, 0);
+    if (result.ok && result.data) {
+      const total = result.data.results.reduce((sum, r) => sum + r.softDeletedCount, 0);
       setPurgeResult(total > 0
         ? `Successfully purged ${total.toLocaleString()} expired entries.`
         : "No expired entries to purge."

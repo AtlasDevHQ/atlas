@@ -155,15 +155,17 @@ function ConnectionFormDialog({
     const data = await testMutation.mutate({
       body: { url, schema: schemaVal || undefined },
       onSuccess: (d) => {
-        setTestResult({
-          ok: d.status === "healthy",
-          message: d.status === "healthy"
-            ? `Connected (${d.latencyMs}ms)`
-            : d.message || "Connection unhealthy",
-        });
+        if (d) {
+          setTestResult({
+            ok: d.status === "healthy",
+            message: d.status === "healthy"
+              ? `Connected (${d.latencyMs}ms)`
+              : d.message || "Connection unhealthy",
+          });
+        }
       },
     });
-    if (data === undefined) {
+    if (!data.ok) {
       setTestResult({ ok: false, message: "Connection test failed" });
     }
   }
@@ -452,7 +454,7 @@ function PoolStatsSection({ onError }: { onError: (msg: string) => void }) {
         fetchMetrics();
       },
     });
-    if (result === undefined) {
+    if (!result.ok) {
       // Error already set in hook — surface it via onError
       onError("Drain request failed");
     }
@@ -679,14 +681,16 @@ export default function ConnectionsPage() {
       path: `/api/v1/admin/connections/${encodeURIComponent(id)}/test`,
       itemId: id,
       onSuccess: (data) => {
-        setLocalConnections((prev) =>
-          (prev ?? displayConnections).map((c) =>
-            c.id === id ? { ...c, health: data } : c
-          )
-        );
+        if (data) {
+          setLocalConnections((prev) =>
+            (prev ?? displayConnections).map((c) =>
+              c.id === id ? { ...c, health: data } : c
+            )
+          );
+        }
       },
     });
-    if (result === undefined) {
+    if (!result.ok) {
       setMutationError(`Connection test failed for "${id}"`);
     }
   }

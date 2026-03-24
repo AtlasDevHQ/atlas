@@ -256,7 +256,7 @@ export default function LearnedPatternsPage() {
       },
     });
 
-    if (result === undefined) {
+    if (!result.ok) {
       // Revert optimistic update
       setError({ message: "Failed to update pattern" });
     }
@@ -273,7 +273,7 @@ export default function LearnedPatternsPage() {
       path: `/api/v1/admin/learned-patterns/${id}`,
     });
 
-    if (result !== undefined) {
+    if (result.ok) {
       if (detailPattern?.id === id) setDetailPattern(null);
       setFetchKey((k) => k + 1);
     } else {
@@ -297,7 +297,7 @@ export default function LearnedPatternsPage() {
     const result = await bulkMutate({
       body: { ids: selected, status },
     });
-    if (result === undefined) {
+    if (!result.ok) {
       setError({ message: "Failed to bulk update" });
     }
     table.resetRowSelection();

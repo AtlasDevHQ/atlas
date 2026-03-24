@@ -96,7 +96,7 @@ function ReinstateDialog({
     const result = await mutate({
       path: `/api/v1/admin/abuse/${encodeURIComponent(workspace.workspaceId)}/reinstate`,
     });
-    if (result !== undefined) {
+    if (result.ok) {
       handleOpen(false);
     }
   }

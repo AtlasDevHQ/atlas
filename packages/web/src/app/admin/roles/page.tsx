@@ -152,7 +152,7 @@ function RoleDialog({
       method: isEditing ? "PUT" : "POST",
       body,
     });
-    if (result !== undefined) {
+    if (result.ok) {
       onOpenChange(false);
     }
   }
@@ -283,7 +283,7 @@ function DeleteRoleDialog({
     const result = await mutate({
       path: `/api/v1/admin/roles/${encodeURIComponent(role.id)}`,
     });
-    if (result !== undefined) {
+    if (result.ok) {
       handleOpen(false);
     }
   }

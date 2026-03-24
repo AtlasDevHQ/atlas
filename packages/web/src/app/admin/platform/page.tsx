@@ -216,7 +216,7 @@ function PlatformPageContent() {
       : `/api/v1/platform/workspaces/${workspaceId}/${type}`;
 
     const result = await actionMutate({ path, method });
-    if (result !== undefined) {
+    if (result.ok) {
       setConfirmAction(null);
     }
     inProgress.stop(workspaceId);
@@ -230,7 +230,7 @@ function PlatformPageContent() {
       path: `/api/v1/platform/workspaces/${workspaceId}/plan`,
       body: { planTier },
     });
-    if (result !== undefined) {
+    if (result.ok) {
       setPlanChange(null);
     }
     inProgress.stop(workspaceId);

@@ -190,6 +190,10 @@ export interface ChatPluginConfig {
   /** State backend configuration. Default: { backend: "memory" } */
   state?: StateConfig;
 
+  /** Slash command name registered with the Chat SDK. Default: "/atlas".
+   * Must start with "/" followed by a lowercase letter, then lowercase alphanumeric or hyphens. */
+  slashCommandName?: string;
+
   /** Run the Atlas agent on a question and return structured results. Required. */
   executeQuery: (
     question: string,
@@ -319,6 +323,13 @@ export const ChatConfigSchema = z.object({
       "At least one adapter must be configured",
     ),
   state: StateConfigSchema,
+  slashCommandName: z
+    .string()
+    .regex(
+      /^\/[a-z][a-z0-9-]*$/,
+      "slashCommandName must start with '/' followed by lowercase alphanumeric characters or hyphens (e.g. '/atlas', '/data-query')",
+    )
+    .optional(),
   executeQuery: z
     .any()
     .refine(

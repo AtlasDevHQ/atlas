@@ -109,6 +109,7 @@ export default defineConfig({
 | `state.backend` | `"memory" \| "pg" \| "redis"` | No | State backend to use. Default: `"memory"`. |
 | `state.tablePrefix` | `string` | No | Table name prefix for PG backend. Must be a valid SQL identifier. Default: `"chat_"`. |
 | `state.redisUrl` | `string` | No | Redis connection URL (future — not yet implemented). |
+| `slashCommandName` | `string` | No | Slash command name (e.g. `"/data-query"`). Must start with `/` followed by lowercase alphanumeric + hyphens. Default: `"/atlas"`. |
 | `executeQuery` | `function` | Yes | Callback to run the Atlas agent on a question. |
 | `executeQueryStream` | `function` | No | Streaming query callback — returns `{ stream, result }`. See [Streaming](#streaming). |
 | `streaming` | `object` | No | Streaming configuration. |
@@ -156,10 +157,11 @@ For production deployments, use the `pg` backend. The `memory` backend is suitab
 
 The plugin bridges Chat SDK events to the Atlas agent:
 
-1. **Slash commands** (`/atlas <question>`) — Posts a "Thinking about: \<question\>..." indicator, subscribes the thread, runs `executeQuery`, edits the response with a JSX card (or markdown fallback)
+1. **Slash commands** (configurable, default `/atlas <question>`) — Posts a "Thinking about: \<question\>..." indicator, subscribes the thread, runs `executeQuery`, edits the response with a JSX card (or markdown fallback)
 2. **@mentions** — Subscribes to the thread, runs `executeQuery`, posts the result as a native JSX card (Block Kit on Slack, Adaptive Cards on Teams, Discord Embeds) with markdown fallback
 3. **Thread follow-ups** — Messages in subscribed threads are routed through `executeQuery` with conversation history, posted as a JSX card with markdown fallback
-4. **Actions** — Approval button clicks call `actions.approve()` or `actions.deny()`, then update the original message
+4. **Actions** — Approval button clicks call `actions.approve()` or `actions.deny()`, then update the original message. Quick-action buttons (Run Again, Export CSV) appear on query result cards
+5. **Modals** (Slack only) — Clarification dialogs collect structured input and feed responses back into the conversation
 
 ### Rich Cards
 
@@ -172,6 +174,56 @@ import { buildQueryResultCard, buildErrorCard, buildApprovalCardJSX, buildDataTa
 // Or from the dedicated cards entrypoint:
 import { buildQueryResultCard } from "@useatlas/chat/cards";
 ```
+
+### Configurable Slash Command
+
+By default, the bridge registers `/atlas` as the slash command. To use a custom name (e.g., if you want `/data` or `/query`), set `slashCommandName`:
+
+```typescript
+chatPlugin({
+  adapters: { slack: { /* ... */ } },
+  slashCommandName: "/data-query",
+  executeQuery: myQueryFunction,
+})
+```
+
+The command name must start with `/` followed by lowercase alphanumeric characters or hyphens. Remember to register the matching slash command in your platform's app configuration (e.g., Slack App Manifest, Discord Application Commands).
+
+### Quick-Action Buttons
+
+Query result cards include interactive buttons when SQL was executed:
+
+- **Run Again** — Re-executes the same SQL query and posts updated results in the thread
+- **Export CSV** — Placeholder for CSV export (coming soon)
+
+Buttons are rendered as platform-native interactive components (Block Kit buttons on Slack, Adaptive Card actions on Teams, Discord buttons). On platforms with limited interactivity, the card includes a text fallback with instructions:
+
+> _To run again, re-send the same question. To export, ask "export the last result as CSV"._
+
+### Interactive Capabilities by Platform
+
+| Feature | Slack | Teams | Discord | Google Chat | Telegram |
+|---------|-------|-------|---------|-------------|----------|
+| Slash commands | Yes | Yes | Yes | Yes | Yes |
+| Action buttons | Yes | Yes | Yes | Yes | Partial (inline keyboard) |
+| Modals | Yes | No | No | No | No |
+
+### Slack Modals
+
+On Slack, the bridge supports modals for parameter collection. When the agent needs clarification (e.g., date range, segment selection), a modal dialog can be opened with input fields.
+
+The bridge exposes an `openClarificationModal` method for host integrations that need to collect structured input:
+
+```typescript
+// From an action handler or slash command context
+await bridge.openClarificationModal(event, "What date range would you like to analyze?");
+```
+
+The modal collects user input and feeds the response back into the conversation thread. Modal submissions are validated server-side — empty responses are rejected with an error message displayed in the modal.
+
+<Callout type="info">
+Modals are currently supported only on Slack. On other platforms, clarifying questions are handled through regular thread messages.
+</Callout>
 
 ## Streaming
 

@@ -1,5 +1,5 @@
 /** @jsxImportSource chat */
-import { Card, CardText, Fields, Field, Table, Divider } from "chat";
+import { Card, CardText, Fields, Field, Table, Divider, Actions, Button } from "chat";
 import type { CardElement } from "chat";
 import { toCardElement } from "chat/jsx-runtime";
 import type { ChatQueryResult } from "../config";
@@ -7,9 +7,13 @@ import type { ChatQueryResult } from "../config";
 /** Maximum rows shown inline in query result cards. */
 const MAX_INLINE_ROWS = 20;
 
+/** Maximum length of SQL stored in action button values. */
+const MAX_ACTION_VALUE_LENGTH = 2000;
+
 /**
  * Build the main query result card.
- * Renders answer text, SQL code block, data table preview, and metadata.
+ * Renders answer text, SQL code block, data table preview, metadata,
+ * and quick-action buttons (Run Again, Export CSV).
  * Returns { card, fallbackText } for cross-platform compatibility.
  */
 export function buildQueryResultCard(result: ChatQueryResult): {
@@ -67,6 +71,21 @@ export function buildQueryResultCard(result: ChatQueryResult): {
     </Fields>,
   );
 
+  // Quick-action buttons (only when there's SQL to re-run or data to export)
+  if (hasSql) {
+    const sqlPayload = result.sql.join("\n\n").slice(0, MAX_ACTION_VALUE_LENGTH);
+    children.push(
+      <Actions>
+        <Button id="atlas_run_again" value={sqlPayload}>
+          Run Again
+        </Button>
+        <Button id="atlas_export_csv" value={sqlPayload}>
+          Export CSV
+        </Button>
+      </Actions>,
+    );
+  }
+
   const jsx = <Card>{children}</Card>;
   const card = toCardElement(jsx);
   if (!card) {
@@ -109,6 +128,13 @@ function buildFallbackText(
   parts.push(
     `\n_${result.steps} steps | ${result.usage.totalTokens.toLocaleString()} tokens_`,
   );
+
+  // Text fallback for platforms without button support
+  if (result.sql.length > 0) {
+    parts.push(
+      `\n_To run again, re-send the same question. To export, ask "export the last result as CSV"._`,
+    );
+  }
 
   return parts.join("\n");
 }

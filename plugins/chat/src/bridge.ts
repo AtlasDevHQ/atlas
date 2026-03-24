@@ -19,8 +19,9 @@
  * StateAdapter (memory, PG, or future Redis).
  */
 
-import { Chat } from "chat";
+import { Chat, Modal, TextInput } from "chat";
 import type { Adapter, StateAdapter, Lock, CardElement, StreamChunk } from "chat";
+import { toModalElement } from "chat/jsx-runtime";
 import type { PluginLogger } from "@useatlas/plugin-sdk";
 import type {
   ChatPluginConfig,
@@ -44,6 +45,9 @@ const CONVERSATION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** TTL for event dedup locks (30 seconds). */
 const DEDUP_LOCK_TTL_MS = 30_000;
+
+/** Callback ID for the Slack clarification modal. */
+const MODAL_CALLBACK_ID = "atlas_clarify";
 
 /** Scrubbing patterns for error messages — never expose these to users. */
 const SENSITIVE_PATTERNS = [
@@ -306,6 +310,15 @@ async function persistConversationMessages(
 export interface ChatBridge {
   /** Platform webhook handlers (e.g., `webhooks.slack`). */
   readonly webhooks: Chat["webhooks"];
+  /**
+   * Open a Slack modal for parameter collection / clarification.
+   * Returns the view ID on success, or undefined if the platform
+   * does not support modals.
+   */
+  openClarificationModal(
+    event: { openModal: (modal: unknown) => Promise<{ viewId: string } | undefined> },
+    prompt: string,
+  ): Promise<{ viewId: string } | undefined>;
   /** Shut down the Chat SDK instance and clean up resources. */
   shutdown(): Promise<void>;
 }
@@ -714,8 +727,9 @@ export function createChatBridge(
     }
   });
 
-  // --- onSlashCommand: /atlas <question> ---
-  chat.onSlashCommand("/atlas", async (event) => {
+  // --- onSlashCommand: /<configurable> <question> ---
+  const commandName = config.slashCommandName ?? "/atlas";
+  chat.onSlashCommand(commandName, async (event) => {
     const question = event.text?.trim();
     const channelId = event.channel.id;
 
@@ -723,7 +737,7 @@ export function createChatBridge(
       try {
         await event.channel.postEphemeral(
           event.user,
-          { markdown: "Usage: `/atlas <your question>`\nExample: `/atlas how many active users last month?`" },
+          { markdown: `Usage: \`${commandName} <your question>\`\nExample: \`${commandName} how many active users last month?\`` },
           { fallbackToDM: false },
         );
       } catch (ephErr) {
@@ -1000,8 +1014,199 @@ export function createChatBridge(
     );
   }
 
+  // --- onAction: Run Again button ---
+  chat.onAction("atlas_run_again", async (event) => {
+    const sqlPayload = event.value;
+    const threadId = event.threadId;
+
+    if (!sqlPayload || !threadId) {
+      log.warn({ actionId: event.actionId }, "Run Again action missing value or threadId");
+      return;
+    }
+
+    log.info(
+      { threadId, userId: event.user.userId },
+      "Run Again button clicked",
+    );
+
+    try {
+      const priorMessages = await retrieveHistory(stateAdapter, threadId, log);
+      const question = `Re-run this SQL query: ${sqlPayload}`;
+
+      if (event.thread) {
+        if (streamingEnabled) {
+          await handleStreamingQuery(
+            threadId, question,
+            (stream) => event.thread!.post(stream),
+            null, priorMessages,
+          );
+        } else {
+          await handleQuery(
+            threadId, question,
+            (response) => event.thread!.post({ card: response.card, fallbackText: response.fallbackText }),
+            null, priorMessages,
+          );
+        }
+      } else {
+        // Fallback: post via adapter when thread is not available
+        const result = await config.executeQuery(question, { threadId, priorMessages });
+        const response = buildQueryResultCard(result);
+        await event.adapter.postMessage(threadId, { card: response.card, fallbackText: response.fallbackText });
+      }
+    } catch (err) {
+      log.error(
+        { err: err instanceof Error ? err : new Error(String(err)), threadId },
+        "Run Again query execution failed",
+      );
+
+      const errorMessage = scrubErrorMessage(
+        err instanceof Error ? err.message : String(err),
+        config.scrubError,
+      );
+      try {
+        await event.adapter.postMessage(threadId, { ...buildErrorCard({ message: errorMessage }) });
+      } catch (postErr) {
+        log.warn(
+          { err: postErr instanceof Error ? postErr : new Error(String(postErr)), threadId },
+          "Failed to post error for Run Again action",
+        );
+      }
+    }
+  });
+
+  // --- onAction: Export CSV button (stub — full implementation in #770) ---
+  chat.onAction("atlas_export_csv", async (event) => {
+    const threadId = event.threadId;
+
+    log.info(
+      { threadId, userId: event.user.userId },
+      "Export CSV button clicked (stub)",
+    );
+
+    try {
+      await event.adapter.postMessage(threadId, {
+        markdown: "CSV export is not yet available. This feature is coming soon.",
+      });
+    } catch (postErr) {
+      log.warn(
+        { err: postErr instanceof Error ? postErr : new Error(String(postErr)), threadId },
+        "Failed to post Export CSV stub response",
+      );
+    }
+  });
+
+  // --- Slack modal: clarification parameter collection ---
+  chat.onModalSubmit(MODAL_CALLBACK_ID, async (event) => {
+    const response = event.values.clarification_response;
+
+    if (!response?.trim()) {
+      return {
+        action: "errors" as const,
+        errors: { clarification_response: "Please provide a response" },
+      };
+    }
+
+    log.info(
+      { callbackId: event.callbackId, userId: event.user.userId },
+      "Modal clarification submitted",
+    );
+
+    // Feed the response back into the conversation thread
+    if (event.relatedThread) {
+      try {
+        const threadId = `${event.adapter.name}:${event.relatedThread.id}`;
+        const priorMessages = await retrieveHistory(stateAdapter, threadId, log);
+
+        if (streamingEnabled) {
+          await handleStreamingQuery(
+            threadId,
+            response.trim(),
+            (stream) => event.relatedThread!.post(stream),
+            null,
+            priorMessages,
+          );
+        } else {
+          await handleQuery(
+            threadId,
+            response.trim(),
+            (cardResponse) => event.relatedThread!.post({
+              card: cardResponse.card,
+              fallbackText: cardResponse.fallbackText,
+            }),
+            null,
+            priorMessages,
+          );
+        }
+      } catch (err) {
+        log.error(
+          { err: err instanceof Error ? err : new Error(String(err)) },
+          "Modal clarification query failed",
+        );
+
+        const errorMessage = scrubErrorMessage(
+          err instanceof Error ? err.message : String(err),
+          config.scrubError,
+        );
+        try {
+          await event.relatedThread.post(buildErrorCard({ message: errorMessage }));
+        } catch (postErr) {
+          log.warn(
+            { err: postErr instanceof Error ? postErr : new Error(String(postErr)) },
+            "Failed to post error after modal clarification",
+          );
+        }
+      }
+    }
+
+    return { action: "close" as const };
+  });
+
+  chat.onModalClose(MODAL_CALLBACK_ID, async (event) => {
+    log.debug(
+      { userId: event.user.userId, callbackId: event.callbackId },
+      "Clarification modal dismissed",
+    );
+  });
+
   return {
     webhooks: chat.webhooks,
+
+    /**
+     * Open a clarification modal on Slack. Returns the view ID on success,
+     * or undefined if the platform does not support modals.
+     *
+     * This is exposed on the bridge so that host integrations can trigger
+     * modals programmatically when the agent requests clarification.
+     */
+    async openClarificationModal(
+      event: { openModal: (modal: unknown) => Promise<{ viewId: string } | undefined> },
+      prompt: string,
+    ): Promise<{ viewId: string } | undefined> {
+      const modal = toModalElement(
+        Modal({
+          callbackId: MODAL_CALLBACK_ID,
+          title: "Provide Details",
+          submitLabel: "Submit",
+          notifyOnClose: true,
+          children: [
+            TextInput({
+              id: "clarification_response",
+              label: prompt.slice(0, 150),
+              multiline: true,
+              placeholder: "Type your response here...",
+            }),
+          ],
+        }),
+      );
+
+      if (!modal) {
+        log.warn("Failed to build clarification modal element");
+        return undefined;
+      }
+
+      return event.openModal(modal);
+    },
+
     async shutdown() {
       await chat.shutdown();
       log.info("Chat bridge shut down");

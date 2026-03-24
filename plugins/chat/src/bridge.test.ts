@@ -2436,3 +2436,186 @@ describe("chat plugin streaming lifecycle", () => {
     expect(result.healthy).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Configurable slash command name
+// ---------------------------------------------------------------------------
+
+describe("chatPlugin slashCommandName config", () => {
+  const mockExecuteQuery = async () => ({
+    answer: "test",
+    sql: [] as string[],
+    data: [] as { columns: string[]; rows: Record<string, unknown>[] }[],
+    steps: 1,
+    usage: { totalTokens: 10 },
+  });
+
+  it("accepts valid slash command name", async () => {
+    const { chatPlugin } = await import("./index");
+
+    const plugin = chatPlugin({
+      adapters: {
+        slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+      },
+      slashCommandName: "/data-query",
+      executeQuery: mockExecuteQuery,
+    });
+
+    expect(plugin.id).toBe("chat-interaction");
+  });
+
+  it("accepts single-word slash command name", async () => {
+    const { chatPlugin } = await import("./index");
+
+    const plugin = chatPlugin({
+      adapters: {
+        slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+      },
+      slashCommandName: "/query",
+      executeQuery: mockExecuteQuery,
+    });
+
+    expect(plugin.id).toBe("chat-interaction");
+  });
+
+  it("rejects slash command without leading /", async () => {
+    const { chatPlugin } = await import("./index");
+
+    expect(() =>
+      chatPlugin({
+        adapters: {
+          slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+        },
+        slashCommandName: "atlas",
+        executeQuery: mockExecuteQuery,
+      }),
+    ).toThrow(/slashCommandName/i);
+  });
+
+  it("rejects slash command with uppercase letters", async () => {
+    const { chatPlugin } = await import("./index");
+
+    expect(() =>
+      chatPlugin({
+        adapters: {
+          slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+        },
+        slashCommandName: "/Atlas",
+        executeQuery: mockExecuteQuery,
+      }),
+    ).toThrow(/slashCommandName/i);
+  });
+
+  it("rejects slash command with spaces", async () => {
+    const { chatPlugin } = await import("./index");
+
+    expect(() =>
+      chatPlugin({
+        adapters: {
+          slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+        },
+        slashCommandName: "/my command",
+        executeQuery: mockExecuteQuery,
+      }),
+    ).toThrow(/slashCommandName/i);
+  });
+
+  it("defaults to /atlas when omitted", async () => {
+    const { chatPlugin } = await import("./index");
+
+    const plugin = chatPlugin({
+      adapters: {
+        slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+      },
+      executeQuery: mockExecuteQuery,
+    });
+
+    // Config should not have slashCommandName set
+    expect(plugin.config?.slashCommandName).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Query result card quick-action buttons
+// ---------------------------------------------------------------------------
+
+describe("buildQueryResultCard quick-action buttons", () => {
+  it("includes Run Again and Export CSV buttons when SQL is present", () => {
+    const result: ChatQueryResult = {
+      answer: "42 users.",
+      sql: ["SELECT COUNT(*) FROM users"],
+      data: [{ columns: ["count"], rows: [{ count: 42 }] }],
+      steps: 2,
+      usage: { totalTokens: 500 },
+    };
+
+    const { card } = buildQueryResultCard(result);
+    const actionsChild = card.children.find((c) => c.type === "actions");
+    expect(actionsChild).toBeDefined();
+
+    const buttons = (actionsChild as { children: { id: string; value?: string }[] }).children;
+    expect(buttons.length).toBe(2);
+    expect(buttons[0].id).toBe("atlas_run_again");
+    expect(buttons[0].value).toContain("SELECT COUNT(*)");
+    expect(buttons[1].id).toBe("atlas_export_csv");
+  });
+
+  it("omits quick-action buttons when no SQL", () => {
+    const result: ChatQueryResult = {
+      answer: "No SQL needed.",
+      sql: [],
+      data: [],
+      steps: 1,
+      usage: { totalTokens: 100 },
+    };
+
+    const { card } = buildQueryResultCard(result);
+    const actionsChild = card.children.find((c) => c.type === "actions");
+    expect(actionsChild).toBeUndefined();
+  });
+
+  it("truncates SQL in button value to 2000 chars", () => {
+    const longSql = "SELECT " + "x".repeat(3000) + " FROM t";
+    const result: ChatQueryResult = {
+      answer: "Done.",
+      sql: [longSql],
+      data: [],
+      steps: 1,
+      usage: { totalTokens: 100 },
+    };
+
+    const { card } = buildQueryResultCard(result);
+    const actionsChild = card.children.find((c) => c.type === "actions");
+    expect(actionsChild).toBeDefined();
+
+    const buttons = (actionsChild as { children: { value?: string }[] }).children;
+    expect((buttons[0].value ?? "").length).toBeLessThanOrEqual(2000);
+  });
+
+  it("includes text fallback for platforms without buttons", () => {
+    const result: ChatQueryResult = {
+      answer: "Done.",
+      sql: ["SELECT 1"],
+      data: [],
+      steps: 1,
+      usage: { totalTokens: 100 },
+    };
+
+    const { fallbackText } = buildQueryResultCard(result);
+    expect(fallbackText).toContain("re-send the same question");
+    expect(fallbackText).toContain("export");
+  });
+
+  it("omits text fallback when no SQL", () => {
+    const result: ChatQueryResult = {
+      answer: "Done.",
+      sql: [],
+      data: [],
+      steps: 1,
+      usage: { totalTokens: 100 },
+    };
+
+    const { fallbackText } = buildQueryResultCard(result);
+    expect(fallbackText).not.toContain("re-send the same question");
+  });
+});

@@ -122,13 +122,17 @@ WhatsApp supports interactive messages (button replies and list menus), but the 
 
 ### Response Format
 
-Responses are rendered as formatted text:
+Responses are rendered as plain text using the Chat SDK markdown fallback:
 
 - **Answer text** as plain text
-- **SQL queries** in code fences
-- **Data tables** as text tables
+- **SQL queries** wrapped in triple-backtick fences (WhatsApp renders these as monospace)
+- **Data tables** as text-aligned tables
 - **Reactions** supported (emoji reactions on messages)
 - **Read receipts** sent automatically when messages are received
+
+<Callout type="info">
+WhatsApp supports limited formatting: *bold*, _italic_, ~strikethrough~, and \`monospace\`. Full markdown (headers, links, bullet lists) is not rendered — it appears as plain text.
+</Callout>
 
 WhatsApp has a 4096-character message limit. Long responses are automatically split across multiple messages, breaking on paragraph boundaries when possible.
 

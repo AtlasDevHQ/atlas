@@ -68,6 +68,7 @@ import type { TelegramAdapter } from "@chat-adapter/telegram";
 import type { GitHubAdapter } from "@chat-adapter/github";
 import type { LinearAdapter } from "@chat-adapter/linear";
 import type { WhatsAppAdapter } from "@chat-adapter/whatsapp";
+import type { Context } from "hono";
 import { createPlugin } from "@useatlas/plugin-sdk";
 import type {
   AtlasInteractionPlugin,
@@ -489,8 +490,9 @@ function buildChatPlugin(
       }
 
       if (config.adapters.whatsapp) {
-        // GET for Meta webhook verification challenge-response
-        app.get("/webhooks/whatsapp", async (c) => {
+        // WhatsApp needs both GET (Meta verification challenge) and POST (events).
+        // The Chat SDK adapter's handleWebhook() dispatches on HTTP method internally.
+        const handleWhatsApp = async (c: Context) => {
           if (!bridge) {
             return c.json({ error: "Chat plugin not yet initialized" }, 503);
           }
@@ -520,40 +522,10 @@ function buildChatPlugin(
             );
             return c.json({ error: "Webhook processing failed", requestId }, 500);
           }
-        });
+        };
 
-        // POST for incoming message events
-        app.post("/webhooks/whatsapp", async (c) => {
-          if (!bridge) {
-            return c.json({ error: "Chat plugin not yet initialized" }, 503);
-          }
-
-          const handler = bridge.webhooks.whatsapp;
-          if (!handler) {
-            return c.json({ error: "WhatsApp adapter not configured" }, 404);
-          }
-
-          const requestId = crypto.randomUUID();
-          try {
-            const response = await handler(c.req.raw, {
-              waitUntil: (task: Promise<unknown>) => {
-                task.catch((err: unknown) => {
-                  (log ?? console).error(
-                    { err: err instanceof Error ? err : new Error(String(err)), requestId, adapter: "whatsapp" },
-                    "Chat SDK WhatsApp webhook background task failed",
-                  );
-                });
-              },
-            });
-            return response;
-          } catch (err) {
-            (log ?? console).error(
-              { err: err instanceof Error ? err : new Error(String(err)), requestId, adapter: "whatsapp" },
-              "WhatsApp webhook handler threw unexpectedly",
-            );
-            return c.json({ error: "Webhook processing failed", requestId }, 500);
-          }
-        });
+        app.get("/webhooks/whatsapp", handleWhatsApp);
+        app.post("/webhooks/whatsapp", handleWhatsApp);
       }
     },
 

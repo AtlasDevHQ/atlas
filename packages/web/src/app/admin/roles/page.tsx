@@ -133,6 +133,11 @@ function RoleDialog({
     ? { name: editingRole.name, description: editingRole.description, permissions: editingRole.permissions }
     : { name: "", description: "", permissions: [] as string[] };
 
+  function handleOpenChange(next: boolean) {
+    if (next) saveMutation.reset();
+    onOpenChange(next);
+  }
+
   async function handleSubmit(values: z.infer<typeof roleCreateSchema>) {
     const path = isEditing
       ? `/api/v1/admin/roles/${encodeURIComponent(editingRole!.id)}`
@@ -155,7 +160,7 @@ function RoleDialog({
   return (
     <FormDialog
       open={open}
-      onOpenChange={onOpenChange}
+      onOpenChange={handleOpenChange}
       title={isEditing ? "Edit Role" : "Create Role"}
       description={
         isEditing

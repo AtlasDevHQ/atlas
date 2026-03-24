@@ -77,6 +77,11 @@ function AddEntryDialog({
     invalidates: onAdded,
   });
 
+  function handleOpenChange(next: boolean) {
+    if (next) saveMutation.reset();
+    onOpenChange(next);
+  }
+
   async function handleSubmit(values: z.infer<typeof ipEntrySchema>) {
     const result = await saveMutation.mutate({
       body: {
@@ -92,7 +97,7 @@ function AddEntryDialog({
   return (
     <FormDialog
       open={open}
-      onOpenChange={onOpenChange}
+      onOpenChange={handleOpenChange}
       title="Add IP Allowlist Entry"
       description="Add a CIDR range to restrict workspace access. Both IPv4 (e.g. 10.0.0.0/8) and IPv6 (e.g. 2001:db8::/32) are supported."
       schema={ipEntrySchema}
@@ -103,9 +108,10 @@ function AddEntryDialog({
       serverError={saveMutation.error}
       className="max-w-md"
     >
-      {() => (
+      {(form) => (
         <>
           <FormField
+            control={form.control}
             name="cidr"
             render={({ field }) => (
               <FormItem>
@@ -119,6 +125,7 @@ function AddEntryDialog({
           />
 
           <FormField
+            control={form.control}
             name="description"
             render={({ field }) => (
               <FormItem>

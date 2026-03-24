@@ -368,6 +368,11 @@ function AddMappingDialog({
     invalidates: onAdded,
   });
 
+  function handleOpenChange(next: boolean) {
+    if (next) saveMutation.reset();
+    onOpenChange(next);
+  }
+
   async function handleSubmit(values: z.infer<typeof mappingSchema>) {
     const result = await saveMutation.mutate({
       body: {
@@ -383,7 +388,7 @@ function AddMappingDialog({
   return (
     <FormDialog
       open={open}
-      onOpenChange={onOpenChange}
+      onOpenChange={handleOpenChange}
       title="Add Group Mapping"
       description="Map a SCIM group from your identity provider to an Atlas custom role."
       schema={mappingSchema}
@@ -393,9 +398,10 @@ function AddMappingDialog({
       saving={saveMutation.saving}
       serverError={saveMutation.error}
     >
-      {() => (
+      {(form) => (
         <>
           <FormField
+            control={form.control}
             name="scimGroupName"
             render={({ field }) => (
               <FormItem>
@@ -415,6 +421,7 @@ function AddMappingDialog({
           />
 
           <FormField
+            control={form.control}
             name="roleName"
             render={({ field }) => (
               <FormItem>

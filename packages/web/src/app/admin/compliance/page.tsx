@@ -185,7 +185,7 @@ function ClassificationsTab() {
 
   const [editingId, setEditingId] = useState<string | null>(null);
 
-  const { mutate, saving, error: actionError } = useAdminMutation({
+  const { mutate, saving, error: actionError, reset: resetAction } = useAdminMutation({
     method: "PUT",
     invalidates: refetch,
   });
@@ -366,7 +366,10 @@ function ClassificationsTab() {
       {/* Edit dialog */}
       <FormDialog
         open={!!editingId}
-        onOpenChange={(open) => { if (!open) setEditingId(null); }}
+        onOpenChange={(open) => {
+          if (open) resetAction();
+          if (!open) setEditingId(null);
+        }}
         title="Edit PII Classification"
         description={editingItem ? `${editingItem.tableName}.${editingItem.columnName}` : ""}
         schema={classificationEditSchema}
@@ -375,15 +378,17 @@ function ClassificationsTab() {
           maskingStrategy: editingItem?.maskingStrategy ?? "",
         }}
         onSubmit={async (values) => {
-          if (editingId) await handleUpdate(editingId, values);
+          if (!editingId) throw new Error("No classification selected for editing");
+          await handleUpdate(editingId, values);
         }}
         submitLabel="Save Changes"
         saving={saving}
         serverError={actionError}
       >
-        {() => (
+        {(form) => (
           <>
             <FormField
+              control={form.control}
               name="category"
               render={({ field }) => (
                 <FormItem>
@@ -408,6 +413,7 @@ function ClassificationsTab() {
             />
 
             <FormField
+              control={form.control}
               name="maskingStrategy"
               render={({ field }) => (
                 <FormItem>

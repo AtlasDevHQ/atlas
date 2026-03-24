@@ -101,7 +101,7 @@ export default function ModelConfigPage() {
 
   // Sync form when server data loads or changes (after save/refetch)
   useEffect(() => {
-    if (data === null) return; // still loading
+    if (loading) return; // wait for fetch to complete
     if (existingConfig) {
       form.reset({
         provider: existingConfig.provider,
@@ -113,11 +113,10 @@ export default function ModelConfigPage() {
       form.reset({ provider: "anthropic", model: "", apiKey: "", baseUrl: "" });
     }
     setTestResult(null);
-
     clearSaveError();
     clearDeleteError();
     clearTestError();
-  }, [data]); // intentionally depends only on `data` — reset when server data changes
+  }, [data, loading]); // reset when server data changes or loading completes
 
   // Gate: 401/403/404
   if (!loading && error?.status && [401, 403, 404].includes(error.status)) {

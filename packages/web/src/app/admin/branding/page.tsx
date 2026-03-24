@@ -67,6 +67,8 @@ export default function BrandingPage() {
         faviconUrl: data.faviconUrl ?? "",
         hideAtlasBranding: data.hideAtlasBranding,
       });
+    } else {
+      form.reset({ logoUrl: "", logoText: "", primaryColor: "", faviconUrl: "", hideAtlasBranding: false });
     }
   }, [data, loading]); // intentionally reset when data changes (after save/refetch)
 
@@ -82,7 +84,7 @@ export default function BrandingPage() {
   const colorValid = !primaryColor || HEX_RE.test(primaryColor);
 
   async function handleSave(values: z.infer<typeof brandingSchema>) {
-    await mutate({
+    const result = await mutate({
       method: "PUT",
       body: {
         logoUrl: values.logoUrl || null,
@@ -92,11 +94,16 @@ export default function BrandingPage() {
         hideAtlasBranding: values.hideAtlasBranding,
       },
     });
+    if (result === undefined) {
+      throw new Error("Save failed");
+    }
   }
 
   async function handleReset() {
-    await mutate({ method: "DELETE" });
-    form.reset({ logoUrl: "", logoText: "", primaryColor: "", faviconUrl: "", hideAtlasBranding: false });
+    const result = await mutate({ method: "DELETE" });
+    if (result !== undefined) {
+      form.reset({ logoUrl: "", logoText: "", primaryColor: "", faviconUrl: "", hideAtlasBranding: false });
+    }
   }
 
   return (

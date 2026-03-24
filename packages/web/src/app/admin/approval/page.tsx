@@ -74,7 +74,13 @@ const createRuleSchema = z.object({
   ruleType: z.enum(["table", "column", "cost"]),
   pattern: z.string(),
   threshold: z.string(),
-});
+}).refine(
+  (data) => data.ruleType === "cost" || data.pattern.trim().length > 0,
+  { message: "Pattern is required for table/column rules", path: ["pattern"] },
+).refine(
+  (data) => data.ruleType !== "cost" || (data.threshold.trim().length > 0 && !isNaN(Number(data.threshold))),
+  { message: "A valid numeric threshold is required", path: ["threshold"] },
+);
 
 function statusBadge(status: ApprovalStatus) {
   switch (status) {

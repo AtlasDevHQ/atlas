@@ -9,6 +9,7 @@
     "teams",
     "discord",
     "gchat",
+    "telegram",
     "webhook"
   ]
 }

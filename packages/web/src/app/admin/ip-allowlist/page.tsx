@@ -284,6 +284,7 @@ export default function IPAllowlistPage() {
             error={error}
             feature="IP Allowlist"
             onRetry={refetch}
+            loadingMessage="Loading IP allowlist..."
             emptyIcon={Shield}
             emptyTitle="No IP restrictions configured"
             emptyDescription="The workspace is accessible from any IP address. Add CIDR ranges to restrict access to specific networks."

@@ -222,6 +222,7 @@ export default function AbusePage() {
             error={error}
             feature="Abuse Prevention"
             onRetry={refetch}
+            loadingMessage="Loading abuse flags..."
             emptyIcon={ShieldAlert}
             emptyTitle="No workspaces flagged"
             emptyDescription="All workspaces are operating within normal parameters. Anomalous query patterns will be automatically detected and shown here."

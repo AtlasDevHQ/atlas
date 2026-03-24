@@ -106,6 +106,7 @@ export default function SSOPage() {
             error={error}
             feature="SSO"
             onRetry={() => { refetchProviders(); refetchEnforcement(); }}
+            loadingMessage="Loading SSO configuration..."
             emptyIcon={ShieldCheck}
             emptyTitle="No SSO configured"
             isEmpty={false}

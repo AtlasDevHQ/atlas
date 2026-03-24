@@ -124,6 +124,7 @@ export default function SCIMPage() {
             error={error}
             feature="SCIM"
             onRetry={() => { refetchStatus(); refetchMappings(); }}
+            loadingMessage="Loading SCIM configuration..."
             emptyIcon={Cable}
             emptyTitle="No SCIM configuration"
             isEmpty={false}

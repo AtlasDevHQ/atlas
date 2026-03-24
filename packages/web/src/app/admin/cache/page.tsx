@@ -133,6 +133,7 @@ export default function CachePage() {
             error={error}
             feature="Cache"
             onRetry={refetch}
+            loadingMessage="Loading cache stats..."
             emptyIcon={HardDrive}
             emptyTitle="No cache data available"
             isEmpty={!data}

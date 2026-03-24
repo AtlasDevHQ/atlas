@@ -360,6 +360,7 @@ export default function RolesPage() {
             error={error}
             feature="Custom Roles"
             onRetry={refetch}
+            loadingMessage="Loading roles..."
             emptyIcon={KeyRound}
             emptyTitle="No roles configured"
             isEmpty={false}

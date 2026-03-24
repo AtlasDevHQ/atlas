@@ -446,6 +446,7 @@ export default function ScheduledTasksPage() {
           error={error}
           feature="Scheduled Tasks"
           onRetry={() => setError(null)}
+          loadingMessage="Loading scheduled tasks..."
           emptyIcon={CalendarClock}
           emptyTitle="No scheduled tasks"
           emptyDescription="Create a task to automate recurring queries and reports"

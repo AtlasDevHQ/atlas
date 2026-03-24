@@ -186,11 +186,54 @@ export default function SessionsPage() {
 
       <ErrorBoundary>
         <div className="flex-1 overflow-auto p-6 space-y-6">
+          {/* Stats */}
+          {stats && !statsError && (
+            <div className="grid gap-4 sm:grid-cols-3">
+              <StatCard title="Total Sessions" value={stats.total.toLocaleString()} icon={<Monitor className="size-4" />} />
+              <StatCard title="Active Sessions" value={stats.active.toLocaleString()} icon={<Activity className="size-4" />} />
+              <StatCard title="Unique Users" value={stats.uniqueUsers.toLocaleString()} icon={<Users className="size-4" />} />
+            </div>
+          )}
+
+          {/* Search */}
+          <div className="flex flex-wrap items-end gap-3">
+            <div className="relative flex-1 min-w-[200px] max-w-sm">
+              <Search className="absolute left-2.5 top-2.5 size-3.5 text-muted-foreground" />
+              <Input
+                placeholder="Search by email or IP..."
+                value={search}
+                onChange={(e) => {
+                  table.setPageIndex(0);
+                  setParams({ search: e.target.value });
+                }}
+                className="h-9 pl-8"
+              />
+            </div>
+            {hasFilters && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-9"
+                onClick={() => {
+                  table.setPageIndex(0);
+                  setParams({ search: "" });
+                }}
+              >
+                <X className="mr-1.5 size-3.5" />
+                Clear
+              </Button>
+            )}
+          </div>
+
+          {revokeError && (
+            <ErrorBanner message={revokeError} onRetry={() => setFetchKey((k) => k + 1)} />
+          )}
           <AdminContentWrapper
             loading={loading}
             error={error}
             feature="Sessions"
             onRetry={() => setFetchKey((k) => k + 1)}
+            loadingMessage="Loading sessions..."
             emptyIcon={Monitor}
             emptyTitle="No active sessions"
             emptyDescription="Sessions will appear here when users sign in."
@@ -201,49 +244,6 @@ export default function SessionsPage() {
             }}
             isEmpty={rows.length === 0}
           >
-            {/* Stats */}
-            {stats && !statsError && (
-              <div className="grid gap-4 sm:grid-cols-3">
-                <StatCard title="Total Sessions" value={stats.total.toLocaleString()} icon={<Monitor className="size-4" />} />
-                <StatCard title="Active Sessions" value={stats.active.toLocaleString()} icon={<Activity className="size-4" />} />
-                <StatCard title="Unique Users" value={stats.uniqueUsers.toLocaleString()} icon={<Users className="size-4" />} />
-              </div>
-            )}
-
-            {/* Search */}
-            <div className="flex flex-wrap items-end gap-3">
-              <div className="relative flex-1 min-w-[200px] max-w-sm">
-                <Search className="absolute left-2.5 top-2.5 size-3.5 text-muted-foreground" />
-                <Input
-                  placeholder="Search by email or IP..."
-                  value={search}
-                  onChange={(e) => {
-                    table.setPageIndex(0);
-                    setParams({ search: e.target.value });
-                  }}
-                  className="h-9 pl-8"
-                />
-              </div>
-              {hasFilters && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className="h-9"
-                  onClick={() => {
-                    table.setPageIndex(0);
-                    setParams({ search: "" });
-                  }}
-                >
-                  <X className="mr-1.5 size-3.5" />
-                  Clear
-                </Button>
-              )}
-            </div>
-
-            {/* Content */}
-            {revokeError && (
-              <ErrorBanner message={revokeError} onRetry={() => setFetchKey((k) => k + 1)} />
-            )}
             <DataTable table={table}>
               <DataTableToolbar table={table}>
                 <DataTableSortList table={table} />

@@ -14,6 +14,7 @@ export interface AdminContentWrapperProps {
   error: FetchError | null;
   feature: string;
   onRetry: () => void;
+  loadingMessage?: string;
   emptyIcon: LucideIcon;
   emptyTitle: string;
   emptyDescription?: string;
@@ -29,6 +30,7 @@ export function AdminContentWrapper({
   error,
   feature,
   onRetry,
+  loadingMessage,
   emptyIcon,
   emptyTitle,
   emptyDescription,
@@ -38,36 +40,43 @@ export function AdminContentWrapper({
   isEmpty,
   children,
 }: AdminContentWrapperProps) {
-  if (!loading && error?.status && [401, 403, 404].includes(error.status)) {
-    return <FeatureGate status={error.status as 401 | 403 | 404} feature={feature} />;
+  if (!loading && error?.status && [401, 403, 404, 503].includes(error.status)) {
+    return <FeatureGate status={error.status as 401 | 403 | 404 | 503} feature={feature} />;
   }
 
-  return (
-    <>
-      {error && <ErrorBanner message={friendlyError(error)} onRetry={onRetry} />}
-      {loading ? (
-        <LoadingState />
-      ) : isEmpty && !hasFilters ? (
-        <EmptyState
-          icon={emptyIcon}
-          title={emptyTitle}
-          description={emptyDescription}
-          action={emptyAction}
-        />
-      ) : isEmpty && hasFilters ? (
-        <EmptyState
-          icon={Search}
-          title="No matches"
-          description="Try adjusting your filters."
-          action={
-            onClearFilters
-              ? { label: "Clear filters", onClick: onClearFilters }
-              : undefined
-          }
-        />
-      ) : (
-        children
-      )}
-    </>
-  );
+  if (error) {
+    return <ErrorBanner message={friendlyError(error)} onRetry={onRetry} />;
+  }
+
+  if (loading) {
+    return <LoadingState message={loadingMessage} />;
+  }
+
+  if (isEmpty && !hasFilters) {
+    return (
+      <EmptyState
+        icon={emptyIcon}
+        title={emptyTitle}
+        description={emptyDescription}
+        action={emptyAction}
+      />
+    );
+  }
+
+  if (isEmpty && hasFilters) {
+    return (
+      <EmptyState
+        icon={Search}
+        title="No matches"
+        description="Try adjusting your filters."
+        action={
+          onClearFilters
+            ? { label: "Clear filters", onClick: onClearFilters }
+            : undefined
+        }
+      />
+    );
+  }
+
+  return <>{children}</>;
 }

@@ -113,7 +113,7 @@ export default defineConfig({
 | `executeQueryStream` | `function` | No | Streaming query callback — returns `{ stream, result }`. See [Streaming](#streaming). |
 | `streaming` | `object` | No | Streaming configuration. |
 | `streaming.enabled` | `boolean` | No | Enable streaming responses. Default: `true`. |
-| `streaming.chunkIntervalMs` | `number` | No | Minimum interval (ms) between edits on non-streaming platforms. Range: 200–10000. Default: `1000`. |
+| `streaming.chunkIntervalMs` | `number` | No | Minimum interval (ms) between edits on non-streaming platforms. Range: 200–10000. Default: `500`. |
 | `checkRateLimit` | `function` | No | Optional rate limiting callback. |
 | `scrubError` | `function` | No | Optional error scrubbing callback. |
 | `actions` | `ActionCallbacks` | No | Optional action framework callbacks (`approve`, `deny`, `get`). |
@@ -195,10 +195,10 @@ chatPlugin({
     slack: { botToken: "xoxb-...", signingSecret: "..." },
     teams: { appId: "...", appPassword: "..." },
   },
-  executeQuery: myQueryFunction, // required fallback
+  executeQuery: myQueryFunction, // always required — used when streaming is disabled
   streaming: {
     enabled: true,        // default: true
-    chunkIntervalMs: 1000, // default: 1000ms — edit throttle for Teams/Discord/GChat
+    chunkIntervalMs: 1000, // override Chat SDK default of 500ms — edit throttle for Teams/Discord/GChat
   },
   executeQueryStream: (question, options) => {
     // Return a stream and a promise for the final structured result

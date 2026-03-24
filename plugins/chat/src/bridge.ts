@@ -3,9 +3,9 @@
  *
  * Maps Chat SDK lifecycle and events to Atlas plugin callbacks:
  *
- * - `onNewMention` → lock + subscribe thread + `executeQuery` → post JSX card
- * - `onSubscribedMessage` → lock + `executeQuery` with thread history → post JSX card
- * - `onSlashCommand("/atlas")` → post thinking → subscribe → `executeQuery` → edit with card
+ * - `onNewMention` → lock + subscribe thread + `executeQuery`/`executeQueryStream` → post card or stream
+ * - `onSubscribedMessage` → lock + query with thread history → post card or stream
+ * - `onSlashCommand("/atlas")` → post thinking → subscribe → query → edit with card or stream
  * - `onAction("atlas_action_approve"|"atlas_action_deny")` → approve/deny → edit message
  * - Error scrubbing prevents leaking connection strings, stack traces, or
  *   internal errors to chat platforms
@@ -418,11 +418,10 @@ export function createChatBridge(
 
   /**
    * Streaming variant of handleQuery. Passes the async iterable from
-   * `executeQueryStream` directly to Chat SDK, which routes to native
-   * streaming on Slack or edit-based fallback (post + edit) on Teams,
-   * Discord, and Google Chat.
+   * `executeQueryStream` to Chat SDK for incremental delivery.
    *
-   * Throws on stream errors — callers handle error posting per context.
+   * Throws if `postStream` fails or if the final `result` promise rejects
+   * after the stream completes — callers handle error posting per context.
    */
   async function handleStreamingQuery(
     threadId: string,

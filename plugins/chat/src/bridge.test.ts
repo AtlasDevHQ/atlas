@@ -2376,6 +2376,38 @@ describe("chat plugin streaming lifecycle", () => {
     expect(result.healthy).toBe(false);
   });
 
+  it("accepts executeQueryStream returning invalid shape without crashing at init", async () => {
+    // The return shape validation happens at call time, not init time.
+    // This test verifies the plugin still initializes even with a
+    // badly-typed executeQueryStream — the error surfaces when a message arrives.
+    const { buildChatPlugin } = require("./index");
+    const plugin = buildChatPlugin({
+      adapters: {
+        slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+      },
+      executeQuery: async () => ({
+        answer: "test",
+        sql: [],
+        data: [],
+        steps: 1,
+        usage: { totalTokens: 10 },
+      }),
+      streaming: { enabled: true },
+      executeQueryStream: () => ({ wrong: "shape" }),
+    });
+
+    await plugin.initialize!({
+      db: null,
+      connections: { get: () => { throw new Error("unused"); }, list: () => [] },
+      tools: { register: () => {} },
+      logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+      config: {},
+    });
+
+    const result = await plugin.healthCheck!();
+    expect(result.healthy).toBe(true);
+  });
+
   it("initializes with streaming disabled (falls back to executeQuery)", async () => {
     const { buildChatPlugin } = require("./index");
     const plugin = buildChatPlugin({

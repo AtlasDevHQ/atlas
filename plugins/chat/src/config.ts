@@ -108,8 +108,9 @@ export interface StreamingConfig {
   enabled?: boolean;
   /** Minimum interval (ms) between message edits for edit-based streaming
    * on platforms without native streaming (Teams, Discord, Google Chat).
-   * Lower values provide smoother updates but risk hitting platform rate limits.
-   * Default: 1000 */
+   * Must be between 200 and 10,000. Lower values provide smoother updates
+   * but risk hitting platform rate limits.
+   * Default: 500 (Chat SDK default) */
   chunkIntervalMs?: number;
 }
 

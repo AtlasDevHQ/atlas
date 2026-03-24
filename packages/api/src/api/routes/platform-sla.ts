@@ -13,15 +13,14 @@
  * - POST   /evaluate      — trigger alert evaluation on demand
  */
 
-import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
-import { validationHook } from "./validation-hook";
+import { createRoute, z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
 import {
   SLA_ALERT_STATUSES,
   SLA_ALERT_TYPES,
 } from "@useatlas/types";
 import { ErrorSchema, AuthErrorSchema, parsePagination } from "./shared-schemas";
-import { platformAdminAuth, requestContext, type AuthEnv } from "./middleware";
+import { createPlatformRouter } from "./admin-router";
 
 const log = createLogger("platform-sla");
 
@@ -232,10 +231,7 @@ async function loadSLA(): Promise<SLAModule | null> {
 // Router
 // ---------------------------------------------------------------------------
 
-const platformSLA = new OpenAPIHono<AuthEnv>({ defaultHook: validationHook });
-
-platformSLA.use(platformAdminAuth);
-platformSLA.use(requestContext);
+const platformSLA = createPlatformRouter();
 
 // ── List all workspaces SLA ──────────────────────────────────────────
 

@@ -6,14 +6,12 @@
  * (is_builtin = true) are read-only — mutations return 403.
  */
 
-import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
-import { validationHook } from "./validation-hook";
-import { HTTPException } from "hono/http-exception";
+import { createRoute, z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import type { PromptCollection, PromptItem } from "@useatlas/types";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
-import { adminAuth, requestContext, type AuthEnv } from "./middleware";
+import { createAdminRouter } from "./admin-router";
 
 const log = createLogger("admin-prompts");
 
@@ -485,20 +483,7 @@ const reorderItemsRoute = createRoute({
 // Router
 // ---------------------------------------------------------------------------
 
-export const adminPrompts = new OpenAPIHono<AuthEnv>({ defaultHook: validationHook });
-
-adminPrompts.use(adminAuth);
-adminPrompts.use(requestContext);
-
-adminPrompts.onError((err, c) => {
-  if (err instanceof HTTPException) {
-    if (err.res) return err.res;
-    if (err.status === 400) {
-      return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400);
-    }
-  }
-  throw err;
-});
+export const adminPrompts = createAdminRouter();
 
 // ---------------------------------------------------------------------------
 // GET / — list all collections (admin view)

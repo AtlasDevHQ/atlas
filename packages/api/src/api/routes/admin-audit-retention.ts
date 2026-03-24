@@ -12,14 +12,12 @@
  * - POST /hard-delete     — manually trigger hard-delete cleanup
  */
 
-import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
-import { validationHook } from "./validation-hook";
+import { createRoute, z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
-import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import { RetentionError } from "@atlas/ee/audit/retention";
-import { throwIfEEError, eeOnError } from "./ee-error-handler";
+import { throwIfEEError } from "./ee-error-handler";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
-import { adminAuth, requestContext, type AuthEnv } from "./middleware";
+import { createAdminRouter, requireOrgContext } from "./admin-router";
 
 const log = createLogger("admin-audit-retention");
 
@@ -304,26 +302,13 @@ const hardDeleteRoute = createRoute({
 // Router
 // ---------------------------------------------------------------------------
 
-const adminAuditRetention = new OpenAPIHono<AuthEnv>({ defaultHook: validationHook });
+const adminAuditRetention = createAdminRouter();
 
-adminAuditRetention.use(adminAuth);
-adminAuditRetention.use(requestContext);
-
-adminAuditRetention.onError(eeOnError);
+adminAuditRetention.use(requireOrgContext());
 
 // GET / — get current retention policy
 adminAuditRetention.openapi(getRetentionRoute, async (c) => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
-
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-  }
-
-  const orgId = authResult.user?.activeOrganizationId;
-  if (!orgId) {
-    return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
-  }
+  const { requestId, orgId } = c.get("orgContext");
 
   try {
     const { getRetentionPolicy } = await import("@atlas/ee/audit/retention");
@@ -338,17 +323,8 @@ adminAuditRetention.openapi(getRetentionRoute, async (c) => {
 
 // PUT / — update retention policy
 adminAuditRetention.openapi(updateRetentionRoute, async (c) => {
-  const requestId = c.get("requestId");
+  const { requestId, orgId } = c.get("orgContext");
   const authResult = c.get("authResult");
-
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-  }
-
-  const orgId = authResult.user?.activeOrganizationId;
-  if (!orgId) {
-    return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
-  }
 
   const body = c.req.valid("json");
 
@@ -372,17 +348,7 @@ adminAuditRetention.openapi(updateRetentionRoute, async (c) => {
 
 // POST /export — compliance export
 adminAuditRetention.openapi(exportRoute, async (c) => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
-
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-  }
-
-  const orgId = authResult.user?.activeOrganizationId;
-  if (!orgId) {
-    return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
-  }
+  const { requestId, orgId } = c.get("orgContext");
 
   const body = c.req.valid("json");
 
@@ -430,17 +396,7 @@ adminAuditRetention.openapi(exportRoute, async (c) => {
 
 // POST /purge — manual soft-delete purge
 adminAuditRetention.openapi(purgeRoute, async (c) => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
-
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-  }
-
-  const orgId = authResult.user?.activeOrganizationId;
-  if (!orgId) {
-    return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
-  }
+  const { requestId, orgId } = c.get("orgContext");
 
   try {
     const { purgeExpiredEntries } = await import("@atlas/ee/audit/retention");
@@ -455,17 +411,7 @@ adminAuditRetention.openapi(purgeRoute, async (c) => {
 
 // POST /hard-delete — manual hard-delete cleanup
 adminAuditRetention.openapi(hardDeleteRoute, async (c) => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
-
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-  }
-
-  const orgId = authResult.user?.activeOrganizationId;
-  if (!orgId) {
-    return c.json({ error: "no_organization", message: "No active organization.", requestId }, 404);
-  }
+  const { requestId, orgId } = c.get("orgContext");
 
   try {
     const { hardDeleteExpired } = await import("@atlas/ee/audit/retention");

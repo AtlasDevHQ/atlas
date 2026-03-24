@@ -5,11 +5,9 @@
  * enterprise license (enforced within the model-routing service layer).
  */
 
-import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
-import { validationHook } from "./validation-hook";
+import { createRoute, z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
-import { hasInternalDB } from "@atlas/api/lib/db/internal";
-import { throwIfEEError, eeOnError } from "./ee-error-handler";
+import { throwIfEEError } from "./ee-error-handler";
 import {
   getWorkspaceModelConfig,
   setWorkspaceModelConfig,
@@ -18,7 +16,7 @@ import {
   ModelConfigError,
 } from "@atlas/ee/platform/model-routing";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
-import { adminAuth, requestContext, type AuthEnv } from "./middleware";
+import { createAdminRouter, requireOrgContext } from "./admin-router";
 
 const log = createLogger("admin-model-config");
 
@@ -265,26 +263,13 @@ const testConfigRoute = createRoute({
 // Router
 // ---------------------------------------------------------------------------
 
-const adminModelConfig = new OpenAPIHono<AuthEnv>({ defaultHook: validationHook });
+const adminModelConfig = createAdminRouter();
 
-adminModelConfig.use(adminAuth);
-adminModelConfig.use(requestContext);
-
-adminModelConfig.onError(eeOnError);
+adminModelConfig.use(requireOrgContext());
 
 // GET / — get workspace model configuration
 adminModelConfig.openapi(getConfigRoute, async (c) => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
-
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-  }
-
-  const orgId = authResult.user?.activeOrganizationId;
-  if (!orgId) {
-    return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
-  }
+  const { requestId, orgId } = c.get("orgContext");
 
   try {
     const config = await getWorkspaceModelConfig(orgId);
@@ -298,17 +283,7 @@ adminModelConfig.openapi(getConfigRoute, async (c) => {
 
 // PUT / — set workspace model configuration
 adminModelConfig.openapi(setConfigRoute, async (c) => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
-
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-  }
-
-  const orgId = authResult.user?.activeOrganizationId;
-  if (!orgId) {
-    return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
-  }
+  const { requestId, orgId } = c.get("orgContext");
 
   const body = c.req.valid("json");
 
@@ -337,17 +312,7 @@ adminModelConfig.openapi(setConfigRoute, async (c) => {
 
 // DELETE / — reset workspace model configuration
 adminModelConfig.openapi(deleteConfigRoute, async (c) => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
-
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-  }
-
-  const orgId = authResult.user?.activeOrganizationId;
-  if (!orgId) {
-    return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
-  }
+  const { requestId, orgId } = c.get("orgContext");
 
   try {
     const deleted = await deleteWorkspaceModelConfig(orgId);
@@ -364,13 +329,7 @@ adminModelConfig.openapi(deleteConfigRoute, async (c) => {
 
 // POST /test — test model configuration
 adminModelConfig.openapi(testConfigRoute, async (c) => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
-
-  const orgId = authResult.user?.activeOrganizationId;
-  if (!orgId) {
-    return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
-  }
+  const { requestId, orgId } = c.get("orgContext");
 
   const body = c.req.valid("json");
 

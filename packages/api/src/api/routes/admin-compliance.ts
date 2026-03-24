@@ -12,12 +12,10 @@
  * - GET    /reports/user-activity       — user activity compliance report
  */
 
-import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
+import { createRoute, z } from "@hono/zod-openapi";
 import { HTTPException } from "hono/http-exception";
-import { validationHook } from "./validation-hook";
 import { createLogger } from "@atlas/api/lib/logger";
-import { hasInternalDB } from "@atlas/api/lib/db/internal";
-import { throwIfEEError, eeOnError } from "./ee-error-handler";
+import { throwIfEEError } from "./ee-error-handler";
 import {
   listPIIClassifications,
   updatePIIClassification,
@@ -35,7 +33,7 @@ import {
 } from "@atlas/ee/compliance/reports";
 import type { PIICategory, MaskingStrategy } from "@useatlas/types";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
-import { adminAuth, requestContext, type AuthEnv } from "./middleware";
+import { createAdminRouter, requireOrgContext } from "./admin-router";
 
 const log = createLogger("admin-compliance");
 
@@ -135,26 +133,13 @@ const deleteRoute = createRoute({
 
 // ── Router ──────────────────────────────────────────────────────
 
-export const adminCompliance = new OpenAPIHono<AuthEnv>({ defaultHook: validationHook });
+export const adminCompliance = createAdminRouter();
 
-adminCompliance.use(adminAuth);
-adminCompliance.use(requestContext);
-
-adminCompliance.onError(eeOnError);
+adminCompliance.use(requireOrgContext());
 
 // GET /classifications
 adminCompliance.openapi(listRoute, async (c) => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
-
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-  }
-
-  const orgId = authResult.user?.activeOrganizationId;
-  if (!orgId) {
-    return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
-  }
+  const { requestId, orgId } = c.get("orgContext");
   const { connectionId } = c.req.valid("query");
 
   try {
@@ -169,18 +154,7 @@ adminCompliance.openapi(listRoute, async (c) => {
 
 // PUT /classifications/:id
 adminCompliance.openapi(updateRoute, async (c) => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
-
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-  }
-
-  const orgId = authResult.user?.activeOrganizationId;
-  if (!orgId) {
-    return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
-  }
-
+  const { requestId, orgId } = c.get("orgContext");
   const id = c.req.param("id");
   const body = c.req.valid("json");
 
@@ -202,18 +176,7 @@ adminCompliance.openapi(updateRoute, async (c) => {
 
 // DELETE /classifications/:id
 adminCompliance.openapi(deleteRoute, async (c) => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
-
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-  }
-
-  const orgId = authResult.user?.activeOrganizationId;
-  if (!orgId) {
-    return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
-  }
-
+  const { requestId, orgId } = c.get("orgContext");
   const id = c.req.param("id");
 
   try {
@@ -335,18 +298,7 @@ const userActivityReportRoute = createRoute({
 
 // GET /reports/data-access
 adminCompliance.openapi(dataAccessReportRoute, async (c) => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
-
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-  }
-
-  const orgId = authResult.user?.activeOrganizationId;
-  if (!orgId) {
-    return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
-  }
-
+  const { requestId, orgId } = c.get("orgContext");
   const query = c.req.valid("query");
 
   try {
@@ -384,18 +336,7 @@ adminCompliance.openapi(dataAccessReportRoute, async (c) => {
 
 // GET /reports/user-activity
 adminCompliance.openapi(userActivityReportRoute, async (c) => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
-
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-  }
-
-  const orgId = authResult.user?.activeOrganizationId;
-  if (!orgId) {
-    return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
-  }
-
+  const { requestId, orgId } = c.get("orgContext");
   const query = c.req.valid("query");
 
   try {

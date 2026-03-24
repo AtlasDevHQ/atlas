@@ -5,11 +5,9 @@
  * Provides visibility into the onboarding email sequence for workspace users.
  */
 
-import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
-import { validationHook } from "./validation-hook";
-import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
+import { createRoute, z } from "@hono/zod-openapi";
+import { createLogger } from "@atlas/api/lib/logger";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
-import { adminAuthPreamble } from "./admin-auth";
 import {
   getOnboardingStatuses,
   isOnboardingEmailEnabled,
@@ -17,6 +15,7 @@ import {
 import { ONBOARDING_SEQUENCE } from "@atlas/api/lib/email/sequence";
 import { ONBOARDING_EMAIL_STEPS, ONBOARDING_MILESTONES } from "@useatlas/types";
 import { ErrorSchema, AuthErrorSchema, parsePagination } from "./shared-schemas";
+import { createAdminRouter } from "./admin-router";
 
 const log = createLogger("admin-onboarding-emails");
 
@@ -107,66 +106,45 @@ const getSequenceRoute = createRoute({
 // Router
 // ---------------------------------------------------------------------------
 
-export const adminOnboardingEmails = new OpenAPIHono({ defaultHook: validationHook });
+export const adminOnboardingEmails = createAdminRouter();
 
 adminOnboardingEmails.openapi(listStatusesRoute, async (c) => {
-  const requestId = crypto.randomUUID();
-  return withRequestContext({ requestId }, async () => {
-    const preamble = await adminAuthPreamble(c.req.raw, requestId);
-    if ("error" in preamble) {
-      if (preamble.headers) {
-        for (const [k, v] of Object.entries(preamble.headers)) c.header(k, v);
-      }
-      return c.json(preamble.error, preamble.status as 401);
-    }
+  const requestId = c.get("requestId");
+  const authResult = c.get("authResult");
+  const orgId = authResult.user?.activeOrganizationId;
 
-    const { authResult } = preamble;
-    const orgId = authResult.user?.activeOrganizationId;
+  if (!orgId || !hasInternalDB()) {
+    return c.json({
+      enabled: false,
+      statuses: [],
+      total: 0,
+    }, 200);
+  }
 
-    if (!orgId || !hasInternalDB()) {
-      return c.json({
-        enabled: false,
-        statuses: [],
-        total: 0,
-      }, 200);
-    }
+  const { limit, offset } = parsePagination(c);
 
-    const { limit, offset } = parsePagination(c);
-
-    try {
-      const result = await getOnboardingStatuses(orgId, limit, offset);
-      return c.json({
-        enabled: isOnboardingEmailEnabled(),
-        statuses: result.statuses,
-        total: result.total,
-      }, 200);
-    } catch (err) {
-      log.error({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to fetch onboarding statuses");
-      return c.json({ error: "internal_error", message: "Failed to fetch onboarding email statuses.", requestId }, 500);
-    }
-  });
+  try {
+    const result = await getOnboardingStatuses(orgId, limit, offset);
+    return c.json({
+      enabled: isOnboardingEmailEnabled(),
+      statuses: result.statuses,
+      total: result.total,
+    }, 200);
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to fetch onboarding statuses");
+    return c.json({ error: "internal_error", message: "Failed to fetch onboarding email statuses.", requestId }, 500);
+  }
 });
 
 adminOnboardingEmails.openapi(getSequenceRoute, async (c) => {
-  const requestId = crypto.randomUUID();
-  return withRequestContext({ requestId }, async () => {
-    const preamble = await adminAuthPreamble(c.req.raw, requestId);
-    if ("error" in preamble) {
-      if (preamble.headers) {
-        for (const [k, v] of Object.entries(preamble.headers)) c.header(k, v);
-      }
-      return c.json(preamble.error, preamble.status as 401);
-    }
-
-    return c.json({
-      enabled: isOnboardingEmailEnabled(),
-      steps: ONBOARDING_SEQUENCE.map((s) => ({
-        step: s.step,
-        trigger: s.trigger,
-        fallbackHours: s.fallbackHours,
-        subject: s.subject,
-        description: s.description,
-      })),
-    }, 200);
-  });
+  return c.json({
+    enabled: isOnboardingEmailEnabled(),
+    steps: ONBOARDING_SEQUENCE.map((s) => ({
+      step: s.step,
+      trigger: s.trigger,
+      fallbackHours: s.fallbackHours,
+      subject: s.subject,
+      description: s.description,
+    })),
+  }, 200);
 });

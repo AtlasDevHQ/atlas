@@ -16,8 +16,8 @@
  * - GET    /noisy-neighbors     — workspaces consuming disproportionate resources
  */
 
-import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
-import { validationHook } from "./validation-hook";
+import { createRoute, z } from "@hono/zod-openapi";
+import { createPlatformRouter } from "./admin-router";
 import { createLogger } from "@atlas/api/lib/logger";
 import {
   hasInternalDB,
@@ -38,7 +38,6 @@ import {
 } from "@useatlas/types";
 import { ATLAS_ROLES, type AtlasRole } from "@atlas/api/lib/auth/types";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
-import { platformAdminAuth, requestContext, type AuthEnv } from "./middleware";
 
 const log = createLogger("platform-admin");
 
@@ -332,10 +331,7 @@ const PLAN_MRR: Record<string, number> = {
 // Router
 // ---------------------------------------------------------------------------
 
-const platformAdmin = new OpenAPIHono<AuthEnv>({ defaultHook: validationHook });
-
-platformAdmin.use(platformAdminAuth);
-platformAdmin.use(requestContext);
+const platformAdmin = createPlatformRouter();
 
 // ── List workspaces ──────────────────────────────────────────────────
 

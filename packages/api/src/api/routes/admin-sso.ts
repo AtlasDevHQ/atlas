@@ -5,11 +5,9 @@
  * enterprise license (enforced within the SSO service layer).
  */
 
-import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
-import { validationHook } from "./validation-hook";
+import { createRoute, z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
-import { hasInternalDB } from "@atlas/api/lib/db/internal";
-import { throwIfEEError, eeOnError } from "./ee-error-handler";
+import { throwIfEEError } from "./ee-error-handler";
 import {
   listSSOProviders,
   getSSOProvider,
@@ -28,7 +26,7 @@ import type {
   UpdateSSOProviderRequest,
 } from "@useatlas/types";
 import { ErrorSchema, AuthErrorSchema, isValidId, MAX_ID_LENGTH } from "./shared-schemas";
-import { adminAuth, requestContext, type AuthEnv } from "./middleware";
+import { createAdminRouter, requireOrgContext } from "./admin-router";
 
 const log = createLogger("admin-sso");
 
@@ -445,26 +443,12 @@ const setEnforcementRoute = createRoute({
 // Router
 // ---------------------------------------------------------------------------
 
-const adminSso = new OpenAPIHono<AuthEnv>({ defaultHook: validationHook });
-
-adminSso.use(adminAuth);
-adminSso.use(requestContext);
-
-adminSso.onError(eeOnError);
+const adminSso = createAdminRouter();
+adminSso.use(requireOrgContext());
 
 // GET /providers — list SSO providers for the active org
 adminSso.openapi(listProvidersRoute, async (c) => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
-
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-  }
-
-  const orgId = authResult.user?.activeOrganizationId;
-  if (!orgId) {
-    return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
-  }
+  const { requestId, orgId } = c.get("orgContext");
 
   try {
     const providers = await listSSOProviders(orgId);
@@ -478,21 +462,11 @@ adminSso.openapi(listProvidersRoute, async (c) => {
 
 // GET /providers/:id — get a single SSO provider
 adminSso.openapi(getProviderRoute, async (c) => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
+  const { requestId, orgId } = c.get("orgContext");
   const { id: providerId } = c.req.valid("param");
 
   if (!isValidId(providerId)) {
     return c.json({ error: "bad_request", message: "Invalid provider ID." }, 400);
-  }
-
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-  }
-
-  const orgId = authResult.user?.activeOrganizationId;
-  if (!orgId) {
-    return c.json({ error: "bad_request", message: "No active organization." }, 400);
   }
 
   try {
@@ -510,18 +484,7 @@ adminSso.openapi(getProviderRoute, async (c) => {
 
 // POST /providers — create a new SSO provider
 adminSso.openapi(createProviderRoute, async (c) => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
-
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-  }
-
-  const orgId = authResult.user?.activeOrganizationId;
-  if (!orgId) {
-    return c.json({ error: "bad_request", message: "No active organization." }, 400);
-  }
-
+  const { requestId, orgId } = c.get("orgContext");
   const body = c.req.valid("json");
 
   // Structural check only — business validation is in createSSOProvider
@@ -541,21 +504,11 @@ adminSso.openapi(createProviderRoute, async (c) => {
 
 // PATCH /providers/:id — update an SSO provider
 adminSso.openapi(updateProviderRoute, async (c) => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
+  const { requestId, orgId } = c.get("orgContext");
   const { id: providerId } = c.req.valid("param");
 
   if (!isValidId(providerId)) {
     return c.json({ error: "bad_request", message: "Invalid provider ID." }, 400);
-  }
-
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-  }
-
-  const orgId = authResult.user?.activeOrganizationId;
-  if (!orgId) {
-    return c.json({ error: "bad_request", message: "No active organization." }, 400);
   }
 
   const body = c.req.valid("json") as UpdateSSOProviderRequest;
@@ -572,21 +525,11 @@ adminSso.openapi(updateProviderRoute, async (c) => {
 
 // DELETE /providers/:id — delete an SSO provider
 adminSso.openapi(deleteProviderRoute, async (c) => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
+  const { requestId, orgId } = c.get("orgContext");
   const { id: providerId } = c.req.valid("param");
 
   if (!isValidId(providerId)) {
     return c.json({ error: "bad_request", message: "Invalid provider ID." }, 400);
-  }
-
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-  }
-
-  const orgId = authResult.user?.activeOrganizationId;
-  if (!orgId) {
-    return c.json({ error: "bad_request", message: "No active organization." }, 400);
   }
 
   try {
@@ -604,17 +547,7 @@ adminSso.openapi(deleteProviderRoute, async (c) => {
 
 // GET /enforcement — get SSO enforcement status
 adminSso.openapi(getEnforcementRoute, async (c) => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
-
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-  }
-
-  const orgId = authResult.user?.activeOrganizationId;
-  if (!orgId) {
-    return c.json({ error: "bad_request", message: "No active organization." }, 400);
-  }
+  const { requestId, orgId } = c.get("orgContext");
 
   try {
     const result = await isSSOEnforced(orgId);
@@ -628,18 +561,7 @@ adminSso.openapi(getEnforcementRoute, async (c) => {
 
 // PUT /enforcement — set SSO enforcement
 adminSso.openapi(setEnforcementRoute, async (c) => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
-
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-  }
-
-  const orgId = authResult.user?.activeOrganizationId;
-  if (!orgId) {
-    return c.json({ error: "bad_request", message: "No active organization." }, 400);
-  }
-
+  const { requestId, orgId } = c.get("orgContext");
   const { enforced } = c.req.valid("json");
 
   try {

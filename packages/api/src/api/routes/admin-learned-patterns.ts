@@ -5,15 +5,14 @@
  * Provides list, get, update, delete, and bulk status change for learned query patterns.
  */
 
-import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
-import { validationHook } from "./validation-hook";
+import { createRoute, z } from "@hono/zod-openapi";
 import { HTTPException } from "hono/http-exception";
 import { createLogger } from "@atlas/api/lib/logger";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { LEARNED_PATTERN_STATUSES, type LearnedPattern } from "@useatlas/types";
 import { invalidatePatternCache } from "@atlas/api/lib/learn/pattern-cache";
 import { ErrorSchema, AuthErrorSchema, parsePagination } from "./shared-schemas";
-import { adminAuth, requestContext, type AuthEnv } from "./middleware";
+import { createAdminRouter } from "./admin-router";
 
 const log = createLogger("admin-learned-patterns");
 
@@ -342,10 +341,7 @@ const bulkStatusRoute = createRoute({
 // Router
 // ---------------------------------------------------------------------------
 
-const adminLearnedPatterns = new OpenAPIHono<AuthEnv>({ defaultHook: validationHook });
-
-adminLearnedPatterns.use(adminAuth);
-adminLearnedPatterns.use(requestContext);
+const adminLearnedPatterns = createAdminRouter();
 
 adminLearnedPatterns.onError((err, c) => {
   if (err instanceof HTTPException) {

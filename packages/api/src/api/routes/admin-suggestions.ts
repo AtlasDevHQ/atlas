@@ -5,14 +5,13 @@
  * Provides list and delete for query suggestions (auto-generated from query frequency).
  */
 
-import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
-import { validationHook } from "./validation-hook";
+import { createRoute, z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
 import { hasInternalDB, internalQuery, deleteSuggestion } from "@atlas/api/lib/db/internal";
 import { toQuerySuggestion } from "@atlas/api/lib/learn/suggestion-helpers";
 import type { QuerySuggestionRow } from "@atlas/api/lib/db/internal";
 import { ErrorSchema, AuthErrorSchema, parsePagination } from "./shared-schemas";
-import { adminAuth, requestContext, type AuthEnv } from "./middleware";
+import { createAdminRouter } from "./admin-router";
 
 const log = createLogger("admin-suggestions");
 
@@ -133,10 +132,7 @@ const deleteSuggestionRoute = createRoute({
 // Router
 // ---------------------------------------------------------------------------
 
-export const adminSuggestions = new OpenAPIHono<AuthEnv>({ defaultHook: validationHook });
-
-adminSuggestions.use(adminAuth);
-adminSuggestions.use(requestContext);
+export const adminSuggestions = createAdminRouter();
 
 // GET / — list suggestions with filters
 adminSuggestions.openapi(listSuggestionsRoute, async (c) => {

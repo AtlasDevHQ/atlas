@@ -5,9 +5,7 @@
  * Provides CRUD for organizations and their members (platform admin view).
  */
 
-import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
-import { validationHook } from "./validation-hook";
-import { HTTPException } from "hono/http-exception";
+import { createRoute, z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
 import {
   hasInternalDB,
@@ -23,7 +21,7 @@ import { connections } from "@atlas/api/lib/db/connection";
 import { flushCache } from "@atlas/api/lib/cache/index";
 import { invalidatePlanCache } from "@atlas/api/lib/billing/enforcement";
 import { ErrorSchema, AuthErrorSchema, MAX_ID_LENGTH } from "./shared-schemas";
-import { adminAuth, requestContext, type AuthEnv } from "./middleware";
+import { createAdminRouter } from "./admin-router";
 
 const log = createLogger("admin-orgs");
 
@@ -512,20 +510,7 @@ const updatePlanRoute = createRoute({
 // Router
 // ---------------------------------------------------------------------------
 
-const adminOrgs = new OpenAPIHono<AuthEnv>({ defaultHook: validationHook });
-
-adminOrgs.use(adminAuth);
-adminOrgs.use(requestContext);
-
-adminOrgs.onError((err, c) => {
-  if (err instanceof HTTPException) {
-    if (err.res) return err.res;
-    if (err.status === 400) {
-      return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400);
-    }
-  }
-  throw err;
-});
+const adminOrgs = createAdminRouter();
 
 // ---------------------------------------------------------------------------
 // GET / — list all organizations (platform admin view)

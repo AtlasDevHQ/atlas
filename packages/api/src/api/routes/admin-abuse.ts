@@ -5,8 +5,7 @@
  * Provides listing of flagged workspaces, reinstatement, and threshold config.
  */
 
-import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
-import { validationHook } from "./validation-hook";
+import { createRoute, z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
 import {
   listFlaggedWorkspaces,
@@ -15,7 +14,7 @@ import {
   getAbuseConfig,
 } from "@atlas/api/lib/security/abuse";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
-import { adminAuth, requestContext, type AuthEnv } from "./middleware";
+import { createAdminRouter } from "./admin-router";
 
 const log = createLogger("admin-abuse");
 
@@ -170,10 +169,7 @@ const getConfigRoute = createRoute({
 // Router
 // ---------------------------------------------------------------------------
 
-const adminAbuse = new OpenAPIHono<AuthEnv>({ defaultHook: validationHook });
-
-adminAbuse.use(adminAuth);
-adminAbuse.use(requestContext);
+const adminAbuse = createAdminRouter();
 
 // GET / — list flagged workspaces
 adminAbuse.openapi(listFlaggedRoute, async (c) => {

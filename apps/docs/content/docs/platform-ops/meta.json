@@ -1,0 +1,12 @@
+{
+  "title": "Platform Operations",
+  "description": "Infrastructure guides for Atlas platform operators",
+  "icon": "Server",
+  "pages": [
+    "platform-admin",
+    "sla-monitoring",
+    "backups",
+    "data-residency",
+    "abuse-prevention"
+  ]
+}

@@ -26,7 +26,6 @@
     "compliance-reporting",
     "usage-metering",
     "billing-and-plans",
-    "platform-admin",
     "admin-console",
     "embedding-widget",
     "sharing-conversations",
@@ -39,9 +38,6 @@
     "self-hosted-models",
     "rate-limiting",
     "troubleshooting",
-    "sla-monitoring",
-    "backups",
-    "data-residency",
     "custom-domains",
     "observability"
   ]

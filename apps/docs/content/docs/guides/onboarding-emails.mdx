@@ -1,0 +1,74 @@
+---
+title: Onboarding Emails
+description: Automated drip campaign that guides new users through database connection, first query, and team setup.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Onboarding emails are an automated drip campaign sent to new users after signup. Each email is triggered by a milestone (e.g., connecting a database, running a first query) or sent on a time-based fallback if the milestone is not reached.
+
+<Callout title="Prerequisites">
+- Internal database configured (`DATABASE_URL`)
+- Email delivery configured (`RESEND_API_KEY` or `ATLAS_SMTP_URL`)
+- Feature flag enabled (`ATLAS_ONBOARDING_EMAILS_ENABLED=true`)
+</Callout>
+
+---
+
+## Email Sequence
+
+The onboarding sequence consists of five milestone-driven emails:
+
+| Step | Trigger Milestone | Fallback | Description |
+|------|-------------------|----------|-------------|
+| `welcome` | `signup_completed` | Immediate | Welcome email with getting-started links |
+| `connect_database` | `database_connected` | Time-based | Prompts the user to connect their first datasource |
+| `first_query` | `first_query_executed` | Time-based | Encourages the user to ask their first question |
+| `invite_team` | `team_member_invited` | Time-based | Suggests inviting colleagues |
+| `explore_features` | `feature_explored` | Time-based | Highlights advanced features (notebook, scheduled tasks, actions) |
+
+Each email is sent at most once per user. If the user completes the milestone before the fallback timer fires, the email is sent immediately on milestone completion.
+
+---
+
+## Configuration
+
+Enable onboarding emails via environment variable:
+
+```bash
+ATLAS_ONBOARDING_EMAILS_ENABLED=true
+RESEND_API_KEY=re_...            # or ATLAS_SMTP_URL for webhook delivery
+ATLAS_EMAIL_FROM=Atlas <noreply@yourdomain.com>  # optional, defaults to noreply@useatlas.dev
+```
+
+See [Environment Variables](/reference/environment-variables#email-delivery) for all email configuration options.
+
+---
+
+## Admin Management
+
+Admins can view onboarding email status for their organization via the admin API:
+
+- **List statuses** — `GET /api/v1/admin/onboarding-emails` returns per-user progress (sent steps, pending steps, unsubscribe status)
+- **View sequence** — `GET /api/v1/admin/onboarding-emails/sequence` returns the configured sequence steps with triggers and timing
+
+See the [API Reference](/api-reference/admin-—-onboarding-emails) for full endpoint documentation.
+
+---
+
+## Unsubscribe & Resubscribe
+
+Every onboarding email includes an unsubscribe link. Users can:
+
+- **Unsubscribe** — click the link in any onboarding email (`GET /api/v1/onboarding-emails/unsubscribe?userId=...`)
+- **Resubscribe** — `POST /api/v1/onboarding-emails/resubscribe` with `{ userId }` in the body
+
+Unsubscribed users will not receive any further onboarding emails. Resubscribing resumes the sequence from the next unsent step.
+
+---
+
+## See Also
+
+- [Environment Variables — Email Delivery](/reference/environment-variables#email-delivery)
+- [Guided Tour](/guides/guided-tour) — In-app walkthrough complementing the email sequence
+- [Signup](/guides/signup) — User registration flow that triggers the welcome email

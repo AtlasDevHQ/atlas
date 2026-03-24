@@ -82,7 +82,7 @@ const listSLARoute = createRoute({
   path: "/",
   tags: ["Platform Admin — SLA"],
   summary: "All workspaces SLA summary",
-  description: "Returns SLA metrics (latency percentiles, error rate, uptime) for all workspaces over the given time window.",
+  description: "SaaS only. Returns SLA metrics (latency percentiles, error rate, uptime) for all workspaces over the given time window.",
   responses: {
     200: {
       description: "Workspaces SLA summary",
@@ -100,7 +100,7 @@ const getWorkspaceSLARoute = createRoute({
   path: "/:workspaceId",
   tags: ["Platform Admin — SLA"],
   summary: "Per-workspace SLA detail",
-  description: "Returns detailed SLA metrics with latency and error rate time-series for a single workspace.",
+  description: "SaaS only. Returns detailed SLA metrics with latency and error rate time-series for a single workspace.",
   responses: {
     200: {
       description: "Workspace SLA detail",
@@ -118,7 +118,7 @@ const listAlertsRoute = createRoute({
   path: "/alerts",
   tags: ["Platform Admin — SLA"],
   summary: "SLA alerts",
-  description: "Returns active and recent SLA alerts. Optionally filter by status.",
+  description: "SaaS only. Returns active and recent SLA alerts. Optionally filter by status.",
   responses: {
     200: {
       description: "SLA alerts list",
@@ -136,7 +136,7 @@ const updateThresholdsRoute = createRoute({
   path: "/thresholds",
   tags: ["Platform Admin — SLA"],
   summary: "Update alert thresholds",
-  description: "Configure the default SLA alert thresholds.",
+  description: "SaaS only. Configure the default SLA alert thresholds.",
   request: { body: { required: true, content: { "application/json": { schema: SLAThresholdsSchema } } } },
   responses: {
     200: {
@@ -155,7 +155,7 @@ const getThresholdsRoute = createRoute({
   path: "/thresholds",
   tags: ["Platform Admin — SLA"],
   summary: "Get alert thresholds",
-  description: "Returns the current default SLA alert thresholds.",
+  description: "SaaS only. Returns the current default SLA alert thresholds.",
   responses: {
     200: {
       description: "Current thresholds",
@@ -173,7 +173,7 @@ const acknowledgeAlertRoute = createRoute({
   path: "/alerts/:alertId/acknowledge",
   tags: ["Platform Admin — SLA"],
   summary: "Acknowledge an alert",
-  description: "Acknowledge a firing SLA alert.",
+  description: "SaaS only. Acknowledge a firing SLA alert.",
   responses: {
     200: {
       description: "Alert acknowledged",
@@ -192,7 +192,7 @@ const evaluateAlertsRoute = createRoute({
   path: "/evaluate",
   tags: ["Platform Admin — SLA"],
   summary: "Evaluate alerts now",
-  description: "Trigger alert evaluation against current metrics and thresholds.",
+  description: "SaaS only. Trigger alert evaluation against current metrics and thresholds.",
   responses: {
     200: {
       description: "Evaluation results",

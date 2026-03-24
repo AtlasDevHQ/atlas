@@ -59,7 +59,7 @@ const listBackupsRoute = createRoute({
   path: "/",
   tags: ["Platform Admin — Backups"],
   summary: "List backups",
-  description: "Returns all backups with status, size, and retention info.",
+  description: "SaaS only. Returns all backups with status, size, and retention info.",
   responses: {
     200: {
       description: "Backups list",
@@ -77,7 +77,7 @@ const createBackupRoute = createRoute({
   path: "/",
   tags: ["Platform Admin — Backups"],
   summary: "Create manual backup",
-  description: "Trigger an immediate backup of the internal database.",
+  description: "SaaS only. Trigger an immediate backup of the internal database.",
   responses: {
     200: {
       description: "Backup created",
@@ -95,7 +95,7 @@ const verifyBackupRoute = createRoute({
   path: "/:id/verify",
   tags: ["Platform Admin — Backups"],
   summary: "Verify backup integrity",
-  description: "Decompress and validate the pg_dump header of a backup file.",
+  description: "SaaS only. Decompress and validate the pg_dump header of a backup file.",
   responses: {
     200: {
       description: "Verification result",
@@ -114,7 +114,7 @@ const requestRestoreRoute = createRoute({
   path: "/:id/restore",
   tags: ["Platform Admin — Backups"],
   summary: "Request backup restore",
-  description: "Returns a confirmation token that must be passed to the confirm endpoint. The confirm step creates a pre-restore backup automatically before restoring.",
+  description: "SaaS only. Returns a confirmation token that must be passed to the confirm endpoint. The confirm step creates a pre-restore backup automatically before restoring.",
   responses: {
     200: {
       description: "Confirmation token",
@@ -133,7 +133,7 @@ const confirmRestoreRoute = createRoute({
   path: "/:id/restore/confirm",
   tags: ["Platform Admin — Backups"],
   summary: "Confirm and execute restore",
-  description: "Execute the restore operation using the confirmation token from the request endpoint.",
+  description: "SaaS only. Execute the restore operation using the confirmation token from the request endpoint.",
   request: {
     body: {
       required: true,
@@ -162,7 +162,7 @@ const getConfigRoute = createRoute({
   path: "/config",
   tags: ["Platform Admin — Backups"],
   summary: "Get backup configuration",
-  description: "Returns the current backup schedule, retention policy, and storage path.",
+  description: "SaaS only. Returns the current backup schedule, retention policy, and storage path.",
   responses: {
     200: {
       description: "Current configuration",
@@ -180,7 +180,7 @@ const updateConfigRoute = createRoute({
   path: "/config",
   tags: ["Platform Admin — Backups"],
   summary: "Update backup configuration",
-  description: "Update the backup schedule, retention policy, or storage path.",
+  description: "SaaS only. Update the backup schedule, retention policy, or storage path.",
   request: { body: { required: true, content: { "application/json": { schema: UpdateConfigSchema } } } },
   responses: {
     200: {

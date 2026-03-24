@@ -72,7 +72,7 @@ const listFlaggedRoute = createRoute({
   path: "/",
   tags: ["Admin — Abuse Prevention"],
   summary: "List flagged workspaces",
-  description: "Returns all workspaces with active abuse flags (warning, throttled, or suspended).",
+  description: "SaaS only. Returns all workspaces with active abuse flags (warning, throttled, or suspended).",
   responses: {
     200: {
       description: "Flagged workspaces",
@@ -102,7 +102,7 @@ const reinstateRoute = createRoute({
   path: "/:workspaceId/reinstate",
   tags: ["Admin — Abuse Prevention"],
   summary: "Reinstate a suspended workspace",
-  description: "Manually re-enable a workspace that was suspended or throttled due to abuse detection.",
+  description: "SaaS only. Manually re-enable a workspace that was suspended or throttled due to abuse detection.",
   request: {
     params: z.object({
       workspaceId: z.string(),
@@ -141,7 +141,7 @@ const getConfigRoute = createRoute({
   path: "/config",
   tags: ["Admin — Abuse Prevention"],
   summary: "Current abuse threshold configuration",
-  description: "Returns the current abuse detection thresholds (from env vars or defaults).",
+  description: "SaaS only. Returns the current abuse detection thresholds (from env vars or defaults).",
   responses: {
     200: {
       description: "Threshold configuration",

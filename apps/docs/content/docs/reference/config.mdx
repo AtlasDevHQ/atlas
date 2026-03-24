@@ -791,6 +791,38 @@ Planned enterprise features include SSO (SAML/OIDC), SCIM provisioning, PII dete
 
 ---
 
+## Residency
+
+<Callout type="warn">
+SaaS only. Requires enterprise features to be enabled.
+</Callout>
+
+Data residency configuration for routing workspaces to geographic regions with region-specific databases.
+
+```typescript
+export default defineConfig({
+  enterprise: { enabled: true, licenseKey: process.env.ATLAS_ENTERPRISE_LICENSE_KEY },
+  residency: {
+    regions: {
+      "us-east": { url: process.env.US_EAST_DB_URL! },
+      "eu-west": { url: process.env.EU_WEST_DB_URL! },
+    },
+    defaultRegion: "us-east",
+  },
+});
+```
+
+### Residency fields
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `regions` | `Record<string, RegionConfig>` | Yes | — | Map of region identifiers to database configuration. At least one region required |
+| `defaultRegion` | `string` | Yes | — | Default region for new workspaces. Must be a key in the `regions` map |
+
+Each region value is a `RegionConfig` with the same fields as a datasource entry (e.g. `url`, `schema`).
+
+---
+
 ## Full Example
 
 ```typescript

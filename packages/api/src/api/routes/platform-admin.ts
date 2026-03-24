@@ -112,7 +112,7 @@ const listWorkspacesRoute = createRoute({
   path: "/workspaces",
   tags: ["Platform Admin"],
   summary: "List all workspaces",
-  description: "Returns all workspaces across the platform with health metrics, usage data, plan info, and status.",
+  description: "SaaS only. Returns all workspaces across the platform with health metrics, usage data, plan info, and status.",
   responses: {
     200: {
       description: "Workspaces list",
@@ -130,7 +130,7 @@ const getWorkspaceRoute = createRoute({
   path: "/workspaces/:id",
   tags: ["Platform Admin"],
   summary: "Get workspace details",
-  description: "Returns detailed workspace information including resource breakdown and user list.",
+  description: "SaaS only. Returns detailed workspace information including resource breakdown and user list.",
   responses: {
     200: {
       description: "Workspace detail",
@@ -155,7 +155,7 @@ const suspendWorkspaceRoute = createRoute({
   path: "/workspaces/:id/suspend",
   tags: ["Platform Admin"],
   summary: "Suspend a workspace",
-  description: "Suspends a workspace, preventing all user access until reactivated.",
+  description: "SaaS only. Suspends a workspace, preventing all user access until reactivated.",
   responses: {
     200: {
       description: "Workspace suspended",
@@ -174,7 +174,7 @@ const unsuspendWorkspaceRoute = createRoute({
   path: "/workspaces/:id/unsuspend",
   tags: ["Platform Admin"],
   summary: "Unsuspend a workspace",
-  description: "Reactivates a suspended workspace, restoring user access.",
+  description: "SaaS only. Reactivates a suspended workspace, restoring user access.",
   responses: {
     200: {
       description: "Workspace reactivated",
@@ -193,7 +193,7 @@ const deleteWorkspaceRoute = createRoute({
   path: "/workspaces/:id",
   tags: ["Platform Admin"],
   summary: "Delete a workspace",
-  description: "Soft-deletes a workspace with cascading cleanup (conversations, semantic entities, learned patterns, suggestions, scheduled tasks).",
+  description: "SaaS only. Soft-deletes a workspace with cascading cleanup (conversations, semantic entities, learned patterns, suggestions, scheduled tasks).",
   responses: {
     200: {
       description: "Workspace deleted",
@@ -226,7 +226,7 @@ const changePlanRoute = createRoute({
   path: "/workspaces/:id/plan",
   tags: ["Platform Admin"],
   summary: "Change workspace plan tier",
-  description: "Updates the plan tier for a workspace (free, trial, team, enterprise).",
+  description: "SaaS only. Updates the plan tier for a workspace (free, trial, team, enterprise).",
   request: { body: { required: true, content: { "application/json": { schema: ChangePlanBodySchema } } } },
   responses: {
     200: {
@@ -246,7 +246,7 @@ const platformStatsRoute = createRoute({
   path: "/stats",
   tags: ["Platform Admin"],
   summary: "Aggregate platform stats",
-  description: "Returns aggregate platform statistics: total workspaces, active users, total queries, MRR.",
+  description: "SaaS only. Returns aggregate platform statistics: total workspaces, active users, total queries, MRR.",
   responses: {
     200: {
       description: "Platform statistics",
@@ -264,7 +264,7 @@ const noisyNeighborsRoute = createRoute({
   path: "/noisy-neighbors",
   tags: ["Platform Admin"],
   summary: "Detect noisy neighbors",
-  description: "Identifies workspaces consuming disproportionate resources (>3x median queries, tokens, or storage).",
+  description: "SaaS only. Identifies workspaces consuming disproportionate resources (>3x median queries, tokens, or storage).",
   responses: {
     200: {
       description: "Noisy neighbors list",

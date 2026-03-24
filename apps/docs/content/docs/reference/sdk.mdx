@@ -653,6 +653,7 @@ try {
 | `trial_expired` | 403 | No | Trial has expired — upgrade to a paid plan |
 | `billing_check_failed` | 503 | Yes | Billing check failed — transient infrastructure issue |
 | `workspace_check_failed` | 503 | Yes | Workspace check failed — transient infrastructure issue |
+| `workspace_throttled` | 429 | Yes | Workspace throttled by abuse detection — retry after delay |
 | `workspace_suspended` | 403 | No | Workspace suspended by administrator |
 | `workspace_deleted` | 404 | No | Workspace has been permanently deleted |
 | `internal_error` | 500 | Yes | Server error (includes `requestId` for log correlation) |

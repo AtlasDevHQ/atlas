@@ -4248,6 +4248,161 @@
         }
       }
     },
+    "/api/v1/onboarding-emails/unsubscribe": {
+      "get": {
+        "tags": [
+          "Onboarding Emails"
+        ],
+        "summary": "Unsubscribe from onboarding emails",
+        "description": "SaaS only. Unsubscribe a user from onboarding emails via the link in emails.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "User ID to unsubscribe"
+            },
+            "required": true,
+            "description": "User ID to unsubscribe",
+            "name": "userId",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Unsubscribed successfully",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing userId",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/onboarding-emails/resubscribe": {
+      "post": {
+        "tags": [
+          "Onboarding Emails"
+        ],
+        "summary": "Resubscribe to onboarding emails",
+        "description": "SaaS only. Re-enable onboarding emails for a user.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "userId": {
+                    "type": "string",
+                    "description": "User ID to resubscribe"
+                  }
+                },
+                "required": [
+                  "userId"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Resubscribed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "ok"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing userId",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/onboarding/social-providers": {
       "get": {
         "tags": [
@@ -7621,6 +7776,103 @@
         }
       }
     },
+    "/api/v1/scheduled-tasks/tick": {
+      "post": {
+        "tags": [
+          "Scheduled Tasks"
+        ],
+        "summary": "Trigger scheduler tick",
+        "description": "Serverless scheduler tick endpoint for Vercel Cron or external cron services. Checks for due tasks and executes them. Requires CRON_SECRET or ATLAS_SCHEDULER_SECRET.",
+        "responses": {
+          "200": {
+            "description": "Tick completed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or missing cron secret",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Feature not available (no internal database configured)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Tick execution failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/scheduled-tasks": {
       "get": {
         "tags": [
@@ -8018,103 +8270,6 @@
           },
           "500": {
             "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "requestId": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error",
-                    "message"
-                  ]
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/v1/scheduled-tasks/tick": {
-      "post": {
-        "tags": [
-          "Scheduled Tasks"
-        ],
-        "summary": "Trigger scheduler tick",
-        "description": "Serverless scheduler tick endpoint for Vercel Cron or external cron services. Checks for due tasks and executes them. Requires CRON_SECRET or ATLAS_SCHEDULER_SECRET.",
-        "responses": {
-          "200": {
-            "description": "Tick completed",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "additionalProperties": {}
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Invalid or missing cron secret",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "requestId": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error",
-                    "message"
-                  ]
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Feature not available (no internal database configured)",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "requestId": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error",
-                    "message"
-                  ]
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Tick execution failed",
             "content": {
               "application/json": {
                 "schema": {
@@ -21292,6 +21447,31 @@
               }
             }
           },
+          "400": {
+            "description": "No active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
           "401": {
             "description": "Authentication required",
             "content": {
@@ -23512,6 +23692,724 @@
                     "error",
                     "message"
                   ]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/onboarding-emails": {
+      "get": {
+        "tags": [
+          "Admin — Onboarding Emails"
+        ],
+        "summary": "List onboarding email statuses",
+        "description": "SaaS only. Returns onboarding email progress for users in the authenticated admin's organization.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Max results (default 50)"
+            },
+            "required": false,
+            "description": "Max results (default 50)",
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Pagination offset (default 0)"
+            },
+            "required": false,
+            "description": "Pagination offset (default 0)",
+            "name": "offset",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of user onboarding email statuses",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "statuses": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "userId": {
+                            "type": "string"
+                          },
+                          "email": {
+                            "type": "string"
+                          },
+                          "orgId": {
+                            "type": "string"
+                          },
+                          "sentSteps": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "enum": [
+                                "welcome",
+                                "connect_database",
+                                "first_query",
+                                "invite_team",
+                                "explore_features"
+                              ]
+                            }
+                          },
+                          "pendingSteps": {
+                            "type": "array",
+                            "items": {
+                              "type": "string",
+                              "enum": [
+                                "welcome",
+                                "connect_database",
+                                "first_query",
+                                "invite_team",
+                                "explore_features"
+                              ]
+                            }
+                          },
+                          "unsubscribed": {
+                            "type": "boolean"
+                          },
+                          "createdAt": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "userId",
+                          "email",
+                          "orgId",
+                          "sentSteps",
+                          "pendingSteps",
+                          "unsubscribed",
+                          "createdAt"
+                        ]
+                      }
+                    },
+                    "total": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "enabled",
+                    "statuses",
+                    "total"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/onboarding-emails/sequence": {
+      "get": {
+        "tags": [
+          "Admin — Onboarding Emails"
+        ],
+        "summary": "Get onboarding email sequence definition",
+        "description": "SaaS only. Returns the configured onboarding email sequence steps with triggers and timing.",
+        "responses": {
+          "200": {
+            "description": "Sequence steps",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "steps": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "step": {
+                            "type": "string",
+                            "enum": [
+                              "welcome",
+                              "connect_database",
+                              "first_query",
+                              "invite_team",
+                              "explore_features"
+                            ]
+                          },
+                          "trigger": {
+                            "type": "string",
+                            "enum": [
+                              "signup_completed",
+                              "database_connected",
+                              "first_query_executed",
+                              "team_member_invited",
+                              "feature_explored"
+                            ]
+                          },
+                          "fallbackHours": {
+                            "type": "number"
+                          },
+                          "subject": {
+                            "type": "string"
+                          },
+                          "description": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "step",
+                          "trigger",
+                          "fallbackHours",
+                          "subject",
+                          "description"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "enabled",
+                    "steps"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Unauthorized",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/abuse": {
+      "get": {
+        "tags": [
+          "Admin — Abuse Prevention"
+        ],
+        "summary": "List flagged workspaces",
+        "description": "SaaS only. Returns all workspaces with active abuse flags (warning, throttled, or suspended).",
+        "responses": {
+          "200": {
+            "description": "Flagged workspaces",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "workspaces": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "workspaceId": {
+                            "type": "string"
+                          },
+                          "workspaceName": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "level": {
+                            "type": "string",
+                            "enum": [
+                              "none",
+                              "warning",
+                              "throttled",
+                              "suspended"
+                            ]
+                          },
+                          "trigger": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "enum": [
+                              "query_rate",
+                              "error_rate",
+                              "unique_tables",
+                              "manual",
+                              null
+                            ]
+                          },
+                          "message": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "updatedAt": {
+                            "type": "string"
+                          },
+                          "events": {
+                            "type": "array",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "id": {
+                                  "type": "string"
+                                },
+                                "workspaceId": {
+                                  "type": "string"
+                                },
+                                "level": {
+                                  "type": "string",
+                                  "enum": [
+                                    "none",
+                                    "warning",
+                                    "throttled",
+                                    "suspended"
+                                  ]
+                                },
+                                "trigger": {
+                                  "type": "string",
+                                  "enum": [
+                                    "query_rate",
+                                    "error_rate",
+                                    "unique_tables",
+                                    "manual"
+                                  ]
+                                },
+                                "message": {
+                                  "type": "string"
+                                },
+                                "metadata": {
+                                  "type": "object",
+                                  "additionalProperties": {}
+                                },
+                                "createdAt": {
+                                  "type": "string"
+                                },
+                                "actor": {
+                                  "type": "string"
+                                }
+                              },
+                              "required": [
+                                "id",
+                                "workspaceId",
+                                "level",
+                                "trigger",
+                                "message",
+                                "metadata",
+                                "createdAt",
+                                "actor"
+                              ]
+                            }
+                          }
+                        },
+                        "required": [
+                          "workspaceId",
+                          "workspaceName",
+                          "level",
+                          "trigger",
+                          "message",
+                          "updatedAt",
+                          "events"
+                        ]
+                      }
+                    },
+                    "total": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "workspaces",
+                    "total"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/abuse/:workspaceId/reinstate": {
+      "post": {
+        "tags": [
+          "Admin — Abuse Prevention"
+        ],
+        "summary": "Reinstate a suspended workspace",
+        "description": "SaaS only. Manually re-enable a workspace that was suspended or throttled due to abuse detection.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "workspaceId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Workspace reinstated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "workspaceId": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "success",
+                    "workspaceId",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Workspace not flagged",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/admin/abuse/config": {
+      "get": {
+        "tags": [
+          "Admin — Abuse Prevention"
+        ],
+        "summary": "Current abuse threshold configuration",
+        "description": "SaaS only. Returns the current abuse detection thresholds (from env vars or defaults).",
+        "responses": {
+          "200": {
+            "description": "Threshold configuration",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "queryRateLimit": {
+                      "type": "number"
+                    },
+                    "queryRateWindowSeconds": {
+                      "type": "number"
+                    },
+                    "errorRateThreshold": {
+                      "type": "number"
+                    },
+                    "uniqueTablesLimit": {
+                      "type": "number"
+                    },
+                    "throttleDelayMs": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "queryRateLimit",
+                    "queryRateWindowSeconds",
+                    "errorRateThreshold",
+                    "uniqueTablesLimit",
+                    "throttleDelayMs"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
                 }
               }
             }
@@ -28137,7 +29035,35 @@
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "additionalProperties": {}
+                  "properties": {
+                    "healthy": {
+                      "type": "boolean"
+                    },
+                    "message": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "latencyMs": {
+                      "type": [
+                        "number",
+                        "null"
+                      ]
+                    },
+                    "status": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "error": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "healthy"
+                  ]
                 }
               }
             }
@@ -28254,7 +29180,32 @@
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "additionalProperties": {}
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "status": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "persisted": {
+                      "type": "boolean"
+                    },
+                    "warning": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "enabled",
+                    "status",
+                    "persisted"
+                  ]
                 }
               }
             }
@@ -28371,7 +29322,32 @@
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "additionalProperties": {}
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "enabled": {
+                      "type": "boolean"
+                    },
+                    "status": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "persisted": {
+                      "type": "boolean"
+                    },
+                    "warning": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "enabled",
+                    "status",
+                    "persisted"
+                  ]
                 }
               }
             }
@@ -31534,7 +32510,7 @@
           "Platform Admin"
         ],
         "summary": "List all workspaces",
-        "description": "Returns all workspaces across the platform with health metrics, usage data, plan info, and status.",
+        "description": "SaaS only. Returns all workspaces across the platform with health metrics, usage data, plan info, and status.",
         "responses": {
           "200": {
             "description": "Workspaces list",
@@ -31616,6 +32592,18 @@
                               "null"
                             ]
                           },
+                          "region": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "regionAssignedAt": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
                           "createdAt": {
                             "type": "string"
                           }
@@ -31636,6 +32624,8 @@
                           "trialEndsAt",
                           "suspendedAt",
                           "deletedAt",
+                          "region",
+                          "regionAssignedAt",
                           "createdAt"
                         ]
                       }
@@ -31729,7 +32719,7 @@
           "Platform Admin"
         ],
         "summary": "Get workspace details",
-        "description": "Returns detailed workspace information including resource breakdown and user list.",
+        "description": "SaaS only. Returns detailed workspace information including resource breakdown and user list.",
         "responses": {
           "200": {
             "description": "Workspace detail",
@@ -31809,6 +32799,18 @@
                             "null"
                           ]
                         },
+                        "region": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "regionAssignedAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
                         "createdAt": {
                           "type": "string"
                         }
@@ -31829,6 +32831,8 @@
                         "trialEndsAt",
                         "suspendedAt",
                         "deletedAt",
+                        "region",
+                        "regionAssignedAt",
                         "createdAt"
                       ]
                     },
@@ -31956,7 +32960,7 @@
           "Platform Admin"
         ],
         "summary": "Delete a workspace",
-        "description": "Soft-deletes a workspace with cascading cleanup (conversations, semantic entities, learned patterns, suggestions, scheduled tasks).",
+        "description": "SaaS only. Soft-deletes a workspace with cascading cleanup (conversations, semantic entities, learned patterns, suggestions, scheduled tasks).",
         "responses": {
           "200": {
             "description": "Workspace deleted",
@@ -32055,6 +33059,31 @@
               }
             }
           },
+          "409": {
+            "description": "Workspace already deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
           "500": {
             "description": "Internal server error",
             "content": {
@@ -32089,7 +33118,7 @@
           "Platform Admin"
         ],
         "summary": "Suspend a workspace",
-        "description": "Suspends a workspace, preventing all user access until reactivated.",
+        "description": "SaaS only. Suspends a workspace, preventing all user access until reactivated.",
         "responses": {
           "200": {
             "description": "Workspace suspended",
@@ -32219,7 +33248,7 @@
           "Platform Admin"
         ],
         "summary": "Unsuspend a workspace",
-        "description": "Reactivates a suspended workspace, restoring user access.",
+        "description": "SaaS only. Reactivates a suspended workspace, restoring user access.",
         "responses": {
           "200": {
             "description": "Workspace reactivated",
@@ -32349,7 +33378,7 @@
           "Platform Admin"
         ],
         "summary": "Change workspace plan tier",
-        "description": "Updates the plan tier for a workspace (free, trial, team, enterprise).",
+        "description": "SaaS only. Updates the plan tier for a workspace (free, trial, team, enterprise).",
         "requestBody": {
           "required": true,
           "content": {
@@ -32509,7 +33538,7 @@
           "Platform Admin"
         ],
         "summary": "Aggregate platform stats",
-        "description": "Returns aggregate platform statistics: total workspaces, active users, total queries, MRR.",
+        "description": "SaaS only. Returns aggregate platform statistics: total workspaces, active users, total queries, MRR.",
         "responses": {
           "200": {
             "description": "Platform statistics",
@@ -32630,7 +33659,7 @@
           "Platform Admin"
         ],
         "summary": "Detect noisy neighbors",
-        "description": "Identifies workspaces consuming disproportionate resources (>3x median queries, tokens, or storage).",
+        "description": "SaaS only. Identifies workspaces consuming disproportionate resources (>3x median queries, tokens, or storage).",
         "responses": {
           "200": {
             "description": "Noisy neighbors list",
@@ -32765,6 +33794,3479 @@
           },
           "500": {
             "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/platform/sla": {
+      "get": {
+        "tags": [
+          "Platform Admin — SLA"
+        ],
+        "summary": "All workspaces SLA summary",
+        "description": "SaaS only. Returns SLA metrics (latency percentiles, error rate, uptime) for all workspaces over the given time window.",
+        "responses": {
+          "200": {
+            "description": "Workspaces SLA summary",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "workspaces": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "workspaceId": {
+                            "type": "string"
+                          },
+                          "workspaceName": {
+                            "type": "string"
+                          },
+                          "latencyP50Ms": {
+                            "type": "number",
+                            "minimum": 0
+                          },
+                          "latencyP95Ms": {
+                            "type": "number",
+                            "minimum": 0
+                          },
+                          "latencyP99Ms": {
+                            "type": "number",
+                            "minimum": 0
+                          },
+                          "errorRatePct": {
+                            "type": "number",
+                            "minimum": 0,
+                            "maximum": 100
+                          },
+                          "uptimePct": {
+                            "type": "number",
+                            "minimum": 0,
+                            "maximum": 100
+                          },
+                          "totalQueries": {
+                            "type": "number",
+                            "minimum": 0
+                          },
+                          "failedQueries": {
+                            "type": "number",
+                            "minimum": 0
+                          },
+                          "lastQueryAt": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "workspaceId",
+                          "workspaceName",
+                          "latencyP50Ms",
+                          "latencyP95Ms",
+                          "latencyP99Ms",
+                          "errorRatePct",
+                          "uptimePct",
+                          "totalQueries",
+                          "failedQueries",
+                          "lastQueryAt"
+                        ]
+                      }
+                    },
+                    "hoursBack": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "workspaces",
+                    "hoursBack"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Platform admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Enterprise feature not enabled or no internal DB",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/platform/sla/:workspaceId": {
+      "get": {
+        "tags": [
+          "Platform Admin — SLA"
+        ],
+        "summary": "Per-workspace SLA detail",
+        "description": "SaaS only. Returns detailed SLA metrics with latency and error rate time-series for a single workspace.",
+        "responses": {
+          "200": {
+            "description": "Workspace SLA detail",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "summary": {
+                      "type": "object",
+                      "properties": {
+                        "workspaceId": {
+                          "type": "string"
+                        },
+                        "workspaceName": {
+                          "type": "string"
+                        },
+                        "latencyP50Ms": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "latencyP95Ms": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "latencyP99Ms": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "errorRatePct": {
+                          "type": "number",
+                          "minimum": 0,
+                          "maximum": 100
+                        },
+                        "uptimePct": {
+                          "type": "number",
+                          "minimum": 0,
+                          "maximum": 100
+                        },
+                        "totalQueries": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "failedQueries": {
+                          "type": "number",
+                          "minimum": 0
+                        },
+                        "lastQueryAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "workspaceId",
+                        "workspaceName",
+                        "latencyP50Ms",
+                        "latencyP95Ms",
+                        "latencyP99Ms",
+                        "errorRatePct",
+                        "uptimePct",
+                        "totalQueries",
+                        "failedQueries",
+                        "lastQueryAt"
+                      ]
+                    },
+                    "latencyTimeline": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "timestamp": {
+                            "type": "string"
+                          },
+                          "value": {
+                            "type": "number"
+                          }
+                        },
+                        "required": [
+                          "timestamp",
+                          "value"
+                        ]
+                      }
+                    },
+                    "errorTimeline": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "timestamp": {
+                            "type": "string"
+                          },
+                          "value": {
+                            "type": "number"
+                          }
+                        },
+                        "required": [
+                          "timestamp",
+                          "value"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "summary",
+                    "latencyTimeline",
+                    "errorTimeline"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Platform admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Enterprise feature not enabled or no internal DB",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/platform/sla/alerts": {
+      "get": {
+        "tags": [
+          "Platform Admin — SLA"
+        ],
+        "summary": "SLA alerts",
+        "description": "SaaS only. Returns active and recent SLA alerts. Optionally filter by status.",
+        "responses": {
+          "200": {
+            "description": "SLA alerts list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "alerts": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "workspaceId": {
+                            "type": "string"
+                          },
+                          "workspaceName": {
+                            "type": "string"
+                          },
+                          "type": {
+                            "type": "string",
+                            "enum": [
+                              "latency_p99",
+                              "error_rate"
+                            ]
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "firing",
+                              "resolved",
+                              "acknowledged"
+                            ]
+                          },
+                          "currentValue": {
+                            "type": "number"
+                          },
+                          "threshold": {
+                            "type": "number"
+                          },
+                          "message": {
+                            "type": "string"
+                          },
+                          "firedAt": {
+                            "type": "string"
+                          },
+                          "resolvedAt": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "acknowledgedAt": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "acknowledgedBy": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "workspaceId",
+                          "workspaceName",
+                          "type",
+                          "status",
+                          "currentValue",
+                          "threshold",
+                          "message",
+                          "firedAt",
+                          "resolvedAt",
+                          "acknowledgedAt",
+                          "acknowledgedBy"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "alerts"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Platform admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Enterprise feature not enabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/platform/sla/thresholds": {
+      "get": {
+        "tags": [
+          "Platform Admin — SLA"
+        ],
+        "summary": "Get alert thresholds",
+        "description": "SaaS only. Returns the current default SLA alert thresholds.",
+        "responses": {
+          "200": {
+            "description": "Current thresholds",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "latencyP99Ms": {
+                      "type": "number",
+                      "minimum": 0,
+                      "description": "P99 latency threshold in ms",
+                      "example": 5000
+                    },
+                    "errorRatePct": {
+                      "type": "number",
+                      "minimum": 0,
+                      "maximum": 100,
+                      "description": "Error rate threshold in percent",
+                      "example": 5
+                    }
+                  },
+                  "required": [
+                    "latencyP99Ms",
+                    "errorRatePct"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Platform admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Enterprise feature not enabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Platform Admin — SLA"
+        ],
+        "summary": "Update alert thresholds",
+        "description": "SaaS only. Configure the default SLA alert thresholds.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "latencyP99Ms": {
+                    "type": "number",
+                    "minimum": 0,
+                    "description": "P99 latency threshold in ms",
+                    "example": 5000
+                  },
+                  "errorRatePct": {
+                    "type": "number",
+                    "minimum": 0,
+                    "maximum": 100,
+                    "description": "Error rate threshold in percent",
+                    "example": 5
+                  }
+                },
+                "required": [
+                  "latencyP99Ms",
+                  "errorRatePct"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Thresholds updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string"
+                    },
+                    "thresholds": {
+                      "type": "object",
+                      "properties": {
+                        "latencyP99Ms": {
+                          "type": "number",
+                          "minimum": 0,
+                          "description": "P99 latency threshold in ms",
+                          "example": 5000
+                        },
+                        "errorRatePct": {
+                          "type": "number",
+                          "minimum": 0,
+                          "maximum": 100,
+                          "description": "Error rate threshold in percent",
+                          "example": 5
+                        }
+                      },
+                      "required": [
+                        "latencyP99Ms",
+                        "errorRatePct"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "message",
+                    "thresholds"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Platform admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Enterprise feature not enabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/platform/sla/alerts/:alertId/acknowledge": {
+      "post": {
+        "tags": [
+          "Platform Admin — SLA"
+        ],
+        "summary": "Acknowledge an alert",
+        "description": "SaaS only. Acknowledge a firing SLA alert.",
+        "responses": {
+          "200": {
+            "description": "Alert acknowledged",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string"
+                    },
+                    "alertId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "message",
+                    "alertId"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Alert not in firing state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Platform admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Enterprise feature not enabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/platform/sla/evaluate": {
+      "post": {
+        "tags": [
+          "Platform Admin — SLA"
+        ],
+        "summary": "Evaluate alerts now",
+        "description": "SaaS only. Trigger alert evaluation against current metrics and thresholds.",
+        "responses": {
+          "200": {
+            "description": "Evaluation results",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "newAlerts": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "workspaceId": {
+                            "type": "string"
+                          },
+                          "workspaceName": {
+                            "type": "string"
+                          },
+                          "type": {
+                            "type": "string",
+                            "enum": [
+                              "latency_p99",
+                              "error_rate"
+                            ]
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "firing",
+                              "resolved",
+                              "acknowledged"
+                            ]
+                          },
+                          "currentValue": {
+                            "type": "number"
+                          },
+                          "threshold": {
+                            "type": "number"
+                          },
+                          "message": {
+                            "type": "string"
+                          },
+                          "firedAt": {
+                            "type": "string"
+                          },
+                          "resolvedAt": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "acknowledgedAt": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "acknowledgedBy": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "workspaceId",
+                          "workspaceName",
+                          "type",
+                          "status",
+                          "currentValue",
+                          "threshold",
+                          "message",
+                          "firedAt",
+                          "resolvedAt",
+                          "acknowledgedAt",
+                          "acknowledgedBy"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "newAlerts"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Platform admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Enterprise feature not enabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/platform/backups": {
+      "get": {
+        "tags": [
+          "Platform Admin — Backups"
+        ],
+        "summary": "List backups",
+        "description": "SaaS only. Returns all backups with status, size, and retention info.",
+        "responses": {
+          "200": {
+            "description": "Backups list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "backups": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "createdAt": {
+                            "type": "string"
+                          },
+                          "sizeBytes": {
+                            "type": [
+                              "number",
+                              "null"
+                            ]
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "in_progress",
+                              "completed",
+                              "failed",
+                              "verified"
+                            ]
+                          },
+                          "storagePath": {
+                            "type": "string"
+                          },
+                          "retentionExpiresAt": {
+                            "type": "string"
+                          },
+                          "errorMessage": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "createdAt",
+                          "sizeBytes",
+                          "status",
+                          "storagePath",
+                          "retentionExpiresAt",
+                          "errorMessage"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "backups"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Platform admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Enterprise feature not enabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Platform Admin — Backups"
+        ],
+        "summary": "Create manual backup",
+        "description": "SaaS only. Trigger an immediate backup of the internal database.",
+        "responses": {
+          "200": {
+            "description": "Backup created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string"
+                    },
+                    "backup": {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "createdAt": {
+                          "type": "string"
+                        },
+                        "sizeBytes": {
+                          "type": [
+                            "number",
+                            "null"
+                          ]
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "in_progress",
+                            "completed",
+                            "failed",
+                            "verified"
+                          ]
+                        },
+                        "storagePath": {
+                          "type": "string"
+                        },
+                        "retentionExpiresAt": {
+                          "type": "string"
+                        },
+                        "errorMessage": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "createdAt",
+                        "sizeBytes",
+                        "status",
+                        "storagePath",
+                        "retentionExpiresAt",
+                        "errorMessage"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "message",
+                    "backup"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Platform admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Enterprise feature not enabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/platform/backups/:id/verify": {
+      "post": {
+        "tags": [
+          "Platform Admin — Backups"
+        ],
+        "summary": "Verify backup integrity",
+        "description": "SaaS only. Decompress and validate the pg_dump header of a backup file.",
+        "responses": {
+          "200": {
+            "description": "Verification result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "verified": {
+                      "type": "boolean"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "verified",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Backup not in verifiable state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Platform admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Enterprise feature not enabled or backup not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/platform/backups/:id/restore": {
+      "post": {
+        "tags": [
+          "Platform Admin — Backups"
+        ],
+        "summary": "Request backup restore",
+        "description": "SaaS only. Returns a confirmation token that must be passed to the confirm endpoint. The confirm step creates a pre-restore backup automatically before restoring.",
+        "responses": {
+          "200": {
+            "description": "Confirmation token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "confirmationToken": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "confirmationToken",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Backup not in restorable state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Platform admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Enterprise feature not enabled or backup not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/platform/backups/:id/restore/confirm": {
+      "post": {
+        "tags": [
+          "Platform Admin — Backups"
+        ],
+        "summary": "Confirm and execute restore",
+        "description": "SaaS only. Execute the restore operation using the confirmation token from the request endpoint.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "confirmationToken": {
+                    "type": "string",
+                    "description": "Token from restore request"
+                  }
+                },
+                "required": [
+                  "confirmationToken"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Restore completed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "restored": {
+                      "type": "boolean"
+                    },
+                    "preRestoreBackupId": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "restored",
+                    "preRestoreBackupId",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid or expired token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Platform admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Enterprise feature not enabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/platform/backups/config": {
+      "get": {
+        "tags": [
+          "Platform Admin — Backups"
+        ],
+        "summary": "Get backup configuration",
+        "description": "SaaS only. Returns the current backup schedule, retention policy, and storage path.",
+        "responses": {
+          "200": {
+            "description": "Current configuration",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "schedule": {
+                      "type": "string",
+                      "description": "Cron expression for automated backups",
+                      "example": "0 3 * * *"
+                    },
+                    "retentionDays": {
+                      "type": "number",
+                      "minimum": 1,
+                      "maximum": 365,
+                      "description": "Days to retain backups",
+                      "example": 30
+                    },
+                    "storagePath": {
+                      "type": "string",
+                      "description": "Backup storage path",
+                      "example": "./backups"
+                    }
+                  },
+                  "required": [
+                    "schedule",
+                    "retentionDays",
+                    "storagePath"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Platform admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Enterprise feature not enabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "Platform Admin — Backups"
+        ],
+        "summary": "Update backup configuration",
+        "description": "SaaS only. Update the backup schedule, retention policy, or storage path.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "schedule": {
+                    "type": "string",
+                    "pattern": "^(\\*|[\\d,\\-/]+)(\\s+(\\*|[\\d,\\-/]+)){4}$",
+                    "description": "Cron expression",
+                    "example": "0 3 * * *"
+                  },
+                  "retentionDays": {
+                    "type": "number",
+                    "minimum": 1,
+                    "maximum": 365,
+                    "description": "Retention days",
+                    "example": 30
+                  },
+                  "storagePath": {
+                    "type": "string",
+                    "description": "Storage path",
+                    "example": "./backups"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Configuration updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string"
+                    },
+                    "config": {
+                      "type": "object",
+                      "properties": {
+                        "schedule": {
+                          "type": "string",
+                          "description": "Cron expression for automated backups",
+                          "example": "0 3 * * *"
+                        },
+                        "retentionDays": {
+                          "type": "number",
+                          "minimum": 1,
+                          "maximum": 365,
+                          "description": "Days to retain backups",
+                          "example": 30
+                        },
+                        "storagePath": {
+                          "type": "string",
+                          "description": "Backup storage path",
+                          "example": "./backups"
+                        }
+                      },
+                      "required": [
+                        "schedule",
+                        "retentionDays",
+                        "storagePath"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "message",
+                    "config"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Platform admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Enterprise feature not enabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/platform/residency/regions": {
+      "get": {
+        "tags": [
+          "Platform Admin — Residency"
+        ],
+        "summary": "List configured regions",
+        "description": "SaaS only. Returns all configured regions with workspace counts and health status.",
+        "responses": {
+          "200": {
+            "description": "Regions list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "regions": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "region": {
+                            "type": "string"
+                          },
+                          "label": {
+                            "type": "string"
+                          },
+                          "workspaceCount": {
+                            "type": "number"
+                          },
+                          "healthy": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "region",
+                          "label",
+                          "workspaceCount",
+                          "healthy"
+                        ]
+                      }
+                    },
+                    "defaultRegion": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "regions",
+                    "defaultRegion"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Platform admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Enterprise feature not enabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/platform/residency/workspaces/:id/region": {
+      "get": {
+        "tags": [
+          "Platform Admin — Residency"
+        ],
+        "summary": "Get workspace region",
+        "description": "SaaS only. Returns the region assignment for a workspace.",
+        "responses": {
+          "200": {
+            "description": "Workspace region assignment",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "workspaceId": {
+                      "type": "string"
+                    },
+                    "region": {
+                      "type": "string"
+                    },
+                    "assignedAt": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "workspaceId",
+                    "region",
+                    "assignedAt"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Platform admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Workspace not found or no region assigned",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Platform Admin — Residency"
+        ],
+        "summary": "Assign region to workspace",
+        "description": "SaaS only. Assign a workspace to a geographic region. Region is immutable after assignment.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "region": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Region identifier to assign (e.g. 'eu-west', 'us-east')",
+                    "example": "eu-west"
+                  }
+                },
+                "required": [
+                  "region"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Region assigned",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "workspaceId": {
+                      "type": "string"
+                    },
+                    "region": {
+                      "type": "string"
+                    },
+                    "assignedAt": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "workspaceId",
+                    "region",
+                    "assignedAt"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid region",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Platform admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Enterprise feature not enabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Region already assigned",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/platform/residency/assignments": {
+      "get": {
+        "tags": [
+          "Platform Admin — Residency"
+        ],
+        "summary": "List all workspace region assignments",
+        "description": "SaaS only. Returns all workspaces that have been assigned to a region.",
+        "responses": {
+          "200": {
+            "description": "Workspace region assignments",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "assignments": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "workspaceId": {
+                            "type": "string"
+                          },
+                          "region": {
+                            "type": "string"
+                          },
+                          "assignedAt": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "workspaceId",
+                          "region",
+                          "assignedAt"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "assignments"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Platform admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Enterprise feature not enabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/platform/domains": {
+      "get": {
+        "tags": [
+          "Platform Admin — Custom Domains"
+        ],
+        "summary": "List all custom domains",
+        "description": "SaaS only. Returns all registered custom domains across workspaces.",
+        "responses": {
+          "200": {
+            "description": "Domains list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "domains": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "workspaceId": {
+                            "type": "string"
+                          },
+                          "domain": {
+                            "type": "string"
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "pending",
+                              "verified",
+                              "failed"
+                            ]
+                          },
+                          "railwayDomainId": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "cnameTarget": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "certificateStatus": {
+                            "type": [
+                              "string",
+                              "null"
+                            ],
+                            "enum": [
+                              "PENDING",
+                              "ISSUED",
+                              "FAILED",
+                              null
+                            ]
+                          },
+                          "createdAt": {
+                            "type": "string"
+                          },
+                          "verifiedAt": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "workspaceId",
+                          "domain",
+                          "status",
+                          "railwayDomainId",
+                          "cnameTarget",
+                          "certificateStatus",
+                          "createdAt",
+                          "verifiedAt"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "domains"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Platform admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Enterprise feature not enabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Required infrastructure not configured (database or Railway)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "Platform Admin — Custom Domains"
+        ],
+        "summary": "Register a custom domain",
+        "description": "SaaS only. Register a custom domain for a workspace via Railway. Returns CNAME target for DNS setup.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "workspaceId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Workspace ID to register the domain for",
+                    "example": "org-abc123"
+                  },
+                  "domain": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Custom domain to register (e.g. 'data.customer.com')",
+                    "example": "data.customer.com"
+                  }
+                },
+                "required": [
+                  "workspaceId",
+                  "domain"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Domain registered",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "workspaceId": {
+                      "type": "string"
+                    },
+                    "domain": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "pending",
+                        "verified",
+                        "failed"
+                      ]
+                    },
+                    "railwayDomainId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "cnameTarget": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "certificateStatus": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "enum": [
+                        "PENDING",
+                        "ISSUED",
+                        "FAILED",
+                        null
+                      ]
+                    },
+                    "createdAt": {
+                      "type": "string"
+                    },
+                    "verifiedAt": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "workspaceId",
+                    "domain",
+                    "status",
+                    "railwayDomainId",
+                    "cnameTarget",
+                    "certificateStatus",
+                    "createdAt",
+                    "verifiedAt"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid domain",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Platform admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Enterprise feature not enabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Domain already registered",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Required infrastructure not configured (database or Railway)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/platform/domains/:id/verify": {
+      "post": {
+        "tags": [
+          "Platform Admin — Custom Domains"
+        ],
+        "summary": "Verify a custom domain",
+        "description": "SaaS only. Checks DNS propagation and TLS certificate status via Railway.",
+        "responses": {
+          "200": {
+            "description": "Verification result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "workspaceId": {
+                      "type": "string"
+                    },
+                    "domain": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "pending",
+                        "verified",
+                        "failed"
+                      ]
+                    },
+                    "railwayDomainId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "cnameTarget": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "certificateStatus": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "enum": [
+                        "PENDING",
+                        "ISSUED",
+                        "FAILED",
+                        null
+                      ]
+                    },
+                    "createdAt": {
+                      "type": "string"
+                    },
+                    "verifiedAt": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "workspaceId",
+                    "domain",
+                    "status",
+                    "railwayDomainId",
+                    "cnameTarget",
+                    "certificateStatus",
+                    "createdAt",
+                    "verifiedAt"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Platform admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Domain not found or enterprise not enabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Required infrastructure not configured (database or Railway)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/platform/domains/:id": {
+      "delete": {
+        "tags": [
+          "Platform Admin — Custom Domains"
+        ],
+        "summary": "Delete a custom domain",
+        "description": "SaaS only. Removes a custom domain from both Railway and Atlas.",
+        "responses": {
+          "200": {
+            "description": "Domain deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "deleted": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "deleted"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Platform admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Domain not found or enterprise not enabled",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Required infrastructure not configured (database or Railway)",
             "content": {
               "application/json": {
                 "schema": {

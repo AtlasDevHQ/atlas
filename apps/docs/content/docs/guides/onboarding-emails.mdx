@@ -22,10 +22,10 @@ The onboarding sequence consists of five milestone-driven emails:
 | Step | Trigger Milestone | Fallback | Description |
 |------|-------------------|----------|-------------|
 | `welcome` | `signup_completed` | Immediate | Welcome email with getting-started links |
-| `connect_database` | `database_connected` | Time-based | Prompts the user to connect their first datasource |
-| `first_query` | `first_query_executed` | Time-based | Encourages the user to ask their first question |
-| `invite_team` | `team_member_invited` | Time-based | Suggests inviting colleagues |
-| `explore_features` | `feature_explored` | Time-based | Highlights advanced features (notebook, scheduled tasks, actions) |
+| `connect_database` | `database_connected` | 24h after signup | Prompts the user to connect their first datasource |
+| `first_query` | `first_query_executed` | 72h after signup | Encourages the user to ask their first question |
+| `invite_team` | `team_member_invited` | 7 days after signup | Suggests inviting colleagues |
+| `explore_features` | `feature_explored` | 7 days after signup | Highlights advanced features (notebook, scheduled tasks, actions) |
 
 Each email is sent at most once per user. If the user completes the milestone before the fallback timer fires, the email is sent immediately on milestone completion.
 
@@ -37,8 +37,8 @@ Enable onboarding emails via environment variable:
 
 ```bash
 ATLAS_ONBOARDING_EMAILS_ENABLED=true
-RESEND_API_KEY=re_...            # or ATLAS_SMTP_URL for webhook delivery
-ATLAS_EMAIL_FROM=Atlas <noreply@yourdomain.com>  # optional, defaults to noreply@useatlas.dev
+RESEND_API_KEY=re_...            # or ATLAS_SMTP_URL for HTTP webhook-based delivery (POST JSON)
+ATLAS_EMAIL_FROM=Atlas <noreply@yourdomain.com>  # optional, defaults to "Atlas <noreply@useatlas.dev>"
 ```
 
 See [Environment Variables](/reference/environment-variables#email-delivery) for all email configuration options.

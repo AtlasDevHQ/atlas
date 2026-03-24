@@ -601,8 +601,8 @@ SaaS only. Thresholds for SLA alerting.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ATLAS_SLA_LATENCY_P99_MS` | — | P99 latency threshold in milliseconds. When set, SLA alerts fire if p99 latency exceeds this value |
-| `ATLAS_SLA_ERROR_RATE_PCT` | — | Error rate threshold as a percentage (0–100). When set, SLA alerts fire if the error rate exceeds this value |
+| `ATLAS_SLA_LATENCY_P99_MS` | — | P99 latency threshold in milliseconds. When unset, the system applies an internal default of 5000ms for alert evaluation |
+| `ATLAS_SLA_ERROR_RATE_PCT` | — | Error rate threshold as a percentage (0–100). When unset, the system applies an internal default of 5% for alert evaluation |
 | `ATLAS_SLA_WEBHOOK_URL` | — | Webhook URL for SLA alert notifications. Receives POST requests with alert payloads |
 
 ### Backups

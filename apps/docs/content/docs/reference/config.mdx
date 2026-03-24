@@ -819,7 +819,13 @@ export default defineConfig({
 | `regions` | `Record<string, RegionConfig>` | Yes | — | Map of region identifiers to database configuration. At least one region required |
 | `defaultRegion` | `string` | Yes | — | Default region for new workspaces. Must be a key in the `regions` map |
 
-Each region value is a `RegionConfig` with fields: `label` (string, required), `databaseUrl` (string, required), and `datasourceUrl` (string, optional — overrides the analytics datasource for the region).
+**RegionConfig fields:**
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `label` | `string` | Yes | — | Human-readable region name for the admin console |
+| `databaseUrl` | `string` | Yes | — | Connection string for the region's internal database |
+| `datasourceUrl` | `string` | No | — | Analytics datasource override for the region. When unset, uses the default datasource |
 
 ---
 

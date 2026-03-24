@@ -200,8 +200,8 @@ function ClassificationsTab() {
     const result = await mutate({
       path: `/api/v1/admin/compliance/classifications/${id}`,
       body: {
-        category: values.category || undefined,
-        maskingStrategy: values.maskingStrategy || undefined,
+        category: values.category,
+        maskingStrategy: values.maskingStrategy,
         reviewed: true,
       },
     });

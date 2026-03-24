@@ -138,7 +138,7 @@ function RoleDialog({
     onOpenChange(next);
   }
 
-  async function handleSubmit(values: z.infer<typeof roleCreateSchema>) {
+  async function handleSubmit(values: z.infer<typeof roleCreateSchema | typeof roleEditSchema>) {
     const path = isEditing
       ? `/api/v1/admin/roles/${encodeURIComponent(editingRole!.id)}`
       : `/api/v1/admin/roles`;

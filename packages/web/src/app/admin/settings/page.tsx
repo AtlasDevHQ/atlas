@@ -83,6 +83,59 @@ const editSettingSchema = z.object({
   value: z.string(),
 });
 
+function SettingControl({
+  setting,
+  field,
+}: {
+  setting: SettingWithValue;
+  field: { value: string; onChange: (value: string) => void };
+}) {
+  if (setting.type === "boolean") {
+    return (
+      <div className="flex items-center gap-3">
+        <FormControl>
+          <Switch
+            checked={field.value === "true"}
+            onCheckedChange={(checked) => field.onChange(checked ? "true" : "false")}
+          />
+        </FormControl>
+        <span className="text-sm text-muted-foreground">
+          {field.value === "true" ? "Enabled" : "Disabled"}
+        </span>
+      </div>
+    );
+  }
+
+  if (setting.type === "select" && setting.options) {
+    return (
+      <Select value={field.value} onValueChange={field.onChange}>
+        <FormControl>
+          <SelectTrigger>
+            <SelectValue placeholder="Select..." />
+          </SelectTrigger>
+        </FormControl>
+        <SelectContent>
+          {setting.options.map((opt) => (
+            <SelectItem key={opt} value={opt}>
+              {opt}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    );
+  }
+
+  return (
+    <FormControl>
+      <Input
+        type={setting.type === "number" ? "number" : "text"}
+        placeholder={setting.default ?? ""}
+        {...field}
+      />
+    </FormControl>
+  );
+}
+
 function EditDialog({
   setting,
   open,
@@ -95,6 +148,7 @@ function EditDialog({
   onSaved: () => void;
 }) {
   const saveMutation = useAdminMutation({
+    path: `/api/v1/admin/settings/${encodeURIComponent(setting.key)}`,
     method: "PUT",
     invalidates: onSaved,
   });
@@ -106,7 +160,6 @@ function EditDialog({
 
   async function handleSubmit(values: z.infer<typeof editSettingSchema>) {
     await saveMutation.mutate({
-      path: `/api/v1/admin/settings/${encodeURIComponent(setting.key)}`,
       body: { value: values.value },
       onSuccess: () => onOpenChange(false),
     });
@@ -132,42 +185,7 @@ function EditDialog({
             name="value"
             render={({ field }) => (
               <FormItem>
-                {setting.type === "boolean" ? (
-                  <div className="flex items-center gap-3">
-                    <FormControl>
-                      <Switch
-                        checked={field.value === "true"}
-                        onCheckedChange={(checked) => field.onChange(checked ? "true" : "false")}
-                      />
-                    </FormControl>
-                    <span className="text-sm text-muted-foreground">
-                      {field.value === "true" ? "Enabled" : "Disabled"}
-                    </span>
-                  </div>
-                ) : setting.type === "select" && setting.options ? (
-                  <Select value={field.value} onValueChange={field.onChange}>
-                    <FormControl>
-                      <SelectTrigger>
-                        <SelectValue placeholder="Select..." />
-                      </SelectTrigger>
-                    </FormControl>
-                    <SelectContent>
-                      {setting.options.map((opt) => (
-                        <SelectItem key={opt} value={opt}>
-                          {opt}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                ) : (
-                  <FormControl>
-                    <Input
-                      type={setting.type === "number" ? "number" : "text"}
-                      placeholder={setting.default ?? ""}
-                      {...field}
-                    />
-                  </FormControl>
-                )}
+                <SettingControl setting={setting} field={field} />
                 <FormMessage />
               </FormItem>
             )}

@@ -92,24 +92,22 @@ Dynamic learning layer that gets smarter with every query. Agent proposes learne
 
 Comprehensive polish of the notebook UI. Error boundaries and shared transport hook for stability. Error propagation refactored so callers can distinguish failure reasons. Keyboard navigation tests, UX polish (keybinding consistency, auto-expand, dialog dedup), and hook-level test coverage. Missing error codes added to type catalog, reference gaps filled for learn config and CLI flags, and OpenAPI spec updated with 50+ missing endpoints via codegen pipeline. Notebook Phase 2 shipped fork/branch from any cell, drag-and-drop reorder with server persistence, and a branch selector. Phase 3 added markdown text cells for narrative annotation and export to Markdown/HTML.
 
----
+### 0.9.0 — SaaS Infrastructure
 
-## 0.9.0 — SaaS Infrastructure
-
-The current milestone. Platform foundation for hosted Atlas at app.useatlas.dev.
-
-- **Provisioning** — Self-serve signup (shipped), workspace lifecycle (shipped), guided semantic layer setup wizard (shipped)
-- **Billing** — Usage metering (shipped), Stripe billing integration (shipped), usage dashboard (shipped), overage handling (shipped)
-- **Enterprise auth** — `/ee` directory structure (shipped), SAML/OIDC SSO (shipped), SSO enforcement (shipped), IP allowlisting (shipped), custom roles (shipped), tenant-level model routing (shipped), SCIM directory sync (shipped), custom domains per workspace (shipped), auth route protection via Next.js proxy (shipped)
-- **Compliance** — Audit log retention with auto-purge and compliance export (shipped), approval workflows for sensitive queries with admin approve/deny UI (shipped), PII detection and column masking with role-based rules and admin UI (shipped), compliance reporting (shipped)
-- **Branding** — White-labeling with custom logo, colors, favicon, and conditional Atlas branding (shipped)
-- **Integrations** — Chat SDK bridge plugin with persistent state adapters (PG, memory) for unified chat platform interactions (shipped), Slack migration to Chat SDK adapter (shipped), Teams migration to Chat SDK adapter (shipped), Discord interaction via Chat SDK (shipped), Google Chat interaction via Chat SDK (shipped), Telegram interaction via Chat SDK (shipped), GitHub bot interaction via Chat SDK (shipped), Linear bot interaction via Chat SDK (shipped), WhatsApp interaction via Chat SDK (shipped), unified JSX cards for query results across all chat platforms (shipped), AI streaming responses across chat platforms with native Slack streaming and edit-based fallback for Teams/Discord/Google Chat (shipped), interactive components — modals, slash commands, and action buttons across platforms (shipped), file upload support with CSV export across chat platforms (shipped), cross-platform emoji and status reactions via Chat SDK type-safe emoji API (shipped), ephemeral messages for errors and rate limits with DM fallback on non-Slack platforms (shipped), proactive DM API for digest/alert delivery across all chat platforms (shipped)
-- **Platform ops** — SLA monitoring (shipped), abuse prevention (shipped), platform admin console (shipped), automated backups & disaster recovery (shipped), data residency controls for tenant routing (shipped)
-- **Onboarding** — Interactive demo mode (shipped), in-app guided tour (shipped), email sequence (shipped)
+Platform foundation for hosted Atlas at app.useatlas.dev. Self-serve signup with workspace lifecycle and guided semantic layer wizard. Stripe billing with usage metering, dashboards, and overage handling. Enterprise auth suite: SAML/OIDC SSO with enforcement, SCIM directory sync, IP allowlisting, custom roles with granular permissions, tenant-level model routing, custom domains, and approval workflows. Compliance features: audit log retention with auto-purge, PII detection and column masking, and compliance reporting dashboards. White-labeling with custom branding per workspace. Chat SDK bridge plugin unifying 8 chat platforms (Slack, Teams, Discord, Google Chat, Telegram, GitHub, Linear, WhatsApp) with JSX cards, AI streaming, interactive components, file uploads, emoji reactions, ephemeral messages, and proactive DMs. Platform operations: SLA monitoring, abuse prevention, platform admin console, automated backups, and data residency controls. Onboarding: interactive demo mode, in-app guided tour, and email drip campaign.
 
 ### 0.9.1 — Docs & Polish
 
-Documentation and hardening companion to 0.9.0. Guide pages for all SaaS features including signup, SSO, IP allowlisting, billing, custom domains, data residency, PII masking, and per-platform chat bot setup. OpenAPI auto-generation migrated from 4,300 manual lines to codegen with all 150 routes. Enterprise error handling hardened with `instanceof` checks, DB boundary validation, and governance audit. Eight architecture refactors shipped: shared admin middleware (`throwIfEEError`, `parsePagination`, `isValidId`), EE test mock factory, sandbox backend consolidation, semantic layer directory restructure, admin router factory with `requireOrgContext` middleware, `AdminContentWrapper` for page rendering, `useAdminMutation` discriminated results for proper 204 handling, and react-hook-form + shadcn Form adoption across all 26 admin pages.
+Documentation and hardening companion to 0.9.0. Guide pages for all SaaS features including signup, SSO, IP allowlisting, billing, custom domains, data residency, PII masking, and per-platform chat bot setup. OpenAPI auto-generation migrated from 4,300 manual lines to codegen with all 150 routes. Enterprise error handling hardened with `instanceof` checks, DB boundary validation, and governance audit. Eight architecture refactors shipped: shared admin middleware, EE test mock factory, sandbox backend consolidation, semantic layer restructure, admin router factory, AdminContentWrapper, useAdminMutation discriminated results, and react-hook-form adoption across all 26 admin pages.
+
+---
+
+## 0.9.2 — Docs Persona Audit
+
+The current milestone. Systematic audit of all docs pages for persona clarity — every page should have a clear audience (end user, workspace admin, or platform operator) with appropriate framing and sidebar placement.
+
+- **Phase 1 (shipped)** — Classified all 354 docs pages by persona, identified framing issues, filed sub-issues
+- **Phase 2 (in progress)** — Reframe deployment/config and enterprise guides for correct audience, relocate misplaced pages, add persona sections to mixed-audience and security reference pages, improve plugin interaction docs
 
 ---
 
@@ -118,8 +116,9 @@ Documentation and hardening companion to 0.9.0. Guide pages for all SaaS feature
 Public launch of hosted Atlas at app.useatlas.dev.
 
 - **General availability** — Production SLAs, SOC 2 readiness, status page
-- **Self-serve** — Sign-up flow, free tier, upgrade paths
+- **Self-serve** — Public pricing page, upgrade paths, migration tooling from self-hosted
 - **Enterprise** — Dedicated instances, custom contracts, priority support
+- **Content** — Launch blog post, comparison pages, hosted-specific documentation
 
 ---
 

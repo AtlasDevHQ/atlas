@@ -485,17 +485,36 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 
 ---
 
+## 0.9.2 — Docs Persona Audit
+
+**Systematic audit of all docs pages for persona clarity.** Every page should have a clear audience (end user, workspace admin, or platform operator) with appropriate framing, callouts, and sidebar placement.
+
+### Phase 1 — Audit & Classification
+
+- [x] Classify all 354 docs pages by persona (#847, PR #885) — audit table in `docs/research/persona-audit.md`, sub-issues filed for rewriting work
+
+### Phase 2 — Structural Reorganization & Content Rewriting
+
+- [ ] Reframe deployment/config pages for SaaS vs self-hosted audiences (#878)
+- [ ] Reframe enterprise feature guides from customer perspective (#880)
+- [ ] Add persona sections to security reference pages (#881)
+- [ ] Relocate misplaced operator/developer guides to correct sections (#882)
+- [ ] Add persona sections to mixed-audience pages (#883)
+- [ ] Improve plugin interaction pages — chat SDK split, email digest sections (#884)
+
+---
+
 ## 1.0.0 — SaaS Launch
 
 **app.useatlas.dev goes live.** The hosted product where teams sign up, connect their database, and have a production-ready AI data analyst without deploying anything.
 
-- [ ] Public pricing page on useatlas.dev — free tier, team tier, enterprise tier
-- [ ] SLA commitments — uptime guarantee, query latency targets, support response times
-- [ ] Terms of service, privacy policy, DPA for enterprise
-- [ ] Launch content — blog post, Show HN (if not done earlier), comparison pages updated
-- [ ] Migration tooling — path from self-hosted Atlas to hosted (export/import conversations, semantic layers, settings)
-- [ ] Documentation for hosted users — separate onboarding flow from self-hosted docs
-- [ ] Status page — public incident communication
+- [ ] Public pricing page on useatlas.dev (#871)
+- [ ] SLA commitments — uptime guarantee, query latency targets, support response times (#872)
+- [ ] Terms of service, privacy policy, DPA for enterprise (#873)
+- [ ] Launch content — blog post, Show HN, comparison pages updated (#874)
+- [ ] Migration tooling — self-hosted to hosted (export/import conversations, semantic layers, settings) (#875)
+- [ ] Documentation for hosted users — separate onboarding flow from self-hosted docs (#876)
+- [ ] Status page — public incident communication (#877)
 
 ---
 

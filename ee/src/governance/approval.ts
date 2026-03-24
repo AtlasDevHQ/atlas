@@ -339,8 +339,8 @@ export interface ApprovalMatchResult {
  *
  * This function does NOT require enterprise — it gracefully returns
  * `{ required: false }` when enterprise is disabled or no internal DB exists.
- * The guard is intentionally omitted so the hot SQL execution path doesn't
- * throw when enterprise is not configured.
+ * However, unexpected errors from the enterprise check are re-thrown to avoid
+ * silently bypassing governance.
  */
 export async function checkApprovalRequired(
   orgId: string | undefined,
@@ -351,7 +351,7 @@ export async function checkApprovalRequired(
     return { required: false, matchedRules: [] };
   }
 
-  // Check if enterprise is enabled without throwing
+  // Check if enterprise is enabled — re-throw unexpected errors
   try {
     requireEnterprise("approval-workflows");
   } catch (err) {

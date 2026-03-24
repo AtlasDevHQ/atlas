@@ -267,10 +267,14 @@ describe("checkApprovalRequired", () => {
   });
 
   it("re-throws unexpected errors instead of returning false", async () => {
-    mockGetConfigError = new Error("DB connection failed");
-    await expect(checkApprovalRequired("org-1", ["users"], ["id"])).rejects.toThrow(
-      "DB connection failed",
-    );
+    const original = new Error("DB connection failed");
+    mockGetConfigError = original;
+    try {
+      await checkApprovalRequired("org-1", ["users"], ["id"]);
+      expect.unreachable("should have thrown");
+    } catch (err) {
+      expect(err).toBe(original);
+    }
   });
 
   it("returns false when no rules exist", async () => {
@@ -409,8 +413,14 @@ describe("expireStaleRequests", () => {
   });
 
   it("re-throws unexpected errors instead of returning 0", async () => {
-    mockGetConfigError = new Error("Config service unavailable");
-    await expect(expireStaleRequests()).rejects.toThrow("Config service unavailable");
+    const original = new Error("Config service unavailable");
+    mockGetConfigError = original;
+    try {
+      await expireStaleRequests();
+      expect.unreachable("should have thrown");
+    } catch (err) {
+      expect(err).toBe(original);
+    }
   });
 });
 
@@ -424,8 +434,14 @@ describe("getPendingCount", () => {
   });
 
   it("re-throws unexpected errors instead of returning 0", async () => {
-    mockGetConfigError = new Error("Unexpected config failure");
-    await expect(getPendingCount("org-1")).rejects.toThrow("Unexpected config failure");
+    const original = new Error("Unexpected config failure");
+    mockGetConfigError = original;
+    try {
+      await getPendingCount("org-1");
+      expect.unreachable("should have thrown");
+    } catch (err) {
+      expect(err).toBe(original);
+    }
   });
 
   it("returns count from database", async () => {

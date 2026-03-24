@@ -217,7 +217,7 @@ chat.openapi(chatRoute, async (c) => {
     );
   }
 
-  // Abuse check — block suspended workspaces, delay throttled ones
+  // Abuse check — block suspended workspaces, reject throttled ones with 429
   const abuseOrgId = authResult.user?.activeOrganizationId;
   if (abuseOrgId) {
     const abuse = checkAbuseStatus(abuseOrgId);

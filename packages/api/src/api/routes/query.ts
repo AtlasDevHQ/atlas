@@ -209,7 +209,7 @@ query.openapi(
       });
     }
 
-    // Abuse check — block suspended workspaces, delay throttled ones
+    // Abuse check — block suspended workspaces, reject throttled ones with 429
     const abuseOrgId = authResult.user?.activeOrganizationId;
     if (abuseOrgId) {
       const abuse = checkAbuseStatus(abuseOrgId);
@@ -226,6 +226,7 @@ query.openapi(
         const retryAfterSeconds = Math.ceil(abuse.throttleDelayMs / 1000);
         log.warn({ requestId, orgId: abuseOrgId, delayMs: abuse.throttleDelayMs }, "Workspace throttled due to abuse");
         throw new HTTPException(429, {
+          // Use raw Response (not Response.json) to include Retry-After header
           res: new Response(
             JSON.stringify({
               error: "workspace_throttled",

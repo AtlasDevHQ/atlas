@@ -21,6 +21,15 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  FormDialog,
+  FormField,
+  FormItem,
+  FormLabel,
+  FormControl,
+  FormMessage,
+} from "@/components/form-dialog";
+import { z } from "zod";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { LoadingState } from "@/ui/components/admin/loading-state";
 import { FeatureGate } from "@/ui/components/admin/feature-disabled";
@@ -48,6 +57,11 @@ interface IPAllowlistResponse {
 
 // ── Add Entry Dialog ──────────────────────────────────────────────
 
+const ipEntrySchema = z.object({
+  cidr: z.string().min(1, "CIDR range is required"),
+  description: z.string(),
+});
+
 function AddEntryDialog({
   open,
   onOpenChange,
@@ -57,95 +71,68 @@ function AddEntryDialog({
   onOpenChange: (open: boolean) => void;
   onAdded: () => void;
 }) {
-  const [cidr, setCidr] = useState("");
-  const [description, setDescription] = useState("");
-  const [validationError, setValidationError] = useState<string | null>(null);
-  const { mutate, saving, error, reset } = useAdminMutation({
+  const saveMutation = useAdminMutation({
     path: "/api/v1/admin/ip-allowlist",
     method: "POST",
     invalidates: onAdded,
   });
 
-  const displayError = validationError ?? error;
-
-  function handleOpen(next: boolean) {
-    if (next) {
-      setCidr("");
-      setDescription("");
-      setValidationError(null);
-      reset();
-    }
-    onOpenChange(next);
-  }
-
-  async function handleSave() {
-    setValidationError(null);
-    if (!cidr.trim()) {
-      setValidationError("CIDR range is required.");
-      return;
-    }
-
-    const result = await mutate({
+  async function handleSubmit(values: z.infer<typeof ipEntrySchema>) {
+    const result = await saveMutation.mutate({
       body: {
-        cidr: cidr.trim(),
-        ...(description.trim() && { description: description.trim() }),
+        cidr: values.cidr.trim(),
+        ...(values.description.trim() && { description: values.description.trim() }),
       },
     });
     if (result !== undefined) {
-      handleOpen(false);
+      onOpenChange(false);
     }
   }
 
   return (
-    <Dialog open={open} onOpenChange={handleOpen}>
-      <DialogContent className="max-w-md">
-        <DialogHeader>
-          <DialogTitle>Add IP Allowlist Entry</DialogTitle>
-          <DialogDescription>
-            Add a CIDR range to restrict workspace access. Both IPv4 (e.g. 10.0.0.0/8) and IPv6 (e.g. 2001:db8::/32) are supported.
-          </DialogDescription>
-        </DialogHeader>
+    <FormDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      title="Add IP Allowlist Entry"
+      description="Add a CIDR range to restrict workspace access. Both IPv4 (e.g. 10.0.0.0/8) and IPv6 (e.g. 2001:db8::/32) are supported."
+      schema={ipEntrySchema}
+      defaultValues={{ cidr: "", description: "" }}
+      onSubmit={handleSubmit}
+      submitLabel="Add Entry"
+      saving={saveMutation.saving}
+      serverError={saveMutation.error}
+      className="max-w-md"
+    >
+      {() => (
+        <>
+          <FormField
+            name="cidr"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>CIDR Range</FormLabel>
+                <FormControl>
+                  <Input placeholder="10.0.0.0/8" autoFocus {...field} />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
 
-        <div className="space-y-3 py-2">
-          <div className="space-y-1.5">
-            <label htmlFor="cidr" className="text-sm font-medium">CIDR Range</label>
-            <Input
-              id="cidr"
-              value={cidr}
-              onChange={(e) => setCidr(e.target.value)}
-              placeholder="10.0.0.0/8"
-              autoFocus
-            />
-          </div>
-
-          <div className="space-y-1.5">
-            <label htmlFor="description" className="text-sm font-medium">Description (optional)</label>
-            <Input
-              id="description"
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              placeholder="Office network"
-            />
-          </div>
-
-          {displayError && (
-            <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-              {displayError}
-            </div>
-          )}
-        </div>
-
-        <DialogFooter>
-          <Button variant="outline" onClick={() => handleOpen(false)}>
-            Cancel
-          </Button>
-          <Button onClick={handleSave} disabled={saving || !cidr.trim()}>
-            {saving && <Loader2 className="mr-1 size-3 animate-spin" />}
-            Add Entry
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+          <FormField
+            name="description"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>Description (optional)</FormLabel>
+                <FormControl>
+                  <Input placeholder="Office network" {...field} />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+        </>
+      )}
+    </FormDialog>
   );
 }
 

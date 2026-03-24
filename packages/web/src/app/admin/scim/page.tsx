@@ -5,7 +5,16 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import {
+  FormDialog,
+  FormField,
+  FormItem,
+  FormLabel,
+  FormControl,
+  FormMessage,
+  FormDescription,
+} from "@/components/form-dialog";
+import { z } from "zod";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -16,14 +25,6 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { LoadingState } from "@/ui/components/admin/loading-state";
 import { FeatureGate } from "@/ui/components/admin/feature-disabled";
@@ -347,6 +348,11 @@ export default function SCIMPage() {
 
 // ── Add Mapping Dialog ────────────────────────────────────────────
 
+const mappingSchema = z.object({
+  scimGroupName: z.string().min(1, "SCIM group name is required"),
+  roleName: z.string().min(1, "Role name is required"),
+});
+
 function AddMappingDialog({
   open,
   onOpenChange,
@@ -356,100 +362,79 @@ function AddMappingDialog({
   onOpenChange: (open: boolean) => void;
   onAdded: () => void;
 }) {
-  const [scimGroupName, setScimGroupName] = useState("");
-  const [roleName, setRoleName] = useState("");
-  const [validationError, setValidationError] = useState<string | null>(null);
-
-  const { mutate, saving, error: mutateError, reset } = useAdminMutation({
+  const saveMutation = useAdminMutation({
     path: "/api/v1/admin/scim/group-mappings",
     method: "POST",
     invalidates: onAdded,
   });
 
-  const error = validationError ?? mutateError;
-
-  function handleOpen(v: boolean) {
-    if (!v) {
-      setScimGroupName("");
-      setRoleName("");
-      setValidationError(null);
-      reset();
-    }
-    onOpenChange(v);
-  }
-
-  async function handleSave() {
-    if (!scimGroupName.trim()) {
-      setValidationError("SCIM group name is required.");
-      return;
-    }
-    if (!roleName.trim()) {
-      setValidationError("Role name is required.");
-      return;
-    }
-    setValidationError(null);
-    const result = await mutate({
+  async function handleSubmit(values: z.infer<typeof mappingSchema>) {
+    const result = await saveMutation.mutate({
       body: {
-        scimGroupName: scimGroupName.trim(),
-        roleName: roleName.trim(),
+        scimGroupName: values.scimGroupName.trim(),
+        roleName: values.roleName.trim(),
       },
     });
     if (result !== undefined) {
-      handleOpen(false);
+      onOpenChange(false);
     }
   }
 
   return (
-    <Dialog open={open} onOpenChange={handleOpen}>
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Add Group Mapping</DialogTitle>
-          <DialogDescription>
-            Map a SCIM group from your identity provider to an Atlas custom role.
-          </DialogDescription>
-        </DialogHeader>
-        <div className="space-y-4 py-2">
-          {error && (
-            <div className="rounded-md border border-destructive/50 bg-destructive/5 px-3 py-2 text-sm text-destructive">
-              {error}
-            </div>
-          )}
-          <div className="space-y-2">
-            <Label htmlFor="scim-group-name">SCIM Group Name</Label>
-            <Input
-              id="scim-group-name"
-              placeholder="e.g. Engineers, Data Science Team"
-              value={scimGroupName}
-              onChange={(e) => setScimGroupName(e.target.value)}
-            />
-            <p className="text-xs text-muted-foreground">
-              The display name of the group as it appears in your IdP.
-            </p>
-          </div>
-          <div className="space-y-2">
-            <Label htmlFor="role-name">Atlas Role Name</Label>
-            <Input
-              id="role-name"
-              placeholder="e.g. analyst, viewer"
-              value={roleName}
-              onChange={(e) => setRoleName(e.target.value)}
-            />
-            <p className="text-xs text-muted-foreground">
-              The custom role to assign. Must already exist in{" "}
-              <a href="/admin/roles" className="underline">Roles</a>.
-            </p>
-          </div>
-        </div>
-        <DialogFooter>
-          <Button variant="outline" onClick={() => handleOpen(false)} disabled={saving}>
-            Cancel
-          </Button>
-          <Button onClick={handleSave} disabled={saving}>
-            {saving && <Loader2 className="mr-1 size-3 animate-spin" />}
-            Create Mapping
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+    <FormDialog
+      open={open}
+      onOpenChange={onOpenChange}
+      title="Add Group Mapping"
+      description="Map a SCIM group from your identity provider to an Atlas custom role."
+      schema={mappingSchema}
+      defaultValues={{ scimGroupName: "", roleName: "" }}
+      onSubmit={handleSubmit}
+      submitLabel="Create Mapping"
+      saving={saveMutation.saving}
+      serverError={saveMutation.error}
+    >
+      {() => (
+        <>
+          <FormField
+            name="scimGroupName"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>SCIM Group Name</FormLabel>
+                <FormControl>
+                  <Input
+                    placeholder="e.g. Engineers, Data Science Team"
+                    {...field}
+                  />
+                </FormControl>
+                <FormDescription>
+                  The display name of the group as it appears in your IdP.
+                </FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <FormField
+            name="roleName"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>Atlas Role Name</FormLabel>
+                <FormControl>
+                  <Input
+                    placeholder="e.g. analyst, viewer"
+                    {...field}
+                  />
+                </FormControl>
+                <FormDescription>
+                  The custom role to assign. Must already exist in{" "}
+                  <a href="/admin/roles" className="underline">Roles</a>.
+                </FormDescription>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+        </>
+      )}
+    </FormDialog>
   );
 }

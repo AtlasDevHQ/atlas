@@ -23,7 +23,7 @@
  * StateAdapter (memory, PG, or future Redis).
  */
 
-import { Chat, Modal, TextInput } from "chat";
+import { Chat, Modal, TextInput, emoji as chatEmoji } from "chat";
 import type { Adapter, StateAdapter, Lock, CardElement, FileUpload, StreamChunk } from "chat";
 import { toModalElement } from "chat/jsx-runtime";
 import type { PluginLogger } from "@useatlas/plugin-sdk";
@@ -44,6 +44,8 @@ import {
   platformSupportsFileUpload,
   shouldAttachCSV,
 } from "./features/file-upload";
+import { createReactionLifecycle } from "./features/reactions";
+import type { IReactionLifecycle } from "./features/reactions";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -115,14 +117,14 @@ export function formatActionResult(
   status: "approved" | "denied" | "executed" | "failed",
   error?: string,
 ): string {
-  const emoji =
+  const statusEmoji =
     status === "executed" || status === "approved"
-      ? "\u2705"
+      ? chatEmoji.check
       : status === "denied"
-        ? "\u26D4"
-        : "\u274C";
+        ? chatEmoji.stop
+        : chatEmoji.x;
 
-  let text = `${emoji} **Action ${status}**: ${(action.summary || action.type).slice(0, 200)}`;
+  let text = `${statusEmoji} **Action ${status}**: ${(action.summary || action.type).slice(0, 200)}`;
   if (error) text += `\n_${error.slice(0, 200)}_`;
   return text;
 }
@@ -427,7 +429,10 @@ export function createChatBridge(
     postApproval: ((action: PendingAction) => Promise<void>) | null,
     priorMessages?: ChatMessage[],
     csvContext?: CSVContext,
+    reactions?: IReactionLifecycle,
   ): Promise<void> {
+    await reactions?.markProcessing();
+
     const result = await config.executeQuery(question, {
       threadId,
       priorMessages,
@@ -436,6 +441,8 @@ export function createChatBridge(
     // Post the card response first — ensure the user gets the answer
     const response = buildQueryResultCard(result);
     await postResponse(response);
+
+    await reactions?.markComplete();
 
     // Attach CSV file if threshold exceeded or export requested
     if (csvContext) {
@@ -503,6 +510,7 @@ export function createChatBridge(
     postApproval: ((action: PendingAction) => Promise<void>) | null,
     priorMessages?: ChatMessage[],
     csvContext?: CSVContext,
+    reactions?: IReactionLifecycle,
   ): Promise<void> {
     // Defensive guard — streamingEnabled should prevent this, but
     // protects against config mutation after bridge creation.
@@ -511,6 +519,8 @@ export function createChatBridge(
         "handleStreamingQuery called but executeQueryStream is not configured",
       );
     }
+
+    await reactions?.markProcessing();
 
     const streamResult = config.executeQueryStream(question, {
       threadId,
@@ -550,6 +560,8 @@ export function createChatBridge(
       );
       throw resultErr;
     }
+
+    await reactions?.markComplete();
 
     // Attach CSV file after streaming if threshold exceeded or export requested
     if (csvContext) {
@@ -625,12 +637,21 @@ export function createChatBridge(
       return;
     }
 
+    // Status reactions — best-effort visual feedback on user message.
+    // Created before try so it's available in the catch block.
+    const reactions = createReactionLifecycle(
+      thread.adapter, thread.id, message.id, log, config.reactions,
+    );
+
     try {
+      await reactions.markReceived();
+
       // Rate limiting
       if (config.checkRateLimit) {
         try {
           const check = config.checkRateLimit(threadId);
           if (!check.allowed) {
+            await reactions.markError();
             const rateLimitCard = buildErrorCard({
               message: "Rate limit exceeded.",
               retryHint: "Please wait before trying again.",
@@ -643,6 +664,7 @@ export function createChatBridge(
             { err: rateLimitErr instanceof Error ? rateLimitErr : new Error(String(rateLimitErr)), threadId },
             "Rate limit check failed — denying request",
           );
+          await reactions.markError();
           await safePostError(
             thread,
             buildErrorCard({ message: "Unable to verify rate limits. Please try again shortly." }),
@@ -679,6 +701,7 @@ export function createChatBridge(
           approvalCallback,
           undefined,
           csvCtx,
+          reactions,
         );
       } else {
         await handleQuery(
@@ -688,6 +711,7 @@ export function createChatBridge(
           approvalCallback,
           undefined,
           csvCtx,
+          reactions,
         );
       }
     } catch (err) {
@@ -698,6 +722,7 @@ export function createChatBridge(
         "Query execution failed",
       );
 
+      // Deliver error to user first — never let reaction failure block this
       const errorMessage = scrubErrorMessage(rawMessage, config.scrubError);
       const errorCard = buildErrorCard({ message: errorMessage });
       await safePostError(
@@ -706,6 +731,9 @@ export function createChatBridge(
         log,
         threadId,
       );
+
+      // Best-effort error reaction — after user feedback is secured
+      await reactions.markError();
     } finally {
       await stateAdapter.releaseLock(lock).catch((releaseErr: unknown) => {
         log.error(
@@ -738,12 +766,21 @@ export function createChatBridge(
       return;
     }
 
+    // Status reactions — best-effort visual feedback on user message.
+    // Created before try so it's available in the catch block.
+    const reactions = createReactionLifecycle(
+      thread.adapter, thread.id, message.id, log, config.reactions,
+    );
+
     try {
+      await reactions.markReceived();
+
       // Rate limiting
       if (config.checkRateLimit) {
         try {
           const check = config.checkRateLimit(threadId);
           if (!check.allowed) {
+            await reactions.markError();
             const rateLimitCard = buildErrorCard({
               message: "Rate limit exceeded.",
               retryHint: "Please wait before trying again.",
@@ -756,6 +793,7 @@ export function createChatBridge(
             { err: rateLimitErr instanceof Error ? rateLimitErr : new Error(String(rateLimitErr)), threadId },
             "Rate limit check failed — denying request",
           );
+          await reactions.markError();
           await safePostError(
             thread,
             buildErrorCard({ message: "Unable to verify rate limits. Please try again shortly." }),
@@ -792,6 +830,7 @@ export function createChatBridge(
           approvalCallback,
           priorMessages,
           csvCtx,
+          reactions,
         );
       } else {
         await handleQuery(
@@ -801,6 +840,7 @@ export function createChatBridge(
           approvalCallback,
           priorMessages,
           csvCtx,
+          reactions,
         );
       }
     } catch (err) {
@@ -811,6 +851,7 @@ export function createChatBridge(
         "Follow-up query execution failed",
       );
 
+      // Deliver error to user first — never let reaction failure block this
       const errorMessage = scrubErrorMessage(rawMessage, config.scrubError);
       const errorCard = buildErrorCard({ message: errorMessage });
       await safePostError(
@@ -819,6 +860,9 @@ export function createChatBridge(
         log,
         threadId,
       );
+
+      // Best-effort error reaction — after user feedback is secured
+      await reactions.markError();
     } finally {
       await stateAdapter.releaseLock(lock).catch((releaseErr: unknown) => {
         log.error(
@@ -860,7 +904,7 @@ export function createChatBridge(
     let thinkingMsg;
     try {
       thinkingMsg = await event.channel.post({
-        markdown: `\u231B Thinking about: _${question.slice(0, 150)}_...`,
+        markdown: `${chatEmoji.hourglass} Thinking about: _${question.slice(0, 150)}_...`,
       });
     } catch (postErr) {
       log.error(
@@ -1115,7 +1159,7 @@ export function createChatBridge(
           // Try to update the original message with an error
           try {
             await event.adapter.editMessage(event.threadId, event.messageId, {
-              markdown: "\u26A0\uFE0F Failed to process action. Please try again or use the web UI.",
+              markdown: `${chatEmoji.warning} Failed to process action. Please try again or use the web UI.`,
             });
           } catch (editErr) {
             log.warn(

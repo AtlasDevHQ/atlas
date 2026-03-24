@@ -13,6 +13,7 @@
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { validationHook } from "./validation-hook";
 import { createLogger } from "@atlas/api/lib/logger";
+import { EnterpriseError } from "@atlas/ee/index";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { platformAdminAuth, requestContext, type AuthEnv } from "./middleware";
 
@@ -68,6 +69,7 @@ const listRegionsRoute = createRoute({
     403: { description: "Platform admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
     404: { description: "Enterprise feature not enabled", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+    503: { description: "Internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
 
@@ -86,6 +88,7 @@ const getWorkspaceRegionRoute = createRoute({
     403: { description: "Platform admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
     404: { description: "Workspace not found or no region assigned", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+    503: { description: "Internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
 
@@ -112,6 +115,7 @@ const assignRegionRoute = createRoute({
     404: { description: "Enterprise feature not enabled", content: { "application/json": { schema: ErrorSchema } } },
     409: { description: "Region already assigned", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+    503: { description: "Internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
 
@@ -130,6 +134,7 @@ const listAssignmentsRoute = createRoute({
     403: { description: "Platform admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
     404: { description: "Enterprise feature not enabled", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+    503: { description: "Internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
 
@@ -144,7 +149,7 @@ const RESIDENCY_ERROR_STATUS: Record<string, number> = {
   invalid_region: 400,
   already_assigned: 409,
   workspace_not_found: 404,
-  no_internal_db: 404,
+  no_internal_db: 503,
 };
 
 async function loadResidency(): Promise<ResidencyModule | null> {
@@ -172,9 +177,9 @@ function handleResidencyError(err: unknown, requestId: string): { error: string;
     return { error: code, message, status, requestId };
   }
 
-  // Enterprise license error → 403 (requireEnterprise throws plain Error)
-  if (err instanceof Error && message.includes("Enterprise features")) {
-    return { error: "enterprise_required", message, status: 403, requestId };
+  // Enterprise license error → 403 (sanitize to avoid leaking config details)
+  if (err instanceof EnterpriseError) {
+    return { error: "enterprise_required", message: "This feature requires an enterprise license. Visit https://useatlas.dev/enterprise for licensing options.", status: 403, requestId };
   }
 
   return { error: "internal_error", message: `Unexpected error (ref: ${requestId.slice(0, 8)})`, status: 500, requestId };

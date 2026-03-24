@@ -1,17 +1,37 @@
 "use client";
 
-import { Ban, ShieldX } from "lucide-react";
+import { Ban, DatabaseZap, ShieldX } from "lucide-react";
 
 /**
- * Shown when an admin page gets a 403 (no admin role) or 404 (feature not enabled).
+ * Shown when an admin page gets a 401/403/404/503 status.
+ *
+ * Evaluation order (matches code):
+ * - 503 → internal database not configured (DATABASE_URL missing)
+ * - 404 → feature not enabled (enterprise config)
+ * - 401 → authentication required
+ * - 403 → insufficient role
  */
 export function FeatureGate({
   status,
   feature,
 }: {
-  status: 401 | 403 | 404;
+  status: 401 | 403 | 404 | 503;
   feature: string;
 }) {
+  if (status === 503) {
+    return (
+      <div className="flex h-full items-center justify-center">
+        <div className="text-center">
+          <DatabaseZap className="mx-auto size-10 text-muted-foreground/50" />
+          <p className="mt-3 text-sm font-medium">Internal database not configured</p>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Set DATABASE_URL to enable {feature}.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   if (status === 404) {
     return (
       <div className="flex h-full items-center justify-center">

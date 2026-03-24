@@ -20,4 +20,11 @@ describe("FeatureGate", () => {
     expect(container.textContent).toContain("Authentication required");
     expect(container.textContent).toContain("sign in");
   });
+
+  test("renders 503 — internal database not configured", () => {
+    const { container } = render(<FeatureGate status={503} feature="Custom Domains" />);
+    expect(container.textContent).toContain("Internal database not configured");
+    expect(container.textContent).toContain("DATABASE_URL");
+    expect(container.textContent).toContain("Custom Domains");
+  });
 });

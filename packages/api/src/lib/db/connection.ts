@@ -1219,3 +1219,40 @@ export const connections = new ConnectionRegistry();
 export function getDB(): DBConnection {
   return connections.getDefault();
 }
+
+/**
+ * Resolve a region-aware connection for a workspace.
+ *
+ * If the workspace has a region assigned and residency is configured,
+ * registers (or reuses) a region-specific datasource and returns the
+ * org-scoped pool for that region. Falls back to the default connection
+ * if residency is not configured or the workspace has no region.
+ *
+ * This function is fire-and-forget safe — non-enterprise deployments
+ * get the default connection without errors.
+ */
+export async function getRegionAwareConnection(
+  orgId: string,
+  connectionId: string = "default",
+): Promise<DBConnection> {
+  try {
+    const { resolveRegionDatabaseUrl } = await import("@atlas/ee/platform/residency");
+    const regionInfo = await resolveRegionDatabaseUrl(orgId);
+
+    if (regionInfo?.datasourceUrl) {
+      const regionConnId = `region:${regionInfo.region}`;
+      if (!connections.has(regionConnId)) {
+        connections.register(regionConnId, {
+          url: regionInfo.datasourceUrl,
+          description: `Region ${regionInfo.region} datasource`,
+        });
+        log.info({ connectionId: regionConnId, region: regionInfo.region }, "Registered region datasource");
+      }
+      return connections.getForOrg(orgId, regionConnId);
+    }
+  } catch {
+    // ee module not available or residency not configured — fall through to default
+  }
+
+  return connections.getForOrg(orgId, connectionId);
+}

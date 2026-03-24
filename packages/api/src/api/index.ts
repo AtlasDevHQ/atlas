@@ -250,6 +250,18 @@ try {
   );
 }
 
+// Platform data residency routes — enterprise-gated, platform_admin role.
+try {
+  const { platformResidency } = await import("./routes/platform-residency");
+  app.route("/api/v1/platform/residency", platformResidency);
+  log.info("Platform residency routes enabled");
+} catch (err) {
+  log.error(
+    { err: err instanceof Error ? err : new Error(String(err)) },
+    "Failed to load platform residency routes — data residency will be unavailable",
+  );
+}
+
 // Billing routes — lazy import, only loaded if STRIPE_SECRET_KEY is set (SaaS mode).
 if (process.env.STRIPE_SECRET_KEY) {
   try {

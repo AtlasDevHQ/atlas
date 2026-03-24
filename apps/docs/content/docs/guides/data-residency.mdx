@@ -1,0 +1,150 @@
+---
+title: Data Residency
+description: Assign workspaces to geographic regions and route data to region-specific databases for compliance.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Atlas data residency controls let enterprise operators assign workspaces to geographic regions (e.g. `eu-west`, `us-east`). Each region maps to a dedicated database, ensuring tenant data stays in the correct jurisdiction.
+
+<Callout title="Prerequisites">
+- Enterprise features enabled (`ATLAS_ENTERPRISE_ENABLED=true` + license key)
+- Internal database configured (`DATABASE_URL`)
+- Platform admin role for dashboard access
+- At least one region configured in `atlas.config.ts`
+</Callout>
+
+## How It Works
+
+When a workspace is created or assigned a region, Atlas routes its database connections to the region-specific database URL configured for that region. Internal writes (conversations, audit logs, learned patterns) and analytics datasource queries are directed to the correct regional infrastructure.
+
+| Concept | Description |
+|---------|-------------|
+| **Region** | A geographic identifier (e.g. `us-east`, `eu-west`) mapped to database URLs |
+| **Assignment** | A workspace is assigned to a region at creation time |
+| **Immutability** | Region cannot be changed after assignment (data migration is a separate process) |
+| **Default region** | New workspaces get the configured default region if none is specified |
+
+## Configuration
+
+### atlas.config.ts
+
+Add a `residency` section to your Atlas configuration:
+
+```typescript
+import { defineConfig } from "@atlas/api/lib/config";
+
+export default defineConfig({
+  datasources: {
+    default: { url: process.env.ATLAS_DATASOURCE_URL! },
+  },
+  enterprise: {
+    enabled: true,
+    licenseKey: process.env.ATLAS_ENTERPRISE_LICENSE_KEY,
+  },
+  residency: {
+    regions: {
+      "us-east": {
+        label: "US East (Virginia)",
+        databaseUrl: "postgresql://us-east-db.example.com/atlas",
+        datasourceUrl: "postgresql://us-east-analytics.example.com/warehouse",
+      },
+      "eu-west": {
+        label: "EU West (Ireland)",
+        databaseUrl: "postgresql://eu-west-db.example.com/atlas",
+        datasourceUrl: "postgresql://eu-west-analytics.example.com/warehouse",
+      },
+      "ap-southeast": {
+        label: "Asia Pacific (Singapore)",
+        databaseUrl: "postgresql://ap-southeast-db.example.com/atlas",
+      },
+    },
+    defaultRegion: "us-east",
+  },
+});
+```
+
+Each region requires:
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `label` | Yes | Human-readable name shown in the admin console |
+| `databaseUrl` | Yes | PostgreSQL URL for the region's internal database |
+| `datasourceUrl` | No | Override analytics datasource URL for this region |
+
+The `defaultRegion` must be one of the configured region keys.
+
+## Admin UI
+
+Navigate to **Admin → Data Residency** (platform admin only) to:
+
+- View all configured regions with workspace counts and health status
+- See which workspaces are assigned to which regions
+- Identify the default region for new workspaces
+
+Region assignment is also visible in the **Platform Admin → Workspaces** table as a region column.
+
+## API
+
+### List Configured Regions
+
+```bash
+curl http://localhost:3001/api/v1/platform/residency/regions \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+Response:
+
+```json
+{
+  "regions": [
+    { "region": "us-east", "label": "US East (Virginia)", "workspaceCount": 12, "healthy": true },
+    { "region": "eu-west", "label": "EU West (Ireland)", "workspaceCount": 5, "healthy": true }
+  ],
+  "defaultRegion": "us-east"
+}
+```
+
+### Assign Region to Workspace
+
+```bash
+curl -X POST http://localhost:3001/api/v1/platform/residency/workspaces/$WORKSPACE_ID/region \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"region": "eu-west"}'
+```
+
+<Callout type="warn">
+Region assignment is **immutable**. Once a workspace is assigned to a region, it cannot be changed. Plan region assignments carefully. Changing a workspace's region requires a data migration (not yet supported).
+</Callout>
+
+### Get Workspace Region
+
+```bash
+curl http://localhost:3001/api/v1/platform/residency/workspaces/$WORKSPACE_ID/region \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+### List All Assignments
+
+```bash
+curl http://localhost:3001/api/v1/platform/residency/assignments \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+## Connection Routing
+
+When a workspace has a region assigned:
+
+1. **Analytics queries** — If the region has a `datasourceUrl`, queries route to that region-specific datasource instead of the default
+2. **Internal writes** — Conversations, audit logs, and other internal data route to the region's `databaseUrl`
+3. **No region** — Workspaces without a region use the default datasource and internal database as before
+
+The routing is transparent to the agent and end users — the same API endpoints work regardless of region.
+
+## Limitations
+
+- Region assignment is immutable (no cross-region migration yet)
+- Region health checks are basic (connectivity only)
+- Requires enterprise license
+- Region configuration changes require server restart

@@ -220,6 +220,32 @@ const PoolConfigSchema = z.object({
   perOrg: OrgPoolConfigSchema.optional(),
 });
 
+const RegionConfigSchema = z.object({
+  /** Human-readable region label for the admin console. */
+  label: z.string().min(1),
+  /** Database URL for the region's internal database. */
+  databaseUrl: z.string().min(1, "Region database URL must not be empty"),
+  /** Optional datasource URL override for analytics in this region. */
+  datasourceUrl: z.string().min(1).optional(),
+});
+
+export type RegionConfigInput = z.input<typeof RegionConfigSchema>;
+
+const ResidencyConfigSchema = z.object({
+  /** Available regions and their database configuration. Keys are region identifiers (e.g. "eu-west"). */
+  regions: z.record(z.string().min(1), RegionConfigSchema).refine(
+    (r) => Object.keys(r).length > 0,
+    { message: "At least one region must be configured when residency is enabled" },
+  ),
+  /** Default region for new workspaces. Must be a key in the regions map. */
+  defaultRegion: z.string().min(1),
+}).refine(
+  (cfg) => cfg.defaultRegion in cfg.regions,
+  { message: "defaultRegion must be one of the configured regions", path: ["defaultRegion"] },
+);
+
+export type ResidencyConfig = z.infer<typeof ResidencyConfigSchema>;
+
 const AtlasConfigSchema = z.object({
   /**
    * Named datasource connections. The "default" key is used when no
@@ -367,6 +393,13 @@ const AtlasConfigSchema = z.object({
     /** License key for enterprise features. */
     licenseKey: z.string().min(1).optional(),
   }).optional(),
+
+  /**
+   * Data residency configuration. When configured, workspaces are assigned
+   * to geographic regions and connections route to region-specific databases.
+   * Requires enterprise features to be enabled.
+   */
+  residency: ResidencyConfigSchema.optional(),
 });
 
 /** The output type after Zod parsing (defaults applied, all fields present). */
@@ -376,7 +409,7 @@ export type AtlasConfig = z.infer<typeof AtlasConfigSchema>;
 export type AtlasConfigInput = z.input<typeof AtlasConfigSchema>;
 
 /** Expose schemas and formatter for external validation (e.g. tests, CLI). */
-export { AtlasConfigSchema, RateLimitConfigSchema, RLSConditionSchema, RLSPolicySchema, RLSConfigSchema, SandboxConfigSchema, PythonConfigSchema, PoolConfigSchema, OrgPoolConfigSchema };
+export { AtlasConfigSchema, RateLimitConfigSchema, RLSConditionSchema, RLSPolicySchema, RLSConfigSchema, SandboxConfigSchema, PythonConfigSchema, PoolConfigSchema, OrgPoolConfigSchema, ResidencyConfigSchema };
 
 /**
  * The resolved config after merging the config file with env var defaults.
@@ -418,6 +451,8 @@ export interface ResolvedConfig {
   learn?: { confidenceThreshold: number };
   /** Enterprise feature gating. */
   enterprise?: { enabled: boolean; licenseKey?: string };
+  /** Data residency configuration for region-based routing. */
+  residency?: ResidencyConfig;
   /** Whether the config was loaded from a file or synthesized from env vars. */
   source: "file" | "env";
 }
@@ -956,6 +991,7 @@ export function validateAndResolve(raw: unknown): ResolvedConfig {
     ...(config.cache ? { cache: config.cache } : {}),
     ...(config.learn ? { learn: config.learn } : {}),
     ...(config.enterprise ? { enterprise: config.enterprise } : {}),
+    ...(config.residency ? { residency: config.residency } : {}),
     source: "file",
   };
 }

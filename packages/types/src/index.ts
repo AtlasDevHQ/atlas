@@ -22,3 +22,4 @@ export * from "./onboarding-email";
 export * from "./abuse";
 export * from "./sla";
 export * from "./backups";
+export * from "./residency";

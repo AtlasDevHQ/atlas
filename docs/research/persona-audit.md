@@ -17,8 +17,8 @@ Note: **Developer/integrator** (self-hosting or embedding Atlas) appears frequen
 ## Summary
 
 - **Total pages audited:** 354 (99 content + 247 API reference + 8 index/meta)
-- **Pages with framing issues:** 28 content pages
-- **Pages correctly framed:** 71 content pages
+- **Pages with framing issues:** 24 content pages
+- **Pages correctly framed:** 83 content pages (including index pages)
 - **Key pattern:** SaaS enterprise features (SSO, SCIM, IP allowlist, custom roles, audit, approval) are well-framed. Self-hosted/deployment concerns bleed into user-facing guides.
 
 ---
@@ -265,6 +265,8 @@ API reference pages are auto-generated from OpenAPI spec. Classification is by e
 ---
 
 ## Issue Summary by Category
+
+Note: Some pages appear in multiple categories below (e.g., `slack.mdx` in Cat 2 and Cat 5). The 24 unique pages with framing issues are deduplicated in the tables above. Category 6 pages are marked "Yes" (minor UX improvements, not framing issues).
 
 ### Category 1: Deployment/Config — Self-hosted vs SaaS framing (7 pages)
 - `getting-started/connect-your-data.mdx` — SaaS customers don't set ATLAS_DATASOURCE_URL

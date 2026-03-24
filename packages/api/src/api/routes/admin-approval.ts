@@ -20,6 +20,7 @@ import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { validationHook } from "./validation-hook";
 import { HTTPException } from "hono/http-exception";
 import { createLogger } from "@atlas/api/lib/logger";
+import { EnterpriseError } from "@atlas/ee/index";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import {
   listApprovalRules,
@@ -45,10 +46,9 @@ const APPROVAL_ERROR_STATUS = { validation: 400, not_found: 404, conflict: 409, 
  * errors → 403; ApprovalError → 400/404/409/410. Unknown errors fall through.
  */
 function throwIfApprovalError(err: unknown): void {
-  const message = err instanceof Error ? err.message : String(err);
-  if (message.includes("Enterprise features")) {
+  if (err instanceof EnterpriseError) {
     throw new HTTPException(403, {
-      res: Response.json({ error: "enterprise_required", message }, { status: 403 }),
+      res: Response.json({ error: "enterprise_required", message: err.message }, { status: 403 }),
     });
   }
   if (err instanceof ApprovalError) {

@@ -13,7 +13,7 @@
  * All mutating operations call `requireEnterprise("approval-workflows")`.
  */
 
-import { requireEnterprise } from "../index";
+import { requireEnterprise, EnterpriseError } from "../index";
 import {
   hasInternalDB,
   internalQuery,
@@ -355,8 +355,8 @@ export async function checkApprovalRequired(
   try {
     requireEnterprise("approval-workflows");
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    if (!msg.includes("Enterprise features")) {
+    if (!(err instanceof EnterpriseError)) {
+      const msg = err instanceof Error ? err.message : String(err);
       log.warn({ err: msg }, "Unexpected error checking enterprise status in approval check");
     }
     return { required: false, matchedRules: [] };
@@ -580,8 +580,8 @@ export async function expireStaleRequests(): Promise<number> {
   try {
     requireEnterprise("approval-workflows");
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    if (!msg.includes("Enterprise features")) {
+    if (!(err instanceof EnterpriseError)) {
+      const msg = err instanceof Error ? err.message : String(err);
       log.warn({ err: msg }, "Unexpected error checking enterprise status in expireStaleRequests");
     }
     return 0;
@@ -607,8 +607,8 @@ export async function getPendingCount(orgId: string): Promise<number> {
   try {
     requireEnterprise("approval-workflows");
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    if (!msg.includes("Enterprise features")) {
+    if (!(err instanceof EnterpriseError)) {
+      const msg = err instanceof Error ? err.message : String(err);
       log.warn({ err: msg }, "Unexpected error checking enterprise status in getPendingCount");
     }
     return 0;

@@ -16,6 +16,7 @@ import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { validationHook } from "./validation-hook";
 import { HTTPException } from "hono/http-exception";
 import { createLogger } from "@atlas/api/lib/logger";
+import { EnterpriseError } from "@atlas/ee/index";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { adminAuth, requestContext, type AuthEnv } from "./middleware";
@@ -27,10 +28,9 @@ const log = createLogger("admin-audit-retention");
  * errors → 403; RetentionError → 400/404. Unknown errors fall through.
  */
 function throwIfRetentionError(err: unknown): void {
-  const message = err instanceof Error ? err.message : String(err);
-  if (message.includes("Enterprise features")) {
+  if (err instanceof EnterpriseError) {
     throw new HTTPException(403, {
-      res: Response.json({ error: "enterprise_required", message }, { status: 403 }),
+      res: Response.json({ error: "enterprise_required", message: err.message }, { status: 403 }),
     });
   }
   // Dynamically import to check error type

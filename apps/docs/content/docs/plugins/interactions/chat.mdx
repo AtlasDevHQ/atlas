@@ -133,6 +133,9 @@ export default defineConfig({
 | `scrubError` | `function` | No | Optional error scrubbing callback. |
 | `actions` | `ActionCallbacks` | No | Optional action framework callbacks (`approve`, `deny`, `get`). |
 | `conversations` | `ConversationCallbacks` | No | Optional conversation persistence callbacks (`create`, `addMessage`, `get`, `generateTitle`). |
+| `fileUpload` | `object` | No | CSV file upload configuration. |
+| `fileUpload.autoAttachThreshold` | `number` | No | Row count above which CSV files are auto-attached. Set to `0` to disable. Default: `20`. |
+| `fileUpload.webBaseUrl` | `string` | No | Atlas web UI base URL for fallback links on platforms without file upload (GitHub, Linear). |
 
 <Callout type="info">
 \* Required when that adapter is configured. At least one adapter must be present.
@@ -208,11 +211,47 @@ The command name must start with `/` followed by lowercase alphanumeric characte
 Query result cards include interactive buttons when SQL was executed:
 
 - **Run Again** — Re-executes the same SQL query and posts updated results in the thread
-- **Export CSV** — Placeholder for CSV export (coming soon)
+- **Export CSV** — Re-executes the query and uploads results as a CSV file attachment
 
 Buttons are rendered as platform-native interactive components (Block Kit buttons on Slack, Adaptive Card actions on Teams, Discord buttons). On platforms with limited interactivity, the card includes a text fallback with instructions:
 
 > _To run again, re-send the same question. To export, ask "export the last result as CSV"._
+
+### File Upload (CSV Export)
+
+Query results can be exported as CSV file attachments. This happens in three ways:
+
+1. **Export CSV button** — Clicking the "Export CSV" button on a query result card re-executes the SQL and uploads the full result as a CSV file
+2. **Auto-attach** — When query results exceed the configured row threshold (default: 20 rows), a CSV file is automatically attached alongside the card response
+3. **Keyword detection** — When the user's question contains export keywords ("export", "download", "send as CSV", "as csv", "csv file", "to csv"), the CSV is always attached regardless of row count
+
+#### Platform support
+
+| Platform | File Upload | Fallback |
+|----------|-------------|----------|
+| Slack | Yes | — |
+| Teams | Yes | — |
+| Discord | Yes | — |
+| Google Chat | Yes | — |
+| Telegram | Yes | — |
+| WhatsApp | Yes | — |
+| GitHub | No | Link to web UI |
+| Linear | No | Link to web UI |
+
+On platforms without file upload support, a "View full results" link to the Atlas web UI is posted instead. Configure `fileUpload.webBaseUrl` to enable this:
+
+```typescript
+chatPlugin({
+  adapters: { /* ... */ },
+  executeQuery: myQueryFunction,
+  fileUpload: {
+    autoAttachThreshold: 50,        // attach CSV when > 50 rows (default: 20)
+    webBaseUrl: "https://app.example.com", // fallback link for GitHub/Linear
+  },
+})
+```
+
+CSV files include a UTF-8 BOM for Excel compatibility and follow RFC 4180 formatting (proper quoting and escaping of commas, newlines, and double quotes).
 
 ### Interactive Capabilities by Platform
 
@@ -220,6 +259,7 @@ Buttons are rendered as platform-native interactive components (Block Kit button
 |---------|-------|-------|---------|-------------|----------|--------|--------|
 | Slash commands | Yes | Yes | Yes | Yes | Yes | No | No |
 | Action buttons | Yes | Yes | Yes | Yes | Partial (inline keyboard) | No | No |
+| File uploads | Yes | Yes | Yes | Yes | Yes | No | No |
 | Modals | Yes | No | No | No | No | No | No |
 
 ### Slack Modals

@@ -280,6 +280,19 @@ export interface ConversationCallbacks {
   generateTitle(question: string): string;
 }
 
+/** File upload (CSV export) configuration. */
+export interface FileUploadConfig {
+  /** Row count threshold for auto-attaching CSV files. When a query result
+   * contains more rows than this value, a CSV file is automatically attached
+   * alongside the card response. Set to 0 to disable auto-attach.
+   * Default: 20 */
+  autoAttachThreshold?: number;
+  /** Base URL for the Atlas web UI. Used as a fallback link on platforms
+   * that do not support file uploads (GitHub, Linear).
+   * Example: "https://app.useatlas.dev" */
+  webBaseUrl?: string;
+}
+
 export interface ChatPluginConfig {
   /** Adapter credentials keyed by platform name. */
   adapters: {
@@ -335,6 +348,10 @@ export interface ChatPluginConfig {
       priorMessages?: ChatMessage[];
     },
   ) => StreamingQueryResult;
+
+  /** File upload (CSV export) configuration. Controls when query results are
+   * attached as CSV files in chat responses. */
+  fileUpload?: FileUploadConfig;
 }
 
 // ---------------------------------------------------------------------------
@@ -493,6 +510,17 @@ const StreamingConfigSchema = z
   })
   .optional();
 
+const FileUploadConfigSchema = z
+  .object({
+    autoAttachThreshold: z
+      .number()
+      .int()
+      .min(0, "autoAttachThreshold must be >= 0")
+      .optional(),
+    webBaseUrl: z.string().url("webBaseUrl must be a valid URL").optional(),
+  })
+  .optional();
+
 export const ChatConfigSchema = z.object({
   adapters: z
     .object({
@@ -565,6 +593,7 @@ export const ChatConfigSchema = z.object({
     )
     .optional(),
   streaming: StreamingConfigSchema,
+  fileUpload: FileUploadConfigSchema,
   executeQueryStream: z
     .any()
     .refine(

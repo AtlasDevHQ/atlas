@@ -99,11 +99,22 @@ export type {
   LinearAdapterConfig,
   StreamingConfig,
   StreamingQueryResult,
+  FileUploadConfig,
 } from "./config";
 export type { ChatBridge } from "./bridge";
 export type { StreamChunk, TaskUpdateChunk, PlanUpdateChunk, MarkdownTextChunk } from "chat";
 export { createStateAdapter } from "./state";
 export type { PluginDB } from "./state";
+
+// File upload / CSV export utilities
+export {
+  generateCSV,
+  buildCSVFileUpload,
+  buildCSVFromQueryData,
+  isExportRequest,
+  platformSupportsFileUpload,
+  shouldAttachCSV,
+} from "./features/file-upload";
 
 // Card components for host customization
 export { buildQueryResultCard } from "./cards/query-result-card";

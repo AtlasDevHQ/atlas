@@ -134,7 +134,7 @@ describe("getApprovalRule", () => {
   });
 
   it("throws for rule with invalid rule_type instead of returning null", async () => {
-    mockRows.push([makeRuleRow({ rule_type: "bogus" })]);
+    ee.queueMockRows([makeRuleRow({ rule_type: "bogus" })]);
     await expect(getApprovalRule("org-1", "rule-1")).rejects.toThrow("invalid type");
   });
 });
@@ -177,7 +177,7 @@ describe("createApprovalRule", () => {
   });
 
   it("throws when DB returns invalid rule_type after insert", async () => {
-    mockRows.push([makeRuleRow({ rule_type: "corrupted" })]);
+    ee.queueMockRows([makeRuleRow({ rule_type: "corrupted" })]);
     await expect(
       createApprovalRule("org-1", { name: "test", ruleType: "table", pattern: "users" }),
     ).rejects.toThrow("unexpected rule_type");
@@ -214,8 +214,8 @@ describe("updateApprovalRule", () => {
   });
 
   it("throws when DB returns invalid rule_type after update", async () => {
-    mockRows.push([makeRuleRow()]); // getApprovalRule succeeds
-    mockRows.push([makeRuleRow({ rule_type: "corrupted" })]); // UPDATE RETURNING has bad type
+    ee.queueMockRows([makeRuleRow()]); // getApprovalRule succeeds
+    ee.queueMockRows([makeRuleRow({ rule_type: "corrupted" })]); // UPDATE RETURNING has bad type
     await expect(
       updateApprovalRule("org-1", "rule-1", { name: "Updated" }),
     ).rejects.toThrow("unexpected rule_type");
@@ -335,7 +335,7 @@ describe("listApprovalRequests", () => {
   });
 
   it("skips requests with invalid status", async () => {
-    mockRows.push([
+    ee.queueMockRows([
       makeQueueRow({ id: "req-1", status: "approved" }),
       makeQueueRow({ id: "req-2", status: "bogus" }),
       makeQueueRow({ id: "req-3", status: "pending" }),
@@ -358,7 +358,7 @@ describe("getApprovalRequest", () => {
   beforeEach(resetMocks);
 
   it("throws for request with invalid status", async () => {
-    mockRows.push([makeQueueRow({ status: "bogus" })]);
+    ee.queueMockRows([makeQueueRow({ status: "bogus" })]);
     await expect(getApprovalRequest("org-1", "req-1")).rejects.toThrow("invalid status");
   });
 });
@@ -486,7 +486,7 @@ describe("hasApprovedRequest", () => {
     mockEnterpriseEnabled = false;
     const result = await hasApprovedRequest("org-1", "user-1", "SELECT * FROM users");
     expect(result).toBe(false);
-    expect(capturedQueries).toHaveLength(0);
+    expect(ee.capturedQueries).toHaveLength(0);
   });
 
   it("re-throws unexpected errors instead of returning false", async () => {
@@ -505,7 +505,7 @@ describe("listApprovalRules — invalid rule_type filtering", () => {
   beforeEach(resetMocks);
 
   it("skips rules with invalid rule_type", async () => {
-    mockRows.push([
+    ee.queueMockRows([
       makeRuleRow({ id: "rule-1", rule_type: "table" }),
       makeRuleRow({ id: "rule-2", rule_type: "bogus" }),
       makeRuleRow({ id: "rule-3", rule_type: "column", name: "SSN column", pattern: "ssn" }),
@@ -517,7 +517,7 @@ describe("listApprovalRules — invalid rule_type filtering", () => {
   });
 
   it("returns empty array when all rules have invalid types", async () => {
-    mockRows.push([
+    ee.queueMockRows([
       makeRuleRow({ id: "rule-1", rule_type: "invalid" }),
       makeRuleRow({ id: "rule-2", rule_type: "" }),
     ]);
@@ -530,7 +530,7 @@ describe("checkApprovalRequired — invalid rule_type in matching", () => {
   beforeEach(resetMocks);
 
   it("skips rules with invalid rule_type during matching", async () => {
-    mockRows.push([
+    ee.queueMockRows([
       makeRuleRow({ id: "rule-1", rule_type: "bogus", pattern: "users" }),
       makeRuleRow({ id: "rule-2", rule_type: "table", pattern: "users" }),
     ]);

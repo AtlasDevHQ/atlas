@@ -13,14 +13,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { z } from "zod";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+  FormDialog,
+  FormField,
+  FormItem,
+  FormControl,
+  FormMessage,
+} from "@/components/form-dialog";
 import { Separator } from "@/components/ui/separator";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { LoadingState } from "@/ui/components/admin/loading-state";
@@ -79,6 +79,10 @@ function SourceBadge({ source }: { source: "env" | "override" | "default" }) {
 
 // ── Edit Dialog ───────────────────────────────────────────────────
 
+const editSettingSchema = z.object({
+  value: z.string(),
+});
+
 function EditDialog({
   setting,
   open,
@@ -90,96 +94,92 @@ function EditDialog({
   onOpenChange: (open: boolean) => void;
   onSaved: () => void;
 }) {
-  const [value, setValue] = useState(setting.currentValue ?? "");
-
-  const { mutate, saving, error, reset } = useAdminMutation({
+  const saveMutation = useAdminMutation({
     method: "PUT",
     invalidates: onSaved,
   });
 
-  function handleOpen(next: boolean) {
-    if (next) {
-      setValue(setting.currentValue ?? setting.default ?? "");
-      reset();
-    }
+  function handleOpenChange(next: boolean) {
+    if (next) saveMutation.reset();
     onOpenChange(next);
   }
 
-  async function handleSave() {
-    const result = await mutate({
+  async function handleSubmit(values: z.infer<typeof editSettingSchema>) {
+    await saveMutation.mutate({
       path: `/api/v1/admin/settings/${encodeURIComponent(setting.key)}`,
-      body: { value },
+      body: { value: values.value },
+      onSuccess: () => onOpenChange(false),
     });
-    if (result !== undefined) {
-      onOpenChange(false);
-    }
   }
 
   return (
-    <Dialog open={open} onOpenChange={handleOpen}>
-      <DialogContent className="max-w-md">
-        <DialogHeader>
-          <DialogTitle>Edit {setting.label}</DialogTitle>
-          <DialogDescription>{setting.description}</DialogDescription>
-        </DialogHeader>
-
-        <div className="space-y-3 py-2">
-          {setting.type === "boolean" ? (
-            <div className="flex items-center gap-3">
-              <Switch
-                checked={value === "true"}
-                onCheckedChange={(checked) => setValue(checked ? "true" : "false")}
-              />
-              <span className="text-sm text-muted-foreground">
-                {value === "true" ? "Enabled" : "Disabled"}
-              </span>
-            </div>
-          ) : setting.type === "select" && setting.options ? (
-            <Select value={value} onValueChange={setValue}>
-              <SelectTrigger>
-                <SelectValue placeholder="Select..." />
-              </SelectTrigger>
-              <SelectContent>
-                {setting.options.map((opt) => (
-                  <SelectItem key={opt} value={opt}>
-                    {opt}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          ) : (
-            <Input
-              type={setting.type === "number" ? "number" : "text"}
-              value={value}
-              onChange={(e) => setValue(e.target.value)}
-              placeholder={setting.default ?? ""}
-            />
-          )}
-
+    <FormDialog
+      open={open}
+      onOpenChange={handleOpenChange}
+      title={`Edit ${setting.label}`}
+      description={setting.description}
+      schema={editSettingSchema}
+      defaultValues={{ value: setting.currentValue ?? setting.default ?? "" }}
+      onSubmit={handleSubmit}
+      saving={saveMutation.saving}
+      serverError={saveMutation.error}
+      className="max-w-md"
+    >
+      {(form) => (
+        <>
+          <FormField
+            control={form.control}
+            name="value"
+            render={({ field }) => (
+              <FormItem>
+                {setting.type === "boolean" ? (
+                  <div className="flex items-center gap-3">
+                    <FormControl>
+                      <Switch
+                        checked={field.value === "true"}
+                        onCheckedChange={(checked) => field.onChange(checked ? "true" : "false")}
+                      />
+                    </FormControl>
+                    <span className="text-sm text-muted-foreground">
+                      {field.value === "true" ? "Enabled" : "Disabled"}
+                    </span>
+                  </div>
+                ) : setting.type === "select" && setting.options ? (
+                  <Select value={field.value} onValueChange={field.onChange}>
+                    <FormControl>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select..." />
+                      </SelectTrigger>
+                    </FormControl>
+                    <SelectContent>
+                      {setting.options.map((opt) => (
+                        <SelectItem key={opt} value={opt}>
+                          {opt}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                ) : (
+                  <FormControl>
+                    <Input
+                      type={setting.type === "number" ? "number" : "text"}
+                      placeholder={setting.default ?? ""}
+                      {...field}
+                    />
+                  </FormControl>
+                )}
+                <FormMessage />
+              </FormItem>
+            )}
+          />
           {setting.default && (
             <p className="text-xs text-muted-foreground">
               Default: <code className="rounded bg-muted px-1">{setting.default}</code>
             </p>
           )}
-
-          {error && (
-            <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-              {error}
-            </div>
-          )}
-        </div>
-
-        <DialogFooter>
-          <Button variant="outline" onClick={() => handleOpen(false)}>
-            Cancel
-          </Button>
-          <Button onClick={handleSave} disabled={saving}>
-            {saving && <Loader2 className="mr-1 size-3 animate-spin" />}
-            Save
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        </>
+      )}
+    </FormDialog>
   );
 }
 

@@ -280,6 +280,45 @@ const pendingCountRoute = createRoute({
 // ---------------------------------------------------------------------------
 
 const adminApproval = createAdminRouter();
+
+// ── Handlers WITHOUT requireOrgContext ────────────────────────────────
+// Registered before requireOrgContext() so the middleware does not apply.
+
+// POST /expire — manually expire stale requests (global, no org/DB needed)
+adminApproval.openapi(expireRoute, async (c) => {
+  const requestId = c.get("requestId");
+
+  try {
+    const expired = await expireStaleRequests();
+    return c.json({ expired }, 200);
+  } catch (err) {
+    throwIfEEError(err, [ApprovalError, APPROVAL_ERROR_STATUS]);
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to expire stale requests");
+    return c.json({ error: "internal_error", message: "Failed to expire stale requests.", requestId }, 500);
+  }
+});
+
+// GET /pending-count — count of pending requests (needs orgId, not hasInternalDB)
+adminApproval.openapi(pendingCountRoute, async (c) => {
+  const requestId = c.get("requestId");
+  const authResult = c.get("authResult");
+
+  const orgId = authResult.user?.activeOrganizationId;
+  if (!orgId) {
+    return c.json({ error: "bad_request", message: "No active organization. Set an active org first.", requestId }, 400);
+  }
+
+  try {
+    const count = await getPendingCount(orgId);
+    return c.json({ count }, 200);
+  } catch (err) {
+    throwIfEEError(err, [ApprovalError, APPROVAL_ERROR_STATUS]);
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to get pending count");
+    return c.json({ error: "internal_error", message: "Failed to get pending approval count.", requestId }, 500);
+  }
+});
+
+// ── Handlers WITH requireOrgContext ───────────────────────────────────
 adminApproval.use(requireOrgContext());
 
 // GET /rules — list approval rules
@@ -414,34 +453,6 @@ adminApproval.openapi(reviewRoute, async (c) => {
     throwIfEEError(err, [ApprovalError, APPROVAL_ERROR_STATUS]);
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to review approval request");
     return c.json({ error: "internal_error", message: "Failed to review approval request.", requestId }, 500);
-  }
-});
-
-// POST /expire — manually expire stale requests
-adminApproval.openapi(expireRoute, async (c) => {
-  const { requestId } = c.get("orgContext");
-
-  try {
-    const expired = await expireStaleRequests();
-    return c.json({ expired }, 200);
-  } catch (err) {
-    throwIfEEError(err, [ApprovalError, APPROVAL_ERROR_STATUS]);
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to expire stale requests");
-    return c.json({ error: "internal_error", message: "Failed to expire stale requests.", requestId }, 500);
-  }
-});
-
-// GET /pending-count — count of pending requests
-adminApproval.openapi(pendingCountRoute, async (c) => {
-  const { requestId, orgId } = c.get("orgContext");
-
-  try {
-    const count = await getPendingCount(orgId);
-    return c.json({ count }, 200);
-  } catch (err) {
-    throwIfEEError(err, [ApprovalError, APPROVAL_ERROR_STATUS]);
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to get pending count");
-    return c.json({ error: "internal_error", message: "Failed to get pending approval count.", requestId }, 500);
   }
 });
 

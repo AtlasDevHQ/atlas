@@ -59,18 +59,22 @@ function isValidRegion(region: string, residency: ResidencyConfig): boolean {
   return region in residency.regions;
 }
 
-/** Coerce a value that may be a Date or string to an ISO 8601 string. */
-function toISOString(value: unknown): string {
+/** Coerce a DB value (Date or string) to an ISO 8601 string. Throws on null/undefined/unexpected types. */
+function toISOString(value: unknown, field: string): string {
   if (value instanceof Date) return value.toISOString();
-  return String(value ?? "");
+  if (typeof value === "string" && value.length > 0) return value;
+  throw new ResidencyError(
+    `rowToWorkspaceRegion: expected Date or ISO string for "${field}", got ${value === null ? "null" : typeof value}`,
+    "not_configured",
+  );
 }
 
-/** Map a DB row to a WorkspaceRegion wire type with runtime validation. */
+/** Map a DB row to a WorkspaceRegion wire type with defensive coercion. */
 function rowToWorkspaceRegion(row: Record<string, unknown>): WorkspaceRegion {
   return {
     workspaceId: String(row.id ?? ""),
     region: String(row.region ?? ""),
-    assignedAt: toISOString(row.region_assigned_at),
+    assignedAt: toISOString(row.region_assigned_at, "region_assigned_at"),
   };
 }
 
@@ -195,7 +199,7 @@ export async function getWorkspaceRegionAssignment(
   return {
     workspaceId,
     region: String(rows[0].region),
-    assignedAt: toISOString(rows[0].region_assigned_at),
+    assignedAt: toISOString(rows[0].region_assigned_at, "region_assigned_at"),
   };
 }
 

@@ -35,7 +35,8 @@ export type DomainErrorCode =
   | "duplicate_domain"
   | "domain_not_found"
   | "railway_error"
-  | "railway_not_configured";
+  | "railway_not_configured"
+  | "data_integrity";
 
 export class DomainError extends Error {
   constructor(message: string, public readonly code: DomainErrorCode) {
@@ -60,34 +61,49 @@ function requireInternalDB(): void {
   }
 }
 
-/** Coerce a value that may be a Date or string to an ISO 8601 string. */
-function toISOString(value: unknown): string {
+/** Coerce a DB value (Date or string) to an ISO 8601 string. Throws on null/undefined/unexpected types. */
+function toISOString(value: unknown, field: string): string {
   if (value instanceof Date) return value.toISOString();
-  return String(value ?? "");
+  if (typeof value === "string" && value.length > 0) return value;
+  throw new DomainError(
+    `rowToDomain: expected Date or ISO string for "${field}", got ${value === null ? "null" : typeof value}`,
+    "data_integrity",
+  );
 }
 
-/** Map a DB row to a CustomDomain wire type with runtime validation. */
+/** Map a DB row to a CustomDomain wire type. Validates status and certificate_status against known enums; other fields are defensively coerced. */
 function rowToDomain(row: Record<string, unknown>): CustomDomain {
+  const id = row.id;
+  if (id == null || String(id) === "") {
+    throw new DomainError(`rowToDomain: missing required field "id"`, "data_integrity");
+  }
+
   const status = String(row.status ?? "");
   if (!DOMAIN_STATUSES.includes(status as CustomDomain["status"])) {
-    throw new Error(`rowToDomain: unexpected status "${status}" — expected one of ${DOMAIN_STATUSES.join(", ")}`);
+    throw new DomainError(
+      `rowToDomain: unexpected status "${status}" — expected one of ${DOMAIN_STATUSES.join(", ")}`,
+      "data_integrity",
+    );
   }
 
   const certRaw = row.certificate_status != null ? String(row.certificate_status) : null;
   if (certRaw != null && !CERTIFICATE_STATUSES.includes(certRaw as CertificateStatus)) {
-    throw new Error(`rowToDomain: unexpected certificate_status "${certRaw}" — expected one of ${CERTIFICATE_STATUSES.join(", ")}`);
+    throw new DomainError(
+      `rowToDomain: unexpected certificate_status "${certRaw}" — expected one of ${CERTIFICATE_STATUSES.join(", ")}`,
+      "data_integrity",
+    );
   }
 
   return {
-    id: String(row.id ?? ""),
+    id: String(id),
     workspaceId: String(row.workspace_id ?? ""),
     domain: String(row.domain ?? ""),
     status: status as CustomDomain["status"],
     railwayDomainId: row.railway_domain_id != null ? String(row.railway_domain_id) : null,
     cnameTarget: row.cname_target != null ? String(row.cname_target) : null,
     certificateStatus: certRaw as CertificateStatus | null,
-    createdAt: toISOString(row.created_at),
-    verifiedAt: row.verified_at ? toISOString(row.verified_at) : null,
+    createdAt: toISOString(row.created_at, "created_at"),
+    verifiedAt: row.verified_at != null ? toISOString(row.verified_at, "verified_at") : null,
   };
 }
 
@@ -383,9 +399,16 @@ export async function verifyDomain(domainId: string): Promise<CustomDomain> {
   const railwayStatus = await getRailwayDomainStatus(config, record.railwayDomainId);
 
   const certRaw = String(railwayStatus.status.certificateStatus ?? "");
-  const certStatus: CertificateStatus = CERTIFICATE_STATUSES.includes(certRaw as CertificateStatus)
-    ? (certRaw as CertificateStatus)
-    : "PENDING";
+  let certStatus: CertificateStatus;
+  if (CERTIFICATE_STATUSES.includes(certRaw as CertificateStatus)) {
+    certStatus = certRaw as CertificateStatus;
+  } else {
+    log.warn(
+      { domainId, railwayCertificateStatus: certRaw, knownStatuses: [...CERTIFICATE_STATUSES] },
+      "Railway returned unrecognized certificate status — falling back to PENDING",
+    );
+    certStatus = "PENDING";
+  }
   const dnsReady = railwayStatus.status.dnsRecords.every((r) => r.status === "VALID" || r.status === "valid");
   const verified = certStatus === "ISSUED" && dnsReady;
 

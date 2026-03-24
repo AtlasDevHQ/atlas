@@ -5,7 +5,7 @@ you need to get started.
 
 ## Prerequisites
 
-- **[bun](https://bun.sh/)** >= 1.3.10 — package manager and runtime
+- **[bun](https://bun.sh/)** >= 1.3.11 — package manager and runtime
 - **[Docker](https://www.docker.com/)** — for the local Postgres database and sandbox sidecar
 
 ## Dev Setup

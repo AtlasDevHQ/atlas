@@ -1,4 +1,4 @@
-FROM oven/bun:1.3.10-debian AS base
+FROM oven/bun:1.3.11-debian AS base
 
 # Install tools needed for explore mode + Python for executePython
 RUN apt-get update && apt-get install -y --no-install-recommends \

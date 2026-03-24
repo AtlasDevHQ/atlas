@@ -4,7 +4,7 @@
 # Build context: repo root (../../)
 #   docker build -f deploy/web/Dockerfile .
 
-FROM oven/bun:1.3.10 AS base
+FROM oven/bun:1.3.11 AS base
 
 # --- deps ---
 FROM base AS deps

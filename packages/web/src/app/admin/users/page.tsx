@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useQueryStates } from "nuqs";
+import { z } from "zod";
 import { usersSearchParams } from "./search-params";
 import type { ColumnDef } from "@tanstack/react-table";
 import { useAtlasConfig } from "@/ui/context";
@@ -57,6 +58,14 @@ import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { LoadingState } from "@/ui/components/admin/loading-state";
 import { FeatureGate } from "@/ui/components/admin/feature-disabled";
 import {
+  FormDialog,
+  FormField,
+  FormItem,
+  FormLabel,
+  FormControl,
+  FormMessage,
+} from "@/components/form-dialog";
+import {
   useAdminFetch,
   friendlyError,
   type FetchError,
@@ -98,6 +107,11 @@ type ConfirmAction =
 const LIMIT = 50;
 const ROLES = ["member", "admin", "owner"] as const;
 
+const inviteSchema = z.object({
+  email: z.string().email("Valid email address is required"),
+  role: z.enum(ROLES),
+});
+
 export default function UsersPage() {
   const { apiUrl, isCrossOrigin } = useAtlasConfig();
   const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
@@ -121,9 +135,7 @@ export default function UsersPage() {
 
   // -- Invite dialog state --
   const [inviteOpen, setInviteOpen] = useState(false);
-  const [inviteEmail, setInviteEmail] = useState("");
-  const [inviteRole, setInviteRole] = useState<string>("member");
-  const [inviteResult, setInviteResult] = useState<{ inviteUrl: string; emailSent: boolean; emailError?: string } | null>(null);
+  const [inviteResult, setInviteResult] = useState<{ inviteUrl: string; emailSent: boolean; emailError?: string; email: string } | null>(null);
   const [copied, setCopied] = useState(false);
 
   // Invite mutation
@@ -376,18 +388,16 @@ export default function UsersPage() {
   // -- Invite handlers --
 
   function resetInviteDialog() {
-    setInviteEmail("");
-    setInviteRole("member");
     invite.reset();
     setInviteResult(null);
     setCopied(false);
   }
 
-  async function handleInvite() {
+  async function handleInvite(values: z.infer<typeof inviteSchema>) {
     await invite.mutate({
-      body: { email: inviteEmail, role: inviteRole },
+      body: { email: values.email, role: values.role },
       onSuccess: (data) => {
-        setInviteResult({ inviteUrl: data.inviteUrl, emailSent: data.emailSent, emailError: data.emailError });
+        setInviteResult({ inviteUrl: data.inviteUrl, emailSent: data.emailSent, emailError: data.emailError, email: values.email });
         setInvitationsVersion((v) => v + 1);
       },
     });
@@ -566,23 +576,23 @@ export default function UsersPage() {
       </div>
       </ErrorBoundary>
 
-      {/* Invite user dialog */}
-      <Dialog open={inviteOpen} onOpenChange={(open) => { if (!open) setInviteOpen(false); }}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>Invite user</DialogTitle>
-            <DialogDescription>
-              Send an invitation to a new user. They will be assigned the selected role on signup.
-            </DialogDescription>
-          </DialogHeader>
-          {inviteResult ? (
+      {/* Invite user dialog — result phase (plain Dialog) */}
+      {inviteResult && (
+        <Dialog open={inviteOpen && !!inviteResult} onOpenChange={(open) => { if (!open) setInviteOpen(false); }}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>Invite user</DialogTitle>
+              <DialogDescription>
+                Invitation has been created for the new user.
+              </DialogDescription>
+            </DialogHeader>
             <div className="space-y-4">
               {inviteResult.emailSent ? (
                 <div className="flex items-start gap-3 rounded-md border border-green-200 bg-green-50 p-3 dark:border-green-800 dark:bg-green-950">
                   <Mail className="mt-0.5 size-4 text-green-600 dark:text-green-400" />
                   <div className="text-sm">
                     <p className="font-medium text-green-700 dark:text-green-300">Invitation sent!</p>
-                    <p className="text-green-600 dark:text-green-400">An email has been sent to {inviteEmail}.</p>
+                    <p className="text-green-600 dark:text-green-400">An email has been sent to {inviteResult.email}.</p>
                   </div>
                 </div>
               ) : (
@@ -623,47 +633,73 @@ export default function UsersPage() {
                 <Button onClick={() => setInviteOpen(false)}>Done</Button>
               </DialogFooter>
             </div>
-          ) : (
-            <div className="space-y-4">
-              <div className="space-y-2">
-                <Label htmlFor="invite-email">Email address</Label>
-                <Input
-                  id="invite-email"
-                  type="email"
-                  placeholder="user@example.com"
-                  value={inviteEmail}
-                  onChange={(e) => setInviteEmail(e.target.value)}
-                  onKeyDown={(e) => { if (e.key === "Enter" && inviteEmail) handleInvite(); }}
-                />
-              </div>
-              <div className="space-y-2">
-                <Label>Role</Label>
-                <Select value={inviteRole} onValueChange={setInviteRole}>
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {ROLES.map((r) => (
-                      <SelectItem key={r} value={r} className="capitalize">
-                        {r}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              {invite.error && (
-                <p className="text-sm text-destructive">{invite.error}</p>
-              )}
-              <DialogFooter>
-                <Button variant="outline" onClick={() => setInviteOpen(false)}>Cancel</Button>
-                <Button onClick={handleInvite} disabled={invite.saving || !inviteEmail}>
-                  {invite.saving ? "Sending..." : "Send invitation"}
-                </Button>
-              </DialogFooter>
-            </div>
+          </DialogContent>
+        </Dialog>
+      )}
+
+      {/* Invite user dialog — form phase (FormDialog) */}
+      {!inviteResult && (
+        <FormDialog
+          open={inviteOpen && !inviteResult}
+          onOpenChange={(open) => { if (!open) setInviteOpen(false); }}
+          title="Invite user"
+          description="Send an invitation to a new user. They will be assigned the selected role on signup."
+          schema={inviteSchema}
+          defaultValues={{ email: "", role: "member" }}
+          onSubmit={handleInvite}
+          submitLabel="Send invitation"
+          saving={invite.saving}
+          serverError={invite.error}
+          className="sm:max-w-md"
+        >
+          {(form) => (
+            <>
+              <FormField
+                control={form.control}
+                name="email"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Email address</FormLabel>
+                    <FormControl>
+                      <Input
+                        type="email"
+                        placeholder="user@example.com"
+                        {...field}
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              <FormField
+                control={form.control}
+                name="role"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Role</FormLabel>
+                    <Select value={field.value} onValueChange={field.onChange}>
+                      <FormControl>
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                      </FormControl>
+                      <SelectContent>
+                        {ROLES.map((r) => (
+                          <SelectItem key={r} value={r} className="capitalize">
+                            {r}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            </>
           )}
-        </DialogContent>
-      </Dialog>
+        </FormDialog>
+      )}
 
       {/* Ban confirmation dialog */}
       <AlertDialog

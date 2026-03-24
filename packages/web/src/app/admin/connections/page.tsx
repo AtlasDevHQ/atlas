@@ -1,10 +1,10 @@
 "use client";
 
 import type { ColumnDef } from "@tanstack/react-table";
+import { z } from "zod";
 import { useAtlasConfig } from "@/ui/context";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
   Select,
@@ -13,14 +13,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -44,6 +36,15 @@ import { Cable, Loader2, Plus, Pencil, Trash2, Eye, EyeOff, Activity, ChevronDow
 import { useAdminFetch, friendlyError } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
+import {
+  FormDialog,
+  FormField,
+  FormItem,
+  FormLabel,
+  FormControl,
+  FormMessage,
+  FormDescription as FormDesc,
+} from "@/components/form-dialog";
 import { useState, useEffect, useRef } from "react";
 import { cn } from "@/lib/utils";
 import {
@@ -55,6 +56,25 @@ import {
 } from "@/ui/lib/types";
 
 // ── Connection Form Dialog ───────────────────────────────────────
+
+const connectionCreateSchema = z.object({
+  id: z
+    .string()
+    .min(1, "Connection ID is required")
+    .regex(/^[a-z][a-z0-9_-]*$/, "Lowercase letters, numbers, hyphens, underscores. Must start with a letter."),
+  dbType: z.string().min(1, "Database type is required"),
+  url: z.string().min(1, "Connection URL is required"),
+  schema: z.string(),
+  description: z.string(),
+});
+
+const connectionEditSchema = z.object({
+  id: z.string(),
+  dbType: z.string(),
+  url: z.string(), // empty string is valid on edit — empty means keep current URL
+  schema: z.string(),
+  description: z.string(),
+});
 
 interface ConnectionFormProps {
   open: boolean;
@@ -72,14 +92,8 @@ function ConnectionFormDialog({
   onSuccess,
 }: ConnectionFormProps) {
   const isEdit = !!editId;
-  const [id, setId] = useState("");
-  const [dbType, setDbType] = useState("postgres");
-  const [url, setUrl] = useState("");
-  const [schema, setSchema] = useState("");
-  const [description, setDescription] = useState("");
   const [showUrl, setShowUrl] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
-  const [validationError, setValidationError] = useState<string | null>(null);
 
   const testMutation = useAdminMutation<{ status: string; latencyMs?: number; message?: string }>({
     path: "/api/v1/admin/connections/test",
@@ -90,39 +104,56 @@ function ConnectionFormDialog({
     invalidates: onSuccess,
   });
 
-  // Reset form when dialog opens
+  const schema = isEdit ? connectionEditSchema : connectionCreateSchema;
+
+  const defaultValues = isEdit && editDetail
+    ? { id: editId!, dbType: editDetail.dbType, url: "", schema: editDetail.schema ?? "", description: editDetail.description ?? "" }
+    : { id: "", dbType: "postgres", url: "", schema: "", description: "" };
+
   function handleOpenChange(nextOpen: boolean) {
     if (nextOpen) {
-      if (isEdit && editDetail) {
-        setId(editId!);
-        setDbType(editDetail.dbType);
-        setUrl(""); // URL is masked — user needs to re-enter if changing
-        setSchema(editDetail.schema ?? "");
-        setDescription(editDetail.description ?? "");
-      } else {
-        setId("");
-        setDbType("postgres");
-        setUrl("");
-        setSchema("");
-        setDescription("");
-      }
       setShowUrl(false);
       setTestResult(null);
-      setValidationError(null);
       testMutation.reset();
       saveMutation.reset();
     }
     onOpenChange(nextOpen);
   }
 
-  async function handleTest() {
+  async function handleSubmit(values: z.infer<typeof connectionCreateSchema | typeof connectionEditSchema>) {
+    const path = isEdit
+      ? `/api/v1/admin/connections/${encodeURIComponent(editId!)}`
+      : `/api/v1/admin/connections`;
+    const method = isEdit ? "PUT" as const : "POST" as const;
+
+    const body: Record<string, unknown> = {};
+    if (!isEdit) {
+      body.id = values.id;
+      body.url = values.url;
+      if (values.description) body.description = values.description;
+      if (values.schema) body.schema = values.schema;
+    } else {
+      if (values.url) body.url = values.url;
+      body.description = values.description;
+      body.schema = values.schema || undefined;
+    }
+
+    await saveMutation.mutate({
+      path,
+      method,
+      body,
+      onSuccess: () => onOpenChange(false),
+    });
+  }
+
+  async function handleTest(url: string, schemaVal: string) {
     if (!url) {
       setTestResult({ ok: false, message: "Enter a connection URL first." });
       return;
     }
     setTestResult(null);
     const data = await testMutation.mutate({
-      body: { url, schema: schema || undefined },
+      body: { url, schema: schemaVal || undefined },
       onSuccess: (d) => {
         setTestResult({
           ok: d.status === "healthy",
@@ -137,142 +168,155 @@ function ConnectionFormDialog({
     }
   }
 
-  async function handleSave() {
-    if (!isEdit && !id) {
-      setValidationError("Connection ID is required.");
-      return;
-    }
-    if (!isEdit && !url) {
-      setValidationError("Connection URL is required.");
-      return;
-    }
-
-    setValidationError(null);
-    const path = isEdit
-      ? `/api/v1/admin/connections/${encodeURIComponent(editId!)}`
-      : `/api/v1/admin/connections`;
-    const method = isEdit ? "PUT" as const : "POST" as const;
-
-    const body: Record<string, unknown> = {};
-    if (!isEdit) {
-      body.id = id;
-      body.url = url;
-      if (description) body.description = description;
-      if (schema) body.schema = schema;
-    } else {
-      if (url) body.url = url;
-      body.description = description;
-      body.schema = schema || undefined;
-    }
-
-    await saveMutation.mutate({
-      path,
-      method,
-      body,
-      onSuccess: () => onOpenChange(false),
-    });
-  }
-
-  const showSchemaField = dbType === "postgres";
-
   return (
-    <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogContent className="sm:max-w-md">
-        <DialogHeader>
-          <DialogTitle>{isEdit ? "Edit Connection" : "Add Connection"}</DialogTitle>
-          <DialogDescription>
-            {isEdit
-              ? "Update the connection configuration. Leave URL empty to keep the current one."
-              : "Add a new datasource connection."}
-          </DialogDescription>
-        </DialogHeader>
-
-        <div className="grid gap-4 py-2">
+    <FormDialog
+      open={open}
+      onOpenChange={handleOpenChange}
+      title={isEdit ? "Edit Connection" : "Add Connection"}
+      description={
+        isEdit
+          ? "Update the connection configuration. Leave URL empty to keep the current one."
+          : "Add a new datasource connection."
+      }
+      schema={schema}
+      defaultValues={defaultValues}
+      onSubmit={handleSubmit}
+      submitLabel={isEdit ? "Save Changes" : "Add Connection"}
+      saving={saveMutation.saving}
+      serverError={saveMutation.error}
+      className="sm:max-w-md"
+      extraFooter={(form) => (
+        <Button
+          type="button"
+          variant="outline"
+          onClick={() => handleTest(form.getValues("url"), form.getValues("schema"))}
+          disabled={testMutation.saving || !form.watch("url")}
+        >
+          {testMutation.saving ? <Loader2 className="mr-2 size-4 animate-spin" /> : null}
+          Test
+        </Button>
+      )}
+    >
+      {(form) => (
+        <>
           {!isEdit && (
-            <div className="grid gap-2">
-              <Label htmlFor="conn-id">Connection ID</Label>
-              <Input
-                id="conn-id"
-                placeholder="e.g. warehouse"
-                value={id}
-                onChange={(e) => setId(e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, ""))}
-              />
-              <p className="text-xs text-muted-foreground">
-                Lowercase letters, numbers, hyphens, underscores.
-              </p>
-            </div>
-          )}
-
-          <div className="grid gap-2">
-            <Label htmlFor="conn-type">Database Type</Label>
-            <Select value={dbType} onValueChange={setDbType} disabled={isEdit}>
-              <SelectTrigger id="conn-type" className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {DB_TYPES.map((t) => (
-                  <SelectItem key={t.value} value={t.value}>
-                    {t.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-
-          <div className="grid gap-2">
-            <Label htmlFor="conn-url">Connection URL</Label>
-            <div className="relative">
-              <Input
-                id="conn-url"
-                type={showUrl ? "text" : "password"}
-                placeholder={isEdit ? "(unchanged)" : "postgresql://user:pass@host:5432/dbname"}
-                value={url}
-                onChange={(e) => setUrl(e.target.value)}
-                className="pr-10"
-              />
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                className="absolute right-0 top-0 h-full px-3"
-                onClick={() => setShowUrl(!showUrl)}
-                aria-label={showUrl ? "Hide connection URL" : "Show connection URL"}
-              >
-                {showUrl ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
-              </Button>
-            </div>
-            {isEdit && editDetail?.maskedUrl && (
-              <p className="text-xs text-muted-foreground font-mono">
-                Current: {editDetail.maskedUrl}
-              </p>
-            )}
-          </div>
-
-          {showSchemaField && (
-            <div className="grid gap-2">
-              <Label htmlFor="conn-schema">Schema</Label>
-              <Input
-                id="conn-schema"
-                placeholder="public"
-                value={schema}
-                onChange={(e) => setSchema(e.target.value)}
-              />
-              <p className="text-xs text-muted-foreground">
-                PostgreSQL schema (sets search_path). Leave empty for &quot;public&quot;.
-              </p>
-            </div>
-          )}
-
-          <div className="grid gap-2">
-            <Label htmlFor="conn-desc">Description</Label>
-            <Textarea
-              id="conn-desc"
-              placeholder="Optional description shown in the agent system prompt"
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              rows={2}
+            <FormField
+              control={form.control}
+              name="id"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Connection ID</FormLabel>
+                  <FormControl>
+                    <Input
+                      placeholder="e.g. warehouse"
+                      {...field}
+                      onChange={(e) => field.onChange(e.target.value.toLowerCase().replace(/[^a-z0-9_-]/g, ""))}
+                    />
+                  </FormControl>
+                  <FormDesc>Lowercase letters, numbers, hyphens, underscores.</FormDesc>
+                  <FormMessage />
+                </FormItem>
+              )}
             />
-          </div>
+          )}
+
+          <FormField
+            control={form.control}
+            name="dbType"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>Database Type</FormLabel>
+                <Select value={field.value} onValueChange={field.onChange} disabled={isEdit}>
+                  <FormControl>
+                    <SelectTrigger className="w-full">
+                      <SelectValue />
+                    </SelectTrigger>
+                  </FormControl>
+                  <SelectContent>
+                    {DB_TYPES.map((t) => (
+                      <SelectItem key={t.value} value={t.value}>
+                        {t.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <FormField
+            control={form.control}
+            name="url"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>Connection URL</FormLabel>
+                <div className="relative">
+                  <FormControl>
+                    <Input
+                      type={showUrl ? "text" : "password"}
+                      placeholder={isEdit ? "(unchanged)" : "postgresql://user:pass@host:5432/dbname"}
+                      className="pr-10"
+                      {...field}
+                    />
+                  </FormControl>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="sm"
+                    className="absolute right-0 top-0 h-full px-3"
+                    onClick={() => setShowUrl(!showUrl)}
+                    aria-label={showUrl ? "Hide connection URL" : "Show connection URL"}
+                  >
+                    {showUrl ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+                  </Button>
+                </div>
+                {isEdit && editDetail?.maskedUrl && (
+                  <p className="text-xs text-muted-foreground font-mono">
+                    Current: {editDetail.maskedUrl}
+                  </p>
+                )}
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          {form.watch("dbType") === "postgres" && (
+            <FormField
+              control={form.control}
+              name="schema"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Schema</FormLabel>
+                  <FormControl>
+                    <Input placeholder="public" {...field} />
+                  </FormControl>
+                  <FormDesc>
+                    PostgreSQL schema (sets search_path). Leave empty for &quot;public&quot;.
+                  </FormDesc>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+          )}
+
+          <FormField
+            control={form.control}
+            name="description"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel>Description</FormLabel>
+                <FormControl>
+                  <Textarea
+                    placeholder="Optional description shown in the agent system prompt"
+                    rows={2}
+                    {...field}
+                  />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
 
           {testResult && (
             <div
@@ -286,33 +330,9 @@ function ConnectionFormDialog({
               {testResult.message}
             </div>
           )}
-        </div>
-
-        {(validationError ?? saveMutation.error) && (
-          <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-            {validationError ?? saveMutation.error}
-          </div>
-        )}
-
-        <DialogFooter>
-          <Button
-            variant="outline"
-            onClick={handleTest}
-            disabled={testMutation.saving || !url}
-          >
-            {testMutation.saving ? <Loader2 className="mr-2 size-4 animate-spin" /> : null}
-            Test
-          </Button>
-          <Button
-            onClick={handleSave}
-            disabled={saveMutation.saving || (!isEdit && (!id || !url))}
-          >
-            {saveMutation.saving ? <Loader2 className="mr-2 size-4 animate-spin" /> : null}
-            {isEdit ? "Save Changes" : "Add Connection"}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        </>
+      )}
+    </FormDialog>
   );
 }
 

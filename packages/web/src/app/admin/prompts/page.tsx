@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useQueryStates } from "nuqs";
+import { z } from "zod";
 import type { ColumnDef } from "@tanstack/react-table";
 import type { PromptCollection, PromptItem } from "@/ui/lib/types";
 import { PROMPT_INDUSTRIES } from "@/ui/lib/types";
@@ -16,7 +17,6 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { Label } from "@/components/ui/label";
 import {
   Sheet,
   SheetContent,
@@ -24,14 +24,6 @@ import {
   SheetTitle,
   SheetDescription,
 } from "@/components/ui/sheet";
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogFooter,
-  DialogDescription,
-} from "@/components/ui/dialog";
 import {
   Select,
   SelectContent,
@@ -63,6 +55,14 @@ import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { LoadingState } from "@/ui/components/admin/loading-state";
 import { FeatureGate } from "@/ui/components/admin/feature-disabled";
 import {
+  FormDialog,
+  FormField,
+  FormItem,
+  FormLabel,
+  FormControl,
+  FormMessage,
+} from "@/components/form-dialog";
+import {
   friendlyError,
   type FetchError,
 } from "@/ui/hooks/use-admin-fetch";
@@ -90,6 +90,12 @@ const INDUSTRY_LABELS: Record<string, string> = {
   ecommerce: "E-commerce",
   cybersecurity: "Cybersecurity",
 };
+
+const collectionSchema = z.object({
+  name: z.string().min(1, "Name is required"),
+  industry: z.string().min(1, "Industry is required"),
+  description: z.string(),
+});
 
 // -- Page ---------------------------------------------------------------------
 
@@ -121,9 +127,6 @@ export default function PromptsPage() {
     mode: "create" | "edit";
     collection?: PromptCollection;
   }>({ open: false, mode: "create" });
-  const [formName, setFormName] = useState("");
-  const [formIndustry, setFormIndustry] = useState("");
-  const [formDescription, setFormDescription] = useState("");
 
   // Delete confirmation
   const [deleteTarget, setDeleteTarget] = useState<PromptCollection | null>(
@@ -294,20 +297,14 @@ export default function PromptsPage() {
   // -- Actions ----------------------------------------------------------------
 
   function openCreateDialog() {
-    setFormName("");
-    setFormIndustry("");
-    setFormDescription("");
     setCollectionDialog({ open: true, mode: "create" });
   }
 
   function openEditDialog(collection: PromptCollection) {
-    setFormName(collection.name);
-    setFormIndustry(collection.industry);
-    setFormDescription(collection.description);
     setCollectionDialog({ open: true, mode: "edit", collection });
   }
 
-  async function submitCollectionForm() {
+  async function submitCollectionForm(values: z.infer<typeof collectionSchema>) {
     const isEdit = collectionDialog.mode === "edit";
     const path = isEdit
       ? `/api/v1/admin/prompts/${collectionDialog.collection!.id}`
@@ -317,12 +314,11 @@ export default function PromptsPage() {
       path,
       method: isEdit ? "PATCH" : "POST",
       body: {
-        name: formName,
-        industry: formIndustry,
-        description: formDescription,
+        name: values.name,
+        industry: values.industry,
+        description: values.description,
       },
       onSuccess: (updated) => {
-        // Update detail if viewing this collection
         if (detailCollection?.id === updated.id) {
           setDetailCollection(updated);
         }
@@ -787,88 +783,89 @@ export default function PromptsPage() {
       </Sheet>
 
       {/* Create / Edit Collection Dialog */}
-      <Dialog
+      <FormDialog
         open={collectionDialog.open}
         onOpenChange={(open) => {
-          if (!open)
-            setCollectionDialog({ open: false, mode: "create" });
+          if (!open) setCollectionDialog({ open: false, mode: "create" });
         }}
+        title={collectionDialog.mode === "edit" ? "Edit Collection" : "New Collection"}
+        description={
+          collectionDialog.mode === "edit"
+            ? "Update the collection details."
+            : "Create a new prompt collection with starter questions."
+        }
+        schema={collectionSchema}
+        defaultValues={
+          collectionDialog.mode === "edit" && collectionDialog.collection
+            ? { name: collectionDialog.collection.name, industry: collectionDialog.collection.industry, description: collectionDialog.collection.description }
+            : { name: "", industry: "", description: "" }
+        }
+        onSubmit={submitCollectionForm}
+        submitLabel={collectionDialog.mode === "edit" ? "Save Changes" : "Create"}
+        saving={collectionMutation.saving}
+        serverError={collectionMutation.error}
       >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>
-              {collectionDialog.mode === "edit"
-                ? "Edit Collection"
-                : "New Collection"}
-            </DialogTitle>
-            <DialogDescription>
-              {collectionDialog.mode === "edit"
-                ? "Update the collection details."
-                : "Create a new prompt collection with starter questions."}
-            </DialogDescription>
-          </DialogHeader>
+        {(form) => (
+          <>
+            <FormField
+              control={form.control}
+              name="name"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Name</FormLabel>
+                  <FormControl>
+                    <Input placeholder="e.g. Revenue Analysis" {...field} />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
 
-          <div className="space-y-4 py-4">
-            <div className="space-y-2">
-              <Label htmlFor="collection-name">Name</Label>
-              <Input
-                id="collection-name"
-                placeholder="e.g. Revenue Analysis"
-                value={formName}
-                onChange={(e) => setFormName(e.target.value)}
-              />
-            </div>
+            <FormField
+              control={form.control}
+              name="industry"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Industry</FormLabel>
+                  <Select value={field.value} onValueChange={field.onChange}>
+                    <FormControl>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select an industry" />
+                      </SelectTrigger>
+                    </FormControl>
+                    <SelectContent>
+                      {PROMPT_INDUSTRIES.map((ind) => (
+                        <SelectItem key={ind} value={ind}>
+                          {INDUSTRY_LABELS[ind] ?? ind}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
 
-            <div className="space-y-2">
-              <Label htmlFor="collection-industry">Industry</Label>
-              <Select value={formIndustry} onValueChange={setFormIndustry}>
-                <SelectTrigger id="collection-industry">
-                  <SelectValue placeholder="Select an industry" />
-                </SelectTrigger>
-                <SelectContent>
-                  {PROMPT_INDUSTRIES.map((ind) => (
-                    <SelectItem key={ind} value={ind}>
-                      {INDUSTRY_LABELS[ind] ?? ind}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="collection-description">Description</Label>
-              <Textarea
-                id="collection-description"
-                placeholder="What this collection is about..."
-                value={formDescription}
-                onChange={(e) => setFormDescription(e.target.value)}
-                rows={3}
-              />
-            </div>
-          </div>
-
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() =>
-                setCollectionDialog({ open: false, mode: "create" })
-              }
-            >
-              Cancel
-            </Button>
-            <Button
-              onClick={submitCollectionForm}
-              disabled={collectionMutation.saving || !formName.trim() || !formIndustry}
-            >
-              {collectionMutation.saving
-                ? "Saving..."
-                : collectionDialog.mode === "edit"
-                  ? "Save Changes"
-                  : "Create"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+            <FormField
+              control={form.control}
+              name="description"
+              render={({ field }) => (
+                <FormItem>
+                  <FormLabel>Description</FormLabel>
+                  <FormControl>
+                    <Textarea
+                      placeholder="What this collection is about..."
+                      rows={3}
+                      {...field}
+                    />
+                  </FormControl>
+                  <FormMessage />
+                </FormItem>
+              )}
+            />
+          </>
+        )}
+      </FormDialog>
 
       {/* Delete collection confirmation */}
       <AlertDialog

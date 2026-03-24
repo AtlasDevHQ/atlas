@@ -11,6 +11,7 @@
     "gchat",
     "telegram",
     "github",
+    "linear",
     "webhook"
   ]
 }

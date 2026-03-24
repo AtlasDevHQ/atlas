@@ -1,0 +1,218 @@
+---
+title: Linear Bot
+description: Integrate Linear as an interaction surface for Atlas — @mention the bot in issue comments to get data answers rendered as Markdown.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+The Linear interaction is provided via the [`@useatlas/chat`](/plugins/interactions/chat) Chat SDK bridge plugin. Users can @mention the bot in Linear issue comments to query data. The bot replies with a Markdown comment containing the answer, SQL in code fences, and data as a table.
+
+The Chat SDK adapter supports three authentication modes: personal API key, OAuth access token, and OAuth App client credentials. Webhook payloads are verified via HMAC-SHA256 when a webhook secret is configured.
+
+## Prerequisites
+
+- A Linear workspace with API access enabled
+- A publicly accessible HTTPS URL for webhook delivery
+- One of: a personal API key, an OAuth access token, or an OAuth App (client credentials)
+
+## API Key Setup
+
+The simplest approach — suitable for personal bots or testing.
+
+1. Go to **Linear Settings** > **Security & Access** > **Personal API keys**
+2. Create a new API key with appropriate scope
+3. Save the key securely as `LINEAR_API_KEY`
+
+## OAuth App Setup (Recommended)
+
+OAuth App auth uses client credentials for automatic token management. Recommended for production.
+
+### 1. Create an OAuth Application
+
+1. Go to **Linear Settings** > **API** > **OAuth applications** > **Create application**
+2. Fill in the application name, description, and redirect URI
+3. Note the **Client ID** and **Client Secret**
+
+### 2. Configure Scopes
+
+The application needs the following scopes:
+- **Read** access to issues and comments
+- **Write** access to comments (for posting replies)
+
+<Callout type="warn">
+The client secret grants full access to your Linear OAuth application's permissions. Store it securely and never commit it to source control.
+</Callout>
+
+## Webhook Setup
+
+1. Go to **Linear Settings** > **API** > **Webhooks** > **Create webhook**
+2. Set the **URL** to your Atlas API endpoint:
+   ```
+   https://your-atlas-api.example.com/api/plugins/chat-interaction/webhooks/linear
+   ```
+3. Set a **Signing secret** and save it securely as `LINEAR_WEBHOOK_SECRET`
+4. Under **Resource types**, enable:
+   - **Comment** — for issue comment events
+5. Click **Create webhook**
+
+## Configuration
+
+### API Key Auth
+
+```typescript
+import { defineConfig } from "@atlas/api/lib/config";
+import { executeAgentQuery } from "@atlas/api/lib/agent-query";
+import { chatPlugin } from "@useatlas/chat";
+
+export default defineConfig({
+  plugins: [
+    chatPlugin({
+      adapters: {
+        linear: {
+          apiKey: process.env.LINEAR_API_KEY!,
+          webhookSecret: process.env.LINEAR_WEBHOOK_SECRET!,
+          userName: "atlas-bot",
+        },
+      },
+      executeQuery: executeAgentQuery,
+    }),
+  ],
+});
+```
+
+### OAuth Access Token
+
+```typescript
+chatPlugin({
+  adapters: {
+    linear: {
+      accessToken: process.env.LINEAR_ACCESS_TOKEN!,
+      webhookSecret: process.env.LINEAR_WEBHOOK_SECRET!,
+    },
+  },
+  executeQuery: executeAgentQuery,
+})
+```
+
+### OAuth App (Client Credentials)
+
+```typescript
+chatPlugin({
+  adapters: {
+    linear: {
+      clientId: process.env.LINEAR_CLIENT_ID!,
+      clientSecret: process.env.LINEAR_CLIENT_SECRET!,
+      webhookSecret: process.env.LINEAR_WEBHOOK_SECRET!,
+    },
+  },
+  executeQuery: executeAgentQuery,
+})
+```
+
+### Options
+
+| Option | Type | Required | Description |
+|--------|------|----------|-------------|
+| `apiKey` | `string` | Yes* | Personal API key from Linear Settings. |
+| `accessToken` | `string` | Yes* | Pre-obtained OAuth access token. |
+| `clientId` | `string` | Yes* | OAuth application client ID. |
+| `clientSecret` | `string` | Yes* | OAuth application client secret. Required with `clientId`. |
+| `webhookSecret` | `string` | Yes** | Webhook signing secret for HMAC-SHA256 verification. Required by the upstream adapter unless `LINEAR_WEBHOOK_SECRET` env var is set. |
+| `userName` | `string` | No | Bot display name for @-mention detection. Defaults to `LINEAR_BOT_USERNAME` env var or `"linear-bot"`. |
+
+<Callout type="info">
+\* Provide exactly one auth mode: `apiKey`, `accessToken`, or `clientId` + `clientSecret`. Do not combine them.
+
+\*\* The `webhookSecret` can be provided via config or the `LINEAR_WEBHOOK_SECRET` environment variable. The upstream `@chat-adapter/linear` requires it — initialization will fail if neither is set.
+</Callout>
+
+## Mounted Routes
+
+The Chat SDK bridge mounts the following route for Linear:
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/webhooks/linear` | Linear webhook — receives issue comment events |
+
+## How It Works
+
+### @Mentions in Issue Comments
+
+1. A user @mentions the bot in a Linear issue comment
+2. Linear sends a `Comment` webhook to the `/webhooks/linear` endpoint
+3. The adapter subscribes the thread for follow-ups
+4. The `executeQuery` callback runs the Atlas agent
+5. Results are posted as a Markdown comment: answer text, SQL in code fences, data as a table
+
+### Threaded Follow-ups
+
+1. After an initial response, the comment thread is subscribed via the Chat SDK state adapter
+2. Follow-up replies in the same thread trigger new queries with conversation history
+3. The agent has context from prior messages for multi-turn analysis
+
+### Comment Threading
+
+Linear supports two levels of threading:
+- **Issue-level**: Top-level comments on the issue
+- **Comment thread**: Replies nested under a specific root comment
+
+The adapter handles both — replies to the bot's comments are threaded under the original response.
+
+### Streaming
+
+When `executeQueryStream` is configured, the adapter accumulates the full streamed response and posts it as a single comment once complete. Like GitHub, there are no progressive edits — the `chunkIntervalMs` setting has no effect on Linear.
+
+### Actions and Buttons
+
+Linear does not support interactive buttons or card actions. Approval prompts (pending actions) are not rendered on this platform. If your workflow requires approval flows, use a platform that supports interactive cards (Slack, Teams, Discord).
+
+### Response Format
+
+Responses are rendered as Markdown:
+
+- **Answer text** as plain markdown
+- **SQL queries** in ` ```sql ` code fences
+- **Data tables** as Markdown tables
+- **Reactions** supported (emoji reactions on comments)
+
+Linear does not support rich cards or interactive buttons. The Chat SDK adapter automatically uses the markdown fallback format.
+
+## Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `LINEAR_API_KEY` | Personal API key (for API key auth) |
+| `LINEAR_ACCESS_TOKEN` | OAuth access token (for OAuth token auth) |
+| `LINEAR_CLIENT_ID` | OAuth application client ID (for OAuth App auth) |
+| `LINEAR_CLIENT_SECRET` | OAuth application client secret (for OAuth App auth) |
+| `LINEAR_WEBHOOK_SECRET` | Webhook signing secret for HMAC-SHA256 verification |
+| `LINEAR_BOT_USERNAME` | Bot display name for @-mention detection (optional) |
+
+## Troubleshooting
+
+### Bot not responding to @mentions
+
+1. Verify the webhook is configured and delivering successfully in Linear Settings > API > Webhooks
+2. Check that the webhook URL is publicly accessible over HTTPS
+3. Ensure the **Comment** resource type is enabled on the webhook
+4. Check Atlas logs for initialization errors
+
+### Webhook signature verification failures
+
+Ensure the `webhookSecret` in your Atlas config matches the signing secret configured in Linear webhook settings. The comparison is case-sensitive.
+
+### Bot replying to its own messages
+
+The adapter uses the bot's user ID for self-message detection. For API key auth, set `userName` to match the account's Linear display name. For OAuth App auth, this is the application name.
+
+### Rate limiting
+
+Linear's API has rate limits (documented in their API reference). The Chat SDK adapter handles rate limit responses and retries automatically. For high-traffic workspaces, OAuth App auth is recommended.
+
+## Reference
+
+- [Linear API documentation](https://linear.app/developers)
+- [Linear webhooks documentation](https://linear.app/developers/webhooks)
+- [Linear OAuth documentation](https://linear.app/developers/oauth-2-0-authentication)
+- [Chat SDK Bridge plugin](/plugins/interactions/chat)
+- [Chat SDK documentation](https://chat-sdk.dev/docs)

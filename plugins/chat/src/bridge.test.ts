@@ -2619,3 +2619,324 @@ describe("buildQueryResultCard quick-action buttons", () => {
     expect(fallbackText).not.toContain("re-send the same question");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Linear adapter config validation
+// ---------------------------------------------------------------------------
+
+describe("chatPlugin Linear adapter config", () => {
+  const mockExecuteQueryFn = async () => ({
+    answer: "test",
+    sql: [] as string[],
+    data: [] as { columns: string[]; rows: Record<string, unknown>[] }[],
+    steps: 1,
+    usage: { totalTokens: 10 },
+  });
+
+  it("accepts valid config with apiKey auth", async () => {
+    const { chatPlugin } = await import("./index");
+
+    const plugin = chatPlugin({
+      adapters: {
+        linear: { apiKey: "lin_api_test123" },
+      },
+      executeQuery: mockExecuteQueryFn,
+    });
+
+    expect(plugin.id).toBe("chat-interaction");
+    expect(plugin.types).toEqual(["interaction"]);
+  });
+
+  it("accepts valid config with accessToken auth", async () => {
+    const { chatPlugin } = await import("./index");
+
+    const plugin = chatPlugin({
+      adapters: {
+        linear: { accessToken: "lin_oauth_test123" },
+      },
+      executeQuery: mockExecuteQueryFn,
+    });
+
+    expect(plugin.id).toBe("chat-interaction");
+  });
+
+  it("accepts valid config with clientId + clientSecret auth", async () => {
+    const { chatPlugin } = await import("./index");
+
+    const plugin = chatPlugin({
+      adapters: {
+        linear: { clientId: "test-client-id", clientSecret: "test-client-secret" },
+      },
+      executeQuery: mockExecuteQueryFn,
+    });
+
+    expect(plugin.id).toBe("chat-interaction");
+  });
+
+  it("accepts config with optional webhookSecret and userName", async () => {
+    const { chatPlugin } = await import("./index");
+
+    const plugin = chatPlugin({
+      adapters: {
+        linear: {
+          apiKey: "lin_api_test123",
+          webhookSecret: "whsec_test",
+          userName: "atlas-bot",
+        },
+      },
+      executeQuery: mockExecuteQueryFn,
+    });
+
+    expect(plugin.id).toBe("chat-interaction");
+  });
+
+  it("rejects config with no credentials", async () => {
+    const { chatPlugin } = await import("./index");
+
+    expect(() =>
+      chatPlugin({
+        adapters: {
+          linear: {} as { apiKey: string },
+        },
+        executeQuery: mockExecuteQueryFn,
+      }),
+    ).toThrow(/credential/i);
+  });
+
+  it("rejects config with empty apiKey", async () => {
+    const { chatPlugin } = await import("./index");
+
+    expect(() =>
+      chatPlugin({
+        adapters: {
+          linear: { apiKey: "" } as { apiKey: string },
+        },
+        executeQuery: mockExecuteQueryFn,
+      }),
+    ).toThrow(/apiKey/i);
+  });
+
+  it("rejects config with clientId but no clientSecret", async () => {
+    const { chatPlugin } = await import("./index");
+
+    expect(() =>
+      chatPlugin({
+        adapters: {
+          linear: { clientId: "test-id" } as { clientId: string; clientSecret: string },
+        },
+        executeQuery: mockExecuteQueryFn,
+      }),
+    ).toThrow(/clientSecret/i);
+  });
+
+  it("rejects config with clientSecret but no clientId", async () => {
+    const { chatPlugin } = await import("./index");
+
+    expect(() =>
+      chatPlugin({
+        adapters: {
+          linear: { clientSecret: "test-secret" } as { clientId: string; clientSecret: string },
+        },
+        executeQuery: mockExecuteQueryFn,
+      }),
+    ).toThrow(/clientId/i);
+  });
+
+  it("rejects config with multiple auth modes (apiKey + accessToken)", async () => {
+    const { chatPlugin } = await import("./index");
+
+    expect(() =>
+      chatPlugin({
+        adapters: {
+          linear: { apiKey: "key", accessToken: "token" } as { apiKey: string },
+        },
+        executeQuery: mockExecuteQueryFn,
+      }),
+    ).toThrow(/one auth mode/i);
+  });
+
+  it("rejects config with multiple auth modes (apiKey + clientId)", async () => {
+    const { chatPlugin } = await import("./index");
+
+    expect(() =>
+      chatPlugin({
+        adapters: {
+          linear: { apiKey: "key", clientId: "id", clientSecret: "sec" } as { apiKey: string },
+        },
+        executeQuery: mockExecuteQueryFn,
+      }),
+    ).toThrow(/one auth mode/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Linear adapter factory
+// ---------------------------------------------------------------------------
+
+describe("createLinearAdapter", () => {
+  it("creates adapter with apiKey auth", async () => {
+    const { createLinearAdapter } = await import("./adapters/linear");
+
+    const adapter = createLinearAdapter({
+      apiKey: "lin_api_test123",
+      webhookSecret: "whsec_test",
+      userName: "atlas-bot",
+    });
+    expect(adapter).toBeDefined();
+    expect(adapter.name).toBe("linear");
+  });
+
+  it("creates adapter with accessToken auth", async () => {
+    const { createLinearAdapter } = await import("./adapters/linear");
+
+    const adapter = createLinearAdapter({
+      accessToken: "lin_oauth_test",
+      webhookSecret: "whsec_test",
+    });
+    expect(adapter).toBeDefined();
+    expect(adapter.name).toBe("linear");
+  });
+
+  it("creates adapter with clientId + clientSecret auth", async () => {
+    const { createLinearAdapter } = await import("./adapters/linear");
+
+    const adapter = createLinearAdapter({
+      clientId: "test-client-id",
+      clientSecret: "test-client-secret",
+      webhookSecret: "whsec_test",
+    });
+    expect(adapter).toBeDefined();
+    expect(adapter.name).toBe("linear");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Linear webhook route guard
+// ---------------------------------------------------------------------------
+
+describe("linear webhook route guard", () => {
+  it("linear webhook returns 503 before initialization", async () => {
+    const { buildChatPlugin } = require("./index");
+    const { Hono } = require("hono");
+
+    const plugin = buildChatPlugin({
+      adapters: {
+        linear: { apiKey: "lin_api_test123" },
+      },
+      executeQuery: async () => ({
+        answer: "test",
+        sql: [],
+        data: [],
+        steps: 1,
+        usage: { totalTokens: 10 },
+      }),
+    });
+
+    const app = new Hono();
+    plugin.routes!(app);
+
+    const resp = await app.request("/webhooks/linear", { method: "POST" });
+    expect(resp.status).toBe(503);
+    const body = await resp.json();
+    expect(body.error).toContain("not yet initialized");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Linear adapter lifecycle
+// ---------------------------------------------------------------------------
+
+describe("chat plugin Linear lifecycle", () => {
+  function createLinearTestPlugin(opts?: { omitWebhookSecret?: boolean }) {
+    const { buildChatPlugin } = require("./index");
+    return buildChatPlugin({
+      adapters: {
+        linear: {
+          apiKey: "lin_api_test123",
+          ...(opts?.omitWebhookSecret ? {} : { webhookSecret: "whsec_test" }),
+        },
+      },
+      executeQuery: async () => ({
+        answer: "test answer",
+        sql: ["SELECT 1"],
+        data: [],
+        steps: 1,
+        usage: { totalTokens: 50 },
+      }),
+    });
+  }
+
+  it("healthCheck returns unhealthy before initialization", async () => {
+    const plugin = createLinearTestPlugin();
+    const result = await plugin.healthCheck!();
+    expect(result.healthy).toBe(false);
+    expect(result.message).toContain("not initialized");
+  });
+
+  it("initialize sets up the bridge with linear adapter", async () => {
+    const plugin = createLinearTestPlugin();
+    const logs: string[] = [];
+
+    await plugin.initialize!({
+      db: null,
+      connections: { get: () => { throw new Error("unused"); }, list: () => [] },
+      tools: { register: () => {} },
+      logger: {
+        info: (msg: unknown) => logs.push(typeof msg === "string" ? msg : JSON.stringify(msg)),
+        warn: () => {},
+        error: () => {},
+        debug: () => {},
+      },
+      config: {},
+    });
+
+    const result = await plugin.healthCheck!();
+    expect(result.healthy).toBe(true);
+    expect(result.message).toContain("linear");
+  });
+
+  it("double initialize throws with linear adapter", async () => {
+    const plugin = createLinearTestPlugin();
+    const ctx = {
+      db: null,
+      connections: { get: () => { throw new Error("unused"); }, list: () => [] },
+      tools: { register: () => {} },
+      logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+      config: {},
+    };
+
+    await plugin.initialize!(ctx);
+    await expect(plugin.initialize!(ctx)).rejects.toThrow(/already initialized/);
+  });
+
+  it("teardown cleans up linear adapter", async () => {
+    const plugin = createLinearTestPlugin();
+
+    await plugin.initialize!({
+      db: null,
+      connections: { get: () => { throw new Error("unused"); }, list: () => [] },
+      tools: { register: () => {} },
+      logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+      config: {},
+    });
+
+    await plugin.teardown!();
+
+    const result = await plugin.healthCheck!();
+    expect(result.healthy).toBe(false);
+  });
+
+  it("initialization fails when webhookSecret is missing (upstream requires it)", async () => {
+    const plugin = createLinearTestPlugin({ omitWebhookSecret: true });
+
+    await expect(
+      plugin.initialize!({
+        db: null,
+        connections: { get: () => { throw new Error("unused"); }, list: () => [] },
+        tools: { register: () => {} },
+        logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+        config: {},
+      }),
+    ).rejects.toThrow(/webhookSecret/i);
+  });
+});

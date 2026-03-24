@@ -1,6 +1,6 @@
 ---
 title: Chat SDK Bridge
-description: Unified chat interaction plugin bridging Slack, Teams, Discord, Telegram, and more into Atlas via Chat SDK adapters.
+description: Unified chat interaction plugin bridging Slack, Teams, Discord, Telegram, Linear, and more into Atlas via Chat SDK adapters.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
@@ -31,6 +31,7 @@ bun add @useatlas/chat
 | Google Chat | `@chat-adapter/gchat` | Stable |
 | Telegram | `@chat-adapter/telegram` | Stable |
 | GitHub | `@chat-adapter/github` | Stable |
+| Linear | `@chat-adapter/linear` | Stable |
 
 Stable adapters are bundled as dependencies of `@useatlas/chat` — no separate install needed. Additional platforms (WhatsApp) are planned and will be supported as Chat SDK adapters are published.
 
@@ -112,6 +113,12 @@ export default defineConfig({
 | `adapters.github.token` | `string` | Yes* | Personal Access Token (alternative to App auth). |
 | `adapters.github.webhookSecret` | `string` | No | Webhook secret for HMAC-SHA256 verification. |
 | `adapters.github.userName` | `string` | No | Bot username for @-mention detection. |
+| `adapters.linear.apiKey` | `string` | Yes* | Personal API key from Linear Settings. |
+| `adapters.linear.accessToken` | `string` | Yes* | Pre-obtained OAuth access token. |
+| `adapters.linear.clientId` | `string` | Yes* | OAuth application client ID. |
+| `adapters.linear.clientSecret` | `string` | Yes* | OAuth application client secret. Required with `clientId`. |
+| `adapters.linear.webhookSecret` | `string` | No | Webhook signing secret for HMAC-SHA256 verification. |
+| `adapters.linear.userName` | `string` | No | Bot display name for @-mention detection. |
 | `state` | `object` | No | State backend config (default: `{ backend: "memory" }`). |
 | `state.backend` | `"memory" \| "pg" \| "redis"` | No | State backend to use. Default: `"memory"`. |
 | `state.tablePrefix` | `string` | No | Table name prefix for PG backend. Must be a valid SQL identifier. Default: `"chat_"`. |
@@ -172,7 +179,7 @@ The plugin bridges Chat SDK events to the Atlas agent:
 
 ### Rich Cards
 
-Query results render as platform-native cards using the Chat SDK JSX runtime. Cards include the answer, SQL code block, data table preview, and metadata (steps, tokens). On platforms that don't support rich cards (WhatsApp), a markdown fallback is sent automatically. Telegram and GitHub receive formatted text with the markdown fallback.
+Query results render as platform-native cards using the Chat SDK JSX runtime. Cards include the answer, SQL code block, data table preview, and metadata (steps, tokens). On platforms that don't support rich cards (WhatsApp), a markdown fallback is sent automatically. Telegram, GitHub, and Linear receive formatted text with the markdown fallback.
 
 Card components are exported for host customization:
 
@@ -209,11 +216,11 @@ Buttons are rendered as platform-native interactive components (Block Kit button
 
 ### Interactive Capabilities by Platform
 
-| Feature | Slack | Teams | Discord | Google Chat | Telegram |
-|---------|-------|-------|---------|-------------|----------|
-| Slash commands | Yes | Yes | Yes | Yes | Yes |
-| Action buttons | Yes | Yes | Yes | Yes | Partial (inline keyboard) |
-| Modals | Yes | No | No | No | No |
+| Feature | Slack | Teams | Discord | Google Chat | Telegram | GitHub | Linear |
+|---------|-------|-------|---------|-------------|----------|--------|--------|
+| Slash commands | Yes | Yes | Yes | Yes | Yes | No | No |
+| Action buttons | Yes | Yes | Yes | Yes | Partial (inline keyboard) | No | No |
+| Modals | Yes | No | No | No | No | No | No |
 
 ### Slack Modals
 
@@ -242,6 +249,7 @@ When `executeQueryStream` is provided and `streaming.enabled` is not `false`, th
 - **Teams, Discord, Google Chat** — Posts an initial message then edits it with new content at the configured `chunkIntervalMs` interval (post + edit pattern)
 - **Telegram** — Posts an initial message then progressively edits it (same post + edit pattern)
 - **GitHub** — Accumulates the full stream and posts as a single comment (no progressive edits due to API constraints)
+- **Linear** — Accumulates the full stream and posts as a single comment (same as GitHub)
 
 The bridge passes the async iterable from `executeQueryStream` directly to Chat SDK's `thread.post()`, which automatically selects the best transport per platform.
 
@@ -311,6 +319,7 @@ The `chunkIntervalMs` setting controls how frequently messages are edited on pla
 | `POST` | `/webhooks/gchat` | Google Chat webhook (@mentions, DMs, card clicks, Pub/Sub) |
 | `POST` | `/webhooks/telegram` | Telegram webhook (messages, @mentions, commands, callback queries) |
 | `POST` | `/webhooks/github` | GitHub webhook (issue comments, PR comments, review comments) |
+| `POST` | `/webhooks/linear` | Linear webhook (issue comment events) |
 | `GET` | `/oauth/slack/install` | Slack OAuth install redirect (only when `clientId` configured) |
 | `GET` | `/oauth/slack/callback` | Slack OAuth callback (only when `clientId` configured) |
 
@@ -341,6 +350,11 @@ Routes are mounted under the plugin's base path (e.g., `/api/plugins/chat-intera
 | `GITHUB_INSTALLATION_ID` | Installation ID for single-tenant mode (optional) |
 | `GITHUB_TOKEN` | Personal Access Token (for PAT auth) |
 | `GITHUB_WEBHOOK_SECRET` | Webhook secret for HMAC-SHA256 verification |
+| `LINEAR_API_KEY` | Linear personal API key (for API key auth) |
+| `LINEAR_ACCESS_TOKEN` | Linear OAuth access token (for OAuth token auth) |
+| `LINEAR_CLIENT_ID` | Linear OAuth application client ID (for OAuth App auth) |
+| `LINEAR_CLIENT_SECRET` | Linear OAuth application client secret (for OAuth App auth) |
+| `LINEAR_WEBHOOK_SECRET` | Linear webhook signing secret for HMAC-SHA256 verification |
 | `DATABASE_URL` | Required for `pg` state backend |
 
 ## Error Scrubbing
@@ -439,3 +453,4 @@ Routes return 503 if the plugin hasn't finished initializing. This is normal dur
 - [Google Chat bot setup](/plugins/interactions/gchat)
 - [Telegram bot setup](/plugins/interactions/telegram)
 - [GitHub bot setup](/plugins/interactions/github)
+- [Linear bot setup](/plugins/interactions/linear)

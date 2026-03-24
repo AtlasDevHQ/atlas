@@ -34,10 +34,8 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { ErrorBanner } from "@/ui/components/admin/error-banner";
-import { LoadingState } from "@/ui/components/admin/loading-state";
-import { FeatureGate } from "@/ui/components/admin/feature-disabled";
-import { useAdminFetch, friendlyError } from "@/ui/hooks/use-admin-fetch";
+import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
+import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { KeyRound, Plus, Pencil, Trash2, Loader2, Lock, Users } from "lucide-react";
@@ -340,19 +338,6 @@ export default function RolesPage() {
   const builtinRoles = roles.filter((r) => r.isBuiltin);
   const customRoles = roles.filter((r) => !r.isBuiltin);
 
-  // Gate: 401/403/404
-  if (!loading && error?.status && [401, 403, 404].includes(error.status)) {
-    return (
-      <div className="flex h-[calc(100dvh-3rem)] flex-col">
-        <div className="border-b px-6 py-4">
-          <h1 className="text-2xl font-bold tracking-tight">Roles</h1>
-          <p className="text-sm text-muted-foreground">Manage roles and permissions</p>
-        </div>
-        <FeatureGate status={error.status as 401 | 403 | 404} feature="Custom Roles" />
-      </div>
-    );
-  }
-
   return (
     <div className="flex h-[calc(100dvh-3rem)] flex-col">
       <div className="flex items-center justify-between border-b px-6 py-4">
@@ -370,11 +355,16 @@ export default function RolesPage() {
 
       <ErrorBoundary>
         <div className="flex-1 overflow-auto p-6">
-          {error && <ErrorBanner message={friendlyError(error)} onRetry={refetch} />}
-
-          {loading ? (
-            <LoadingState message="Loading roles..." />
-          ) : (
+          <AdminContentWrapper
+            loading={loading}
+            error={error}
+            feature="Custom Roles"
+            onRetry={refetch}
+            loadingMessage="Loading roles..."
+            emptyIcon={KeyRound}
+            emptyTitle="No roles configured"
+            isEmpty={false}
+          >
             <div className="space-y-6">
               {/* Built-in Roles */}
               <Card className="shadow-none">
@@ -512,7 +502,7 @@ export default function RolesPage() {
                 </CardContent>
               </Card>
             </div>
-          )}
+          </AdminContentWrapper>
         </div>
       </ErrorBoundary>
 

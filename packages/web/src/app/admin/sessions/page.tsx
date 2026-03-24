@@ -12,12 +12,10 @@ import { useDataTable } from "@/hooks/use-data-table";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { StatCard } from "@/ui/components/admin/stat-card";
-import { EmptyState } from "@/ui/components/admin/empty-state";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
-import { LoadingState } from "@/ui/components/admin/loading-state";
-import { FeatureGate } from "@/ui/components/admin/feature-disabled";
+import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { Monitor, Search, X, Users, Activity, Trash2 } from "lucide-react";
-import { useAdminFetch, friendlyError, type FetchError } from "@/ui/hooks/use-admin-fetch";
+import { useAdminFetch, type FetchError } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import {
@@ -149,19 +147,6 @@ export default function SessionsPage() {
     table.resetRowSelection();
   }
 
-  // Auth/feature gate
-  if (!loading && error?.status && [401, 403, 404].includes(error.status)) {
-    return (
-      <div className="flex h-[calc(100dvh-3rem)] flex-col">
-        <div className="border-b px-6 py-4">
-          <h1 className="text-2xl font-bold tracking-tight">Sessions</h1>
-          <p className="text-sm text-muted-foreground">Manage active user sessions</p>
-        </div>
-        <FeatureGate status={error.status as 401 | 403 | 404} feature="Sessions" />
-      </div>
-    );
-  }
-
   const hasFilters = !!search;
   const selectedCount = table.getSelectedRowModel().rows.length;
 
@@ -240,36 +225,31 @@ export default function SessionsPage() {
             )}
           </div>
 
-          {/* Content */}
           {revokeError && (
             <ErrorBanner message={revokeError} onRetry={() => setFetchKey((k) => k + 1)} />
           )}
-          {error && !error.status ? (
-            <ErrorBanner message={friendlyError(error)} onRetry={() => setFetchKey((k) => k + 1)} />
-          ) : loading ? (
-            <div className="flex h-64 items-center justify-center">
-              <LoadingState message="Loading sessions..." />
-            </div>
-          ) : rows.length === 0 && !hasFilters ? (
-            <EmptyState
-              icon={Monitor}
-              title="No active sessions"
-              description="Sessions will appear here when users sign in."
-            />
-          ) : rows.length === 0 && hasFilters ? (
-            <EmptyState
-              icon={Search}
-              title="No matching sessions"
-              description="Try adjusting your search."
-            />
-          ) : (
+          <AdminContentWrapper
+            loading={loading}
+            error={error}
+            feature="Sessions"
+            onRetry={() => setFetchKey((k) => k + 1)}
+            loadingMessage="Loading sessions..."
+            emptyIcon={Monitor}
+            emptyTitle="No active sessions"
+            emptyDescription="Sessions will appear here when users sign in."
+            hasFilters={hasFilters}
+            onClearFilters={() => {
+              table.setPageIndex(0);
+              setParams({ search: "" });
+            }}
+            isEmpty={rows.length === 0}
+          >
             <DataTable table={table}>
               <DataTableToolbar table={table}>
                 <DataTableSortList table={table} />
               </DataTableToolbar>
-              {/* Action column — rendered per-row via custom cell */}
             </DataTable>
-          )}
+          </AdminContentWrapper>
         </div>
       </ErrorBoundary>
     </div>

@@ -138,7 +138,7 @@ export default function CachePage() {
             emptyTitle="No cache data available"
             isEmpty={!data}
           >
-            <div className="space-y-6">
+            {data && <div className="space-y-6">
               {/* Disabled notice */}
               {!data.enabled && (
                 <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-sm text-amber-700 dark:text-amber-300">
@@ -262,7 +262,7 @@ export default function CachePage() {
                   </AlertDialog>
                 </CardContent>
               </Card>
-            </div>
+            </div>}
           </AdminContentWrapper>
         </div>
       </ErrorBoundary>

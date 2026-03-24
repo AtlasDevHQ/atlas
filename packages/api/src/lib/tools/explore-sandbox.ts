@@ -10,11 +10,10 @@
  */
 
 import type { ExploreBackend, ExecResult } from "./backends/types";
-import { sandboxErrorDetail } from "./backends/shared";
+import { sandboxErrorDetail, safeError } from "./backends/shared";
 import * as path from "path";
 import * as fs from "fs";
 import { createLogger } from "@atlas/api/lib/logger";
-import { SENSITIVE_PATTERNS } from "@atlas/api/lib/security";
 
 const log = createLogger("explore-sandbox");
 
@@ -162,11 +161,8 @@ export async function createSandboxBackend(
       } catch (err) {
         const detail = sandboxErrorDetail(err);
         log.error({ err: detail, dir }, "Failed to create directory in sandbox");
-        const safeDetail = SENSITIVE_PATTERNS.test(detail)
-          ? "sandbox API error (details in server logs)"
-          : detail;
         throw new Error(
-          `Failed to create directory "${dir}" in sandbox: ${safeDetail}.`,
+          `Failed to create directory "${dir}" in sandbox: ${safeError(detail)}.`,
           { cause: err },
         );
       }
@@ -177,11 +173,8 @@ export async function createSandboxBackend(
     } catch (err) {
       const detail = sandboxErrorDetail(err);
       log.error({ err: detail, fileCount: files.length }, "Failed to write files into sandbox");
-      const safeDetail = SENSITIVE_PATTERNS.test(detail)
-        ? "sandbox API error (details in server logs)"
-        : detail;
       throw new Error(
-        `Failed to upload ${files.length} semantic files to sandbox: ${safeDetail}.`,
+        `Failed to upload ${files.length} semantic files to sandbox: ${safeError(detail)}.`,
         { cause: err }
       );
     }

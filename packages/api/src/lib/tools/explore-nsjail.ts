@@ -11,109 +11,16 @@
  */
 
 import type { ExploreBackend, ExecResult } from "./backends/types";
-import { readLimited, MAX_OUTPUT, parsePositiveInt } from "./backends/shared";
-import { findNsjailBinary } from "./backends/nsjail";
+import { readLimited, MAX_OUTPUT } from "./backends/shared";
+import { findNsjailBinary, buildNsjailArgs } from "./backends/nsjail";
 import { createLogger } from "@atlas/api/lib/logger";
 import * as fs from "fs";
 
 const log = createLogger("nsjail-sandbox");
 
 // Re-export nsjail detection utilities for backward compatibility.
-// startup.ts and python.ts dynamically import these from this module path.
+// startup.ts dynamically imports these from this module path.
 export { findNsjailBinary, isNsjailAvailable, testNsjailCapabilities } from "./backends/nsjail";
-
-/** Build the nsjail CLI args for a single command execution. */
-function buildNsjailArgs(
-  nsjailPath: string,
-  semanticRoot: string,
-  command: string,
-): string[] {
-  const timeLimit = parsePositiveInt(
-    "ATLAS_NSJAIL_TIME_LIMIT",
-    10,
-    "time limit",
-    log,
-  );
-  const memoryLimit = parsePositiveInt(
-    "ATLAS_NSJAIL_MEMORY_LIMIT",
-    256,
-    "memory limit",
-    log,
-  );
-
-  return [
-    nsjailPath,
-    "--mode",
-    "o",
-
-    // Read-only bind mounts
-    "-R",
-    `${semanticRoot}:/semantic`,
-    "-R",
-    "/bin",
-    "-R",
-    "/usr/bin",
-    "-R",
-    "/lib",
-    "-R",
-    "/lib64",
-    "-R",
-    "/usr/lib",
-
-    // Minimal /dev
-    "-R",
-    "/dev/null",
-    "-R",
-    "/dev/zero",
-    "-R",
-    "/dev/urandom",
-
-    // /proc for correct namespace operation
-    "--proc_path",
-    "/proc",
-
-    // Writable tmpfs for scratch
-    "-T",
-    "/tmp",
-
-    // Working directory
-    "--cwd",
-    "/semantic",
-
-    // Network namespace is enabled by default in nsjail (no network access).
-    // Older versions used --clone_newnet to opt in; current versions use
-    // --disable_clone_newnet to opt out. No flag needed.
-
-    // Time limit
-    "-t",
-    String(timeLimit),
-
-    // Resource limits
-    "--rlimit_as",
-    String(memoryLimit),
-    "--rlimit_fsize",
-    "10",
-    "--rlimit_nproc",
-    "5",
-    "--rlimit_nofile",
-    "64",
-
-    // Run as nobody
-    "-u",
-    "65534",
-    "-g",
-    "65534",
-
-    // Suppress nsjail info logs but keep error diagnostics
-    "--quiet",
-
-    // Command to execute
-    "--",
-    "/bin/bash",
-    "-c",
-    command,
-  ];
-}
 
 /** Minimal env passed into the jail — no secrets. */
 const JAIL_ENV: Record<string, string> = {
@@ -160,7 +67,7 @@ export async function createNsjailBackend(
     exec: async (command: string): Promise<ExecResult> => {
       let proc;
       try {
-        const args = buildNsjailArgs(nsjailPath, semanticRoot, command);
+        const args = buildNsjailArgs(nsjailPath, semanticRoot, command, log);
         proc = Bun.spawn(args, {
           env: JAIL_ENV,
           stdout: "pipe",

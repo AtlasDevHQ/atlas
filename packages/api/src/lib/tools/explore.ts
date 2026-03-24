@@ -30,7 +30,7 @@ import { useVercelSandbox, useSidecar } from "./backends/detect";
 
 const log = createLogger("explore");
 
-// --- Backend interface (canonical source: backends/types.ts) ---
+// --- Backend interface (canonical source: ./backends/types.ts) ---
 
 export type { ExecResult, ExploreBackend } from "./backends/types";
 import type { ExploreBackend } from "./backends/types";

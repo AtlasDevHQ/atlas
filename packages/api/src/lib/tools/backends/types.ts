@@ -1,9 +1,9 @@
 /**
  * Shared types for sandbox backends.
  *
- * Canonical definitions for the explore backend interface. Both explore
- * and python tools import from here; plugins/wiring.ts uses ExploreBackend
- * as the type for sandbox plugin backends.
+ * Canonical definitions for the explore backend interface. Explore tool
+ * backends import from here; plugins/wiring.ts uses ExploreBackend as
+ * the type for sandbox plugin backends.
  */
 
 export interface ExecResult {

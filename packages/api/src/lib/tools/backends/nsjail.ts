@@ -1,20 +1,17 @@
 /**
- * Shared nsjail detection and capability testing.
+ * Shared nsjail detection, args building, and capability testing.
  *
  * These functions are nsjail-platform-generic — they detect whether nsjail
  * is available and can create namespaces. Both explore and python backends
- * use them, as does startup.ts for pre-flight checks.
- *
- * Extracted from explore-nsjail.ts to eliminate the cross-tool dependency
- * where python.ts and startup.ts imported nsjail detection from an
- * explore-specific module.
+ * use them, as does startup.ts (via explore-nsjail.ts re-exports) for
+ * pre-flight checks. python.ts imports directly from this module.
  */
 
 import * as fs from "fs";
 import { createLogger } from "@atlas/api/lib/logger";
 import { readLimited, MAX_OUTPUT, parsePositiveInt } from "./shared";
 
-const log = createLogger("nsjail");
+const log = createLogger("nsjail-sandbox");
 
 /** Resolve the nsjail binary path, or null if unavailable. */
 export function findNsjailBinary(): string | null {
@@ -44,6 +41,7 @@ export function findNsjailBinary(): string | null {
       fs.accessSync(candidate, fs.constants.X_OK);
       return candidate;
     } catch {
+      // intentionally ignored: file not found/not executable is the expected case when scanning PATH
       continue;
     }
   }
@@ -56,23 +54,35 @@ export function isNsjailAvailable(): boolean {
   return findNsjailBinary() !== null;
 }
 
-/** Build minimal nsjail args for a capability test (echo nsjail-ok). */
-function buildTestArgs(
+/** Logger interface for buildNsjailArgs — avoids coupling to pino. */
+interface NsjailLogger {
+  warn: (...args: unknown[]) => void;
+}
+
+/**
+ * Build the nsjail CLI args for a single command execution.
+ *
+ * Shared between testNsjailCapabilities (capability check) and
+ * createNsjailBackend (real execution) so both exercise the exact
+ * same namespace config.
+ */
+export function buildNsjailArgs(
   nsjailPath: string,
   semanticRoot: string,
   command: string,
+  nsjailLog: NsjailLogger = log,
 ): string[] {
   const timeLimit = parsePositiveInt(
     "ATLAS_NSJAIL_TIME_LIMIT",
     10,
     "time limit",
-    log,
+    nsjailLog,
   );
   const memoryLimit = parsePositiveInt(
     "ATLAS_NSJAIL_MEMORY_LIMIT",
     256,
     "memory limit",
-    log,
+    nsjailLog,
   );
 
   return [
@@ -155,10 +165,10 @@ const JAIL_ENV: Record<string, string> = {
 /**
  * Run a minimal nsjail command to verify namespace support actually works.
  *
- * Exercises the exact same namespace config (user, PID, mount, network)
- * that real explore commands use. Returns `{ ok: true }` if nsjail can
- * create namespaces on this platform, or `{ ok: false, error }` with
- * a diagnostic message otherwise.
+ * Uses the same buildNsjailArgs as real explore commands to exercise the
+ * exact same namespace config (user, PID, mount, network). Returns
+ * `{ ok: true }` if nsjail can create namespaces on this platform, or
+ * `{ ok: false, error }` with a diagnostic message otherwise.
  */
 export async function testNsjailCapabilities(
   nsjailPath: string,
@@ -166,7 +176,7 @@ export async function testNsjailCapabilities(
 ): Promise<{ ok: boolean; error?: string }> {
   const TIMEOUT_MS = 5000;
   try {
-    const args = buildTestArgs(nsjailPath, semanticRoot, "echo nsjail-ok");
+    const args = buildNsjailArgs(nsjailPath, semanticRoot, "echo nsjail-ok");
     const proc = Bun.spawn(args, {
       env: JAIL_ENV,
       stdout: "pipe",

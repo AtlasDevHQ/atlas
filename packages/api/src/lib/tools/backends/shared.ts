@@ -1,8 +1,8 @@
 /**
  * Shared utilities for sandbox backends.
  *
- * Extracted from explore-nsjail.ts, python-nsjail.ts, explore-sandbox.ts,
- * and python-sandbox.ts to eliminate cross-backend duplication.
+ * Extracted from the explore and python nsjail/sandbox backend files
+ * to eliminate cross-backend duplication.
  */
 
 import { SENSITIVE_PATTERNS } from "@atlas/api/lib/security";

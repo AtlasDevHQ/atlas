@@ -37,6 +37,7 @@ mock.module("@atlas/api/lib/logger", () => {
 
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { createMiddleware } from "hono/factory";
+import { HTTPException } from "hono/http-exception";
 import type { AuthResult } from "@atlas/api/lib/auth/types";
 import {
   createAdminRouter,
@@ -46,25 +47,40 @@ import {
 } from "../admin-router";
 
 // ---------------------------------------------------------------------------
-// Helpers — inject fake auth context so we can test requireOrgContext in isolation
+// Helpers
 // ---------------------------------------------------------------------------
 
-function fakeAuthResult(orgId: string | undefined): AuthResult & { authenticated: true } {
-  if (orgId) {
+/** Build a typed AuthResult for testing. Supports user-with-org, user-without-org, and no-user. */
+function fakeAuthResult(
+  orgId: string | undefined,
+  opts?: { includeUser: boolean },
+): AuthResult & { authenticated: true } {
+  const includeUser = opts?.includeUser ?? !!orgId;
+  if (includeUser) {
     return {
       authenticated: true,
       mode: "managed",
-      user: { id: "user-1", mode: "managed", label: "admin@test.dev", role: "admin", activeOrganizationId: orgId },
+      user: {
+        id: "user-1",
+        mode: "managed",
+        label: "admin@test.dev",
+        role: "admin",
+        ...(orgId !== undefined ? { activeOrganizationId: orgId } : {}),
+      },
     };
   }
   return { authenticated: true, mode: "none", user: undefined };
 }
 
 /** Injects requestId + authResult into context for testing requireOrgContext in isolation. */
-function withFakeAuth(app: OpenAPIHono<OrgContextEnv>, orgId: string | undefined) {
+function withFakeAuth(
+  app: OpenAPIHono<OrgContextEnv>,
+  orgId: string | undefined,
+  opts?: { includeUser: boolean },
+) {
   app.use(createMiddleware<OrgContextEnv>(async (c, next) => {
     c.set("requestId", "test-req-id");
-    c.set("authResult", fakeAuthResult(orgId));
+    c.set("authResult", fakeAuthResult(orgId, opts));
     await next();
   }));
 }
@@ -100,14 +116,30 @@ describe("requireOrgContext", () => {
     const res = await app.request("/test");
     expect(res.status).toBe(404);
 
-    const body = (await res.json()) as { error: string; message: string };
+    const body = (await res.json()) as { error: string; message: string; requestId: string };
     expect(body.error).toBe("not_available");
     expect(body.message).toContain("No internal database");
+    expect(body.requestId).toBe("test-req-id");
   });
 
-  it("returns 400 when no active organization", async () => {
+  it("returns 400 when no active organization (no user)", async () => {
     const app = new OpenAPIHono<OrgContextEnv>();
     withFakeAuth(app, undefined);
+    app.use(requireOrgContext());
+    app.openapi(testRoute, (c) => c.json({ ok: true }, 200));
+
+    const res = await app.request("/test");
+    expect(res.status).toBe(400);
+
+    const body = (await res.json()) as { error: string; message: string; requestId: string };
+    expect(body.error).toBe("bad_request");
+    expect(body.message).toContain("No active organization");
+    expect(body.requestId).toBe("test-req-id");
+  });
+
+  it("returns 400 when user exists but has no activeOrganizationId", async () => {
+    const app = new OpenAPIHono<OrgContextEnv>();
+    withFakeAuth(app, undefined, { includeUser: true });
     app.use(requireOrgContext());
     app.openapi(testRoute, (c) => c.json({ ok: true }, 200));
 
@@ -117,6 +149,35 @@ describe("requireOrgContext", () => {
     const body = (await res.json()) as { error: string; message: string };
     expect(body.error).toBe("bad_request");
     expect(body.message).toContain("No active organization");
+  });
+
+  it("returns 400 when activeOrganizationId is an empty string", async () => {
+    const app = new OpenAPIHono<OrgContextEnv>();
+    withFakeAuth(app, "", { includeUser: true });
+    app.use(requireOrgContext());
+    app.openapi(testRoute, (c) => c.json({ ok: true }, 200));
+
+    const res = await app.request("/test");
+    expect(res.status).toBe(400);
+
+    const body = (await res.json()) as { error: string; message: string };
+    expect(body.error).toBe("bad_request");
+    expect(body.message).toContain("No active organization");
+  });
+
+  it("returns 404 (not 400) when both DB and orgId are missing — DB check has priority", async () => {
+    mockHasInternalDB = false;
+
+    const app = new OpenAPIHono<OrgContextEnv>();
+    withFakeAuth(app, undefined);
+    app.use(requireOrgContext());
+    app.openapi(testRoute, (c) => c.json({ ok: true }, 200));
+
+    const res = await app.request("/test");
+    expect(res.status).toBe(404);
+
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("not_available");
   });
 
   it("sets orgContext and passes through on valid request", async () => {
@@ -143,9 +204,28 @@ describe("requireOrgContext", () => {
 // ---------------------------------------------------------------------------
 
 describe("createAdminRouter", () => {
-  it("returns an OpenAPIHono instance", () => {
+  it("returns an OpenAPIHono instance with middleware wired", () => {
     const router = createAdminRouter();
     expect(router).toBeInstanceOf(OpenAPIHono);
+  });
+
+  it("surfaces HTTPExceptions via eeOnError", async () => {
+    const router = createAdminRouter();
+    const errorRoute = createRoute({
+      method: "get",
+      path: "/err",
+      responses: { 403: { description: "Forbidden" } },
+    });
+    router.openapi(errorRoute, () => {
+      throw new HTTPException(403, {
+        res: Response.json({ error: "enterprise_required", message: "License required" }, { status: 403 }),
+      });
+    });
+
+    const res = await router.request("/err");
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("enterprise_required");
   });
 });
 

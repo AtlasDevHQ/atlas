@@ -22,10 +22,8 @@
  * ```
  */
 
-import type { Env } from "hono";
 import { OpenAPIHono } from "@hono/zod-openapi";
 import { createMiddleware } from "hono/factory";
-import type { AuthResult } from "@atlas/api/lib/auth/types";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import { validationHook } from "./validation-hook";
 import { eeOnError } from "./ee-error-handler";
@@ -46,10 +44,8 @@ export type OrgContext = { requestId: string; orgId: string };
  * Extends AuthEnv with the orgContext variable set by requireOrgContext().
  * Used by admin routers whose handlers need org-scoped context.
  */
-export type OrgContextEnv = Env & {
-  Variables: {
-    authResult: AuthResult & { authenticated: true };
-    requestId: string;
+export type OrgContextEnv = AuthEnv & {
+  Variables: AuthEnv["Variables"] & {
     orgContext: OrgContext;
   };
 };
@@ -100,7 +96,7 @@ export function requireOrgContext() {
 
     if (!hasInternalDB()) {
       return c.json(
-        { error: "not_available", message: "No internal database configured." },
+        { error: "not_available", message: "No internal database configured.", requestId },
         404,
       );
     }
@@ -112,6 +108,7 @@ export function requireOrgContext() {
         {
           error: "bad_request",
           message: "No active organization. Set an active org first.",
+          requestId,
         },
         400,
       );

@@ -79,6 +79,26 @@ export interface TelegramAdapterConfig {
   secretToken?: string;
 }
 
+/** GitHub adapter credential configuration.
+ * Supports three auth modes: PAT, single-tenant App, multi-tenant App. */
+export interface GitHubAdapterConfig {
+  /** Personal Access Token — simplest auth, for personal bots or testing. */
+  token?: string;
+  /** GitHub App ID — required for App-based auth. */
+  appId?: string;
+  /** GitHub App private key (PEM format) — required for App-based auth. */
+  privateKey?: string;
+  /** Installation ID for single-tenant GitHub App auth.
+   * Omit for multi-tenant mode (auto-detected from webhook payloads). */
+  installationId?: number;
+  /** Webhook secret for HMAC-SHA256 signature verification.
+   * Must match the secret configured in your GitHub webhook settings. */
+  webhookSecret?: string;
+  /** Bot username (e.g., "my-bot" or "my-bot[bot]" for GitHub Apps).
+   * Used for @-mention detection. */
+  userName?: string;
+}
+
 /** Google Chat adapter credential configuration. */
 export interface GoogleChatAdapterConfig {
   /** Service account credentials JSON (client_email + private_key). */
@@ -185,6 +205,7 @@ export interface ChatPluginConfig {
     discord?: DiscordAdapterConfig;
     gchat?: GoogleChatAdapterConfig;
     telegram?: TelegramAdapterConfig;
+    github?: GitHubAdapterConfig;
   };
 
   /** State backend configuration. Default: { backend: "memory" } */
@@ -263,6 +284,25 @@ const TelegramAdapterSchema = z.object({
   secretToken: z.string().min(1).optional(),
 });
 
+const GitHubAdapterSchema = z.object({
+  token: z.string().min(1, "github token must not be empty").optional(),
+  appId: z.string().min(1, "github appId must not be empty").optional(),
+  privateKey: z.string().min(1, "github privateKey must not be empty").optional(),
+  installationId: z.number().int().positive("github installationId must be a positive integer").optional(),
+  webhookSecret: z.string().min(1, "github webhookSecret must not be empty").optional(),
+  userName: z.string().min(1, "github userName must not be empty").optional(),
+}).refine(
+  (c) => {
+    // Must provide either token OR appId+privateKey (or neither for env-var auto-detection)
+    if (c.token && c.appId) return false;
+    if (c.appId && !c.privateKey) return false;
+    if (!c.appId && c.privateKey) return false;
+    if (c.installationId && !c.appId) return false;
+    return true;
+  },
+  "Provide either token (PAT) or appId+privateKey (GitHub App), not both. installationId requires appId",
+);
+
 const GoogleChatAdapterSchema = z.object({
   credentials: z.object({
     client_email: z.string().email("gchat credentials.client_email must be a valid email"),
@@ -312,6 +352,7 @@ export const ChatConfigSchema = z.object({
       discord: DiscordAdapterSchema.optional(),
       gchat: GoogleChatAdapterSchema.optional(),
       telegram: TelegramAdapterSchema.optional(),
+      github: GitHubAdapterSchema.optional(),
     })
     .strict()
     .refine(

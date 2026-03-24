@@ -330,7 +330,7 @@ export function createChatBridge(
   config: ChatPluginConfig,
   log: PluginLogger,
   stateAdapter: StateAdapter,
-  adapterInstances: { slack?: Adapter | null; teams?: Adapter | null; discord?: Adapter | null; gchat?: Adapter | null; telegram?: Adapter | null },
+  adapterInstances: { slack?: Adapter | null; teams?: Adapter | null; discord?: Adapter | null; gchat?: Adapter | null; telegram?: Adapter | null; github?: Adapter | null },
 ): ChatBridge {
   // Build adapters dict from pre-built instances
   const adapters: Record<string, Adapter> = {};
@@ -353,6 +353,10 @@ export function createChatBridge(
   if (adapterInstances.telegram) {
     adapters.telegram = adapterInstances.telegram;
     log.info("Telegram adapter configured");
+  }
+  if (adapterInstances.github) {
+    adapters.github = adapterInstances.github;
+    log.info("GitHub adapter configured");
   }
 
   const chat = new Chat({

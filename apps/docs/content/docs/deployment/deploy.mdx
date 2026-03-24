@@ -4,10 +4,34 @@ description: Deploy Atlas to Railway, Vercel, or Docker in one click.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
+import { Tabs, Tab } from "fumadocs-ui/components/tabs";
 
-## One-Click Deploy
+Atlas can be used as a hosted SaaS platform or deployed to your own infrastructure. Choose the path that fits your needs.
 
-The fastest way to get Atlas running in production.
+<Tabs items={["SaaS (app.useatlas.dev)", "Self-Hosted"]}>
+<Tab value="SaaS (app.useatlas.dev)">
+
+The fastest way to use Atlas. No infrastructure to manage — sign up, connect your database, and start querying.
+
+1. **Sign up** at [app.useatlas.dev](https://app.useatlas.dev)
+2. **Connect your database** — go to **Admin &gt; Connections** and paste your connection string. See [Connect Your Data](/getting-started/connect-your-data) for database-specific setup (creating read-only users, SSL configuration)
+3. **Start querying** — the semantic layer is generated automatically. You can review and edit entity files in **Admin &gt; Semantic Layer**
+
+Authentication, sandbox isolation, scaling, and updates are managed by the Atlas platform. For workspace configuration, see [Admin Console](/guides/admin-console).
+
+</Tab>
+<Tab value="Self-Hosted">
+
+Deploy Atlas to your own infrastructure. You control the environment, data residency, and LLM provider. Continue reading for one-click deploy options, scaffolding a project, and platform-specific guides.
+
+</Tab>
+</Tabs>
+
+---
+
+## One-Click Deploy (Self-Hosted)
+
+The fastest way to get Atlas running on your own infrastructure.
 
 <div className="not-prose grid gap-4 sm:grid-cols-3 my-6">
   <a

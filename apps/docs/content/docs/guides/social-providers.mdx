@@ -6,6 +6,10 @@ description: Configure Google, GitHub, and Microsoft social login for Atlas mana
 import { Callout } from "fumadocs-ui/components/callout";
 import { Steps, Step } from "fumadocs-ui/components/steps";
 
+<Callout type="warn" title="Self-Hosted Only">
+  Configuring social login providers requires editing the `betterAuth()` call in your Atlas source code. This applies to self-hosted deployments only. On [app.useatlas.dev](https://app.useatlas.dev), social login providers are managed by the Atlas platform — go to **Admin &gt; Authentication** to enable them for your workspace.
+</Callout>
+
 Atlas's managed auth (Better Auth) supports social login — no plugin required. Adding social providers requires a small configuration change to the `betterAuth()` call in `packages/api/src/lib/auth/server.ts`. This guide walks through setting up each provider.
 
 <Callout title="Prerequisites">

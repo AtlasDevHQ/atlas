@@ -5,6 +5,10 @@ description: Run Atlas with local inference servers — Ollama, vLLM, and TGI. M
 
 import { Callout } from "fumadocs-ui/components/callout";
 
+<Callout type="warn" title="Self-Hosted Only">
+  This guide is for operators running their own Atlas instance who want to use local inference servers instead of cloud LLM providers. On [app.useatlas.dev](https://app.useatlas.dev), the LLM provider is managed by the Atlas platform — no model hosting is required.
+</Callout>
+
 Atlas works with any OpenAI-compatible inference server. This guide covers setting up Ollama, vLLM, and TGI, choosing the right model, and troubleshooting common issues.
 
 <Callout type="warn">

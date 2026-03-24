@@ -3,6 +3,12 @@ title: Authentication
 description: Configure Atlas authentication — from no auth in development to enterprise SSO in production.
 ---
 
+import { Callout } from "fumadocs-ui/components/callout";
+
+<Callout type="info" title="Using app.useatlas.dev?">
+  On the hosted SaaS platform, authentication is pre-configured. Users sign in with email/password or SSO. API access uses Bearer tokens from your workspace settings. The configuration below (environment variables, `ATLAS_AUTH_MODE`, `BETTER_AUTH_SECRET`) is for **self-hosted operators** deploying their own Atlas instance. If you are a SaaS user looking to integrate with Atlas, see [API Keys](#simple-key) and [BYOT (Bring Your Own Token)](#byot-bring-your-own-token) for client-side usage.
+</Callout>
+
 Atlas supports four authentication modes. Auth is optional — Atlas works with no auth for local development.
 
 | Mode | Best for | How it works |
@@ -12,7 +18,11 @@ Atlas supports four authentication modes. Auth is optional — Atlas works with 
 | **Managed** | Multi-user web apps | Email/password with sessions. Built on [Better Auth](https://www.better-auth.com/) |
 | **BYOT** | Enterprise SSO (Auth0, Clerk, Okta) | Stateless JWT verification against your identity provider's JWKS endpoint |
 
-## Auto-detection
+## Operator Setup (Self-Hosted)
+
+The following sections cover how operators configure authentication for their Atlas deployment. If you are a SaaS user on app.useatlas.dev, skip to [Roles](#roles) or [Rate Limiting](#rate-limiting).
+
+### Auto-detection
 
 When `ATLAS_AUTH_MODE` is not set, Atlas auto-detects the mode from environment variables:
 
@@ -25,7 +35,7 @@ When `ATLAS_AUTH_MODE` is not set, Atlas auto-detects the mode from environment 
 
 Set `ATLAS_AUTH_MODE` explicitly to override auto-detection: `none`, `api-key` (alias: `simple-key`), `managed`, or `byot`.
 
-## No Auth
+### No Auth
 
 The default for local development. All requests pass through without authentication.
 
@@ -38,11 +48,11 @@ No user identity is available. Rate limiting still works (keyed by IP). Audit lo
 
 > Do not use no-auth mode in production unless Atlas is behind a VPN or reverse proxy that handles authentication externally.
 
-## Simple Key
+### Simple Key
 
 A single shared secret for API access. Best for headless integrations, CLI tools, and automation.
 
-### Simple key setup
+#### Simple key setup
 
 ```bash
 # .env
@@ -50,7 +60,11 @@ ATLAS_API_KEY=your-secret-key-here
 ATLAS_API_KEY_ROLE=analyst    # Optional: viewer, analyst (default), admin
 ```
 
-### Client usage
+## User Authentication (All Deployments)
+
+The sections below apply to all Atlas users — both SaaS and self-hosted — covering how to authenticate API requests and understand roles.
+
+### Client usage (Simple Key)
 
 Send the key in the `Authorization` header (preferred) or `X-API-Key` header:
 
@@ -66,13 +80,13 @@ curl -H "X-API-Key: your-secret-key-here" \
   -d '{"question": "How many users?"}'
 ```
 
-### Security details
+#### Security details
 
 - Keys are compared using constant-time SHA-256 hash comparison (timing-safe)
 - User IDs in logs are derived from a hash of the key — the raw key is never logged
 - A single key maps to a single user identity and role
 
-### RLS with Simple Key
+#### RLS with Simple Key
 
 When using [Row-Level Security](/reference/environment-variables#row-level-security) with simple-key auth, provide static claims:
 
@@ -80,11 +94,15 @@ When using [Row-Level Security](/reference/environment-variables#row-level-secur
 ATLAS_RLS_CLAIMS='{"tenant_id": "acme-corp"}'
 ```
 
-## Managed Auth
+### Managed Auth (Self-Hosted Setup)
 
 Full user management with email/password login, sessions, and role-based access. Built on [Better Auth](https://www.better-auth.com/). Requires an internal Postgres database (`DATABASE_URL`). Supports [social login providers](/guides/social-providers) (Google, GitHub, Microsoft) alongside email/password.
 
-### Managed auth setup
+<Callout type="info">
+  On [app.useatlas.dev](https://app.useatlas.dev), managed auth is pre-configured. The setup below is for self-hosted operators only.
+</Callout>
+
+#### Managed auth setup
 
 ```bash
 # .env
@@ -98,14 +116,14 @@ ATLAS_ADMIN_EMAIL=admin@example.com            # First admin account
 ATLAS_CORS_ORIGIN=https://app.example.com      # Required for cross-origin cookies
 ```
 
-### Bootstrap admin
+#### Bootstrap admin
 
 On first deployment:
 - If `ATLAS_ADMIN_EMAIL` is set, the user matching that email gets `admin` role on signup
 - If `ATLAS_ADMIN_EMAIL` is not set, the first user to sign up gets `admin` automatically
 - Subsequent signups get the `analyst` role (set by Better Auth's `defaultRole` in the admin plugin)
 
-### Dev admin seeding
+#### Dev admin seeding
 
 When `ATLAS_ADMIN_EMAIL` is set and no users exist in the database, Atlas automatically creates a dev admin account on startup:
 
@@ -115,7 +133,7 @@ When `ATLAS_ADMIN_EMAIL` is set and no users exist in the database, Atlas automa
 
 The account is flagged with `password_change_required` -- the user must change this password after first login. This is intended for initial setup only. If any users already exist, seeding is skipped (idempotent).
 
-### How sessions work
+### How sessions work (All Deployments)
 
 1. User signs in via `POST /api/auth/sign-in/email`
 2. Better Auth creates a session and sets a `better-auth.session_token` cookie
@@ -126,7 +144,7 @@ Users can log out via `POST /api/auth/sign-out` (clears the session cookie). Ses
 
 > **Cookie cache:** Better Auth is configured with a 5-minute cookie cache (`cookieCache.maxAge = 300s`). This means **role changes and session revocations may take up to 5 minutes to take effect** due to the cache. The cache improves performance by avoiding a database lookup on every request, but be aware of this delay when revoking access or changing user roles.
 
-### Cross-origin deployment
+#### Cross-origin deployment (Self-Hosted)
 
 When the API and frontend are on different origins (e.g. `api.example.com` and `app.example.com`):
 
@@ -142,7 +160,7 @@ BETTER_AUTH_URL=https://api.example.com
 
 > **Cross-subdomain cookies:** When `ATLAS_CORS_ORIGIN` and `BETTER_AUTH_URL` are on different subdomains (e.g. `app.example.com` and `api.example.com`), the session cookie domain is automatically derived to the parent domain (`.example.com`). This allows cookies set by the API to be sent from the frontend subdomain. No manual cookie configuration is needed.
 
-### Frontend integration
+### Frontend integration (All Deployments)
 
 The Atlas web UI includes a built-in auth client. For custom frontends, use the Better Auth React client:
 
@@ -167,11 +185,11 @@ await auth.signIn.email({
 });
 ```
 
-## BYOT (Bring Your Own Token)
+### BYOT (Bring Your Own Token)
 
-Stateless JWT verification against an external identity provider. Best for enterprises with existing SSO (Auth0, Clerk, Okta, Supabase Auth, etc.).
+Stateless JWT verification against an external identity provider. Best for enterprises with existing SSO (Auth0, Clerk, Okta, Supabase Auth, etc.). BYOT works on both SaaS and self-hosted deployments — on app.useatlas.dev, configure your JWKS endpoint in **Admin &gt; Authentication**.
 
-### BYOT setup
+#### BYOT setup (Self-Hosted)
 
 ```bash
 # .env
@@ -185,7 +203,7 @@ ATLAS_AUTH_ROLE_CLAIM=app_metadata.role     # Optional, defaults to "role" then 
 
 If `ATLAS_AUTH_AUDIENCE` is set, audience validation is enforced — JWTs without a matching `aud` claim are rejected. If unset, audience validation is skipped entirely.
 
-### How it works
+### How BYOT works (All Deployments)
 
 1. Client obtains a JWT from your identity provider (Auth0, Clerk, etc.)
 2. Client sends `Authorization: Bearer <jwt>` to Atlas
@@ -193,7 +211,7 @@ If `ATLAS_AUTH_AUDIENCE` is set, audience validation is enforced — JWTs withou
 4. Atlas validates `iss` (issuer) and `aud` (audience) claims
 5. Atlas extracts user ID from `sub` claim and role from the configured claim path
 
-### Provider examples
+#### Provider examples
 
 **Auth0:**
 
@@ -220,7 +238,7 @@ ATLAS_AUTH_ISSUER=https://your-project.supabase.co/auth/v1
 ATLAS_AUTH_ROLE_CLAIM=app_metadata.role
 ```
 
-### Role claim extraction
+#### Role claim extraction
 
 The `ATLAS_AUTH_ROLE_CLAIM` supports dot-delimited paths for nested JWT structures:
 
@@ -237,7 +255,7 @@ ATLAS_AUTH_ROLE_CLAIM=https://example.com/claims.atlas.role
 
 If not set, Atlas checks `role` then `atlas_role` at the top level. Valid roles: `viewer`, `analyst`, `admin`.
 
-### RLS with BYOT
+#### RLS with BYOT
 
 The full JWT payload is available as user claims for [Row-Level Security](/reference/environment-variables#row-level-security). This enables tenant isolation based on JWT claims:
 

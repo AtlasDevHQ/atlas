@@ -56,13 +56,13 @@ describe("getWorkspaceModelConfig", () => {
   beforeEach(() => ee.reset());
 
   it("returns null when no config exists", async () => {
-    ee.setMockRows([]); // empty result
+    ee.queueMockRows([]); // empty result
     const result = await getWorkspaceModelConfig("org-1");
     expect(result).toBeNull();
   });
 
   it("returns config with masked API key", async () => {
-    ee.setMockRows([makeRow()]);
+    ee.queueMockRows([makeRow()]);
     const result = await getWorkspaceModelConfig("org-1");
     expect(result).not.toBeNull();
     expect(result!.provider).toBe("anthropic");
@@ -81,13 +81,13 @@ describe("getWorkspaceModelConfigRaw", () => {
   beforeEach(() => ee.reset());
 
   it("returns null when no config exists", async () => {
-    ee.setMockRows([]); // empty result
+    ee.queueMockRows([]); // empty result
     const result = await getWorkspaceModelConfigRaw("org-1");
     expect(result).toBeNull();
   });
 
   it("returns raw config with decrypted API key", async () => {
-    ee.setMockRows([makeRow()]);
+    ee.queueMockRows([makeRow()]);
     const result = await getWorkspaceModelConfigRaw("org-1");
     expect(result).not.toBeNull();
     expect(result!.provider).toBe("anthropic");
@@ -97,7 +97,7 @@ describe("getWorkspaceModelConfigRaw", () => {
 
   it("does NOT enforce enterprise gate (called in hot path)", async () => {
     ee.setEnterpriseEnabled(false);
-    ee.setMockRows([]);
+    ee.queueMockRows([]);
     // Should not throw even when enterprise is disabled
     const result = await getWorkspaceModelConfigRaw("org-1");
     expect(result).toBeNull();
@@ -108,7 +108,7 @@ describe("setWorkspaceModelConfig", () => {
   beforeEach(() => ee.reset());
 
   it("saves config with encrypted API key", async () => {
-    ee.setMockRows([makeRow()]);
+    ee.queueMockRows([makeRow()]);
     const result = await setWorkspaceModelConfig("org-1", {
       provider: "anthropic",
       model: "claude-opus-4-6",
@@ -183,7 +183,7 @@ describe("setWorkspaceModelConfig", () => {
   });
 
   it("accepts valid base URL for custom provider", async () => {
-    ee.setMockRows([makeRow({
+    ee.queueMockRows([makeRow({
       provider: "custom",
       model: "llama-3",
       base_url: "https://api.example.com/v1",
@@ -214,14 +214,14 @@ describe("deleteWorkspaceModelConfig", () => {
   beforeEach(() => ee.reset());
 
   it("returns true when config is deleted", async () => {
-    ee.setMockRows([{ id: "cfg-123" }]); // DELETE RETURNING result
+    ee.queueMockRows([{ id: "cfg-123" }]); // DELETE RETURNING result
     const result = await deleteWorkspaceModelConfig("org-1");
     expect(result).toBe(true);
     expect(ee.capturedQueries[0].sql).toContain("DELETE FROM workspace_model_config");
   });
 
   it("returns false when no config exists", async () => {
-    ee.setMockRows([]); // empty DELETE RETURNING result
+    ee.queueMockRows([]); // empty DELETE RETURNING result
     const result = await deleteWorkspaceModelConfig("org-1");
     expect(result).toBe(false);
   });

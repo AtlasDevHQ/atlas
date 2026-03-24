@@ -173,7 +173,7 @@ describe("listSSOProviders", () => {
   beforeEach(() => ee.reset());
 
   it("returns providers for the org", async () => {
-    ee.setMockRows([sampleSamlRow, sampleOidcRow]);
+    ee.queueMockRows([sampleSamlRow, sampleOidcRow]);
     const providers = await listSSOProviders("org-1");
     expect(providers).toHaveLength(2);
     expect(providers[0].type).toBe("saml");
@@ -182,7 +182,7 @@ describe("listSSOProviders", () => {
   });
 
   it("returns empty array when no providers", async () => {
-    ee.setMockRows([]);
+    ee.queueMockRows([]);
     const providers = await listSSOProviders("org-1");
     expect(providers).toHaveLength(0);
   });
@@ -192,7 +192,7 @@ describe("getSSOProvider", () => {
   beforeEach(() => ee.reset());
 
   it("returns a single provider", async () => {
-    ee.setMockRows([sampleSamlRow]);
+    ee.queueMockRows([sampleSamlRow]);
     const provider = await getSSOProvider("org-1", "prov-1");
     expect(provider).not.toBeNull();
     expect(provider!.id).toBe("prov-1");
@@ -200,7 +200,7 @@ describe("getSSOProvider", () => {
   });
 
   it("returns null when not found", async () => {
-    ee.setMockRows([]);
+    ee.queueMockRows([]);
     const provider = await getSSOProvider("org-1", "nonexistent");
     expect(provider).toBeNull();
   });
@@ -211,9 +211,9 @@ describe("createSSOProvider", () => {
 
   it("creates a SAML provider", async () => {
     // Domain uniqueness check
-    ee.setMockRows([]);
+    ee.queueMockRows([]);
     // INSERT RETURNING
-    ee.setMockRows([sampleSamlRow]);
+    ee.queueMockRows([sampleSamlRow]);
 
     const provider = await createSSOProvider("org-1", {
       type: "saml",
@@ -244,7 +244,7 @@ describe("createSSOProvider", () => {
   });
 
   it("rejects duplicate domain", async () => {
-    ee.setMockRows([{ id: "existing-prov", org_id: "other-org" }]);
+    ee.queueMockRows([{ id: "existing-prov", org_id: "other-org" }]);
 
     await expect(createSSOProvider("org-1", {
       type: "saml",
@@ -281,13 +281,13 @@ describe("deleteSSOProvider", () => {
   beforeEach(() => ee.reset());
 
   it("returns true when provider exists", async () => {
-    ee.setMockRows([{ id: "prov-1" }]);
+    ee.queueMockRows([{ id: "prov-1" }]);
     const result = await deleteSSOProvider("org-1", "prov-1");
     expect(result).toBe(true);
   });
 
   it("returns false when provider not found", async () => {
-    ee.setMockRows([]);
+    ee.queueMockRows([]);
     const result = await deleteSSOProvider("org-1", "nonexistent");
     expect(result).toBe(false);
   });
@@ -297,20 +297,20 @@ describe("findProviderByDomain", () => {
   beforeEach(() => ee.reset());
 
   it("finds enabled provider for domain", async () => {
-    ee.setMockRows([sampleSamlRow]);
+    ee.queueMockRows([sampleSamlRow]);
     const provider = await findProviderByDomain("acme.com");
     expect(provider).not.toBeNull();
     expect(provider!.domain).toBe("acme.com");
   });
 
   it("returns null when no matching domain", async () => {
-    ee.setMockRows([]);
+    ee.queueMockRows([]);
     const provider = await findProviderByDomain("unknown.com");
     expect(provider).toBeNull();
   });
 
   it("normalizes domain case", async () => {
-    ee.setMockRows([sampleSamlRow]);
+    ee.queueMockRows([sampleSamlRow]);
     await findProviderByDomain("ACME.COM");
     expect(ee.capturedQueries[0].params[0]).toBe("acme.com");
   });
@@ -318,7 +318,7 @@ describe("findProviderByDomain", () => {
   it("does NOT call requireEnterprise — usable in login flow without license", async () => {
     ee.setEnterpriseEnabled(false);
     ee.setEnterpriseLicenseKey(undefined);
-    ee.setMockRows([]);
+    ee.queueMockRows([]);
     // Should not throw even though enterprise is disabled
     const provider = await findProviderByDomain("acme.com");
     expect(provider).toBeNull();
@@ -330,9 +330,9 @@ describe("updateSSOProvider", () => {
 
   it("updates issuer only", async () => {
     // getSSOProvider: requireEnterprise + query
-    ee.setMockRows([sampleSamlRow]);
+    ee.queueMockRows([sampleSamlRow]);
     // UPDATE RETURNING
-    ee.setMockRows([{ ...sampleSamlRow, issuer: "https://new-idp.acme.com" }]);
+    ee.queueMockRows([{ ...sampleSamlRow, issuer: "https://new-idp.acme.com" }]);
 
     const provider = await updateSSOProvider("org-1", "prov-1", {
       issuer: "https://new-idp.acme.com",
@@ -342,11 +342,11 @@ describe("updateSSOProvider", () => {
 
   it("updates domain with uniqueness check", async () => {
     // getSSOProvider query
-    ee.setMockRows([sampleSamlRow]);
+    ee.queueMockRows([sampleSamlRow]);
     // Domain clash check
-    ee.setMockRows([]);
+    ee.queueMockRows([]);
     // UPDATE RETURNING
-    ee.setMockRows([{ ...sampleSamlRow, domain: "newdomain.com" }]);
+    ee.queueMockRows([{ ...sampleSamlRow, domain: "newdomain.com" }]);
 
     const provider = await updateSSOProvider("org-1", "prov-1", {
       domain: "newdomain.com",
@@ -356,9 +356,9 @@ describe("updateSSOProvider", () => {
 
   it("rejects domain collision on update", async () => {
     // getSSOProvider query
-    ee.setMockRows([sampleSamlRow]);
+    ee.queueMockRows([sampleSamlRow]);
     // Domain clash check — found a collision
-    ee.setMockRows([{ id: "other-prov" }]);
+    ee.queueMockRows([{ id: "other-prov" }]);
 
     await expect(updateSSOProvider("org-1", "prov-1", {
       domain: "taken.com",
@@ -367,9 +367,9 @@ describe("updateSSOProvider", () => {
 
   it("updates enabled flag", async () => {
     // getSSOProvider query
-    ee.setMockRows([sampleSamlRow]);
+    ee.queueMockRows([sampleSamlRow]);
     // UPDATE RETURNING
-    ee.setMockRows([{ ...sampleSamlRow, enabled: false }]);
+    ee.queueMockRows([{ ...sampleSamlRow, enabled: false }]);
 
     const provider = await updateSSOProvider("org-1", "prov-1", {
       enabled: false,
@@ -379,7 +379,7 @@ describe("updateSSOProvider", () => {
 
   it("returns existing provider when no fields to update", async () => {
     // getSSOProvider query
-    ee.setMockRows([sampleSamlRow]);
+    ee.queueMockRows([sampleSamlRow]);
 
     const provider = await updateSSOProvider("org-1", "prov-1", {});
     expect(provider.id).toBe("prov-1");
@@ -387,7 +387,7 @@ describe("updateSSOProvider", () => {
 
   it("throws when provider not found", async () => {
     // getSSOProvider returns nothing
-    ee.setMockRows([]);
+    ee.queueMockRows([]);
 
     await expect(updateSSOProvider("org-1", "nonexistent", {
       issuer: "https://new.com",
@@ -407,9 +407,9 @@ describe("OIDC encryption round-trip", () => {
 
   it("encrypts clientSecret on create", async () => {
     // Domain uniqueness check
-    ee.setMockRows([]);
+    ee.queueMockRows([]);
     // INSERT RETURNING
-    ee.setMockRows([sampleOidcRow]);
+    ee.queueMockRows([sampleOidcRow]);
 
     await createSSOProvider("org-1", {
       type: "oidc",
@@ -430,7 +430,7 @@ describe("OIDC encryption round-trip", () => {
   });
 
   it("decrypts clientSecret on read", async () => {
-    ee.setMockRows([sampleOidcRow]);
+    ee.queueMockRows([sampleOidcRow]);
     const providers = await listSSOProviders("org-1");
     expect(providers).toHaveLength(1);
     // The mock decryptUrl strips "encrypted:" prefix
@@ -445,9 +445,9 @@ describe("setSSOEnforcement", () => {
 
   it("enables enforcement when active provider exists", async () => {
     // Check for active providers
-    ee.setMockRows([{ id: "prov-1" }]);
+    ee.queueMockRows([{ id: "prov-1" }]);
     // UPDATE RETURNING query — must return at least one row
-    ee.setMockRows([{ id: "prov-1" }]);
+    ee.queueMockRows([{ id: "prov-1" }]);
 
     const result = await setSSOEnforcement("org-1", true);
     expect(result.enforced).toBe(true);
@@ -463,9 +463,9 @@ describe("setSSOEnforcement", () => {
 
   it("throws when enable UPDATE affects zero rows (providers deleted mid-request)", async () => {
     // Check for active providers — one found
-    ee.setMockRows([{ id: "prov-1" }]);
+    ee.queueMockRows([{ id: "prov-1" }]);
     // UPDATE RETURNING — zero rows (provider deleted between check and update)
-    ee.setMockRows([]);
+    ee.queueMockRows([]);
 
     await expect(setSSOEnforcement("org-1", true)).rejects.toThrow(
       "No SSO providers were updated",
@@ -474,7 +474,7 @@ describe("setSSOEnforcement", () => {
 
   it("disables enforcement without checking providers", async () => {
     // UPDATE query (no provider check needed for disabling)
-    ee.setMockRows([]);
+    ee.queueMockRows([]);
 
     const result = await setSSOEnforcement("org-1", false);
     expect(result.enforced).toBe(false);
@@ -483,7 +483,7 @@ describe("setSSOEnforcement", () => {
 
   it("rejects enforcement without active provider", async () => {
     // Check for active providers — none found
-    ee.setMockRows([]);
+    ee.queueMockRows([]);
 
     await expect(setSSOEnforcement("org-1", true)).rejects.toThrow(
       "Cannot enforce SSO without at least one active SSO provider",
@@ -491,7 +491,7 @@ describe("setSSOEnforcement", () => {
   });
 
   it("throws SSOEnforcementError when no providers", async () => {
-    ee.setMockRows([]);
+    ee.queueMockRows([]);
     try {
       await setSSOEnforcement("org-1", true);
       throw new Error("Should have thrown");
@@ -517,7 +517,7 @@ describe("isSSOEnforced", () => {
 
   it("returns enforced: true when enforcement is active", async () => {
     const enforcedRow = { ...sampleSamlRow, sso_enforced: true };
-    ee.setMockRows([enforcedRow]);
+    ee.queueMockRows([enforcedRow]);
 
     const result = await isSSOEnforced("org-1");
     expect(result).not.toBeNull();
@@ -527,7 +527,7 @@ describe("isSSOEnforced", () => {
   });
 
   it("returns enforced: false when no enforced providers", async () => {
-    ee.setMockRows([]);
+    ee.queueMockRows([]);
 
     const result = await isSSOEnforced("org-1");
     expect(result).not.toBeNull();
@@ -537,7 +537,7 @@ describe("isSSOEnforced", () => {
   it("does NOT call requireEnterprise — usable in login flow", async () => {
     ee.setEnterpriseEnabled(false);
     ee.setEnterpriseLicenseKey(undefined);
-    ee.setMockRows([]);
+    ee.queueMockRows([]);
 
     const result = await isSSOEnforced("org-1");
     expect(result).not.toBeNull();
@@ -550,7 +550,7 @@ describe("isSSOEnforcedForDomain", () => {
 
   it("returns enforced: true when domain has enforcement", async () => {
     const enforcedRow = { ...sampleSamlRow, sso_enforced: true };
-    ee.setMockRows([enforcedRow]);
+    ee.queueMockRows([enforcedRow]);
 
     const result = await isSSOEnforcedForDomain("acme.com");
     expect(result).not.toBeNull();
@@ -560,7 +560,7 @@ describe("isSSOEnforcedForDomain", () => {
 
   it("returns OIDC discovery URL for OIDC providers", async () => {
     const enforcedOidcRow = { ...sampleOidcRow, enabled: true, sso_enforced: true };
-    ee.setMockRows([enforcedOidcRow]);
+    ee.queueMockRows([enforcedOidcRow]);
 
     const result = await isSSOEnforcedForDomain("example.com");
     expect(result).not.toBeNull();
@@ -569,7 +569,7 @@ describe("isSSOEnforcedForDomain", () => {
   });
 
   it("returns enforced: false when domain has no enforcement", async () => {
-    ee.setMockRows([]);
+    ee.queueMockRows([]);
 
     const result = await isSSOEnforcedForDomain("noenforcement.com");
     expect(result).not.toBeNull();
@@ -577,7 +577,7 @@ describe("isSSOEnforcedForDomain", () => {
   });
 
   it("normalizes domain case", async () => {
-    ee.setMockRows([]);
+    ee.queueMockRows([]);
     await isSSOEnforcedForDomain("ACME.COM");
     expect(ee.capturedQueries[0].params[0]).toBe("acme.com");
   });
@@ -585,7 +585,7 @@ describe("isSSOEnforcedForDomain", () => {
   it("does NOT call requireEnterprise — usable in login flow", async () => {
     ee.setEnterpriseEnabled(false);
     ee.setEnterpriseLicenseKey(undefined);
-    ee.setMockRows([]);
+    ee.queueMockRows([]);
 
     const result = await isSSOEnforcedForDomain("acme.com");
     expect(result).not.toBeNull();

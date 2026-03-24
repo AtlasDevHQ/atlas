@@ -41,7 +41,7 @@ describe("getWorkspaceBranding", () => {
   beforeEach(() => ee.reset());
 
   it("returns branding when found", async () => {
-    ee.setMockRows([makeRow()]);
+    ee.queueMockRows([makeRow()]);
     const result = await getWorkspaceBranding("org-1");
     expect(result).not.toBeNull();
     expect(result!.orgId).toBe("org-1");
@@ -52,7 +52,7 @@ describe("getWorkspaceBranding", () => {
   });
 
   it("returns null when no branding found", async () => {
-    ee.setMockRows([]);
+    ee.queueMockRows([]);
     const result = await getWorkspaceBranding("org-1");
     expect(result).toBeNull();
   });
@@ -75,14 +75,14 @@ describe("getWorkspaceBrandingPublic", () => {
 
   it("returns branding without enterprise check", async () => {
     ee.setEnterpriseEnabled(false);
-    ee.setMockRows([makeRow()]);
+    ee.queueMockRows([makeRow()]);
     const result = await getWorkspaceBrandingPublic("org-1");
     expect(result).not.toBeNull();
     expect(result!.logoText).toBe("Acme Corp");
   });
 
   it("returns null when no branding found", async () => {
-    ee.setMockRows([]);
+    ee.queueMockRows([]);
     const result = await getWorkspaceBrandingPublic("org-1");
     expect(result).toBeNull();
   });
@@ -99,7 +99,7 @@ describe("setWorkspaceBranding", () => {
   beforeEach(() => ee.reset());
 
   it("upserts branding and returns result", async () => {
-    ee.setMockRows([makeRow()]);
+    ee.queueMockRows([makeRow()]);
     const result = await setWorkspaceBranding("org-1", {
       logoUrl: "https://example.com/logo.png",
       logoText: "Acme Corp",
@@ -149,7 +149,7 @@ describe("setWorkspaceBranding", () => {
   });
 
   it("allows empty string values (treated as null)", async () => {
-    ee.setMockRows([makeRow({ logo_url: null, primary_color: null, favicon_url: null })]);
+    ee.queueMockRows([makeRow({ logo_url: null, primary_color: null, favicon_url: null })]);
     const result = await setWorkspaceBranding("org-1", {
       logoUrl: "",
       primaryColor: "",
@@ -159,7 +159,7 @@ describe("setWorkspaceBranding", () => {
   });
 
   it("allows null/empty values", async () => {
-    ee.setMockRows([makeRow({ logo_url: null, logo_text: null, primary_color: null, favicon_url: null, hide_atlas_branding: false })]);
+    ee.queueMockRows([makeRow({ logo_url: null, logo_text: null, primary_color: null, favicon_url: null, hide_atlas_branding: false })]);
     const result = await setWorkspaceBranding("org-1", {
       logoUrl: null,
       logoText: null,
@@ -186,7 +186,7 @@ describe("setWorkspaceBranding", () => {
   });
 
   it("throws when INSERT returns no rows", async () => {
-    ee.setMockRows([]);
+    ee.queueMockRows([]);
     await expect(
       setWorkspaceBranding("org-1", { logoText: "Test" }),
     ).rejects.toThrow("Failed to save workspace branding");
@@ -197,13 +197,13 @@ describe("deleteWorkspaceBranding", () => {
   beforeEach(() => ee.reset());
 
   it("returns true when branding was deleted", async () => {
-    ee.setMockRows([{ id: "brand-123" }]);
+    ee.queueMockRows([{ id: "brand-123" }]);
     const result = await deleteWorkspaceBranding("org-1");
     expect(result).toBe(true);
   });
 
   it("returns false when no branding existed", async () => {
-    ee.setMockRows([]);
+    ee.queueMockRows([]);
     const result = await deleteWorkspaceBranding("org-1");
     expect(result).toBe(false);
   });

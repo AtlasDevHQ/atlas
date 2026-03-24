@@ -222,7 +222,7 @@ describe("listIPAllowlistEntries", () => {
   beforeEach(resetMocks);
 
   it("returns entries from DB", async () => {
-    ee.setMockRows([
+    ee.queueMockRows([
       {
         id: "entry-1",
         org_id: "org-1",
@@ -251,9 +251,9 @@ describe("addIPAllowlistEntry", () => {
 
   it("adds a valid CIDR entry", async () => {
     // First query: duplicate check (no results)
-    ee.setMockRows([]);
+    ee.queueMockRows([]);
     // Second query: INSERT RETURNING
-    ee.setMockRows([
+    ee.queueMockRows([
       {
         id: "new-id",
         org_id: "org-1",
@@ -281,7 +281,7 @@ describe("addIPAllowlistEntry", () => {
 
   it("rejects duplicate CIDR", async () => {
     // Duplicate check returns existing row
-    ee.setMockRows([{ id: "existing-id" }]);
+    ee.queueMockRows([{ id: "existing-id" }]);
 
     try {
       await addIPAllowlistEntry("org-1", "10.0.0.0/8", null, null);
@@ -302,13 +302,13 @@ describe("removeIPAllowlistEntry", () => {
   beforeEach(resetMocks);
 
   it("removes existing entry", async () => {
-    ee.setMockRows([{ id: "entry-1" }]);
+    ee.queueMockRows([{ id: "entry-1" }]);
     const deleted = await removeIPAllowlistEntry("org-1", "entry-1");
     expect(deleted).toBe(true);
   });
 
   it("returns false for non-existent entry", async () => {
-    ee.setMockRows([]);
+    ee.queueMockRows([]);
     const deleted = await removeIPAllowlistEntry("org-1", "no-such-entry");
     expect(deleted).toBe(false);
   });
@@ -331,31 +331,31 @@ describe("checkIPAllowlist", () => {
   });
 
   it("allows when no allowlist entries exist (opt-in)", async () => {
-    ee.setMockRows([]); // empty allowlist
+    ee.queueMockRows([]); // empty allowlist
     const result = await checkIPAllowlist("org-1", "1.2.3.4");
     expect(result.allowed).toBe(true);
   });
 
   it("allows matching IP", async () => {
-    ee.setMockRows([{ cidr: "10.0.0.0/8" }]);
+    ee.queueMockRows([{ cidr: "10.0.0.0/8" }]);
     const result = await checkIPAllowlist("org-1", "10.0.0.1");
     expect(result.allowed).toBe(true);
   });
 
   it("blocks non-matching IP", async () => {
-    ee.setMockRows([{ cidr: "10.0.0.0/8" }]);
+    ee.queueMockRows([{ cidr: "10.0.0.0/8" }]);
     const result = await checkIPAllowlist("org-1", "192.168.1.1");
     expect(result.allowed).toBe(false);
   });
 
   it("blocks when IP is null and allowlist has entries", async () => {
-    ee.setMockRows([{ cidr: "10.0.0.0/8" }]);
+    ee.queueMockRows([{ cidr: "10.0.0.0/8" }]);
     const result = await checkIPAllowlist("org-1", null);
     expect(result.allowed).toBe(false);
   });
 
   it("uses cache on second call", async () => {
-    ee.setMockRows([{ cidr: "10.0.0.0/8" }]);
+    ee.queueMockRows([{ cidr: "10.0.0.0/8" }]);
     await checkIPAllowlist("org-1", "10.0.0.1");
     // Second call should not query DB (no additional rows needed)
     const result = await checkIPAllowlist("org-1", "10.0.0.1");
@@ -365,12 +365,12 @@ describe("checkIPAllowlist", () => {
   });
 
   it("cache invalidation forces DB reload", async () => {
-    ee.setMockRows([{ cidr: "10.0.0.0/8" }]);
+    ee.queueMockRows([{ cidr: "10.0.0.0/8" }]);
     await checkIPAllowlist("org-1", "10.0.0.1");
 
     // Invalidate cache
     _clearCache();
-    ee.setMockRows([{ cidr: "192.168.0.0/16" }]);
+    ee.queueMockRows([{ cidr: "192.168.0.0/16" }]);
 
     const result = await checkIPAllowlist("org-1", "10.0.0.1");
     // Should now be blocked because cache was cleared and new DB data loaded
@@ -385,7 +385,7 @@ describe("edge cases", () => {
   beforeEach(resetMocks);
 
   it("handles multiple CIDR ranges for one org", async () => {
-    ee.setMockRows([
+    ee.queueMockRows([
       { cidr: "10.0.0.0/8" },
       { cidr: "172.16.0.0/12" },
       { cidr: "192.168.0.0/16" },
@@ -396,7 +396,7 @@ describe("edge cases", () => {
   });
 
   it("handles mixed IPv4/IPv6 in allowlist", async () => {
-    ee.setMockRows([
+    ee.queueMockRows([
       { cidr: "10.0.0.0/8" },
       { cidr: "2001:db8::/32" },
     ]);
@@ -405,7 +405,7 @@ describe("edge cases", () => {
 
     // Clear cache for fresh query
     _clearCache();
-    ee.setMockRows([
+    ee.queueMockRows([
       { cidr: "10.0.0.0/8" },
       { cidr: "2001:db8::/32" },
     ]);
@@ -451,8 +451,8 @@ describe("fixed issues", () => {
 
   it("addIPAllowlistEntry normalizes CIDR for duplicate check", async () => {
     // First call: add 10.0.0.0/8
-    ee.setMockRows([]); // no duplicates
-    ee.setMockRows([
+    ee.queueMockRows([]); // no duplicates
+    ee.queueMockRows([
       {
         id: "new-id",
         org_id: "org-1",
@@ -505,8 +505,8 @@ describe("fixed issues", () => {
   });
 
   it("plain IP can be added to allowlist", async () => {
-    ee.setMockRows([]); // no duplicates
-    ee.setMockRows([
+    ee.queueMockRows([]); // no duplicates
+    ee.queueMockRows([
       {
         id: "new-id",
         org_id: "org-1",

@@ -1,7 +1,8 @@
 /**
  * Shared mock factory for EE test files.
  *
- * 9 test files independently mock the same three modules:
+ * 8 EE test files mock all three of these modules; 1 additional file
+ * (approval.test.ts) uses only the DB and logger mocks:
  *   - `../index` (enterprise gate)
  *   - `@atlas/api/lib/db/internal` (internal DB)
  *   - `@atlas/api/lib/logger` (logger)
@@ -43,8 +44,8 @@ export interface EEMock {
   capturedQueries: { sql: string; params: unknown[] }[];
 
   // ── Helpers ──────────────────────────────────────────────────
-  /** Queue rows that subsequent internalQuery / getInternalDB().query calls will return. */
-  setMockRows: (...batches: Record<string, unknown>[][]) => void;
+  /** Append row batches to the queue — subsequent internalQuery / getInternalDB().query calls consume them in order. */
+  queueMockRows: (...batches: Record<string, unknown>[][]) => void;
   /** Toggle the enterprise-enabled flag. */
   setEnterpriseEnabled: (enabled: boolean) => void;
   /** Set or clear the enterprise license key. */
@@ -61,7 +62,7 @@ export interface EEMock {
  */
 export function createEEMock(overrides?: EEMockOverrides): EEMock {
   // ── Mutable state ──────────────────────────────────────────────
-  let enterpriseEnabled = false;
+  let enterpriseEnabled = true;
   let enterpriseLicenseKey: string | undefined = "test-key";
   let hasInternalDB = true;
   const mockRows: Record<string, unknown>[][] = [];
@@ -101,7 +102,7 @@ export function createEEMock(overrides?: EEMockOverrides): EEMock {
     getInternalDB: () => ({
       query: async (sql: string, params?: unknown[]) => {
         const rows = handleQuery(sql, params);
-        return { rows };
+        return { rows, rowCount: rows.length };
       },
       end: async () => {},
       on: () => {},
@@ -132,7 +133,7 @@ export function createEEMock(overrides?: EEMockOverrides): EEMock {
   };
 
   // ── Helpers ────────────────────────────────────────────────────
-  function setMockRows(...batches: Record<string, unknown>[][]) {
+  function queueMockRows(...batches: Record<string, unknown>[][]) {
     mockRows.push(...batches);
   }
 
@@ -162,7 +163,7 @@ export function createEEMock(overrides?: EEMockOverrides): EEMock {
     internalDBMock,
     loggerMock,
     capturedQueries,
-    setMockRows,
+    queueMockRows,
     setEnterpriseEnabled,
     setEnterpriseLicenseKey,
     setHasInternalDB,

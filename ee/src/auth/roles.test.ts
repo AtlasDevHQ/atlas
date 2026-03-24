@@ -160,7 +160,7 @@ describe("resolvePermissions", () => {
   });
 
   it("returns custom role permissions when found in DB", async () => {
-    ee.setMockRows([makeRoleRow({
+    ee.queueMockRows([makeRoleRow({
       permissions: JSON.stringify(["query", "admin:audit"]),
     })]);
 
@@ -173,7 +173,7 @@ describe("resolvePermissions", () => {
   });
 
   it("falls back to legacy for admin role when no custom role in DB", async () => {
-    ee.setMockRows([]); // No custom role found
+    ee.queueMockRows([]); // No custom role found
 
     const user = makeUser({ role: "admin" });
     const perms = await resolvePermissions(user);
@@ -181,7 +181,7 @@ describe("resolvePermissions", () => {
   });
 
   it("falls back to legacy for member role when no custom role in DB", async () => {
-    ee.setMockRows([]); // No custom role found
+    ee.queueMockRows([]); // No custom role found
 
     const user = makeUser({ role: "member" });
     const perms = await resolvePermissions(user);
@@ -191,7 +191,7 @@ describe("resolvePermissions", () => {
   });
 
   it("falls back to member permissions for unknown roles", async () => {
-    ee.setMockRows([]); // No custom role found
+    ee.queueMockRows([]); // No custom role found
 
     const user = makeUser({ role: undefined });
     const perms = await resolvePermissions(user);
@@ -202,7 +202,7 @@ describe("resolvePermissions", () => {
 
   it("fails closed with empty permissions on corrupt role data", async () => {
     // Simulate corrupt JSON in permissions column
-    ee.setMockRows([{ id: "r1", org_id: "org-1", name: "test", description: "", permissions: "INVALID_JSON{", is_builtin: false, created_at: "", updated_at: "" }]);
+    ee.queueMockRows([{ id: "r1", org_id: "org-1", name: "test", description: "", permissions: "INVALID_JSON{", is_builtin: false, created_at: "", updated_at: "" }]);
 
     const user = makeUser({ role: "test" });
     const perms = await resolvePermissions(user);
@@ -216,12 +216,12 @@ describe("hasPermission", () => {
   beforeEach(resetMocks);
 
   it("returns true when user has the permission", async () => {
-    ee.setMockRows([]); // Falls back to legacy admin
+    ee.queueMockRows([]); // Falls back to legacy admin
     expect(await hasPermission(makeUser({ role: "admin" }), "admin:users")).toBe(true);
   });
 
   it("returns false when user lacks the permission", async () => {
-    ee.setMockRows([]); // Falls back to legacy member
+    ee.queueMockRows([]); // Falls back to legacy member
     expect(await hasPermission(makeUser({ role: "member" }), "admin:users")).toBe(false);
   });
 });
@@ -230,13 +230,13 @@ describe("checkPermission", () => {
   beforeEach(resetMocks);
 
   it("returns null when permission is satisfied", async () => {
-    ee.setMockRows([]); // Legacy admin
+    ee.queueMockRows([]); // Legacy admin
     const result = await checkPermission(makeUser({ role: "admin" }), "admin:users", "req-1");
     expect(result).toBeNull();
   });
 
   it("returns error response when permission is denied", async () => {
-    ee.setMockRows([]); // Legacy member
+    ee.queueMockRows([]); // Legacy member
     const result = await checkPermission(makeUser({ role: "member" }), "admin:users", "req-1");
     expect(result).not.toBeNull();
     expect(result!.status).toBe(403);
@@ -257,11 +257,11 @@ describe("CRUD operations", () => {
     it("returns roles from DB", async () => {
       // seedBuiltinRoles: 3 built-in roles × (SELECT existence check + INSERT if needed)
       // Each SELECT returns a row (already exists), so no INSERT needed
-      ee.setMockRows([{ id: "r1" }]); // admin exists
-      ee.setMockRows([{ id: "r2" }]); // analyst exists
-      ee.setMockRows([{ id: "r3" }]); // viewer exists
+      ee.queueMockRows([{ id: "r1" }]); // admin exists
+      ee.queueMockRows([{ id: "r2" }]); // analyst exists
+      ee.queueMockRows([{ id: "r3" }]); // viewer exists
       // listRoles query result
-      ee.setMockRows([
+      ee.queueMockRows([
         makeRoleRow(),
         makeRoleRow({ id: "role-2", name: "custom", is_builtin: false }),
       ]);
@@ -275,14 +275,14 @@ describe("CRUD operations", () => {
 
   describe("getRole", () => {
     it("returns role when found", async () => {
-      ee.setMockRows([makeRoleRow()]);
+      ee.queueMockRows([makeRoleRow()]);
       const role = await getRole("org-1", "role-1");
       expect(role).not.toBeNull();
       expect(role!.name).toBe("analyst");
     });
 
     it("returns null when not found", async () => {
-      ee.setMockRows([]);
+      ee.queueMockRows([]);
       const role = await getRole("org-1", "nonexistent");
       expect(role).toBeNull();
     });
@@ -290,8 +290,8 @@ describe("CRUD operations", () => {
 
   describe("createRole", () => {
     it("creates a custom role", async () => {
-      ee.setMockRows([]); // uniqueness check
-      ee.setMockRows([makeRoleRow({
+      ee.queueMockRows([]); // uniqueness check
+      ee.queueMockRows([makeRoleRow({
         id: "new-role",
         name: "data-engineer",
         is_builtin: false,
@@ -333,7 +333,7 @@ describe("CRUD operations", () => {
     });
 
     it("rejects duplicate names", async () => {
-      ee.setMockRows([{ id: "existing" }]); // uniqueness check finds existing
+      ee.queueMockRows([{ id: "existing" }]); // uniqueness check finds existing
 
       await expect(
         createRole("org-1", { name: "analyst", permissions: ["query"] }),
@@ -344,9 +344,9 @@ describe("CRUD operations", () => {
   describe("updateRole", () => {
     it("updates description and permissions", async () => {
       // getRole lookup
-      ee.setMockRows([makeRoleRow({ is_builtin: false })]);
+      ee.queueMockRows([makeRoleRow({ is_builtin: false })]);
       // UPDATE query
-      ee.setMockRows([makeRoleRow({
+      ee.queueMockRows([makeRoleRow({
         is_builtin: false,
         description: "Updated description",
         permissions: JSON.stringify(["query"]),
@@ -361,7 +361,7 @@ describe("CRUD operations", () => {
     });
 
     it("rejects modification of built-in roles", async () => {
-      ee.setMockRows([makeRoleRow({ is_builtin: true })]);
+      ee.queueMockRows([makeRoleRow({ is_builtin: true })]);
 
       await expect(
         updateRole("org-1", "role-1", { permissions: ["query"] }),
@@ -369,7 +369,7 @@ describe("CRUD operations", () => {
     });
 
     it("rejects when role not found", async () => {
-      ee.setMockRows([]); // getRole returns nothing
+      ee.queueMockRows([]); // getRole returns nothing
 
       await expect(
         updateRole("org-1", "nonexistent", { permissions: ["query"] }),
@@ -380,24 +380,24 @@ describe("CRUD operations", () => {
   describe("deleteRole", () => {
     it("deletes a custom role with no active members", async () => {
       // getRole (via internalQuery) returns custom role
-      ee.setMockRows([makeRoleRow({ is_builtin: false })]);
+      ee.queueMockRows([makeRoleRow({ is_builtin: false })]);
       // listRoleMembers: getRole returns the role again
-      ee.setMockRows([makeRoleRow({ is_builtin: false })]);
+      ee.queueMockRows([makeRoleRow({ is_builtin: false })]);
       // listRoleMembers: member table query returns empty (no members)
-      ee.setMockRows([]);
+      ee.queueMockRows([]);
       // DELETE (via getInternalDB().query) returns the deleted row
-      ee.setMockRows([{ id: "role-1" }]);
+      ee.queueMockRows([{ id: "role-1" }]);
 
       const result = await deleteRole("org-1", "role-1");
       expect(result).toBe(true);
     });
 
     it("rejects deletion when role has active members", async () => {
-      ee.setMockRows([makeRoleRow({ is_builtin: false })]);
+      ee.queueMockRows([makeRoleRow({ is_builtin: false })]);
       // listRoleMembers: getRole
-      ee.setMockRows([makeRoleRow({ is_builtin: false })]);
+      ee.queueMockRows([makeRoleRow({ is_builtin: false })]);
       // listRoleMembers: member table returns 2 members
-      ee.setMockRows([
+      ee.queueMockRows([
         { userId: "u1", role: "analyst", createdAt: "2026-01-01" },
         { userId: "u2", role: "analyst", createdAt: "2026-01-01" },
       ]);
@@ -408,7 +408,7 @@ describe("CRUD operations", () => {
     });
 
     it("rejects deletion of built-in roles", async () => {
-      ee.setMockRows([makeRoleRow({ is_builtin: true })]);
+      ee.queueMockRows([makeRoleRow({ is_builtin: true })]);
 
       await expect(
         deleteRole("org-1", "role-1"),
@@ -416,7 +416,7 @@ describe("CRUD operations", () => {
     });
 
     it("returns false when role not found", async () => {
-      ee.setMockRows([]); // getRole returns nothing
+      ee.queueMockRows([]); // getRole returns nothing
 
       const result = await deleteRole("org-1", "nonexistent");
       expect(result).toBe(false);
@@ -430,9 +430,9 @@ describe("Role assignment", () => {
   describe("listRoleMembers", () => {
     it("returns members for a role", async () => {
       // getRole lookup
-      ee.setMockRows([makeRoleRow()]);
+      ee.queueMockRows([makeRoleRow()]);
       // member query
-      ee.setMockRows([
+      ee.queueMockRows([
         { userId: "user-1", role: "analyst", createdAt: "2026-01-01" },
         { userId: "user-2", role: "analyst", createdAt: "2026-01-02" },
       ]);
@@ -443,7 +443,7 @@ describe("Role assignment", () => {
     });
 
     it("throws when role not found", async () => {
-      ee.setMockRows([]); // getRole returns nothing
+      ee.queueMockRows([]); // getRole returns nothing
 
       await expect(
         listRoleMembers("org-1", "nonexistent"),
@@ -454,9 +454,9 @@ describe("Role assignment", () => {
   describe("assignRole", () => {
     it("assigns a role to a user", async () => {
       // Role existence check
-      ee.setMockRows([{ id: "role-1" }]);
+      ee.queueMockRows([{ id: "role-1" }]);
       // UPDATE member
-      ee.setMockRows([{ userId: "user-1", role: "analyst" }]);
+      ee.queueMockRows([{ userId: "user-1", role: "analyst" }]);
 
       const result = await assignRole("org-1", "user-1", "analyst");
       expect(result.userId).toBe("user-1");
@@ -464,7 +464,7 @@ describe("Role assignment", () => {
     });
 
     it("rejects when role does not exist", async () => {
-      ee.setMockRows([]); // role not found
+      ee.queueMockRows([]); // role not found
 
       await expect(
         assignRole("org-1", "user-1", "nonexistent"),
@@ -472,8 +472,8 @@ describe("Role assignment", () => {
     });
 
     it("rejects when user is not a member", async () => {
-      ee.setMockRows([{ id: "role-1" }]); // role exists
-      ee.setMockRows([]); // member update returns nothing
+      ee.queueMockRows([{ id: "role-1" }]); // role exists
+      ee.queueMockRows([]); // member update returns nothing
 
       await expect(
         assignRole("org-1", "user-1", "analyst"),
@@ -487,7 +487,7 @@ describe("seedBuiltinRoles", () => {
 
   it("seeds all three built-in roles when none exist", async () => {
     // Three existence checks, all empty
-    ee.setMockRows([], [], []);
+    ee.queueMockRows([], [], []);
 
     await seedBuiltinRoles("org-1");
 
@@ -500,7 +500,7 @@ describe("seedBuiltinRoles", () => {
 
   it("skips roles that already exist", async () => {
     // First two exist, third doesn't
-    ee.setMockRows([{ id: "existing" }], [{ id: "existing" }], []);
+    ee.queueMockRows([{ id: "existing" }], [{ id: "existing" }], []);
 
     await seedBuiltinRoles("org-1");
 

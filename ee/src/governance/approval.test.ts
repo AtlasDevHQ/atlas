@@ -95,13 +95,13 @@ describe("listApprovalRules", () => {
   beforeEach(resetMocks);
 
   it("returns empty array when no rules exist", async () => {
-    ee.setMockRows([]);
+    ee.queueMockRows([]);
     const result = await listApprovalRules("org-1");
     expect(result).toEqual([]);
   });
 
   it("returns rules for the organization", async () => {
-    ee.setMockRows([makeRuleRow(), makeRuleRow({ id: "rule-2", name: "SSN column" })]);
+    ee.queueMockRows([makeRuleRow(), makeRuleRow({ id: "rule-2", name: "SSN column" })]);
     const result = await listApprovalRules("org-1");
     expect(result).toHaveLength(2);
     expect(result[0].name).toBe("PII table approval");
@@ -118,13 +118,13 @@ describe("getApprovalRule", () => {
   beforeEach(resetMocks);
 
   it("returns null when rule does not exist", async () => {
-    ee.setMockRows([]);
+    ee.queueMockRows([]);
     const result = await getApprovalRule("org-1", "rule-1");
     expect(result).toBeNull();
   });
 
   it("returns rule when found", async () => {
-    ee.setMockRows([makeRuleRow()]);
+    ee.queueMockRows([makeRuleRow()]);
     const result = await getApprovalRule("org-1", "rule-1");
     expect(result).not.toBeNull();
     expect(result!.name).toBe("PII table approval");
@@ -137,7 +137,7 @@ describe("createApprovalRule", () => {
   beforeEach(resetMocks);
 
   it("creates a table rule", async () => {
-    ee.setMockRows([makeRuleRow()]);
+    ee.queueMockRows([makeRuleRow()]);
     const result = await createApprovalRule("org-1", {
       name: "PII table approval",
       ruleType: "table",
@@ -182,20 +182,20 @@ describe("updateApprovalRule", () => {
 
   it("updates rule name", async () => {
     // getApprovalRule call
-    ee.setMockRows([makeRuleRow()]);
+    ee.queueMockRows([makeRuleRow()]);
     // UPDATE RETURNING
-    ee.setMockRows([makeRuleRow({ name: "Updated name" })]);
+    ee.queueMockRows([makeRuleRow({ name: "Updated name" })]);
     const result = await updateApprovalRule("org-1", "rule-1", { name: "Updated name" });
     expect(result.name).toBe("Updated name");
   });
 
   it("throws not_found for missing rule", async () => {
-    ee.setMockRows([]); // getApprovalRule returns nothing
+    ee.queueMockRows([]); // getApprovalRule returns nothing
     await expect(updateApprovalRule("org-1", "missing", { name: "x" })).rejects.toThrow("not found");
   });
 
   it("returns existing rule when no changes", async () => {
-    ee.setMockRows([makeRuleRow()]);
+    ee.queueMockRows([makeRuleRow()]);
     const result = await updateApprovalRule("org-1", "rule-1", {});
     expect(result.name).toBe("PII table approval");
   });
@@ -206,7 +206,7 @@ describe("deleteApprovalRule", () => {
 
   it("returns true when rule is deleted", async () => {
     // getInternalDB().query returns rowCount based on rows array length
-    ee.setMockRows([{ deleted: true }]); // simulate 1 affected row
+    ee.queueMockRows([{ deleted: true }]); // simulate 1 affected row
     const result = await deleteApprovalRule("org-1", "rule-1");
     expect(result).toBe(true);
   });
@@ -240,13 +240,13 @@ describe("checkApprovalRequired", () => {
   });
 
   it("returns false when no rules exist", async () => {
-    ee.setMockRows([]); // empty rules
+    ee.queueMockRows([]); // empty rules
     const result = await checkApprovalRequired("org-1", ["users"], ["id"]);
     expect(result.required).toBe(false);
   });
 
   it("matches table rule", async () => {
-    ee.setMockRows([makeRuleRow({ rule_type: "table", pattern: "users" })]);
+    ee.queueMockRows([makeRuleRow({ rule_type: "table", pattern: "users" })]);
     const result = await checkApprovalRequired("org-1", ["users"], ["id"]);
     expect(result.required).toBe(true);
     expect(result.matchedRules).toHaveLength(1);
@@ -254,25 +254,25 @@ describe("checkApprovalRequired", () => {
   });
 
   it("matches table rule case-insensitively", async () => {
-    ee.setMockRows([makeRuleRow({ rule_type: "table", pattern: "Users" })]);
+    ee.queueMockRows([makeRuleRow({ rule_type: "table", pattern: "Users" })]);
     const result = await checkApprovalRequired("org-1", ["users"], ["id"]);
     expect(result.required).toBe(true);
   });
 
   it("matches column rule", async () => {
-    ee.setMockRows([makeRuleRow({ rule_type: "column", pattern: "ssn" })]);
+    ee.queueMockRows([makeRuleRow({ rule_type: "column", pattern: "ssn" })]);
     const result = await checkApprovalRequired("org-1", ["users"], ["ssn"]);
     expect(result.required).toBe(true);
   });
 
   it("does not match when table is not accessed", async () => {
-    ee.setMockRows([makeRuleRow({ rule_type: "table", pattern: "secret_data" })]);
+    ee.queueMockRows([makeRuleRow({ rule_type: "table", pattern: "secret_data" })]);
     const result = await checkApprovalRequired("org-1", ["orders"], ["id"]);
     expect(result.required).toBe(false);
   });
 
   it("matches schema-qualified table name", async () => {
-    ee.setMockRows([makeRuleRow({ rule_type: "table", pattern: "users" })]);
+    ee.queueMockRows([makeRuleRow({ rule_type: "table", pattern: "users" })]);
     const result = await checkApprovalRequired("org-1", ["public.users"], ["id"]);
     expect(result.required).toBe(true);
   });
@@ -284,7 +284,7 @@ describe("createApprovalRequest", () => {
   beforeEach(resetMocks);
 
   it("creates an approval request", async () => {
-    ee.setMockRows([makeQueueRow()]);
+    ee.queueMockRows([makeQueueRow()]);
     const result = await createApprovalRequest({
       orgId: "org-1",
       ruleId: "rule-1",
@@ -308,13 +308,13 @@ describe("listApprovalRequests", () => {
   beforeEach(resetMocks);
 
   it("returns all requests", async () => {
-    ee.setMockRows([makeQueueRow(), makeQueueRow({ id: "req-2" })]);
+    ee.queueMockRows([makeQueueRow(), makeQueueRow({ id: "req-2" })]);
     const result = await listApprovalRequests("org-1");
     expect(result).toHaveLength(2);
   });
 
   it("filters by status", async () => {
-    ee.setMockRows([makeQueueRow({ status: "approved" })]);
+    ee.queueMockRows([makeQueueRow({ status: "approved" })]);
     const result = await listApprovalRequests("org-1", "approved");
     expect(result).toHaveLength(1);
     expect(ee.capturedQueries[0].sql).toContain("AND status = $2");
@@ -326,29 +326,29 @@ describe("reviewApprovalRequest", () => {
 
   it("approves a pending request", async () => {
     // getApprovalRequest call
-    ee.setMockRows([makeQueueRow()]);
+    ee.queueMockRows([makeQueueRow()]);
     // UPDATE RETURNING
-    ee.setMockRows([makeQueueRow({ status: "approved", reviewer_id: "admin-1", reviewed_at: "2026-01-01T12:00:00Z" })]);
+    ee.queueMockRows([makeQueueRow({ status: "approved", reviewer_id: "admin-1", reviewed_at: "2026-01-01T12:00:00Z" })]);
     const result = await reviewApprovalRequest("org-1", "req-1", "admin-1", "admin@example.com", "approve", "Looks good");
     expect(result.status).toBe("approved");
   });
 
   it("denies a pending request", async () => {
-    ee.setMockRows([makeQueueRow()]);
-    ee.setMockRows([makeQueueRow({ status: "denied", reviewer_id: "admin-1", reviewed_at: "2026-01-01T12:00:00Z" })]);
+    ee.queueMockRows([makeQueueRow()]);
+    ee.queueMockRows([makeQueueRow({ status: "denied", reviewer_id: "admin-1", reviewed_at: "2026-01-01T12:00:00Z" })]);
     const result = await reviewApprovalRequest("org-1", "req-1", "admin-1", "admin@example.com", "deny");
     expect(result.status).toBe("denied");
   });
 
   it("throws not_found for missing request", async () => {
-    ee.setMockRows([]); // getApprovalRequest returns nothing
+    ee.queueMockRows([]); // getApprovalRequest returns nothing
     await expect(
       reviewApprovalRequest("org-1", "missing", "admin-1", null, "approve"),
     ).rejects.toThrow("not found");
   });
 
   it("throws conflict for already-reviewed request", async () => {
-    ee.setMockRows([makeQueueRow({ status: "approved" })]);
+    ee.queueMockRows([makeQueueRow({ status: "approved" })]);
     await expect(
       reviewApprovalRequest("org-1", "req-1", "admin-1", null, "approve"),
     ).rejects.toThrow("Cannot approve request");
@@ -356,9 +356,9 @@ describe("reviewApprovalRequest", () => {
 
   it("auto-expires and throws for expired request", async () => {
     // Return a pending request that's already past its expiry
-    ee.setMockRows([makeQueueRow({ expires_at: "2020-01-01T00:00:00Z" })]);
+    ee.queueMockRows([makeQueueRow({ expires_at: "2020-01-01T00:00:00Z" })]);
     // For the UPDATE to expired status
-    ee.setMockRows([]);
+    ee.queueMockRows([]);
     await expect(
       reviewApprovalRequest("org-1", "req-1", "admin-1", null, "approve"),
     ).rejects.toThrow("expired");
@@ -407,7 +407,7 @@ describe("getPendingCount", () => {
   });
 
   it("returns count from database", async () => {
-    ee.setMockRows([{ count: "5" }]);
+    ee.queueMockRows([{ count: "5" }]);
     const result = await getPendingCount("org-1");
     expect(result).toBe(5);
   });
@@ -417,7 +417,7 @@ describe("reviewApprovalRequest — self-approval", () => {
   beforeEach(resetMocks);
 
   it("throws conflict when reviewer is the requester", async () => {
-    ee.setMockRows([makeQueueRow({ requester_id: "user-1" })]);
+    ee.queueMockRows([makeQueueRow({ requester_id: "user-1" })]);
     await expect(
       reviewApprovalRequest("org-1", "req-1", "user-1", "user@example.com", "approve"),
     ).rejects.toThrow("Cannot review your own approval request");
@@ -428,14 +428,14 @@ describe("hasApprovedRequest", () => {
   beforeEach(resetMocks);
 
   it("returns true when an approved request exists", async () => {
-    ee.setMockRows([{ id: "req-1" }]);
+    ee.queueMockRows([{ id: "req-1" }]);
     const result = await hasApprovedRequest("org-1", "user-1", "SELECT * FROM users");
     expect(result).toBe(true);
     expect(ee.capturedQueries[0].sql).toContain("status = 'approved'");
   });
 
   it("returns false when no approved request exists", async () => {
-    ee.setMockRows([]);
+    ee.queueMockRows([]);
     const result = await hasApprovedRequest("org-1", "user-1", "SELECT * FROM users");
     expect(result).toBe(false);
   });

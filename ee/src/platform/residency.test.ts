@@ -113,7 +113,7 @@ describe("residency", () => {
 
   describe("listRegions", () => {
     it("returns regions with workspace counts", async () => {
-      ee.setMockRows([
+      ee.queueMockRows([
         { region: "us-east", cnt: "3" },
         { region: "eu-west", cnt: "1" },
       ]);
@@ -127,7 +127,7 @@ describe("residency", () => {
     });
 
     it("returns zero counts for regions with no workspaces", async () => {
-      ee.setMockRows([]); // no workspace counts
+      ee.queueMockRows([]); // no workspace counts
       const regions = await listRegions();
       expect(regions[0].workspaceCount).toBe(0);
     });
@@ -160,7 +160,7 @@ describe("residency", () => {
 
   describe("getWorkspaceRegionAssignment", () => {
     it("returns assignment for workspace with region", async () => {
-      ee.setMockRows([{ region: "eu-west", region_assigned_at: "2026-03-23T00:00:00Z" }]);
+      ee.queueMockRows([{ region: "eu-west", region_assigned_at: "2026-03-23T00:00:00Z" }]);
       const result = await getWorkspaceRegionAssignment("org-1");
       expect(result).not.toBeNull();
       expect(result!.region).toBe("eu-west");
@@ -168,13 +168,13 @@ describe("residency", () => {
     });
 
     it("returns null for workspace without region", async () => {
-      ee.setMockRows([{ region: null, region_assigned_at: null }]);
+      ee.queueMockRows([{ region: null, region_assigned_at: null }]);
       const result = await getWorkspaceRegionAssignment("org-1");
       expect(result).toBeNull();
     });
 
     it("returns null for nonexistent workspace", async () => {
-      ee.setMockRows([]);
+      ee.queueMockRows([]);
       const result = await getWorkspaceRegionAssignment("org-999");
       expect(result).toBeNull();
     });
@@ -205,7 +205,7 @@ describe("residency", () => {
 
   describe("listWorkspaceRegions", () => {
     it("returns all assignments", async () => {
-      ee.setMockRows([
+      ee.queueMockRows([
         { id: "org-1", region: "us-east", region_assigned_at: "2026-03-23T00:00:00Z" },
         { id: "org-2", region: "eu-west", region_assigned_at: "2026-03-23T01:00:00Z" },
       ]);

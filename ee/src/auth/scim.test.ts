@@ -98,13 +98,13 @@ describe("listConnections", () => {
   beforeEach(resetMocks);
 
   it("returns empty array when no connections", async () => {
-    ee.setMockRows([]); // empty result
+    ee.queueMockRows([]); // empty result
     const result = await listConnections(ORG_ID);
     expect(result).toEqual([]);
   });
 
   it("returns connections for org", async () => {
-    ee.setMockRows([
+    ee.queueMockRows([
       {
         id: "conn-1",
         providerId: "okta-prod",
@@ -123,13 +123,13 @@ describe("deleteConnection", () => {
   beforeEach(resetMocks);
 
   it("returns true when connection deleted", async () => {
-    ee.setMockRows([{ id: "conn-1" }]); // pool.query RETURNING
+    ee.queueMockRows([{ id: "conn-1" }]); // pool.query RETURNING
     const result = await deleteConnection(ORG_ID, "conn-1");
     expect(result).toBe(true);
   });
 
   it("returns false when connection not found", async () => {
-    ee.setMockRows([]); // no match
+    ee.queueMockRows([]); // no match
     const result = await deleteConnection(ORG_ID, "nonexistent");
     expect(result).toBe(false);
   });
@@ -139,9 +139,9 @@ describe("getSyncStatus", () => {
   beforeEach(resetMocks);
 
   it("returns zero counts when no data", async () => {
-    ee.setMockRows([{ count: "0" }]); // connections count
-    ee.setMockRows([{ count: "0" }]); // user count
-    ee.setMockRows([{ last_sync: null }]); // last sync
+    ee.queueMockRows([{ count: "0" }]); // connections count
+    ee.queueMockRows([{ count: "0" }]); // user count
+    ee.queueMockRows([{ last_sync: null }]); // last sync
     const status = await getSyncStatus(ORG_ID);
     expect(status.connections).toBe(0);
     expect(status.provisionedUsers).toBe(0);
@@ -149,9 +149,9 @@ describe("getSyncStatus", () => {
   });
 
   it("returns correct counts", async () => {
-    ee.setMockRows([{ count: "2" }]);
-    ee.setMockRows([{ count: "15" }]);
-    ee.setMockRows([{ last_sync: "2026-03-22T10:00:00Z" }]);
+    ee.queueMockRows([{ count: "2" }]);
+    ee.queueMockRows([{ count: "15" }]);
+    ee.queueMockRows([{ last_sync: "2026-03-22T10:00:00Z" }]);
     const status = await getSyncStatus(ORG_ID);
     expect(status.connections).toBe(2);
     expect(status.provisionedUsers).toBe(15);
@@ -164,15 +164,15 @@ describe("group mappings", () => {
 
   describe("listGroupMappings", () => {
     it("returns empty when no mappings", async () => {
-      ee.setMockRows([]); // ensureGroupMappingsTable CREATE TABLE
-      ee.setMockRows([]); // query result
+      ee.queueMockRows([]); // ensureGroupMappingsTable CREATE TABLE
+      ee.queueMockRows([]); // query result
       const result = await listGroupMappings(ORG_ID);
       expect(result).toEqual([]);
     });
 
     it("returns mappings for org", async () => {
-      ee.setMockRows([]); // ensureGroupMappingsTable
-      ee.setMockRows([
+      ee.queueMockRows([]); // ensureGroupMappingsTable
+      ee.queueMockRows([
         {
           id: "map-1",
           org_id: ORG_ID,
@@ -190,10 +190,10 @@ describe("group mappings", () => {
 
   describe("createGroupMapping", () => {
     it("creates a mapping successfully", async () => {
-      ee.setMockRows([]); // ensureGroupMappingsTable
-      ee.setMockRows([{ id: "role-1" }]); // role exists check
-      ee.setMockRows([]); // duplicate check
-      ee.setMockRows([
+      ee.queueMockRows([]); // ensureGroupMappingsTable
+      ee.queueMockRows([{ id: "role-1" }]); // role exists check
+      ee.queueMockRows([]); // duplicate check
+      ee.queueMockRows([
         {
           id: "map-new",
           org_id: ORG_ID,
@@ -209,37 +209,37 @@ describe("group mappings", () => {
     });
 
     it("throws on invalid group name", async () => {
-      ee.setMockRows([]); // ensureGroupMappingsTable
+      ee.queueMockRows([]); // ensureGroupMappingsTable
       await expect(createGroupMapping(ORG_ID, "", "analyst")).rejects.toThrow(SCIMError);
     });
 
     it("throws when role does not exist", async () => {
-      ee.setMockRows([]); // ensureGroupMappingsTable
-      ee.setMockRows([]); // role not found
+      ee.queueMockRows([]); // ensureGroupMappingsTable
+      ee.queueMockRows([]); // role not found
       await expect(createGroupMapping(ORG_ID, "Engineers", "nonexistent")).rejects.toThrow(
         'Role "nonexistent" does not exist',
       );
     });
 
     it("throws on duplicate mapping", async () => {
-      ee.setMockRows([]); // ensureGroupMappingsTable
-      ee.setMockRows([{ id: "role-1" }]); // role exists
-      ee.setMockRows([{ id: "existing-map" }]); // duplicate found
+      ee.queueMockRows([]); // ensureGroupMappingsTable
+      ee.queueMockRows([{ id: "role-1" }]); // role exists
+      ee.queueMockRows([{ id: "existing-map" }]); // duplicate found
       await expect(createGroupMapping(ORG_ID, "Engineers", "analyst")).rejects.toThrow("already exists");
     });
   });
 
   describe("deleteGroupMapping", () => {
     it("returns true on success", async () => {
-      ee.setMockRows([]); // ensureGroupMappingsTable
-      ee.setMockRows([{ id: "map-1" }]); // pool.query RETURNING
+      ee.queueMockRows([]); // ensureGroupMappingsTable
+      ee.queueMockRows([{ id: "map-1" }]); // pool.query RETURNING
       const result = await deleteGroupMapping(ORG_ID, "map-1");
       expect(result).toBe(true);
     });
 
     it("returns false when not found", async () => {
-      ee.setMockRows([]); // ensureGroupMappingsTable
-      ee.setMockRows([]); // no match
+      ee.queueMockRows([]); // ensureGroupMappingsTable
+      ee.queueMockRows([]); // no match
       const result = await deleteGroupMapping(ORG_ID, "nonexistent");
       expect(result).toBe(false);
     });
@@ -250,23 +250,23 @@ describe("resolveGroupToRole", () => {
   beforeEach(resetMocks);
 
   it("returns role name when mapping exists", async () => {
-    ee.setMockRows([]); // ensureGroupMappingsTable
-    ee.setMockRows([{ role_name: "analyst" }]);
+    ee.queueMockRows([]); // ensureGroupMappingsTable
+    ee.queueMockRows([{ role_name: "analyst" }]);
     const result = await resolveGroupToRole(ORG_ID, "Engineers");
     expect(result).toBe("analyst");
   });
 
   it("returns null when no mapping", async () => {
-    ee.setMockRows([]); // ensureGroupMappingsTable
-    ee.setMockRows([]); // no match
+    ee.queueMockRows([]); // ensureGroupMappingsTable
+    ee.queueMockRows([]); // no match
     const result = await resolveGroupToRole(ORG_ID, "Unknown Group");
     expect(result).toBeNull();
   });
 
   it("does not require enterprise gate (skips requireEnterprise)", async () => {
     ee.setEnterpriseEnabled(false); // would throw if requireEnterprise were called
-    ee.setMockRows([]); // ensureGroupMappingsTable
-    ee.setMockRows([{ role_name: "analyst" }]);
+    ee.queueMockRows([]); // ensureGroupMappingsTable
+    ee.queueMockRows([{ role_name: "analyst" }]);
     const result = await resolveGroupToRole(ORG_ID, "Engineers");
     expect(result).toBe("analyst");
   });
@@ -276,7 +276,7 @@ describe("SCIMError codes", () => {
   beforeEach(resetMocks);
 
   it("throws validation code for invalid group name", async () => {
-    ee.setMockRows([]); // ensureGroupMappingsTable
+    ee.queueMockRows([]); // ensureGroupMappingsTable
     try {
       await createGroupMapping(ORG_ID, "", "analyst");
       expect(true).toBe(false); // should not reach
@@ -287,8 +287,8 @@ describe("SCIMError codes", () => {
   });
 
   it("throws not_found code for missing role", async () => {
-    ee.setMockRows([]); // ensureGroupMappingsTable
-    ee.setMockRows([]); // role not found
+    ee.queueMockRows([]); // ensureGroupMappingsTable
+    ee.queueMockRows([]); // role not found
     try {
       await createGroupMapping(ORG_ID, "Engineers", "nonexistent");
       expect(true).toBe(false);
@@ -299,9 +299,9 @@ describe("SCIMError codes", () => {
   });
 
   it("throws conflict code for duplicate mapping", async () => {
-    ee.setMockRows([]); // ensureGroupMappingsTable
-    ee.setMockRows([{ id: "role-1" }]); // role exists
-    ee.setMockRows([{ id: "existing-map" }]); // duplicate found
+    ee.queueMockRows([]); // ensureGroupMappingsTable
+    ee.queueMockRows([{ id: "role-1" }]); // role exists
+    ee.queueMockRows([{ id: "existing-map" }]); // duplicate found
     try {
       await createGroupMapping(ORG_ID, "Engineers", "analyst");
       expect(true).toBe(false);

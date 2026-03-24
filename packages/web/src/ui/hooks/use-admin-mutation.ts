@@ -7,6 +7,16 @@ import type { FetchError } from "./use-admin-fetch";
 /** HTTP methods supported by admin mutations. */
 type MutationMethod = "POST" | "PUT" | "PATCH" | "DELETE";
 
+/**
+ * Discriminated result returned by `mutate()`.
+ * Discriminates on `ok`: true means the request succeeded (data is
+ * undefined for 204 No Content or non-JSON responses), false means
+ * an error occurred.
+ */
+export type MutateResult<T> =
+  | { ok: true; data: T | undefined }
+  | { ok: false; error: string };
+
 /** Options for a single mutate() call. */
 interface MutateOptions<TResponse = unknown> {
   /** Override the path from the hook-level default. */
@@ -17,7 +27,7 @@ interface MutateOptions<TResponse = unknown> {
   body?: Record<string, unknown>;
   /** Track this mutation under an ID for per-item loading state. */
   itemId?: string;
-  /** Called on success with the parsed JSON response body. */
+  /** Called on success when the server returns a JSON body. Not called for 204 No Content. */
   onSuccess?: (data: TResponse) => void;
 }
 
@@ -33,8 +43,8 @@ interface UseAdminMutationOptions {
 
 /** Return value of useAdminMutation. */
 interface UseAdminMutationReturn<TResponse> {
-  /** Execute a mutation. Resolves with the parsed response on success, undefined on failure. */
-  mutate: (options?: MutateOptions<TResponse>) => Promise<TResponse | undefined>;
+  /** Execute a mutation. Resolves with a discriminated `{ ok, data }` or `{ ok, error }` result. */
+  mutate: (options?: MutateOptions<TResponse>) => Promise<MutateResult<TResponse>>;
   /** True while any non-item-scoped mutation is in flight. */
   saving: boolean;
   /** Last mutation error message, or null. Cleared on next mutate() call. */
@@ -103,7 +113,7 @@ export function useAdminMutation<TResponse = unknown>(
   );
 
   const mutate = useCallback(
-    async (callOpts?: MutateOptions<TResponse>): Promise<TResponse | undefined> => {
+    async (callOpts?: MutateOptions<TResponse>): Promise<MutateResult<TResponse>> => {
       const opts = optionsRef.current;
       const path = callOpts?.path ?? opts?.path;
       const method = callOpts?.method ?? opts?.method ?? "POST";
@@ -112,7 +122,7 @@ export function useAdminMutation<TResponse = unknown>(
       if (!path) {
         const msg = "useAdminMutation: no path provided";
         setError(msg);
-        return undefined;
+        return { ok: false, error: msg };
       }
 
       // Track loading state
@@ -142,7 +152,7 @@ export function useAdminMutation<TResponse = unknown>(
         if (!res.ok) {
           const fetchError = await extractError(res);
           setError(fetchError.message);
-          return undefined;
+          return { ok: false, error: fetchError.message };
         }
 
         // Parse response (handle 204 No Content)
@@ -164,8 +174,9 @@ export function useAdminMutation<TResponse = unknown>(
         }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        setError(msg || "Request failed");
-        return undefined;
+        const errorMessage = msg || "Request failed";
+        setError(errorMessage);
+        return { ok: false, error: errorMessage };
       } finally {
         if (itemId) {
           setInFlight((prev) => {
@@ -179,12 +190,13 @@ export function useAdminMutation<TResponse = unknown>(
       }
 
       // Call onSuccess outside try/catch so callback bugs don't
-      // get misreported as mutation failures
+      // get misreported as mutation failures.
+      // Only called when data is present — 204/non-JSON callers use result.ok instead.
       if (data !== undefined) {
         callOpts?.onSuccess?.(data);
       }
 
-      return data;
+      return { ok: true, data };
     },
     [apiUrl, credentials],
   );

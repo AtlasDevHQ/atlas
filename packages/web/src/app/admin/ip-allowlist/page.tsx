@@ -87,7 +87,7 @@ function AddEntryDialog({
         ...(values.description.trim() && { description: values.description.trim() }),
       },
     });
-    if (result !== undefined) {
+    if (result.ok) {
       onOpenChange(false);
     }
   }
@@ -182,7 +182,7 @@ function DeleteEntryDialog({
     const result = await mutate({
       path: `/api/v1/admin/ip-allowlist/${encodeURIComponent(entry.id)}`,
     });
-    if (result !== undefined) {
+    if (result.ok) {
       handleOpen(false);
     }
   }

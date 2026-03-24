@@ -153,7 +153,7 @@ export default function ModelConfigPage() {
     }
 
     const result = await saveMutate({ body });
-    if (result !== undefined) {
+    if (result.ok) {
       form.setValue("apiKey", ""); // Clear API key after save
     }
   }
@@ -166,7 +166,7 @@ export default function ModelConfigPage() {
     clearTestError();
 
     const result = await deleteMutate();
-    if (result !== undefined) {
+    if (result.ok) {
       form.reset({ provider: "anthropic", model: "", apiKey: "", baseUrl: "" });
     }
   }
@@ -189,8 +189,8 @@ export default function ModelConfigPage() {
     }
 
     const result = await testMutate({ body });
-    if (result !== undefined) {
-      setTestResult(result);
+    if (result.ok && result.data) {
+      setTestResult(result.data);
     }
   }
 

@@ -163,7 +163,7 @@ function ConnectionFormDialog({
         });
       },
     });
-    if (data === undefined) {
+    if (!data.ok) {
       setTestResult({ ok: false, message: "Connection test failed" });
     }
   }
@@ -452,7 +452,7 @@ function PoolStatsSection({ onError }: { onError: (msg: string) => void }) {
         fetchMetrics();
       },
     });
-    if (result === undefined) {
+    if (!result.ok) {
       // Error already set in hook — surface it via onError
       onError("Drain request failed");
     }
@@ -686,7 +686,7 @@ export default function ConnectionsPage() {
         );
       },
     });
-    if (result === undefined) {
+    if (!result.ok) {
       setMutationError(`Connection test failed for "${id}"`);
     }
   }

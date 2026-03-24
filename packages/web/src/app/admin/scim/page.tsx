@@ -101,7 +101,7 @@ export default function SCIMPage() {
 
     const result = await deleteMutate({ path });
     setDeleteTarget(null);
-    // error is captured by the hook; result is undefined on failure
+    // error is captured by the hook
     void result;
   }
 
@@ -371,7 +371,7 @@ function AddMappingDialog({
         roleName: values.roleName.trim(),
       },
     });
-    if (result !== undefined) {
+    if (result.ok) {
       onOpenChange(false);
     }
   }

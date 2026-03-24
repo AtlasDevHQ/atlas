@@ -133,7 +133,9 @@ export type GitHubAdapterConfig =
 /** Shared Linear adapter fields (auth-mode-independent). */
 interface LinearAdapterBaseConfig {
   /** Webhook signing secret for HMAC-SHA256 verification.
-   * Found on the webhook detail page in Linear settings. */
+   * Found on the webhook detail page in Linear settings.
+   * Required by the upstream @chat-adapter/linear — initialization
+   * will fail if omitted and LINEAR_WEBHOOK_SECRET env var is unset. */
   webhookSecret?: string;
   /** Bot display name used for @-mention detection.
    * Defaults to LINEAR_BOT_USERNAME env var or "linear-bot". */

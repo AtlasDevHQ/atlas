@@ -117,11 +117,13 @@ chatPlugin({
 | `accessToken` | `string` | Yes* | Pre-obtained OAuth access token. |
 | `clientId` | `string` | Yes* | OAuth application client ID. |
 | `clientSecret` | `string` | Yes* | OAuth application client secret. Required with `clientId`. |
-| `webhookSecret` | `string` | No | Webhook signing secret for HMAC-SHA256 verification. Strongly recommended for production. |
+| `webhookSecret` | `string` | Yes** | Webhook signing secret for HMAC-SHA256 verification. Required by the upstream adapter unless `LINEAR_WEBHOOK_SECRET` env var is set. |
 | `userName` | `string` | No | Bot display name for @-mention detection. Defaults to `LINEAR_BOT_USERNAME` env var or `"linear-bot"`. |
 
 <Callout type="info">
 \* Provide exactly one auth mode: `apiKey`, `accessToken`, or `clientId` + `clientSecret`. Do not combine them.
+
+\*\* The `webhookSecret` can be provided via config or the `LINEAR_WEBHOOK_SECRET` environment variable. The upstream `@chat-adapter/linear` requires it — initialization will fail if neither is set.
 </Callout>
 
 ## Mounted Routes

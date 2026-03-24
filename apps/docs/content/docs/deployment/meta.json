@@ -4,6 +4,9 @@
   "icon": "CloudUpload",
   "pages": [
     "deploy",
-    "authentication"
+    "authentication",
+    "multi-datasource",
+    "schema-evolution",
+    "cache-configuration"
   ]
 }

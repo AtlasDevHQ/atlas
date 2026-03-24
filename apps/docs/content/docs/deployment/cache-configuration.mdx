@@ -1,0 +1,91 @@
+---
+title: Cache Configuration
+description: Configure query result caching via environment variables, atlas.config.ts, or an external Redis backend.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Atlas caches query results in-memory with tenant-isolated, claim-scoped cache keys. This page covers operator-level configuration: environment variables, config file settings, and plugging in an external cache backend.
+
+<Callout title="Prerequisites">
+- Atlas server running (`bun run dev`)
+- For external backends: a Redis instance or compatible key-value store
+</Callout>
+
+For cache monitoring, stats, and flush operations, see [Cache Monitoring](/guides/caching).
+
+---
+
+## Configuration
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ATLAS_CACHE_ENABLED` | `true` | Enable/disable query result caching |
+| `ATLAS_CACHE_TTL` | `300000` | Cache TTL in milliseconds (default: 5 minutes) |
+| `ATLAS_CACHE_MAX_SIZE` | `1000` | Maximum cached entries. LRU eviction when full |
+
+### Config File
+
+```typescript
+// atlas.config.ts
+export default defineConfig({
+  cache: {
+    enabled: true,       // default: true
+    ttl: 300_000,        // 5 minutes in ms
+    maxSize: 1000,       // max cached entries
+  },
+});
+```
+
+See [Configuration](/reference/config#query-cache) for full details.
+
+---
+
+## External Cache Backend (Redis)
+
+Plugins can replace the default in-memory LRU cache with an external backend (e.g., Redis) by implementing the `PluginCacheBackend` interface from `@useatlas/plugin-sdk`:
+
+```typescript
+import type { PluginCacheBackend, PluginCacheEntry } from "@useatlas/plugin-sdk";
+
+const redisCacheBackend: PluginCacheBackend = {
+  get(key: string): PluginCacheEntry | null { /* ... */ },
+  set(key: string, entry: PluginCacheEntry): void { /* ... */ },
+  delete(key: string): boolean { /* ... */ },
+  flush(): void { /* ... */ },
+  stats() { /* return { hits, misses, entryCount, maxSize, ttl } */ },
+};
+```
+
+Return `cacheBackend` from your plugin object and Atlas will use it instead of the built-in LRU. Only one plugin cache backend is supported per server — the first plugin with a `cacheBackend` wins.
+
+If the plugin backend fails to initialize at startup, Atlas logs the error and continues with the built-in LRU cache.
+
+See [Plugin Authoring Guide](/plugins/authoring-guide) for building custom plugins.
+
+---
+
+## Troubleshooting
+
+### Cache disabled but queries still appear cached
+
+**Cause:** A plugin is providing a cache backend that ignores the `enabled` flag.
+
+**Fix:** Check your plugin configuration. Remove or disable the cache backend plugin.
+
+### External backend connection failures
+
+**Cause:** The Redis (or other external) cache backend is unreachable.
+
+**Fix:** Atlas falls back to the built-in LRU cache when the plugin backend fails to initialize. Check your Redis connection string and network connectivity. Review server logs for cache backend initialization errors.
+
+---
+
+## See Also
+
+- [Cache Monitoring](/guides/caching) — Admin console stats, flush operations, and cache key scoping details
+- [Configuration](/reference/config#query-cache) — Cache config options in `atlas.config.ts`
+- [Environment Variables](/reference/environment-variables) — `ATLAS_CACHE_*` variables
+- [Plugin Authoring Guide](/plugins/authoring-guide) — Building a custom cache backend plugin

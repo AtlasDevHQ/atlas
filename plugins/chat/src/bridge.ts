@@ -51,6 +51,9 @@ import type { IReactionLifecycle } from "./features/reactions";
 // Types
 // ---------------------------------------------------------------------------
 
+/** Valid platform adapter names for the chat bridge. */
+export type ChatPlatform = "slack" | "teams" | "discord" | "gchat" | "telegram" | "github" | "linear" | "whatsapp";
+
 /** Context for CSV file attachment in query responses. */
 interface CSVContext {
   adapterName: string;
@@ -382,7 +385,7 @@ export interface ChatBridge {
    *
    * Uses the Chat SDK's `adapter.openDM(userId)` to open a DM channel,
    * then `adapter.postMessage()` to deliver the message. Works across
-   * Slack, Teams, Discord, Google Chat, Telegram, and WhatsApp.
+   * all configured adapters that support DMs.
    *
    * Use cases: digest delivery, alert notifications, anomaly detection,
    * and scheduled report delivery.
@@ -390,10 +393,11 @@ export interface ChatBridge {
    * @param platform - Adapter name (e.g., "slack", "teams", "discord")
    * @param userId - Platform-specific user ID
    * @param message - Message content (markdown string or card)
-   * @returns The sent message, or null if the adapter doesn't support DMs
+   * @returns The sent message ID, or null if the adapter is not configured,
+   *   does not support DMs, or if DM delivery fails
    */
   sendDirectMessage(
-    platform: string,
+    platform: ChatPlatform,
     userId: string,
     message: string | { card: CardElement; fallbackText: string },
   ): Promise<{ messageId: string } | null>;
@@ -715,7 +719,7 @@ export function createChatBridge(
             if (useEphemeralErrors) {
               await safePostEphemeralError(thread, message.author, rateLimitCard, log, threadId);
             } else {
-              await thread.post({ card: rateLimitCard.card, fallbackText: rateLimitCard.fallbackText });
+              await safePostError(thread, rateLimitCard, log, threadId);
             }
             return;
           }
@@ -847,7 +851,7 @@ export function createChatBridge(
             if (useEphemeralErrors) {
               await safePostEphemeralError(thread, message.author, rateLimitCard, log, threadId);
             } else {
-              await thread.post({ card: rateLimitCard.card, fallbackText: rateLimitCard.fallbackText });
+              await safePostError(thread, rateLimitCard, log, threadId);
             }
             return;
           }
@@ -979,8 +983,13 @@ export function createChatBridge(
           { markdown: "Unable to start processing your question. Please try again." },
           { fallbackToDM: true },
         );
-      } catch {
-        // intentionally ignored: double-fault — both post and ephemeral failed
+      } catch (fallbackErr) {
+        // All delivery attempts failed (post + ephemeral + DM fallback).
+        // Log for operational visibility — user received no feedback.
+        log.error(
+          { err: fallbackErr instanceof Error ? fallbackErr : new Error(String(fallbackErr)), channelId },
+          "All message delivery attempts failed for slash command — user received no feedback",
+        );
       }
       return;
     }
@@ -1542,7 +1551,7 @@ export function createChatBridge(
     },
 
     async sendDirectMessage(
-      platform: string,
+      platform: ChatPlatform,
       userId: string,
       message: string | { card: CardElement; fallbackText: string },
     ): Promise<{ messageId: string } | null> {
@@ -1561,9 +1570,8 @@ export function createChatBridge(
       try {
         dmThreadId = await adapter.openDM(userId);
       } catch (err) {
-        const detail = err instanceof Error ? err.message : String(err);
         log.error(
-          { err: detail, platform, userId },
+          { err: err instanceof Error ? err : new Error(String(err)), platform, userId },
           "sendDirectMessage: failed to open DM channel",
         );
         return null;
@@ -1580,9 +1588,8 @@ export function createChatBridge(
         );
         return { messageId: sent.id };
       } catch (err) {
-        const detail = err instanceof Error ? err.message : String(err);
         log.error(
-          { err: detail, platform, userId, dmThreadId },
+          { err: err instanceof Error ? err : new Error(String(err)), platform, userId, dmThreadId },
           "sendDirectMessage: failed to post message to DM channel",
         );
         return null;

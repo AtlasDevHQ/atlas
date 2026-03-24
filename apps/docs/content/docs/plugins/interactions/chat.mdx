@@ -525,26 +525,16 @@ chatPlugin({
 })
 ```
 
-Set `errorsAsEphemeral: false` to post errors publicly in the thread (pre-v0.9.0 behavior).
+Set `errorsAsEphemeral: false` to post errors publicly in the thread.
 
 ## Proactive Direct Messages
 
 The bridge exposes a `sendDirectMessage()` method for programmatic DMs — useful for digest delivery, alert notifications, and anomaly detection.
 
+The `sendDirectMessage()` method is available on the `ChatBridge` instance returned by the bridge's internal initialization. It accepts a platform name, user ID, and message:
+
 ```typescript
-import { chatPlugin } from "@useatlas/chat";
-import type { ChatBridge } from "@useatlas/chat";
-
-// Keep a reference to the bridge instance
-let bridge: ChatBridge;
-
-const plugin = chatPlugin({
-  adapters: { slack: { /* ... */ } },
-  executeQuery,
-});
-
-// After plugin initialization, access the bridge via the plugin's create() return
-// Then send proactive DMs:
+// Send a proactive DM to a Slack user
 const result = await bridge.sendDirectMessage(
   "slack",        // platform name
   "U0123456789",  // platform-specific user ID
@@ -556,7 +546,7 @@ if (result) {
 }
 ```
 
-`sendDirectMessage()` supports all 6 primary platforms (Slack, Teams, Discord, Google Chat, Telegram, WhatsApp). Returns `null` if the adapter is not configured or doesn't support DMs.
+`sendDirectMessage()` works across all configured adapters that support DMs. Returns `null` if the adapter is not configured, does not support DMs, or if delivery fails.
 
 ## Migrating from @useatlas/slack
 

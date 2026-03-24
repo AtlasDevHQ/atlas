@@ -80,11 +80,11 @@ function ResidencyPageContent() {
   const [selectedRegion, setSelectedRegion] = useState<string>("");
 
   // Feature gate
-  if (regionsError?.status === 404) return <FeatureGate status={404} />;
-  if (regionsError?.status === 403) return <FeatureGate status={403} />;
-  if (regionsError?.status === 401) return <FeatureGate status={401} />;
+  if (regionsError?.status === 404) return <FeatureGate status={404} feature="Data Residency" />;
+  if (regionsError?.status === 403) return <FeatureGate status={403} feature="Data Residency" />;
+  if (regionsError?.status === 401) return <FeatureGate status={401} feature="Data Residency" />;
 
-  if (regionsLoading) return <LoadingState label="Loading regions..." />;
+  if (regionsLoading) return <LoadingState message="Loading regions..." />;
   if (regionsError) return <ErrorBanner message={regionsError.message} />;
 
   const regions = regionsData?.regions ?? [];
@@ -122,17 +122,17 @@ function ResidencyPageContent() {
         <StatCard
           title="Configured Regions"
           value={regions.length}
-          icon={Globe}
+          icon={<Globe className="size-4" />}
         />
         <StatCard
           title="Assigned Workspaces"
           value={totalWorkspaces}
-          icon={MapPin}
+          icon={<MapPin className="size-4" />}
         />
         <StatCard
           title="Default Region"
           value={defaultRegion || "—"}
-          icon={MapPin}
+          icon={<MapPin className="size-4" />}
         />
       </div>
 
@@ -192,7 +192,7 @@ function ResidencyPageContent() {
       <div>
         <h2 className="mb-4 text-lg font-semibold">Workspace Assignments</h2>
         {assignmentsLoading ? (
-          <LoadingState label="Loading assignments..." />
+          <LoadingState message="Loading assignments..." />
         ) : assignmentsError ? (
           <ErrorBanner message={assignmentsError.message} />
         ) : (

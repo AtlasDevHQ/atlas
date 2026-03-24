@@ -6,10 +6,9 @@
  * limits + history + per-user breakdown), historical summaries, and per-user breakdown.
  */
 
-import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
-import { validationHook } from "./validation-hook";
+import { createRoute, z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
-import { hasInternalDB, getWorkspaceDetails } from "@atlas/api/lib/db/internal";
+import { getWorkspaceDetails } from "@atlas/api/lib/db/internal";
 import {
   getCurrentPeriodUsage,
   getUsageHistory,
@@ -18,7 +17,7 @@ import {
 } from "@atlas/api/lib/metering";
 import { getPlanDefinition, getPlanLimits, isUnlimited } from "@atlas/api/lib/billing/plans";
 import { ErrorSchema, AuthErrorSchema, parsePagination } from "./shared-schemas";
-import { adminAuth, requestContext, type AuthEnv } from "./middleware";
+import { createAdminRouter, requireOrgContext } from "./admin-router";
 
 const log = createLogger("admin-usage");
 
@@ -260,24 +259,13 @@ const getUsageBreakdownRoute = createRoute({
 // Router
 // ---------------------------------------------------------------------------
 
-const adminUsage = new OpenAPIHono<AuthEnv>({ defaultHook: validationHook });
+const adminUsage = createAdminRouter();
 
-adminUsage.use(adminAuth);
-adminUsage.use(requestContext);
+adminUsage.use(requireOrgContext());
 
 // GET / — current period usage summary for the active workspace
 adminUsage.openapi(getCurrentUsageRoute, async (c) => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
-
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-  }
-
-  const orgId = authResult.user?.activeOrganizationId;
-  if (!orgId) {
-    return c.json({ error: "org_required", message: "No active organization. Select a workspace first." }, 400);
-  }
+  const { requestId, orgId } = c.get("orgContext");
 
   try {
     const usage = await getCurrentPeriodUsage(orgId);
@@ -290,17 +278,7 @@ adminUsage.openapi(getCurrentUsageRoute, async (c) => {
 
 // GET /summary — combined usage dashboard payload
 adminUsage.openapi(getUsageSummaryRoute, async (c) => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
-
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-  }
-
-  const orgId = authResult.user?.activeOrganizationId;
-  if (!orgId) {
-    return c.json({ error: "org_required", message: "No active organization. Select a workspace first." }, 400);
-  }
+  const { requestId, orgId } = c.get("orgContext");
 
   try {
     // Aggregate today's daily summary before fetching history.
@@ -365,17 +343,7 @@ adminUsage.openapi(getUsageSummaryRoute, async (c) => {
 
 // GET /history — historical usage summaries
 adminUsage.openapi(getUsageHistoryRoute, async (c) => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
-
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-  }
-
-  const orgId = authResult.user?.activeOrganizationId;
-  if (!orgId) {
-    return c.json({ error: "org_required", message: "No active organization. Select a workspace first." }, 400);
-  }
+  const { requestId, orgId } = c.get("orgContext");
 
   const period = c.req.query("period") === "daily" ? "daily" as const : "monthly" as const;
   const startDate = c.req.query("startDate");
@@ -407,17 +375,7 @@ adminUsage.openapi(getUsageHistoryRoute, async (c) => {
 
 // GET /breakdown — per-user usage breakdown
 adminUsage.openapi(getUsageBreakdownRoute, async (c) => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
-
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-  }
-
-  const orgId = authResult.user?.activeOrganizationId;
-  if (!orgId) {
-    return c.json({ error: "org_required", message: "No active organization. Select a workspace first." }, 400);
-  }
+  const { requestId, orgId } = c.get("orgContext");
 
   const startDate = c.req.query("startDate");
   const endDate = c.req.query("endDate");

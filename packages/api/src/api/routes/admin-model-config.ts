@@ -5,11 +5,10 @@
  * enterprise license (enforced within the model-routing service layer).
  */
 
-import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
-import { validationHook } from "./validation-hook";
+import { createRoute, z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
-import { throwIfEEError, eeOnError } from "./ee-error-handler";
+import { throwIfEEError } from "./ee-error-handler";
 import {
   getWorkspaceModelConfig,
   setWorkspaceModelConfig,
@@ -18,7 +17,7 @@ import {
   ModelConfigError,
 } from "@atlas/ee/platform/model-routing";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
-import { adminAuth, requestContext, type AuthEnv } from "./middleware";
+import { createAdminRouter } from "./admin-router";
 
 const log = createLogger("admin-model-config");
 
@@ -265,12 +264,11 @@ const testConfigRoute = createRoute({
 // Router
 // ---------------------------------------------------------------------------
 
-const adminModelConfig = new OpenAPIHono<AuthEnv>({ defaultHook: validationHook });
+const adminModelConfig = createAdminRouter();
 
-adminModelConfig.use(adminAuth);
-adminModelConfig.use(requestContext);
-
-adminModelConfig.onError(eeOnError);
+// requireOrgContext applied per-handler (not router-level) because
+// testConfigRoute only needs orgId, not hasInternalDB — it tests
+// external API keys without touching the internal database.
 
 // GET / — get workspace model configuration
 adminModelConfig.openapi(getConfigRoute, async (c) => {
@@ -278,12 +276,12 @@ adminModelConfig.openapi(getConfigRoute, async (c) => {
   const authResult = c.get("authResult");
 
   if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
+    return c.json({ error: "not_available", message: "No internal database configured.", requestId }, 404);
   }
 
   const orgId = authResult.user?.activeOrganizationId;
   if (!orgId) {
-    return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
+    return c.json({ error: "bad_request", message: "No active organization. Set an active org first.", requestId }, 400);
   }
 
   try {
@@ -302,12 +300,12 @@ adminModelConfig.openapi(setConfigRoute, async (c) => {
   const authResult = c.get("authResult");
 
   if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
+    return c.json({ error: "not_available", message: "No internal database configured.", requestId }, 404);
   }
 
   const orgId = authResult.user?.activeOrganizationId;
   if (!orgId) {
-    return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
+    return c.json({ error: "bad_request", message: "No active organization. Set an active org first.", requestId }, 400);
   }
 
   const body = c.req.valid("json");
@@ -341,12 +339,12 @@ adminModelConfig.openapi(deleteConfigRoute, async (c) => {
   const authResult = c.get("authResult");
 
   if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
+    return c.json({ error: "not_available", message: "No internal database configured.", requestId }, 404);
   }
 
   const orgId = authResult.user?.activeOrganizationId;
   if (!orgId) {
-    return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
+    return c.json({ error: "bad_request", message: "No active organization. Set an active org first.", requestId }, 400);
   }
 
   try {
@@ -362,14 +360,14 @@ adminModelConfig.openapi(deleteConfigRoute, async (c) => {
   }
 });
 
-// POST /test — test model configuration
+// POST /test — test model configuration (no hasInternalDB — tests external APIs only)
 adminModelConfig.openapi(testConfigRoute, async (c) => {
   const requestId = c.get("requestId");
   const authResult = c.get("authResult");
 
   const orgId = authResult.user?.activeOrganizationId;
   if (!orgId) {
-    return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
+    return c.json({ error: "bad_request", message: "No active organization. Set an active org first.", requestId }, 400);
   }
 
   const body = c.req.valid("json");

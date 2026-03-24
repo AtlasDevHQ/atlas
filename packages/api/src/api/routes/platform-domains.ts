@@ -10,13 +10,12 @@
  * - DELETE /:id                — delete a custom domain
  */
 
-import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
-import { validationHook } from "./validation-hook";
+import { createRoute, z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
 import { EnterpriseError } from "@atlas/ee/index";
 import { DomainError, type DomainErrorCode } from "@atlas/ee/platform/domains";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
-import { platformAdminAuth, requestContext, type AuthEnv } from "./middleware";
+import { createPlatformRouter } from "./admin-router";
 
 const log = createLogger("platform-domains");
 
@@ -196,10 +195,7 @@ function handleDomainError(err: unknown, requestId: string): { error: string; me
 // Router
 // ---------------------------------------------------------------------------
 
-const platformDomains = new OpenAPIHono<AuthEnv>({ defaultHook: validationHook });
-
-platformDomains.use(platformAdminAuth);
-platformDomains.use(requestContext);
+const platformDomains = createPlatformRouter();
 
 // ── List all domains ─────────────────────────────────────────────────
 

@@ -9,11 +9,9 @@
  * These admin routes manage SCIM connections, tokens, and group→role mappings.
  */
 
-import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
-import { validationHook } from "./validation-hook";
+import { createRoute, z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
-import { hasInternalDB } from "@atlas/api/lib/db/internal";
-import { throwIfEEError, eeOnError } from "./ee-error-handler";
+import { throwIfEEError } from "./ee-error-handler";
 import {
   listConnections,
   deleteConnection,
@@ -24,7 +22,7 @@ import {
   SCIMError,
 } from "@atlas/ee/auth/scim";
 import { ErrorSchema, AuthErrorSchema, isValidId, MAX_ID_LENGTH } from "./shared-schemas";
-import { adminAuth, requestContext, type AuthEnv } from "./middleware";
+import { createAdminRouter, requireOrgContext } from "./admin-router";
 
 const log = createLogger("admin-scim");
 
@@ -305,26 +303,13 @@ const deleteGroupMappingRoute = createRoute({
 // Router
 // ---------------------------------------------------------------------------
 
-const adminScim = new OpenAPIHono<AuthEnv>({ defaultHook: validationHook });
+const adminScim = createAdminRouter();
 
-adminScim.use(adminAuth);
-adminScim.use(requestContext);
-
-adminScim.onError(eeOnError);
+adminScim.use(requireOrgContext());
 
 // GET / — SCIM connections and sync status
 adminScim.openapi(getStatusRoute, async (c) => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
-
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-  }
-
-  const orgId = authResult.user?.activeOrganizationId;
-  if (!orgId) {
-    return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
-  }
+  const { requestId, orgId } = c.get("orgContext");
 
   try {
     const [connections, syncStatus] = await Promise.all([
@@ -341,21 +326,11 @@ adminScim.openapi(getStatusRoute, async (c) => {
 
 // DELETE /connections/:id — revoke a SCIM connection
 adminScim.openapi(deleteConnectionRoute, async (c) => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
+  const { requestId, orgId } = c.get("orgContext");
   const { id: connectionId } = c.req.valid("param");
 
   if (!isValidId(connectionId)) {
     return c.json({ error: "bad_request", message: "Invalid connection ID." }, 400);
-  }
-
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-  }
-
-  const orgId = authResult.user?.activeOrganizationId;
-  if (!orgId) {
-    return c.json({ error: "bad_request", message: "No active organization." }, 400);
   }
 
   try {
@@ -373,17 +348,7 @@ adminScim.openapi(deleteConnectionRoute, async (c) => {
 
 // GET /group-mappings — list group→role mappings
 adminScim.openapi(listGroupMappingsRoute, async (c) => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
-
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-  }
-
-  const orgId = authResult.user?.activeOrganizationId;
-  if (!orgId) {
-    return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
-  }
+  const { requestId, orgId } = c.get("orgContext");
 
   try {
     const mappings = await listGroupMappings(orgId);
@@ -397,17 +362,7 @@ adminScim.openapi(listGroupMappingsRoute, async (c) => {
 
 // POST /group-mappings — create a group→role mapping
 adminScim.openapi(createGroupMappingRoute, async (c) => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
-
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-  }
-
-  const orgId = authResult.user?.activeOrganizationId;
-  if (!orgId) {
-    return c.json({ error: "bad_request", message: "No active organization." }, 400);
-  }
+  const { requestId, orgId } = c.get("orgContext");
 
   const { scimGroupName, roleName } = c.req.valid("json");
   if (!scimGroupName || !roleName) {
@@ -426,21 +381,11 @@ adminScim.openapi(createGroupMappingRoute, async (c) => {
 
 // DELETE /group-mappings/:id — delete a group mapping
 adminScim.openapi(deleteGroupMappingRoute, async (c) => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
+  const { requestId, orgId } = c.get("orgContext");
   const { id: mappingId } = c.req.valid("param");
 
   if (!isValidId(mappingId)) {
     return c.json({ error: "bad_request", message: "Invalid mapping ID." }, 400);
-  }
-
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-  }
-
-  const orgId = authResult.user?.activeOrganizationId;
-  if (!orgId) {
-    return c.json({ error: "bad_request", message: "No active organization." }, 400);
   }
 
   try {

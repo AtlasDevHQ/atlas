@@ -5,11 +5,9 @@
  * enterprise license (enforced within the IP allowlist service layer).
  */
 
-import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
-import { validationHook } from "./validation-hook";
+import { createRoute, z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
-import { hasInternalDB } from "@atlas/api/lib/db/internal";
-import { throwIfEEError, eeOnError } from "./ee-error-handler";
+import { throwIfEEError } from "./ee-error-handler";
 import { getClientIP } from "@atlas/api/lib/auth/middleware";
 import {
   listIPAllowlistEntries,
@@ -18,7 +16,7 @@ import {
   IPAllowlistError,
 } from "@atlas/ee/auth/ip-allowlist";
 import { ErrorSchema, AuthErrorSchema, isValidId, MAX_ID_LENGTH } from "./shared-schemas";
-import { adminAuth, requestContext, type AuthEnv } from "./middleware";
+import { createAdminRouter, requireOrgContext } from "./admin-router";
 
 const log = createLogger("admin-ip-allowlist");
 
@@ -211,26 +209,13 @@ const deleteEntryRoute = createRoute({
 // Router
 // ---------------------------------------------------------------------------
 
-const adminIPAllowlist = new OpenAPIHono<AuthEnv>({ defaultHook: validationHook });
+const adminIPAllowlist = createAdminRouter();
 
-adminIPAllowlist.use(adminAuth);
-adminIPAllowlist.use(requestContext);
-
-adminIPAllowlist.onError(eeOnError);
+adminIPAllowlist.use(requireOrgContext());
 
 // GET / — list IP allowlist entries for the active org
 adminIPAllowlist.openapi(listEntriesRoute, async (c) => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
-
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-  }
-
-  const orgId = authResult.user?.activeOrganizationId;
-  if (!orgId) {
-    return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
-  }
+  const { requestId, orgId } = c.get("orgContext");
 
   const callerIP = getClientIP(c.req.raw);
 
@@ -246,17 +231,8 @@ adminIPAllowlist.openapi(listEntriesRoute, async (c) => {
 
 // POST / — add a CIDR range to the allowlist
 adminIPAllowlist.openapi(addEntryRoute, async (c) => {
-  const requestId = c.get("requestId");
+  const { requestId, orgId } = c.get("orgContext");
   const authResult = c.get("authResult");
-
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-  }
-
-  const orgId = authResult.user?.activeOrganizationId;
-  if (!orgId) {
-    return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
-  }
 
   const body = c.req.valid("json");
 
@@ -281,21 +257,11 @@ adminIPAllowlist.openapi(addEntryRoute, async (c) => {
 
 // DELETE /:id — remove an IP allowlist entry
 adminIPAllowlist.openapi(deleteEntryRoute, async (c) => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
+  const { requestId, orgId } = c.get("orgContext");
   const { id: entryId } = c.req.valid("param");
 
   if (!isValidId(entryId)) {
     return c.json({ error: "bad_request", message: "Invalid entry ID." }, 400);
-  }
-
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-  }
-
-  const orgId = authResult.user?.activeOrganizationId;
-  if (!orgId) {
-    return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
   }
 
   try {

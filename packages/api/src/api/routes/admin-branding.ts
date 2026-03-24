@@ -5,11 +5,9 @@
  * enterprise license (enforced within the branding service layer).
  */
 
-import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
-import { validationHook } from "./validation-hook";
+import { createRoute, z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
-import { hasInternalDB } from "@atlas/api/lib/db/internal";
-import { throwIfEEError, eeOnError } from "./ee-error-handler";
+import { throwIfEEError } from "./ee-error-handler";
 import {
   getWorkspaceBranding,
   setWorkspaceBranding,
@@ -17,7 +15,7 @@ import {
   BrandingError,
 } from "@atlas/ee/branding/white-label";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
-import { adminAuth, requestContext, type AuthEnv } from "./middleware";
+import { createAdminRouter, requireOrgContext } from "./admin-router";
 
 const log = createLogger("admin-branding");
 
@@ -207,26 +205,13 @@ const deleteBrandingRoute = createRoute({
 // Router
 // ---------------------------------------------------------------------------
 
-const adminBranding = new OpenAPIHono<AuthEnv>({ defaultHook: validationHook });
+const adminBranding = createAdminRouter();
 
-adminBranding.use(adminAuth);
-adminBranding.use(requestContext);
-
-adminBranding.onError(eeOnError);
+adminBranding.use(requireOrgContext());
 
 // GET / — get workspace branding
 adminBranding.openapi(getBrandingRoute, async (c) => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
-
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-  }
-
-  const orgId = authResult.user?.activeOrganizationId;
-  if (!orgId) {
-    return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
-  }
+  const { requestId, orgId } = c.get("orgContext");
 
   try {
     const branding = await getWorkspaceBranding(orgId);
@@ -240,17 +225,7 @@ adminBranding.openapi(getBrandingRoute, async (c) => {
 
 // PUT / — set workspace branding
 adminBranding.openapi(setBrandingRoute, async (c) => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
-
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-  }
-
-  const orgId = authResult.user?.activeOrganizationId;
-  if (!orgId) {
-    return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
-  }
+  const { requestId, orgId } = c.get("orgContext");
 
   const body = c.req.valid("json");
 
@@ -272,17 +247,7 @@ adminBranding.openapi(setBrandingRoute, async (c) => {
 
 // DELETE / — reset workspace branding
 adminBranding.openapi(deleteBrandingRoute, async (c) => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
-
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-  }
-
-  const orgId = authResult.user?.activeOrganizationId;
-  if (!orgId) {
-    return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
-  }
+  const { requestId, orgId } = c.get("orgContext");
 
   try {
     const deleted = await deleteWorkspaceBranding(orgId);

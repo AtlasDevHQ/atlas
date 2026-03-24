@@ -5,10 +5,9 @@
  * enterprise license (enforced within the roles service layer).
  */
 
-import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
+import { createRoute, z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
-import { hasInternalDB } from "@atlas/api/lib/db/internal";
-import { throwIfEEError, eeOnError } from "./ee-error-handler";
+import { throwIfEEError } from "./ee-error-handler";
 import {
   listRoles,
   createRole,
@@ -20,7 +19,7 @@ import {
   PERMISSIONS,
 } from "@atlas/ee/auth/roles";
 import { ErrorSchema, AuthErrorSchema, isValidId, MAX_ID_LENGTH } from "./shared-schemas";
-import { adminAuth, requestContext, type AuthEnv } from "./middleware";
+import { createAdminRouter, requireOrgContext } from "./admin-router";
 
 const log = createLogger("admin-roles");
 
@@ -386,26 +385,13 @@ const assignRoleRoute = createRoute({
 // Router
 // ---------------------------------------------------------------------------
 
-const adminRoles = new OpenAPIHono<AuthEnv>();
+const adminRoles = createAdminRouter();
 
-adminRoles.use(adminAuth);
-adminRoles.use(requestContext);
-
-adminRoles.onError(eeOnError);
+adminRoles.use(requireOrgContext());
 
 // GET / — list all roles for the active org
 adminRoles.openapi(listRolesRoute, async (c) => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
-
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-  }
-
-  const orgId = authResult.user?.activeOrganizationId;
-  if (!orgId) {
-    return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
-  }
+  const { requestId, orgId } = c.get("orgContext");
 
   try {
     const roles = await listRoles(orgId);
@@ -423,17 +409,7 @@ adminRoles.openapi(listRolesRoute, async (c) => {
 
 // POST / — create a custom role
 adminRoles.openapi(createRoleRoute, async (c) => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
-
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-  }
-
-  const orgId = authResult.user?.activeOrganizationId;
-  if (!orgId) {
-    return c.json({ error: "bad_request", message: "No active organization." }, 400);
-  }
+  const { requestId, orgId } = c.get("orgContext");
 
   const body = c.req.valid("json");
 
@@ -453,21 +429,11 @@ adminRoles.openapi(createRoleRoute, async (c) => {
 
 // PUT /:id — update a custom role
 adminRoles.openapi(updateRoleRoute, async (c) => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
+  const { requestId, orgId } = c.get("orgContext");
   const { id: roleId } = c.req.valid("param");
 
   if (!isValidId(roleId)) {
     return c.json({ error: "bad_request", message: "Invalid role ID." }, 400);
-  }
-
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-  }
-
-  const orgId = authResult.user?.activeOrganizationId;
-  if (!orgId) {
-    return c.json({ error: "bad_request", message: "No active organization." }, 400);
   }
 
   const body = c.req.valid("json");
@@ -484,21 +450,11 @@ adminRoles.openapi(updateRoleRoute, async (c) => {
 
 // DELETE /:id — delete a custom role
 adminRoles.openapi(deleteRoleRoute, async (c) => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
+  const { requestId, orgId } = c.get("orgContext");
   const { id: roleId } = c.req.valid("param");
 
   if (!isValidId(roleId)) {
     return c.json({ error: "bad_request", message: "Invalid role ID." }, 400);
-  }
-
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-  }
-
-  const orgId = authResult.user?.activeOrganizationId;
-  if (!orgId) {
-    return c.json({ error: "bad_request", message: "No active organization." }, 400);
   }
 
   try {
@@ -516,21 +472,11 @@ adminRoles.openapi(deleteRoleRoute, async (c) => {
 
 // GET /:id/members — list members with a specific role
 adminRoles.openapi(listRoleMembersRoute, async (c) => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
+  const { requestId, orgId } = c.get("orgContext");
   const { id: roleId } = c.req.valid("param");
 
   if (!isValidId(roleId)) {
     return c.json({ error: "bad_request", message: "Invalid role ID." }, 400);
-  }
-
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-  }
-
-  const orgId = authResult.user?.activeOrganizationId;
-  if (!orgId) {
-    return c.json({ error: "bad_request", message: "No active organization." }, 400);
   }
 
   try {
@@ -545,21 +491,11 @@ adminRoles.openapi(listRoleMembersRoute, async (c) => {
 
 // PUT /users/:userId/role — assign a role to a user
 adminRoles.openapi(assignRoleRoute, async (c) => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
+  const { requestId, orgId } = c.get("orgContext");
   const { userId } = c.req.valid("param");
 
   if (!isValidId(userId)) {
     return c.json({ error: "bad_request", message: "Invalid user ID." }, 400);
-  }
-
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-  }
-
-  const orgId = authResult.user?.activeOrganizationId;
-  if (!orgId) {
-    return c.json({ error: "bad_request", message: "No active organization." }, 400);
   }
 
   const { role: roleName } = c.req.valid("json");

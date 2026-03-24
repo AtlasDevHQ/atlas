@@ -13,12 +13,11 @@
  * - PUT    /config        — update schedule/retention
  */
 
-import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
-import { validationHook } from "./validation-hook";
+import { createRoute, z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
 import { BACKUP_STATUSES } from "@useatlas/types";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
-import { platformAdminAuth, requestContext, type AuthEnv } from "./middleware";
+import { createPlatformRouter } from "./admin-router";
 
 const log = createLogger("platform-backups");
 
@@ -243,10 +242,7 @@ function toBackupEntry(row: {
 // Router
 // ---------------------------------------------------------------------------
 
-const platformBackups = new OpenAPIHono<AuthEnv>({ defaultHook: validationHook });
-
-platformBackups.use(platformAdminAuth);
-platformBackups.use(requestContext);
+const platformBackups = createPlatformRouter();
 
 // ── List backups ─────────────────────────────────────────────────────
 

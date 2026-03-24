@@ -154,3 +154,24 @@ Tracking module-deepening refactors discovered by the `improve-codebase-architec
 - New admin pages get the correct rendering chain with a single component
 
 **Category:** Repeated conditional rendering chain consolidated into a composable wrapper component.
+
+---
+
+## 8. Extract createAdminRouter factory + requireOrgContext middleware
+
+**Date:** 2026-03-24
+**Issue:** #858
+
+**Problem:** 22 admin/platform route files repeated identical 4-line router setup boilerplate (`new OpenAPIHono<AuthEnv>({ defaultHook: validationHook })` + `.use(adminAuth)` + `.use(requestContext)` + `.onError(eeOnError)`). Additionally, ~85 handlers across these files repeated ~8 lines of org context extraction (`c.get("requestId")`, `c.get("authResult")`, `hasInternalDB()` check, `activeOrganizationId` extraction + null guard). One file (`admin-onboarding-emails`) still used the legacy `adminAuthPreamble` inline pattern.
+
+**Solution:** Created `admin-router.ts` with three exports: `createAdminRouter()` (admin routes with validationHook + adminAuth + requestContext + eeOnError), `createPlatformRouter()` (platform routes with platformAdminAuth), and `requireOrgContext()` middleware (validates hasInternalDB + extracts orgId, sets typed `orgContext` variable). Migrated all 22 route files. Legacy preamble file fully migrated to middleware pattern.
+
+**Impact:**
+- **-630 net lines** (799 removed, 169 added across 24 files including new factory + tests)
+- 22 route files migrated to factory pattern
+- ~85 handlers simplified from ~8-line boilerplate to single destructure: `const { requestId, orgId } = c.get("orgContext")`
+- 1 legacy preamble file (`admin-onboarding-emails`) migrated to middleware pattern
+- Bug fix: `admin-roles` now gets `validationHook` (was missing from constructor)
+- 5 tests for requireOrgContext middleware (404 no DB, 400 no org, 200 passthrough)
+
+**Category:** Repeated router setup and per-handler boilerplate consolidated into factory functions and typed middleware.

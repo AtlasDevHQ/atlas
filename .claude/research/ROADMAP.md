@@ -481,6 +481,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] Extract shared sandbox backends for explore/python (#839, PR #859) — 6 parallel backend files → 3 shared, SandboxBackend interface
 - [x] Adopt react-hook-form + shadcn Form for admin dialogs (#856, PRs #862, #863, #864, #865) — FormDialog component with Zod 4 validation, all 26 admin pages migrated across 4 batches. z.ZodType<T,T> generic pattern for proper zodResolver overload matching
 - [x] Extract AdminContentWrapper for admin page rendering (#857) — shared FeatureGate/ErrorBanner/LoadingState/EmptyState chain, 8 admin pages migrated
+- [x] Extract createAdminRouter factory + requireOrgContext middleware (#858) — `createAdminRouter()`, `createPlatformRouter()`, `requireOrgContext()` replace 4-line router setup boilerplate × 22 files and ~8-line org-context extraction × 85 handlers
 
 ---
 

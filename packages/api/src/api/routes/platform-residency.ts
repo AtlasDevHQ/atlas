@@ -10,13 +10,12 @@
  * - GET    /assignments                     — list all workspace region assignments
  */
 
-import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
-import { validationHook } from "./validation-hook";
+import { createRoute, z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
 import { EnterpriseError } from "@atlas/ee/index";
 import { ResidencyError, type ResidencyErrorCode } from "@atlas/ee/platform/residency";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
-import { platformAdminAuth, requestContext, type AuthEnv } from "./middleware";
+import { createPlatformRouter } from "./admin-router";
 
 const log = createLogger("platform-residency");
 
@@ -190,10 +189,7 @@ function handleResidencyError(err: unknown, requestId: string): { error: string;
 // Router
 // ---------------------------------------------------------------------------
 
-const platformResidency = new OpenAPIHono<AuthEnv>({ defaultHook: validationHook });
-
-platformResidency.use(platformAdminAuth);
-platformResidency.use(requestContext);
+const platformResidency = createPlatformRouter();
 
 // ── List regions ─────────────────────────────────────────────────────
 

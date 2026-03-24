@@ -16,11 +16,9 @@
  * - GET    /pending-count  — count of pending requests
  */
 
-import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
-import { validationHook } from "./validation-hook";
+import { createRoute, z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
-import { hasInternalDB } from "@atlas/api/lib/db/internal";
-import { throwIfEEError, eeOnError } from "./ee-error-handler";
+import { throwIfEEError } from "./ee-error-handler";
 import {
   listApprovalRules,
   createApprovalRule,
@@ -34,7 +32,7 @@ import {
   ApprovalError,
 } from "@atlas/ee/governance/approval";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
-import { adminAuth, requestContext, type AuthEnv } from "./middleware";
+import { createAdminRouter, requireOrgContext } from "./admin-router";
 
 const log = createLogger("admin-approval");
 
@@ -281,26 +279,51 @@ const pendingCountRoute = createRoute({
 // Router
 // ---------------------------------------------------------------------------
 
-const adminApproval = new OpenAPIHono<AuthEnv>({ defaultHook: validationHook });
+const adminApproval = createAdminRouter();
 
-adminApproval.use(adminAuth);
-adminApproval.use(requestContext);
+// ── Handlers WITHOUT requireOrgContext ────────────────────────────────
+// Registered before requireOrgContext() so the middleware does not apply.
 
-adminApproval.onError(eeOnError);
+// POST /expire — manually expire stale requests (global, no org/DB needed)
+adminApproval.openapi(expireRoute, async (c) => {
+  const requestId = c.get("requestId");
 
-// GET /rules — list approval rules
-adminApproval.openapi(listRulesRoute, async (c) => {
+  try {
+    const expired = await expireStaleRequests();
+    return c.json({ expired }, 200);
+  } catch (err) {
+    throwIfEEError(err, [ApprovalError, APPROVAL_ERROR_STATUS]);
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to expire stale requests");
+    return c.json({ error: "internal_error", message: "Failed to expire stale requests.", requestId }, 500);
+  }
+});
+
+// GET /pending-count — count of pending requests (needs orgId, not hasInternalDB)
+adminApproval.openapi(pendingCountRoute, async (c) => {
   const requestId = c.get("requestId");
   const authResult = c.get("authResult");
 
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-  }
-
   const orgId = authResult.user?.activeOrganizationId;
   if (!orgId) {
-    return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
+    return c.json({ error: "bad_request", message: "No active organization. Set an active org first.", requestId }, 400);
   }
+
+  try {
+    const count = await getPendingCount(orgId);
+    return c.json({ count }, 200);
+  } catch (err) {
+    throwIfEEError(err, [ApprovalError, APPROVAL_ERROR_STATUS]);
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to get pending count");
+    return c.json({ error: "internal_error", message: "Failed to get pending approval count.", requestId }, 500);
+  }
+});
+
+// ── Handlers WITH requireOrgContext ───────────────────────────────────
+adminApproval.use(requireOrgContext());
+
+// GET /rules — list approval rules
+adminApproval.openapi(listRulesRoute, async (c) => {
+  const { requestId, orgId } = c.get("orgContext");
 
   try {
     const rules = await listApprovalRules(orgId);
@@ -314,18 +337,7 @@ adminApproval.openapi(listRulesRoute, async (c) => {
 
 // POST /rules — create approval rule
 adminApproval.openapi(createRuleRoute, async (c) => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
-
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-  }
-
-  const orgId = authResult.user?.activeOrganizationId;
-  if (!orgId) {
-    return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
-  }
-
+  const { requestId, orgId } = c.get("orgContext");
   const body = c.req.valid("json");
 
   try {
@@ -346,18 +358,7 @@ adminApproval.openapi(createRuleRoute, async (c) => {
 
 // PUT /rules/:id — update approval rule
 adminApproval.openapi(updateRuleRoute, async (c) => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
-
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-  }
-
-  const orgId = authResult.user?.activeOrganizationId;
-  if (!orgId) {
-    return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
-  }
-
+  const { requestId, orgId } = c.get("orgContext");
   const ruleId = c.req.param("id");
   const body = c.req.valid("json");
 
@@ -373,18 +374,7 @@ adminApproval.openapi(updateRuleRoute, async (c) => {
 
 // DELETE /rules/:id — delete approval rule
 adminApproval.openapi(deleteRuleRoute, async (c) => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
-
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-  }
-
-  const orgId = authResult.user?.activeOrganizationId;
-  if (!orgId) {
-    return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
-  }
-
+  const { requestId, orgId } = c.get("orgContext");
   const ruleId = c.req.param("id");
 
   try {
@@ -402,17 +392,7 @@ adminApproval.openapi(deleteRuleRoute, async (c) => {
 
 // GET /queue — list approval requests
 adminApproval.openapi(listQueueRoute, async (c) => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
-
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-  }
-
-  const orgId = authResult.user?.activeOrganizationId;
-  if (!orgId) {
-    return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
-  }
+  const { requestId, orgId } = c.get("orgContext");
 
   try {
     const statusParam = new URL(c.req.raw.url).searchParams.get("status") as import("@useatlas/types").ApprovalStatus | null;
@@ -429,18 +409,7 @@ adminApproval.openapi(listQueueRoute, async (c) => {
 
 // GET /queue/:id — get single approval request
 adminApproval.openapi(getQueueItemRoute, async (c) => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
-
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-  }
-
-  const orgId = authResult.user?.activeOrganizationId;
-  if (!orgId) {
-    return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
-  }
-
+  const { requestId, orgId } = c.get("orgContext");
   const itemId = c.req.param("id");
 
   try {
@@ -458,17 +427,8 @@ adminApproval.openapi(getQueueItemRoute, async (c) => {
 
 // POST /queue/:id — review (approve/deny) an approval request
 adminApproval.openapi(reviewRoute, async (c) => {
-  const requestId = c.get("requestId");
+  const { requestId, orgId } = c.get("orgContext");
   const authResult = c.get("authResult");
-
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-  }
-
-  const orgId = authResult.user?.activeOrganizationId;
-  if (!orgId) {
-    return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
-  }
 
   const itemId = c.req.param("id");
   const body = c.req.valid("json");
@@ -493,40 +453,6 @@ adminApproval.openapi(reviewRoute, async (c) => {
     throwIfEEError(err, [ApprovalError, APPROVAL_ERROR_STATUS]);
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to review approval request");
     return c.json({ error: "internal_error", message: "Failed to review approval request.", requestId }, 500);
-  }
-});
-
-// POST /expire — manually expire stale requests
-adminApproval.openapi(expireRoute, async (c) => {
-  const requestId = c.get("requestId");
-
-  try {
-    const expired = await expireStaleRequests();
-    return c.json({ expired }, 200);
-  } catch (err) {
-    throwIfEEError(err, [ApprovalError, APPROVAL_ERROR_STATUS]);
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to expire stale requests");
-    return c.json({ error: "internal_error", message: "Failed to expire stale requests.", requestId }, 500);
-  }
-});
-
-// GET /pending-count — count of pending requests
-adminApproval.openapi(pendingCountRoute, async (c) => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
-
-  const orgId = authResult.user?.activeOrganizationId;
-  if (!orgId) {
-    return c.json({ error: "bad_request", message: "No active organization. Set an active org first." }, 400);
-  }
-
-  try {
-    const count = await getPendingCount(orgId);
-    return c.json({ count }, 200);
-  } catch (err) {
-    throwIfEEError(err, [ApprovalError, APPROVAL_ERROR_STATUS]);
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to get pending count");
-    return c.json({ error: "internal_error", message: "Failed to get pending approval count.", requestId }, 500);
   }
 });
 

@@ -350,6 +350,7 @@
         "@chat-adapter/discord": "4.20.2",
         "@chat-adapter/gchat": "4.20.2",
         "@chat-adapter/github": "4.20.2",
+        "@chat-adapter/linear": "4.20.2",
         "@chat-adapter/slack": "4.20.2",
         "@chat-adapter/state-memory": "4.20.2",
         "@chat-adapter/teams": "4.20.2",
@@ -907,6 +908,8 @@
 
     "@chat-adapter/github": ["@chat-adapter/github@4.20.2", "", { "dependencies": { "@chat-adapter/shared": "4.20.2", "@octokit/auth-app": "^8.2.0", "@octokit/rest": "^22.0.1", "chat": "4.20.2" } }, "sha512-CGC8cyVKPdlIB9Q9EhPnh4cOrvus7N+m7skwSfUakVvji/gs+TzFKGP/TX3CZD3wCzXEWjAw/zbK4iaiNNUdtQ=="],
 
+    "@chat-adapter/linear": ["@chat-adapter/linear@4.20.2", "", { "dependencies": { "@chat-adapter/shared": "4.20.2", "@linear/sdk": "^76.0.0", "chat": "4.20.2" } }, "sha512-a6K1iGZzMOaSJF3X0OcjMPBUJsVepcGJPm60WGmgx/JgzM2emB25mA/FYe6eysimsj18PeadrCW6EOSYKkmasg=="],
+
     "@chat-adapter/shared": ["@chat-adapter/shared@4.20.2", "", { "dependencies": { "chat": "4.20.2" } }, "sha512-cTtTVHgH/2l9/+ILSExCr/kZwzz2Y8tp7WKRweMRWFOBcXZ0U5ZtviZCCDWBqU/YOBilQUgON8vIP9eo1w0m5w=="],
 
     "@chat-adapter/slack": ["@chat-adapter/slack@4.20.2", "", { "dependencies": { "@chat-adapter/shared": "4.20.2", "@slack/web-api": "^7.14.0", "chat": "4.20.2" } }, "sha512-DCGMdB5sLG7lJ8TTv6zHUC3GQXfW3zWXLv+w5sRc+Km0Rq4tG43vLMmcCAd3AEj2Bjhl0bnWjhkTwR7txlu7TQ=="],
@@ -1089,6 +1092,8 @@
 
     "@googleapis/workspaceevents": ["@googleapis/workspaceevents@9.1.0", "", { "dependencies": { "googleapis-common": "^8.0.0" } }, "sha512-aJiMrTi/YyUUaaTO0tnhTHDYU+N9CTD3l3FSfe0yzEHQl7DEc+1LISgdK1o2nurvCtguBEumify5kTkr6Cg5eA=="],
 
+    "@graphql-typed-document-node/core": ["@graphql-typed-document-node/core@3.2.0", "", { "peerDependencies": { "graphql": "^0.8.0 || ^0.9.0 || ^0.10.0 || ^0.11.0 || ^0.12.0 || ^0.13.0 || ^14.0.0 || ^15.0.0 || ^16.0.0 || ^17.0.0" } }, "sha512-mB9oAsNCm9aM3/SOv4YtBMqZbYj10R7dkq8byBqxGY/ncFwhf2oQzMV+LCRlWoDSEBJ3COiR1yeDvMtsoOsuFQ=="],
+
     "@grpc/grpc-js": ["@grpc/grpc-js@1.14.3", "", { "dependencies": { "@grpc/proto-loader": "^0.8.0", "@js-sdsl/ordered-map": "^4.4.2" } }, "sha512-Iq8QQQ/7X3Sac15oB6p0FmUg/klxQvXLeileoqrTRGJYLV+/9tubbr9ipz0GKHjmXVsgFPo/+W+2cA8eNcR+XA=="],
 
     "@grpc/proto-loader": ["@grpc/proto-loader@0.8.0", "", { "dependencies": { "lodash.camelcase": "^4.3.0", "long": "^5.0.0", "protobufjs": "^7.5.3", "yargs": "^17.7.2" }, "bin": { "proto-loader-gen-types": "build/bin/proto-loader-gen-types.js" } }, "sha512-rc1hOQtjIWGxcxpb9aHAfLpIctjEnsDehj0DAiVfBlmT84uvR0uUtN2hEi/ecvWVjXUGf5qPF4qEgiLOx1YIMQ=="],
@@ -1182,6 +1187,8 @@
     "@jridgewell/trace-mapping": ["@jridgewell/trace-mapping@0.3.31", "", { "dependencies": { "@jridgewell/resolve-uri": "^3.1.0", "@jridgewell/sourcemap-codec": "^1.4.14" } }, "sha512-zzNR+SdQSDJzc8joaeP8QQoCQr8NuYx2dIIytl1QeBEZHJ9uW6hebsrYgbz8hJwUQao3TWCMtmfV8Nu1twOLAw=="],
 
     "@js-sdsl/ordered-map": ["@js-sdsl/ordered-map@4.4.2", "", {}, "sha512-iUKgm52T8HOE/makSxjqoWhe95ZJA1/G1sYsGev2JDKUSS14KAgg1LHb+Ba+IPow0xflbnSkOsZcO08C7w1gYw=="],
+
+    "@linear/sdk": ["@linear/sdk@76.0.0", "", { "dependencies": { "@graphql-typed-document-node/core": "^3.2.0" } }, "sha512-Xt0x5Kl6qBoWhGFypb8ykyP+c5kT7scmRPs1uJidSPOaRgkMJ/4y41QpmZCWCBUMmZtf/O0VktgQio6rLXT94w=="],
 
     "@marijn/find-cluster-break": ["@marijn/find-cluster-break@1.0.2", "", {}, "sha512-l0h88YhZFyKdXIFNfSWpyjStDjGHwZ/U7iobcK1cQQD8sejsONdQtTVU+1wVN1PBw40PiiHB1vA5S7VTfQiP9g=="],
 

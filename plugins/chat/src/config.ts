@@ -130,6 +130,55 @@ export type GitHubAdapterConfig =
   | GitHubAppSingleTenantConfig
   | GitHubAppMultiTenantConfig;
 
+/** Shared Linear adapter fields (auth-mode-independent). */
+interface LinearAdapterBaseConfig {
+  /** Webhook signing secret for HMAC-SHA256 verification.
+   * Found on the webhook detail page in Linear settings. */
+  webhookSecret?: string;
+  /** Bot display name used for @-mention detection.
+   * Defaults to LINEAR_BOT_USERNAME env var or "linear-bot". */
+  userName?: string;
+}
+
+/** Linear adapter using a personal API key. */
+interface LinearAPIKeyConfig extends LinearAdapterBaseConfig {
+  /** Personal API key from Linear Settings > Security & Access. */
+  apiKey: string;
+  accessToken?: never;
+  clientId?: never;
+  clientSecret?: never;
+}
+
+/** Linear adapter using a pre-obtained OAuth access token. */
+interface LinearOAuthConfig extends LinearAdapterBaseConfig {
+  apiKey?: never;
+  /** OAuth access token obtained through the OAuth flow. */
+  accessToken: string;
+  clientId?: never;
+  clientSecret?: never;
+}
+
+/** Linear adapter using OAuth client credentials (recommended for apps).
+ * The adapter handles token management internally. */
+interface LinearAppConfig extends LinearAdapterBaseConfig {
+  apiKey?: never;
+  accessToken?: never;
+  /** OAuth application client ID. */
+  clientId: string;
+  /** OAuth application client secret. */
+  clientSecret: string;
+}
+
+/** Linear adapter credential configuration.
+ * Discriminated union — exactly one auth mode must be provided:
+ * - API Key: `{ apiKey }` — simplest, for personal bots
+ * - OAuth token: `{ accessToken }` — pre-obtained OAuth token
+ * - OAuth App: `{ clientId, clientSecret }` — recommended for apps */
+export type LinearAdapterConfig =
+  | LinearAPIKeyConfig
+  | LinearOAuthConfig
+  | LinearAppConfig;
+
 /** Google Chat adapter credential configuration. */
 export interface GoogleChatAdapterConfig {
   /** Service account credentials JSON (client_email + private_key). */
@@ -238,6 +287,7 @@ export interface ChatPluginConfig {
     gchat?: GoogleChatAdapterConfig;
     telegram?: TelegramAdapterConfig;
     github?: GitHubAdapterConfig;
+    linear?: LinearAdapterConfig;
   };
 
   /** State backend configuration. Default: { backend: "memory" } */
@@ -363,6 +413,43 @@ const GitHubAdapterSchema = z.object({
   }
 });
 
+const LinearAdapterSchema = z.object({
+  apiKey: z.string().min(1, "linear apiKey must not be empty").optional(),
+  accessToken: z.string().min(1, "linear accessToken must not be empty").optional(),
+  clientId: z.string().min(1, "linear clientId must not be empty").optional(),
+  clientSecret: z.string().min(1, "linear clientSecret must not be empty").optional(),
+  webhookSecret: z.string().min(1, "linear webhookSecret must not be empty").optional(),
+  userName: z.string().min(1, "linear userName must not be empty").optional(),
+}).superRefine((c, ctx) => {
+  const modes = [c.apiKey, c.accessToken, c.clientId].filter(Boolean).length;
+  if (modes > 1) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Provide exactly one auth mode: apiKey, accessToken, or clientId + clientSecret",
+    });
+  }
+  if (c.clientId && !c.clientSecret) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "clientId requires clientSecret for OAuth App auth",
+      path: ["clientSecret"],
+    });
+  }
+  if (!c.clientId && c.clientSecret) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "clientSecret requires clientId for OAuth App auth",
+      path: ["clientId"],
+    });
+  }
+  if (!c.apiKey && !c.accessToken && !c.clientId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "Provide apiKey, accessToken, or clientId + clientSecret — at least one credential path is required",
+    });
+  }
+});
+
 const GoogleChatAdapterSchema = z.object({
   credentials: z.object({
     client_email: z.string().email("gchat credentials.client_email must be a valid email"),
@@ -413,6 +500,7 @@ export const ChatConfigSchema = z.object({
       gchat: GoogleChatAdapterSchema.optional(),
       telegram: TelegramAdapterSchema.optional(),
       github: GitHubAdapterSchema.optional(),
+      linear: LinearAdapterSchema.optional(),
     })
     .strict()
     .refine(

@@ -3,7 +3,7 @@
  *
  * Bridges vercel/chat (Chat SDK) into the Atlas plugin system as a unified
  * interaction layer. Supports Slack, Teams, Discord, Google Chat, Telegram,
- * and GitHub; additional platforms will be added as Chat SDK adapters.
+ * GitHub, and Linear; additional platforms will be added as Chat SDK adapters.
  *
  * Replaces the standalone `@useatlas/slack` and `@useatlas/teams` plugins
  * with a unified Chat SDK adapter approach. See the migration guide in README.md.
@@ -41,6 +41,10 @@
  *           privateKey: process.env.GITHUB_PRIVATE_KEY!,
  *           webhookSecret: process.env.GITHUB_WEBHOOK_SECRET!,
  *         },
+ *         linear: {
+ *           apiKey: process.env.LINEAR_API_KEY!,
+ *           webhookSecret: process.env.LINEAR_WEBHOOK_SECRET!,
+ *         },
  *       },
  *       executeQuery: myQueryFunction,
  *     }),
@@ -56,6 +60,7 @@ import type { DiscordAdapter } from "@chat-adapter/discord";
 import type { GoogleChatAdapter } from "@chat-adapter/gchat";
 import type { TelegramAdapter } from "@chat-adapter/telegram";
 import type { GitHubAdapter } from "@chat-adapter/github";
+import type { LinearAdapter } from "@chat-adapter/linear";
 import { createPlugin } from "@useatlas/plugin-sdk";
 import type {
   AtlasInteractionPlugin,
@@ -73,6 +78,7 @@ import { createDiscordAdapter } from "./adapters/discord";
 import { createGoogleChatAdapter } from "./adapters/gchat";
 import { createTelegramAdapter } from "./adapters/telegram";
 import { createGitHubAdapter } from "./adapters/github";
+import { createLinearAdapter } from "./adapters/linear";
 import { createStateAdapter } from "./state";
 
 // Re-export types for host wiring convenience
@@ -90,6 +96,7 @@ export type {
   GoogleChatAdapterConfig,
   TelegramAdapterConfig,
   GitHubAdapterConfig,
+  LinearAdapterConfig,
   StreamingConfig,
   StreamingQueryResult,
 } from "./config";
@@ -121,6 +128,7 @@ function buildChatPlugin(
   let gchatAdapterInstance: GoogleChatAdapter | null = null;
   let telegramAdapterInstance: TelegramAdapter | null = null;
   let githubAdapterInstance: GitHubAdapter | null = null;
+  let linearAdapterInstance: LinearAdapter | null = null;
   let log: PluginLogger | null = null;
   let initialized = false;
 
@@ -424,6 +432,40 @@ function buildChatPlugin(
           }
         });
       }
+
+      if (config.adapters.linear) {
+        app.post("/webhooks/linear", async (c) => {
+          if (!bridge) {
+            return c.json({ error: "Chat plugin not yet initialized" }, 503);
+          }
+
+          const handler = bridge.webhooks.linear;
+          if (!handler) {
+            return c.json({ error: "Linear adapter not configured" }, 404);
+          }
+
+          const requestId = crypto.randomUUID();
+          try {
+            const response = await handler(c.req.raw, {
+              waitUntil: (task: Promise<unknown>) => {
+                task.catch((err: unknown) => {
+                  (log ?? console).error(
+                    { err: err instanceof Error ? err : new Error(String(err)), requestId, adapter: "linear" },
+                    "Chat SDK Linear webhook background task failed",
+                  );
+                });
+              },
+            });
+            return response;
+          } catch (err) {
+            (log ?? console).error(
+              { err: err instanceof Error ? err : new Error(String(err)), requestId, adapter: "linear" },
+              "Linear webhook handler threw unexpectedly",
+            );
+            return c.json({ error: "Webhook processing failed", requestId }, 500);
+          }
+        });
+      }
     },
 
     async initialize(ctx: AtlasPluginContext) {
@@ -451,6 +493,7 @@ function buildChatPlugin(
         gchat?: GoogleChatAdapter | null;
         telegram?: TelegramAdapter | null;
         github?: GitHubAdapter | null;
+        linear?: LinearAdapter | null;
       } = {};
       try {
         if (config.adapters.slack) {
@@ -482,6 +525,15 @@ function buildChatPlugin(
           githubAdapterInstance = createGitHubAdapter(config.adapters.github) as GitHubAdapter;
           adapterInstances.github = githubAdapterInstance;
         }
+        if (config.adapters.linear) {
+          if (!config.adapters.linear.webhookSecret) {
+            ctx.logger.warn(
+              "Linear adapter configured without webhookSecret — webhook endpoint will accept unauthenticated requests. Set webhookSecret for production deployments.",
+            );
+          }
+          linearAdapterInstance = createLinearAdapter(config.adapters.linear) as LinearAdapter;
+          adapterInstances.linear = linearAdapterInstance;
+        }
 
         bridge = createChatBridge(config, ctx.logger, stateAdapter, adapterInstances);
       } catch (err) {
@@ -505,6 +557,7 @@ function buildChatPlugin(
         gchatAdapterInstance = null;
         telegramAdapterInstance = null;
         githubAdapterInstance = null;
+        linearAdapterInstance = null;
         throw err;
       }
 
@@ -592,6 +645,7 @@ function buildChatPlugin(
       gchatAdapterInstance = null;
       telegramAdapterInstance = null;
       githubAdapterInstance = null;
+      linearAdapterInstance = null;
       log = null;
       initialized = false;
     },
@@ -615,6 +669,7 @@ function buildChatPlugin(
  *     gchat: { credentials: { client_email: "...", private_key: "..." } },
  *     telegram: { botToken: "..." },
  *     github: { appId: "...", privateKey: "...", webhookSecret: "..." },
+ *     linear: { apiKey: "...", webhookSecret: "..." },
  *   },
  *   executeQuery: myQueryFunction,
  * })]

@@ -1,0 +1,192 @@
+---
+title: Telegram Bot
+description: Integrate Telegram as an interaction surface for Atlas with @mentions, threaded conversations, and formatted query results.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+The Telegram interaction is provided via the [`@useatlas/chat`](/plugins/interactions/chat) Chat SDK bridge plugin. Users can @mention the bot in group chats or send direct messages to query data. The bot replies with formatted text containing query results, SQL, and data tables.
+
+The Chat SDK adapter uses Telegram's Bot API webhook mode. Incoming requests can be verified using a webhook secret token.
+
+## Prerequisites
+
+- A Telegram bot created via [BotFather](https://t.me/BotFather)
+- The bot token from BotFather
+- A publicly accessible HTTPS URL for webhook delivery
+
+## BotFather Setup
+
+### 1. Create a Bot
+
+1. Open Telegram and message [@BotFather](https://t.me/BotFather)
+2. Send `/newbot` and follow the prompts to choose a name and username
+3. BotFather will reply with your bot token
+
+<Callout type="warn">
+The bot token grants full control of your bot. Store it securely and never commit it to source control.
+</Callout>
+
+### 2. Configure Bot Settings
+
+Optionally configure your bot's profile via BotFather:
+
+- `/setdescription` — Set the bot's description (shown on the bot's profile)
+- `/setabouttext` — Set the "About" text
+- `/setuserpic` — Set the bot's profile picture
+- `/setcommands` — Register slash commands (e.g., `atlas - Ask a data question`)
+
+### 3. Set the Webhook
+
+Register the webhook URL with Telegram. You can use the Bot API directly:
+
+```bash
+curl -X POST "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/setWebhook" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "https://your-atlas-api.example.com/api/plugins/chat-interaction/webhooks/telegram",
+    "secret_token": "your-optional-secret-token"
+  }'
+```
+
+<Callout type="info">
+The `secret_token` is optional but recommended. When set, Telegram includes it in the `x-telegram-bot-api-secret-token` header on every webhook request. The Chat SDK adapter verifies this automatically.
+</Callout>
+
+### 4. Add the Bot to a Group (Optional)
+
+To use the bot in group chats:
+
+1. Open the group in Telegram
+2. Tap the group name → **Add Members** → search for your bot username
+3. The bot responds to @mentions and direct replies in the group
+
+For the bot to see all messages (not just commands and @mentions), disable privacy mode via BotFather: `/setprivacy` → **Disable**.
+
+## Configuration
+
+```typescript
+import { defineConfig } from "@atlas/api/lib/config";
+import { executeAgentQuery } from "@atlas/api/lib/agent-query";
+import { chatPlugin } from "@useatlas/chat";
+
+export default defineConfig({
+  plugins: [
+    chatPlugin({
+      adapters: {
+        telegram: {
+          botToken: process.env.TELEGRAM_BOT_TOKEN!,
+        },
+      },
+      executeQuery: executeAgentQuery,
+    }),
+  ],
+});
+```
+
+With optional webhook secret token:
+
+```typescript
+chatPlugin({
+  adapters: {
+    telegram: {
+      botToken: process.env.TELEGRAM_BOT_TOKEN!,
+      secretToken: process.env.TELEGRAM_WEBHOOK_SECRET_TOKEN,
+    },
+  },
+  executeQuery: executeAgentQuery,
+})
+```
+
+### Options
+
+| Option | Type | Required | Description |
+|--------|------|----------|-------------|
+| `botToken` | `string` | Yes | Telegram bot token from BotFather. |
+| `secretToken` | `string` | No | Webhook secret token for verifying incoming requests via `x-telegram-bot-api-secret-token` header. |
+
+## Mounted Routes
+
+The Chat SDK bridge mounts the following route for Telegram:
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/webhooks/telegram` | Telegram Bot API webhook — receives messages, @mentions, commands, and callback queries |
+
+## How It Works
+
+### @Mentions
+
+1. A user @mentions the bot in a Telegram group chat
+2. Telegram sends a webhook update to the `/webhooks/telegram` endpoint
+3. The Chat SDK subscribes the thread for follow-up messages
+4. The `executeQuery` callback runs the Atlas agent
+5. Results are posted as a formatted text reply
+
+### Direct Messages
+
+1. A user sends a direct message to the bot
+2. The message is received via the webhook endpoint
+3. The `executeQuery` callback runs the Atlas agent
+4. Results are posted as a reply in the DM
+
+### Threaded Follow-ups
+
+1. After an initial response, the thread is subscribed via the Chat SDK state adapter
+2. Follow-up messages (replies to the bot's message) trigger new queries with conversation history
+3. The agent has context from prior messages for multi-turn analysis
+
+### AI Streaming
+
+Telegram doesn't support true message streaming. The adapter uses a post-then-edit pattern: an initial message is posted immediately, then progressively edited with new content as the response streams in.
+
+### Callback Queries (Button Clicks)
+
+When a response includes approval buttons (e.g., for pending actions), button clicks are received as callback queries via the same webhook endpoint. The Chat SDK adapter handles routing these to the action framework automatically.
+
+## Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `TELEGRAM_BOT_TOKEN` | Telegram bot token from BotFather |
+| `TELEGRAM_WEBHOOK_SECRET_TOKEN` | Optional webhook secret token for request verification |
+
+## Troubleshooting
+
+### Bot not responding to messages
+
+1. Verify the webhook is set correctly: `curl "https://api.telegram.org/bot$TELEGRAM_BOT_TOKEN/getWebhookInfo"`
+2. Check that the webhook URL is publicly accessible over HTTPS
+3. Ensure the bot token is correct and the bot hasn't been revoked
+4. Check Atlas logs for initialization errors
+
+### Bot not receiving group messages
+
+By default, Telegram bots only receive commands and @mentions in groups (privacy mode). To receive all messages:
+
+1. Message BotFather: `/setprivacy`
+2. Select your bot
+3. Choose **Disable**
+
+<Callout type="info">
+After changing the privacy setting, you may need to remove and re-add the bot to existing groups for the change to take effect.
+</Callout>
+
+### Webhook secret token verification failures
+
+Ensure the `secretToken` in your Atlas config matches the `secret_token` you set when registering the webhook with Telegram. The token is case-sensitive.
+
+### Webhook URL not reachable
+
+Telegram requires a valid HTTPS URL with a trusted certificate. Self-signed certificates require uploading the public key when setting the webhook. For development, use a tunneling service like ngrok.
+
+### Messages being truncated
+
+Telegram has a 4096-character limit for text messages. The Chat SDK adapter automatically truncates messages that exceed this limit. For large query results, consider using the data table card format which shows a preview with the most relevant rows.
+
+## Reference
+
+- [Telegram Bot API documentation](https://core.telegram.org/bots/api)
+- [BotFather](https://t.me/BotFather)
+- [Chat SDK Bridge plugin](/plugins/interactions/chat)
+- [Chat SDK documentation](https://chat-sdk.dev/docs)

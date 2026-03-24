@@ -68,6 +68,14 @@ export interface DiscordAdapterConfig {
   mentionRoleIds?: string[];
 }
 
+/** Telegram adapter credential configuration. */
+export interface TelegramAdapterConfig {
+  /** Telegram bot token from BotFather. */
+  botToken: string;
+  /** Optional webhook secret token for verifying incoming requests. */
+  secretToken?: string;
+}
+
 /** Google Chat adapter credential configuration. */
 export interface GoogleChatAdapterConfig {
   /** Service account credentials JSON (client_email + private_key). */
@@ -145,6 +153,7 @@ export interface ChatPluginConfig {
     teams?: TeamsAdapterConfig;
     discord?: DiscordAdapterConfig;
     gchat?: GoogleChatAdapterConfig;
+    telegram?: TelegramAdapterConfig;
   };
 
   /** State backend configuration. Default: { backend: "memory" } */
@@ -199,6 +208,11 @@ const DiscordAdapterSchema = z.object({
   mentionRoleIds: z.array(z.string().min(1)).optional(),
 });
 
+const TelegramAdapterSchema = z.object({
+  botToken: z.string().min(1, "telegram botToken must not be empty"),
+  secretToken: z.string().min(1).optional(),
+});
+
 const GoogleChatAdapterSchema = z.object({
   credentials: z.object({
     client_email: z.string().email("gchat credentials.client_email must be a valid email"),
@@ -235,6 +249,7 @@ export const ChatConfigSchema = z.object({
       teams: TeamsAdapterSchema.optional(),
       discord: DiscordAdapterSchema.optional(),
       gchat: GoogleChatAdapterSchema.optional(),
+      telegram: TelegramAdapterSchema.optional(),
     })
     .strict()
     .refine(

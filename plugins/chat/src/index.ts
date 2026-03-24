@@ -2,7 +2,7 @@
  * Atlas Chat SDK Bridge Plugin.
  *
  * Bridges vercel/chat (Chat SDK) into the Atlas plugin system as a unified
- * interaction layer. Supports Slack, Teams, Discord, and Google Chat;
+ * interaction layer. Supports Slack, Teams, Discord, Google Chat, and Telegram;
  * additional platforms will be added as Chat SDK adapters in follow-up issues.
  *
  * Replaces the standalone `@useatlas/slack` and `@useatlas/teams` plugins
@@ -33,6 +33,9 @@
  *         gchat: {
  *           credentials: JSON.parse(process.env.GOOGLE_CHAT_CREDENTIALS!),
  *         },
+ *         telegram: {
+ *           botToken: process.env.TELEGRAM_BOT_TOKEN!,
+ *         },
  *       },
  *       executeQuery: myQueryFunction,
  *     }),
@@ -46,6 +49,7 @@ import type { SlackAdapter } from "@chat-adapter/slack";
 import type { TeamsAdapter } from "@chat-adapter/teams";
 import type { DiscordAdapter } from "@chat-adapter/discord";
 import type { GoogleChatAdapter } from "@chat-adapter/gchat";
+import type { TelegramAdapter } from "@chat-adapter/telegram";
 import { createPlugin } from "@useatlas/plugin-sdk";
 import type {
   AtlasInteractionPlugin,
@@ -61,6 +65,7 @@ import { createSlackAdapter } from "./adapters/slack";
 import { createTeamsAdapter } from "./adapters/teams";
 import { createDiscordAdapter } from "./adapters/discord";
 import { createGoogleChatAdapter } from "./adapters/gchat";
+import { createTelegramAdapter } from "./adapters/telegram";
 import { createStateAdapter } from "./state";
 
 // Re-export types for host wiring convenience
@@ -76,6 +81,7 @@ export type {
   TeamsAdapterConfig,
   DiscordAdapterConfig,
   GoogleChatAdapterConfig,
+  TelegramAdapterConfig,
 } from "./config";
 export type { ChatBridge } from "./bridge";
 export { createStateAdapter } from "./state";
@@ -102,6 +108,7 @@ function buildChatPlugin(
   let teamsAdapterInstance: TeamsAdapter | null = null;
   let discordAdapterInstance: DiscordAdapter | null = null;
   let gchatAdapterInstance: GoogleChatAdapter | null = null;
+  let telegramAdapterInstance: TelegramAdapter | null = null;
   let log: PluginLogger | null = null;
   let initialized = false;
 
@@ -336,6 +343,40 @@ function buildChatPlugin(
           }
         });
       }
+
+      if (config.adapters.telegram) {
+        app.post("/webhooks/telegram", async (c) => {
+          if (!bridge) {
+            return c.json({ error: "Chat plugin not yet initialized" }, 503);
+          }
+
+          const handler = bridge.webhooks.telegram;
+          if (!handler) {
+            return c.json({ error: "Telegram adapter not configured" }, 404);
+          }
+
+          try {
+            const response = await handler(c.req.raw, {
+              waitUntil: (task: Promise<unknown>) => {
+                task.catch((err: unknown) => {
+                  (log ?? console).error(
+                    { err: err instanceof Error ? err : new Error(String(err)) },
+                    "Chat SDK Telegram webhook background task failed",
+                  );
+                });
+              },
+            });
+            return response;
+          } catch (err) {
+            const requestId = crypto.randomUUID();
+            (log ?? console).error(
+              { err: err instanceof Error ? err : new Error(String(err)), requestId },
+              "Telegram webhook handler threw unexpectedly",
+            );
+            return c.json({ error: "Webhook processing failed", requestId }, 500);
+          }
+        });
+      }
     },
 
     async initialize(ctx: AtlasPluginContext) {
@@ -361,6 +402,7 @@ function buildChatPlugin(
         teams?: TeamsAdapter | null;
         discord?: DiscordAdapter | null;
         gchat?: GoogleChatAdapter | null;
+        telegram?: TelegramAdapter | null;
       } = {};
       try {
         if (config.adapters.slack) {
@@ -378,6 +420,10 @@ function buildChatPlugin(
         if (config.adapters.gchat) {
           gchatAdapterInstance = createGoogleChatAdapter(config.adapters.gchat) as GoogleChatAdapter;
           adapterInstances.gchat = gchatAdapterInstance;
+        }
+        if (config.adapters.telegram) {
+          telegramAdapterInstance = createTelegramAdapter(config.adapters.telegram) as TelegramAdapter;
+          adapterInstances.telegram = telegramAdapterInstance;
         }
 
         bridge = createChatBridge(config, ctx.logger, stateAdapter, adapterInstances);
@@ -400,6 +446,7 @@ function buildChatPlugin(
         teamsAdapterInstance = null;
         discordAdapterInstance = null;
         gchatAdapterInstance = null;
+        telegramAdapterInstance = null;
         throw err;
       }
 
@@ -485,6 +532,7 @@ function buildChatPlugin(
       teamsAdapterInstance = null;
       discordAdapterInstance = null;
       gchatAdapterInstance = null;
+      telegramAdapterInstance = null;
       log = null;
       initialized = false;
     },
@@ -506,6 +554,7 @@ function buildChatPlugin(
  *     teams: { appId: "...", appPassword: "..." },
  *     discord: { botToken: "...", applicationId: "...", publicKey: "..." },
  *     gchat: { credentials: { client_email: "...", private_key: "..." } },
+ *     telegram: { botToken: "..." },
  *   },
  *   executeQuery: myQueryFunction,
  * })]

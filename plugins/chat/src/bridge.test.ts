@@ -1740,7 +1740,7 @@ describe("chatPlugin Google Chat adapter config", () => {
     ).toThrow(/not both/i);
   });
 
-  it("accepts config with all four adapters", async () => {
+  it("accepts config with all five adapters", async () => {
     const { chatPlugin } = await import("./index");
 
     const plugin = chatPlugin({
@@ -1753,11 +1753,69 @@ describe("chatPlugin Google Chat adapter config", () => {
           publicKey: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
         },
         gchat: {},
+        telegram: { botToken: "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11" },
       },
       executeQuery: mockExecuteQueryFn,
     });
 
     expect(plugin.id).toBe("chat-interaction");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Telegram adapter config validation
+// ---------------------------------------------------------------------------
+
+describe("chatPlugin Telegram adapter config", () => {
+  const mockExecuteQueryFn = async () => ({
+    answer: "test",
+    sql: [] as string[],
+    data: [] as { columns: string[]; rows: Record<string, unknown>[] }[],
+    steps: 1,
+    usage: { totalTokens: 10 },
+  });
+
+  it("accepts valid config with telegram adapter", async () => {
+    const { chatPlugin } = await import("./index");
+
+    const plugin = chatPlugin({
+      adapters: {
+        telegram: { botToken: "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11" },
+      },
+      executeQuery: mockExecuteQueryFn,
+    });
+
+    expect(plugin.id).toBe("chat-interaction");
+    expect(plugin.types).toEqual(["interaction"]);
+  });
+
+  it("accepts telegram config with secretToken", async () => {
+    const { chatPlugin } = await import("./index");
+
+    const plugin = chatPlugin({
+      adapters: {
+        telegram: {
+          botToken: "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11",
+          secretToken: "my-webhook-secret",
+        },
+      },
+      executeQuery: mockExecuteQueryFn,
+    });
+
+    expect(plugin.id).toBe("chat-interaction");
+  });
+
+  it("rejects telegram config with empty botToken", async () => {
+    const { chatPlugin } = await import("./index");
+
+    expect(() =>
+      chatPlugin({
+        adapters: {
+          telegram: { botToken: "" },
+        },
+        executeQuery: mockExecuteQueryFn,
+      }),
+    ).toThrow(/botToken/i);
   });
 });
 
@@ -1910,22 +1968,61 @@ describe("chat plugin Google Chat lifecycle", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Multi-adapter lifecycle (all four adapters)
+// Telegram adapter factory
 // ---------------------------------------------------------------------------
 
-describe("chat plugin four-adapter lifecycle", () => {
-  function createQuadAdapterPlugin() {
+describe("createTelegramAdapter", () => {
+  it("creates adapter with correct name", async () => {
+    const { createTelegramAdapter: createAdapter } = await import("./adapters/telegram");
+
+    const adapter = createAdapter({ botToken: "123456:test-token" });
+    expect(adapter).toBeDefined();
+    expect(adapter.name).toBe("telegram");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Telegram webhook route guard
+// ---------------------------------------------------------------------------
+
+describe("telegram webhook route guard", () => {
+  it("telegram webhook returns 503 before initialization", async () => {
+    const { buildChatPlugin } = require("./index");
+    const { Hono } = require("hono");
+
+    const plugin = buildChatPlugin({
+      adapters: {
+        telegram: { botToken: "123456:test-token" },
+      },
+      executeQuery: async () => ({
+        answer: "test",
+        sql: [],
+        data: [],
+        steps: 1,
+        usage: { totalTokens: 10 },
+      }),
+    });
+
+    const app = new Hono();
+    plugin.routes!(app);
+
+    const resp = await app.request("/webhooks/telegram", { method: "POST" });
+    expect(resp.status).toBe(503);
+    const body = await resp.json();
+    expect(body.error).toContain("not yet initialized");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Telegram adapter lifecycle
+// ---------------------------------------------------------------------------
+
+describe("chat plugin Telegram lifecycle", () => {
+  function createTelegramTestPlugin() {
     const { buildChatPlugin } = require("./index");
     return buildChatPlugin({
       adapters: {
-        slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
-        teams: { appId: "test-app-id", appPassword: "test-app-password" },
-        discord: {
-          botToken: "test-bot-token",
-          applicationId: "test-app-id",
-          publicKey: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
-        },
-        gchat: { credentials: testGchatCredentials },
+        telegram: { botToken: "123456:test-token" },
       },
       executeQuery: async () => ({
         answer: "test answer",
@@ -1937,8 +2034,84 @@ describe("chat plugin four-adapter lifecycle", () => {
     });
   }
 
-  it("initializes with all four adapters", async () => {
-    const plugin = createQuadAdapterPlugin();
+  it("healthCheck returns unhealthy before initialization", async () => {
+    const plugin = createTelegramTestPlugin();
+    const result = await plugin.healthCheck!();
+    expect(result.healthy).toBe(false);
+    expect(result.message).toContain("not initialized");
+  });
+
+  it("initialize sets up the bridge with telegram adapter", async () => {
+    const plugin = createTelegramTestPlugin();
+    const logs: string[] = [];
+
+    await plugin.initialize!({
+      db: null,
+      connections: { get: () => { throw new Error("unused"); }, list: () => [] },
+      tools: { register: () => {} },
+      logger: {
+        info: (msg: unknown) => logs.push(typeof msg === "string" ? msg : JSON.stringify(msg)),
+        warn: () => {},
+        error: () => {},
+        debug: () => {},
+      },
+      config: {},
+    });
+
+    const result = await plugin.healthCheck!();
+    expect(result.healthy).toBe(true);
+    expect(result.message).toContain("telegram");
+  });
+
+  it("teardown cleans up telegram adapter", async () => {
+    const plugin = createTelegramTestPlugin();
+
+    await plugin.initialize!({
+      db: null,
+      connections: { get: () => { throw new Error("unused"); }, list: () => [] },
+      tools: { register: () => {} },
+      logger: { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} },
+      config: {},
+    });
+
+    await plugin.teardown!();
+
+    const result = await plugin.healthCheck!();
+    expect(result.healthy).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Multi-adapter lifecycle (all five adapters)
+// ---------------------------------------------------------------------------
+
+describe("chat plugin five-adapter lifecycle", () => {
+  function createFiveAdapterPlugin() {
+    const { buildChatPlugin } = require("./index");
+    return buildChatPlugin({
+      adapters: {
+        slack: { botToken: "xoxb-test-token", signingSecret: "test-signing-secret" },
+        teams: { appId: "test-app-id", appPassword: "test-app-password" },
+        discord: {
+          botToken: "test-bot-token",
+          applicationId: "test-app-id",
+          publicKey: "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+        },
+        gchat: { credentials: testGchatCredentials },
+        telegram: { botToken: "123456:test-token" },
+      },
+      executeQuery: async () => ({
+        answer: "test answer",
+        sql: ["SELECT 1"],
+        data: [],
+        steps: 1,
+        usage: { totalTokens: 50 },
+      }),
+    });
+  }
+
+  it("initializes with all five adapters", async () => {
+    const plugin = createFiveAdapterPlugin();
     const logs: string[] = [];
 
     await plugin.initialize!({
@@ -1960,5 +2133,6 @@ describe("chat plugin four-adapter lifecycle", () => {
     expect(result.message).toContain("teams");
     expect(result.message).toContain("discord");
     expect(result.message).toContain("gchat");
+    expect(result.message).toContain("telegram");
   });
 });

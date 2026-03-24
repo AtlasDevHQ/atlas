@@ -1,6 +1,6 @@
 ---
 title: Chat SDK Bridge
-description: Unified chat interaction plugin bridging Slack, Teams, Discord, and more into Atlas via Chat SDK adapters.
+description: Unified chat interaction plugin bridging Slack, Teams, Discord, Telegram, and more into Atlas via Chat SDK adapters.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
@@ -29,8 +29,9 @@ bun add @useatlas/chat
 | Microsoft Teams | `@chat-adapter/teams` | Stable |
 | Discord | `@chat-adapter/discord` | Stable |
 | Google Chat | `@chat-adapter/gchat` | Stable |
+| Telegram | `@chat-adapter/telegram` | Stable |
 
-Stable adapters are bundled as dependencies of `@useatlas/chat` — no separate install needed. Additional platforms (Telegram, WhatsApp) are planned and will be supported as Chat SDK adapters are published.
+Stable adapters are bundled as dependencies of `@useatlas/chat` — no separate install needed. Additional platforms (WhatsApp) are planned and will be supported as Chat SDK adapters are published.
 
 ## Configuration
 
@@ -102,6 +103,8 @@ export default defineConfig({
 | `adapters.gchat.endpointUrl` | `string` | No | HTTP endpoint URL for card button click actions. |
 | `adapters.gchat.pubsubTopic` | `string` | No | Pub/Sub topic for Workspace Events (`projects/{project}/topics/{topic}`). |
 | `adapters.gchat.impersonateUser` | `string` | No | User email for domain-wide delegation. |
+| `adapters.telegram.botToken` | `string` | Yes* | Telegram bot token from BotFather. |
+| `adapters.telegram.secretToken` | `string` | No | Webhook secret token for request verification. |
 | `state` | `object` | No | State backend config (default: `{ backend: "memory" }`). |
 | `state.backend` | `"memory" \| "pg" \| "redis"` | No | State backend to use. Default: `"memory"`. |
 | `state.tablePrefix` | `string` | No | Table name prefix for PG backend. Must be a valid SQL identifier. Default: `"chat_"`. |
@@ -156,7 +159,7 @@ The plugin bridges Chat SDK events to the Atlas agent:
 
 ### Rich Cards
 
-Query results render as platform-native cards using the Chat SDK JSX runtime. Cards include the answer, SQL code block, data table preview, and metadata (steps, tokens). On platforms that don't support rich cards (WhatsApp, Telegram), a markdown fallback is sent automatically.
+Query results render as platform-native cards using the Chat SDK JSX runtime. Cards include the answer, SQL code block, data table preview, and metadata (steps, tokens). On platforms that don't support rich cards (WhatsApp), a markdown fallback is sent automatically. Telegram receives formatted text with the markdown fallback.
 
 Card components are exported for host customization:
 
@@ -174,6 +177,7 @@ import { buildQueryResultCard } from "@useatlas/chat/cards";
 | `POST` | `/webhooks/teams` | Teams webhook (Bot Framework activities) |
 | `POST` | `/webhooks/discord` | Discord webhook (interactions, gateway events) |
 | `POST` | `/webhooks/gchat` | Google Chat webhook (@mentions, DMs, card clicks, Pub/Sub) |
+| `POST` | `/webhooks/telegram` | Telegram webhook (messages, @mentions, commands, callback queries) |
 | `GET` | `/oauth/slack/install` | Slack OAuth install redirect (only when `clientId` configured) |
 | `GET` | `/oauth/slack/callback` | Slack OAuth callback (only when `clientId` configured) |
 
@@ -197,6 +201,8 @@ Routes are mounted under the plugin's base path (e.g., `/api/plugins/chat-intera
 | `GOOGLE_CHAT_USE_ADC` | Set to `"true"` for Application Default Credentials |
 | `GOOGLE_CHAT_PUBSUB_TOPIC` | Pub/Sub topic for Workspace Events |
 | `GOOGLE_CHAT_IMPERSONATE_USER` | User email for domain-wide delegation |
+| `TELEGRAM_BOT_TOKEN` | Telegram bot token from BotFather |
+| `TELEGRAM_WEBHOOK_SECRET_TOKEN` | Optional webhook secret token for request verification |
 | `DATABASE_URL` | Required for `pg` state backend |
 
 ## Error Scrubbing
@@ -293,3 +299,4 @@ Routes return 503 if the plugin hasn't finished initializing. This is normal dur
 - [Slack plugin (deprecated)](/plugins/interactions/slack)
 - [Teams plugin (deprecated)](/plugins/interactions/teams)
 - [Google Chat bot setup](/plugins/interactions/gchat)
+- [Telegram bot setup](/plugins/interactions/telegram)

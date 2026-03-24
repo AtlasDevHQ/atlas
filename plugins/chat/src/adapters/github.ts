@@ -8,16 +8,16 @@
  */
 
 import { createGitHubAdapter as createChatGitHubAdapter } from "@chat-adapter/github";
-import type { GitHubAdapterConfig as ChatGitHubAdapterConfig } from "@chat-adapter/github";
 import type { GitHubAdapterConfig } from "../config";
 
 /**
  * Create a Chat SDK GitHub adapter from Atlas plugin config.
  *
- * Supports three auth modes (at least one credential path required):
- * - Personal Access Token: `{ token }` — simplest, for personal bots
- * - GitHub App (single-tenant): `{ appId, privateKey, installationId }` — fixed org
- * - GitHub App (multi-tenant): `{ appId, privateKey }` — public app, auto-detects installation
+ * Maps from the Atlas discriminated union config to the upstream
+ * `@chat-adapter/github` config. The three auth modes correspond to:
+ * - PAT: `{ token }` — personal bots or testing
+ * - App single-tenant: `{ appId, privateKey, installationId }` — fixed org
+ * - App multi-tenant: `{ appId, privateKey }` — public app
  */
 export function createGitHubAdapter(config: GitHubAdapterConfig) {
   const base = {
@@ -25,32 +25,29 @@ export function createGitHubAdapter(config: GitHubAdapterConfig) {
     userName: config.userName,
   };
 
-  let adapterConfig: ChatGitHubAdapterConfig;
-
-  if (config.token) {
-    // PAT auth
-    adapterConfig = { ...base, token: config.token };
-  } else if (config.appId && config.privateKey && config.installationId) {
-    // GitHub App single-tenant
-    adapterConfig = {
-      ...base,
-      appId: config.appId,
-      privateKey: config.privateKey,
-      installationId: config.installationId,
-    };
-  } else if (config.appId && config.privateKey) {
-    // GitHub App multi-tenant
-    adapterConfig = {
-      ...base,
-      appId: config.appId,
-      privateKey: config.privateKey,
-    };
-  } else {
-    throw new Error(
-      "GitHub adapter requires either 'token' (PAT) or 'appId' + 'privateKey' (GitHub App). " +
-      "No credentials were provided.",
-    );
+  if ("token" in config && config.token) {
+    return createChatGitHubAdapter({ ...base, token: config.token });
   }
 
-  return createChatGitHubAdapter(adapterConfig);
+  if ("appId" in config && config.appId) {
+    if ("installationId" in config && config.installationId) {
+      return createChatGitHubAdapter({
+        ...base,
+        appId: config.appId,
+        privateKey: config.privateKey,
+        installationId: config.installationId,
+      });
+    }
+    return createChatGitHubAdapter({
+      ...base,
+      appId: config.appId,
+      privateKey: config.privateKey,
+    });
+  }
+
+  // Unreachable after Zod validation, but defense-in-depth
+  throw new Error(
+    "GitHub adapter requires either 'token' (PAT) or 'appId' + 'privateKey' (GitHub App). " +
+    "No credentials were provided.",
+  );
 }

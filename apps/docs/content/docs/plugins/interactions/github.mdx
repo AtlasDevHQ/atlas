@@ -176,6 +176,14 @@ The adapter only processes comments on Pull Requests. Standalone issue comments 
 2. Follow-up comments in the same PR thread trigger new queries with conversation history
 3. The agent has context from prior messages for multi-turn analysis
 
+### Streaming
+
+When `executeQueryStream` is configured, the adapter accumulates the full streamed response and posts it as a single comment once complete. Unlike Teams or Discord, there are no progressive edits — GitHub's API constraints make rapid comment edits impractical. The `chunkIntervalMs` setting has no effect on GitHub.
+
+### Actions and Buttons
+
+GitHub does not support interactive buttons or card actions. Approval prompts (pending actions) are not rendered on this platform. If your workflow requires approval flows, use a platform that supports interactive cards (Slack, Teams, Discord).
+
 ### Response Format
 
 Responses are rendered as GitHub-Flavored Markdown:
@@ -217,11 +225,11 @@ The adapter uses the bot's user ID for self-message detection. For GitHub Apps, 
 
 ### Rate limiting
 
-GitHub API has rate limits (5,000 requests/hour for authenticated requests, higher for GitHub Apps). For high-traffic repositories, use GitHub App auth which has higher rate limits per installation. The Chat SDK adapter does not implement automatic retry on rate limit responses.
+GitHub API has rate limits (5,000 requests/hour for authenticated requests, higher for GitHub Apps). For high-traffic repositories, use GitHub App auth which has higher rate limits per installation.
 
 ### Large data tables
 
-GitHub comments have a 65,536-character limit. The Chat SDK adapter does not automatically truncate — very large query results may fail to post. Consider configuring `ATLAS_ROW_LIMIT` to limit result size.
+GitHub comments have a 65,536-character limit. Very large query results may be truncated or fail to post. Consider configuring `ATLAS_ROW_LIMIT` to limit result size.
 
 ## Reference
 

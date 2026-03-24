@@ -188,6 +188,8 @@ When `executeQueryStream` is provided and `streaming.enabled` is not `false`, th
 
 - **Slack** — Uses Chat SDK's native streaming API for real-time token-by-token updates
 - **Teams, Discord, Google Chat** — Posts an initial message then edits it with new content at the configured `chunkIntervalMs` interval (post + edit pattern)
+- **Telegram** — Posts an initial message then progressively edits it (same post + edit pattern)
+- **GitHub** — Accumulates the full stream and posts as a single comment (no progressive edits due to API constraints)
 
 The bridge passes the async iterable from `executeQueryStream` directly to Chat SDK's `thread.post()`, which automatically selects the best transport per platform.
 

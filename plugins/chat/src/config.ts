@@ -191,7 +191,7 @@ export interface ChatPluginConfig {
   state?: StateConfig;
 
   /** Slash command name registered with the Chat SDK. Default: "/atlas".
-   * Must start with "/" and contain only lowercase alphanumeric + hyphens. */
+   * Must start with "/" followed by a lowercase letter, then lowercase alphanumeric or hyphens. */
   slashCommandName?: string;
 
   /** Run the Atlas agent on a question and return structured results. Required. */

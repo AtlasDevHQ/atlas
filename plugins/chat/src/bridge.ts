@@ -5,8 +5,12 @@
  *
  * - `onNewMention` → lock + subscribe thread + `executeQuery`/`executeQueryStream` → post card or stream
  * - `onSubscribedMessage` → lock + query with thread history → post card or stream
- * - `onSlashCommand("/atlas")` → post thinking → subscribe → query → edit with card or stream
+ * - `onSlashCommand(configurable, default "/atlas")` → post thinking → subscribe → query → edit with card or stream
  * - `onAction("atlas_action_approve"|"atlas_action_deny")` → approve/deny → edit message
+ * - `onAction("atlas_run_again")` → re-execute query → post result card
+ * - `onAction("atlas_export_csv")` → stub response (full implementation in separate issue)
+ * - `onModalSubmit("atlas_clarify")` → feed clarification response into conversation
+ * - `onModalClose("atlas_clarify")` → log dismissal
  * - Error scrubbing prevents leaking connection strings, stack traces, or
  *   internal errors to chat platforms
  *
@@ -330,9 +334,10 @@ export interface ChatBridge {
  * 1. Creates the Chat SDK instance from pre-built adapters
  * 2. Sets up onNewMention → lock + subscribe + executeQuery → thread.post
  * 3. Sets up onSubscribedMessage → lock + executeQuery with history → thread.post
- * 4. Sets up onSlashCommand("/atlas") → post thinking → subscribe → executeQuery → edit
- * 5. Sets up onAction for approval buttons → approve/deny → edit message
- * 6. Exposes webhook handlers for route mounting
+ * 4. Sets up onSlashCommand (configurable, default "/atlas") → post thinking → subscribe → executeQuery → edit
+ * 5. Sets up onAction for approval, Run Again, and Export CSV buttons
+ * 6. Sets up onModalSubmit/onModalClose for clarification modals (Slack)
+ * 7. Exposes webhook handlers and openClarificationModal for route mounting
  *
  * @param config       - Chat plugin configuration
  * @param log          - Plugin-scoped logger
@@ -1029,6 +1034,13 @@ export function createChatBridge(
       "Run Again button clicked",
     );
 
+    // Dedup lock — prevent duplicate execution on double-clicks or retries
+    const lock = await tryAcquireLock(stateAdapter, `bridge:run-again:${threadId}`, DEDUP_LOCK_TTL_MS, log, threadId);
+    if (!lock) {
+      log.debug({ threadId }, "Run Again already being processed");
+      return;
+    }
+
     try {
       const priorMessages = await retrieveHistory(stateAdapter, threadId, log);
       const question = `Re-run this SQL query: ${sqlPayload}`;
@@ -1071,12 +1083,24 @@ export function createChatBridge(
           "Failed to post error for Run Again action",
         );
       }
+    } finally {
+      await stateAdapter.releaseLock(lock).catch((releaseErr: unknown) => {
+        log.error(
+          { err: releaseErr instanceof Error ? releaseErr : new Error(String(releaseErr)), threadId },
+          "Failed to release Run Again lock — thread may be blocked until TTL expires",
+        );
+      });
     }
   });
 
   // --- onAction: Export CSV button (stub — full implementation in #770) ---
   chat.onAction("atlas_export_csv", async (event) => {
     const threadId = event.threadId;
+
+    if (!threadId) {
+      log.warn({ actionId: event.actionId }, "Export CSV action missing threadId");
+      return;
+    }
 
     log.info(
       { threadId, userId: event.user.userId },
@@ -1112,49 +1136,61 @@ export function createChatBridge(
     );
 
     // Feed the response back into the conversation thread
-    if (event.relatedThread) {
+    if (!event.relatedThread) {
+      log.warn(
+        { callbackId: event.callbackId, userId: event.user.userId },
+        "Modal submission has no related thread — cannot deliver clarification response",
+      );
+      return {
+        action: "errors" as const,
+        errors: {
+          clarification_response:
+            "Unable to deliver your response — the original thread could not be found. Please re-ask your question in the channel.",
+        },
+      };
+    }
+
+    const threadId = `${event.adapter.name}:${event.relatedThread.id}`;
+    try {
+      const priorMessages = await retrieveHistory(stateAdapter, threadId, log);
+
+      if (streamingEnabled) {
+        await handleStreamingQuery(
+          threadId,
+          response.trim(),
+          (stream) => event.relatedThread!.post(stream),
+          null,
+          priorMessages,
+        );
+      } else {
+        await handleQuery(
+          threadId,
+          response.trim(),
+          (cardResponse) => event.relatedThread!.post({
+            card: cardResponse.card,
+            fallbackText: cardResponse.fallbackText,
+          }),
+          null,
+          priorMessages,
+        );
+      }
+    } catch (err) {
+      log.error(
+        { err: err instanceof Error ? err : new Error(String(err)), threadId },
+        "Modal clarification query failed",
+      );
+
+      const errorMessage = scrubErrorMessage(
+        err instanceof Error ? err.message : String(err),
+        config.scrubError,
+      );
       try {
-        const threadId = `${event.adapter.name}:${event.relatedThread.id}`;
-        const priorMessages = await retrieveHistory(stateAdapter, threadId, log);
-
-        if (streamingEnabled) {
-          await handleStreamingQuery(
-            threadId,
-            response.trim(),
-            (stream) => event.relatedThread!.post(stream),
-            null,
-            priorMessages,
-          );
-        } else {
-          await handleQuery(
-            threadId,
-            response.trim(),
-            (cardResponse) => event.relatedThread!.post({
-              card: cardResponse.card,
-              fallbackText: cardResponse.fallbackText,
-            }),
-            null,
-            priorMessages,
-          );
-        }
-      } catch (err) {
-        log.error(
-          { err: err instanceof Error ? err : new Error(String(err)) },
-          "Modal clarification query failed",
+        await event.relatedThread.post(buildErrorCard({ message: errorMessage }));
+      } catch (postErr) {
+        log.warn(
+          { err: postErr instanceof Error ? postErr : new Error(String(postErr)), threadId },
+          "Failed to post error after modal clarification",
         );
-
-        const errorMessage = scrubErrorMessage(
-          err instanceof Error ? err.message : String(err),
-          config.scrubError,
-        );
-        try {
-          await event.relatedThread.post(buildErrorCard({ message: errorMessage }));
-        } catch (postErr) {
-          log.warn(
-            { err: postErr instanceof Error ? postErr : new Error(String(postErr)) },
-            "Failed to post error after modal clarification",
-          );
-        }
       }
     }
 
@@ -1204,7 +1240,15 @@ export function createChatBridge(
         return undefined;
       }
 
-      return event.openModal(modal);
+      try {
+        return await event.openModal(modal);
+      } catch (err) {
+        log.error(
+          { err: err instanceof Error ? err : new Error(String(err)) },
+          "Failed to open clarification modal via platform API",
+        );
+        return undefined;
+      }
     },
 
     async shutdown() {

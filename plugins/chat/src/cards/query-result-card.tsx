@@ -71,7 +71,7 @@ export function buildQueryResultCard(result: ChatQueryResult): {
     </Fields>,
   );
 
-  // Quick-action buttons (only when there's SQL to re-run or data to export)
+  // Quick-action buttons (only when SQL was executed)
   if (hasSql) {
     const sqlPayload = result.sql.join("\n\n").slice(0, MAX_ACTION_VALUE_LENGTH);
     children.push(

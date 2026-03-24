@@ -196,7 +196,7 @@ Query result cards include interactive buttons when SQL was executed:
 - **Run Again** — Re-executes the same SQL query and posts updated results in the thread
 - **Export CSV** — Placeholder for CSV export (coming soon)
 
-Buttons are rendered as platform-native interactive components (Block Kit buttons on Slack, Adaptive Card actions on Teams, Discord buttons). On platforms that don't support buttons (GitHub, Linear, WhatsApp), the card includes a text fallback with instructions:
+Buttons are rendered as platform-native interactive components (Block Kit buttons on Slack, Adaptive Card actions on Teams, Discord buttons). On platforms with limited interactivity, the card includes a text fallback with instructions:
 
 > _To run again, re-send the same question. To export, ask "export the last result as CSV"._
 
@@ -205,9 +205,8 @@ Buttons are rendered as platform-native interactive components (Block Kit button
 | Feature | Slack | Teams | Discord | Google Chat | Telegram |
 |---------|-------|-------|---------|-------------|----------|
 | Slash commands | Yes | Yes | Yes | Yes | Yes |
-| Action buttons | Yes | Yes | Yes | Yes | Partial |
+| Action buttons | Yes | Yes | Yes | Yes | Partial (inline keyboard) |
 | Modals | Yes | No | No | No | No |
-| Dropdowns | Yes | No | Yes | No | No |
 
 ### Slack Modals
 

@@ -59,6 +59,25 @@ function isValidRegion(region: string, residency: ResidencyConfig): boolean {
   return region in residency.regions;
 }
 
+/** Coerce a DB value (Date or string) to an ISO 8601 string. Throws on null/undefined/unexpected types. */
+function toISOString(value: unknown, field: string): string {
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value === "string" && value.length > 0) return value;
+  throw new ResidencyError(
+    `rowToWorkspaceRegion: expected Date or ISO string for "${field}", got ${value === null ? "null" : typeof value}`,
+    "not_configured",
+  );
+}
+
+/** Map a DB row to a WorkspaceRegion wire type with defensive coercion. */
+function rowToWorkspaceRegion(row: Record<string, unknown>): WorkspaceRegion {
+  return {
+    workspaceId: String(row.id ?? ""),
+    region: String(row.region ?? ""),
+    assignedAt: toISOString(row.region_assigned_at, "region_assigned_at"),
+  };
+}
+
 // ── Public API ──────────────────────────────────────────────────────
 
 /**
@@ -170,7 +189,7 @@ export async function getWorkspaceRegionAssignment(
     );
   }
 
-  const rows = await internalQuery<{ region: string | null; region_assigned_at: string | null }>(
+  const rows = await internalQuery<Record<string, unknown>>(
     `SELECT region, region_assigned_at FROM organization WHERE id = $1`,
     [workspaceId],
   );
@@ -179,8 +198,8 @@ export async function getWorkspaceRegionAssignment(
 
   return {
     workspaceId,
-    region: rows[0].region,
-    assignedAt: rows[0].region_assigned_at ?? new Date().toISOString(),
+    region: String(rows[0].region),
+    assignedAt: toISOString(rows[0].region_assigned_at, "region_assigned_at"),
   };
 }
 
@@ -232,16 +251,12 @@ export async function listWorkspaceRegions(): Promise<WorkspaceRegion[]> {
     );
   }
 
-  const rows = await internalQuery<{ id: string; region: string; region_assigned_at: string }>(
+  const rows = await internalQuery<Record<string, unknown>>(
     `SELECT id, region, region_assigned_at FROM organization WHERE region IS NOT NULL ORDER BY region_assigned_at DESC`,
     [],
   );
 
-  return rows.map((row) => ({
-    workspaceId: row.id,
-    region: row.region,
-    assignedAt: row.region_assigned_at,
-  }));
+  return rows.map(rowToWorkspaceRegion);
 }
 
 /**

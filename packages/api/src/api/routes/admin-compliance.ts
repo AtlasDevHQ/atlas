@@ -16,6 +16,7 @@ import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { HTTPException } from "hono/http-exception";
 import { validationHook } from "./validation-hook";
 import { createLogger } from "@atlas/api/lib/logger";
+import { EnterpriseError } from "@atlas/ee/index";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import {
   listPIIClassifications,
@@ -47,10 +48,9 @@ const REPORT_ERROR_STATUS = { validation: 400, not_available: 404 } as const sat
  * Unknown errors fall through.
  */
 function throwIfComplianceError(err: unknown): void {
-  const message = err instanceof Error ? err.message : String(err);
-  if (message.includes("Enterprise features")) {
+  if (err instanceof EnterpriseError) {
     throw new HTTPException(403, {
-      res: Response.json({ error: "enterprise_required", message }, { status: 403 }),
+      res: Response.json({ error: "enterprise_required", message: err.message }, { status: 403 }),
     });
   }
   if (err instanceof ComplianceError) {

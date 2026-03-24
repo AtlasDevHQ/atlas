@@ -8,6 +8,7 @@
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { HTTPException } from "hono/http-exception";
 import { createLogger } from "@atlas/api/lib/logger";
+import { EnterpriseError } from "@atlas/ee/index";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import {
   listRoles,
@@ -38,10 +39,9 @@ const ROLE_ERROR_STATUS = { not_found: 404, conflict: 409, validation: 400, buil
  * Unknown errors fall through.
  */
 function throwIfRoleError(err: unknown): void {
-  const message = err instanceof Error ? err.message : String(err);
-  if (message.includes("Enterprise features")) {
+  if (err instanceof EnterpriseError) {
     throw new HTTPException(403, {
-      res: Response.json({ error: "enterprise_required", message }, { status: 403 }),
+      res: Response.json({ error: "enterprise_required", message: err.message }, { status: 403 }),
     });
   }
   if (err instanceof RoleError) {

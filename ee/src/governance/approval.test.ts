@@ -69,6 +69,7 @@ const {
   deleteApprovalRule,
   checkApprovalRequired,
   createApprovalRequest,
+  getApprovalRequest,
   listApprovalRequests,
   reviewApprovalRequest,
   expireStaleRequests,
@@ -371,11 +372,32 @@ describe("listApprovalRequests", () => {
     expect(result).toHaveLength(2);
   });
 
+  it("skips requests with invalid status", async () => {
+    mockRows.push([
+      makeQueueRow({ id: "req-1", status: "approved" }),
+      makeQueueRow({ id: "req-2", status: "bogus" }),
+      makeQueueRow({ id: "req-3", status: "pending" }),
+    ]);
+    const result = await listApprovalRequests("org-1");
+    expect(result).toHaveLength(2);
+    expect(result[0].id).toBe("req-1");
+    expect(result[1].id).toBe("req-3");
+  });
+
   it("filters by status", async () => {
     mockRows.push([makeQueueRow({ status: "approved" })]);
     const result = await listApprovalRequests("org-1", "approved");
     expect(result).toHaveLength(1);
     expect(capturedQueries[0].sql).toContain("AND status = $2");
+  });
+});
+
+describe("getApprovalRequest", () => {
+  beforeEach(resetMocks);
+
+  it("throws for request with invalid status", async () => {
+    mockRows.push([makeQueueRow({ status: "bogus" })]);
+    await expect(getApprovalRequest("org-1", "req-1")).rejects.toThrow("invalid status");
   });
 });
 

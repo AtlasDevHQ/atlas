@@ -31,7 +31,7 @@ import type {
   CreateApprovalRuleRequest,
   UpdateApprovalRuleRequest,
 } from "@useatlas/types";
-import { APPROVAL_RULE_TYPES } from "@useatlas/types";
+import { APPROVAL_RULE_TYPES, APPROVAL_STATUSES } from "@useatlas/types";
 
 const log = createLogger("ee:approval-workflows");
 
@@ -89,6 +89,10 @@ function isValidRuleType(type: string): type is ApprovalRuleType {
   return (APPROVAL_RULE_TYPES as readonly string[]).includes(type);
 }
 
+function isValidStatus(status: string): status is ApprovalStatus {
+  return (APPROVAL_STATUSES as readonly string[]).includes(status);
+}
+
 function rowToRule(row: ApprovalRuleRow): ApprovalRule | null {
   if (!isValidRuleType(row.rule_type)) {
     log.warn({ ruleId: row.id, ruleType: row.rule_type }, "Approval rule has unexpected rule_type in database — skipping rule");
@@ -121,7 +125,11 @@ function parseJsonArray(val: string | null): string[] {
   return [];
 }
 
-function rowToRequest(row: ApprovalQueueRow): ApprovalRequest {
+function rowToRequest(row: ApprovalQueueRow): ApprovalRequest | null {
+  if (!isValidStatus(row.status)) {
+    log.warn({ requestId: row.id, status: row.status }, "Approval request has unexpected status in database — skipping request");
+    return null;
+  }
   return {
     id: row.id,
     orgId: row.org_id,
@@ -134,7 +142,7 @@ function rowToRequest(row: ApprovalQueueRow): ApprovalRequest {
     connectionId: row.connection_id,
     tablesAccessed: parseJsonArray(row.tables_accessed),
     columnsAccessed: parseJsonArray(row.columns_accessed),
-    status: row.status as ApprovalStatus,
+    status: row.status,
     reviewerId: row.reviewer_id,
     reviewerEmail: row.reviewer_email,
     reviewComment: row.review_comment,
@@ -467,7 +475,9 @@ export async function createApprovalRequest(opts: {
   }
 
   log.info({ orgId: opts.orgId, requestId: rows[0].id, ruleId: opts.ruleId }, "Approval request created");
-  return rowToRequest(rows[0]);
+  const request = rowToRequest(rows[0]);
+  if (!request) throw new ApprovalError(`Created request has unexpected status "${rows[0].status}" after insert.`, "conflict");
+  return request;
 }
 
 /** List approval requests for an organization, optionally filtered by status. */
@@ -499,7 +509,7 @@ export async function listApprovalRequests(
   params.push(safeLimit, safeOffset);
 
   const rows = await internalQuery<ApprovalQueueRow>(sql, params);
-  return rows.map(rowToRequest);
+  return rows.map(rowToRequest).filter((r): r is ApprovalRequest => r !== null);
 }
 
 /** Get a single approval request by ID. */
@@ -520,7 +530,15 @@ export async function getApprovalRequest(
     [orgId, requestId],
   );
   if (rows.length === 0) return null;
-  return rowToRequest(rows[0]);
+  const request = rowToRequest(rows[0]);
+  if (!request) {
+    log.warn({ orgId, requestId, status: rows[0].status }, "Approval request found but has invalid status — treating as corrupt");
+    throw new ApprovalError(
+      `Approval request "${requestId}" exists but has an invalid status "${rows[0].status}".`,
+      "validation",
+    );
+  }
+  return request;
 }
 
 /** Approve or deny an approval request. */
@@ -588,7 +606,9 @@ export async function reviewApprovalRequest(
     { orgId, requestId, action, reviewerId },
     `Approval request ${action === "approve" ? "approved" : "denied"}`,
   );
-  return rowToRequest(rows[0]);
+  const request = rowToRequest(rows[0]);
+  if (!request) throw new ApprovalError(`Reviewed request has unexpected status "${rows[0].status}" after update.`, "conflict");
+  return request;
 }
 
 /** Expire all stale pending requests across all orgs. Returns count of expired. */

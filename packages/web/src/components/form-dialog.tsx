@@ -2,7 +2,12 @@
 
 import type { ReactNode } from "react";
 import { useEffect } from "react";
-import type { DefaultValues, FieldValues, UseFormReturn } from "react-hook-form";
+import type {
+  DefaultValues,
+  FieldValues,
+  Resolver,
+  UseFormReturn,
+} from "react-hook-form";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import type { z } from "zod";
@@ -18,16 +23,16 @@ import {
 } from "@/components/ui/dialog";
 import { Form } from "@/components/ui/form";
 
-interface FormDialogProps<TSchema extends z.ZodType<FieldValues>> {
+interface FormDialogProps<TValues extends FieldValues> {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   title: string;
   description?: string;
-  schema: TSchema;
-  defaultValues: DefaultValues<z.infer<TSchema>>;
-  onSubmit: (values: z.infer<TSchema>) => Promise<void>;
+  schema: z.ZodType<TValues>;
+  defaultValues: DefaultValues<TValues>;
+  onSubmit: (values: TValues) => Promise<void>;
   /** Render form fields. Use shadcn FormField / FormItem / FormControl components. */
-  children: (form: UseFormReturn<z.infer<TSchema>>) => ReactNode;
+  children: (form: UseFormReturn<TValues>) => ReactNode;
   /** Text for the submit button. Default: "Save" */
   submitLabel?: string;
   /** Whether the mutation is in flight (disables submit button + shows spinner). Callers should not vary submitLabel for saving state — the spinner handles it. */
@@ -35,7 +40,7 @@ interface FormDialogProps<TSchema extends z.ZodType<FieldValues>> {
   /** Server-side error message to display above the footer. */
   serverError?: string | null;
   /** Extra content to render in the footer before the submit button. */
-  extraFooter?: (form: UseFormReturn<z.infer<TSchema>>) => ReactNode;
+  extraFooter?: (form: UseFormReturn<TValues>) => ReactNode;
   /** Dialog content class name override. */
   className?: string;
 }
@@ -48,7 +53,7 @@ interface FormDialogProps<TSchema extends z.ZodType<FieldValues>> {
  * - Catches `onSubmit` errors and surfaces them as root-level form errors
  * - Renders field-level errors via shadcn Form primitives
  */
-export function FormDialog<TSchema extends z.ZodType<FieldValues>>({
+export function FormDialog<TValues extends FieldValues>({
   open,
   onOpenChange,
   title,
@@ -62,11 +67,13 @@ export function FormDialog<TSchema extends z.ZodType<FieldValues>>({
   serverError,
   extraFooter,
   className,
-}: FormDialogProps<TSchema>) {
-  type TValues = z.infer<TSchema>;
-
+}: FormDialogProps<TValues>) {
   const form = useForm<TValues>({
-    resolver: zodResolver(schema),
+    // zodResolver's overloads target Zod 3 and Zod 4 internal types that can't
+    // be satisfied by the public z.ZodType<T> generic. The cast is safe because
+    // zodResolver handles any valid Zod schema at runtime.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    resolver: zodResolver(schema as any) as Resolver<TValues>,
     defaultValues,
   });
 

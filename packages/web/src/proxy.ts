@@ -17,7 +17,7 @@ import { getSessionCookie } from "better-auth/cookies";
 const authMode = process.env.NEXT_PUBLIC_ATLAS_AUTH_MODE ?? "";
 
 /** Routes that require authentication. */
-const protectedPrefixes = ["/notebook", "/wizard", "/admin"];
+const protectedPrefixes = ["/notebook", "/wizard", "/admin", "/create-org"];
 
 /** Routes that only unauthenticated users should see. */
 const authRoutes = ["/signup", "/login"];
@@ -30,9 +30,9 @@ function isPublicRoute(pathname: string): boolean {
 }
 
 function isAuthRoute(pathname: string): boolean {
-  return authRoutes.some(
-    (route) => pathname === route || pathname.startsWith(route + "/"),
-  );
+  // Exact match only — sub-routes like /signup/workspace are onboarding
+  // steps that require an active session and must not redirect away.
+  return authRoutes.some((route) => pathname === route);
 }
 
 function isProtectedRoute(pathname: string): boolean {

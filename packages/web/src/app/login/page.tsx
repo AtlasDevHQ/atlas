@@ -66,6 +66,7 @@ export default function LoginPage() {
       }
       router.push("/");
     } catch (err) {
+      console.debug("Sign in failed:", err instanceof Error ? err.message : String(err));
       setError(
         err instanceof TypeError
           ? "Unable to reach the server"

@@ -16,10 +16,8 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
-import { LoadingState } from "@/ui/components/admin/loading-state";
-import { EmptyState } from "@/ui/components/admin/empty-state";
-import { FeatureGate } from "@/ui/components/admin/feature-disabled";
-import { useAdminFetch, friendlyError } from "@/ui/hooks/use-admin-fetch";
+import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
+import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { HardDrive, Trash2, Activity, Database, Clock, Target } from "lucide-react";
@@ -97,19 +95,6 @@ export default function CachePage() {
       invalidates: refetch,
     });
 
-  // Gate: 401/403/404
-  if (!loading && error?.status && [401, 403, 404].includes(error.status)) {
-    return (
-      <div className="flex h-[calc(100dvh-3rem)] flex-col">
-        <div className="border-b px-6 py-4">
-          <h1 className="text-2xl font-bold tracking-tight">Cache</h1>
-          <p className="text-sm text-muted-foreground">Query result cache statistics</p>
-        </div>
-        <FeatureGate status={error.status as 401 | 403 | 404} feature="Cache" />
-      </div>
-    );
-  }
-
   async function handleFlush() {
     if (flushing) return;
     setFlushMessage(null);
@@ -134,7 +119,6 @@ export default function CachePage() {
 
       <ErrorBoundary>
         <div className="flex-1 overflow-auto p-6">
-          {error && <ErrorBanner message={friendlyError(error)} onRetry={refetch} />}
           {flushError && (
             <ErrorBanner message={flushError} onRetry={clearFlushError} />
           )}
@@ -144,9 +128,15 @@ export default function CachePage() {
             </div>
           )}
 
-          {loading ? (
-            <LoadingState message="Loading cache stats..." />
-          ) : data ? (
+          <AdminContentWrapper
+            loading={loading}
+            error={error}
+            feature="Cache"
+            onRetry={refetch}
+            emptyIcon={HardDrive}
+            emptyTitle="No cache data available"
+            isEmpty={!data}
+          >
             <div className="space-y-6">
               {/* Disabled notice */}
               {!data.enabled && (
@@ -272,9 +262,7 @@ export default function CachePage() {
                 </CardContent>
               </Card>
             </div>
-          ) : !error ? (
-            <EmptyState icon={HardDrive} title="No cache data available" />
-          ) : null}
+          </AdminContentWrapper>
         </div>
       </ErrorBoundary>
     </div>

@@ -30,10 +30,8 @@ import {
   FormMessage,
 } from "@/components/form-dialog";
 import { z } from "zod";
-import { ErrorBanner } from "@/ui/components/admin/error-banner";
-import { LoadingState } from "@/ui/components/admin/loading-state";
-import { FeatureGate } from "@/ui/components/admin/feature-disabled";
-import { useAdminFetch, friendlyError } from "@/ui/hooks/use-admin-fetch";
+import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
+import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { Shield, Plus, Trash2, Loader2, AlertTriangle, Globe } from "lucide-react";
@@ -257,21 +255,6 @@ export default function IPAllowlistPage() {
   const entries = data?.entries ?? [];
   const callerIP = data?.callerIP ?? null;
 
-  // Gate: 401/403/404
-  if (!loading && error?.status && [401, 403, 404].includes(error.status)) {
-    return (
-      <div className="flex h-[calc(100dvh-3rem)] flex-col">
-        <div className="border-b px-6 py-4">
-          <h1 className="text-2xl font-bold tracking-tight">IP Allowlist</h1>
-          <p className="text-sm text-muted-foreground">
-            Restrict workspace access by IP address
-          </p>
-        </div>
-        <FeatureGate status={error.status as 401 | 403 | 404} feature="IP Allowlist" />
-      </div>
-    );
-  }
-
   return (
     <div className="flex h-[calc(100dvh-3rem)] flex-col">
       <div className="flex items-center justify-between border-b px-6 py-4">
@@ -289,8 +272,6 @@ export default function IPAllowlistPage() {
 
       <ErrorBoundary>
         <div className="flex-1 overflow-auto p-6">
-          {error && <ErrorBanner message={friendlyError(error)} onRetry={refetch} />}
-
           {callerIP && (
             <div className="mb-4 flex items-center gap-2 text-sm text-muted-foreground">
               <Globe className="size-3.5" />
@@ -298,9 +279,17 @@ export default function IPAllowlistPage() {
             </div>
           )}
 
-          {loading ? (
-            <LoadingState message="Loading IP allowlist..." />
-          ) : entries.length > 0 ? (
+          <AdminContentWrapper
+            loading={loading}
+            error={error}
+            feature="IP Allowlist"
+            onRetry={refetch}
+            emptyIcon={Shield}
+            emptyTitle="No IP restrictions configured"
+            emptyDescription="The workspace is accessible from any IP address. Add CIDR ranges to restrict access to specific networks."
+            emptyAction={{ label: "Add First Entry", onClick: () => setAddDialogOpen(true) }}
+            isEmpty={entries.length === 0}
+          >
             <Card className="shadow-none">
               <CardHeader className="pb-2">
                 <CardTitle className="flex items-center gap-2 text-base">
@@ -359,23 +348,7 @@ export default function IPAllowlistPage() {
                 </Table>
               </CardContent>
             </Card>
-          ) : !error ? (
-            <div className="flex flex-col items-center justify-center py-16 text-center">
-              <Shield className="mb-3 size-10 text-muted-foreground/50" />
-              <p className="text-sm font-medium">No IP restrictions configured</p>
-              <p className="mt-1 max-w-sm text-xs text-muted-foreground">
-                The workspace is accessible from any IP address. Add CIDR ranges to restrict access to specific networks.
-              </p>
-              <Button
-                className="mt-4"
-                size="sm"
-                onClick={() => setAddDialogOpen(true)}
-              >
-                <Plus className="mr-1 size-3.5" />
-                Add First Entry
-              </Button>
-            </div>
-          ) : null}
+          </AdminContentWrapper>
         </div>
       </ErrorBoundary>
 

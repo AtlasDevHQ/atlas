@@ -134,3 +134,23 @@ Tracking module-deepening refactors discovered by the `improve-codebase-architec
 - Discovered 2 bugs during migration: useAdminMutation 204 handling (#866, #867)
 
 **Category:** Manual form state management replaced with composable hook + component pattern, leveraging existing ecosystem (react-hook-form + Zod + shadcn).
+
+---
+
+## 7. Extract AdminContentWrapper for admin page rendering
+
+**Date:** 2026-03-24
+**Issue:** #857
+
+**Problem:** 33 admin page files repeated the same ~15-line conditional rendering chain: FeatureGate check (early return for 401/403/404), ErrorBanner with retry, LoadingState spinner, EmptyState (with/without filters), and finally children. 326 total occurrences of FeatureGate/ErrorBanner/LoadingState/EmptyState across the admin. Each page independently implemented the gate check, error display, and loading/empty state cascade.
+
+**Solution:** Created `AdminContentWrapper` component (`packages/web/src/ui/components/admin-content-wrapper.tsx`) that encapsulates the full rendering decision tree. The component accepts `loading`, `error`, `feature`, `onRetry`, `emptyIcon`, `emptyTitle`, `emptyDescription`, `emptyAction`, `hasFilters`, `onClearFilters`, `isEmpty`, and `children`. Gate errors render `FeatureGate`, non-gate errors show `ErrorBanner`, loading shows `LoadingState`, empty states render appropriately with or without filters, and data renders children.
+
+**Impact:**
+- 8 admin pages migrated: sessions, roles, scim, sso, ip-allowlist, abuse, cache, scheduled-tasks
+- Eliminated 8 FeatureGate early-return blocks (~10 lines each = ~80 lines)
+- Eliminated 8 error/loading/empty conditional chains (~15 lines each = ~120 lines)
+- Remaining ~25 admin pages can be migrated incrementally
+- New admin pages get the correct rendering chain with a single component
+
+**Category:** Repeated conditional rendering chain consolidated into a composable wrapper component.

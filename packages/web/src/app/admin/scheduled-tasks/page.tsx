@@ -33,10 +33,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { EmptyState } from "@/ui/components/admin/empty-state";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
-import { LoadingState } from "@/ui/components/admin/loading-state";
-import { FeatureGate } from "@/ui/components/admin/feature-disabled";
+import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import {
   CalendarClock,
   Play,
@@ -47,7 +45,7 @@ import {
   History,
   Eye,
 } from "lucide-react";
-import { type FetchError, friendlyError } from "@/ui/hooks/use-admin-fetch";
+import type { FetchError } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { DeliveryStatusBadge } from "@/ui/components/admin/delivery-status-badge";
@@ -175,19 +173,6 @@ export default function ScheduledTasksPage() {
       cancelled = true;
     };
   }, [apiUrl, offset, enabledFilter, credentials, refetchKey]);
-
-  // Gate: 401/403/404
-  if (!loading && error?.status && [401, 403, 404].includes(error.status)) {
-    return (
-      <div className="flex h-[calc(100dvh-3rem)] flex-col">
-        <div className="border-b px-6 py-4">
-          <h1 className="text-2xl font-bold tracking-tight">Scheduled Tasks</h1>
-          <p className="text-sm text-muted-foreground">Manage recurring queries and delivery schedules</p>
-        </div>
-        <FeatureGate status={error.status as 401 | 403 | 404} feature="Scheduled Tasks" />
-      </div>
-    );
-  }
 
   // ── Fetch detail (with recent runs) ─────────────────────────────
   async function handleRowClick(taskId: string) {
@@ -452,23 +437,21 @@ export default function ScheduledTasksPage() {
 
       <ErrorBoundary>
       <div className="flex-1 overflow-auto p-6 space-y-6">
-        {error && <ErrorBanner message={friendlyError(error)} onRetry={() => setError(null)} />}
         {toggleMutation.error && <ErrorBanner message={toggleMutation.error} onRetry={toggleMutation.clearError} />}
         {triggerMutation.error && <ErrorBanner message={triggerMutation.error} onRetry={triggerMutation.clearError} />}
         {deleteMutation.error && <ErrorBanner message={deleteMutation.error} onRetry={deleteMutation.clearError} />}
 
-        {loading ? (
-          <div className="flex h-64 items-center justify-center">
-            <LoadingState message="Loading scheduled tasks..." />
-          </div>
-        ) : tasks.length === 0 && !error ? (
-          <EmptyState
-            icon={CalendarClock}
-            title="No scheduled tasks"
-            description="Create a task to automate recurring queries and reports"
-            action={{ label: "Create task", onClick: openCreate }}
-          />
-        ) : tasks.length > 0 ? (
+        <AdminContentWrapper
+          loading={loading}
+          error={error}
+          feature="Scheduled Tasks"
+          onRetry={() => setError(null)}
+          emptyIcon={CalendarClock}
+          emptyTitle="No scheduled tasks"
+          emptyDescription="Create a task to automate recurring queries and reports"
+          emptyAction={{ label: "Create task", onClick: openCreate }}
+          isEmpty={tasks.length === 0}
+        >
           <ExpandableDataTable
             table={tasksTable}
             onRowClick={handleTaskRowClick}
@@ -479,7 +462,7 @@ export default function ScheduledTasksPage() {
               <DataTableSortList table={tasksTable} />
             </DataTableToolbar>
           </ExpandableDataTable>
-        ) : null}
+        </AdminContentWrapper>
       </div>
       </ErrorBoundary>
 

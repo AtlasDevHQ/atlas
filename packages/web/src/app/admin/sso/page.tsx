@@ -16,9 +16,8 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
-import { LoadingState } from "@/ui/components/admin/loading-state";
-import { FeatureGate } from "@/ui/components/admin/feature-disabled";
-import { useAdminFetch, friendlyError } from "@/ui/hooks/use-admin-fetch";
+import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
+import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { ShieldCheck, AlertTriangle, Loader2, Shield } from "lucide-react";
 
@@ -73,19 +72,6 @@ export default function SSOPage() {
   const enforced = enforcementData?.enforced ?? false;
   const hasActiveProvider = providers.some((p) => p.enabled);
 
-  // Gate: 401/403/404
-  if (!loading && error?.status && [401, 403, 404].includes(error.status)) {
-    return (
-      <div className="flex h-[calc(100dvh-3rem)] flex-col">
-        <div className="border-b px-6 py-4">
-          <h1 className="text-2xl font-bold tracking-tight">SSO</h1>
-          <p className="text-sm text-muted-foreground">Manage single sign-on providers and enforcement</p>
-        </div>
-        <FeatureGate status={error.status as 401 | 403 | 404} feature="SSO" />
-      </div>
-    );
-  }
-
   async function handleToggleEnforcement(enable: boolean) {
     if (enable) {
       setConfirmEnforce(true);
@@ -112,14 +98,18 @@ export default function SSOPage() {
 
       <ErrorBoundary>
         <div className="flex-1 overflow-auto p-6">
-          {error && <ErrorBanner message={friendlyError(error)} onRetry={() => { refetchProviders(); refetchEnforcement(); }} />}
           {mutationError && (
             <ErrorBanner message={mutationError} onRetry={clearMutationError} />
           )}
-
-          {loading ? (
-            <LoadingState message="Loading SSO configuration..." />
-          ) : (
+          <AdminContentWrapper
+            loading={loading}
+            error={error}
+            feature="SSO"
+            onRetry={() => { refetchProviders(); refetchEnforcement(); }}
+            emptyIcon={ShieldCheck}
+            emptyTitle="No SSO configured"
+            isEmpty={false}
+          >
             <div className="space-y-6">
               {/* Enforcement Card */}
               <Card className="shadow-none">
@@ -218,7 +208,7 @@ export default function SSOPage() {
                 </CardContent>
               </Card>
             </div>
-          )}
+          </AdminContentWrapper>
         </div>
       </ErrorBoundary>
 

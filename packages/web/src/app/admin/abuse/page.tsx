@@ -20,10 +20,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { ErrorBanner } from "@/ui/components/admin/error-banner";
-import { LoadingState } from "@/ui/components/admin/loading-state";
-import { FeatureGate } from "@/ui/components/admin/feature-disabled";
-import { useAdminFetch, friendlyError } from "@/ui/hooks/use-admin-fetch";
+import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
+import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import {
@@ -170,21 +168,6 @@ export default function AbusePage() {
 
   const workspaces = data?.workspaces ?? [];
 
-  // Gate: 401/403/404
-  if (!loading && error?.status && [401, 403, 404].includes(error.status)) {
-    return (
-      <div className="flex h-[calc(100dvh-3rem)] flex-col">
-        <div className="border-b px-6 py-4">
-          <h1 className="text-2xl font-bold tracking-tight">Abuse Prevention</h1>
-          <p className="text-sm text-muted-foreground">
-            Monitor and manage workspace abuse flags
-          </p>
-        </div>
-        <FeatureGate status={error.status as 401 | 403 | 404} feature="Abuse Prevention" />
-      </div>
-    );
-  }
-
   return (
     <div className="flex h-[calc(100dvh-3rem)] flex-col">
       <div className="flex items-center justify-between border-b px-6 py-4">
@@ -198,8 +181,6 @@ export default function AbusePage() {
 
       <ErrorBoundary>
         <div className="flex-1 overflow-auto p-6 space-y-6">
-          {error && <ErrorBanner message={friendlyError(error)} onRetry={refetch} />}
-
           {/* Threshold config summary */}
           {config && (
             <Card className="shadow-none">
@@ -236,9 +217,16 @@ export default function AbusePage() {
           )}
 
           {/* Flagged workspaces */}
-          {loading ? (
-            <LoadingState message="Loading abuse flags..." />
-          ) : workspaces.length > 0 ? (
+          <AdminContentWrapper
+            loading={loading}
+            error={error}
+            feature="Abuse Prevention"
+            onRetry={refetch}
+            emptyIcon={ShieldAlert}
+            emptyTitle="No workspaces flagged"
+            emptyDescription="All workspaces are operating within normal parameters. Anomalous query patterns will be automatically detected and shown here."
+            isEmpty={workspaces.length === 0}
+          >
             <Card className="shadow-none">
               <CardHeader className="pb-2">
                 <CardTitle className="flex items-center gap-2 text-base">
@@ -294,15 +282,7 @@ export default function AbusePage() {
                 </Table>
               </CardContent>
             </Card>
-          ) : !error ? (
-            <div className="flex flex-col items-center justify-center py-16 text-center">
-              <ShieldAlert className="mb-3 size-10 text-muted-foreground/50" />
-              <p className="text-sm font-medium">No workspaces flagged</p>
-              <p className="mt-1 max-w-sm text-xs text-muted-foreground">
-                All workspaces are operating within normal parameters. Anomalous query patterns will be automatically detected and shown here.
-              </p>
-            </div>
-          ) : null}
+          </AdminContentWrapper>
         </div>
       </ErrorBoundary>
 

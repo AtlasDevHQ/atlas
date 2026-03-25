@@ -6,11 +6,11 @@ import { ArrowIcon, Divider, TopGlow } from "../../../components/shared";
 import { StickyNav } from "../../../components/sticky-nav";
 
 export const metadata: Metadata = {
-  title: "Announcing Atlas — Open-Source Text-to-SQL with a Semantic Layer",
+  title: "Announcing Atlas: Open-Source Text-to-SQL with a Semantic Layer",
   description:
-    "Atlas 1.0 is here. Connect your database, auto-generate a semantic layer, and let an AI agent query your data — self-hosted or on Atlas Cloud.",
+    "Atlas 1.0 is here. Connect your database, auto-generate a semantic layer, and let an AI agent query your data. Self-hosted or on Atlas Cloud.",
   openGraph: {
-    title: "Announcing Atlas — Open-Source Text-to-SQL with a Semantic Layer",
+    title: "Announcing Atlas: Open-Source Text-to-SQL with a Semantic Layer",
     description:
       "Atlas 1.0 is here. Connect your database, auto-generate a semantic layer, and let an AI agent query your data.",
     url: "https://useatlas.dev/blog/announcing-atlas",
@@ -63,7 +63,7 @@ function FeatureBullet({ title, children }: { title: string; children: React.Rea
   return (
     <li className="mb-4">
       <span className="font-medium text-zinc-200">{title}</span>
-      <span className="text-zinc-400"> — {children}</span>
+      <span className="text-zinc-400">: {children}</span>
     </li>
   );
 }
@@ -81,12 +81,12 @@ export default function AnnouncingAtlas() {
 
       <article className="mx-auto max-w-2xl px-6 pt-24 pb-20 md:pt-36 md:pb-28">
         {/* Header */}
-        <div className="mb-12">
+        <header className="mb-12">
           <div className="mb-5 flex items-center gap-3">
             <span className="rounded-full border border-brand/20 bg-brand/10 px-2.5 py-0.5 font-mono text-[10px] font-medium tracking-wider text-brand uppercase">
               Launch
             </span>
-            <time className="font-mono text-xs text-zinc-600">2026-03-25</time>
+            <time dateTime="2026-03-25" className="font-mono text-xs text-zinc-600">2026-03-25</time>
           </div>
           <h1 className="animate-fade-in-up delay-100 text-2xl font-semibold leading-tight tracking-tight text-zinc-100 md:text-4xl">
             Announcing Atlas: open-source text-to-SQL with a semantic layer
@@ -95,7 +95,7 @@ export default function AnnouncingAtlas() {
             You&apos;re already using AI to query your data. Atlas makes it
             safe, accurate, and deployable.
           </p>
-        </div>
+        </header>
 
         {/* ── The problem ── */}
         <SectionHeading>The problem: everyone is already doing this</SectionHeading>
@@ -106,7 +106,7 @@ export default function AnnouncingAtlas() {
         </Paragraph>
         <Paragraph>
           It works surprisingly often. But it fails in ways that are hard to
-          catch — silently wrong column references, missing WHERE clauses that
+          catch: silently wrong column references, missing WHERE clauses that
           filter soft-deletes, metrics calculated before discounts instead of
           after. The AI doesn&apos;t know your business rules. It guesses from
           column names like <InlineCode>fact_txn_amt</InlineCode> and{" "}
@@ -127,7 +127,7 @@ export default function AnnouncingAtlas() {
         <Paragraph>
           Atlas is a text-to-SQL agent that connects to your database,
           understands your schema through a semantic layer, validates every
-          query, and runs it — all in one place. Self-host it with Docker,
+          query, and runs it. All in one place. Self-host it with Docker,
           Railway, or Vercel, or use Atlas Cloud at{" "}
           <a
             href="https://app.useatlas.dev"
@@ -148,13 +148,13 @@ export default function AnnouncingAtlas() {
 $ cd my-app && bun run dev
 
 > Ready on http://localhost:3000
-> Connected to PostgreSQL — 42 tables profiled
+> Connected to PostgreSQL - 42 tables profiled
 > Semantic layer generated at ./semantic/`}</BlockCode>
 
         <Paragraph>
           Run <InlineCode>atlas init</InlineCode> against your database and it
-          profiles every table — column types, sample values, cardinality,
-          nullability — and generates YAML entity files that the agent reads
+          profiles every table (column types, sample values, cardinality,
+          nullability) and generates YAML entity files that the agent reads
           before writing SQL. You can enrich these with descriptions, business
           terms, and known query patterns. Changes go through pull requests.
           The semantic layer lives in your repo, versioned like code.
@@ -170,16 +170,16 @@ $ cd my-app && bun run dev
           pipeline:
         </Paragraph>
         <ol className="mb-6 list-inside list-decimal space-y-2 text-[15px] text-zinc-400">
-          <li><span className="text-zinc-300">Empty check</span> — rejects blank input</li>
-          <li><span className="text-zinc-300">Regex mutation guard</span> — blocks INSERT, UPDATE, DELETE, DROP</li>
-          <li><span className="text-zinc-300">AST parse</span> — confirms a single SELECT statement</li>
-          <li><span className="text-zinc-300">Table whitelist</span> — only tables in the semantic layer are queryable</li>
-          <li><span className="text-zinc-300">RLS injection</span> — appends WHERE clauses for tenant isolation</li>
-          <li><span className="text-zinc-300">Auto LIMIT</span> — prevents unbounded result sets</li>
-          <li><span className="text-zinc-300">Statement timeout</span> — kills runaway queries</li>
+          <li><span className="text-zinc-300">Empty check</span>: rejects blank input</li>
+          <li><span className="text-zinc-300">Regex mutation guard</span>: blocks INSERT, UPDATE, DELETE, DROP</li>
+          <li><span className="text-zinc-300">AST parse</span>: confirms a single SELECT statement</li>
+          <li><span className="text-zinc-300">Table whitelist</span>: only tables in the semantic layer are queryable</li>
+          <li><span className="text-zinc-300">RLS injection</span>: appends WHERE clauses for tenant isolation</li>
+          <li><span className="text-zinc-300">Auto LIMIT</span>: prevents unbounded result sets</li>
+          <li><span className="text-zinc-300">Statement timeout</span>: kills runaway queries</li>
         </ol>
         <Paragraph>
-          This is defense-in-depth. Any single layer can fail — the pipeline
+          This is defense-in-depth. Any single layer can fail, but the pipeline
           makes it so all of them would have to fail simultaneously for a
           dangerous query to execute.
         </Paragraph>
@@ -191,9 +191,10 @@ $ cd my-app && bun run dev
             PostgreSQL, MySQL, BigQuery, ClickHouse, DuckDB, Snowflake, and
             Salesforce via datasource plugins
           </FeatureBullet>
-          <FeatureBullet title="5 LLM providers">
-            Anthropic, OpenAI, Bedrock, Ollama, and AI Gateway. Bring your own
-            keys or use Atlas Cloud&apos;s managed tokens
+          <FeatureBullet title="6 LLM providers">
+            Anthropic, OpenAI, Bedrock, Ollama, OpenAI-compatible (vLLM, TGI,
+            LiteLLM), and AI Gateway. Bring your own keys or use Atlas
+            Cloud&apos;s managed tokens
           </FeatureBullet>
           <FeatureBullet title="20+ plugins">
             Datasource adapters, sandbox backends, interaction channels (Slack,
@@ -205,7 +206,7 @@ $ cd my-app && bun run dev
             Works with Next.js, Nuxt, SvelteKit, or any HTTP client
           </FeatureBullet>
           <FeatureBullet title="Chat SDK">
-            8 platform adapters — Slack, Teams, Discord, Telegram, Google Chat,
+            8 platform adapters: Slack, Teams, Discord, Telegram, Google Chat,
             GitHub, Linear, and WhatsApp
           </FeatureBullet>
           <FeatureBullet title="Enterprise features">
@@ -213,12 +214,14 @@ $ cd my-app && bun run dev
             approval workflows, audit log retention and export, data residency
           </FeatureBullet>
           <FeatureBullet title="Effect.ts architecture">
-            Backend rebuilt on Effect for structured concurrency, typed errors,
-            graceful shutdown, and circuit breaking
+            Key backend subsystems (SQL pipeline, rate limiting, scheduler,
+            connection management) use Effect for structured concurrency,
+            typed errors, graceful shutdown, and circuit breaking, with more
+            migrating
           </FeatureBullet>
           <FeatureBullet title="Admin console">
             Connections, users, plugins, semantic layer browser, query
-            analytics, learned patterns, and settings — all in one place
+            analytics, learned patterns, and settings. All in one place
           </FeatureBullet>
         </ul>
 
@@ -231,7 +234,7 @@ $ cd my-app && bun run dev
         <Paragraph>
           <span className="text-zinc-200">vs Vanna AI:</span> Vanna is a Python
           library that learns from historical queries via RAG. Atlas uses an
-          explicit YAML semantic layer — you know exactly what context the agent
+          explicit YAML semantic layer. You know exactly what context the agent
           sees, and changes go through code review. Vanna is great for Python
           shops that want a library. Atlas is a deployable product with auth,
           admin, and embedding built in.
@@ -241,7 +244,7 @@ $ cd my-app && bun run dev
           platform with a UI-based semantic modeling layer. It&apos;s closer to
           &ldquo;replace Looker&rdquo; than &ldquo;embed an analyst.&rdquo;
           Atlas is designed to be a component in your application, not a
-          standalone BI tool. WrenAI is also AGPL-3.0 end-to-end — Atlas&apos;s
+          standalone BI tool. WrenAI is also AGPL-3.0 end-to-end. Atlas&apos;s
           client libraries are MIT.
         </Paragraph>
         <Paragraph>
@@ -255,7 +258,7 @@ $ cd my-app && bun run dev
           <span className="text-zinc-200">vs enterprise platforms:</span>{" "}
           ThoughtSpot, Databricks AI/BI, and Looker AI are powerful but
           proprietary and locked to their ecosystems. Atlas is open-source,
-          deploy-anywhere, and designed for embedding — not for replacing your
+          deploy-anywhere, and designed for embedding, not for replacing your
           entire BI stack.
         </Paragraph>
         <Paragraph>
@@ -268,8 +271,8 @@ $ cd my-app && bun run dev
         {/* ── Pricing ── */}
         <SectionHeading>Self-hosted is free. Cloud is for teams.</SectionHeading>
         <Paragraph>
-          Atlas is AGPL-3.0 licensed. You can self-host the full product — every
-          feature, no artificial limits — for free. Run{" "}
+          Atlas is AGPL-3.0 licensed. You can self-host the full product,
+          every feature, no artificial limits, for free. Run{" "}
           <InlineCode>bun create atlas-agent</InlineCode>, connect your
           database, and you&apos;re done.
         </Paragraph>
@@ -288,7 +291,7 @@ $ cd my-app && bun run dev
         {/* ── CTA ── */}
         <SectionHeading>Try it</SectionHeading>
         <Paragraph>
-          The fastest way to see Atlas is the live demo — no signup, no
+          The fastest way to see Atlas is the live demo. No signup, no
           installation. It&apos;s connected to a cybersecurity SaaS dataset with
           60 tables and 200K rows of realistic, messy data.
         </Paragraph>

@@ -56,7 +56,7 @@ function PostCard({ post }: { post: Post }) {
         <span className="rounded-full border border-brand/20 bg-brand/10 px-2.5 py-0.5 font-mono text-[10px] font-medium tracking-wider text-brand uppercase">
           {post.tag}
         </span>
-        <time className="font-mono text-xs text-zinc-600">{post.date}</time>
+        <time dateTime={post.date} className="font-mono text-xs text-zinc-600">{post.date}</time>
       </div>
       <h2 className="mb-3 text-lg font-semibold tracking-tight text-zinc-100 group-hover:text-white">
         {post.title}

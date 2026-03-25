@@ -263,7 +263,7 @@ Response: {
 Minimal image — no secrets, no database drivers:
 
 ```dockerfile
-FROM oven/bun:1.3.11-debian AS base
+FROM oven/bun:1.3.11 AS base
 
 # Shell tools for explore + Python for executePython
 RUN apt-get update && apt-get install -y --no-install-recommends \

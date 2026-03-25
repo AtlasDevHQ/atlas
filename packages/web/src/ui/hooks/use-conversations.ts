@@ -1,8 +1,9 @@
 "use client";
 
-import { useState, useCallback, useRef } from "react";
+import { useState, useCallback, useRef, useMemo } from "react";
 import type { Conversation, ConversationWithMessages, Message, ShareStatus, ShareMode, ShareExpiryKey, NotebookStateWire, ForkBranchWire } from "../lib/types";
 import type { UIMessage } from "@ai-sdk/react";
+import { createAtlasFetch } from "../lib/fetch-client";
 
 export interface UseConversationsOptions {
   apiUrl: string;
@@ -51,6 +52,11 @@ export function transformMessages(messages: Message[]): UIMessage[] {
 }
 
 export function useConversations(opts: UseConversationsOptions): UseConversationsReturn {
+  const api = useMemo(
+    () => createAtlasFetch(opts),
+    [opts.apiUrl, opts.getHeaders, opts.getCredentials],
+  );
+
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
@@ -64,10 +70,7 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
     setLoading(true);
     setFetchError(null);
     try {
-      const res = await fetch(`${opts.apiUrl}/api/v1/conversations?limit=50`, {
-        headers: opts.getHeaders(),
-        credentials: opts.getCredentials(),
-      });
+      const res = await api.raw("GET", "/api/v1/conversations?limit=50");
 
       if (res.status === 404) {
         setAvailable(false);
@@ -96,146 +99,62 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
     } finally {
       setLoading(false);
     }
-  }, [opts.apiUrl, opts.enabled, opts.getHeaders, opts.getCredentials, available]);
+  }, [api, opts.enabled, available]);
 
   const loadConversation = useCallback(async (id: string): Promise<UIMessage[]> => {
-    const res = await fetch(`${opts.apiUrl}/api/v1/conversations/${id}`, {
-      headers: opts.getHeaders(),
-      credentials: opts.getCredentials(),
-    });
-
-    if (!res.ok) {
-      console.warn(`loadConversation: HTTP ${res.status} for ${id}`);
-      throw new Error(`Failed to load conversation (HTTP ${res.status})`);
-    }
-
-    const data: ConversationWithMessages = await res.json();
+    const data = await api.get<ConversationWithMessages>(`/api/v1/conversations/${id}`);
     return transformMessages(data.messages);
-  }, [opts.apiUrl, opts.getHeaders, opts.getCredentials]);
+  }, [api]);
 
   const deleteConversation = useCallback(async (id: string): Promise<void> => {
-    const res = await fetch(`${opts.apiUrl}/api/v1/conversations/${id}`, {
-      method: "DELETE",
-      headers: opts.getHeaders(),
-      credentials: opts.getCredentials(),
-    });
-
-    if (!res.ok) {
-      console.warn(`deleteConversation: HTTP ${res.status} for ${id}`);
-      throw new Error(`Failed to delete conversation (HTTP ${res.status})`);
-    }
-
+    await api.del(`/api/v1/conversations/${id}`);
     setConversations((prev) => prev.filter((c) => c.id !== id));
     setTotal((prev) => Math.max(0, prev - 1));
-
     if (selectedId === id) setSelectedId(null);
-  }, [opts.apiUrl, opts.getHeaders, opts.getCredentials, selectedId]);
+  }, [api, selectedId]);
 
   const starConversation = useCallback(async (id: string, starred: boolean): Promise<void> => {
     // Optimistic update
     setConversations((prev) =>
       prev.map((c) => (c.id === id ? { ...c, starred } : c)),
     );
-    let rolledBack = false;
     try {
-      const res = await fetch(`${opts.apiUrl}/api/v1/conversations/${id}/star`, {
-        method: "PATCH",
-        headers: { ...opts.getHeaders(), "Content-Type": "application/json" },
-        credentials: opts.getCredentials(),
-        body: JSON.stringify({ starred }),
-      });
-
-      if (!res.ok) {
-        console.warn(`starConversation: HTTP ${res.status} for ${id}`);
-        setConversations((prev) =>
-          prev.map((c) => (c.id === id ? { ...c, starred: !starred } : c)),
-        );
-        rolledBack = true;
-        throw new Error(`Failed to update star (HTTP ${res.status})`);
-      }
+      await api.patch(`/api/v1/conversations/${id}/star`, { starred });
     } catch (err: unknown) {
-      if (!rolledBack) {
-        setConversations((prev) =>
-          prev.map((c) => (c.id === id ? { ...c, starred: !starred } : c)),
-        );
-      }
+      setConversations((prev) =>
+        prev.map((c) => (c.id === id ? { ...c, starred: !starred } : c)),
+      );
       throw err;
     }
-  }, [opts.apiUrl, opts.getHeaders, opts.getCredentials]);
+  }, [api]);
 
   const shareConversation = useCallback(async (id: string, shareOpts?: { expiresIn?: ShareExpiryKey; shareMode?: ShareMode }): Promise<{ token: string; url: string }> => {
-    const res = await fetch(`${opts.apiUrl}/api/v1/conversations/${id}/share`, {
-      method: "POST",
-      headers: { ...opts.getHeaders(), "Content-Type": "application/json" },
-      credentials: opts.getCredentials(),
-      body: shareOpts ? JSON.stringify(shareOpts) : undefined,
-    });
-    if (!res.ok) {
-      console.warn(`shareConversation: HTTP ${res.status} for ${id}`);
-      throw new Error(`Failed to share conversation (HTTP ${res.status})`);
-    }
-    const data = await res.json();
+    const data = await api.post<Record<string, unknown>>(`/api/v1/conversations/${id}/share`, shareOpts);
     if (!data?.token || typeof data.token !== "string") {
       console.warn(`shareConversation: missing token in response for ${id}`);
       throw new Error("Share response missing token");
     }
     return {
       token: data.token,
-      url: data.url ?? `${window.location.origin}/shared/${data.token}`,
+      url: typeof data.url === "string" ? data.url : `${window.location.origin}/shared/${data.token}`,
     };
-  }, [opts.apiUrl, opts.getHeaders, opts.getCredentials]);
+  }, [api]);
 
   const unshareConversation = useCallback(async (id: string): Promise<void> => {
-    const res = await fetch(`${opts.apiUrl}/api/v1/conversations/${id}/share`, {
-      method: "DELETE",
-      headers: opts.getHeaders(),
-      credentials: opts.getCredentials(),
-    });
-    if (!res.ok) {
-      console.warn(`unshareConversation: HTTP ${res.status} for ${id}`);
-      throw new Error(`Failed to unshare conversation (HTTP ${res.status})`);
-    }
-  }, [opts.apiUrl, opts.getHeaders, opts.getCredentials]);
+    await api.del(`/api/v1/conversations/${id}/share`);
+  }, [api]);
 
   const getShareStatus = useCallback(async (id: string): Promise<ShareStatus> => {
-    const res = await fetch(`${opts.apiUrl}/api/v1/conversations/${id}/share`, {
-      headers: opts.getHeaders(),
-      credentials: opts.getCredentials(),
-    });
-    if (!res.ok) {
-      console.warn(`getShareStatus: HTTP ${res.status} for ${id}`);
-      throw new Error(`Failed to get share status (HTTP ${res.status})`);
-    }
-    const data: ShareStatus = await res.json();
-    return data;
-  }, [opts.apiUrl, opts.getHeaders, opts.getCredentials]);
+    return api.get<ShareStatus>(`/api/v1/conversations/${id}/share`);
+  }, [api]);
 
   const getConversationData = useCallback(async (id: string): Promise<ConversationWithMessages> => {
-    const res = await fetch(`${opts.apiUrl}/api/v1/conversations/${id}`, {
-      headers: opts.getHeaders(),
-      credentials: opts.getCredentials(),
-    });
-
-    if (!res.ok) {
-      console.warn(`getConversationData: HTTP ${res.status} for ${id}`);
-      throw new Error(`Failed to load conversation (HTTP ${res.status})`);
-    }
-
-    return res.json();
-  }, [opts.apiUrl, opts.getHeaders, opts.getCredentials]);
+    return api.get<ConversationWithMessages>(`/api/v1/conversations/${id}`);
+  }, [api]);
 
   const saveNotebookState = useCallback(async (id: string, state: NotebookStateWire): Promise<void> => {
     try {
-      const res = await fetch(`${opts.apiUrl}/api/v1/conversations/${id}/notebook-state`, {
-        method: "PATCH",
-        headers: { ...opts.getHeaders(), "Content-Type": "application/json" },
-        credentials: opts.getCredentials(),
-        body: JSON.stringify(state),
-      });
-
-      if (!res.ok) {
-        console.warn(`saveNotebookState: HTTP ${res.status} for ${id}`);
-      }
+      await api.patch(`/api/v1/conversations/${id}/notebook-state`, state);
     } catch (err: unknown) {
       // Non-fatal — localStorage is still the backup
       console.warn(
@@ -243,26 +162,14 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
         err instanceof Error ? err.message : String(err),
       );
     }
-  }, [opts.apiUrl, opts.getHeaders, opts.getCredentials]);
+  }, [api]);
 
   const forkConversation = useCallback(async (
     sourceId: string,
     forkPointMessageId: string,
     label?: string,
   ): Promise<{ id: string; branches: ForkBranchWire[]; warning?: string }> => {
-    const res = await fetch(`${opts.apiUrl}/api/v1/conversations/${sourceId}/fork`, {
-      method: "POST",
-      headers: { ...opts.getHeaders(), "Content-Type": "application/json" },
-      credentials: opts.getCredentials(),
-      body: JSON.stringify({ forkPointMessageId, label }),
-    });
-
-    if (!res.ok) {
-      console.warn(`forkConversation: HTTP ${res.status} for ${sourceId}`);
-      throw new Error(`Failed to fork conversation (HTTP ${res.status})`);
-    }
-
-    const data = await res.json();
+    const data = await api.post<Record<string, unknown>>(`/api/v1/conversations/${sourceId}/fork`, { forkPointMessageId, label });
     if (!data.id || typeof data.id !== "string") {
       throw new Error("Fork response missing conversation ID");
     }
@@ -271,7 +178,7 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
       branches: (data.branches ?? []) as ForkBranchWire[],
       warning: typeof data.warning === "string" ? data.warning : undefined,
     };
-  }, [opts.apiUrl, opts.getHeaders, opts.getCredentials]);
+  }, [api]);
 
   const refresh = useCallback(async () => {
     await fetchList();

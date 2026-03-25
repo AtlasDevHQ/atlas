@@ -259,3 +259,25 @@ Tracking module-deepening refactors discovered by the `improve-codebase-architec
 - 48 tests covering all factories (boundary cases: empty string, max length, extra fields, missing fields)
 
 **Category:** Duplicated OpenAPI schemas consolidated into factory functions with consistent validation.
+
+---
+
+## 13. Extract conversation fetch client (`createAtlasFetch`)
+
+**Date:** 2026-03-25
+**Issue:** #896
+**PR:** #915
+
+**Problem:** `use-conversations.ts` (300 lines) contained 10 separate `fetch()` calls, each repeating the same pattern: build URL from `apiUrl + path`, set headers via `getHeaders()`, set credentials via `getCredentials()`, check `res.ok`, `console.warn` on failure, throw `Error` with HTTP status. Changes to error behavior, auth scheme, or request configuration required updating 10 locations.
+
+**Solution:** Extracted `createAtlasFetch(opts)` into `packages/web/src/ui/lib/fetch-client.ts`. Returns typed `{ get, post, patch, del, raw }` methods that handle URL construction, header injection, credential wiring, error logging, and JSON parsing. The `raw` method returns the bare `Response` for callers needing custom error handling (e.g., `fetchList` with its 404/not_available checks). All 10 fetch calls in `use-conversations.ts` migrated to the client.
+
+**Impact:**
+- **-26 net lines** production code (300 → 207 in hook, +67 in new client)
+- **+221 lines** test coverage (17 tests for the fetch client)
+- 10 duplicated fetch patterns consolidated into 5 typed methods
+- Error handling (warn + throw) defined once, not 10 times
+- Dependency arrays simplified: `[opts.apiUrl, opts.getHeaders, opts.getCredentials]` → `[api]`
+- `starConversation` optimistic rollback simplified from double-guard to single catch
+
+**Category:** Duplicated fetch boilerplate extracted into typed client with shared error handling.

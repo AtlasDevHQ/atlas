@@ -1,5 +1,5 @@
 /**
- * Unit tests for the scheduler engine.
+ * Unit tests for the scheduler engine (Effect.ts migration).
  */
 import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
 

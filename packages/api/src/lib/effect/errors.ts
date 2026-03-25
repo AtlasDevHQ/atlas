@@ -144,6 +144,37 @@ export class ActionTimeoutError extends Data.TaggedError("ActionTimeoutError")<{
   readonly timeoutMs: number;
 }> {}
 
+// ── Scheduler ──────────────────────────────────────────────────────
+
+/** Scheduled task execution timed out. */
+export class SchedulerTaskTimeoutError extends Data.TaggedError("SchedulerTaskTimeoutError")<{
+  readonly message: string;
+  readonly taskId: string;
+  readonly timeoutMs: number;
+}> {}
+
+/** Failed to acquire execution lock for a scheduled task. */
+export class SchedulerLockError extends Data.TaggedError("SchedulerLockError")<{
+  readonly message: string;
+  readonly taskId: string;
+}> {}
+
+/** Scheduled task execution failed. */
+export class SchedulerExecutionError extends Data.TaggedError("SchedulerExecutionError")<{
+  readonly message: string;
+  readonly taskId: string;
+  readonly runId?: string;
+}> {}
+
+/** Delivery to a recipient channel failed. */
+export class DeliveryError extends Data.TaggedError("DeliveryError")<{
+  readonly message: string;
+  readonly channel: string;
+  readonly recipient: string;
+  /** When true, this error is permanent and should not be retried. */
+  readonly permanent?: boolean;
+}> {}
+
 // ── Union type ──────────────────────────────────────────────────────
 
 /** Union of all known Atlas error types for exhaustive matching. */
@@ -164,7 +195,11 @@ export type AtlasError =
   | ApprovalRequiredError
   | PluginRejectedError
   | CustomValidatorError
-  | ActionTimeoutError;
+  | ActionTimeoutError
+  | SchedulerTaskTimeoutError
+  | SchedulerLockError
+  | SchedulerExecutionError
+  | DeliveryError;
 
 /** Discriminant union of all known `_tag` values — derived from `AtlasError`. */
 export type AtlasErrorTag = AtlasError["_tag"];

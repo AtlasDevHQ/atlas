@@ -66,6 +66,10 @@ const ATLAS_ERROR_TAGS = new Set<string>([
   "PluginRejectedError",
   "CustomValidatorError",
   "ActionTimeoutError",
+  "SchedulerTaskTimeoutError",
+  "SchedulerLockError",
+  "SchedulerExecutionError",
+  "DeliveryError",
 ]);
 
 /**
@@ -148,7 +152,16 @@ export function mapTaggedError(error: AtlasError): HttpErrorMapping {
     // ── 504 Gateway Timeout ──────────────────────────────────────
     case "QueryTimeoutError":
     case "ActionTimeoutError":
+    case "SchedulerTaskTimeoutError":
       return { status: 504, code: "timeout", message: error.message };
+
+    // ── Scheduler ──────────────────────────────────────────────
+    case "SchedulerLockError":
+      return { status: 409, code: "bad_request", message: error.message };
+    case "SchedulerExecutionError":
+      return { status: 500, code: "upstream_error", message: error.message };
+    case "DeliveryError":
+      return { status: 502, code: "upstream_error", message: error.message };
   }
 }
 

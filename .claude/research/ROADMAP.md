@@ -530,7 +530,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 ### Infrastructure Primitives (P1–P4)
 - [ ] P1: SQL validation & query execution → Effect.gen with tagged errors (#904)
 - [ ] P2: Rate limiting → Effect Semaphore and Ref (#905)
-- [ ] P3: Scheduler and delivery → Effect Schedule, Semaphore, retry (#906)
+- [x] P3: Scheduler and delivery → Effect Schedule, Semaphore, retry (#906, PR #919)
 - [ ] P4: ConnectionRegistry → Effect Layer/Service with scoped resources (#907)
 
 ### Service Architecture (P5–P8)

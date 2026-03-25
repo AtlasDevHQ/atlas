@@ -62,6 +62,15 @@ export {
   createPluginTestLayer,
   type PluginRegistryShape,
   type PluginWiringConfig,
+  // Request + Auth Context (P8)
+  RequestContext,
+  makeRequestContextLayer,
+  createRequestContextTestLayer,
+  AuthContext,
+  makeAuthContextLayer,
+  createAuthContextTestLayer,
+  type RequestContextShape,
+  type AuthContextShape,
 } from "./services";
 
 // ── Startup Layers (P6) ─────────────────────────────────────────────

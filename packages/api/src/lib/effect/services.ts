@@ -677,3 +677,100 @@ export function createPluginTestLayer(
   const stubService = new Proxy({} as PluginRegistryShape, handler);
   return Layer.succeed(PluginRegistry, stubService);
 }
+
+// ══════════════════════════════════════════════════════════════════════
+// ██  Request Context Service (P8)
+// ══════════════════════════════════════════════════════════════════════
+
+/**
+ * Per-request context available to all Effect programs running within
+ * a route handler. Bridges from Hono's `c.get("requestId")`.
+ */
+export interface RequestContextShape {
+  readonly requestId: string;
+  readonly startTime: number;
+}
+
+export class RequestContext extends Context.Tag("RequestContext")<
+  RequestContext,
+  RequestContextShape
+>() {}
+
+/**
+ * Create a RequestContext Layer from concrete values.
+ * Used by runHandler to bridge Hono context → Effect Context.
+ */
+export function makeRequestContextLayer(
+  requestId: string,
+  startTime?: number,
+): Layer.Layer<RequestContext> {
+  return Layer.succeed(RequestContext, {
+    requestId,
+    startTime: startTime ?? Date.now(),
+  });
+}
+
+/** Create a test Layer for RequestContext. */
+export function createRequestContextTestLayer(
+  partial: Partial<RequestContextShape> = {},
+): Layer.Layer<RequestContext> {
+  return Layer.succeed(RequestContext, {
+    requestId: partial.requestId ?? "test-request-id",
+    startTime: partial.startTime ?? Date.now(),
+  });
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// ██  Auth Context Service (P8)
+// ══════════════════════════════════════════════════════════════════════
+
+type AtlasUser = import("@useatlas/types/auth").AtlasUser;
+type AuthMode = import("@useatlas/types/auth").AuthMode;
+
+/**
+ * Authenticated user context available to Effect programs.
+ * Bridges from Hono's `c.get("authResult")`.
+ *
+ * Only provided when the request is authenticated (`authResult.authenticated === true`).
+ * Programs that `yield* AuthContext` will fail with a missing-service error
+ * if auth middleware has not run — this is the compile-time guarantee that
+ * replaces the runtime `c.get("authResult")` check.
+ */
+export interface AuthContextShape {
+  readonly mode: AuthMode;
+  /** Authenticated user. Undefined only in "none" auth mode (local dev). */
+  readonly user: AtlasUser | undefined;
+  /** Convenience: active org ID from user, or undefined. */
+  readonly orgId: string | undefined;
+}
+
+export class AuthContext extends Context.Tag("AuthContext")<
+  AuthContext,
+  AuthContextShape
+>() {}
+
+/**
+ * Create an AuthContext Layer from an authenticated AuthResult.
+ * Used by runHandler to bridge Hono context → Effect Context.
+ */
+export function makeAuthContextLayer(
+  mode: AuthMode,
+  user: AtlasUser | undefined,
+): Layer.Layer<AuthContext> {
+  return Layer.succeed(AuthContext, {
+    mode,
+    user,
+    orgId: user?.activeOrganizationId,
+  });
+}
+
+/** Create a test Layer for AuthContext. */
+export function createAuthContextTestLayer(
+  partial: Partial<AuthContextShape> = {},
+): Layer.Layer<AuthContext> {
+  return Layer.succeed(AuthContext, {
+    mode: partial.mode ?? "none",
+    user: partial.user,
+    orgId: partial.orgId ?? partial.user?.activeOrganizationId,
+  });
+}

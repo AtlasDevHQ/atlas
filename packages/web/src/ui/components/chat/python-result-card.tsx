@@ -6,6 +6,7 @@ import { DarkModeContext } from "../../hooks/use-dark-mode";
 import dynamic from "next/dynamic";
 import { LoadingCard } from "./loading-card";
 import { DataTable } from "./data-table";
+import { ResultCardBase } from "./result-card-base";
 import type { ChartDetectionResult, ChartType } from "../chart/chart-detection";
 
 const ResultChart = dynamic(
@@ -83,7 +84,6 @@ function PythonResultCardInner({ part, progressEvents }: { part: unknown; progre
   const args = getToolArgs(part);
   const raw = getToolResult(part);
   const done = isToolComplete(part);
-  const [open, setOpen] = useState(true);
   const outputRef = useRef<HTMLPreElement>(null);
 
   // Auto-scroll the streaming output to the bottom
@@ -199,42 +199,30 @@ function PythonResultCardInner({ part, progressEvents }: { part: unknown; progre
     : [];
 
   return (
-    <div className="my-2 overflow-hidden rounded-lg border border-zinc-200 bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900">
-      <button
-        onClick={() => setOpen(!open)}
-        className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs transition-colors hover:bg-zinc-100/60 dark:hover:bg-zinc-800/60"
-      >
-        <span className="rounded bg-emerald-100 px-1.5 py-0.5 font-medium text-emerald-700 dark:bg-emerald-600/20 dark:text-emerald-400">
-          Python
-        </span>
-        <span className="flex-1 truncate text-zinc-500 dark:text-zinc-400">
-          {String(args.explanation ?? "Python result")}
-        </span>
-        <span className="text-zinc-400 dark:text-zinc-600">{open ? "\u25BE" : "\u25B8"}</span>
-      </button>
-
-      {open && (
-        <div className="space-y-2 border-t border-zinc-100 px-3 py-2 dark:border-zinc-800">
-          {output && (
-            <pre className="rounded-md bg-zinc-100 px-3 py-2 text-xs whitespace-pre-wrap text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
-              {output}
-            </pre>
-          )}
-
-          {hasTable && <DataTable columns={table.columns} rows={table.rows} />}
-
-          {hasRechartsCharts &&
-            rechartsCharts.map((chart, i) => (
-              <RechartsChartSection key={i} chart={chart} dark={dark} />
-            ))}
-
-          {safeCharts.length > 0 &&
-            safeCharts.map((chart, i) => (
-              <ChartImage key={i} chart={chart} index={i} />
-            ))}
-        </div>
+    <ResultCardBase
+      badge="Python"
+      badgeClassName="bg-emerald-100 text-emerald-700 dark:bg-emerald-600/20 dark:text-emerald-400"
+      title={String(args.explanation ?? "Python result")}
+      contentClassName="space-y-2 px-3 py-2"
+    >
+      {output && (
+        <pre className="rounded-md bg-zinc-100 px-3 py-2 text-xs whitespace-pre-wrap text-zinc-700 dark:bg-zinc-800 dark:text-zinc-300">
+          {output}
+        </pre>
       )}
-    </div>
+
+      {hasTable && <DataTable columns={table.columns} rows={table.rows} />}
+
+      {hasRechartsCharts &&
+        rechartsCharts.map((chart, i) => (
+          <RechartsChartSection key={i} chart={chart} dark={dark} />
+        ))}
+
+      {safeCharts.length > 0 &&
+        safeCharts.map((chart, i) => (
+          <ChartImage key={i} chart={chart} index={i} />
+        ))}
+    </ResultCardBase>
   );
 }
 

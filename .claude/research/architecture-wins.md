@@ -316,7 +316,7 @@ Tracking module-deepening refactors discovered by the `improve-codebase-architec
 
 **Date:** 2026-03-25
 **Issue:** #910
-**PR:** #TBD
+**PR:** #925
 
 **Problem:** 166 route handlers across 33 files used `withErrorHandler` HOF to wrap try-catch blocks. The HOF caught errors, called `throwIfEEError` to map enterprise/domain errors to HTTP status codes, and returned 500 with requestId for unknowns. Error-to-HTTP mapping was split across three modules: `error-handler.ts` (96 lines, HOF + `DomainErrorMapping` type), `ee-error-handler.ts` (79 lines, `throwIfEEError` + `eeOnError`), and the `mapTaggedError` switch in `hono.ts`. Every route handler was wrapped in a HOF that hid the error-to-HTTP mapping.
 

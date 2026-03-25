@@ -1,26 +1,28 @@
 /**
  * Effect Layer DAG for Atlas server startup.
  *
- * Replaces the sequential await chain in server.ts with composable Layers
- * that express dependency ordering at the type level. Shutdown is automatic
- * via Scope cleanup — no manual SIGTERM handler ordering.
+ * Replaces a subset of the sequential startup steps in server.ts
+ * (telemetry, migrations, semantic sync, settings, schedulers) with
+ * composable Layers. Config and plugin wiring remain imperative in
+ * server.ts because they produce the config object the DAG needs.
  *
- * Layer dependency graph:
+ * Layer dependency graph (all independent — merged via Layer.mergeAll):
  *
- *   TelemetryLayer (independent)
- *   ConfigLayer (independent)
- *     ├→ ConnectionLayer (depends on Config)        [P4 — services.ts]
- *     │    └→ PluginLayer (depends on Connections)  [P5 — services.ts]
- *     ├→ MigrationLayer (depends on Config)
- *     ├→ SemanticSyncLayer (depends on Config)
- *     ├→ SettingsLayer (depends on Config)
- *     └→ SchedulerLayer (depends on Config)
+ *   TelemetryLayer          (no deps)
+ *   ConfigLayer             (no deps — receives pre-resolved config via Layer.succeed)
+ *   MigrationLayer          (no deps)
+ *   SemanticSyncLayer       (no deps)
+ *   SettingsLayer           (no deps)
+ *   SchedulerLayer          (no deps — receives config as function param)
  *
- *   AppLayer = merge all of the above
+ *   AppLayer = mergeAll(Telemetry, Config, Migration, SemanticSync, Settings, Scheduler)
+ *
+ * Note: ConnectionLayer (P4) and PluginLayer (P5) live in services.ts
+ * and are not yet part of AppLayer — they are wired imperatively in server.ts.
  *
  * Each layer wraps an imperative startup step with Effect.addFinalizer
- * for cleanup. Layer construction runs eagerly — startup errors surface
- * at boot, not on first request.
+ * for cleanup. On shutdown, Effect disposes scoped layers via their
+ * finalizers. Order among independent layers is unspecified.
  */
 
 import { Context, Effect, Layer } from "effect";
@@ -79,7 +81,7 @@ export const TelemetryLive: Layer.Layer<Telemetry> = Layer.scoped(
             catch: (err) => (err instanceof Error ? err.message : String(err)),
           }).pipe(
             Effect.catchAll((errMsg) => {
-              log.error({ err: errMsg }, "Failed to shut down OTel SDK");
+              log.error({ err: new Error(errMsg) }, "Failed to shut down OTel SDK");
               return Effect.void;
             }),
           )
@@ -206,7 +208,7 @@ export const SemanticSyncLive: Layer.Layer<SemanticSync> = Layer.effect(
       catch: (err) => (err instanceof Error ? err.message : String(err)),
     }).pipe(
       Effect.catchAll((errMsg) => {
-        log.error({ err: errMsg }, "Semantic sync failed");
+        log.error({ err: new Error(errMsg) }, "Semantic sync failed");
         return Effect.succeed(false);
       }),
     );
@@ -243,7 +245,7 @@ export const SettingsLive: Layer.Layer<Settings> = Layer.effect(
       catch: (err) => (err instanceof Error ? err.message : String(err)),
     }).pipe(
       Effect.catchAll((errMsg) => {
-        log.error({ err: errMsg }, "Settings load failed");
+        log.error({ err: new Error(errMsg) }, "Settings load failed");
         return Effect.succeed(0);
       }),
     );
@@ -257,25 +259,33 @@ export const SettingsLive: Layer.Layer<Settings> = Layer.effect(
 // ══════════════════════════════════════════════════════════════════════
 
 export interface SchedulerShape {
-  readonly backend: "bun" | "vercel" | "none";
+  /** "webhook" relies on external cron; "none" means no scheduler configured. */
+  readonly backend: "bun" | "webhook" | "vercel" | "none";
 }
 
-export class SchedulerService extends Context.Tag("Scheduler")<
-  SchedulerService,
+export class Scheduler extends Context.Tag("Scheduler")<
+  Scheduler,
   SchedulerShape
 >() {}
 
 /**
  * Create a Scheduler layer that reads the config to decide which backend
- * to start. Finalizer stops the scheduler and email/audit sub-schedulers.
+ * to start. Finalizer stops the scheduler and email sub-scheduler.
  */
 export function makeSchedulerLive(
   config: ResolvedConfig,
-): Layer.Layer<SchedulerService> {
+): Layer.Layer<Scheduler> {
   return Layer.scoped(
-    SchedulerService,
+    Scheduler,
     Effect.gen(function* () {
-      const backend = config.scheduler?.backend ?? "none";
+      const raw = config.scheduler?.backend ?? "none";
+      const VALID_BACKENDS = new Set<SchedulerShape["backend"]>(["bun", "webhook", "vercel", "none"]);
+      if (!VALID_BACKENDS.has(raw as SchedulerShape["backend"])) {
+        log.error({ backend: raw }, `Unknown scheduler backend "${raw}" — falling back to "none"`);
+      }
+      const backend: SchedulerShape["backend"] = VALID_BACKENDS.has(raw as SchedulerShape["backend"])
+        ? (raw as SchedulerShape["backend"])
+        : "none";
 
       // Start main scheduler
       if (backend === "bun") {
@@ -286,16 +296,20 @@ export function makeSchedulerLive(
             );
             getScheduler().start();
           },
-          catch: (err) => (err instanceof Error ? err.message : String(err)),
+          catch: (err) => (err instanceof Error ? err : new Error(String(err))),
         }).pipe(
-          Effect.catchAll((errMsg) => {
-            log.error({ err: errMsg }, "Failed to start scheduler");
+          Effect.catchAll((err) => {
+            log.error({ err }, "Failed to start scheduler");
             return Effect.void;
           }),
         );
       } else if (backend === "vercel") {
         log.info(
           "Scheduler backend is 'vercel' — tick endpoint active, no in-process loop",
+        );
+      } else if (backend === "webhook") {
+        log.info(
+          "Scheduler backend is 'webhook' — external cron expected, no in-process loop",
         );
       }
 
@@ -307,18 +321,18 @@ export function makeSchedulerLive(
           );
           startOnboardingEmailScheduler();
         },
-        catch: (err) => (err instanceof Error ? err.message : String(err)),
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
       }).pipe(
-        Effect.catchAll((errMsg) => {
+        Effect.catchAll((err) => {
           log.debug(
-            { err: errMsg },
+            { err },
             "Onboarding email scheduler not started — feature may be disabled",
           );
           return Effect.void;
         }),
       );
 
-      // Start audit purge scheduler (enterprise — no-op when ee module not available)
+      // Start audit purge scheduler (enterprise — no-op when ee module not installed)
       yield* Effect.tryPromise({
         try: async () => {
           const { startAuditPurgeScheduler } = await import(
@@ -326,9 +340,16 @@ export function makeSchedulerLive(
           );
           startAuditPurgeScheduler();
         },
-        catch: () => "ee-not-available",
+        catch: (err) => (err instanceof Error ? err.message : String(err)),
       }).pipe(
-        Effect.catchAll(() => Effect.void), // intentionally ignored: ee module may not be installed
+        Effect.catchAll((errMsg) => {
+          if (errMsg.includes("Cannot find module") || errMsg.includes("Cannot find package")) {
+            // intentionally ignored: ee module not installed — audit purge scheduler unavailable
+          } else {
+            log.error({ err: new Error(errMsg) }, "Audit purge scheduler failed to start");
+          }
+          return Effect.void;
+        }),
       );
 
       // --- Finalizer: stop all schedulers ---
@@ -343,10 +364,10 @@ export function makeSchedulerLive(
                 getScheduler().stop();
               },
               catch: (err) =>
-                err instanceof Error ? err.message : String(err),
+                err instanceof Error ? err : new Error(String(err)),
             }).pipe(
-              Effect.catchAll((errMsg) => {
-                log.error({ err: errMsg }, "Failed to stop scheduler");
+              Effect.catchAll((err) => {
+                log.error({ err }, "Failed to stop scheduler");
                 return Effect.void;
               }),
             );
@@ -359,14 +380,20 @@ export function makeSchedulerLive(
               );
               stopOnboardingEmailScheduler();
             },
-            catch: () => "not-loaded",
-          }).pipe(Effect.catchAll(() => Effect.void));
+            catch: (err) =>
+              err instanceof Error ? err : new Error(String(err)),
+          }).pipe(
+            Effect.catchAll((err) => {
+              log.error({ err }, "Failed to stop onboarding email scheduler");
+              return Effect.void;
+            }),
+          );
 
           log.info("Schedulers shut down via Effect scope");
         }),
       );
 
-      return { backend: backend as "bun" | "vercel" | "none" } satisfies SchedulerShape;
+      return { backend } satisfies SchedulerShape;
     }),
   );
 }
@@ -378,22 +405,21 @@ export function makeSchedulerLive(
 /**
  * Build the full application Layer DAG.
  *
- * The Layer graph encodes dependency ordering at the type level:
- * - Config loads first (everything depends on it)
- * - Connection warmup + plugin wiring depend on Config
- * - Migrations, semantic sync, settings, scheduler are independent
- *   of each other but all run after Config
- * - Telemetry is fully independent
+ * All layers are independent peers (no Effect-level dependencies between
+ * them). Config is provided as a pre-resolved value via `Layer.succeed`.
+ * The remaining layers use dynamic imports to reach their modules and do
+ * not consume Config from the Effect context.
  *
- * On shutdown, Effect tears down Layers in reverse dependency order:
- * Scheduler → Plugins → Connections → Telemetry (automatic, no manual ordering).
+ * On shutdown, Effect disposes scoped layers (Telemetry, Scheduler) via
+ * their finalizers. Order among independent layers is unspecified.
+ * Connection and plugin shutdown is handled imperatively in server.ts.
  */
 export function buildAppLayer(config: ResolvedConfig): Layer.Layer<
-  Telemetry | Config | Migration | SemanticSync | Settings | SchedulerService
+  Telemetry | Config | Migration | SemanticSync | Settings | Scheduler
 > {
   const configLayer = Layer.succeed(Config, { config });
 
-  // Independent layers (no deps beyond Config)
+  // Independent layers (no Effect-level deps)
   const migrationLayer = MigrationLive;
   const semanticSyncLayer = SemanticSyncLive;
   const settingsLayer = SettingsLive;

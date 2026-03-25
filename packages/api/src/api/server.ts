@@ -263,16 +263,7 @@ const appLayer = buildAppLayer(config);
 const runtime = ManagedRuntime.make(appLayer);
 
 // Eagerly boot the Layer DAG — startup errors surface here, not on first request.
-await Effect.runPromise(
-  runtime.runtimeEffect.pipe(
-    Effect.catchAllDefect((defect) => {
-      const err =
-        defect instanceof Error ? defect : new Error(String(defect));
-      log.error({ err }, "Layer startup failed");
-      return Effect.die(err);
-    }),
-  ),
-).catch((err) => {
+await Effect.runPromise(runtime.runtimeEffect).catch((err) => {
   log.error(
     { err: err instanceof Error ? err : new Error(String(err)) },
     "Server startup failed — Layer DAG could not initialize",
@@ -288,7 +279,7 @@ const server = Bun.serve({
 });
 
 // ── Graceful shutdown ───────────────────────────────────────────────
-// Effect runtime disposal tears down Layers in reverse dependency order.
+// Effect runtime disposal tears down scoped Layers via their finalizers.
 // We also clean up the imperative singletons (connections, internal DB).
 
 async function shutdown(signal: string) {
@@ -328,6 +319,8 @@ async function shutdown(signal: string) {
         { err: err instanceof Error ? err : new Error(String(err)) },
         "Unexpected error during plugin teardown",
       );
+    } finally {
+      clearTimeout(timeout);
     }
   }
 

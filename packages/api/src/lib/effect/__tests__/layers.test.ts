@@ -10,7 +10,7 @@ import {
   SemanticSyncLive,
   Settings,
   SettingsLive,
-  SchedulerService,
+  Scheduler,
   makeSchedulerLive,
   buildAppLayer,
   type ConfigShape,
@@ -155,7 +155,7 @@ describe("makeSchedulerLive", () => {
 
     const result = await Effect.runPromise(
       Effect.gen(function* () {
-        const scheduler = yield* SchedulerService;
+        const scheduler = yield* Scheduler;
         return scheduler.backend;
       }).pipe(Effect.provide(layer)),
     );
@@ -171,7 +171,7 @@ describe("makeSchedulerLive", () => {
 
     const result = await Effect.runPromise(
       Effect.gen(function* () {
-        const scheduler = yield* SchedulerService;
+        const scheduler = yield* Scheduler;
         return scheduler.backend;
       }).pipe(Effect.provide(layer)),
     );
@@ -207,7 +207,7 @@ describe("buildAppLayer", () => {
         const migration = yield* Migration;
         const semanticSync = yield* SemanticSync;
         const settings = yield* Settings;
-        const scheduler = yield* SchedulerService;
+        const scheduler = yield* Scheduler;
         return {
           hasTelemetry: typeof telemetry.shutdown === "function",
           hasConfig: configSvc.config != null,

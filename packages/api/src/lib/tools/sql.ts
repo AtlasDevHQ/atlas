@@ -15,6 +15,7 @@
 
 import { tool } from "ai";
 import { z } from "zod";
+import { Effect } from "effect";
 import { Parser } from "node-sql-parser";
 import { connections, detectDBType, ConnectionNotRegisteredError, NoDatasourceConfiguredError, PoolCapacityExceededError } from "@atlas/api/lib/db/connection";
 import type { DBConnection, DBType } from "@atlas/api/lib/db/connection";
@@ -23,12 +24,17 @@ import { logQueryAudit } from "@atlas/api/lib/auth/audit";
 import { SENSITIVE_PATTERNS } from "@atlas/api/lib/security";
 import { withSpan } from "@atlas/api/lib/tracing";
 import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
-import { acquireSourceSlot, decrementSourceConcurrency } from "@atlas/api/lib/db/source-rate-limit";
+import { withSourceSlot } from "@atlas/api/lib/db/source-rate-limit";
 import { getConfig } from "@atlas/api/lib/config";
 import { resolveRLSFilters, injectRLSConditions, type RLSFilterGroup } from "@atlas/api/lib/rls";
 import { getSetting } from "@atlas/api/lib/settings";
 import { getCache, buildCacheKey, cacheEnabled, getDefaultTtl } from "@atlas/api/lib/cache/index";
 import { proposePatternIfNovel } from "@atlas/api/lib/learn/pattern-proposer";
+import {
+  ConnectionNotFoundError, PoolExhaustedError, NoDatasourceError,
+  QueryExecutionError, RateLimitExceededError, ConcurrencyLimitError,
+  RLSError, PluginRejectedError,
+} from "@atlas/api/lib/effect/errors";
 
 const log = createLogger("sql");
 
@@ -363,188 +369,197 @@ function getQueryTimeout(): number {
   return n;
 }
 
-// ── executeSQL helpers ──────────────────────────────────────────────────
+// ── Effect Pipeline ──────────────────────────────────────────────────
 
 type CustomValidator = (sql: string) => { valid: boolean; reason?: string } | Promise<{ valid: boolean; reason?: string }>;
 
-/** Resolve the database connection for a query. Returns the connection and dbType, or an error response. */
-function resolveConnection(
+/** Union of all errors the pipeline can produce in the error channel. */
+type PipelineError =
+  | ConnectionNotFoundError
+  | PoolExhaustedError
+  | NoDatasourceError
+  | RateLimitExceededError
+  | ConcurrencyLimitError
+  | RLSError
+  | PluginRejectedError
+  | QueryExecutionError;
+
+/** Resolve the database connection. Fails with tagged connection errors. */
+function resolveConnectionEffect(
   connId: string,
   orgId: string | undefined,
-): { ok: true; db: DBConnection; dbType: DBType } | { ok: false; error: { success: false; error: string } } {
-  try {
-    let db: DBConnection;
-    if (orgId) {
-      db = connections.getForOrg(orgId, connId);
-    } else if (connId === "default") {
-      db = connections.getDefault();
-    } else {
-      db = connections.get(connId);
-    }
-    const dbType = connections.getDBType(connId);
-    return { ok: true, db, dbType };
-  } catch (err) {
-    if (err instanceof ConnectionNotRegisteredError) {
-      return { ok: false, error: { success: false, error: `Connection "${connId}" is not registered. Available: ${connections.list().join(", ") || "(none)"}` } };
-    }
-    if (err instanceof NoDatasourceConfiguredError) {
-      return { ok: false, error: { success: false, error: err.message } };
-    }
-    if (err instanceof PoolCapacityExceededError) {
-      log.warn({ connectionId: connId, orgId }, "Org pool capacity exceeded");
-      return { ok: false, error: { success: false, error: "Connection pool capacity reached — the system is handling many concurrent tenants. Try again shortly." } };
-    }
-    const message = err instanceof Error ? err.message : String(err);
-    log.error({ err, connectionId: connId }, "Unexpected error during connection lookup");
-    return { ok: false, error: { success: false, error: `Connection "${connId}" failed to initialize: ${message}` } };
-  }
+): Effect.Effect<
+  { db: DBConnection; dbType: DBType },
+  ConnectionNotFoundError | PoolExhaustedError | NoDatasourceError
+> {
+  return Effect.try({
+    try: () => {
+      let db: DBConnection;
+      if (orgId) db = connections.getForOrg(orgId, connId);
+      else if (connId === "default") db = connections.getDefault();
+      else db = connections.get(connId);
+      const dbType = connections.getDBType(connId);
+      return { db, dbType };
+    },
+    catch: (err) => {
+      if (err instanceof ConnectionNotRegisteredError) {
+        return new ConnectionNotFoundError({
+          message: `Connection "${connId}" is not registered. Available: ${connections.list().join(", ") || "(none)"}`,
+          connectionId: connId,
+          available: connections.list(),
+        });
+      }
+      if (err instanceof NoDatasourceConfiguredError) {
+        return new NoDatasourceError({ message: (err as Error).message });
+      }
+      if (err instanceof PoolCapacityExceededError) {
+        log.warn({ connectionId: connId, orgId }, "Org pool capacity exceeded");
+        return new PoolExhaustedError({
+          message: "Connection pool capacity reached — the system is handling many concurrent tenants. Try again shortly.",
+          current: err.currentSlots,
+          max: err.maxTotalConnections,
+        });
+      }
+      const message = err instanceof Error ? err.message : String(err);
+      log.error({ err, connectionId: connId }, "Unexpected error during connection lookup");
+      return new ConnectionNotFoundError({
+        message: `Connection "${connId}" failed to initialize: ${message}`,
+        connectionId: connId,
+        available: connections.list(),
+      });
+    },
+  });
 }
 
 /**
- * Run query validation using either a custom validator or standard SQL validation.
- * Does not write audit log entries — the caller is responsible for audit logging on failure.
- * `auditError` preserves the specific error detail for audit logs (e.g., original exception message).
+ * Run query validation (custom validator or standard SQL).
+ * Returns a result object — validation rejection is a normal outcome, not an error channel event.
+ * `auditError` preserves specific error detail for audit logs.
  */
-async function runQueryValidation(
+function runQueryValidationEffect(
   sql: string,
   connId: string,
   dbType: DBType | string,
   customValidator: CustomValidator | undefined,
-): Promise<{ ok: true; classification?: SQLClassification } | { ok: false; error: string; auditError: string }> {
-  if (customValidator) {
+): Effect.Effect<{ ok: true; classification?: SQLClassification } | { ok: false; error: string; auditError: string }> {
+  if (!customValidator) {
+    const validation = validateSQL(sql, connId);
+    if (!validation.valid) {
+      return Effect.succeed({ ok: false as const, error: validation.error, auditError: `Validation rejected: ${validation.error}` });
+    }
+    return Effect.succeed({ ok: true as const, classification: validation.classification });
+  }
+
+  // Custom validator (async) — errors are caught and returned as result values, not thrown
+  return Effect.promise(async () => {
     let result: { valid: boolean; reason?: string };
     try {
       result = await customValidator(sql);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       log.error({ err, connectionId: connId, sql: sql.slice(0, 200) }, "Custom validator threw an exception");
-      return {
-        ok: false,
-        error: `Query validation failed for connection "${connId}": internal validator error`,
-        auditError: `Custom validator error: ${message}`,
-      };
+      return { ok: false as const, error: `Query validation failed for connection "${connId}": internal validator error`, auditError: `Custom validator error: ${message}` };
     }
     if (typeof result?.valid !== "boolean") {
       log.error({ connectionId: connId, returnValue: result }, "Custom validator returned invalid shape");
-      return {
-        ok: false,
-        error: `Query validation misconfigured for connection "${connId}"`,
-        auditError: "Custom validator returned invalid result",
-      };
+      return { ok: false as const, error: `Query validation misconfigured for connection "${connId}"`, auditError: "Custom validator returned invalid result" };
     }
     if (!result.valid) {
       const reason = result.reason ?? "Query rejected by custom validator";
-      return { ok: false, error: reason, auditError: `Validation rejected: ${reason}` };
+      return { ok: false as const, error: reason, auditError: `Validation rejected: ${reason}` };
     }
-    return { ok: true };
-  }
-
-  const validation = validateSQL(sql, connId);
-  if (!validation.valid) {
-    return { ok: false, error: validation.error, auditError: `Validation rejected: ${validation.error}` };
-  }
-  return { ok: true, classification: validation.classification };
+    return { ok: true as const, classification: undefined as SQLClassification | undefined };
+  });
 }
 
-/**
- * Apply RLS conditions to a query. Returns the modified SQL or an error.
- * Handles table extraction, filter resolution, and condition injection.
- * Unlike runQueryValidation, this function logs audit entries on failure paths.
- */
-function applyRLSToQuery(
+/** Apply RLS conditions. Returns the (possibly modified) SQL. Fails with RLSError. */
+function applyRLSEffect(
   sql: string,
   connId: string,
   dbType: DBType | string,
   targetHost: string | undefined,
-): { ok: true; sql: string } | { ok: false; error: string } {
-  const config = getConfig();
-  const rlsConfig = config?.rls;
-  if (!rlsConfig?.enabled) return { ok: true, sql };
+): Effect.Effect<string, RLSError> {
+  return Effect.gen(function* () {
+    const config = getConfig();
+    const rlsConfig = config?.rls;
+    if (!rlsConfig?.enabled) return sql;
 
-  const ctx = getRequestContext();
-  const user = ctx?.user;
+    const ctx = getRequestContext();
+    const user = ctx?.user;
 
-  // Extract tables from the (possibly plugin-mutated) SQL
-  let queriedTables: Set<string>;
-  try {
-    const dialect = parserDatabase(dbType, connId);
-    const tableRefs = parser.tableList(sql, { database: dialect });
-    queriedTables = new Set(
-      tableRefs
-        .map((ref) => {
-          const parts = ref.split("::");
-          return parts.pop()?.toLowerCase() ?? "";
-        })
-        .filter(Boolean),
-    );
-  } catch (tableErr) {
-    const tableErrMsg = tableErr instanceof Error ? tableErr.message : String(tableErr);
-    log.error({ err: tableErr, sql: sql.slice(0, 200) }, "RLS: failed to extract table list from query");
-    logQueryAudit({
-      sql: sql.slice(0, 2000),
-      durationMs: 0,
-      rowCount: null,
-      success: false,
-      error: `RLS: could not extract tables from query: ${tableErrMsg}`,
-      sourceId: connId,
-      sourceType: dbType,
-      targetHost,
+    // Extract tables
+    const queriedTables = yield* Effect.try({
+      try: () => {
+        const dialect = parserDatabase(dbType, connId);
+        const tableRefs = parser.tableList(sql, { database: dialect });
+        return new Set(
+          tableRefs
+            .map((ref) => {
+              const parts = ref.split("::");
+              return parts.pop()?.toLowerCase() ?? "";
+            })
+            .filter(Boolean),
+        );
+      },
+      catch: (tableErr) => {
+        const tableErrMsg = tableErr instanceof Error ? tableErr.message : String(tableErr);
+        log.error({ err: tableErr, sql: sql.slice(0, 200) }, "RLS: failed to extract table list from query");
+        logQueryAudit({
+          sql: sql.slice(0, 2000), durationMs: 0, rowCount: null, success: false,
+          error: `RLS: could not extract tables from query: ${tableErrMsg}`,
+          sourceId: connId, sourceType: dbType, targetHost,
+        });
+        return new RLSError({
+          message: "Query could not be analyzed for row-level security. Rewrite using standard SQL.",
+          phase: "extraction",
+        });
+      },
     });
-    return { ok: false, error: "Query could not be analyzed for row-level security. Rewrite using standard SQL." };
-  }
 
-  const filterResult = resolveRLSFilters(user, queriedTables, rlsConfig);
-  if ("error" in filterResult) {
-    log.warn({ error: filterResult.error, userId: user?.id }, "RLS filter resolution failed — query blocked");
-    logQueryAudit({
-      sql: sql.slice(0, 2000),
-      durationMs: 0,
-      rowCount: null,
-      success: false,
-      error: `RLS blocked: ${filterResult.error}`,
-      sourceId: connId,
-      sourceType: dbType,
-      targetHost,
-    });
-    return { ok: false, error: filterResult.error };
-  }
+    // Resolve filters
+    const filterResult = resolveRLSFilters(user, queriedTables, rlsConfig);
+    if ("error" in filterResult) {
+      log.warn({ error: filterResult.error, userId: user?.id }, "RLS filter resolution failed — query blocked");
+      logQueryAudit({
+        sql: sql.slice(0, 2000), durationMs: 0, rowCount: null, success: false,
+        error: `RLS blocked: ${filterResult.error}`,
+        sourceId: connId, sourceType: dbType, targetHost,
+      });
+      return yield* new RLSError({ message: filterResult.error, phase: "filter" });
+    }
 
-  const hasFilters = filterResult.groups.some((g: RLSFilterGroup) => g.filters.length > 0);
-  if (hasFilters) {
-    try {
-      const injected = injectRLSConditions(sql, filterResult.groups, filterResult.combineWith, dbType);
+    // Inject conditions
+    const hasFilters = filterResult.groups.some((g: RLSFilterGroup) => g.filters.length > 0);
+    if (hasFilters) {
+      const injected = yield* Effect.try({
+        try: () => injectRLSConditions(sql, filterResult.groups, filterResult.combineWith, dbType),
+        catch: (err) => {
+          const msg = err instanceof Error ? err.message : String(err);
+          log.error({ err, userId: user?.id }, "RLS injection failed — query blocked");
+          logQueryAudit({
+            sql: sql.slice(0, 2000), durationMs: 0, rowCount: null, success: false,
+            error: `RLS injection failed: ${msg}`,
+            sourceId: connId, sourceType: dbType, targetHost,
+          });
+          return new RLSError({ message: "Query could not be processed for row-level security.", phase: "injection" });
+        },
+      });
       log.debug(
         { groups: filterResult.groups.length, combineWith: filterResult.combineWith, userId: user?.id },
         "RLS conditions injected",
       );
-      return { ok: true, sql: injected };
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      log.error({ err, userId: user?.id }, "RLS injection failed — query blocked");
-      logQueryAudit({
-        sql: sql.slice(0, 2000),
-        durationMs: 0,
-        rowCount: null,
-        success: false,
-        error: `RLS injection failed: ${msg}`,
-        sourceId: connId,
-        sourceType: dbType,
-        targetHost,
-      });
-      return { ok: false, error: "Query could not be processed for row-level security." };
+      return injected;
     }
-  }
 
-  return { ok: true, sql };
+    return sql;
+  });
 }
 
 /**
  * Execute a validated query with tracing, cache write, audit logging, plugin hooks,
- * and error filtering. Releases the concurrency slot (decrementSourceConcurrency)
- * in its finally block — callers must not release it separately.
- * SQL content is NOT included in span attributes for security.
+ * and error filtering. Called inside withSourceSlot — concurrency release is automatic.
  */
-async function executeAndAudit(opts: {
+function executeAndAuditEffect(opts: {
   db: DBConnection;
   dbType: DBType;
   connId: string;
@@ -558,176 +573,196 @@ async function executeAndAudit(opts: {
   cacheKey: string | null;
   hookMetadata: Record<string, unknown>;
   dispatchHook: (event: "afterQuery", ctx: Record<string, unknown>) => Promise<void>;
-}): Promise<Record<string, unknown>> {
-  const { db, dbType, connId, orgId, targetHost, querySql, queryTimeout, rowLimit, explanation, classification, cacheKey, hookMetadata, dispatchHook } = opts;
+}): Effect.Effect<Record<string, unknown>, QueryExecutionError> {
+  const {
+    db, dbType, connId, orgId, targetHost, querySql, queryTimeout,
+    rowLimit, explanation, classification, cacheKey, hookMetadata, dispatchHook,
+  } = opts;
 
   const start = performance.now();
-  try {
-    const result = await withSpan(
-      "atlas.sql.execute",
-      {
-        "db.system": dbType,
-        "atlas.connection_id": connId,
-      },
-      () => db.query(querySql, queryTimeout),
-      (r) => ({
-        "atlas.row_count": r.rows.length,
-        "atlas.column_count": r.columns.length,
+
+  return Effect.tryPromise({
+    try: () =>
+      withSpan(
+        "atlas.sql.execute",
+        { "db.system": dbType, "atlas.connection_id": connId },
+        () => db.query(querySql, queryTimeout),
+        (r) => ({ "atlas.row_count": r.rows.length, "atlas.column_count": r.columns.length }),
+      ),
+    catch: (err) => {
+      const durationMs = Math.round(performance.now() - start);
+      const message = err instanceof Error ? err.message : "Unknown database error";
+
+      connections.recordQuery(connId, durationMs, orgId);
+      connections.recordError(connId, orgId);
+
+      // SLA metric (fire-and-forget, enterprise feature)
+      if (orgId) {
+        import("@atlas/ee/sla/index")
+          .then(({ recordQueryMetric }) => recordQueryMetric(orgId, durationMs, true))
+          .catch((slaErr) => {
+            // Dynamic import failure = ee not installed (expected in non-enterprise).
+            // Runtime error from recordQueryMetric = log warning for diagnostics.
+            if (slaErr instanceof Error && !slaErr.message.includes("Cannot find module")) {
+              log.warn({ err: slaErr.message, connectionId: connId }, "SLA metric recording failed");
+            }
+          });
+      }
+
+      try {
+        logQueryAudit({
+          sql: querySql, durationMs, rowCount: null, success: false, error: message,
+          sourceId: connId, sourceType: dbType, targetHost,
+          tablesAccessed: classification?.tablesAccessed,
+          columnsAccessed: classification?.columnsAccessed,
+        });
+      } catch (auditErr) {
+        log.warn({ err: auditErr }, "Failed to write query audit log");
+      }
+
+      // Filter sensitive errors before returning to the agent
+      if (SENSITIVE_PATTERNS.test(message)) {
+        return new QueryExecutionError({ message: "Database query failed — check server logs for details." });
+      }
+      const dbErr = err as { hint?: string; position?: string };
+      let detail = message;
+      if (dbErr.hint) detail += ` — Hint: ${dbErr.hint}`;
+      if (dbErr.position) detail += ` (at character ${dbErr.position})`;
+      return new QueryExecutionError({ message: detail, hint: dbErr.hint, position: dbErr.position });
+    },
+  }).pipe(
+    // Success path: metrics, cache, audit, hooks, masking
+    Effect.flatMap((result) =>
+      Effect.tryPromise({
+        try: async () => {
+          const durationMs = Math.round(performance.now() - start);
+          const truncated = result.rows.length >= rowLimit;
+
+          connections.recordQuery(connId, durationMs, orgId);
+          connections.recordSuccess(connId, orgId);
+
+          // SLA metric (fire-and-forget, enterprise feature)
+          if (orgId) {
+            try {
+              const { recordQueryMetric } = await import("@atlas/ee/sla/index");
+              recordQueryMetric(orgId, durationMs, false);
+            } catch (err) {
+              // Dynamic import failure = ee not installed (expected in non-enterprise).
+              // Runtime error from recordQueryMetric = log warning for diagnostics.
+              if (err instanceof Error && !err.message.includes("Cannot find module")) {
+                log.warn({ err: err.message, connectionId: connId }, "SLA metric recording failed");
+              }
+            }
+          }
+
+          // Cache write (fail open)
+          if (cacheKey) {
+            try {
+              getCache().set(cacheKey, {
+                columns: result.columns, rows: result.rows,
+                cachedAt: Date.now(), ttl: getDefaultTtl(),
+              });
+            } catch (cacheErr) {
+              log.error({ err: cacheErr, connectionId: connId }, "Cache write failed — result not cached");
+            }
+          }
+
+          try {
+            logQueryAudit({
+              sql: querySql, durationMs, rowCount: result.rows.length, success: true,
+              sourceId: connId, sourceType: dbType, targetHost,
+              tablesAccessed: classification?.tablesAccessed,
+              columnsAccessed: classification?.columnsAccessed,
+            });
+          } catch (auditErr) {
+            log.warn({ err: auditErr }, "Failed to write query audit log");
+          }
+
+          try {
+            await dispatchHook("afterQuery", {
+              sql: querySql, connectionId: connId,
+              result: { columns: result.columns, rows: result.rows },
+              durationMs,
+            });
+          } catch (hookErr) {
+            log.warn(
+              { err: hookErr instanceof Error ? hookErr.message : String(hookErr), connectionId: connId },
+              "afterQuery hook failed — query result unaffected",
+            );
+          }
+
+          // Pattern learning (fire-and-forget)
+          proposePatternIfNovel({
+            sql: querySql, dialect: parserDatabase(dbType, connId), connectionId: connId,
+          });
+
+          // PII masking (fails open)
+          let maskedRows = result.rows;
+          let maskingApplied = false;
+          if (classification?.tablesAccessed.length && orgId) {
+            try {
+              const { applyMasking } = await import("@atlas/ee/compliance/masking");
+              const maskCtx = getRequestContext();
+              maskedRows = await applyMasking({
+                columns: result.columns, rows: result.rows,
+                tablesAccessed: classification.tablesAccessed,
+                orgId, userRole: maskCtx?.user?.role,
+              });
+              maskingApplied = maskedRows !== result.rows;
+            } catch (err) {
+              log.warn(
+                { err: err instanceof Error ? err.message : String(err), connectionId: connId },
+                "PII masking failed — returning unmasked results",
+              );
+            }
+          }
+
+          const hasHookMeta = Object.keys(hookMetadata).length > 0;
+          return {
+            success: true,
+            explanation,
+            row_count: maskedRows.length,
+            columns: result.columns,
+            rows: maskedRows,
+            truncated,
+            cached: false,
+            maskingApplied,
+            ...(hasHookMeta && { metadata: hookMetadata }),
+          } as Record<string, unknown>;
+        },
+        catch: (err) => {
+          // Query succeeded but post-processing failed — return the error
+          // rather than losing the completed query result as an unrecoverable defect.
+          const message = err instanceof Error ? err.message : String(err);
+          log.error({ err, connectionId: connId }, "Post-query processing failed after successful execution");
+          return new QueryExecutionError({ message: `Query succeeded but post-processing failed: ${message}` });
+        },
       }),
-    );
-    const durationMs = Math.round(performance.now() - start);
-    const truncated = result.rows.length >= rowLimit;
+    ),
+  );
+}
 
-    connections.recordQuery(connId, durationMs, orgId);
-    connections.recordSuccess(connId, orgId);
-
-    // Record SLA metric (fire-and-forget, enterprise feature)
-    if (orgId) {
-      try {
-        const { recordQueryMetric } = await import("@atlas/ee/sla/index");
-        recordQueryMetric(orgId, durationMs, false);
-      } catch {
-        // ee/sla module not installed — SLA metrics unavailable, skip
-      }
-    }
-
-    // Store in cache on success — fail open if cache backend is broken
-    if (cacheKey) {
-      try {
-        getCache().set(cacheKey, {
-          columns: result.columns,
-          rows: result.rows,
-          cachedAt: Date.now(),
-          ttl: getDefaultTtl(),
-        });
-      } catch (cacheErr) {
-        log.error({ err: cacheErr, connectionId: connId }, "Cache write failed — result not cached");
-      }
-    }
-
-    try {
-      logQueryAudit({
-        sql: querySql,
-        durationMs,
-        rowCount: result.rows.length,
-        success: true,
-        sourceId: connId,
-        sourceType: dbType,
-        targetHost,
-        tablesAccessed: classification?.tablesAccessed,
-        columnsAccessed: classification?.columnsAccessed,
-      });
-    } catch (auditErr) {
-      log.warn({ err: auditErr }, "Failed to write query audit log");
-    }
-
-    await dispatchHook("afterQuery", {
-      sql: querySql,
-      connectionId: connId,
-      result: { columns: result.columns, rows: result.rows },
-      durationMs,
-    });
-
-    // Fire-and-forget: propose as learned pattern if novel.
-    // Note: querySql may include auto-appended LIMIT (stripped by normalizeSQL)
-    // and RLS-injected WHERE clauses (not stripped — same base query may produce
-    // different patterns for different RLS contexts).
-    proposePatternIfNovel({
-      sql: querySql,
-      dialect: parserDatabase(dbType, connId),
-      connectionId: connId,
-    });
-
-    // Enterprise PII masking — mask sensitive columns based on user role.
-    // Fails open: non-enterprise deployments or errors return unmasked results.
-    let maskedRows = result.rows;
-    let maskingApplied = false;
-    if (classification?.tablesAccessed.length && orgId) {
-      try {
-        const { applyMasking } = await import("@atlas/ee/compliance/masking");
-        const maskCtx = getRequestContext();
-        maskedRows = await applyMasking({
-          columns: result.columns,
-          rows: result.rows,
-          tablesAccessed: classification.tablesAccessed,
-          orgId,
-          userRole: maskCtx?.user?.role,
-        });
-        maskingApplied = maskedRows !== result.rows;
-      } catch (err) {
-        // Masking unavailable (ee not installed, enterprise disabled, DB error).
-        // Fail open — log and return unmasked results.
-        log.warn(
-          { err: err instanceof Error ? err.message : String(err), connectionId: connId },
-          "PII masking failed — returning unmasked results",
-        );
-      }
-    }
-
-    const hasHookMeta = Object.keys(hookMetadata).length > 0;
-    return {
-      success: true,
-      explanation,
-      row_count: maskedRows.length,
-      columns: result.columns,
-      rows: maskedRows,
-      truncated,
-      cached: false,
-      maskingApplied,
-      ...(hasHookMeta && { metadata: hookMetadata }),
-    };
-  } catch (err) {
-    const durationMs = Math.round(performance.now() - start);
-    const message =
-      err instanceof Error ? err.message : "Unknown database error";
-
-    connections.recordQuery(connId, durationMs, orgId);
-    connections.recordError(connId, orgId);
-
-    // Record SLA metric for failed query (fire-and-forget, enterprise feature)
-    if (orgId) {
-      try {
-        const { recordQueryMetric } = await import("@atlas/ee/sla/index");
-        recordQueryMetric(orgId, durationMs, true);
-      } catch {
-        // ee/sla module not installed — SLA metrics unavailable, skip
-      }
-    }
-
-    try {
-      logQueryAudit({
-        sql: querySql,
-        durationMs,
-        rowCount: null,
+/** Map a pipeline error to the tool's {success: false} response format. Exhaustive over PipelineError. */
+function pipelineErrorToResponse(error: PipelineError): Record<string, unknown> {
+  switch (error._tag) {
+    case "RateLimitExceededError":
+      return {
         success: false,
-        error: message,
-        sourceId: connId,
-        sourceType: dbType,
-        targetHost,
-        tablesAccessed: classification?.tablesAccessed,
-        columnsAccessed: classification?.columnsAccessed,
-      });
-    } catch (auditErr) {
-      log.warn({ err: auditErr }, "Failed to write query audit log");
+        error: error.message,
+        ...(error.retryAfterMs != null && { retryAfterMs: error.retryAfterMs }),
+      };
+    case "ConcurrencyLimitError":
+    case "ConnectionNotFoundError":
+    case "PoolExhaustedError":
+    case "NoDatasourceError":
+    case "RLSError":
+    case "PluginRejectedError":
+    case "QueryExecutionError":
+      return { success: false, error: error.message };
+    default: {
+      const _exhaustive: never = error;
+      return { success: false, error: `Unknown pipeline error: ${(_exhaustive as { message: string }).message}` };
     }
-
-    // Block errors that might expose connection details or internal state
-    if (SENSITIVE_PATTERNS.test(message)) {
-      return { success: false, error: "Database query failed — check server logs for details." };
-    }
-
-    // Surface the full DB error to the agent for self-correction
-    const dbErr = err as { hint?: string; position?: string };
-    let detail = message;
-    if (dbErr.hint) {
-      detail += ` — Hint: ${dbErr.hint}`;
-    }
-    if (dbErr.position) {
-      detail += ` (at character ${dbErr.position})`;
-    }
-    return { success: false, error: detail };
-  } finally {
-    decrementSourceConcurrency(connId);
   }
 }
 
@@ -757,283 +792,269 @@ Rules:
   execute: async ({ sql, explanation, connectionId }) => {
     const connId = connectionId ?? "default";
 
-    // Resolve org context for tenant-scoped pool isolation.
-    // Only active when pool.perOrg is explicitly configured in atlas.config.ts.
-    const reqCtx = getRequestContext();
-    const orgId = connections.isOrgPoolingEnabled()
-      ? reqCtx?.user?.activeOrganizationId
-      : undefined;
+    // The full pipeline runs as an Effect.gen program. Tagged errors flow through
+    // the error channel; expected rejections (validation, approval, cache) return
+    // as {success: false} values. At the boundary, catchAll maps errors to responses.
+    const pipeline = Effect.gen(function* () {
+      // Resolve org context for tenant-scoped pool isolation
+      const reqCtx = getRequestContext();
+      const orgId = connections.isOrgPoolingEnabled()
+        ? reqCtx?.user?.activeOrganizationId
+        : undefined;
 
-    // Validate connection exists before proceeding.
-    const resolved = resolveConnection(connId, orgId);
-    if (!resolved.ok) return resolved.error;
-    const { db, dbType } = resolved;
+      // Step 1: Resolve connection (tagged errors)
+      const { db, dbType } = yield* resolveConnectionEffect(connId, orgId);
 
-    const targetHost = connections.getTargetHost(connId);
+      const targetHost = connections.getTargetHost(connId);
+      const customValidator = connections.getValidator(connId);
+      const normalizedSql = sql.trim().replace(/;\s*$/, "").trimEnd();
 
-    // Check for a custom validator (non-SQL datasource plugins like SOQL, GraphQL).
-    // When present, it completely replaces the standard SQL validation pipeline.
-    // If absent, validateSQL is used instead — validators are mutually exclusive.
-    const customValidator = connections.getValidator(connId);
-    const normalizedSql = sql.trim().replace(/;\s*$/, "").trimEnd();
-
-    // Run initial validation (custom validator or standard SQL validation)
-    const initial = await runQueryValidation(normalizedSql, connId, dbType, customValidator);
-    if (!initial.ok) {
-      logQueryAudit({
-        sql: normalizedSql.slice(0, 2000),
-        durationMs: 0,
-        rowCount: null,
-        success: false,
-        error: initial.auditError,
-        sourceId: connId,
-        sourceType: dbType,
-      });
-      return { success: false, error: initial.error };
-    }
-    // Classification is only populated for standard SQL (validateSQL path).
-    // Custom validators (SOQL, GraphQL) bypass node-sql-parser so classification
-    // stays undefined — their audit entries store NULL for tables/columns_accessed.
-    const classification = initial.classification;
-
-    // Enterprise approval check — if the query touches tables/columns that require
-    // sign-off, queue the request and return early with an "approval_required" response.
-    // Phase 1 (check) can fail open; Phase 2 (create request) must block on failure.
-    if (classification) {
-      let approvalMatch: { required: boolean; matchedRules: { id: string; name: string }[] } | null = null;
-      try {
-        const { checkApprovalRequired } = await import("@atlas/ee/governance/approval");
-        const reqCtxForCheck = getRequestContext();
-        const checkOrgId = reqCtxForCheck?.user?.activeOrganizationId;
-        approvalMatch = await checkApprovalRequired(
-          checkOrgId,
-          classification.tablesAccessed,
-          classification.columnsAccessed,
-        );
-      } catch (err) {
-        // Approval check unavailable (ee not installed, enterprise disabled, DB error).
-        // Fail open — log and continue without approval gating.
-        log.warn(
-          { err: err instanceof Error ? err.message : String(err), connectionId: connId },
-          "Approval check failed — proceeding without approval gate",
-        );
+      // Step 2: Validate (custom validator or standard SQL validation)
+      const initial = yield* runQueryValidationEffect(normalizedSql, connId, dbType, customValidator);
+      if (!initial.ok) {
+        logQueryAudit({
+          sql: normalizedSql.slice(0, 2000), durationMs: 0, rowCount: null, success: false,
+          error: initial.auditError, sourceId: connId, sourceType: dbType,
+        });
+        return { success: false, error: initial.error };
       }
+      // Classification is only populated for standard SQL (validateSQL path).
+      // Custom validators (SOQL, GraphQL) bypass node-sql-parser so classification
+      // stays undefined — their audit entries store NULL for tables/columns_accessed.
+      const classification = initial.classification;
 
-      // If approval IS required, creating the request must NOT fail silently.
-      // Errors here propagate up and block the query — a governance bypass is worse
-      // than a failed query.
-      if (approvalMatch?.required) {
-        const { createApprovalRequest, hasApprovedRequest } = await import("@atlas/ee/governance/approval");
-        const reqCtxForApproval = getRequestContext();
-        const approvalOrgId = reqCtxForApproval?.user?.activeOrganizationId;
-        const userId = reqCtxForApproval?.user?.id;
-        const userEmail = reqCtxForApproval?.user?.label ?? null;
-
-        if (!userId || !approvalOrgId) {
-          log.warn(
-            { connectionId: connId, orgId: approvalOrgId },
-            "Approval required but user identity unavailable — blocking query",
-          );
-          return {
-            success: false,
-            error: "This query requires approval but the requester identity could not be determined. Please sign in and try again.",
-          };
-        }
-
-        // Check if this query already has an approved request for this user
-        const alreadyApproved = await hasApprovedRequest(approvalOrgId, userId, normalizedSql);
-        if (!alreadyApproved) {
-          const firstRule = approvalMatch.matchedRules[0];
-          const approvalReq = await createApprovalRequest({
-            orgId: approvalOrgId,
-            ruleId: firstRule.id,
-            ruleName: firstRule.name,
-            requesterId: userId,
-            requesterEmail: userEmail,
-            querySql: normalizedSql,
-            explanation,
-            connectionId: connId,
-            tablesAccessed: classification.tablesAccessed,
-            columnsAccessed: classification.columnsAccessed,
-          });
-          logQueryAudit({
-            sql: normalizedSql.slice(0, 2000),
-            durationMs: 0,
-            rowCount: null,
-            success: false,
-            error: `Approval required: ${firstRule.name}`,
-            sourceId: connId,
-            sourceType: dbType,
-            targetHost,
-          });
-          return {
-            success: false,
-            approval_required: true,
-            approval_request_id: approvalReq.id,
-            matched_rules: approvalMatch.matchedRules.map((r: { name: string }) => r.name),
-            message: `This query requires approval before execution. Rule: "${firstRule.name}". ` +
-              `An approval request has been submitted (ID: ${approvalReq.id}). ` +
-              `An admin must approve it before the query can run.`,
-          };
-        }
-        // Query has an existing approved request — proceed to execution
-      }
-    }
-
-    // Check cache before acquiring a concurrency slot — cache hits need no DB connection.
-    // Wrapped in try-catch so a broken cache backend (plugin Redis down) fails open.
-    let cacheKey: string | null = null;
-    if (cacheEnabled()) {
-      try {
-        const ctx = getRequestContext();
-        const cacheOrgId = ctx?.user?.activeOrganizationId;
-        const claims = ctx?.user?.claims;
-        cacheKey = buildCacheKey(normalizedSql, connId, cacheOrgId, claims);
-        const cached = getCache().get(cacheKey);
-        if (cached) {
-          logQueryAudit({
-            sql: normalizedSql.slice(0, 2000),
-            durationMs: 0,
-            rowCount: cached.rows.length,
-            success: true,
-            sourceId: connId,
-            sourceType: dbType,
-            targetHost,
-          });
-          // Apply PII masking to cached results (same as live query path)
-          let cachedRows = cached.rows;
-          let cachedMaskingApplied = false;
-          if (classification?.tablesAccessed.length && orgId) {
+      // Step 3: Enterprise approval check (fail-open for availability, hard-fail for request creation)
+      if (classification) {
+        const approvalResult = yield* Effect.tryPromise({
+          try: async () => {
+            // Phase 1: check availability (fail open)
+            let approvalMatch: { required: boolean; matchedRules: { id: string; name: string }[] } | null = null;
             try {
-              const { applyMasking } = await import("@atlas/ee/compliance/masking");
-              cachedRows = await applyMasking({
-                columns: cached.columns,
-                rows: cached.rows,
-                tablesAccessed: classification.tablesAccessed,
-                orgId,
-                userRole: ctx?.user?.role,
-              });
-              cachedMaskingApplied = cachedRows !== cached.rows;
+              const { checkApprovalRequired } = await import("@atlas/ee/governance/approval");
+              const checkReqCtx = getRequestContext();
+              const checkOrgId = checkReqCtx?.user?.activeOrganizationId;
+              approvalMatch = await checkApprovalRequired(
+                checkOrgId, classification.tablesAccessed, classification.columnsAccessed,
+              );
             } catch (err) {
               log.warn(
                 { err: err instanceof Error ? err.message : String(err), connectionId: connId },
-                "PII masking failed on cached results — returning unmasked results",
+                "Approval check failed — proceeding without approval gate",
               );
             }
-          }
-          return {
-            success: true,
-            explanation,
-            row_count: cachedRows.length,
-            columns: cached.columns,
-            rows: cachedRows,
-            truncated: cachedRows.length >= getRowLimit(),
-            cached: true,
-            maskingApplied: cachedMaskingApplied,
-          };
-        }
-      } catch (cacheErr) {
-        log.error({ err: cacheErr, connectionId: connId }, "Cache read failed — executing query against database");
-        cacheKey = null;
-      }
-    }
 
-    // Per-source rate limiting — atomic check-and-acquire
-    const slot = acquireSourceSlot(connId);
-    if (!slot.acquired) {
-      logQueryAudit({
-        sql: sql.slice(0, 2000),
-        durationMs: 0,
-        rowCount: null,
-        success: false,
-        error: `Rate limited: ${slot.reason}`,
-        sourceId: connId,
-        sourceType: dbType,
-        targetHost,
-      });
-      return {
-        success: false,
-        error: slot.reason ?? "Rate limited",
-        ...(slot.retryAfterMs != null && { retryAfterMs: slot.retryAfterMs }),
-      };
-    }
+            // Phase 2: create request (hard fail — governance bypass is worse than a failed query)
+            if (approvalMatch?.required) {
+              const { createApprovalRequest, hasApprovedRequest } = await import("@atlas/ee/governance/approval");
+              const reqCtxForApproval = getRequestContext();
+              const approvalOrgId = reqCtxForApproval?.user?.activeOrganizationId;
+              const userId = reqCtxForApproval?.user?.id;
+              const userEmail = reqCtxForApproval?.user?.label ?? null;
 
-    const { dispatchHook, dispatchMutableHook } = await import("@atlas/api/lib/plugins/hooks");
-    const hookMetadata: Record<string, unknown> = {};
-    let mutatedSql: string;
-    try {
-      const hookCtx = { sql, connectionId: connId, metadata: hookMetadata };
-      mutatedSql = await dispatchMutableHook(
-        "beforeQuery",
-        hookCtx,
-        "sql",
-      );
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      decrementSourceConcurrency(connId);
-      logQueryAudit({
-        sql: sql.slice(0, 2000),
-        durationMs: 0,
-        rowCount: null,
-        success: false,
-        error: `Plugin rejected: ${message}`,
-        sourceId: connId,
-        sourceType: dbType,
-        targetHost,
-      });
-      return { success: false, error: `Query rejected by plugin: ${message}` };
-    }
+              if (!userId || !approvalOrgId) {
+                log.warn(
+                  { connectionId: connId, orgId: approvalOrgId },
+                  "Approval required but user identity unavailable — blocking query",
+                );
+                return {
+                  success: false,
+                  error: "This query requires approval but the requester identity could not be determined. Please sign in and try again.",
+                };
+              }
 
-    // Re-validate if a plugin rewrote the SQL — a plugin could introduce DML,
-    // disallowed tables, or invalid syntax that would bypass the initial validation
-    let normalizedMutated = mutatedSql.trim().replace(/;\s*$/, "").trimEnd();
-    if (normalizedMutated !== normalizedSql) {
-      const revalidation = await runQueryValidation(normalizedMutated, connId, dbType, customValidator);
-      if (!revalidation.ok) {
-        decrementSourceConcurrency(connId);
-        logQueryAudit({
-          sql: normalizedMutated.slice(0, 2000),
-          durationMs: 0,
-          rowCount: null,
-          success: false,
-          error: `Plugin-rewritten SQL failed validation: ${revalidation.auditError}`,
-          sourceId: connId,
-          sourceType: dbType,
-          targetHost,
+              const alreadyApproved = await hasApprovedRequest(approvalOrgId, userId, normalizedSql);
+              if (!alreadyApproved) {
+                const firstRule = approvalMatch.matchedRules[0];
+                const approvalReq = await createApprovalRequest({
+                  orgId: approvalOrgId,
+                  ruleId: firstRule.id,
+                  ruleName: firstRule.name,
+                  requesterId: userId,
+                  requesterEmail: userEmail,
+                  querySql: normalizedSql,
+                  explanation,
+                  connectionId: connId,
+                  tablesAccessed: classification.tablesAccessed,
+                  columnsAccessed: classification.columnsAccessed,
+                });
+                logQueryAudit({
+                  sql: normalizedSql.slice(0, 2000), durationMs: 0, rowCount: null, success: false,
+                  error: `Approval required: ${firstRule.name}`,
+                  sourceId: connId, sourceType: dbType, targetHost,
+                });
+                return {
+                  success: false,
+                  approval_required: true,
+                  approval_request_id: approvalReq.id,
+                  matched_rules: approvalMatch.matchedRules.map((r: { name: string }) => r.name),
+                  message: `This query requires approval before execution. Rule: "${firstRule.name}". ` +
+                    `An approval request has been submitted (ID: ${approvalReq.id}). ` +
+                    `An admin must approve it before the query can run.`,
+                };
+              }
+            }
+            return null; // proceed to execution
+          },
+          catch: (err) => {
+            // Phase 2 failure — governance bypass is worse than a failed query.
+            // Surface as a typed error so it reaches the agent as {success: false}.
+            const message = err instanceof Error ? err.message : String(err);
+            log.error({ err, connectionId: connId }, "Approval request creation failed — blocking query");
+            return new QueryExecutionError({ message: `Approval workflow failed: ${message}` });
+          },
         });
-        return { success: false, error: `Plugin-rewritten SQL failed validation: ${revalidation.error}` };
+        if (approvalResult !== null) return approvalResult;
       }
-    }
 
-    // --- RLS: inject WHERE conditions based on user claims ---
-    // Applied after validation + plugin hooks so plugins cannot strip RLS.
-    // Skipped for custom validators (non-SQL languages like SOQL).
-    if (!customValidator) {
-      const rlsResult = applyRLSToQuery(normalizedMutated, connId, dbType, targetHost);
-      if (!rlsResult.ok) {
-        decrementSourceConcurrency(connId);
-        return { success: false, error: rlsResult.error };
+      // Step 4: Cache check (short-circuit on hit)
+      let cacheKey: string | null = null;
+      if (cacheEnabled()) {
+        try {
+          const ctx = getRequestContext();
+          const cacheOrgId = ctx?.user?.activeOrganizationId;
+          const claims = ctx?.user?.claims;
+          cacheKey = buildCacheKey(normalizedSql, connId, cacheOrgId, claims);
+          const cached = getCache().get(cacheKey);
+          if (cached) {
+            logQueryAudit({
+              sql: normalizedSql.slice(0, 2000), durationMs: 0, rowCount: cached.rows.length,
+              success: true, sourceId: connId, sourceType: dbType, targetHost,
+            });
+            // Apply PII masking to cached results (same as live query path)
+            const cacheResponse = yield* Effect.tryPromise({
+              try: async () => {
+                let cachedRows = cached.rows;
+                let cachedMaskingApplied = false;
+                if (classification?.tablesAccessed.length && orgId) {
+                  try {
+                    const { applyMasking } = await import("@atlas/ee/compliance/masking");
+                    cachedRows = await applyMasking({
+                      columns: cached.columns, rows: cached.rows,
+                      tablesAccessed: classification.tablesAccessed,
+                      orgId, userRole: ctx?.user?.role,
+                    });
+                    cachedMaskingApplied = cachedRows !== cached.rows;
+                  } catch (err) {
+                    log.warn(
+                      { err: err instanceof Error ? err.message : String(err), connectionId: connId },
+                      "PII masking failed on cached results — returning unmasked results",
+                    );
+                  }
+                }
+                return {
+                  success: true, explanation, row_count: cachedRows.length,
+                  columns: cached.columns, rows: cachedRows,
+                  truncated: cachedRows.length >= getRowLimit(), cached: true,
+                  maskingApplied: cachedMaskingApplied,
+                };
+              },
+              catch: (err) => {
+                const message = err instanceof Error ? err.message : String(err);
+                log.error({ err, connectionId: connId }, "Cache response processing failed");
+                return new QueryExecutionError({ message: `Cache response processing failed: ${message}` });
+              },
+            });
+            return cacheResponse;
+          }
+        } catch (cacheErr) {
+          log.error({ err: cacheErr, connectionId: connId }, "Cache read failed — executing query against database");
+          cacheKey = null;
+        }
       }
-      normalizedMutated = rlsResult.sql;
-    }
 
-    // Read limits per-query so admin changes take effect immediately.
-    const rowLimit = getRowLimit();
-    const queryTimeout = getQueryTimeout();
+      // Step 5: Execute inside a rate-limit slot (concurrency release is automatic)
+      return yield* withSourceSlot(connId,
+        Effect.gen(function* () {
+          // Plugin beforeQuery hook (may rewrite SQL)
+          const { dispatchHook, dispatchMutableHook } = yield* Effect.tryPromise({
+            try: () => import("@atlas/api/lib/plugins/hooks"),
+            catch: (err) => {
+              const message = err instanceof Error ? err.message : String(err);
+              log.error({ err, connectionId: connId }, "Failed to load plugin hooks module");
+              return new PluginRejectedError({ message: `Plugin system unavailable: ${message}`, connectionId: connId });
+            },
+          });
+          const hookMetadata: Record<string, unknown> = {};
+          const hookCtx = { sql, connectionId: connId, metadata: hookMetadata };
+          const mutatedSql = yield* Effect.tryPromise({
+            try: () => dispatchMutableHook("beforeQuery", hookCtx, "sql"),
+            catch: (err) => {
+              const message = err instanceof Error ? err.message : String(err);
+              return new PluginRejectedError({
+                message: `Query rejected by plugin: ${message}`,
+                connectionId: connId,
+              });
+            },
+          }).pipe(
+            Effect.tapError((error) =>
+              Effect.sync(() =>
+                logQueryAudit({
+                  sql: sql.slice(0, 2000), durationMs: 0, rowCount: null, success: false,
+                  error: `Plugin rejected: ${error.message}`,
+                  sourceId: connId, sourceType: dbType, targetHost,
+                }),
+              ),
+            ),
+          );
 
-    // Auto-append LIMIT if not present.
-    // Custom validators are responsible for their own pagination — non-SQL
-    // languages (SOQL, GraphQL) may not support the LIMIT keyword.
-    let querySql = normalizedMutated;
-    if (!customValidator && !/\bLIMIT\b/i.test(querySql)) {
-      querySql += ` LIMIT ${rowLimit}`;
-    }
+          // Re-validate if plugin rewrote the SQL
+          let normalizedMutated = mutatedSql.trim().replace(/;\s*$/, "").trimEnd();
+          if (normalizedMutated !== normalizedSql) {
+            const revalidation = yield* runQueryValidationEffect(normalizedMutated, connId, dbType, customValidator);
+            if (!revalidation.ok) {
+              logQueryAudit({
+                sql: normalizedMutated.slice(0, 2000), durationMs: 0, rowCount: null, success: false,
+                error: `Plugin-rewritten SQL failed validation: ${revalidation.auditError}`,
+                sourceId: connId, sourceType: dbType, targetHost,
+              });
+              return { success: false, error: `Plugin-rewritten SQL failed validation: ${revalidation.error}` };
+            }
+          }
 
-    // Execute the query and handle results/errors
-    return executeAndAudit({
-      db, dbType, connId, orgId, targetHost, querySql, queryTimeout,
-      rowLimit, explanation, classification, cacheKey: cacheKey ?? null,
-      hookMetadata, dispatchHook,
+          // RLS: inject WHERE conditions (skipped for custom validators / non-SQL languages)
+          if (!customValidator) {
+            normalizedMutated = yield* applyRLSEffect(normalizedMutated, connId, dbType, targetHost);
+          }
+
+          // Auto-append LIMIT if not present
+          const rowLimit = getRowLimit();
+          const queryTimeout = getQueryTimeout();
+          let querySql = normalizedMutated;
+          if (!customValidator && !/\bLIMIT\b/i.test(querySql)) {
+            querySql += ` LIMIT ${rowLimit}`;
+          }
+
+          // Execute the query
+          return yield* executeAndAuditEffect({
+            db, dbType, connId, orgId, targetHost, querySql, queryTimeout,
+            rowLimit, explanation, classification, cacheKey: cacheKey ?? null,
+            hookMetadata, dispatchHook,
+          });
+        }),
+      ).pipe(
+        // Audit log rate-limit rejections (inner errors have their own audit handling)
+        Effect.tapError((error) => {
+          if (error._tag === "RateLimitExceededError" || error._tag === "ConcurrencyLimitError") {
+            return Effect.sync(() =>
+              logQueryAudit({
+                sql: sql.slice(0, 2000), durationMs: 0, rowCount: null, success: false,
+                error: `Rate limited: ${error.message}`,
+                sourceId: connId, sourceType: dbType, targetHost,
+              }),
+            );
+          }
+          return Effect.void;
+        }),
+      );
     });
+
+    // Run the pipeline, mapping tagged errors to {success: false} tool responses
+    return Effect.runPromise(
+      pipeline.pipe(
+        Effect.catchAll((error: PipelineError) =>
+          Effect.succeed(pipelineErrorToResponse(error)),
+        ),
+      ),
+    );
   },
 });

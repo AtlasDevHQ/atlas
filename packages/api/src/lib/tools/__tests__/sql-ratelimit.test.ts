@@ -1,15 +1,17 @@
 /**
  * Tests: executeSQL blocks queries when rate-limited and
- * concurrency decrement survives query failures.
+ * handles query execution within rate-limit slots.
  *
  * Separate file from sql-audit.test.ts because mock.module() is
  * process-global and irreversible — we need different mock behavior
- * for acquireSourceSlot.
+ * for withSourceSlot.
  */
 
 import { describe, expect, it, beforeEach, afterEach, mock, type Mock } from "bun:test";
+import { Effect } from "effect";
 import { _resetPool, type InternalPool } from "@atlas/api/lib/db/internal";
 import { createConnectionMock } from "@atlas/api/testing/connection";
+import { RateLimitExceededError, ConcurrencyLimitError } from "@atlas/api/lib/effect/errors";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type AnyResult = any;
@@ -54,15 +56,36 @@ mock.module("@atlas/api/lib/tracing", () => ({
   ) => fn(),
 }));
 
-// Mutable rate-limit mock — tests override these.
-// acquireSourceSlot atomically checks QPM + concurrency and increments both,
-// so there is no separate incrementSourceConcurrency call in sql.ts.
-let slotResult: { acquired: boolean; reason?: string; retryAfterMs?: number } = { acquired: true };
-const decrementCalls: string[] = [];
+// Mutable rate-limit mock — tests override slotAcquired/slotReason.
+// withSourceSlot either passes through the inner Effect or fails with a tagged error.
+// Note: this mock does not replicate acquireUseRelease release semantics — that is
+// tested in source-rate-limit.test.ts. This mock only verifies the pipeline's response
+// to slot acquisition success/failure.
+let slotAcquired = true;
+let slotErrorType: "rate-limit" | "concurrency" = "rate-limit";
+let slotReason = "QPM limit reached (3/min)";
+let slotRetryAfterMs: number | undefined = 5000;
 
 mock.module("@atlas/api/lib/db/source-rate-limit", () => ({
-  acquireSourceSlot: () => slotResult,
-  decrementSourceConcurrency: (id: string) => { decrementCalls.push(id); },
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  withSourceSlot: (_sourceId: string, effect: Effect.Effect<any, any>) => {
+    if (!slotAcquired) {
+      if (slotErrorType === "concurrency") {
+        return Effect.fail(new ConcurrencyLimitError({
+          message: slotReason,
+          sourceId: _sourceId,
+          limit: 0,
+        }));
+      }
+      return Effect.fail(new RateLimitExceededError({
+        message: slotReason,
+        sourceId: _sourceId,
+        limit: 0,
+        retryAfterMs: slotRetryAfterMs,
+      }));
+    }
+    return effect;
+  },
 }));
 
 mock.module("@atlas/api/lib/cache/index", () => ({
@@ -126,7 +149,6 @@ describe("executeSQL rate-limit rejection", () => {
 
   beforeEach(() => {
     auditInserts = [];
-    decrementCalls.length = 0;
     process.env.ATLAS_DATASOURCE_URL = "postgresql://test:test@localhost:5432/test";
     process.env.DATABASE_URL = "postgresql://test:test@localhost:5432/atlas";
     _resetPool(mockPool);
@@ -136,16 +158,15 @@ describe("executeSQL rate-limit rejection", () => {
         rows: [{ id: 1, name: "Acme" }],
       }),
     );
-    // Default: rate-limited
-    slotResult = {
-      acquired: false,
-      reason: "QPM limit reached (3/min)",
-      retryAfterMs: 5000,
-    };
+    // Default: rate-limited (QPM)
+    slotAcquired = false;
+    slotErrorType = "rate-limit";
+    slotReason = "QPM limit reached (3/min)";
+    slotRetryAfterMs = 5000;
   });
 
   afterEach(() => {
-    slotResult = { acquired: true };
+    slotAcquired = true;
     if (origDbUrl) process.env.DATABASE_URL = origDbUrl;
     else delete process.env.DATABASE_URL;
     if (origDatasource) process.env.ATLAS_DATASOURCE_URL = origDatasource;
@@ -179,24 +200,34 @@ describe("executeSQL rate-limit rejection", () => {
     expect(audit.error).toContain("QPM limit reached");
   });
 
-  it("does not decrement concurrency when rate-limited (slot not acquired)", async () => {
-    await exec("SELECT id, name FROM companies");
-    expect(decrementCalls).toHaveLength(0);
+  it("handles ConcurrencyLimitError the same as RateLimitExceededError", async () => {
+    slotErrorType = "concurrency";
+    slotReason = 'Source "default" concurrency limit reached (5)';
+
+    const result = await exec("SELECT id, name FROM companies");
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("concurrency limit reached");
+    expect(queryFn).not.toHaveBeenCalled();
+
+    const inserts = getAuditInserts();
+    expect(inserts).toHaveLength(1);
+    const audit = extractAuditParams(inserts[0].params!);
+    expect(audit.error).toContain("Rate limited");
+    expect(audit.error).toContain("concurrency limit reached");
   });
 });
 
-describe("executeSQL concurrency decrement survives query failures", () => {
+describe("executeSQL query execution within slot", () => {
   const origDbUrl = process.env.DATABASE_URL;
   const origDatasource = process.env.ATLAS_DATASOURCE_URL;
 
   beforeEach(() => {
     auditInserts = [];
-    decrementCalls.length = 0;
     process.env.ATLAS_DATASOURCE_URL = "postgresql://test:test@localhost:5432/test";
     process.env.DATABASE_URL = "postgresql://test:test@localhost:5432/atlas";
     _resetPool(mockPool);
-    // Allow rate limiting (acquireSourceSlot atomically increments concurrency)
-    slotResult = { acquired: true };
+    // Allow rate limiting (withSourceSlot passes through to inner Effect)
+    slotAcquired = true;
   });
 
   afterEach(() => {
@@ -207,19 +238,16 @@ describe("executeSQL concurrency decrement survives query failures", () => {
     _resetPool(null);
   });
 
-  it("decrements concurrency even when query throws", async () => {
+  it("returns error response when query throws", async () => {
     queryFn = mock(() => Promise.reject(new Error("connection refused")));
 
     const result = await exec("SELECT id FROM companies");
 
     expect(result.success).toBe(false);
-    // acquireSourceSlot increments atomically; decrementSourceConcurrency
-    // is called in the finally block regardless of success/failure.
-    expect(decrementCalls).toHaveLength(1);
-    expect(decrementCalls[0]).toBe("default");
+    expect(result.error).toContain("connection refused");
   });
 
-  it("decrements concurrency on successful query", async () => {
+  it("returns success on successful query", async () => {
     queryFn = mock(() =>
       Promise.resolve({ columns: ["id"], rows: [{ id: 1 }] }),
     );
@@ -227,15 +255,19 @@ describe("executeSQL concurrency decrement survives query failures", () => {
     const result = await exec("SELECT id FROM companies");
 
     expect(result.success).toBe(true);
-    expect(decrementCalls).toHaveLength(1);
   });
 
-  it("concurrency decrement called exactly once after failure", async () => {
+  it("creates audit log on query failure", async () => {
     queryFn = mock(() => Promise.reject(new Error("timeout")));
 
     await exec("SELECT id FROM companies");
 
-    // The finally block should decrement exactly once
-    expect(decrementCalls).toHaveLength(1);
+    const inserts = getAuditInserts();
+    expect(inserts.length).toBeGreaterThanOrEqual(1);
+    const failedAudit = inserts.find((i) => {
+      const p = extractAuditParams(i.params!);
+      return !p.success;
+    });
+    expect(failedAudit).toBeDefined();
   });
 });

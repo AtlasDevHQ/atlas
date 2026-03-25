@@ -55,8 +55,8 @@ mock.module("@atlas/api/lib/tracing", () => ({
 }));
 
 mock.module("@atlas/api/lib/db/source-rate-limit", () => ({
-  acquireSourceSlot: () => ({ acquired: true }),
-  decrementSourceConcurrency: () => {},
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  withSourceSlot: (_sourceId: string, effect: any) => effect,
 }));
 
 mock.module("@atlas/api/lib/auth/audit", () => ({

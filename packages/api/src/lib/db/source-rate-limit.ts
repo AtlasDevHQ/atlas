@@ -2,13 +2,18 @@
  * Per-source rate limiting for multi-database deployments.
  *
  * Enforces QPM (queries per minute) and concurrency limits per datasource.
- * Uses a sliding-window pattern for QPM tracking.
+ * Stale QPM entries are filtered on read — no periodic cleanup timer needed.
+ *
+ * Primary API: {@link withSourceSlot} acquires a slot, runs the effect, and
+ * releases the slot on completion (success or failure). Callers never need
+ * to manually decrement concurrency.
  */
 
+import { Effect } from "effect";
+import { RateLimitExceededError, ConcurrencyLimitError } from "@atlas/api/lib/effect/errors";
 import { createLogger } from "@atlas/api/lib/logger";
 
 const log = createLogger("source-rate-limit");
-
 const WINDOW_MS = 60_000;
 
 export interface SourceRateLimit {
@@ -21,14 +26,30 @@ const DEFAULT_LIMIT: SourceRateLimit = {
   concurrency: 5,
 };
 
-/** Per-source config overrides. */
+// ── State ──────────────────────────────────────────────────────────
+
+interface SourceState {
+  timestamps: number[];
+  active: number;
+}
+
 const limits = new Map<string, SourceRateLimit>();
+const states = new Map<string, SourceState>();
 
-/** Per-source sliding window of request timestamps. */
-const windows = new Map<string, number[]>();
+function getLimit(id: string): SourceRateLimit {
+  return limits.get(id) ?? DEFAULT_LIMIT;
+}
 
-/** Per-source current concurrency count. */
-const concurrency = new Map<string, number>();
+function getState(id: string): SourceState {
+  let s = states.get(id);
+  if (!s) {
+    s = { timestamps: [], active: 0 };
+    states.set(id, s);
+  }
+  return s;
+}
+
+// ── Config ─────────────────────────────────────────────────────────
 
 /** Register a custom rate limit for a datasource. */
 export function registerSourceRateLimit(id: string, limit: SourceRateLimit): void {
@@ -46,146 +67,75 @@ export function clearSourceRateLimit(id: string): void {
   limits.delete(id);
 }
 
-function getLimit(id: string): SourceRateLimit {
-  return limits.get(id) ?? DEFAULT_LIMIT;
-}
-
-export function checkSourceRateLimit(sourceId: string): {
-  allowed: boolean;
-  reason?: string;
-  retryAfterMs?: number;
-} {
-  const limit = getLimit(sourceId);
-
-  // Check concurrency first
-  const current = concurrency.get(sourceId) ?? 0;
-  if (current >= limit.concurrency) {
-    return {
-      allowed: false,
-      reason: `Source "${sourceId}" concurrency limit reached (${limit.concurrency})`,
-    };
-  }
-
-  // Check QPM
-  const now = Date.now();
-  const cutoff = now - WINDOW_MS;
-
-  let timestamps = windows.get(sourceId);
-  if (!timestamps) {
-    timestamps = [];
-    windows.set(sourceId, timestamps);
-  }
-
-  // Evict stale entries
-  const firstValid = timestamps.findIndex((t) => t > cutoff);
-  if (firstValid > 0) timestamps.splice(0, firstValid);
-  else if (firstValid === -1) timestamps.length = 0;
-
-  if (timestamps.length >= limit.queriesPerMinute) {
-    const retryAfterMs = Math.max(1, timestamps[0] + WINDOW_MS - now);
-    return {
-      allowed: false,
-      reason: `Source "${sourceId}" QPM limit reached (${limit.queriesPerMinute}/min)`,
-      retryAfterMs,
-    };
-  }
-
-  timestamps.push(now);
-  return { allowed: true };
-}
+// ── Effect API ─────────────────────────────────────────────────────
 
 /**
- * Atomic check-and-acquire: checks both QPM and concurrency limits, and if
- * allowed, atomically records the QPM timestamp AND increments the concurrency
- * counter. This prevents the TOCTOU race where two concurrent requests both
- * pass the concurrency check before either increments.
- *
- * Callers MUST call `decrementSourceConcurrency()` in a `finally` block after
- * the query completes (success or failure).
+ * Acquire a rate-limit slot: check QPM + concurrency, record timestamp,
+ * increment concurrency counter. Fails with tagged errors.
  */
-export function acquireSourceSlot(sourceId: string): {
-  acquired: boolean;
-  reason?: string;
-  retryAfterMs?: number;
-} {
-  const limit = getLimit(sourceId);
+export const acquireSlot = (
+  sourceId: string,
+): Effect.Effect<void, RateLimitExceededError | ConcurrencyLimitError> =>
+  Effect.gen(function* () {
+    const limit = getLimit(sourceId);
+    const state = getState(sourceId);
+    const now = Date.now();
 
-  // Check concurrency first
-  const current = concurrency.get(sourceId) ?? 0;
-  if (current >= limit.concurrency) {
-    return {
-      acquired: false,
-      reason: `Source "${sourceId}" concurrency limit reached (${limit.concurrency})`,
-    };
-  }
-
-  // Check QPM
-  const now = Date.now();
-  const cutoff = now - WINDOW_MS;
-
-  let timestamps = windows.get(sourceId);
-  if (!timestamps) {
-    timestamps = [];
-    windows.set(sourceId, timestamps);
-  }
-
-  // Evict stale entries
-  const firstValid = timestamps.findIndex((t) => t > cutoff);
-  if (firstValid > 0) timestamps.splice(0, firstValid);
-  else if (firstValid === -1) timestamps.length = 0;
-
-  if (timestamps.length >= limit.queriesPerMinute) {
-    const retryAfterMs = Math.max(1, timestamps[0] + WINDOW_MS - now);
-    return {
-      acquired: false,
-      reason: `Source "${sourceId}" QPM limit reached (${limit.queriesPerMinute}/min)`,
-      retryAfterMs,
-    };
-  }
-
-  // Atomically record QPM timestamp AND increment concurrency
-  timestamps.push(now);
-  concurrency.set(sourceId, current + 1);
-  return { acquired: true };
-}
-
-/** Increment concurrency counter before query execution. */
-export function incrementSourceConcurrency(sourceId: string): void {
-  concurrency.set(sourceId, (concurrency.get(sourceId) ?? 0) + 1);
-}
-
-/** Decrement concurrency counter after query execution. */
-export function decrementSourceConcurrency(sourceId: string): void {
-  const current = concurrency.get(sourceId) ?? 0;
-  concurrency.set(sourceId, Math.max(0, current - 1));
-}
-
-/** Periodic cleanup — evict stale QPM windows. */
-const cleanupInterval = setInterval(() => {
-  try {
-    const cutoff = Date.now() - WINDOW_MS;
-    for (const [key, timestamps] of windows) {
-      if (timestamps.length === 0 || timestamps[timestamps.length - 1] <= cutoff) {
-        windows.delete(key);
-      }
+    // Check concurrency first
+    if (state.active >= limit.concurrency) {
+      return yield* new ConcurrencyLimitError({
+        message: `Source "${sourceId}" concurrency limit reached (${limit.concurrency})`,
+        sourceId,
+        limit: limit.concurrency,
+      });
     }
-  } catch (err) {
-    log.error(
-      { err: err instanceof Error ? err : new Error(String(err)) },
-      "Source rate limit cleanup failed",
-    );
-  }
-}, WINDOW_MS);
-cleanupInterval.unref();
 
-/** Stop the periodic cleanup timer. For tests. */
-export function _stopSourceRateLimitCleanup(): void {
-  clearInterval(cleanupInterval);
-}
+    // Filter stale QPM timestamps (replaces setInterval cleanup)
+    const cutoff = now - WINDOW_MS;
+    state.timestamps = state.timestamps.filter((t) => t > cutoff);
+
+    if (state.timestamps.length >= limit.queriesPerMinute) {
+      const retryAfterMs = Math.max(1, state.timestamps[0] + WINDOW_MS - now);
+      return yield* new RateLimitExceededError({
+        message: `Source "${sourceId}" QPM limit reached (${limit.queriesPerMinute}/min)`,
+        sourceId,
+        limit: limit.queriesPerMinute,
+        retryAfterMs,
+      });
+    }
+
+    // Atomically record QPM timestamp AND increment concurrency
+    state.timestamps.push(now);
+    state.active++;
+  });
+
+/**
+ * Run an effect inside a rate-limit slot. The slot is released on completion
+ * (success or failure) — callers never need to manually decrement.
+ */
+export const withSourceSlot = <A, E>(
+  sourceId: string,
+  effect: Effect.Effect<A, E>,
+): Effect.Effect<A, E | RateLimitExceededError | ConcurrencyLimitError> =>
+  Effect.acquireUseRelease(
+    acquireSlot(sourceId),
+    () => effect,
+    () =>
+      Effect.sync(() => {
+        const state = states.get(sourceId);
+        if (state) {
+          if (state.active <= 0) {
+            log.warn({ sourceId, active: state.active }, "Rate limit slot double-release detected — active count already zero");
+          }
+          state.active = Math.max(0, state.active - 1);
+        }
+      }),
+  );
+
+// ── Test helpers ───────────────────────────────────────────────────
 
 /** Reset all state. For tests. */
 export function _resetSourceRateLimits(): void {
   limits.clear();
-  windows.clear();
-  concurrency.clear();
+  states.clear();
 }

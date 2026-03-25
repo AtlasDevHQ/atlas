@@ -25,12 +25,21 @@ export const metadata: Metadata = {
     url: "https://useatlas.dev",
     siteName: "Atlas",
     type: "website",
+    images: [
+      {
+        url: "/og.png",
+        width: 1200,
+        height: 630,
+        alt: "Atlas — Quit copying SQL from ChatGPT",
+      },
+    ],
   },
   twitter: {
     card: "summary_large_image",
     title: "Atlas — Quit copying SQL from ChatGPT",
     description:
       "Stop pasting AI-generated SQL and hoping it works. Atlas connects to your schema, validates every query, and runs it. Open-source or cloud.",
+    images: ["/og.png"],
   },
 };
 

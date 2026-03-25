@@ -15,12 +15,18 @@
  * ```
  */
 
-import { Array as Arr, Effect, Exit, Cause, Option } from "effect";
+import { Array as Arr, Effect, Exit, Cause, Option, Layer } from "effect";
 import { HTTPException } from "hono/http-exception";
 import type { Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { createLogger } from "@atlas/api/lib/logger";
 import { ATLAS_ERROR_TAG_LIST, type AtlasError } from "./errors";
+import {
+  RequestContext,
+  makeRequestContextLayer,
+  AuthContext,
+  makeAuthContextLayer,
+} from "./services";
 
 // ── Domain error mapping (replaces throwIfEEError) ──────────────────
 
@@ -354,6 +360,46 @@ export async function runEffect<A, E>(
   });
 }
 
+// ── Context bridge ───────────────────────────────────────────────────
+
+/**
+ * Build a Layer that bridges Hono request context → Effect Context.
+ *
+ * Reads `requestId` and `authResult` from `c.get()` and provides
+ * `RequestContext` + `AuthContext` as Effect services. This allows
+ * Effect programs to `yield* RequestContext` or `yield* AuthContext`
+ * instead of relying on runtime `c.get()` calls.
+ *
+ * Returns undefined if no request context is available (e.g. before middleware runs).
+ */
+function buildContextLayer(
+  c: Context,
+): Layer.Layer<RequestContext | AuthContext> | undefined {
+  const requestId = (c.get("requestId") as string | undefined);
+  if (!requestId) return undefined;
+
+  const requestLayer = makeRequestContextLayer(requestId);
+
+  // authResult may not be set (e.g. public routes, before auth middleware)
+  const authResult = c.get("authResult") as
+    | { authenticated: true; mode: string; user?: { activeOrganizationId?: string } & Record<string, unknown> }
+    | undefined;
+
+  if (authResult) {
+    const authLayer = makeAuthContextLayer(
+      authResult.mode as import("@useatlas/types/auth").AuthMode,
+      authResult.user as import("@useatlas/types/auth").AtlasUser | undefined,
+    );
+    return Layer.merge(requestLayer, authLayer);
+  }
+
+  // No auth — provide RequestContext only, with a fallback AuthContext
+  // so programs that yield* AuthContext get a clear error rather than
+  // a cryptic "service not found" at runtime.
+  const noAuthLayer = makeAuthContextLayer("none", undefined);
+  return Layer.merge(requestLayer, noAuthLayer);
+}
+
 // ── Convenience wrapper ─────────────────────────────────────────────
 
 /**
@@ -363,8 +409,15 @@ export async function runEffect<A, E>(
  * that haven't been converted to full Effect programs yet. The handler body stays
  * as async/await — thrown errors are caught and classified by `runEffect`.
  *
- * Replaces the `withErrorHandler` HOF: same error-to-HTTP mapping, but routed
- * through the centralized Effect bridge instead of per-handler try/catch.
+ * Automatically bridges Hono request context → Effect Context:
+ * - `RequestContext` with `requestId` and `startTime`
+ * - `AuthContext` with `mode`, `user`, and `orgId`
+ *
+ * Effect programs running inside `runHandler` can access these via:
+ * ```ts
+ * const { requestId } = yield* RequestContext;
+ * const { orgId } = yield* AuthContext;
+ * ```
  *
  * @example
  * ```ts
@@ -380,8 +433,16 @@ export function runHandler<T>(
   handler: () => Promise<T>,
   options?: Pick<RunEffectOptions, "domainErrors">,
 ): Promise<T> {
-  return runEffect(c, Effect.tryPromise({
+  const program = Effect.tryPromise({
     try: handler,
     catch: (err) => err,
-  }), { label, domainErrors: options?.domainErrors });
+  });
+
+  // Provide Hono context as Effect Context layers
+  const contextLayer = buildContextLayer(c);
+  const provided = contextLayer
+    ? program.pipe(Effect.provide(contextLayer))
+    : program;
+
+  return runEffect(c, provided, { label, domainErrors: options?.domainErrors });
 }

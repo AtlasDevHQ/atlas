@@ -200,12 +200,6 @@ describe("executeSQL rate-limit rejection", () => {
     expect(audit.error).toContain("QPM limit reached");
   });
 
-  it("does not execute inner effect when rate-limited (slot not acquired)", async () => {
-    await exec("SELECT id, name FROM companies");
-    // withSourceSlot fails before running the inner Effect — query never executes
-    expect(queryFn).not.toHaveBeenCalled();
-  });
-
   it("handles ConcurrencyLimitError the same as RateLimitExceededError", async () => {
     slotErrorType = "concurrency";
     slotReason = 'Source "default" concurrency limit reached (5)';

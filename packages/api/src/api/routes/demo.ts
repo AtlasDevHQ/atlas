@@ -43,6 +43,7 @@ import {
   captureDemoLead,
   countDemoConversations,
 } from "@atlas/api/lib/demo";
+import { withRequestId, type AuthEnv } from "./middleware";
 import { withErrorHandler } from "@atlas/api/lib/routes/error-handler";
 
 const log = createLogger("demo");
@@ -274,7 +275,9 @@ const getDemoConversationRoute = createRoute({
 // Routes
 // ---------------------------------------------------------------------------
 
-const demo = new OpenAPIHono({ defaultHook: validationHook });
+const demo = new OpenAPIHono<AuthEnv>({ defaultHook: validationHook });
+
+demo.use(withRequestId);
 
 demo.onError((err, c) => {
   if (err instanceof HTTPException) {
@@ -622,7 +625,7 @@ demo.openapi(demoChatRoute, async (c) => {
 
 // GET /conversations — list demo user's conversations
 demo.openapi(listDemoConversationsRoute, withErrorHandler("list demo conversations", async (c) => {
-  const requestId = crypto.randomUUID();
+  const requestId = c.get("requestId");
   const email = extractDemoEmail(c.req.raw);
   if (!email) {
     return c.json({ error: "auth_error", message: "Valid demo token required.", requestId }, 401);
@@ -640,7 +643,7 @@ demo.openapi(listDemoConversationsRoute, withErrorHandler("list demo conversatio
 
 // GET /conversations/:id — get demo conversation with messages
 demo.openapi(getDemoConversationRoute, withErrorHandler("get demo conversation", async (c) => {
-  const requestId = crypto.randomUUID();
+  const requestId = c.get("requestId");
   const email = extractDemoEmail(c.req.raw);
   if (!email) {
     return c.json({ error: "auth_error", message: "Valid demo token required.", requestId }, 401);

@@ -2,16 +2,21 @@ import { describe, it, expect, mock } from "bun:test";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 
-// Mock logger to avoid pino init in tests
+// Mock logger — must export ALL named exports per CLAUDE.md mock rules
+const mockLogger = () => ({
+  info: mock(),
+  warn: mock(),
+  error: mock(),
+  debug: mock(),
+  fatal: mock(),
+  child: mock(),
+});
 mock.module("@atlas/api/lib/logger", () => ({
-  createLogger: () => ({
-    info: mock(),
-    warn: mock(),
-    error: mock(),
-    debug: mock(),
-    fatal: mock(),
-    child: mock(),
-  }),
+  createLogger: mockLogger,
+  getLogger: mockLogger,
+  withRequestContext: mock((_ctx: unknown, fn: () => unknown) => fn()),
+  getRequestContext: mock(() => undefined),
+  redactPaths: [],
 }));
 
 const { withErrorHandler } = await import(

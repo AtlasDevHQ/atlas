@@ -345,7 +345,7 @@ The pipeline follows a **fail-closed** threat model:
 | Resource exhaustion (full-table scans) | Auto LIMIT + statement timeout | 5, 6 |
 | Cross-tenant data access | RLS WHERE injection (fail-closed on missing claims) | 4 |
 
-All queries — successful and failed — are recorded in the [audit log](/deployment/authentication#audit-logging) with user attribution, timing, and error details. Use the Admin > Audit Log page to review query patterns and identify suspicious activity.
+Review query patterns in Admin > Audit Log — see [Error handling](#error-handling) for what gets recorded.
 
 ### For developers
 

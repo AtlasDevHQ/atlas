@@ -117,6 +117,12 @@ export default function Home() {
         </a>
         <div className="flex items-center gap-4 sm:gap-6">
           <a
+            href="/pricing"
+            className="text-sm text-zinc-500 transition-colors hover:text-zinc-300"
+          >
+            Pricing
+          </a>
+          <a
             href="https://docs.useatlas.dev"
             className="text-sm text-zinc-500 transition-colors hover:text-zinc-300"
           >
@@ -695,6 +701,12 @@ export default function App() {
             </a>
           </div>
           <div className="flex items-center gap-6">
+            <a
+              href="/pricing"
+              className="text-xs text-zinc-600 transition-colors hover:text-zinc-400"
+            >
+              Pricing
+            </a>
             <a
               href="https://docs.useatlas.dev"
               className="text-xs text-zinc-600 transition-colors hover:text-zinc-400"

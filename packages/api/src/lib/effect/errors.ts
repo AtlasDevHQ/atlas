@@ -32,14 +32,14 @@ export class ForbiddenPatternError extends Data.TaggedError("ForbiddenPatternErr
   readonly sql: string;
 }> {}
 
-/** AST parse failure, multiple statements, or non-SELECT (layers 2–3). */
+/** AST parse failure, multiple statements, or non-SELECT (layer 2). */
 export class ParseError extends Data.TaggedError("ParseError")<{
   readonly message: string;
   readonly sql: string;
   readonly detail?: string;
 }> {}
 
-/** Table not in the semantic-layer whitelist (layer 4). */
+/** Table not in the semantic-layer whitelist (layer 3). */
 export class WhitelistError extends Data.TaggedError("WhitelistError")<{
   readonly message: string;
   readonly table: string;
@@ -165,3 +165,6 @@ export type AtlasError =
   | PluginRejectedError
   | CustomValidatorError
   | ActionTimeoutError;
+
+/** Discriminant union of all known `_tag` values — derived from `AtlasError`. */
+export type AtlasErrorTag = AtlasError["_tag"];

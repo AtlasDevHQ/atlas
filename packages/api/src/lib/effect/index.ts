@@ -37,6 +37,7 @@ export {
   ActionTimeoutError,
   // Union type
   type AtlasError,
+  type AtlasErrorTag,
 } from "./errors";
 
 export { runEffect, mapTaggedError } from "./hono";

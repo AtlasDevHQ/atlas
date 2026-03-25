@@ -20,22 +20,56 @@ import { HTTPException } from "hono/http-exception";
 import type { Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { createLogger } from "@atlas/api/lib/logger";
+import type { AtlasError } from "./errors";
 
 const log = createLogger("effect-bridge");
 
 // ── Error mapping ───────────────────────────────────────────────────
 
+/** Known error code vocabulary for HTTP error responses. */
+type HttpErrorCode =
+  | "bad_request"
+  | "forbidden"
+  | "not_found"
+  | "unprocessable_entity"
+  | "rate_limited"
+  | "upstream_error"
+  | "service_unavailable"
+  | "timeout";
+
 interface HttpErrorMapping {
   readonly status: ContentfulStatusCode;
-  readonly code: string;
+  readonly code: HttpErrorCode;
   readonly message: string;
+  readonly headers?: Readonly<Record<string, string>>;
 }
 
 /**
- * Type guard for tagged errors produced by `Data.TaggedError`.
- *
- * Tagged errors always have a `_tag` string discriminant and inherit
- * `message` from Error.
+ * Set of all `_tag` values in the `AtlasError` union.
+ * Used by `isAtlasError` to narrow unknown objects before calling `mapTaggedError`.
+ */
+const ATLAS_ERROR_TAGS = new Set<string>([
+  "EmptyQueryError",
+  "ForbiddenPatternError",
+  "ParseError",
+  "WhitelistError",
+  "ConnectionNotFoundError",
+  "PoolExhaustedError",
+  "NoDatasourceError",
+  "QueryTimeoutError",
+  "QueryExecutionError",
+  "RateLimitExceededError",
+  "ConcurrencyLimitError",
+  "RLSError",
+  "EnterpriseGateError",
+  "ApprovalRequiredError",
+  "PluginRejectedError",
+  "CustomValidatorError",
+  "ActionTimeoutError",
+]);
+
+/**
+ * Type guard for objects with a `_tag` string and `message` string.
  */
 function isTaggedError(error: unknown): error is { readonly _tag: string; readonly message: string } {
   return (
@@ -49,12 +83,23 @@ function isTaggedError(error: unknown): error is { readonly _tag: string; readon
 }
 
 /**
- * Map a tagged error to an HTTP status code and response body.
- *
- * Returns null for unknown tags — the caller should treat those as 500s.
- * Status code assignments match existing Hono route behavior.
+ * Narrow a tagged error to a known `AtlasError`.
+ * Returns true only when `_tag` is one of the 17 known tags.
  */
-export function mapTaggedError(error: { readonly _tag: string; readonly message: string }): HttpErrorMapping | null {
+function isAtlasError(error: { readonly _tag: string }): error is AtlasError {
+  return ATLAS_ERROR_TAGS.has(error._tag);
+}
+
+/**
+ * Map a known Atlas error to an HTTP status code, error code, and optional headers.
+ *
+ * Exhaustive over `AtlasError` — the compiler will error if a new variant
+ * is added to the union without a corresponding case here.
+ *
+ * Status code assignments are designed to match the HTTP semantics of each
+ * error category and align with existing route behavior.
+ */
+export function mapTaggedError(error: AtlasError): HttpErrorMapping {
   switch (error._tag) {
     // ── 400 Bad Request — malformed input ────────────────────────
     case "EmptyQueryError":
@@ -79,8 +124,17 @@ export function mapTaggedError(error: { readonly _tag: string; readonly message:
       return { status: 422, code: "unprocessable_entity", message: error.message };
 
     // ── 429 Too Many Requests ────────────────────────────────────
-    case "RateLimitExceededError":
+    case "RateLimitExceededError": {
+      const retryAfterSec = Math.ceil((error.retryAfterMs ?? 60_000) / 1000);
+      return {
+        status: 429,
+        code: "rate_limited",
+        message: error.message,
+        headers: { "Retry-After": String(retryAfterSec) },
+      };
+    }
     case "ConcurrencyLimitError":
+    case "PoolExhaustedError":
       return { status: 429, code: "rate_limited", message: error.message };
 
     // ── 502 Bad Gateway — upstream DB error ──────────────────────
@@ -88,7 +142,6 @@ export function mapTaggedError(error: { readonly _tag: string; readonly message:
       return { status: 502, code: "upstream_error", message: error.message };
 
     // ── 503 Service Unavailable ──────────────────────────────────
-    case "PoolExhaustedError":
     case "NoDatasourceError":
       return { status: 503, code: "service_unavailable", message: error.message };
 
@@ -96,9 +149,6 @@ export function mapTaggedError(error: { readonly _tag: string; readonly message:
     case "QueryTimeoutError":
     case "ActionTimeoutError":
       return { status: 504, code: "timeout", message: error.message };
-
-    default:
-      return null;
   }
 }
 
@@ -112,10 +162,11 @@ export function mapTaggedError(error: { readonly _tag: string; readonly message:
  * containing `{ error, message, requestId }` — Hono's error handler
  * returns this to the client.
  *
- * Three failure modes are handled:
- * 1. **Tagged error** (known `_tag`) → mapped HTTP status via `mapTaggedError`
- * 2. **Untagged typed error** → logged and returned as 500
- * 3. **Defect** (unexpected throw / fiber interruption) → logged and returned as 500
+ * Four failure modes are handled:
+ * 1. **Known tagged error** (Atlas `_tag`) → mapped HTTP status via `mapTaggedError`
+ * 2. **Unknown tagged / untagged typed error** → logged with `_tag` (if present) and returned as 500
+ * 3. **Fiber interruption** → logged at warn level, returned as 500
+ * 4. **Defect** (unexpected throw) → all defects logged at error level, returned as 500
  *
  * @param c - Hono context (used for `requestId` extraction)
  * @param program - Fully-provided Effect program (`R = never`)
@@ -141,21 +192,26 @@ export async function runEffect<A, E>(
   if (Option.isSome(failureOpt)) {
     const error = failureOpt.value;
 
-    if (isTaggedError(error)) {
+    // Known Atlas error — map to HTTP status with optional headers
+    if (isTaggedError(error) && isAtlasError(error)) {
       const mapped = mapTaggedError(error);
-      if (mapped) {
-        throw new HTTPException(mapped.status, {
-          res: Response.json(
-            { error: mapped.code, message: mapped.message, requestId },
-            { status: mapped.status },
-          ),
-        });
-      }
+      throw new HTTPException(mapped.status, {
+        res: Response.json(
+          { error: mapped.code, message: mapped.message, requestId },
+          { status: mapped.status, headers: mapped.headers },
+        ),
+      });
     }
 
-    // Unmapped typed error — log context and return 500
-    const errObj = error instanceof Error ? error : new Error(String(error));
-    log.error({ err: errObj, requestId }, `Unmapped error in ${label}`);
+    // Unknown tagged error — include _tag in log for debugging
+    if (isTaggedError(error)) {
+      const errObj = error instanceof Error ? error : new Error(String(error));
+      log.error({ err: errObj, requestId, tag: error._tag }, `Unmapped tagged error "${error._tag}" in ${label}`);
+    } else {
+      const errObj = error instanceof Error ? error : new Error(String(error));
+      log.error({ err: errObj, requestId }, `Unmapped error in ${label}`);
+    }
+
     throw new HTTPException(500, {
       res: Response.json(
         { error: "internal_error", message: `Failed to ${label}.`, requestId },
@@ -164,11 +220,36 @@ export async function runEffect<A, E>(
     });
   }
 
-  // ── Defect (unexpected throw or fiber interruption) ──────────
+  // ── Fiber interruption ────────────────────────────────────────
+  if (Cause.isInterruptedOnly(exit.cause)) {
+    log.warn({ requestId }, `Fiber interrupted in ${label}`);
+    throw new HTTPException(500, {
+      res: Response.json(
+        { error: "interrupted", message: `Request to ${label} was interrupted.`, requestId },
+        { status: 500 },
+      ),
+    });
+  }
+
+  // ── Defect (unexpected throw) ─────────────────────────────────
   const defects = Arr.fromIterable(Cause.defects(exit.cause));
-  const defect = defects.length > 0 ? defects[0] : undefined;
-  const errObj = defect instanceof Error ? defect : new Error(String(defect ?? "unknown defect"));
-  log.error({ err: errObj, requestId }, `Defect in ${label}`);
+  const primary = defects.length > 0 ? defects[0] : undefined;
+  const errObj = primary instanceof Error ? primary : new Error(String(primary ?? "unknown defect"));
+
+  if (defects.length > 1) {
+    log.error(
+      {
+        err: errObj,
+        requestId,
+        defectCount: defects.length,
+        defects: defects.map((d) => (d instanceof Error ? d.message : String(d))),
+      },
+      `${defects.length} defects in ${label} (logging primary)`,
+    );
+  } else {
+    log.error({ err: errObj, requestId }, `Defect in ${label}`);
+  }
+
   throw new HTTPException(500, {
     res: Response.json(
       { error: "internal_error", message: `Failed to ${label}.`, requestId },

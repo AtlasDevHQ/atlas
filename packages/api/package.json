@@ -31,8 +31,6 @@
     "@better-auth/stripe": "^1.5.1",
     "@clickhouse/client": "^1.17.0",
     "@duckdb/node-api": "^1.4.4-r.1",
-    "@effect/platform": "^0.96.0",
-    "@effect/platform-bun": "^0.89.0",
     "@hono/zod-openapi": "^1.2.3",
     "@opentelemetry/api": "^1.9.0",
     "@opentelemetry/exporter-trace-otlp-http": "^0.213.0",

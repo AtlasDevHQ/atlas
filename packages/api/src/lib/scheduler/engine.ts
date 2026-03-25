@@ -87,10 +87,10 @@ function executeAndDeliverEffect(
     // Attempt lock
     const lockResult = yield* Effect.tryPromise({
       try: () => lockTaskForExecution(taskId),
-      catch: (err) => err,
+      catch: (err) => (err instanceof Error ? err.message : String(err)),
     }).pipe(
-      Effect.catchAll((err) => {
-        log.error({ taskId, err: err instanceof Error ? err.message : String(err) }, "Lock error");
+      Effect.catchAll((errMsg) => {
+        log.error({ taskId, err: errMsg }, "Lock error");
         return Effect.succeed(null as boolean | null);
       }),
     );
@@ -102,24 +102,41 @@ function executeAndDeliverEffect(
     }
 
     // Create run record
-    const runId = yield* Effect.promise(() => createTaskRun(taskId));
+    const runId = yield* Effect.tryPromise({
+      try: () => createTaskRun(taskId),
+      catch: (err) => (err instanceof Error ? err.message : String(err)),
+    }).pipe(
+      Effect.catchAll((errMsg) => {
+        log.error({ taskId, err: errMsg }, "Failed to create run record");
+        return Effect.succeed(null);
+      }),
+    );
+
     if (!runId) {
-      log.error({ taskId }, "Failed to create run record — rescheduling");
-      yield* Effect.promise(() => rescheduleTask(taskId));
+      log.error({ taskId }, "No run record — rescheduling");
+      yield* Effect.tryPromise({
+        try: () => rescheduleTask(taskId),
+        catch: () => "reschedule failed",
+      }).pipe(Effect.catchAll(() => Effect.void));
       return "failed" as const;
     }
 
-    // Execute + deliver
+    // Execute + deliver, with an interrupt finalizer to avoid orphaned run records
     const execResult = yield* Effect.tryPromise({
       try: () => executeScheduledTask(taskId, runId, timeoutMs),
-      catch: (err) => err,
+      catch: (err) => (err instanceof Error ? err.message : String(err)),
     }).pipe(
-      Effect.catchAll((err) => {
-        const message = err instanceof Error ? err.message : String(err);
-        completeTaskRun(runId, "failed", { error: message });
-        log.error({ taskId, runId, err: message }, "Scheduled task failed");
+      Effect.catchAll((errMsg) => {
+        completeTaskRun(runId, "failed", { error: errMsg });
+        log.error({ taskId, runId, err: errMsg }, "Scheduled task failed");
         return Effect.succeed(null);
       }),
+      Effect.onInterrupt(() =>
+        Effect.sync(() => {
+          completeTaskRun(runId, "failed", { error: "Interrupted (scheduler stopped)" });
+          log.warn({ taskId, runId }, "Task interrupted — marked as failed");
+        }),
+      ),
     );
 
     if (execResult === null) return "failed" as const;

@@ -153,12 +153,6 @@ export class SchedulerTaskTimeoutError extends Data.TaggedError("SchedulerTaskTi
   readonly timeoutMs: number;
 }> {}
 
-/** Failed to acquire execution lock for a scheduled task. */
-export class SchedulerLockError extends Data.TaggedError("SchedulerLockError")<{
-  readonly message: string;
-  readonly taskId: string;
-}> {}
-
 /** Scheduled task execution failed. */
 export class SchedulerExecutionError extends Data.TaggedError("SchedulerExecutionError")<{
   readonly message: string;
@@ -172,7 +166,7 @@ export class DeliveryError extends Data.TaggedError("DeliveryError")<{
   readonly channel: string;
   readonly recipient: string;
   /** When true, this error is permanent and should not be retried. */
-  readonly permanent?: boolean;
+  readonly permanent: boolean;
 }> {}
 
 // ── Union type ──────────────────────────────────────────────────────
@@ -197,7 +191,6 @@ export type AtlasError =
   | CustomValidatorError
   | ActionTimeoutError
   | SchedulerTaskTimeoutError
-  | SchedulerLockError
   | SchedulerExecutionError
   | DeliveryError;
 

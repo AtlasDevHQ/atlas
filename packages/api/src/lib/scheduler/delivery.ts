@@ -59,7 +59,9 @@ function isBlockedUrl(urlString: string): boolean {
     const hostname = parsed.hostname;
     return BLOCKED_HOST_PATTERNS.some((pattern) => pattern.test(hostname));
   } catch {
-    return true; // Unparseable URLs are blocked
+    // intentionally treated as blocked: unparseable URLs cannot be validated
+    log.warn({ url: urlString.slice(0, 100) }, "Unparseable webhook URL — blocked");
+    return true;
   }
 }
 
@@ -79,7 +81,15 @@ function sanitizeHeaders(headers: Record<string, string>): Record<string, string
 // ── Retry policy ──────────────────────────────────────────────────
 
 /** Exponential backoff: 1s → 2s → 4s, max 3 retries. */
-const retryPolicy = Schedule.exponential(Duration.seconds(1)).pipe(Schedule.compose(Schedule.recurs(3)));
+const retryPolicy = Schedule.intersect(
+  Schedule.exponential(Duration.seconds(1)),
+  Schedule.recurs(3),
+);
+
+/** HTTP 4xx errors are client errors that will never succeed on retry. */
+function isHttpPermanent(status: number): boolean {
+  return status >= 400 && status < 500;
+}
 
 // ── Per-recipient delivery Effects ────────────────────────────────
 
@@ -113,6 +123,7 @@ function deliverToEmail(
           message: err instanceof Error ? err.message : String(err),
           channel: "email",
           recipient: recipient.address,
+          permanent: false,
         }),
     });
 
@@ -123,7 +134,12 @@ function deliverToEmail(
         "Email delivery failed",
       );
       return yield* Effect.fail(
-        new DeliveryError({ message: `HTTP ${resp.status}`, channel: "email", recipient: recipient.address }),
+        new DeliveryError({
+          message: `HTTP ${resp.status}`,
+          channel: "email",
+          recipient: recipient.address,
+          permanent: isHttpPermanent(resp.status),
+        }),
       );
     }
 
@@ -141,8 +157,26 @@ function deliverToSlack(
 
     let token: string | null = null;
     if (recipient.teamId) {
-      const { getBotToken } = yield* Effect.promise(() => import("@atlas/api/lib/slack/store"));
-      token = yield* Effect.promise(() => getBotToken(recipient.teamId!));
+      const { getBotToken } = yield* Effect.tryPromise({
+        try: () => import("@atlas/api/lib/slack/store"),
+        catch: (err) =>
+          new DeliveryError({
+            message: `Failed to load Slack store: ${err instanceof Error ? err.message : String(err)}`,
+            channel: "slack",
+            recipient: recipient.channel,
+            permanent: false,
+          }),
+      });
+      token = yield* Effect.tryPromise({
+        try: () => getBotToken(recipient.teamId!),
+        catch: (err) =>
+          new DeliveryError({
+            message: `Failed to get bot token: ${err instanceof Error ? err.message : String(err)}`,
+            channel: "slack",
+            recipient: recipient.channel,
+            permanent: false,
+          }),
+      });
     }
     if (!token) {
       token = process.env.SLACK_BOT_TOKEN ?? null;
@@ -154,7 +188,16 @@ function deliverToSlack(
       );
     }
 
-    const { postMessage } = yield* Effect.promise(() => import("@atlas/api/lib/slack/api"));
+    const { postMessage } = yield* Effect.tryPromise({
+      try: () => import("@atlas/api/lib/slack/api"),
+      catch: (err) =>
+        new DeliveryError({
+          message: `Failed to load Slack API: ${err instanceof Error ? err.message : String(err)}`,
+          channel: "slack",
+          recipient: recipient.channel,
+          permanent: false,
+        }),
+    });
     const resp = yield* Effect.tryPromise({
       try: () => postMessage(token, { channel: recipient.channel, text, blocks }),
       catch: (err) =>
@@ -162,13 +205,14 @@ function deliverToSlack(
           message: err instanceof Error ? err.message : String(err),
           channel: "slack",
           recipient: recipient.channel,
+          permanent: false,
         }),
     });
 
     if (!resp.ok) {
       log.error({ taskId: task.id, channel: recipient.channel, error: resp.error }, "Slack delivery failed");
       return yield* Effect.fail(
-        new DeliveryError({ message: resp.error ?? "Slack API error", channel: "slack", recipient: recipient.channel }),
+        new DeliveryError({ message: resp.error ?? "Slack API error", channel: "slack", recipient: recipient.channel, permanent: false }),
       );
     }
 
@@ -204,6 +248,7 @@ function deliverToWebhook(
           message: err instanceof Error ? err.message : String(err),
           channel: "webhook",
           recipient: recipient.url,
+          permanent: false,
         }),
     });
 
@@ -214,7 +259,12 @@ function deliverToWebhook(
         "Webhook delivery failed",
       );
       return yield* Effect.fail(
-        new DeliveryError({ message: `HTTP ${resp.status}`, channel: "webhook", recipient: recipient.url }),
+        new DeliveryError({
+          message: `HTTP ${resp.status}`,
+          channel: "webhook",
+          recipient: recipient.url,
+          permanent: isHttpPermanent(resp.status),
+        }),
       );
     }
 
@@ -244,7 +294,8 @@ function deliverySingle(
  * Returns a delivery summary with attempted/succeeded/failed counts.
  *
  * Each recipient gets exponential-backoff retry (3 attempts) for transient
- * failures. Blocked URLs and missing credentials are not retried.
+ * failures. Permanent errors (blocked URLs, missing credentials, HTTP 4xx)
+ * fail immediately without retry.
  */
 export async function deliverResult(
   task: ScheduledTask,
@@ -263,7 +314,7 @@ export async function deliverResult(
   }
 
   // Deliver to all recipients concurrently, with per-recipient retry.
-  // Permanent errors (blocked URL, missing credentials) fail immediately.
+  // Permanent errors (blocked URL, missing credentials, HTTP 4xx) fail immediately.
   // Transient errors (network, HTTP 5xx) get exponential backoff retry.
   const outcomes = await Effect.runPromise(
     Effect.forEach(
@@ -276,7 +327,7 @@ export async function deliverResult(
           }),
           Effect.map(() => "succeeded" as const),
           Effect.catchTag("DeliveryError", (err) => {
-            log.debug({ taskId: task.id, channel: err.channel, recipient: err.recipient }, "Delivery failed after retries");
+            log.warn({ taskId: task.id, channel: err.channel, recipient: err.recipient, message: err.message }, "Delivery failed after retries exhausted");
             return Effect.succeed("failed" as const);
           }),
         ),

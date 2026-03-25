@@ -67,7 +67,6 @@ const ATLAS_ERROR_TAGS = new Set<string>([
   "CustomValidatorError",
   "ActionTimeoutError",
   "SchedulerTaskTimeoutError",
-  "SchedulerLockError",
   "SchedulerExecutionError",
   "DeliveryError",
 ]);
@@ -88,7 +87,7 @@ function isTaggedError(error: unknown): error is { readonly _tag: string; readon
 
 /**
  * Narrow a tagged error to a known `AtlasError`.
- * Returns true only when `_tag` is one of the 17 known tags.
+ * Returns true only when `_tag` is one of the known tags in `ATLAS_ERROR_TAGS`.
  */
 function isAtlasError(error: { readonly _tag: string }): error is AtlasError {
   return ATLAS_ERROR_TAGS.has(error._tag);
@@ -156,8 +155,6 @@ export function mapTaggedError(error: AtlasError): HttpErrorMapping {
       return { status: 504, code: "timeout", message: error.message };
 
     // ── Scheduler ──────────────────────────────────────────────
-    case "SchedulerLockError":
-      return { status: 409, code: "bad_request", message: error.message };
     case "SchedulerExecutionError":
       return { status: 500, code: "upstream_error", message: error.message };
     case "DeliveryError":

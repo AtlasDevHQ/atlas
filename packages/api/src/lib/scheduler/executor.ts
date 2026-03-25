@@ -78,8 +78,15 @@ export async function executeScheduledTask(
 
   log.info({ taskId, runId, question: task.question.slice(0, 100) }, "Executing scheduled task");
 
+  // Convert tagged errors to plain Errors at the Effect→Promise boundary
+  // so callers get clean messages, not FiberFailure wrappers.
   const agentResult = await Effect.runPromise(
-    agentQueryEffect(task.question, requestId, taskId, timeoutMs),
+    agentQueryEffect(task.question, requestId, taskId, timeoutMs).pipe(
+      Effect.catchTags({
+        SchedulerTaskTimeoutError: (e) => Effect.die(new Error(e.message)),
+        SchedulerExecutionError: (e) => Effect.die(new Error(e.message)),
+      }),
+    ),
   );
 
   // Only attempt delivery when recipients are configured

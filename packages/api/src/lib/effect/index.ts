@@ -37,7 +37,6 @@ export {
   ActionTimeoutError,
   // Scheduler
   SchedulerTaskTimeoutError,
-  SchedulerLockError,
   SchedulerExecutionError,
   DeliveryError,
   // Union type

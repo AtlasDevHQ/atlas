@@ -708,6 +708,12 @@ export default function App() {
               Atlas Cloud
             </a>
             <a
+              href="/status"
+              className="text-xs text-zinc-600 transition-colors hover:text-zinc-400"
+            >
+              Status
+            </a>
+            <a
               href="https://github.com/AtlasDevHQ/atlas"
               className="text-xs text-zinc-600 transition-colors hover:text-zinc-400"
             >

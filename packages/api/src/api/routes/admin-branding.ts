@@ -6,8 +6,7 @@
  */
 
 import { createRoute, z } from "@hono/zod-openapi";
-import { createLogger } from "@atlas/api/lib/logger";
-import { throwIfEEError } from "./ee-error-handler";
+import { withErrorHandler } from "@atlas/api/lib/routes/error-handler";
 import {
   getWorkspaceBranding,
   setWorkspaceBranding,
@@ -16,8 +15,6 @@ import {
 } from "@atlas/ee/branding/white-label";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
-
-const log = createLogger("admin-branding");
 
 const BRANDING_ERROR_STATUS = { validation: 400, not_found: 404 } as const;
 
@@ -210,56 +207,38 @@ const adminBranding = createAdminRouter();
 adminBranding.use(requireOrgContext());
 
 // GET / — get workspace branding
-adminBranding.openapi(getBrandingRoute, async (c) => {
-  const { requestId, orgId } = c.get("orgContext");
+adminBranding.openapi(getBrandingRoute, withErrorHandler("get workspace branding", async (c) => {
+  const { orgId } = c.get("orgContext");
 
-  try {
-    const branding = await getWorkspaceBranding(orgId);
-    return c.json({ branding }, 200);
-  } catch (err) {
-    throwIfEEError(err, [BrandingError, BRANDING_ERROR_STATUS]);
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to get workspace branding");
-    return c.json({ error: "internal_error", message: "Failed to get workspace branding.", requestId }, 500);
-  }
-});
+  const branding = await getWorkspaceBranding(orgId);
+  return c.json({ branding }, 200);
+}, [BrandingError, BRANDING_ERROR_STATUS]));
 
 // PUT / — set workspace branding
-adminBranding.openapi(setBrandingRoute, async (c) => {
-  const { requestId, orgId } = c.get("orgContext");
+adminBranding.openapi(setBrandingRoute, withErrorHandler("save workspace branding", async (c) => {
+  const { orgId } = c.get("orgContext");
 
   const body = c.req.valid("json");
 
-  try {
-    const branding = await setWorkspaceBranding(orgId, {
-      logoUrl: body.logoUrl,
-      logoText: body.logoText,
-      primaryColor: body.primaryColor,
-      faviconUrl: body.faviconUrl,
-      hideAtlasBranding: body.hideAtlasBranding,
-    });
-    return c.json({ branding }, 200);
-  } catch (err) {
-    throwIfEEError(err, [BrandingError, BRANDING_ERROR_STATUS]);
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to save workspace branding");
-    return c.json({ error: "internal_error", message: "Failed to save workspace branding.", requestId }, 500);
-  }
-});
+  const branding = await setWorkspaceBranding(orgId, {
+    logoUrl: body.logoUrl,
+    logoText: body.logoText,
+    primaryColor: body.primaryColor,
+    faviconUrl: body.faviconUrl,
+    hideAtlasBranding: body.hideAtlasBranding,
+  });
+  return c.json({ branding }, 200);
+}, [BrandingError, BRANDING_ERROR_STATUS]));
 
 // DELETE / — reset workspace branding
-adminBranding.openapi(deleteBrandingRoute, async (c) => {
-  const { requestId, orgId } = c.get("orgContext");
+adminBranding.openapi(deleteBrandingRoute, withErrorHandler("reset workspace branding", async (c) => {
+  const { orgId } = c.get("orgContext");
 
-  try {
-    const deleted = await deleteWorkspaceBranding(orgId);
-    if (!deleted) {
-      return c.json({ error: "not_found", message: "No custom branding found." }, 404);
-    }
-    return c.json({ message: "Branding reset to Atlas defaults." }, 200);
-  } catch (err) {
-    throwIfEEError(err, [BrandingError, BRANDING_ERROR_STATUS]);
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to reset workspace branding");
-    return c.json({ error: "internal_error", message: "Failed to reset workspace branding.", requestId }, 500);
+  const deleted = await deleteWorkspaceBranding(orgId);
+  if (!deleted) {
+    return c.json({ error: "not_found", message: "No custom branding found." }, 404);
   }
-});
+  return c.json({ message: "Branding reset to Atlas defaults." }, 200);
+}, [BrandingError, BRANDING_ERROR_STATUS]));
 
 export { adminBranding };

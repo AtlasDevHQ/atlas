@@ -11,9 +11,7 @@ import type { Context } from "hono";
 import { HTTPException } from "hono/http-exception";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { EnterpriseError } from "@atlas/ee/index";
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any -- constructor signatures vary across EE error classes; { code: string } ensures the statusMap lookup is valid
-type DomainErrorClass = new (...args: any[]) => Error & { code: string };
+import type { DomainErrorMapping } from "@atlas/api/lib/routes/error-handler";
 
 /**
  * Rethrow known enterprise/domain errors as HTTPExceptions.
@@ -37,7 +35,7 @@ type DomainErrorClass = new (...args: any[]) => Error & { code: string };
  */
 export function throwIfEEError(
   err: unknown,
-  ...mappings: Array<[errorClass: DomainErrorClass, statusMap: Record<string, number>]>
+  ...mappings: DomainErrorMapping[]
 ): void {
   if (err instanceof EnterpriseError) {
     throw new HTTPException(403, {

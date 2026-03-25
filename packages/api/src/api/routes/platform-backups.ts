@@ -15,6 +15,7 @@
 
 import { createRoute, z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
+import { withErrorHandler } from "@atlas/api/lib/routes/error-handler";
 import { BACKUP_STATUSES } from "@useatlas/types";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createPlatformRouter } from "./admin-router";
@@ -246,7 +247,7 @@ const platformBackups = createPlatformRouter();
 
 // ── List backups ─────────────────────────────────────────────────────
 
-platformBackups.openapi(listBackupsRoute, async (c) => {
+platformBackups.openapi(listBackupsRoute, withErrorHandler("list backups", async (c) => {
   const requestId = c.get("requestId");
 
   const backups = await loadBackups();
@@ -254,18 +255,13 @@ platformBackups.openapi(listBackupsRoute, async (c) => {
     return c.json({ error: "not_available", message: "Backups require enterprise features to be enabled.", requestId }, 404);
   }
 
-  try {
-    const rows = await backups.listBackups(100);
-    return c.json({ backups: rows.map(toBackupEntry) }, 200);
-  } catch (err) {
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to list backups");
-    return c.json({ error: "internal_error", message: "Failed to list backups.", requestId }, 500);
-  }
-});
+  const rows = await backups.listBackups(100);
+  return c.json({ backups: rows.map(toBackupEntry) }, 200);
+}));
 
 // ── Create backup ────────────────────────────────────────────────────
 
-platformBackups.openapi(createBackupRoute, async (c) => {
+platformBackups.openapi(createBackupRoute, withErrorHandler("create backup", async (c) => {
   const requestId = c.get("requestId");
 
   const backupsMod = await loadBackups();
@@ -273,29 +269,24 @@ platformBackups.openapi(createBackupRoute, async (c) => {
     return c.json({ error: "not_available", message: "Backups require enterprise features to be enabled.", requestId }, 404);
   }
 
-  try {
-    const result = await backupsMod.createBackup();
-    log.info({ backupId: result.id, requestId }, "Manual backup created by platform admin");
-    const row = await backupsMod.getBackupById(result.id);
-    const backup = row ? toBackupEntry(row) : {
-      id: result.id,
-      createdAt: new Date().toISOString(),
-      sizeBytes: result.sizeBytes,
-      status: result.status,
-      storagePath: result.storagePath,
-      retentionExpiresAt: new Date().toISOString(),
-      errorMessage: null,
-    };
-    return c.json({ message: "Backup created successfully.", backup }, 200);
-  } catch (err) {
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to create backup");
-    return c.json({ error: "internal_error", message: "Failed to create backup.", requestId }, 500);
-  }
-});
+  const result = await backupsMod.createBackup();
+  log.info({ backupId: result.id, requestId }, "Manual backup created by platform admin");
+  const row = await backupsMod.getBackupById(result.id);
+  const backup = row ? toBackupEntry(row) : {
+    id: result.id,
+    createdAt: new Date().toISOString(),
+    sizeBytes: result.sizeBytes,
+    status: result.status,
+    storagePath: result.storagePath,
+    retentionExpiresAt: new Date().toISOString(),
+    errorMessage: null,
+  };
+  return c.json({ message: "Backup created successfully.", backup }, 200);
+}));
 
 // ── Verify backup ────────────────────────────────────────────────────
 
-platformBackups.openapi(verifyBackupRoute, async (c) => {
+platformBackups.openapi(verifyBackupRoute, withErrorHandler("verify backup", async (c) => {
   const requestId = c.get("requestId");
 
   const backupsMod = await loadBackups();
@@ -317,14 +308,13 @@ platformBackups.openapi(verifyBackupRoute, async (c) => {
     if (message.includes("Cannot verify")) {
       return c.json({ error: "invalid_state", message, requestId }, 400);
     }
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, backupId }, "Failed to verify backup");
-    return c.json({ error: "internal_error", message: "Failed to verify backup.", requestId }, 500);
+    throw err;
   }
-});
+}));
 
 // ── Request restore ──────────────────────────────────────────────────
 
-platformBackups.openapi(requestRestoreRoute, async (c) => {
+platformBackups.openapi(requestRestoreRoute, withErrorHandler("request restore", async (c) => {
   const requestId = c.get("requestId");
 
   const backupsMod = await loadBackups();
@@ -346,14 +336,13 @@ platformBackups.openapi(requestRestoreRoute, async (c) => {
     if (message.includes("Cannot restore")) {
       return c.json({ error: "invalid_state", message, requestId }, 400);
     }
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, backupId }, "Failed to request restore");
-    return c.json({ error: "internal_error", message: "Failed to request restore.", requestId }, 500);
+    throw err;
   }
-});
+}));
 
 // ── Confirm restore ──────────────────────────────────────────────────
 
-platformBackups.openapi(confirmRestoreRoute, async (c) => {
+platformBackups.openapi(confirmRestoreRoute, withErrorHandler("execute restore", async (c) => {
   const requestId = c.get("requestId");
 
   const backupsMod = await loadBackups();
@@ -372,14 +361,13 @@ platformBackups.openapi(confirmRestoreRoute, async (c) => {
     if (message.includes("Invalid or expired") || message.includes("expired")) {
       return c.json({ error: "invalid_token", message, requestId }, 400);
     }
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to execute restore");
-    return c.json({ error: "internal_error", message: "Failed to execute restore.", requestId }, 500);
+    throw err;
   }
-});
+}));
 
 // ── Get config ───────────────────────────────────────────────────────
 
-platformBackups.openapi(getConfigRoute, async (c) => {
+platformBackups.openapi(getConfigRoute, withErrorHandler("read backup config", async (c) => {
   const requestId = c.get("requestId");
 
   const backupsMod = await loadBackups();
@@ -387,22 +375,17 @@ platformBackups.openapi(getConfigRoute, async (c) => {
     return c.json({ error: "not_available", message: "Backups require enterprise features to be enabled.", requestId }, 404);
   }
 
-  try {
-    const config = await backupsMod.getBackupConfig();
-    return c.json({
-      schedule: config.schedule,
-      retentionDays: config.retention_days,
-      storagePath: config.storage_path,
-    }, 200);
-  } catch (err) {
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to read backup config");
-    return c.json({ error: "internal_error", message: "Failed to read backup configuration.", requestId }, 500);
-  }
-});
+  const config = await backupsMod.getBackupConfig();
+  return c.json({
+    schedule: config.schedule,
+    retentionDays: config.retention_days,
+    storagePath: config.storage_path,
+  }, 200);
+}));
 
 // ── Update config ────────────────────────────────────────────────────
 
-platformBackups.openapi(updateConfigRoute, async (c) => {
+platformBackups.openapi(updateConfigRoute, withErrorHandler("update backup config", async (c) => {
   const requestId = c.get("requestId");
 
   const backupsMod = await loadBackups();
@@ -412,22 +395,17 @@ platformBackups.openapi(updateConfigRoute, async (c) => {
 
   const body = c.req.valid("json");
 
-  try {
-    await backupsMod.updateBackupConfig(body);
-    const config = await backupsMod.getBackupConfig();
-    log.info({ config, requestId }, "Backup config updated by platform admin");
-    return c.json({
-      message: "Configuration updated.",
-      config: {
-        schedule: config.schedule,
-        retentionDays: config.retention_days,
-        storagePath: config.storage_path,
-      },
-    }, 200);
-  } catch (err) {
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to update backup config");
-    return c.json({ error: "internal_error", message: "Failed to update backup configuration.", requestId }, 500);
-  }
-});
+  await backupsMod.updateBackupConfig(body);
+  const config = await backupsMod.getBackupConfig();
+  log.info({ config, requestId }, "Backup config updated by platform admin");
+  return c.json({
+    message: "Configuration updated.",
+    config: {
+      schedule: config.schedule,
+      retentionDays: config.retention_days,
+      storagePath: config.storage_path,
+    },
+  }, 200);
+}));
 
 export { platformBackups };

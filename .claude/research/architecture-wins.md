@@ -196,3 +196,24 @@ Tracking module-deepening refactors discovered by the `improve-codebase-architec
 - Empty state with filters ("No matches" + "Clear filters") is automatic via `hasFilters` prop
 
 **Category:** Shallow wrapper deepened with optional props, then adopted across all applicable pages to eliminate duplicated rendering logic.
+
+---
+
+## 10. Extract route handler error wrapper (`withErrorHandler`)
+
+**Date:** 2026-03-25
+**Issue:** #892
+**PR:** #902
+
+**Problem:** 155 route handlers across 33 files repeated a 6-8 line try-catch pattern: type-narrow error, extract requestId, log with structured object, return `{ error: "internal_error", message: "Failed to ...", requestId }` as 500 JSON. Some handlers forgot requestId, used inconsistent narrowing, or missed the log call. For EE routes, the pattern also included `throwIfEEError()` calls with domain error mappings. Total boilerplate: ~1,000+ lines.
+
+**Solution:** Created `withErrorHandler(label, handler, ...domainErrors)` HOF in `packages/api/src/lib/routes/error-handler.ts`. The wrapper catches unexpected errors and returns a consistent 500 response with requestId. HTTPExceptions are re-thrown (preserving framework validation and `throwIfEEError` domain error mapping). Optional domain error mappings pass through to `throwIfEEError` for EE handlers. 11 tests cover success passthrough, error catch, type narrowing, HTTPException passthrough, domain error mapping, EnterpriseError handling, and type preservation.
+
+**Impact:**
+- **-852 net lines** across 33 route files + 1 new file + 1 test file
+- 155 try-catch blocks eliminated (276 → 121 remaining — the 121 are intentionally non-standard: custom error codes, nested try-catch, utility functions)
+- Consistent requestId inclusion on all 500 responses
+- Consistent error type narrowing across all handlers
+- EE domain error mappings now declarative (rest args) instead of inline catch-block calls
+
+**Category:** Repeated per-handler error boilerplate consolidated into a single higher-order function.

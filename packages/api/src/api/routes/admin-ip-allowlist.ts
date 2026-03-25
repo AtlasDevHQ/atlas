@@ -6,8 +6,7 @@
  */
 
 import { createRoute, z } from "@hono/zod-openapi";
-import { createLogger } from "@atlas/api/lib/logger";
-import { throwIfEEError } from "./ee-error-handler";
+import { withErrorHandler } from "@atlas/api/lib/routes/error-handler";
 import { getClientIP } from "@atlas/api/lib/auth/middleware";
 import {
   listIPAllowlistEntries,
@@ -17,8 +16,6 @@ import {
 } from "@atlas/ee/auth/ip-allowlist";
 import { ErrorSchema, AuthErrorSchema, isValidId, MAX_ID_LENGTH } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
-
-const log = createLogger("admin-ip-allowlist");
 
 const IP_ALLOWLIST_ERROR_STATUS = { validation: 400, conflict: 409, not_found: 404 } as const;
 
@@ -214,24 +211,18 @@ const adminIPAllowlist = createAdminRouter();
 adminIPAllowlist.use(requireOrgContext());
 
 // GET / — list IP allowlist entries for the active org
-adminIPAllowlist.openapi(listEntriesRoute, async (c) => {
-  const { requestId, orgId } = c.get("orgContext");
+adminIPAllowlist.openapi(listEntriesRoute, withErrorHandler("list IP allowlist entries", async (c) => {
+  const { orgId } = c.get("orgContext");
 
   const callerIP = getClientIP(c.req.raw);
 
-  try {
-    const entries = await listIPAllowlistEntries(orgId);
-    return c.json({ entries, total: entries.length, callerIP }, 200);
-  } catch (err) {
-    throwIfEEError(err, [IPAllowlistError, IP_ALLOWLIST_ERROR_STATUS]);
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to list IP allowlist entries");
-    return c.json({ error: "internal_error", message: "Failed to list IP allowlist entries.", requestId }, 500);
-  }
-});
+  const entries = await listIPAllowlistEntries(orgId);
+  return c.json({ entries, total: entries.length, callerIP }, 200);
+}, [IPAllowlistError, IP_ALLOWLIST_ERROR_STATUS]));
 
 // POST / — add a CIDR range to the allowlist
-adminIPAllowlist.openapi(addEntryRoute, async (c) => {
-  const { requestId, orgId } = c.get("orgContext");
+adminIPAllowlist.openapi(addEntryRoute, withErrorHandler("add IP allowlist entry", async (c) => {
+  const { orgId } = c.get("orgContext");
   const authResult = c.get("authResult");
 
   const body = c.req.valid("json");
@@ -240,41 +231,29 @@ adminIPAllowlist.openapi(addEntryRoute, async (c) => {
     return c.json({ error: "bad_request", message: "Missing required field: cidr." }, 400);
   }
 
-  try {
-    const entry = await addIPAllowlistEntry(
-      orgId,
-      body.cidr,
-      body.description ?? null,
-      authResult.user?.id ?? null,
-    );
-    return c.json({ entry }, 201);
-  } catch (err) {
-    throwIfEEError(err, [IPAllowlistError, IP_ALLOWLIST_ERROR_STATUS]);
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to add IP allowlist entry");
-    return c.json({ error: "internal_error", message: "Failed to add IP allowlist entry.", requestId }, 500);
-  }
-});
+  const entry = await addIPAllowlistEntry(
+    orgId,
+    body.cidr,
+    body.description ?? null,
+    authResult.user?.id ?? null,
+  );
+  return c.json({ entry }, 201);
+}, [IPAllowlistError, IP_ALLOWLIST_ERROR_STATUS]));
 
 // DELETE /:id — remove an IP allowlist entry
-adminIPAllowlist.openapi(deleteEntryRoute, async (c) => {
-  const { requestId, orgId } = c.get("orgContext");
+adminIPAllowlist.openapi(deleteEntryRoute, withErrorHandler("remove IP allowlist entry", async (c) => {
+  const { orgId } = c.get("orgContext");
   const { id: entryId } = c.req.valid("param");
 
   if (!isValidId(entryId)) {
     return c.json({ error: "bad_request", message: "Invalid entry ID." }, 400);
   }
 
-  try {
-    const deleted = await removeIPAllowlistEntry(orgId, entryId);
-    if (!deleted) {
-      return c.json({ error: "not_found", message: "IP allowlist entry not found." }, 404);
-    }
-    return c.json({ message: "IP allowlist entry removed." }, 200);
-  } catch (err) {
-    throwIfEEError(err, [IPAllowlistError, IP_ALLOWLIST_ERROR_STATUS]);
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId, entryId }, "Failed to remove IP allowlist entry");
-    return c.json({ error: "internal_error", message: "Failed to remove IP allowlist entry.", requestId }, 500);
+  const deleted = await removeIPAllowlistEntry(orgId, entryId);
+  if (!deleted) {
+    return c.json({ error: "not_found", message: "IP allowlist entry not found." }, 404);
   }
-});
+  return c.json({ message: "IP allowlist entry removed." }, 200);
+}, [IPAllowlistError, IP_ALLOWLIST_ERROR_STATUS]));
 
 export { adminIPAllowlist };

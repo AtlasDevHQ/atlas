@@ -8,6 +8,7 @@
 
 import * as path from "path";
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
+import { withErrorHandler } from "@atlas/api/lib/routes/error-handler";
 import { validationHook } from "./validation-hook";
 import { createLogger } from "@atlas/api/lib/logger";
 import {
@@ -131,27 +132,20 @@ semantic.use(standardAuth);
 semantic.use(requestContext);
 
 // GET /entities — list all entities (public summary: drops measureCount, connection, source)
-semantic.openapi(listEntitiesRoute, async (c) => {
-  const requestId = c.get("requestId");
-
+semantic.openapi(listEntitiesRoute, withErrorHandler("load entity list", async (c) => {
   const root = getSemanticRoot();
-  try {
-    const result = discoverEntities(root);
-    const entities = result.entities.map(({ table, description, columnCount, joinCount, type }) => ({
-      table, description, columnCount, joinCount, type: type ?? "",
-    }));
-    return c.json({
-      entities,
-      ...(result.warnings.length > 0 && { warnings: result.warnings }),
-    }, 200);
-  } catch (err) {
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), root }, "Failed to discover entities");
-    return c.json({ error: "internal_error", message: "Failed to load entity list.", requestId }, 500);
-  }
-});
+  const result = discoverEntities(root);
+  const entities = result.entities.map(({ table, description, columnCount, joinCount, type }) => ({
+    table, description, columnCount, joinCount, type: type ?? "",
+  }));
+  return c.json({
+    entities,
+    ...(result.warnings.length > 0 && { warnings: result.warnings }),
+  }, 200);
+}));
 
 // GET /entities/{name} — full entity detail
-semantic.openapi(getEntityRoute, async (c) => {
+semantic.openapi(getEntityRoute, withErrorHandler("parse entity file", async (c) => {
   const requestId = c.get("requestId");
 
   const { name } = c.req.valid("param");
@@ -174,11 +168,6 @@ semantic.openapi(getEntityRoute, async (c) => {
     return c.json({ error: "forbidden", message: "Access denied.", requestId }, 403);
   }
 
-  try {
-    const raw = readYamlFile(filePath);
-    return c.json({ entity: raw }, 200);
-  } catch (err) {
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), filePath, entityName: name }, "Failed to parse entity YAML file");
-    return c.json({ error: "internal_error", message: `Failed to parse entity file for "${name}".`, requestId }, 500);
-  }
-});
+  const raw = readYamlFile(filePath);
+  return c.json({ entity: raw }, 200);
+}));

@@ -6,8 +6,7 @@
  */
 
 import { createRoute, z } from "@hono/zod-openapi";
-import { createLogger } from "@atlas/api/lib/logger";
-import { throwIfEEError } from "./ee-error-handler";
+import { withErrorHandler } from "@atlas/api/lib/routes/error-handler";
 import {
   listSSOProviders,
   getSSOProvider,
@@ -27,8 +26,6 @@ import type {
 } from "@useatlas/types";
 import { ErrorSchema, AuthErrorSchema, isValidId, MAX_ID_LENGTH } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
-
-const log = createLogger("admin-sso");
 
 const SSO_ERROR_STATUS = { not_found: 404, conflict: 409, validation: 400 } as const;
 const SSO_ENFORCEMENT_ERROR_STATUS = { no_provider: 400, not_enterprise: 400 } as const;
@@ -447,44 +444,32 @@ const adminSso = createAdminRouter();
 adminSso.use(requireOrgContext());
 
 // GET /providers — list SSO providers for the active org
-adminSso.openapi(listProvidersRoute, async (c) => {
-  const { requestId, orgId } = c.get("orgContext");
+adminSso.openapi(listProvidersRoute, withErrorHandler("list SSO providers", async (c) => {
+  const { orgId } = c.get("orgContext");
 
-  try {
-    const providers = await listSSOProviders(orgId);
-    return c.json({ providers: providers.map(summarizeProvider), total: providers.length }, 200);
-  } catch (err) {
-    throwIfEEError(err, [SSOEnforcementError, SSO_ENFORCEMENT_ERROR_STATUS], [SSOError, SSO_ERROR_STATUS]);
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to list SSO providers");
-    return c.json({ error: "internal_error", message: "Failed to list SSO providers.", requestId }, 500);
-  }
-});
+  const providers = await listSSOProviders(orgId);
+  return c.json({ providers: providers.map(summarizeProvider), total: providers.length }, 200);
+}, [SSOEnforcementError, SSO_ENFORCEMENT_ERROR_STATUS], [SSOError, SSO_ERROR_STATUS]));
 
 // GET /providers/:id — get a single SSO provider
-adminSso.openapi(getProviderRoute, async (c) => {
-  const { requestId, orgId } = c.get("orgContext");
+adminSso.openapi(getProviderRoute, withErrorHandler("get SSO provider", async (c) => {
+  const { orgId } = c.get("orgContext");
   const { id: providerId } = c.req.valid("param");
 
   if (!isValidId(providerId)) {
     return c.json({ error: "bad_request", message: "Invalid provider ID." }, 400);
   }
 
-  try {
-    const provider = await getSSOProvider(orgId, providerId);
-    if (!provider) {
-      return c.json({ error: "not_found", message: "SSO provider not found." }, 404);
-    }
-    return c.json({ provider: redactProvider(provider) }, 200);
-  } catch (err) {
-    throwIfEEError(err, [SSOEnforcementError, SSO_ENFORCEMENT_ERROR_STATUS], [SSOError, SSO_ERROR_STATUS]);
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to get SSO provider");
-    return c.json({ error: "internal_error", message: "Failed to get SSO provider.", requestId }, 500);
+  const provider = await getSSOProvider(orgId, providerId);
+  if (!provider) {
+    return c.json({ error: "not_found", message: "SSO provider not found." }, 404);
   }
-});
+  return c.json({ provider: redactProvider(provider) }, 200);
+}, [SSOEnforcementError, SSO_ENFORCEMENT_ERROR_STATUS], [SSOError, SSO_ERROR_STATUS]));
 
 // POST /providers — create a new SSO provider
-adminSso.openapi(createProviderRoute, async (c) => {
-  const { requestId, orgId } = c.get("orgContext");
+adminSso.openapi(createProviderRoute, withErrorHandler("create SSO provider", async (c) => {
+  const { orgId } = c.get("orgContext");
   const body = c.req.valid("json");
 
   // Structural check only — business validation is in createSSOProvider
@@ -492,19 +477,13 @@ adminSso.openapi(createProviderRoute, async (c) => {
     return c.json({ error: "bad_request", message: "Missing required fields: type, issuer, domain, config." }, 400);
   }
 
-  try {
-    const provider = await createSSOProvider(orgId, body as unknown as CreateSSOProviderRequest);
-    return c.json({ provider: redactProvider(provider) }, 201);
-  } catch (err) {
-    throwIfEEError(err, [SSOEnforcementError, SSO_ENFORCEMENT_ERROR_STATUS], [SSOError, SSO_ERROR_STATUS]);
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to create SSO provider");
-    return c.json({ error: "internal_error", message: "Failed to create SSO provider.", requestId }, 500);
-  }
-});
+  const provider = await createSSOProvider(orgId, body as unknown as CreateSSOProviderRequest);
+  return c.json({ provider: redactProvider(provider) }, 201);
+}, [SSOEnforcementError, SSO_ENFORCEMENT_ERROR_STATUS], [SSOError, SSO_ERROR_STATUS]));
 
 // PATCH /providers/:id — update an SSO provider
-adminSso.openapi(updateProviderRoute, async (c) => {
-  const { requestId, orgId } = c.get("orgContext");
+adminSso.openapi(updateProviderRoute, withErrorHandler("update SSO provider", async (c) => {
+  const { orgId } = c.get("orgContext");
   const { id: providerId } = c.req.valid("param");
 
   if (!isValidId(providerId)) {
@@ -513,65 +492,41 @@ adminSso.openapi(updateProviderRoute, async (c) => {
 
   const body = c.req.valid("json") as UpdateSSOProviderRequest;
 
-  try {
-    const provider = await updateSSOProvider(orgId, providerId, body);
-    return c.json({ provider: redactProvider(provider) }, 200);
-  } catch (err) {
-    throwIfEEError(err, [SSOEnforcementError, SSO_ENFORCEMENT_ERROR_STATUS], [SSOError, SSO_ERROR_STATUS]);
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId, providerId }, "Failed to update SSO provider");
-    return c.json({ error: "internal_error", message: "Failed to update SSO provider.", requestId }, 500);
-  }
-});
+  const provider = await updateSSOProvider(orgId, providerId, body);
+  return c.json({ provider: redactProvider(provider) }, 200);
+}, [SSOEnforcementError, SSO_ENFORCEMENT_ERROR_STATUS], [SSOError, SSO_ERROR_STATUS]));
 
 // DELETE /providers/:id — delete an SSO provider
-adminSso.openapi(deleteProviderRoute, async (c) => {
-  const { requestId, orgId } = c.get("orgContext");
+adminSso.openapi(deleteProviderRoute, withErrorHandler("delete SSO provider", async (c) => {
+  const { orgId } = c.get("orgContext");
   const { id: providerId } = c.req.valid("param");
 
   if (!isValidId(providerId)) {
     return c.json({ error: "bad_request", message: "Invalid provider ID." }, 400);
   }
 
-  try {
-    const deleted = await deleteSSOProvider(orgId, providerId);
-    if (!deleted) {
-      return c.json({ error: "not_found", message: "SSO provider not found." }, 404);
-    }
-    return c.json({ message: "SSO provider deleted." }, 200);
-  } catch (err) {
-    throwIfEEError(err, [SSOEnforcementError, SSO_ENFORCEMENT_ERROR_STATUS], [SSOError, SSO_ERROR_STATUS]);
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId, providerId }, "Failed to delete SSO provider");
-    return c.json({ error: "internal_error", message: "Failed to delete SSO provider.", requestId }, 500);
+  const deleted = await deleteSSOProvider(orgId, providerId);
+  if (!deleted) {
+    return c.json({ error: "not_found", message: "SSO provider not found." }, 404);
   }
-});
+  return c.json({ message: "SSO provider deleted." }, 200);
+}, [SSOEnforcementError, SSO_ENFORCEMENT_ERROR_STATUS], [SSOError, SSO_ERROR_STATUS]));
 
 // GET /enforcement — get SSO enforcement status
-adminSso.openapi(getEnforcementRoute, async (c) => {
-  const { requestId, orgId } = c.get("orgContext");
+adminSso.openapi(getEnforcementRoute, withErrorHandler("get SSO enforcement status", async (c) => {
+  const { orgId } = c.get("orgContext");
 
-  try {
-    const result = await isSSOEnforced(orgId);
-    return c.json({ enforced: result?.enforced ?? false, orgId }, 200);
-  } catch (err) {
-    throwIfEEError(err, [SSOEnforcementError, SSO_ENFORCEMENT_ERROR_STATUS], [SSOError, SSO_ERROR_STATUS]);
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to get SSO enforcement status");
-    return c.json({ error: "internal_error", message: "Failed to get SSO enforcement status.", requestId }, 500);
-  }
-});
+  const result = await isSSOEnforced(orgId);
+  return c.json({ enforced: result?.enforced ?? false, orgId }, 200);
+}, [SSOEnforcementError, SSO_ENFORCEMENT_ERROR_STATUS], [SSOError, SSO_ERROR_STATUS]));
 
 // PUT /enforcement — set SSO enforcement
-adminSso.openapi(setEnforcementRoute, async (c) => {
-  const { requestId, orgId } = c.get("orgContext");
+adminSso.openapi(setEnforcementRoute, withErrorHandler("set SSO enforcement", async (c) => {
+  const { orgId } = c.get("orgContext");
   const { enforced } = c.req.valid("json");
 
-  try {
-    const result = await setSSOEnforcement(orgId, enforced);
-    return c.json(result, 200);
-  } catch (err) {
-    throwIfEEError(err, [SSOEnforcementError, SSO_ENFORCEMENT_ERROR_STATUS], [SSOError, SSO_ERROR_STATUS]);
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to set SSO enforcement");
-    return c.json({ error: "internal_error", message: "Failed to set SSO enforcement.", requestId }, 500);
-  }
-});
+  const result = await setSSOEnforcement(orgId, enforced);
+  return c.json(result, 200);
+}, [SSOEnforcementError, SSO_ENFORCEMENT_ERROR_STATUS], [SSOError, SSO_ERROR_STATUS]));
 
 export { adminSso };

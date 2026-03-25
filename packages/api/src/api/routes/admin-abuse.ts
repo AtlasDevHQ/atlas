@@ -6,17 +6,15 @@
  */
 
 import { createRoute, z } from "@hono/zod-openapi";
-import { createLogger } from "@atlas/api/lib/logger";
 import {
   listFlaggedWorkspaces,
   reinstateWorkspace,
   getAbuseEvents,
   getAbuseConfig,
 } from "@atlas/api/lib/security/abuse";
+import { withErrorHandler } from "@atlas/api/lib/routes/error-handler";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter } from "./admin-router";
-
-const log = createLogger("admin-abuse");
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -172,64 +170,45 @@ const getConfigRoute = createRoute({
 const adminAbuse = createAdminRouter();
 
 // GET / — list flagged workspaces
-adminAbuse.openapi(listFlaggedRoute, async (c) => {
-  const requestId = c.get("requestId");
+adminAbuse.openapi(listFlaggedRoute, withErrorHandler("list flagged workspaces", async (c) => {
+  const workspaces = listFlaggedWorkspaces();
 
-  try {
-    const workspaces = listFlaggedWorkspaces();
+  // Enrich with recent events from DB
+  const enriched = await Promise.all(
+    workspaces.map(async (ws) => {
+      const events = await getAbuseEvents(ws.workspaceId, 10);
+      return { ...ws, events };
+    }),
+  );
 
-    // Enrich with recent events from DB
-    const enriched = await Promise.all(
-      workspaces.map(async (ws) => {
-        const events = await getAbuseEvents(ws.workspaceId, 10);
-        return { ...ws, events };
-      }),
-    );
-
-    return c.json({ workspaces: enriched, total: enriched.length }, 200);
-  } catch (err) {
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to list flagged workspaces");
-    return c.json({ error: "internal_error", message: "Failed to list flagged workspaces.", requestId }, 500);
-  }
-});
+  return c.json({ workspaces: enriched, total: enriched.length }, 200);
+}));
 
 // POST /:workspaceId/reinstate — reinstate a workspace
-adminAbuse.openapi(reinstateRoute, async (c) => {
+adminAbuse.openapi(reinstateRoute, withErrorHandler("reinstate workspace", async (c) => {
   const requestId = c.get("requestId");
   const authResult = c.get("authResult");
   const { workspaceId } = c.req.valid("param");
   const actorId = authResult.user?.id ?? "unknown";
 
-  try {
-    const success = reinstateWorkspace(workspaceId, actorId);
-    if (!success) {
-      return c.json(
-        { error: "not_flagged", message: "Workspace is not currently flagged for abuse.", requestId },
-        400,
-      );
-    }
-
-    return c.json({
-      success: true,
-      workspaceId,
-      message: "Workspace reinstated successfully.",
-    }, 200);
-  } catch (err) {
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, workspaceId }, "Failed to reinstate workspace");
-    return c.json({ error: "internal_error", message: "Failed to reinstate workspace.", requestId }, 500);
+  const success = reinstateWorkspace(workspaceId, actorId);
+  if (!success) {
+    return c.json(
+      { error: "not_flagged", message: "Workspace is not currently flagged for abuse.", requestId },
+      400,
+    );
   }
-});
+
+  return c.json({
+    success: true,
+    workspaceId,
+    message: "Workspace reinstated successfully.",
+  }, 200);
+}));
 
 // GET /config — current threshold configuration
-adminAbuse.openapi(getConfigRoute, async (c) => {
-  const requestId = c.get("requestId");
-
-  try {
-    return c.json(getAbuseConfig(), 200);
-  } catch (err) {
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to read abuse config");
-    return c.json({ error: "internal_error", message: "Failed to read abuse configuration.", requestId }, 500);
-  }
-});
+adminAbuse.openapi(getConfigRoute, withErrorHandler("read abuse config", async (c) => {
+  return c.json(getAbuseConfig(), 200);
+}));
 
 export { adminAbuse };

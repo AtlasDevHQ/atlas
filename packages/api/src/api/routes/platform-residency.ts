@@ -12,6 +12,7 @@
 
 import { createRoute, z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
+import { withErrorHandler } from "@atlas/api/lib/routes/error-handler";
 import { EnterpriseError } from "@atlas/ee/index";
 import { ResidencyError, type ResidencyErrorCode } from "@atlas/ee/platform/residency";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
@@ -193,7 +194,7 @@ const platformResidency = createPlatformRouter();
 
 // ── List regions ─────────────────────────────────────────────────────
 
-platformResidency.openapi(listRegionsRoute, async (c) => {
+platformResidency.openapi(listRegionsRoute, withErrorHandler("list regions", async (c) => {
   const requestId = c.get("requestId");
 
   const mod = await loadResidency();
@@ -207,15 +208,16 @@ platformResidency.openapi(listRegionsRoute, async (c) => {
     return c.json({ regions, defaultRegion }, 200);
   } catch (err) {
     const result = handleResidencyError(err, requestId);
+    if (result.error === "internal_error") throw err;
     const logFn = result.status >= 500 ? log.error : log.warn;
     logFn({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to list regions");
     return c.json({ error: result.error, message: result.message, requestId: result.requestId }, result.status as 403);
   }
-});
+}));
 
 // ── Get workspace region ─────────────────────────────────────────────
 
-platformResidency.openapi(getWorkspaceRegionRoute, async (c) => {
+platformResidency.openapi(getWorkspaceRegionRoute, withErrorHandler("get workspace region", async (c) => {
   const requestId = c.get("requestId");
   const workspaceId = c.req.param("id");
 
@@ -232,15 +234,16 @@ platformResidency.openapi(getWorkspaceRegionRoute, async (c) => {
     return c.json(assignment, 200);
   } catch (err) {
     const result = handleResidencyError(err, requestId);
+    if (result.error === "internal_error") throw err;
     const logFn = result.status >= 500 ? log.error : log.warn;
     logFn({ err: err instanceof Error ? err : new Error(String(err)), workspaceId, requestId }, "Failed to get workspace region");
     return c.json({ error: result.error, message: result.message, requestId: result.requestId }, result.status as 403);
   }
-});
+}));
 
 // ── Assign region to workspace ───────────────────────────────────────
 
-platformResidency.openapi(assignRegionRoute, async (c) => {
+platformResidency.openapi(assignRegionRoute, withErrorHandler("assign region", async (c) => {
   const requestId = c.get("requestId");
   const workspaceId = c.req.param("id");
   const body = c.req.valid("json");
@@ -256,15 +259,16 @@ platformResidency.openapi(assignRegionRoute, async (c) => {
     return c.json(assignment, 200);
   } catch (err) {
     const result = handleResidencyError(err, requestId);
+    if (result.error === "internal_error") throw err;
     const logFn = result.status >= 500 ? log.error : log.warn;
     logFn({ err: err instanceof Error ? err : new Error(String(err)), workspaceId, region: body.region, requestId }, "Failed to assign region");
     return c.json({ error: result.error, message: result.message, requestId: result.requestId }, result.status as 400);
   }
-});
+}));
 
 // ── List all assignments ─────────────────────────────────────────────
 
-platformResidency.openapi(listAssignmentsRoute, async (c) => {
+platformResidency.openapi(listAssignmentsRoute, withErrorHandler("list region assignments", async (c) => {
   const requestId = c.get("requestId");
 
   const mod = await loadResidency();
@@ -277,10 +281,11 @@ platformResidency.openapi(listAssignmentsRoute, async (c) => {
     return c.json({ assignments }, 200);
   } catch (err) {
     const result = handleResidencyError(err, requestId);
+    if (result.error === "internal_error") throw err;
     const logFn = result.status >= 500 ? log.error : log.warn;
     logFn({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to list region assignments");
     return c.json({ error: result.error, message: result.message, requestId: result.requestId }, result.status as 403);
   }
-});
+}));
 
 export { platformResidency };

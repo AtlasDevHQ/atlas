@@ -10,8 +10,7 @@
  */
 
 import { createRoute, z } from "@hono/zod-openapi";
-import { createLogger } from "@atlas/api/lib/logger";
-import { throwIfEEError } from "./ee-error-handler";
+import { withErrorHandler } from "@atlas/api/lib/routes/error-handler";
 import {
   listConnections,
   deleteConnection,
@@ -23,8 +22,6 @@ import {
 } from "@atlas/ee/auth/scim";
 import { ErrorSchema, AuthErrorSchema, isValidId, MAX_ID_LENGTH } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
-
-const log = createLogger("admin-scim");
 
 const SCIM_ERROR_STATUS = { not_found: 404, conflict: 409, validation: 400 } as const;
 
@@ -308,97 +305,67 @@ const adminScim = createAdminRouter();
 adminScim.use(requireOrgContext());
 
 // GET / — SCIM connections and sync status
-adminScim.openapi(getStatusRoute, async (c) => {
-  const { requestId, orgId } = c.get("orgContext");
+adminScim.openapi(getStatusRoute, withErrorHandler("get SCIM status", async (c) => {
+  const { orgId } = c.get("orgContext");
 
-  try {
-    const [connections, syncStatus] = await Promise.all([
-      listConnections(orgId),
-      getSyncStatus(orgId),
-    ]);
-    return c.json({ connections, syncStatus }, 200);
-  } catch (err) {
-    throwIfEEError(err, [SCIMError, SCIM_ERROR_STATUS]);
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to get SCIM status");
-    return c.json({ error: "internal_error", message: "Failed to get SCIM status.", requestId }, 500);
-  }
-});
+  const [connections, syncStatus] = await Promise.all([
+    listConnections(orgId),
+    getSyncStatus(orgId),
+  ]);
+  return c.json({ connections, syncStatus }, 200);
+}, [SCIMError, SCIM_ERROR_STATUS]));
 
 // DELETE /connections/:id — revoke a SCIM connection
-adminScim.openapi(deleteConnectionRoute, async (c) => {
-  const { requestId, orgId } = c.get("orgContext");
+adminScim.openapi(deleteConnectionRoute, withErrorHandler("delete SCIM connection", async (c) => {
+  const { orgId } = c.get("orgContext");
   const { id: connectionId } = c.req.valid("param");
 
   if (!isValidId(connectionId)) {
     return c.json({ error: "bad_request", message: "Invalid connection ID." }, 400);
   }
 
-  try {
-    const deleted = await deleteConnection(orgId, connectionId);
-    if (!deleted) {
-      return c.json({ error: "not_found", message: "SCIM connection not found." }, 404);
-    }
-    return c.json({ message: "SCIM connection deleted." }, 200);
-  } catch (err) {
-    throwIfEEError(err, [SCIMError, SCIM_ERROR_STATUS]);
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId, connectionId }, "Failed to delete SCIM connection");
-    return c.json({ error: "internal_error", message: "Failed to delete SCIM connection.", requestId }, 500);
+  const deleted = await deleteConnection(orgId, connectionId);
+  if (!deleted) {
+    return c.json({ error: "not_found", message: "SCIM connection not found." }, 404);
   }
-});
+  return c.json({ message: "SCIM connection deleted." }, 200);
+}, [SCIMError, SCIM_ERROR_STATUS]));
 
 // GET /group-mappings — list group→role mappings
-adminScim.openapi(listGroupMappingsRoute, async (c) => {
-  const { requestId, orgId } = c.get("orgContext");
+adminScim.openapi(listGroupMappingsRoute, withErrorHandler("list SCIM group mappings", async (c) => {
+  const { orgId } = c.get("orgContext");
 
-  try {
-    const mappings = await listGroupMappings(orgId);
-    return c.json({ mappings, total: mappings.length }, 200);
-  } catch (err) {
-    throwIfEEError(err, [SCIMError, SCIM_ERROR_STATUS]);
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to list SCIM group mappings");
-    return c.json({ error: "internal_error", message: "Failed to list SCIM group mappings.", requestId }, 500);
-  }
-});
+  const mappings = await listGroupMappings(orgId);
+  return c.json({ mappings, total: mappings.length }, 200);
+}, [SCIMError, SCIM_ERROR_STATUS]));
 
 // POST /group-mappings — create a group→role mapping
-adminScim.openapi(createGroupMappingRoute, async (c) => {
-  const { requestId, orgId } = c.get("orgContext");
+adminScim.openapi(createGroupMappingRoute, withErrorHandler("create SCIM group mapping", async (c) => {
+  const { orgId } = c.get("orgContext");
 
   const { scimGroupName, roleName } = c.req.valid("json");
   if (!scimGroupName || !roleName) {
     return c.json({ error: "bad_request", message: "Missing required fields: scimGroupName, roleName." }, 400);
   }
 
-  try {
-    const mapping = await createGroupMapping(orgId, scimGroupName, roleName);
-    return c.json({ mapping }, 201);
-  } catch (err) {
-    throwIfEEError(err, [SCIMError, SCIM_ERROR_STATUS]);
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to create SCIM group mapping");
-    return c.json({ error: "internal_error", message: "Failed to create SCIM group mapping.", requestId }, 500);
-  }
-});
+  const mapping = await createGroupMapping(orgId, scimGroupName, roleName);
+  return c.json({ mapping }, 201);
+}, [SCIMError, SCIM_ERROR_STATUS]));
 
 // DELETE /group-mappings/:id — delete a group mapping
-adminScim.openapi(deleteGroupMappingRoute, async (c) => {
-  const { requestId, orgId } = c.get("orgContext");
+adminScim.openapi(deleteGroupMappingRoute, withErrorHandler("delete SCIM group mapping", async (c) => {
+  const { orgId } = c.get("orgContext");
   const { id: mappingId } = c.req.valid("param");
 
   if (!isValidId(mappingId)) {
     return c.json({ error: "bad_request", message: "Invalid mapping ID." }, 400);
   }
 
-  try {
-    const deleted = await deleteGroupMapping(orgId, mappingId);
-    if (!deleted) {
-      return c.json({ error: "not_found", message: "SCIM group mapping not found." }, 404);
-    }
-    return c.json({ message: "SCIM group mapping deleted." }, 200);
-  } catch (err) {
-    throwIfEEError(err, [SCIMError, SCIM_ERROR_STATUS]);
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId, mappingId }, "Failed to delete SCIM group mapping");
-    return c.json({ error: "internal_error", message: "Failed to delete SCIM group mapping.", requestId }, 500);
+  const deleted = await deleteGroupMapping(orgId, mappingId);
+  if (!deleted) {
+    return c.json({ error: "not_found", message: "SCIM group mapping not found." }, 404);
   }
-});
+  return c.json({ message: "SCIM group mapping deleted." }, 200);
+}, [SCIMError, SCIM_ERROR_STATUS]));
 
 export { adminScim };

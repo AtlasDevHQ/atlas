@@ -15,6 +15,7 @@
 
 import { createRoute, z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
+import { withErrorHandler } from "@atlas/api/lib/routes/error-handler";
 import {
   SLA_ALERT_STATUSES,
   SLA_ALERT_TYPES,
@@ -235,7 +236,7 @@ const platformSLA = createPlatformRouter();
 
 // ── List all workspaces SLA ──────────────────────────────────────────
 
-platformSLA.openapi(listSLARoute, async (c) => {
+platformSLA.openapi(listSLARoute, withErrorHandler("fetch SLA summary", async (c) => {
   const requestId = c.get("requestId");
 
   const sla = await loadSLA();
@@ -245,18 +246,13 @@ platformSLA.openapi(listSLARoute, async (c) => {
 
   const hoursBack = Math.min(Math.max(parseInt(c.req.query("hours") ?? "24", 10) || 24, 1), 720);
 
-  try {
-    const workspaces = await sla.getAllWorkspaceSLA(hoursBack);
-    return c.json({ workspaces, hoursBack }, 200);
-  } catch (err) {
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to fetch SLA summary");
-    return c.json({ error: "internal_error", message: "Failed to load SLA metrics.", requestId }, 500);
-  }
-});
+  const workspaces = await sla.getAllWorkspaceSLA(hoursBack);
+  return c.json({ workspaces, hoursBack }, 200);
+}));
 
 // ── Get workspace SLA detail ─────────────────────────────────────────
 
-platformSLA.openapi(getWorkspaceSLARoute, async (c) => {
+platformSLA.openapi(getWorkspaceSLARoute, withErrorHandler("fetch workspace SLA detail", async (c) => {
   const requestId = c.get("requestId");
 
   const sla = await loadSLA();
@@ -267,18 +263,13 @@ platformSLA.openapi(getWorkspaceSLARoute, async (c) => {
   const workspaceId = c.req.param("workspaceId");
   const hoursBack = Math.min(Math.max(parseInt(c.req.query("hours") ?? "24", 10) || 24, 1), 720);
 
-  try {
-    const detail = await sla.getWorkspaceSLADetail(workspaceId, hoursBack);
-    return c.json(detail, 200);
-  } catch (err) {
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, workspaceId }, "Failed to fetch workspace SLA detail");
-    return c.json({ error: "internal_error", message: "Failed to load workspace SLA detail.", requestId }, 500);
-  }
-});
+  const detail = await sla.getWorkspaceSLADetail(workspaceId, hoursBack);
+  return c.json(detail, 200);
+}));
 
 // ── List alerts ──────────────────────────────────────────────────────
 
-platformSLA.openapi(listAlertsRoute, async (c) => {
+platformSLA.openapi(listAlertsRoute, withErrorHandler("fetch SLA alerts", async (c) => {
   const requestId = c.get("requestId");
 
   const sla = await loadSLA();
@@ -291,18 +282,13 @@ platformSLA.openapi(listAlertsRoute, async (c) => {
   const status = statusParam && validStatuses.has(statusParam as "firing") ? (statusParam as "firing" | "resolved" | "acknowledged") : undefined;
   const { limit } = parsePagination(c, { limit: 100, maxLimit: 500 });
 
-  try {
-    const alerts = await sla.getAlerts(status, limit);
-    return c.json({ alerts }, 200);
-  } catch (err) {
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to fetch SLA alerts");
-    return c.json({ error: "internal_error", message: "Failed to load SLA alerts.", requestId }, 500);
-  }
-});
+  const alerts = await sla.getAlerts(status, limit);
+  return c.json({ alerts }, 200);
+}));
 
 // ── Get thresholds ───────────────────────────────────────────────────
 
-platformSLA.openapi(getThresholdsRoute, async (c) => {
+platformSLA.openapi(getThresholdsRoute, withErrorHandler("read SLA thresholds", async (c) => {
   const requestId = c.get("requestId");
 
   const sla = await loadSLA();
@@ -310,18 +296,13 @@ platformSLA.openapi(getThresholdsRoute, async (c) => {
     return c.json({ error: "not_available", message: "SLA monitoring requires enterprise features to be enabled.", requestId }, 404);
   }
 
-  try {
-    const thresholds = await sla.getThresholds();
-    return c.json(thresholds, 200);
-  } catch (err) {
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to read SLA thresholds");
-    return c.json({ error: "internal_error", message: "Failed to read SLA thresholds.", requestId }, 500);
-  }
-});
+  const thresholds = await sla.getThresholds();
+  return c.json(thresholds, 200);
+}));
 
 // ── Update thresholds ────────────────────────────────────────────────
 
-platformSLA.openapi(updateThresholdsRoute, async (c) => {
+platformSLA.openapi(updateThresholdsRoute, withErrorHandler("update SLA thresholds", async (c) => {
   const requestId = c.get("requestId");
 
   const sla = await loadSLA();
@@ -331,19 +312,14 @@ platformSLA.openapi(updateThresholdsRoute, async (c) => {
 
   const body = c.req.valid("json");
 
-  try {
-    await sla.updateThresholds(body);
-    log.info({ thresholds: body, requestId }, "SLA thresholds updated by platform admin");
-    return c.json({ message: "Thresholds updated.", thresholds: body }, 200);
-  } catch (err) {
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to update SLA thresholds");
-    return c.json({ error: "internal_error", message: "Failed to update SLA thresholds.", requestId }, 500);
-  }
-});
+  await sla.updateThresholds(body);
+  log.info({ thresholds: body, requestId }, "SLA thresholds updated by platform admin");
+  return c.json({ message: "Thresholds updated.", thresholds: body }, 200);
+}));
 
 // ── Acknowledge alert ────────────────────────────────────────────────
 
-platformSLA.openapi(acknowledgeAlertRoute, async (c) => {
+platformSLA.openapi(acknowledgeAlertRoute, withErrorHandler("acknowledge SLA alert", async (c) => {
   const requestId = c.get("requestId");
 
   const sla = await loadSLA();
@@ -359,22 +335,17 @@ platformSLA.openapi(acknowledgeAlertRoute, async (c) => {
   }
   const actorId = authResult.user.id;
 
-  try {
-    const acknowledged = await sla.acknowledgeAlert(alertId, actorId);
-    if (!acknowledged) {
-      return c.json({ error: "not_firing", message: "Alert is not in firing state.", requestId }, 400);
-    }
-    log.info({ alertId, actorId, requestId }, "SLA alert acknowledged");
-    return c.json({ message: "Alert acknowledged.", alertId }, 200);
-  } catch (err) {
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, alertId }, "Failed to acknowledge SLA alert");
-    return c.json({ error: "internal_error", message: "Failed to acknowledge alert.", requestId }, 500);
+  const acknowledged = await sla.acknowledgeAlert(alertId, actorId);
+  if (!acknowledged) {
+    return c.json({ error: "not_firing", message: "Alert is not in firing state.", requestId }, 400);
   }
-});
+  log.info({ alertId, actorId, requestId }, "SLA alert acknowledged");
+  return c.json({ message: "Alert acknowledged.", alertId }, 200);
+}));
 
 // ── Evaluate alerts ──────────────────────────────────────────────────
 
-platformSLA.openapi(evaluateAlertsRoute, async (c) => {
+platformSLA.openapi(evaluateAlertsRoute, withErrorHandler("evaluate SLA alerts", async (c) => {
   const requestId = c.get("requestId");
 
   const sla = await loadSLA();
@@ -382,13 +353,8 @@ platformSLA.openapi(evaluateAlertsRoute, async (c) => {
     return c.json({ error: "not_available", message: "SLA monitoring requires enterprise features to be enabled.", requestId }, 404);
   }
 
-  try {
-    const newAlerts = await sla.evaluateAlerts();
-    return c.json({ newAlerts }, 200);
-  } catch (err) {
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to evaluate SLA alerts");
-    return c.json({ error: "internal_error", message: "Failed to evaluate alerts.", requestId }, 500);
-  }
-});
+  const newAlerts = await sla.evaluateAlerts();
+  return c.json({ newAlerts }, 200);
+}));
 
 export { platformSLA };

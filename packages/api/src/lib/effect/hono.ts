@@ -20,7 +20,7 @@ import { HTTPException } from "hono/http-exception";
 import type { Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { createLogger } from "@atlas/api/lib/logger";
-import type { AtlasError } from "./errors";
+import { ATLAS_ERROR_TAG_LIST, type AtlasError } from "./errors";
 
 // ── Domain error mapping (replaces throwIfEEError) ──────────────────
 
@@ -61,30 +61,10 @@ interface HttpErrorMapping {
 
 /**
  * Set of all `_tag` values in the `AtlasError` union.
- * Used by `isAtlasError` to narrow unknown objects before calling `mapTaggedError`.
+ * Derived from the compile-time verified `ATLAS_ERROR_TAG_LIST` in errors.ts —
+ * adding a new error variant without updating the list causes a type error.
  */
-const ATLAS_ERROR_TAGS = new Set<string>([
-  "EmptyQueryError",
-  "ForbiddenPatternError",
-  "ParseError",
-  "WhitelistError",
-  "ConnectionNotFoundError",
-  "PoolExhaustedError",
-  "NoDatasourceError",
-  "QueryTimeoutError",
-  "QueryExecutionError",
-  "RateLimitExceededError",
-  "ConcurrencyLimitError",
-  "RLSError",
-  "EnterpriseGateError",
-  "ApprovalRequiredError",
-  "PluginRejectedError",
-  "CustomValidatorError",
-  "ActionTimeoutError",
-  "SchedulerTaskTimeoutError",
-  "SchedulerExecutionError",
-  "DeliveryError",
-]);
+const ATLAS_ERROR_TAGS: ReadonlySet<string> = new Set(ATLAS_ERROR_TAG_LIST);
 
 /**
  * Type guard for objects with a `_tag` string and `message` string.
@@ -182,15 +162,21 @@ export function mapTaggedError(error: AtlasError): HttpErrorMapping {
 /**
  * Check if an error is an EnterpriseError (from @atlas/ee).
  *
- * Uses duck-typing (`name === "EnterpriseError"` + `code === "enterprise_required"`)
- * to avoid a hard import of `@atlas/ee` in the bridge module.
+ * Uses duck-typing (`name === "EnterpriseError"` + string `code`) to avoid a
+ * hard import of `@atlas/ee` in the bridge module. The actual `code` value is
+ * read from the error and used in the HTTP response, so future code additions
+ * (e.g. `"license_expired"`) are forward-compatible.
+ *
+ * Coupling: ee/src/index.ts `EnterpriseError` sets `this.name = "EnterpriseError"`.
+ * If that class is renamed, this guard silently stops matching — a cross-package
+ * test in hono.test.ts verifies the coupling.
  */
-function isEnterpriseError(err: unknown): err is Error & { code: "enterprise_required" } {
+function isEnterpriseError(err: unknown): err is Error & { code: string } {
   return (
     err instanceof Error &&
     err.name === "EnterpriseError" &&
     "code" in err &&
-    (err as Record<string, unknown>).code === "enterprise_required"
+    typeof (err as Record<string, unknown>).code === "string"
   );
 }
 
@@ -212,7 +198,7 @@ function classifyError(
   if (isEnterpriseError(error)) {
     return new HTTPException(403, {
       res: Response.json(
-        { error: "enterprise_required", message: error.message, requestId },
+        { error: error.code, message: error.message, requestId },
         { status: 403 },
       ),
     });
@@ -392,7 +378,7 @@ export function runHandler<T>(
   c: Context,
   label: string,
   handler: () => Promise<T>,
-  options?: { domainErrors?: DomainErrorMapping[] },
+  options?: Pick<RunEffectOptions, "domainErrors">,
 ): Promise<T> {
   return runEffect(c, Effect.tryPromise({
     try: handler,

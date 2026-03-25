@@ -196,3 +196,39 @@ export type AtlasError =
 
 /** Discriminant union of all known `_tag` values — derived from `AtlasError`. */
 export type AtlasErrorTag = AtlasError["_tag"];
+
+/**
+ * Compile-time verified list of all known `_tag` values.
+ *
+ * The `satisfies` clause ensures this array stays in sync with `AtlasErrorTag`:
+ * adding a new error variant to the `AtlasError` union without updating this
+ * list causes a type error. Used by `hono.ts` to build the `ATLAS_ERROR_TAGS`
+ * set for runtime error classification.
+ */
+export const ATLAS_ERROR_TAG_LIST = [
+  "EmptyQueryError",
+  "ForbiddenPatternError",
+  "ParseError",
+  "WhitelistError",
+  "ConnectionNotFoundError",
+  "PoolExhaustedError",
+  "NoDatasourceError",
+  "QueryTimeoutError",
+  "QueryExecutionError",
+  "RateLimitExceededError",
+  "ConcurrencyLimitError",
+  "RLSError",
+  "EnterpriseGateError",
+  "ApprovalRequiredError",
+  "PluginRejectedError",
+  "CustomValidatorError",
+  "ActionTimeoutError",
+  "SchedulerTaskTimeoutError",
+  "SchedulerExecutionError",
+  "DeliveryError",
+] as const satisfies readonly AtlasErrorTag[];
+
+/** Compile-time check: every `AtlasErrorTag` must appear in the list. */
+type _AssertComplete = AtlasErrorTag extends (typeof ATLAS_ERROR_TAG_LIST)[number] ? true : never;
+const _assertComplete: _AssertComplete = true;
+void _assertComplete;

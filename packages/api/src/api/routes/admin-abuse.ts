@@ -13,7 +13,7 @@ import {
   getAbuseConfig,
 } from "@atlas/api/lib/security/abuse";
 import { withErrorHandler } from "@atlas/api/lib/routes/error-handler";
-import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
+import { ErrorSchema, AuthErrorSchema, createListResponseSchema } from "./shared-schemas";
 import { createAdminRouter } from "./admin-router";
 
 // ---------------------------------------------------------------------------
@@ -41,10 +41,7 @@ const AbuseStatusSchema = z.object({
   events: z.array(AbuseEventSchema),
 });
 
-const ListResponseSchema = z.object({
-  workspaces: z.array(AbuseStatusSchema),
-  total: z.number(),
-});
+const ListResponseSchema = createListResponseSchema("workspaces", AbuseStatusSchema);
 
 const ReinstateResponseSchema = z.object({
   success: z.boolean(),

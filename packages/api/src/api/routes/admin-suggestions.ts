@@ -10,7 +10,7 @@ import { withErrorHandler } from "@atlas/api/lib/routes/error-handler";
 import { hasInternalDB, internalQuery, deleteSuggestion } from "@atlas/api/lib/db/internal";
 import { toQuerySuggestion } from "@atlas/api/lib/learn/suggestion-helpers";
 import type { QuerySuggestionRow } from "@atlas/api/lib/db/internal";
-import { ErrorSchema, AuthErrorSchema, parsePagination } from "./shared-schemas";
+import { ErrorSchema, AuthErrorSchema, parsePagination, createIdParamSchema, createListResponseSchema } from "./shared-schemas";
 import { createAdminRouter } from "./admin-router";
 
 // ---------------------------------------------------------------------------
@@ -33,9 +33,7 @@ const SuggestionSchema = z.object({
   updatedAt: z.string(),
 });
 
-const ListSuggestionsResponseSchema = z.object({
-  suggestions: z.array(SuggestionSchema),
-  total: z.number(),
+const ListSuggestionsResponseSchema = createListResponseSchema("suggestions", SuggestionSchema, {
   limit: z.number(),
   offset: z.number(),
 });
@@ -95,9 +93,7 @@ const deleteSuggestionRoute = createRoute({
   summary: "Delete a query suggestion",
   description: "Permanently removes a query suggestion by ID.",
   request: {
-    params: z.object({
-      id: z.string().openapi({ param: { name: "id", in: "path" }, example: "abc123" }),
-    }),
+    params: createIdParamSchema(),
   },
   responses: {
     204: {

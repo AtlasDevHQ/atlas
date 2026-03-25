@@ -14,7 +14,7 @@ import {
   removeIPAllowlistEntry,
   IPAllowlistError,
 } from "@atlas/ee/auth/ip-allowlist";
-import { ErrorSchema, AuthErrorSchema, isValidId, MAX_ID_LENGTH } from "./shared-schemas";
+import { ErrorSchema, AuthErrorSchema, isValidId, createIdParamSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 
 const IP_ALLOWLIST_ERROR_STATUS = { validation: 400, conflict: 409, not_found: 404 } as const;
@@ -32,12 +32,7 @@ const IPAllowlistEntrySchema = z.object({
   createdBy: z.string().nullable(),
 });
 
-const EntryIdParamSchema = z.object({
-  id: z.string().min(1).max(MAX_ID_LENGTH).openapi({
-    param: { name: "id", in: "path" },
-    example: "550e8400-e29b-41d4-a716-446655440000",
-  }),
-});
+const EntryIdParamSchema = createIdParamSchema("550e8400-e29b-41d4-a716-446655440000");
 
 const CreateIPAllowlistBodySchema = z.object({
   cidr: z.string().min(1).openapi({

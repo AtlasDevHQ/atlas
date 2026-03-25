@@ -11,7 +11,7 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { withErrorHandler } from "@atlas/api/lib/routes/error-handler";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import type { PromptCollection, PromptItem } from "@useatlas/types";
-import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
+import { ErrorSchema, AuthErrorSchema, createIdParamSchema, createParamSchema, createListResponseSchema, DeletedResponseSchema } from "./shared-schemas";
 import { createAdminRouter } from "./admin-router";
 
 const log = createLogger("admin-prompts");
@@ -74,14 +74,9 @@ const PromptItemSchema = z.object({
   updatedAt: z.string(),
 });
 
-const ListCollectionsResponseSchema = z.object({
-  collections: z.array(PromptCollectionSchema),
-  total: z.number(),
-});
+const ListCollectionsResponseSchema = createListResponseSchema("collections", PromptCollectionSchema);
 
-const DeletedSchema = z.object({
-  deleted: z.boolean(),
-});
+const DeletedSchema = DeletedResponseSchema;
 
 const ReorderedSchema = z.object({
   reordered: z.boolean(),
@@ -187,9 +182,7 @@ const updateCollectionRoute = createRoute({
   description:
     "Updates a prompt collection's name, industry, and/or description. Built-in collections cannot be modified.",
   request: {
-    params: z.object({
-      id: z.string().openapi({ param: { name: "id", in: "path" }, example: "abc123" }),
-    }),
+    params: createIdParamSchema(),
     body: {
       content: {
         "application/json": {
@@ -242,9 +235,7 @@ const deleteCollectionRoute = createRoute({
   description:
     "Permanently deletes a prompt collection and cascades to its items. Built-in collections cannot be deleted.",
   request: {
-    params: z.object({
-      id: z.string().openapi({ param: { name: "id", in: "path" }, example: "abc123" }),
-    }),
+    params: createIdParamSchema(),
   },
   responses: {
     200: {
@@ -282,9 +273,7 @@ const createItemRoute = createRoute({
   description:
     "Adds a new prompt item to a collection. The collection must not be built-in. Sort order defaults to MAX + 1 if not provided.",
   request: {
-    params: z.object({
-      id: z.string().openapi({ param: { name: "id", in: "path" }, description: "Collection ID", example: "abc123" }),
-    }),
+    params: createIdParamSchema(),
     body: {
       content: {
         "application/json": {
@@ -338,10 +327,7 @@ const updateItemRoute = createRoute({
   description:
     "Updates a prompt item's question, description, and/or category. The parent collection must not be built-in.",
   request: {
-    params: z.object({
-      collectionId: z.string().openapi({ param: { name: "collectionId", in: "path" }, example: "abc123" }),
-      itemId: z.string().openapi({ param: { name: "itemId", in: "path" }, example: "def456" }),
-    }),
+    params: createParamSchema("collectionId").merge(createParamSchema("itemId", "def456")),
     body: {
       content: {
         "application/json": {
@@ -394,10 +380,7 @@ const deleteItemRoute = createRoute({
   description:
     "Permanently removes a prompt item. The parent collection must not be built-in.",
   request: {
-    params: z.object({
-      collectionId: z.string().openapi({ param: { name: "collectionId", in: "path" }, example: "abc123" }),
-      itemId: z.string().openapi({ param: { name: "itemId", in: "path" }, example: "def456" }),
-    }),
+    params: createParamSchema("collectionId").merge(createParamSchema("itemId", "def456")),
   },
   responses: {
     200: {
@@ -435,9 +418,7 @@ const reorderItemsRoute = createRoute({
   description:
     "Reorders all items within a collection. The itemIds array must contain every item ID in the collection exactly once.",
   request: {
-    params: z.object({
-      id: z.string().openapi({ param: { name: "id", in: "path" }, description: "Collection ID", example: "abc123" }),
-    }),
+    params: createIdParamSchema(),
     body: {
       content: {
         "application/json": {

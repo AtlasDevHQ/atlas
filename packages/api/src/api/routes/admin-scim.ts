@@ -20,7 +20,7 @@ import {
   deleteGroupMapping,
   SCIMError,
 } from "@atlas/ee/auth/scim";
-import { ErrorSchema, AuthErrorSchema, isValidId, MAX_ID_LENGTH } from "./shared-schemas";
+import { ErrorSchema, AuthErrorSchema, isValidId, createIdParamSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 
 const SCIM_ERROR_STATUS = { not_found: 404, conflict: 409, validation: 400 } as const;
@@ -50,19 +50,9 @@ const SCIMGroupMappingSchema = z.object({
   createdAt: z.string(),
 });
 
-const ConnectionIdParamSchema = z.object({
-  id: z.string().min(1).max(MAX_ID_LENGTH).openapi({
-    param: { name: "id", in: "path" },
-    example: "conn_abc123",
-  }),
-});
+const ConnectionIdParamSchema = createIdParamSchema("conn_abc123");
 
-const MappingIdParamSchema = z.object({
-  id: z.string().min(1).max(MAX_ID_LENGTH).openapi({
-    param: { name: "id", in: "path" },
-    example: "map_abc123",
-  }),
-});
+const MappingIdParamSchema = createIdParamSchema("map_abc123");
 
 const CreateGroupMappingBodySchema = z.object({
   scimGroupName: z.string().min(1).max(255).regex(

@@ -17,7 +17,7 @@ import {
   RoleError,
   PERMISSIONS,
 } from "@atlas/ee/auth/roles";
-import { ErrorSchema, AuthErrorSchema, isValidId, MAX_ID_LENGTH } from "./shared-schemas";
+import { ErrorSchema, AuthErrorSchema, isValidId, createIdParamSchema, createParamSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 
 const ROLE_ERROR_STATUS = { not_found: 404, conflict: 409, validation: 400, builtin_protected: 403 } as const;
@@ -37,19 +37,9 @@ const RoleSchema = z.object({
   updatedAt: z.string(),
 });
 
-const RoleIdParamSchema = z.object({
-  id: z.string().min(1).max(MAX_ID_LENGTH).openapi({
-    param: { name: "id", in: "path" },
-    example: "role_abc123",
-  }),
-});
+const RoleIdParamSchema = createIdParamSchema("role_abc123");
 
-const UserIdParamSchema = z.object({
-  userId: z.string().min(1).max(MAX_ID_LENGTH).openapi({
-    param: { name: "userId", in: "path" },
-    example: "user_abc123",
-  }),
-});
+const UserIdParamSchema = createParamSchema("userId", "user_abc123");
 
 const CreateRoleBodySchema = z.object({
   name: z.string().min(1).max(63),

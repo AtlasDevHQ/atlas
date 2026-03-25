@@ -62,3 +62,78 @@ export const MAX_ID_LENGTH = 128;
 export function isValidId(id: string | undefined): id is string {
   return !!id && id.length > 0 && id.length <= MAX_ID_LENGTH;
 }
+
+// ---------------------------------------------------------------------------
+// OpenAPI schema factories
+// ---------------------------------------------------------------------------
+
+/**
+ * Create a path parameter schema for an entity ID.
+ * Enforces min(1), max(MAX_ID_LENGTH), and includes `.openapi()` metadata.
+ */
+export function createIdParamSchema(example?: string) {
+  return z.object({
+    id: z.string().min(1).max(MAX_ID_LENGTH).openapi({
+      param: { name: "id", in: "path" },
+      example: example ?? "abc123",
+    }),
+  });
+}
+
+/**
+ * Create a path parameter schema for a named parameter (e.g. "userId", "collectionId").
+ * Same validation as {@link createIdParamSchema} but with a custom param name.
+ */
+export function createParamSchema<K extends string>(name: K, example?: string) {
+  return z.object({
+    [name]: z.string().min(1).max(MAX_ID_LENGTH).openapi({
+      param: { name, in: "path" },
+      example: example ?? "abc123",
+    }),
+  }) as z.ZodObject<Record<K, z.ZodString>>;
+}
+
+/**
+ * Create a list response schema with `{ [fieldName]: T[], total: number }`.
+ * Covers the common admin listing pattern. Pass `extra` for additional fields
+ * (e.g. limit, offset, callerIP).
+ */
+export function createListResponseSchema<T extends z.ZodTypeAny>(
+  fieldName: string,
+  itemSchema: T,
+  extra?: z.ZodRawShape,
+) {
+  return z.object({
+    [fieldName]: z.array(itemSchema),
+    total: z.number().openapi({ description: "Total count" }),
+    ...extra,
+  });
+}
+
+/**
+ * Create a success response schema with a boolean field.
+ * Defaults to `{ success: boolean, message?: string }`.
+ */
+export function createSuccessResponseSchema() {
+  return z.object({
+    success: z.boolean(),
+    message: z.string().optional(),
+  });
+}
+
+/** Standard `{ deleted: boolean }` response schema. */
+export const DeletedResponseSchema = z.object({
+  deleted: z.boolean(),
+});
+
+/**
+ * Create a standard error response schema.
+ * Equivalent to {@link ErrorSchema} but as a factory for symmetry.
+ */
+export function createErrorResponseSchema() {
+  return z.object({
+    error: z.string(),
+    message: z.string(),
+    requestId: z.string().optional(),
+  });
+}

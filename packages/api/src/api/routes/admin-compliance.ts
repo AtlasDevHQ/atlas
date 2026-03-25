@@ -31,7 +31,7 @@ import {
   type ReportErrorCode,
 } from "@atlas/ee/compliance/reports";
 import type { PIICategory, MaskingStrategy } from "@useatlas/types";
-import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
+import { ErrorSchema, AuthErrorSchema, DeletedResponseSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 
 const COMPLIANCE_ERROR_STATUS = { validation: 400, not_found: 404, conflict: 409 } as const;
@@ -119,7 +119,7 @@ const deleteRoute = createRoute({
   tags: ["Admin — Compliance"],
   summary: "Delete a PII classification",
   responses: {
-    200: { description: "Deleted", content: { "application/json": { schema: z.object({ deleted: z.boolean() }) } } },
+    200: { description: "Deleted", content: { "application/json": { schema: DeletedResponseSchema } } },
     400: { description: "No active organization", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     403: { description: "Forbidden", content: { "application/json": { schema: AuthErrorSchema } } },

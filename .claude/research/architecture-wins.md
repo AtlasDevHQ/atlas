@@ -339,6 +339,8 @@ Tracking module-deepening refactors discovered by the `improve-codebase-architec
 
 **Category:** Per-handler HOF error wrapping replaced by centralized Effect bridge with typed error classification.
 
+---
+
 ## 16. PluginRegistry → Effect Layer/Service (P5)
 
 **Date:** 2026-03-25

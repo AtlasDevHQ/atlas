@@ -535,13 +535,16 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 
 ### Service Architecture (P5–P8)
 - [x] P5: Plugin lifecycle → Effect Layer composition (#908, PR #926)
-- [ ] P6: Server startup → Effect Layer DAG (#909)
+- [x] P6: Server startup → Effect Layer DAG (#909, PR #TBD)
 - [x] P7: Route handlers → Effect boundaries with typed error mapping (#910, PR #925)
 - [ ] P8: Auth and request context → Effect Context replacing AsyncLocalStorage (#911)
 
 ### AI & Database (P10–P11)
 - [ ] P10: Agent loop → @effect/ai with AiToolkit and provider Layers (#913)
 - [ ] P11: Database client → @effect/sql-pg and @effect/sql-mysql2 (#914)
+
+### Follow-ups
+- [ ] Migrate platform-residency and platform-domains inner error handling to domainErrors (#927)
 
 ### Test Infrastructure
 - [ ] P9: Test infrastructure → Effect Layer-based test setup (#912)
@@ -555,7 +558,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] Public pricing page on useatlas.dev (#871, PR #922)
 - [ ] SLA commitments — uptime guarantee, query latency targets, support response times (#872)
 - [ ] Terms of service, privacy policy, DPA for enterprise (#873)
-- [ ] Launch content — blog post, Show HN, comparison pages updated (#874)
+- [x] Launch content — blog post, Show HN, comparison pages updated (#874, PR #924)
 - [ ] Migration tooling — self-hosted to hosted (export/import conversations, semantic layers, settings) (#875)
 - [ ] Documentation for hosted users — separate onboarding flow from self-hosted docs (#876)
 - [x] Status page — public incident communication (#877, PR #921)

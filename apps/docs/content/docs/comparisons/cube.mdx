@@ -1,0 +1,61 @@
+---
+title: Atlas vs Cube
+description: Comparing Atlas and Cube.js -- embeddable text-to-SQL agent vs enterprise semantic layer platform.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+[Cube](https://cube.dev/) is the most mature open-source semantic layer, with ~19K GitHub stars and an enterprise-grade caching engine. Cube recently launched its D3 agentic analytics platform, adding AI-driven querying on top of the semantic layer. Atlas and Cube operate at different layers of the stack.
+
+## Quick Comparison
+
+| | Atlas | Cube |
+|---|---|---|
+| **Category** | Embeddable text-to-SQL agent | Semantic layer platform with AI add-on |
+| **License** | AGPL-3.0 core, MIT client libs | Apache 2.0 core, proprietary Cloud |
+| **Semantic layer** | YAML files (auto-generated, git-versioned) | YAML/JavaScript data model with caching engine |
+| **AI querying** | Core feature (agent-based) | D3 platform add-on |
+| **Embeddable** | Script tag, React component, API, SDK | GraphQL/REST/SQL APIs |
+| **Deployment** | Docker, Railway, Vercel, embedded | Docker, Cube Cloud |
+| **Caching** | None (queries hit the database directly) | Pre-aggregation engine (materialized rollups) |
+| **Plugin system** | Plugin SDK + 20 official plugins | Database drivers |
+| **SQL validation** | 7-layer pipeline | Semantic layer governs query generation |
+| **MCP server** | Yes | Yes |
+| **Chat integrations** | Slack, Teams, Discord, Telegram, Google Chat, GitHub, Linear, WhatsApp | None built-in |
+| **Admin console** | Built-in | Cube Cloud dashboard |
+
+## Different Layers of the Stack
+
+**Cube** is infrastructure. It sits between your database and your application, providing a semantic layer with a powerful caching engine (pre-aggregations that materialize rollups). Applications query Cube via GraphQL, REST, or SQL APIs. The D3 platform adds AI agents that generate queries against the Cube semantic layer.
+
+**Atlas** is product. It's an end-to-end agent that reads a semantic layer, writes SQL, validates it, runs it, and returns results with charts and narrative. It deploys as a standalone application or embeds in yours.
+
+**Trade-off:** If you need a universal semantic layer that multiple tools query (BI dashboards, notebooks, AI agents), Cube is the right choice. If you need an AI agent that users interact with directly — embedded in your app or as a standalone tool — Atlas is purpose-built for that.
+
+## Semantic Layer
+
+Both tools use YAML-based semantic definitions, but the scope differs.
+
+**Cube** data models support complex transforms: pre-aggregations (materialized views for performance), multi-tenancy via security contexts, joins with fan-out control, and calculated measures with rolling windows. The Cube engine compiles these into optimized SQL.
+
+**Atlas** entity files describe tables, columns, business terms, metrics, and query patterns. They're simpler — no compilation step, no caching engine — but they're auto-generated from your database via `atlas init` and enrichable with LLM-powered descriptions. Changes deploy as static files, no runtime dependency.
+
+**Trade-off:** Cube's semantic layer is more powerful for complex analytics workloads. Atlas's is simpler to bootstrap and maintain, especially when the primary consumer is an AI agent rather than a BI tool.
+
+## AI Capabilities
+
+Cube D3 adds agentic analytics to the Cube platform — AI agents that understand the data model and generate queries. This is a natural extension of Cube's semantic layer.
+
+Atlas is agent-native from day one. The entire product is an agent loop: multi-step reasoning, tool use (SQL execution, Python analysis, semantic layer exploration), 7-layer SQL validation, and structured output. The agent doesn't just generate a query — it reads context, writes SQL, validates it, runs it, and explains the results.
+
+## When to Choose Cube
+
+- You need a universal semantic layer queried by multiple tools (BI, notebooks, AI)
+- Pre-aggregation caching is critical for your query performance
+- You want the most mature, battle-tested semantic layer in the ecosystem
+- You're already using Cube and want to add AI querying via D3
+- Apache 2.0 licensing is preferred (Cube core is Apache 2.0)
+
+<Callout type="info">
+  Atlas and Cube are potentially complementary. Atlas could read Cube's semantic layer as a context source, combining Cube's caching and modeling with Atlas's agent loop and validation pipeline. This integration is not built yet but architecturally feasible.
+</Callout>

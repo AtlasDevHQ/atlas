@@ -78,6 +78,10 @@ SLACK_SIGNING_SECRET=your-signing-secret    # Basic Information → Signing Secr
 
 ## Multi-Workspace OAuth Setup (Self-Hosted)
 
+<Callout type="info" title="SaaS">
+SaaS users do not need to configure OAuth. Use the pre-configured Atlas app from **Admin > Integrations**. This section is for self-hosted operators only.
+</Callout>
+
 For distributing Atlas to multiple Slack workspaces. Requires an [internal database](/reference/environment-variables) (`DATABASE_URL`) to store per-workspace bot tokens.
 
 ### 1. Configure OAuth

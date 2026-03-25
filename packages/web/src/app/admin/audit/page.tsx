@@ -27,7 +27,8 @@ import { LoadingState } from "@/ui/components/admin/loading-state";
 import { FeatureGate } from "@/ui/components/admin/feature-disabled";
 import { ScrollText, Search, AlertTriangle, Database, BarChart3, Download, X, Shield } from "lucide-react";
 import { RetentionPanel } from "./retention-panel";
-import { useAdminFetch, friendlyError, type FetchError } from "@/ui/hooks/use-admin-fetch";
+import { useAdminFetch, type FetchError } from "@/ui/hooks/use-admin-fetch";
+import { extractFetchError, friendlyError } from "@/ui/lib/fetch-error";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 
 // ── Types ─────────────────────────────────────────────────────────
@@ -84,17 +85,6 @@ function buildQueryString(p: AuditQueryParams, opts?: { noPagination?: boolean }
     qs.set("order", p.sortDesc ? "desc" : "asc");
   }
   return qs;
-}
-
-/** Extract server error message from a non-ok response, falling back to status code. */
-async function extractErrorMessage(res: Response, fallback: string): Promise<string> {
-  try {
-    const body = await res.json();
-    if (body?.message) return body.message;
-  } catch {
-    // Response body not JSON
-  }
-  return `${fallback}: HTTP ${res.status}`;
 }
 
 export default function AuditPage() {
@@ -184,8 +174,7 @@ export default function AuditPage() {
         const res = await fetch(`${apiUrl}/api/v1/admin/audit?${qs}`, { credentials });
         if (!res.ok) {
           if (!cancelled) {
-            const msg = await extractErrorMessage(res, "Failed to load audit log");
-            setError({ message: msg, status: res.status });
+            setError(await extractFetchError(res));
           }
           return;
         }
@@ -215,8 +204,8 @@ export default function AuditPage() {
       const qs = buildQueryString(queryParams, { noPagination: true });
       const res = await fetch(`${apiUrl}/api/v1/admin/audit/export?${qs}`, { credentials });
       if (!res.ok) {
-        const msg = await extractErrorMessage(res, "Export failed");
-        setExportError(msg);
+        const e = await extractFetchError(res);
+        setExportError(e.message);
         return;
       }
 

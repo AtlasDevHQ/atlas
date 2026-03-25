@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useRef } from "react";
 import { useAtlasConfig } from "@/ui/context";
-import type { FetchError } from "./use-admin-fetch";
+import { extractFetchError } from "@/ui/lib/fetch-error";
 
 /** HTTP methods supported by admin mutations. */
 type MutationMethod = "POST" | "PUT" | "PATCH" | "DELETE";
@@ -55,26 +55,6 @@ interface UseAdminMutationReturn<TResponse> {
   reset: () => void;
   /** Check whether a per-item mutation is in flight. */
   isMutating: (itemId: string) => boolean;
-}
-
-/**
- * Extract a user-facing error message from a failed fetch response.
- * Attempts to parse JSON body for `message` and `requestId` fields.
- */
-async function extractError(res: Response): Promise<FetchError> {
-  let message = `HTTP ${res.status}`;
-  let requestId: string | undefined;
-  try {
-    const body: unknown = await res.json();
-    if (typeof body === "object" && body !== null) {
-      const obj = body as Record<string, unknown>;
-      if (typeof obj.message === "string") message = obj.message;
-      if (typeof obj.requestId === "string") requestId = obj.requestId;
-    }
-  } catch {
-    // intentionally ignored: body wasn't JSON — keep the status-only message
-  }
-  return { message, status: res.status, ...(requestId && { requestId }) };
 }
 
 /**
@@ -150,9 +130,12 @@ export function useAdminMutation<TResponse = unknown>(
         });
 
         if (!res.ok) {
-          const fetchError = await extractError(res);
-          setError(fetchError.message);
-          return { ok: false, error: fetchError.message };
+          const fetchError = await extractFetchError(res);
+          const msg = fetchError.requestId
+            ? `${fetchError.message} (Request ID: ${fetchError.requestId})`
+            : fetchError.message;
+          setError(msg);
+          return { ok: false, error: msg };
         }
 
         // Parse response (handle 204 No Content)

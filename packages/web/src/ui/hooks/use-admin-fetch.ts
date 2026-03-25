@@ -2,27 +2,11 @@
 
 import { useEffect, useState, useCallback, useRef } from "react";
 import { useAtlasConfig } from "@/ui/context";
+import { extractFetchError, type FetchError } from "@/ui/lib/fetch-error";
 
-export interface FetchError {
-  message: string;
-  status?: number;
-  requestId?: string;
-}
-
-/** Map HTTP status codes to user-friendly messages for admin pages. Appends request ID for log correlation when available. */
-export function friendlyError(err: FetchError): string {
-  let msg: string;
-  if (err.status === 401) msg = "Not authenticated. Please sign in.";
-  else if (err.status === 403)
-    msg = "Access denied. Admin role required to view this page.";
-  else if (err.status === 404)
-    msg = "This feature is not enabled on this server.";
-  else if (err.status === 503)
-    msg = "A required service is unavailable. Check server configuration.";
-  else msg = err.message;
-  if (err.requestId) msg += ` (Request ID: ${err.requestId})`;
-  return msg;
-}
+// Re-export from @/ui/lib/fetch-error (canonical location) for backward
+// compatibility. New code should import directly from @/ui/lib/fetch-error.
+export { type FetchError, friendlyError } from "@/ui/lib/fetch-error";
 
 /**
  * Shared fetch hook for admin pages.
@@ -53,22 +37,7 @@ export function useAdminFetch<T>(
         signal,
       });
       if (!res.ok) {
-        let message = `HTTP ${res.status}`;
-        let requestId: string | undefined;
-        try {
-          const body: unknown = await res.json();
-          if (
-            typeof body === "object" &&
-            body !== null
-          ) {
-            const obj = body as Record<string, unknown>;
-            if (typeof obj.message === "string") message = obj.message;
-            if (typeof obj.requestId === "string") requestId = obj.requestId;
-          }
-        } catch {
-          // intentionally ignored: body wasn't JSON — keep the status-only message
-        }
-        const e: FetchError = { message, status: res.status, ...(requestId && { requestId }) };
+        const e = await extractFetchError(res);
         if (!signal?.aborted) setError(e);
         return;
       }

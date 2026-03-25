@@ -7,7 +7,7 @@
  */
 
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
-import { withErrorHandler } from "@atlas/api/lib/routes/error-handler";
+import { runHandler } from "@atlas/api/lib/effect/hono";
 import { validationHook } from "./validation-hook";
 import { z } from "zod";
 import { createLogger } from "@atlas/api/lib/logger";
@@ -129,7 +129,7 @@ sessions.use(standardAuth);
 sessions.use(requestContext);
 
 // GET / — list the current user's sessions
-sessions.openapi(listSessionsRoute, withErrorHandler("list sessions", async (c) => {
+sessions.openapi(listSessionsRoute, async (c) => runHandler(c, "list sessions", async () => {
   const requestId = c.get("requestId");
   const authResult = c.get("authResult");
 
@@ -169,7 +169,7 @@ sessions.openapi(listSessionsRoute, withErrorHandler("list sessions", async (c) 
 }));
 
 // DELETE /:id — revoke one of the current user's sessions
-sessions.openapi(revokeSessionRoute, withErrorHandler("revoke session", async (c) => {
+sessions.openapi(revokeSessionRoute, async (c) => runHandler(c, "revoke session", async () => {
   const requestId = c.get("requestId");
   const authResult = c.get("authResult");
 

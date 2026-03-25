@@ -20,7 +20,22 @@ import { HTTPException } from "hono/http-exception";
 import type { Context } from "hono";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { createLogger } from "@atlas/api/lib/logger";
-import type { AtlasError } from "./errors";
+import { ATLAS_ERROR_TAG_LIST, type AtlasError } from "./errors";
+
+// ── Domain error mapping (replaces throwIfEEError) ──────────────────
+
+/**
+ * A domain error class → HTTP status code mapping pair.
+ *
+ * Used by `runEffect` to convert EE domain errors (thrown inside
+ * `Effect.tryPromise`) into proper HTTP responses. Replaces the
+ * `throwIfEEError` + `DomainErrorMapping` combo from `error-handler.ts`.
+ */
+export type DomainErrorMapping = [
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- constructor signatures vary across EE error classes; { code: string } ensures the statusMap lookup is valid
+  errorClass: new (...args: any[]) => Error & { code: string },
+  statusMap: Record<string, ContentfulStatusCode>,
+];
 
 const log = createLogger("effect-bridge");
 
@@ -46,30 +61,10 @@ interface HttpErrorMapping {
 
 /**
  * Set of all `_tag` values in the `AtlasError` union.
- * Used by `isAtlasError` to narrow unknown objects before calling `mapTaggedError`.
+ * Derived from the compile-time verified `ATLAS_ERROR_TAG_LIST` in errors.ts —
+ * adding a new error variant without updating the list causes a type error.
  */
-const ATLAS_ERROR_TAGS = new Set<string>([
-  "EmptyQueryError",
-  "ForbiddenPatternError",
-  "ParseError",
-  "WhitelistError",
-  "ConnectionNotFoundError",
-  "PoolExhaustedError",
-  "NoDatasourceError",
-  "QueryTimeoutError",
-  "QueryExecutionError",
-  "RateLimitExceededError",
-  "ConcurrencyLimitError",
-  "RLSError",
-  "EnterpriseGateError",
-  "ApprovalRequiredError",
-  "PluginRejectedError",
-  "CustomValidatorError",
-  "ActionTimeoutError",
-  "SchedulerTaskTimeoutError",
-  "SchedulerExecutionError",
-  "DeliveryError",
-]);
+const ATLAS_ERROR_TAGS: ReadonlySet<string> = new Set(ATLAS_ERROR_TAG_LIST);
 
 /**
  * Type guard for objects with a `_tag` string and `message` string.
@@ -162,7 +157,94 @@ export function mapTaggedError(error: AtlasError): HttpErrorMapping {
   }
 }
 
+// ── Common error classification ─────────────────────────────────────
+
+/**
+ * Check if an error is an EnterpriseError (from @atlas/ee).
+ *
+ * Uses duck-typing (`name === "EnterpriseError"` + string `code`) to avoid a
+ * hard import of `@atlas/ee` in the bridge module. The actual `code` value is
+ * read from the error and used in the HTTP response, so future code additions
+ * (e.g. `"license_expired"`) are forward-compatible.
+ *
+ * Coupling: ee/src/index.ts `EnterpriseError` sets `this.name = "EnterpriseError"`.
+ * If that class is renamed, this guard silently stops matching — a cross-package
+ * test in hono.test.ts verifies the coupling.
+ */
+function isEnterpriseError(err: unknown): err is Error & { code: string } {
+  return (
+    err instanceof Error &&
+    err.name === "EnterpriseError" &&
+    "code" in err &&
+    typeof (err as Record<string, unknown>).code === "string"
+  );
+}
+
+/**
+ * Try to map an error to an HTTPException using the shared vocabulary:
+ * HTTPException passthrough → EnterpriseError → domain error mappings → AtlasError.
+ *
+ * Returns the HTTPException to throw, or `undefined` if the error is unrecognized.
+ */
+function classifyError(
+  error: unknown,
+  requestId: string,
+  domainErrors?: DomainErrorMapping[],
+): HTTPException | undefined {
+  // 1. HTTPException — re-throw unchanged (framework validation, auth failures)
+  if (error instanceof HTTPException) return error;
+
+  // 2. EnterpriseError → 403
+  if (isEnterpriseError(error)) {
+    return new HTTPException(403, {
+      res: Response.json(
+        { error: error.code, message: error.message, requestId },
+        { status: 403 },
+      ),
+    });
+  }
+
+  // 3. Domain error mappings (EE module errors with { code } property)
+  if (domainErrors) {
+    for (const [errorClass, statusMap] of domainErrors) {
+      if (error instanceof errorClass) {
+        const code = error.code;
+        if (statusMap[code] === undefined) {
+          log.warn(`Unmapped domain error code "${code}" for ${errorClass.name}, defaulting to 400`);
+        }
+        const status = (statusMap[code] ?? 400) as ContentfulStatusCode;
+        return new HTTPException(status, {
+          res: Response.json(
+            { error: code, message: error.message, requestId },
+            { status },
+          ),
+        });
+      }
+    }
+  }
+
+  // 4. Known Atlas tagged error → mapped HTTP status
+  if (isTaggedError(error) && isAtlasError(error)) {
+    const mapped = mapTaggedError(error);
+    return new HTTPException(mapped.status, {
+      res: Response.json(
+        { error: mapped.code, message: mapped.message, requestId },
+        { status: mapped.status, headers: mapped.headers },
+      ),
+    });
+  }
+
+  return undefined;
+}
+
 // ── Bridge ──────────────────────────────────────────────────────────
+
+export interface RunEffectOptions {
+  /** Human-readable action label for error messages and logs. */
+  label?: string;
+  /** Domain error class → HTTP status code mappings (replaces throwIfEEError). */
+  domainErrors?: DomainErrorMapping[];
+}
 
 /**
  * Run an Effect program inside a Hono route handler.
@@ -172,20 +254,23 @@ export function mapTaggedError(error: AtlasError): HttpErrorMapping {
  * containing `{ error, message, requestId }` — Hono's error handler
  * returns this to the client.
  *
- * Four failure modes are handled:
- * 1. **Known tagged error** (Atlas `_tag`) → mapped HTTP status via `mapTaggedError`
- * 2. **Unknown tagged / untagged typed error** → logged with `_tag` (if present) and returned as 500
- * 3. **Fiber interruption** → logged at warn level, returned as 500
- * 4. **Defect** (unexpected throw) → all defects logged at error level, returned as 500
+ * Five failure modes are handled (in priority order):
+ * 1. **HTTPException** → re-thrown unchanged (framework validation, auth)
+ * 2. **EnterpriseError** → 403 (EE feature gate)
+ * 3. **Domain error** → mapped via `domainErrors` option (EE module errors)
+ * 4. **Known tagged error** (Atlas `_tag`) → mapped HTTP status via `mapTaggedError`
+ * 5. **Unmapped / defect** → logged + 500 with requestId
+ *
+ * Also handles fiber interruption (→ 500).
  *
  * @param c - Hono context (used for `requestId` extraction)
  * @param program - Fully-provided Effect program (`R = never`)
- * @param options.label - Human-readable action label for error messages and logs
+ * @param options - Label and optional domain error mappings
  */
 export async function runEffect<A, E>(
   c: Context,
   program: Effect.Effect<A, E, never>,
-  options?: { label?: string },
+  options?: RunEffectOptions,
 ): Promise<A> {
   const exit = await Effect.runPromiseExit(program);
 
@@ -202,16 +287,9 @@ export async function runEffect<A, E>(
   if (Option.isSome(failureOpt)) {
     const error = failureOpt.value;
 
-    // Known Atlas error — map to HTTP status with optional headers
-    if (isTaggedError(error) && isAtlasError(error)) {
-      const mapped = mapTaggedError(error);
-      throw new HTTPException(mapped.status, {
-        res: Response.json(
-          { error: mapped.code, message: mapped.message, requestId },
-          { status: mapped.status, headers: mapped.headers },
-        ),
-      });
-    }
+    // Try shared error classification (HTTPException, EnterpriseError, domain, Atlas)
+    const classified = classifyError(error, requestId, options?.domainErrors);
+    if (classified) throw classified;
 
     // Unknown tagged error — include _tag in log for debugging
     if (isTaggedError(error)) {
@@ -244,6 +322,14 @@ export async function runEffect<A, E>(
   // ── Defect (unexpected throw) ─────────────────────────────────
   const defects = Arr.fromIterable(Cause.defects(exit.cause));
   const primary = defects.length > 0 ? defects[0] : undefined;
+
+  // Try shared classification on the primary defect — domain errors thrown
+  // inside Effect.tryPromise surface as defects, not typed failures.
+  if (primary !== undefined) {
+    const classified = classifyError(primary, requestId, options?.domainErrors);
+    if (classified) throw classified;
+  }
+
   const errObj = primary instanceof Error ? primary : new Error(String(primary ?? "unknown defect"));
 
   if (defects.length > 1) {
@@ -266,4 +352,36 @@ export async function runEffect<A, E>(
       { status: 500 },
     ),
   });
+}
+
+// ── Convenience wrapper ─────────────────────────────────────────────
+
+/**
+ * Run an async handler inside the Effect bridge.
+ *
+ * Convenience wrapper around `runEffect` + `Effect.tryPromise` for route handlers
+ * that haven't been converted to full Effect programs yet. The handler body stays
+ * as async/await — thrown errors are caught and classified by `runEffect`.
+ *
+ * Replaces the `withErrorHandler` HOF: same error-to-HTTP mapping, but routed
+ * through the centralized Effect bridge instead of per-handler try/catch.
+ *
+ * @example
+ * ```ts
+ * router.openapi(route, async (c) => runHandler(c, "list users", async () => {
+ *   const users = await listUsers();
+ *   return c.json({ users }, 200);
+ * }));
+ * ```
+ */
+export function runHandler<T>(
+  c: Context,
+  label: string,
+  handler: () => Promise<T>,
+  options?: Pick<RunEffectOptions, "domainErrors">,
+): Promise<T> {
+  return runEffect(c, Effect.tryPromise({
+    try: handler,
+    catch: (err) => err,
+  }), { label, domainErrors: options?.domainErrors });
 }

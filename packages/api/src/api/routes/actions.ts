@@ -6,7 +6,7 @@
  */
 
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
-import { withErrorHandler } from "@atlas/api/lib/routes/error-handler";
+import { runHandler } from "@atlas/api/lib/effect/hono";
 import { validationHook } from "./validation-hook";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
@@ -318,7 +318,7 @@ actions.onError((err, c) => {
 // GET / — list actions (default: pending)
 // ---------------------------------------------------------------------------
 
-actions.openapi(listActionsRoute, withErrorHandler("list actions", async (c) => {
+actions.openapi(listActionsRoute, async (c) => runHandler(c, "list actions", async () => {
   const requestId = c.get("requestId");
   const authResult = c.get("authResult");
 
@@ -344,7 +344,7 @@ actions.openapi(listActionsRoute, withErrorHandler("list actions", async (c) => 
 // GET /:id — get single action
 // ---------------------------------------------------------------------------
 
-actions.openapi(getActionRoute, withErrorHandler("retrieve action", async (c) => {
+actions.openapi(getActionRoute, async (c) => runHandler(c, "retrieve action", async () => {
   const requestId = c.get("requestId");
   const authResult = c.get("authResult");
 
@@ -368,7 +368,7 @@ actions.openapi(getActionRoute, withErrorHandler("retrieve action", async (c) =>
 // POST /:id/approve — approve a pending action
 // ---------------------------------------------------------------------------
 
-actions.openapi(approveActionRoute, withErrorHandler("approve action", async (c) => {
+actions.openapi(approveActionRoute, async (c) => runHandler(c, "approve action", async () => {
   const requestId = c.get("requestId");
   const authResult = c.get("authResult");
 
@@ -415,7 +415,7 @@ actions.openapi(approveActionRoute, withErrorHandler("approve action", async (c)
 
 actions.openapi(
   denyActionRoute,
-  withErrorHandler("deny action", async (c) => {
+  async (c) => runHandler(c, "deny action", async () => {
     const requestId = c.get("requestId");
     const authResult = c.get("authResult");
 
@@ -483,7 +483,7 @@ actions.openapi(
 // POST /:id/rollback — rollback an executed action
 // ---------------------------------------------------------------------------
 
-actions.openapi(rollbackActionRoute, withErrorHandler("rollback action", async (c) => {
+actions.openapi(rollbackActionRoute, async (c) => runHandler(c, "rollback action", async () => {
   const requestId = c.get("requestId");
   const authResult = c.get("authResult");
 

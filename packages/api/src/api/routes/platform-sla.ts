@@ -15,7 +15,7 @@
 
 import { createRoute, z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
-import { withErrorHandler } from "@atlas/api/lib/routes/error-handler";
+import { runHandler } from "@atlas/api/lib/effect/hono";
 import {
   SLA_ALERT_STATUSES,
   SLA_ALERT_TYPES,
@@ -236,7 +236,7 @@ const platformSLA = createPlatformRouter();
 
 // ── List all workspaces SLA ──────────────────────────────────────────
 
-platformSLA.openapi(listSLARoute, withErrorHandler("fetch SLA summary", async (c) => {
+platformSLA.openapi(listSLARoute, async (c) => runHandler(c, "fetch SLA summary", async () => {
   const requestId = c.get("requestId");
 
   const sla = await loadSLA();
@@ -252,7 +252,7 @@ platformSLA.openapi(listSLARoute, withErrorHandler("fetch SLA summary", async (c
 
 // ── Get workspace SLA detail ─────────────────────────────────────────
 
-platformSLA.openapi(getWorkspaceSLARoute, withErrorHandler("fetch workspace SLA detail", async (c) => {
+platformSLA.openapi(getWorkspaceSLARoute, async (c) => runHandler(c, "fetch workspace SLA detail", async () => {
   const requestId = c.get("requestId");
 
   const sla = await loadSLA();
@@ -269,7 +269,7 @@ platformSLA.openapi(getWorkspaceSLARoute, withErrorHandler("fetch workspace SLA 
 
 // ── List alerts ──────────────────────────────────────────────────────
 
-platformSLA.openapi(listAlertsRoute, withErrorHandler("fetch SLA alerts", async (c) => {
+platformSLA.openapi(listAlertsRoute, async (c) => runHandler(c, "fetch SLA alerts", async () => {
   const requestId = c.get("requestId");
 
   const sla = await loadSLA();
@@ -288,7 +288,7 @@ platformSLA.openapi(listAlertsRoute, withErrorHandler("fetch SLA alerts", async 
 
 // ── Get thresholds ───────────────────────────────────────────────────
 
-platformSLA.openapi(getThresholdsRoute, withErrorHandler("read SLA thresholds", async (c) => {
+platformSLA.openapi(getThresholdsRoute, async (c) => runHandler(c, "read SLA thresholds", async () => {
   const requestId = c.get("requestId");
 
   const sla = await loadSLA();
@@ -302,7 +302,7 @@ platformSLA.openapi(getThresholdsRoute, withErrorHandler("read SLA thresholds", 
 
 // ── Update thresholds ────────────────────────────────────────────────
 
-platformSLA.openapi(updateThresholdsRoute, withErrorHandler("update SLA thresholds", async (c) => {
+platformSLA.openapi(updateThresholdsRoute, async (c) => runHandler(c, "update SLA thresholds", async () => {
   const requestId = c.get("requestId");
 
   const sla = await loadSLA();
@@ -319,7 +319,7 @@ platformSLA.openapi(updateThresholdsRoute, withErrorHandler("update SLA threshol
 
 // ── Acknowledge alert ────────────────────────────────────────────────
 
-platformSLA.openapi(acknowledgeAlertRoute, withErrorHandler("acknowledge SLA alert", async (c) => {
+platformSLA.openapi(acknowledgeAlertRoute, async (c) => runHandler(c, "acknowledge SLA alert", async () => {
   const requestId = c.get("requestId");
 
   const sla = await loadSLA();
@@ -345,7 +345,7 @@ platformSLA.openapi(acknowledgeAlertRoute, withErrorHandler("acknowledge SLA ale
 
 // ── Evaluate alerts ──────────────────────────────────────────────────
 
-platformSLA.openapi(evaluateAlertsRoute, withErrorHandler("evaluate SLA alerts", async (c) => {
+platformSLA.openapi(evaluateAlertsRoute, async (c) => runHandler(c, "evaluate SLA alerts", async () => {
   const requestId = c.get("requestId");
 
   const sla = await loadSLA();

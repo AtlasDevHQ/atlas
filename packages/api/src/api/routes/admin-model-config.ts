@@ -7,7 +7,7 @@
 
 import { createRoute, z } from "@hono/zod-openapi";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
-import { withErrorHandler } from "@atlas/api/lib/routes/error-handler";
+import { runHandler } from "@atlas/api/lib/effect/hono";
 import {
   getWorkspaceModelConfig,
   setWorkspaceModelConfig,
@@ -268,7 +268,7 @@ const adminModelConfig = createAdminRouter();
 // external API keys without touching the internal database.
 
 // GET / — get workspace model configuration
-adminModelConfig.openapi(getConfigRoute, withErrorHandler("get workspace model config", async (c) => {
+adminModelConfig.openapi(getConfigRoute, async (c) => runHandler(c, "get workspace model config", async () => {
   const requestId = c.get("requestId");
   const authResult = c.get("authResult");
 
@@ -283,10 +283,10 @@ adminModelConfig.openapi(getConfigRoute, withErrorHandler("get workspace model c
 
   const config = await getWorkspaceModelConfig(orgId);
   return c.json({ config }, 200);
-}, [ModelConfigError, MODEL_CONFIG_ERROR_STATUS]));
+}, { domainErrors: [[ModelConfigError, MODEL_CONFIG_ERROR_STATUS]] }));
 
 // PUT / — set workspace model configuration
-adminModelConfig.openapi(setConfigRoute, withErrorHandler("set workspace model config", async (c) => {
+adminModelConfig.openapi(setConfigRoute, async (c) => runHandler(c, "set workspace model config", async () => {
   const requestId = c.get("requestId");
   const authResult = c.get("authResult");
 
@@ -316,10 +316,10 @@ adminModelConfig.openapi(setConfigRoute, withErrorHandler("set workspace model c
     baseUrl: body.baseUrl,
   });
   return c.json({ config }, 200);
-}, [ModelConfigError, MODEL_CONFIG_ERROR_STATUS]));
+}, { domainErrors: [[ModelConfigError, MODEL_CONFIG_ERROR_STATUS]] }));
 
 // DELETE / — reset workspace model configuration
-adminModelConfig.openapi(deleteConfigRoute, withErrorHandler("delete workspace model config", async (c) => {
+adminModelConfig.openapi(deleteConfigRoute, async (c) => runHandler(c, "delete workspace model config", async () => {
   const requestId = c.get("requestId");
   const authResult = c.get("authResult");
 
@@ -337,10 +337,10 @@ adminModelConfig.openapi(deleteConfigRoute, withErrorHandler("delete workspace m
     return c.json({ error: "not_found", message: "No custom model configuration found." }, 404);
   }
   return c.json({ message: "Model configuration reset to platform default." }, 200);
-}, [ModelConfigError, MODEL_CONFIG_ERROR_STATUS]));
+}, { domainErrors: [[ModelConfigError, MODEL_CONFIG_ERROR_STATUS]] }));
 
 // POST /test — test model configuration (no hasInternalDB — tests external APIs only)
-adminModelConfig.openapi(testConfigRoute, withErrorHandler("test model config", async (c) => {
+adminModelConfig.openapi(testConfigRoute, async (c) => runHandler(c, "test model config", async () => {
   const requestId = c.get("requestId");
   const authResult = c.get("authResult");
 
@@ -358,6 +358,6 @@ adminModelConfig.openapi(testConfigRoute, withErrorHandler("test model config", 
     baseUrl: body.baseUrl,
   });
   return c.json(result, 200);
-}, [ModelConfigError, MODEL_CONFIG_ERROR_STATUS]));
+}, { domainErrors: [[ModelConfigError, MODEL_CONFIG_ERROR_STATUS]] }));
 
 export { adminModelConfig };

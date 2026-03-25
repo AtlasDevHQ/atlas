@@ -8,7 +8,7 @@
 import { createRoute, z } from "@hono/zod-openapi";
 import { HTTPException } from "hono/http-exception";
 import { createLogger } from "@atlas/api/lib/logger";
-import { withErrorHandler } from "@atlas/api/lib/routes/error-handler";
+import { runHandler } from "@atlas/api/lib/effect/hono";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { LEARNED_PATTERN_STATUSES, type LearnedPattern } from "@useatlas/types";
 import { invalidatePatternCache } from "@atlas/api/lib/learn/pattern-cache";
@@ -357,7 +357,7 @@ adminLearnedPatterns.onError((err, c) => {
 // GET / — list with filters
 // ---------------------------------------------------------------------------
 
-adminLearnedPatterns.openapi(listPatternsRoute, withErrorHandler("list learned patterns", async (c) => {
+adminLearnedPatterns.openapi(listPatternsRoute, async (c) => runHandler(c, "list learned patterns", async () => {
   const requestId = c.get("requestId");
   const authResult = c.get("authResult");
 
@@ -461,7 +461,7 @@ adminLearnedPatterns.openapi(listPatternsRoute, withErrorHandler("list learned p
 // GET /:id — single pattern
 // ---------------------------------------------------------------------------
 
-adminLearnedPatterns.openapi(getPatternRoute, withErrorHandler("get learned pattern", async (c) => {
+adminLearnedPatterns.openapi(getPatternRoute, async (c) => runHandler(c, "get learned pattern", async () => {
   const requestId = c.get("requestId");
   const authResult = c.get("authResult");
 
@@ -491,7 +491,7 @@ adminLearnedPatterns.openapi(getPatternRoute, withErrorHandler("get learned patt
 // PATCH /:id — update
 // ---------------------------------------------------------------------------
 
-adminLearnedPatterns.openapi(updatePatternRoute, withErrorHandler("update learned pattern", async (c) => {
+adminLearnedPatterns.openapi(updatePatternRoute, async (c) => runHandler(c, "update learned pattern", async () => {
   const requestId = c.get("requestId");
   const authResult = c.get("authResult");
 
@@ -564,7 +564,7 @@ adminLearnedPatterns.openapi(updatePatternRoute, withErrorHandler("update learne
 // DELETE /:id — hard delete
 // ---------------------------------------------------------------------------
 
-adminLearnedPatterns.openapi(deletePatternRoute, withErrorHandler("delete learned pattern", async (c) => {
+adminLearnedPatterns.openapi(deletePatternRoute, async (c) => runHandler(c, "delete learned pattern", async () => {
   const requestId = c.get("requestId");
   const authResult = c.get("authResult");
 
@@ -603,7 +603,7 @@ adminLearnedPatterns.openapi(deletePatternRoute, withErrorHandler("delete learne
 // POST /bulk — bulk status change
 // ---------------------------------------------------------------------------
 
-adminLearnedPatterns.openapi(bulkStatusRoute, withErrorHandler("bulk update learned patterns", async (c) => {
+adminLearnedPatterns.openapi(bulkStatusRoute, async (c) => runHandler(c, "bulk update learned patterns", async () => {
   const requestId = c.get("requestId");
   const authResult = c.get("authResult");
 

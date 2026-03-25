@@ -8,7 +8,7 @@
 
 import { createRoute, z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
-import { withErrorHandler } from "@atlas/api/lib/routes/error-handler";
+import { runHandler } from "@atlas/api/lib/effect/hono";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import type { PromptCollection, PromptItem } from "@useatlas/types";
 import { ErrorSchema, AuthErrorSchema, createIdParamSchema, createParamSchema, createListResponseSchema, DeletedResponseSchema } from "./shared-schemas";
@@ -471,7 +471,7 @@ export const adminPrompts = createAdminRouter();
 // GET / — list all collections (admin view)
 // ---------------------------------------------------------------------------
 
-adminPrompts.openapi(listCollectionsRoute, withErrorHandler("list prompt collections", async (c) => {
+adminPrompts.openapi(listCollectionsRoute, async (c) => runHandler(c, "list prompt collections", async () => {
   const requestId = c.get("requestId");
   const authResult = c.get("authResult");
 
@@ -501,7 +501,7 @@ adminPrompts.openapi(listCollectionsRoute, withErrorHandler("list prompt collect
 // POST / — create collection
 // ---------------------------------------------------------------------------
 
-adminPrompts.openapi(createCollectionRoute, withErrorHandler("create prompt collection", async (c) => {
+adminPrompts.openapi(createCollectionRoute, async (c) => runHandler(c, "create prompt collection", async () => {
   const requestId = c.get("requestId");
   const authResult = c.get("authResult");
 
@@ -543,7 +543,7 @@ adminPrompts.openapi(createCollectionRoute, withErrorHandler("create prompt coll
 // PATCH /:id — update collection
 // ---------------------------------------------------------------------------
 
-adminPrompts.openapi(updateCollectionRoute, withErrorHandler("update prompt collection", async (c) => {
+adminPrompts.openapi(updateCollectionRoute, async (c) => runHandler(c, "update prompt collection", async () => {
   const requestId = c.get("requestId");
   const authResult = c.get("authResult");
 
@@ -635,7 +635,7 @@ adminPrompts.openapi(updateCollectionRoute, withErrorHandler("update prompt coll
 // DELETE /:id — delete collection (cascades to items)
 // ---------------------------------------------------------------------------
 
-adminPrompts.openapi(deleteCollectionRoute, withErrorHandler("delete prompt collection", async (c) => {
+adminPrompts.openapi(deleteCollectionRoute, async (c) => runHandler(c, "delete prompt collection", async () => {
   const requestId = c.get("requestId");
   const authResult = c.get("authResult");
 
@@ -681,7 +681,7 @@ adminPrompts.openapi(deleteCollectionRoute, withErrorHandler("delete prompt coll
 // POST /:id/items — add item to collection
 // ---------------------------------------------------------------------------
 
-adminPrompts.openapi(createItemRoute, withErrorHandler("create prompt item", async (c) => {
+adminPrompts.openapi(createItemRoute, async (c) => runHandler(c, "create prompt item", async () => {
   const requestId = c.get("requestId");
   const authResult = c.get("authResult");
 
@@ -755,7 +755,7 @@ adminPrompts.openapi(createItemRoute, withErrorHandler("create prompt item", asy
 // PATCH /:collectionId/items/:itemId — update item
 // ---------------------------------------------------------------------------
 
-adminPrompts.openapi(updateItemRoute, withErrorHandler("update prompt item", async (c) => {
+adminPrompts.openapi(updateItemRoute, async (c) => runHandler(c, "update prompt item", async () => {
   const requestId = c.get("requestId");
   const authResult = c.get("authResult");
 
@@ -857,7 +857,7 @@ adminPrompts.openapi(updateItemRoute, withErrorHandler("update prompt item", asy
 // DELETE /:collectionId/items/:itemId — delete item
 // ---------------------------------------------------------------------------
 
-adminPrompts.openapi(deleteItemRoute, withErrorHandler("delete prompt item", async (c) => {
+adminPrompts.openapi(deleteItemRoute, async (c) => runHandler(c, "delete prompt item", async () => {
   const requestId = c.get("requestId");
   const authResult = c.get("authResult");
 
@@ -913,7 +913,7 @@ adminPrompts.openapi(deleteItemRoute, withErrorHandler("delete prompt item", asy
 // PUT /:id/reorder — reorder items within a collection
 // ---------------------------------------------------------------------------
 
-adminPrompts.openapi(reorderItemsRoute, withErrorHandler("reorder prompt items", async (c) => {
+adminPrompts.openapi(reorderItemsRoute, async (c) => runHandler(c, "reorder prompt items", async () => {
   const requestId = c.get("requestId");
   const authResult = c.get("authResult");
 

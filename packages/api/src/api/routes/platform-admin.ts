@@ -19,7 +19,7 @@
 import { createRoute, z } from "@hono/zod-openapi";
 import { createPlatformRouter } from "./admin-router";
 import { createLogger } from "@atlas/api/lib/logger";
-import { withErrorHandler } from "@atlas/api/lib/routes/error-handler";
+import { runHandler } from "@atlas/api/lib/effect/hono";
 import {
   hasInternalDB,
   internalQuery,
@@ -336,7 +336,7 @@ const platformAdmin = createPlatformRouter();
 
 // ── List workspaces ──────────────────────────────────────────────────
 
-platformAdmin.openapi(listWorkspacesRoute, withErrorHandler("list workspaces", async (c) => {
+platformAdmin.openapi(listWorkspacesRoute, async (c) => runHandler(c, "list workspaces", async () => {
   const requestId = c.get("requestId");
 
   if (!hasInternalDB()) {
@@ -407,7 +407,7 @@ platformAdmin.openapi(listWorkspacesRoute, withErrorHandler("list workspaces", a
 
 // ── Get workspace detail ─────────────────────────────────────────────
 
-platformAdmin.openapi(getWorkspaceRoute, withErrorHandler("get workspace details", async (c) => {
+platformAdmin.openapi(getWorkspaceRoute, async (c) => runHandler(c, "get workspace details", async () => {
   const requestId = c.get("requestId");
 
   if (!hasInternalDB()) {
@@ -473,7 +473,7 @@ platformAdmin.openapi(getWorkspaceRoute, withErrorHandler("get workspace details
 
 // ── Suspend workspace ────────────────────────────────────────────────
 
-platformAdmin.openapi(suspendWorkspaceRoute, withErrorHandler("suspend workspace", async (c) => {
+platformAdmin.openapi(suspendWorkspaceRoute, async (c) => runHandler(c, "suspend workspace", async () => {
   const requestId = c.get("requestId");
 
   if (!hasInternalDB()) {
@@ -503,7 +503,7 @@ platformAdmin.openapi(suspendWorkspaceRoute, withErrorHandler("suspend workspace
 
 // ── Unsuspend workspace ──────────────────────────────────────────────
 
-platformAdmin.openapi(unsuspendWorkspaceRoute, withErrorHandler("unsuspend workspace", async (c) => {
+platformAdmin.openapi(unsuspendWorkspaceRoute, async (c) => runHandler(c, "unsuspend workspace", async () => {
   const requestId = c.get("requestId");
 
   if (!hasInternalDB()) {
@@ -529,7 +529,7 @@ platformAdmin.openapi(unsuspendWorkspaceRoute, withErrorHandler("unsuspend works
 
 // ── Delete workspace ─────────────────────────────────────────────────
 
-platformAdmin.openapi(deleteWorkspaceRoute, withErrorHandler("delete workspace", async (c) => {
+platformAdmin.openapi(deleteWorkspaceRoute, async (c) => runHandler(c, "delete workspace", async () => {
   const requestId = c.get("requestId");
 
   if (!hasInternalDB()) {
@@ -563,7 +563,7 @@ platformAdmin.openapi(deleteWorkspaceRoute, withErrorHandler("delete workspace",
 
 // ── Change plan ──────────────────────────────────────────────────────
 
-platformAdmin.openapi(changePlanRoute, withErrorHandler("change workspace plan", async (c) => {
+platformAdmin.openapi(changePlanRoute, async (c) => runHandler(c, "change workspace plan", async () => {
   const requestId = c.get("requestId");
 
   if (!hasInternalDB()) {
@@ -606,7 +606,7 @@ platformAdmin.openapi(changePlanRoute, withErrorHandler("change workspace plan",
 
 // ── Platform stats ───────────────────────────────────────────────────
 
-platformAdmin.openapi(platformStatsRoute, withErrorHandler("compute platform stats", async (c) => {
+platformAdmin.openapi(platformStatsRoute, async (c) => runHandler(c, "compute platform stats", async () => {
   const requestId = c.get("requestId");
 
   if (!hasInternalDB()) {
@@ -647,7 +647,7 @@ platformAdmin.openapi(platformStatsRoute, withErrorHandler("compute platform sta
 
 // ── Noisy neighbors ──────────────────────────────────────────────────
 
-platformAdmin.openapi(noisyNeighborsRoute, withErrorHandler("detect noisy neighbors", async (c) => {
+platformAdmin.openapi(noisyNeighborsRoute, async (c) => runHandler(c, "detect noisy neighbors", async () => {
   const requestId = c.get("requestId");
 
   if (!hasInternalDB()) {

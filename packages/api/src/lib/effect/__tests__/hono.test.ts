@@ -20,7 +20,8 @@ mock.module("@atlas/api/lib/logger", () => ({
   redactPaths: [],
 }));
 
-const { runEffect, mapTaggedError } = await import("../hono");
+const { runEffect, runHandler, mapTaggedError } = await import("../hono");
+const { EnterpriseError } = await import("@atlas/ee/index");
 const {
   EmptyQueryError,
   ForbiddenPatternError,
@@ -49,6 +50,24 @@ const {
 // ---------------------------------------------------------------------------
 
 type TestEnv = { Variables: { requestId: string } };
+
+// Test domain error classes (mirrors real EE error classes)
+class FakeError extends Error {
+  constructor(message: string, public readonly code: string) {
+    super(message);
+    this.name = "FakeError";
+  }
+}
+
+class OtherFakeError extends Error {
+  constructor(message: string, public readonly code: string) {
+    super(message);
+    this.name = "OtherFakeError";
+  }
+}
+
+const STATUS_MAP = { validation: 400, not_found: 404, conflict: 409 } as const;
+const OTHER_STATUS_MAP = { expired: 410, forbidden: 403 } as const;
 
 interface ErrorBody {
   error: string;
@@ -471,5 +490,277 @@ describe("runEffect", () => {
     const body = (await res.json()) as ErrorBody;
     expect(body.error).toBe("forbidden");
     expect(body.message).toBe('Table "secret" is not allowed');
+  });
+
+  it("classifies EnterpriseError as 403 with requestId", async () => {
+    const app = createApp();
+    app.get("/test", async (c) =>
+      runEffect(
+        c,
+        Effect.fail(new EnterpriseError("License required")),
+        { label: "check feature" },
+      ),
+    );
+
+    const res = await app.request("/test");
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as ErrorBody;
+    expect(body.error).toBe("enterprise_required");
+    expect(body.message).toBe("License required");
+    expect(body.requestId).toBe("test-req-123");
+  });
+
+  it("passes through HTTPException unchanged", async () => {
+    const app = createApp();
+    app.get("/test", async (c) =>
+      runEffect(
+        c,
+        Effect.fail(
+          new HTTPException(401, {
+            res: Response.json({ error: "unauthorized" }, { status: 401 }),
+          }),
+        ),
+      ),
+    );
+
+    const res = await app.request("/test");
+    expect(res.status).toBe(401);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("unauthorized");
+  });
+
+  it("maps domain errors via domainErrors option", async () => {
+    const app = createApp();
+    app.get("/test", async (c) =>
+      runEffect(
+        c,
+        Effect.fail(new FakeError("Not found", "not_found")),
+        { label: "test", domainErrors: [[FakeError, STATUS_MAP]] },
+      ),
+    );
+
+    const res = await app.request("/test");
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as ErrorBody;
+    expect(body.error).toBe("not_found");
+    expect(body.message).toBe("Not found");
+    expect(body.requestId).toBe("test-req-123");
+  });
+
+  it("defaults unmapped domain error code to 400", async () => {
+    const app = createApp();
+    app.get("/test", async (c) =>
+      runEffect(
+        c,
+        Effect.fail(new FakeError("Unknown code", "unknown_code")),
+        { label: "test", domainErrors: [[FakeError, STATUS_MAP]] },
+      ),
+    );
+
+    const res = await app.request("/test");
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as ErrorBody;
+    expect(body.error).toBe("unknown_code");
+  });
+
+  it("classifies domain errors in the defect path", async () => {
+    const app = createApp();
+    app.get("/test", async (c) =>
+      runEffect(
+        c,
+        Effect.die(new FakeError("Conflict", "conflict")),
+        { label: "test", domainErrors: [[FakeError, STATUS_MAP]] },
+      ),
+    );
+
+    const res = await app.request("/test");
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as ErrorBody;
+    expect(body.error).toBe("conflict");
+  });
+
+  it("EnterpriseError takes priority over domain errors", async () => {
+    const app = createApp();
+    app.get("/test", async (c) =>
+      runEffect(
+        c,
+        Effect.fail(new EnterpriseError()),
+        { label: "test", domainErrors: [[FakeError, STATUS_MAP]] },
+      ),
+    );
+
+    const res = await app.request("/test");
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as ErrorBody;
+    expect(body.error).toBe("enterprise_required");
+  });
+
+  it("multiple domain mappings — first match wins", async () => {
+    const app = createApp();
+    app.get("/test", async (c) =>
+      runEffect(
+        c,
+        Effect.fail(new OtherFakeError("Token expired", "expired")),
+        { label: "test", domainErrors: [[FakeError, STATUS_MAP], [OtherFakeError, OTHER_STATUS_MAP]] },
+      ),
+    );
+
+    const res = await app.request("/test");
+    expect(res.status).toBe(410);
+    const body = (await res.json()) as ErrorBody;
+    expect(body.error).toBe("expired");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// runHandler integration tests (replaces withErrorHandler coverage)
+// ---------------------------------------------------------------------------
+
+describe("runHandler", () => {
+  it("returns the handler value on success", async () => {
+    const app = createApp();
+    app.get("/test", async (c) => runHandler(c, "list items", async () => {
+      return c.json({ items: [1, 2, 3] }, 200);
+    }));
+
+    const res = await app.request("/test");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { items: number[] };
+    expect(body.items).toEqual([1, 2, 3]);
+  });
+
+  it("maps thrown Error to 500 with label and requestId", async () => {
+    const app = createApp();
+    app.get("/test", async (c) => runHandler(c, "save data", async () => {
+      throw new Error("database connection lost");
+    }));
+
+    const res = await app.request("/test");
+    expect(res.status).toBe(500);
+    const body = (await res.json()) as ErrorBody;
+    expect(body.error).toBe("internal_error");
+    expect(body.message).toBe("Failed to save data.");
+    expect(body.requestId).toBe("test-req-123");
+  });
+
+  it("passes through HTTPException unchanged", async () => {
+    const app = createApp();
+    app.get("/test", async (c) => runHandler(c, "check auth", async () => {
+      throw new HTTPException(401, {
+        res: Response.json({ error: "unauthorized", message: "Bad token" }, { status: 401 }),
+      });
+    }));
+
+    const res = await app.request("/test");
+    expect(res.status).toBe(401);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("unauthorized");
+  });
+
+  it("maps EnterpriseError to 403 with requestId", async () => {
+    const app = createApp();
+    app.get("/test", async (c) => runHandler(c, "check feature", async () => {
+      throw new EnterpriseError("License required");
+    }));
+
+    const res = await app.request("/test");
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as ErrorBody;
+    expect(body.error).toBe("enterprise_required");
+    expect(body.message).toBe("License required");
+    expect(body.requestId).toBe("test-req-123");
+  });
+
+  it("maps domain error with domainErrors option", async () => {
+    const app = createApp();
+    app.get("/test", async (c) => runHandler(c, "create rule", async () => {
+      throw new FakeError("Already exists", "conflict");
+    }, { domainErrors: [[FakeError, STATUS_MAP]] }));
+
+    const res = await app.request("/test");
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as ErrorBody;
+    expect(body.error).toBe("conflict");
+    expect(body.message).toBe("Already exists");
+  });
+
+  it("defaults unmapped domain error code to 400", async () => {
+    const app = createApp();
+    app.get("/test", async (c) => runHandler(c, "create item", async () => {
+      throw new FakeError("Bad code", "unknown_code");
+    }, { domainErrors: [[FakeError, STATUS_MAP]] }));
+
+    const res = await app.request("/test");
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as ErrorBody;
+    expect(body.error).toBe("unknown_code");
+  });
+
+  it("domain error without domainErrors option falls to 500", async () => {
+    const app = createApp();
+    app.get("/test", async (c) => runHandler(c, "do stuff", async () => {
+      throw new FakeError("Not found", "not_found");
+    }));
+
+    const res = await app.request("/test");
+    expect(res.status).toBe(500);
+    const body = (await res.json()) as ErrorBody;
+    expect(body.error).toBe("internal_error");
+  });
+
+  it("handles non-Error thrown values", async () => {
+    const app = createApp();
+    app.get("/test", async (c) => runHandler(c, "process", async () => {
+      throw "string error";
+    }));
+
+    const res = await app.request("/test");
+    expect(res.status).toBe(500);
+    const body = (await res.json()) as ErrorBody;
+    expect(body.error).toBe("internal_error");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isEnterpriseError cross-package verification
+// ---------------------------------------------------------------------------
+
+describe("isEnterpriseError coupling", () => {
+  it("real EnterpriseError instance is classified as 403", async () => {
+    const app = createApp();
+    app.get("/test", async (c) => runHandler(c, "gate", async () => {
+      throw new EnterpriseError("Enterprise features are not enabled");
+    }));
+
+    const res = await app.request("/test");
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as ErrorBody;
+    expect(body.error).toBe("enterprise_required");
+  });
+
+  it("error with wrong name is NOT classified as EnterpriseError", async () => {
+    const app = createApp();
+    app.get("/test", async (c) => runHandler(c, "gate", async () => {
+      const err = new Error("fake");
+      err.name = "NotEnterpriseError";
+      (err as unknown as Record<string, unknown>).code = "enterprise_required";
+      throw err;
+    }));
+
+    const res = await app.request("/test");
+    expect(res.status).toBe(500);
+  });
+
+  it("error with wrong code type is NOT classified as EnterpriseError", async () => {
+    const app = createApp();
+    app.get("/test", async (c) => runHandler(c, "gate", async () => {
+      const err = new Error("fake");
+      err.name = "EnterpriseError";
+      (err as unknown as Record<string, unknown>).code = 42;
+      throw err;
+    }));
+
+    const res = await app.request("/test");
+    expect(res.status).toBe(500);
   });
 });

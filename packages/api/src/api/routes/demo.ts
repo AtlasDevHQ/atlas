@@ -44,7 +44,7 @@ import {
   countDemoConversations,
 } from "@atlas/api/lib/demo";
 import { withRequestId, type AuthEnv } from "./middleware";
-import { withErrorHandler } from "@atlas/api/lib/routes/error-handler";
+import { runHandler } from "@atlas/api/lib/effect/hono";
 
 const log = createLogger("demo");
 
@@ -624,7 +624,7 @@ demo.openapi(demoChatRoute, async (c) => {
 });
 
 // GET /conversations — list demo user's conversations
-demo.openapi(listDemoConversationsRoute, withErrorHandler("list demo conversations", async (c) => {
+demo.openapi(listDemoConversationsRoute, async (c) => runHandler(c, "list demo conversations", async () => {
   const requestId = c.get("requestId");
   const email = extractDemoEmail(c.req.raw);
   if (!email) {
@@ -642,7 +642,7 @@ demo.openapi(listDemoConversationsRoute, withErrorHandler("list demo conversatio
 }));
 
 // GET /conversations/:id — get demo conversation with messages
-demo.openapi(getDemoConversationRoute, withErrorHandler("get demo conversation", async (c) => {
+demo.openapi(getDemoConversationRoute, async (c) => runHandler(c, "get demo conversation", async () => {
   const requestId = c.get("requestId");
   const email = extractDemoEmail(c.req.raw);
   if (!email) {

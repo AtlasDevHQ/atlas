@@ -6,7 +6,7 @@
  */
 
 import { createRoute, z } from "@hono/zod-openapi";
-import { withErrorHandler } from "@atlas/api/lib/routes/error-handler";
+import { runHandler } from "@atlas/api/lib/effect/hono";
 import {
   getWorkspaceBranding,
   setWorkspaceBranding,
@@ -207,15 +207,15 @@ const adminBranding = createAdminRouter();
 adminBranding.use(requireOrgContext());
 
 // GET / — get workspace branding
-adminBranding.openapi(getBrandingRoute, withErrorHandler("get workspace branding", async (c) => {
+adminBranding.openapi(getBrandingRoute, async (c) => runHandler(c, "get workspace branding", async () => {
   const { orgId } = c.get("orgContext");
 
   const branding = await getWorkspaceBranding(orgId);
   return c.json({ branding }, 200);
-}, [BrandingError, BRANDING_ERROR_STATUS]));
+}, { domainErrors: [[BrandingError, BRANDING_ERROR_STATUS]] }));
 
 // PUT / — set workspace branding
-adminBranding.openapi(setBrandingRoute, withErrorHandler("save workspace branding", async (c) => {
+adminBranding.openapi(setBrandingRoute, async (c) => runHandler(c, "save workspace branding", async () => {
   const { orgId } = c.get("orgContext");
 
   const body = c.req.valid("json");
@@ -228,10 +228,10 @@ adminBranding.openapi(setBrandingRoute, withErrorHandler("save workspace brandin
     hideAtlasBranding: body.hideAtlasBranding,
   });
   return c.json({ branding }, 200);
-}, [BrandingError, BRANDING_ERROR_STATUS]));
+}, { domainErrors: [[BrandingError, BRANDING_ERROR_STATUS]] }));
 
 // DELETE / — reset workspace branding
-adminBranding.openapi(deleteBrandingRoute, withErrorHandler("reset workspace branding", async (c) => {
+adminBranding.openapi(deleteBrandingRoute, async (c) => runHandler(c, "reset workspace branding", async () => {
   const { orgId } = c.get("orgContext");
 
   const deleted = await deleteWorkspaceBranding(orgId);
@@ -239,6 +239,6 @@ adminBranding.openapi(deleteBrandingRoute, withErrorHandler("reset workspace bra
     return c.json({ error: "not_found", message: "No custom branding found." }, 404);
   }
   return c.json({ message: "Branding reset to Atlas defaults." }, 200);
-}, [BrandingError, BRANDING_ERROR_STATUS]));
+}, { domainErrors: [[BrandingError, BRANDING_ERROR_STATUS]] }));
 
 export { adminBranding };

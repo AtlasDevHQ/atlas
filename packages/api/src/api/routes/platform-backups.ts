@@ -15,7 +15,7 @@
 
 import { createRoute, z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
-import { withErrorHandler } from "@atlas/api/lib/routes/error-handler";
+import { runHandler } from "@atlas/api/lib/effect/hono";
 import { BACKUP_STATUSES } from "@useatlas/types";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createPlatformRouter } from "./admin-router";
@@ -247,7 +247,7 @@ const platformBackups = createPlatformRouter();
 
 // ── List backups ─────────────────────────────────────────────────────
 
-platformBackups.openapi(listBackupsRoute, withErrorHandler("list backups", async (c) => {
+platformBackups.openapi(listBackupsRoute, async (c) => runHandler(c, "list backups", async () => {
   const requestId = c.get("requestId");
 
   const backups = await loadBackups();
@@ -261,7 +261,7 @@ platformBackups.openapi(listBackupsRoute, withErrorHandler("list backups", async
 
 // ── Create backup ────────────────────────────────────────────────────
 
-platformBackups.openapi(createBackupRoute, withErrorHandler("create backup", async (c) => {
+platformBackups.openapi(createBackupRoute, async (c) => runHandler(c, "create backup", async () => {
   const requestId = c.get("requestId");
 
   const backupsMod = await loadBackups();
@@ -286,7 +286,7 @@ platformBackups.openapi(createBackupRoute, withErrorHandler("create backup", asy
 
 // ── Verify backup ────────────────────────────────────────────────────
 
-platformBackups.openapi(verifyBackupRoute, withErrorHandler("verify backup", async (c) => {
+platformBackups.openapi(verifyBackupRoute, async (c) => runHandler(c, "verify backup", async () => {
   const requestId = c.get("requestId");
 
   const backupsMod = await loadBackups();
@@ -314,7 +314,7 @@ platformBackups.openapi(verifyBackupRoute, withErrorHandler("verify backup", asy
 
 // ── Request restore ──────────────────────────────────────────────────
 
-platformBackups.openapi(requestRestoreRoute, withErrorHandler("request restore", async (c) => {
+platformBackups.openapi(requestRestoreRoute, async (c) => runHandler(c, "request restore", async () => {
   const requestId = c.get("requestId");
 
   const backupsMod = await loadBackups();
@@ -342,7 +342,7 @@ platformBackups.openapi(requestRestoreRoute, withErrorHandler("request restore",
 
 // ── Confirm restore ──────────────────────────────────────────────────
 
-platformBackups.openapi(confirmRestoreRoute, withErrorHandler("execute restore", async (c) => {
+platformBackups.openapi(confirmRestoreRoute, async (c) => runHandler(c, "execute restore", async () => {
   const requestId = c.get("requestId");
 
   const backupsMod = await loadBackups();
@@ -367,7 +367,7 @@ platformBackups.openapi(confirmRestoreRoute, withErrorHandler("execute restore",
 
 // ── Get config ───────────────────────────────────────────────────────
 
-platformBackups.openapi(getConfigRoute, withErrorHandler("read backup config", async (c) => {
+platformBackups.openapi(getConfigRoute, async (c) => runHandler(c, "read backup config", async () => {
   const requestId = c.get("requestId");
 
   const backupsMod = await loadBackups();
@@ -385,7 +385,7 @@ platformBackups.openapi(getConfigRoute, withErrorHandler("read backup config", a
 
 // ── Update config ────────────────────────────────────────────────────
 
-platformBackups.openapi(updateConfigRoute, withErrorHandler("update backup config", async (c) => {
+platformBackups.openapi(updateConfigRoute, async (c) => runHandler(c, "update backup config", async () => {
   const requestId = c.get("requestId");
 
   const backupsMod = await loadBackups();

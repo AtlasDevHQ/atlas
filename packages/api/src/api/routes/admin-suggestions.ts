@@ -6,7 +6,7 @@
  */
 
 import { createRoute, z } from "@hono/zod-openapi";
-import { withErrorHandler } from "@atlas/api/lib/routes/error-handler";
+import { runHandler } from "@atlas/api/lib/effect/hono";
 import { hasInternalDB, internalQuery, deleteSuggestion } from "@atlas/api/lib/db/internal";
 import { toQuerySuggestion } from "@atlas/api/lib/learn/suggestion-helpers";
 import type { QuerySuggestionRow } from "@atlas/api/lib/db/internal";
@@ -129,7 +129,7 @@ const deleteSuggestionRoute = createRoute({
 export const adminSuggestions = createAdminRouter();
 
 // GET / — list suggestions with filters
-adminSuggestions.openapi(listSuggestionsRoute, withErrorHandler("list suggestions", async (c) => {
+adminSuggestions.openapi(listSuggestionsRoute, async (c) => runHandler(c, "list suggestions", async () => {
   const authResult = c.get("authResult");
 
   if (!hasInternalDB()) {
@@ -190,7 +190,7 @@ adminSuggestions.openapi(listSuggestionsRoute, withErrorHandler("list suggestion
 }));
 
 // DELETE /:id — prune a suggestion
-adminSuggestions.openapi(deleteSuggestionRoute, withErrorHandler("delete suggestion", async (c) => {
+adminSuggestions.openapi(deleteSuggestionRoute, async (c) => runHandler(c, "delete suggestion", async () => {
   const authResult = c.get("authResult");
 
   if (!hasInternalDB()) {

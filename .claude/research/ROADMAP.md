@@ -536,7 +536,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 ### Service Architecture (P5–P8)
 - [ ] P5: Plugin lifecycle → Effect Layer composition (#908)
 - [ ] P6: Server startup → Effect Layer DAG (#909)
-- [ ] P7: Route handlers → Effect boundaries with typed error mapping (#910)
+- [x] P7: Route handlers → Effect boundaries with typed error mapping (#910, PR #925)
 - [ ] P8: Auth and request context → Effect Context replacing AsyncLocalStorage (#911)
 
 ### AI & Database (P10–P11)

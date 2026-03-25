@@ -58,7 +58,6 @@ RLS is working but the claim value does not match any rows. This usually means t
 
 - **Email**: Verify the recipient address is correct and check spam folders
 - **Slack**: Ensure the Atlas bot has been added to the target channel
-- **Webhook**: Check that the endpoint URL is reachable from Atlas
 
 ### Runtime Error Codes
 
@@ -254,11 +253,14 @@ nsjail requires specific Linux kernel capabilities. Check:
 
 #### 401 Responses
 
-| Auth Mode | Common Causes |
-|-----------|---------------|
-| Simple Key | Wrong key, missing `Authorization: Bearer` header |
-| Managed | Session expired (7-day lifetime), cookie not sent (cross-origin without `credentials: 'include'`) |
-| BYOT | JWT expired, wrong issuer, JWKS endpoint unreachable |
+See [User Troubleshooting > Auth Issues](#auth-issues-users) for common 401 causes by auth mode.
+
+**Operator-specific remediation:**
+
+- Verify auth environment variables are set correctly (`ATLAS_API_KEY`, `BETTER_AUTH_SECRET`, or `ATLAS_AUTH_JWKS_URL` depending on mode). Run `atlas doctor` to validate
+- Enable debug logging with `ATLAS_LOG_LEVEL=debug` to see auth decisions, mode detection, and role extraction for each request
+- For BYOT: confirm the JWKS endpoint is reachable from the Atlas server (`curl $ATLAS_AUTH_JWKS_URL`) and that `ATLAS_AUTH_ISSUER` matches the `iss` claim in your JWTs
+- Check `ATLAS_AUTH_MODE` is not set to an unintended value — when set explicitly, it overrides auto-detection
 
 #### CORS with Managed Auth
 

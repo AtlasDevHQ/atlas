@@ -6,7 +6,7 @@ description: Configure Atlas authentication — from no auth in development to e
 import { Callout } from "fumadocs-ui/components/callout";
 
 <Callout type="info" title="Using app.useatlas.dev?">
-  On the hosted SaaS platform, authentication is pre-configured. Users sign in with email/password or SSO. API access uses Bearer tokens from your workspace settings. The configuration below (environment variables, `ATLAS_AUTH_MODE`, `BETTER_AUTH_SECRET`) is for **self-hosted operators** deploying their own Atlas instance. If you are a SaaS user looking to integrate with Atlas, see [API Keys](#simple-key) and [BYOT (Bring Your Own Token)](#byot-bring-your-own-token) for client-side usage.
+  On the hosted SaaS platform, authentication is pre-configured. Users sign in with email/password or SSO. API access uses Bearer tokens from your workspace settings. The configuration below (environment variables, `ATLAS_AUTH_MODE`, `BETTER_AUTH_SECRET`) is for **self-hosted operators** deploying their own Atlas instance. If you are a SaaS user looking to integrate with Atlas, see [Client Usage (Simple Key)](#client-usage-simple-key) and [BYOT (Bring Your Own Token)](#byot-bring-your-own-token) for client-side usage.
 </Callout>
 
 Atlas supports four authentication modes. Auth is optional — Atlas works with no auth for local development.
@@ -60,40 +60,6 @@ ATLAS_API_KEY=your-secret-key-here
 ATLAS_API_KEY_ROLE=analyst    # Optional: viewer, analyst (default), admin
 ```
 
-## User Authentication (All Deployments)
-
-The sections below apply to all Atlas users — both SaaS and self-hosted — covering how to authenticate API requests and understand roles.
-
-### Client usage (Simple Key)
-
-Send the key in the `Authorization` header (preferred) or `X-API-Key` header:
-
-```bash
-# Authorization header
-curl -H "Authorization: Bearer your-secret-key-here" \
-  http://localhost:3001/api/v1/query \
-  -d '{"question": "How many users?"}'
-
-# X-API-Key header (alternative)
-curl -H "X-API-Key: your-secret-key-here" \
-  http://localhost:3001/api/v1/query \
-  -d '{"question": "How many users?"}'
-```
-
-#### Security details
-
-- Keys are compared using constant-time SHA-256 hash comparison (timing-safe)
-- User IDs in logs are derived from a hash of the key — the raw key is never logged
-- A single key maps to a single user identity and role
-
-#### RLS with Simple Key
-
-When using [Row-Level Security](/reference/environment-variables#row-level-security) with simple-key auth, provide static claims:
-
-```bash
-ATLAS_RLS_CLAIMS='{"tenant_id": "acme-corp"}'
-```
-
 ### Managed Auth (Self-Hosted Setup)
 
 Full user management with email/password login, sessions, and role-based access. Built on [Better Auth](https://www.better-auth.com/). Requires an internal Postgres database (`DATABASE_URL`). Supports [social login providers](/guides/social-providers) (Google, GitHub, Microsoft) alongside email/password.
@@ -132,6 +98,40 @@ When `ATLAS_ADMIN_EMAIL` is set and no users exist in the database, Atlas automa
 - **Role**: `admin`
 
 The account is flagged with `password_change_required` -- the user must change this password after first login. This is intended for initial setup only. If any users already exist, seeding is skipped (idempotent).
+
+## User Authentication (All Deployments)
+
+The sections below apply to all Atlas users — both SaaS and self-hosted — covering how to authenticate API requests and understand roles.
+
+### Client usage (Simple Key)
+
+Send the key in the `Authorization` header (preferred) or `X-API-Key` header:
+
+```bash
+# Authorization header
+curl -H "Authorization: Bearer your-secret-key-here" \
+  http://localhost:3001/api/v1/query \
+  -d '{"question": "How many users?"}'
+
+# X-API-Key header (alternative)
+curl -H "X-API-Key: your-secret-key-here" \
+  http://localhost:3001/api/v1/query \
+  -d '{"question": "How many users?"}'
+```
+
+#### Security details
+
+- Keys are compared using constant-time SHA-256 hash comparison (timing-safe)
+- User IDs in logs are derived from a hash of the key — the raw key is never logged
+- A single key maps to a single user identity and role
+
+#### RLS with Simple Key
+
+When using [Row-Level Security](/reference/environment-variables#row-level-security) with simple-key auth, provide static claims:
+
+```bash
+ATLAS_RLS_CLAIMS='{"tenant_id": "acme-corp"}'
+```
 
 ### How sessions work (All Deployments)
 

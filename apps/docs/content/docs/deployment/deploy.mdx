@@ -22,7 +22,13 @@ Authentication, sandbox isolation, scaling, and updates are managed by the Atlas
 </Tab>
 <Tab value="Self-Hosted">
 
-Deploy Atlas to your own infrastructure. You control the environment, data residency, and LLM provider. Continue reading for one-click deploy options, scaffolding a project, and platform-specific guides.
+Deploy Atlas to your own infrastructure. You control the environment, data residency, and LLM provider.
+
+1. **Choose a platform** — one-click deploy to [Railway](#deploy-to-railway), [Vercel](#deploy-to-vercel), or [Docker](#deploy-with-docker), or scaffold a custom project with `bun create @useatlas`
+2. **Connect your database** — set `ATLAS_DATASOURCE_URL` to your PostgreSQL or MySQL analytics database
+3. **Generate your semantic layer** — run `bun run atlas -- init` to profile your schema and create entity YAML files
+
+Continue reading for one-click deploy options, scaffolding a project, and platform-specific guides.
 
 </Tab>
 </Tabs>

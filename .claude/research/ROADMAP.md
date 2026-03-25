@@ -525,7 +525,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 **Incremental adoption of Effect.ts** across `packages/api/`. Typed errors, dependency injection via Layers, scoped resource lifecycle, structured concurrency. Backend only — frontend stays React/Zod.
 
 ### Foundation
-- [ ] P0: Effect.ts foundation — install, tagged errors, Hono bridge (#903)
+- [x] P0: Effect.ts foundation — install, tagged errors, Hono bridge (#903)
 
 ### Infrastructure Primitives (P1–P4)
 - [ ] P1: SQL validation & query execution → Effect.gen with tagged errors (#904)

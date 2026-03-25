@@ -246,7 +246,7 @@ Tracking module-deepening refactors discovered by the `improve-codebase-architec
 
 **Date:** 2026-03-25
 **Issue:** #893
-**PR:** #915
+**PR:** #916
 
 **Problem:** 10+ admin route files independently defined nearly identical Zod schemas for common OpenAPI patterns: ID path parameters (`z.object({ id: z.string().min(1).max(MAX_ID_LENGTH).openapi(...) })`), list response shapes (`{ items: T[], total }` with varying field names), deleted response schemas (`{ deleted: boolean }`), and success responses. Each file imported `MAX_ID_LENGTH` and hand-rolled the same boilerplate with inconsistent `.openapi()` metadata.
 

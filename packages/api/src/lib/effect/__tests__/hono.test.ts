@@ -39,6 +39,9 @@ const {
   PluginRejectedError,
   CustomValidatorError,
   ActionTimeoutError,
+  SchedulerTaskTimeoutError,
+  SchedulerExecutionError,
+  DeliveryError,
 } = await import("../errors");
 
 // ---------------------------------------------------------------------------
@@ -173,6 +176,24 @@ describe("mapTaggedError", () => {
   it("maps ActionTimeoutError to 504", () => {
     const result = mapTaggedError(new ActionTimeoutError({ message: "Timeout", timeoutMs: 10000 }));
     expect(result.status).toBe(504);
+  });
+
+  it("maps SchedulerTaskTimeoutError to 504", () => {
+    const result = mapTaggedError(new SchedulerTaskTimeoutError({ message: "Timeout", taskId: "t", timeoutMs: 60000 }));
+    expect(result.status).toBe(504);
+    expect(result.code).toBe("timeout");
+  });
+
+  it("maps SchedulerExecutionError to 500", () => {
+    const result = mapTaggedError(new SchedulerExecutionError({ message: "Failed", taskId: "t" }));
+    expect(result.status).toBe(500);
+    expect(result.code).toBe("upstream_error");
+  });
+
+  it("maps DeliveryError to 502", () => {
+    const result = mapTaggedError(new DeliveryError({ message: "Failed", channel: "webhook", recipient: "url", permanent: false }));
+    expect(result.status).toBe(502);
+    expect(result.code).toBe("upstream_error");
   });
 });
 

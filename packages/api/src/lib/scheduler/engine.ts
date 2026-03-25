@@ -1,10 +1,18 @@
 /**
  * Scheduler engine — tick-based loop that finds due tasks and executes them.
  *
+ * Effect migration (P3):
+ * - setInterval tick loop → Effect.repeat(tick, Schedule.spaced())
+ * - Manual activeTasks counter → Effect.Semaphore for bounded concurrency
+ * - Fire-and-forget dispatch → Effect.forEach with semaphore permits
+ * - Graceful shutdown via Fiber.interrupt (replaces clearInterval + drain)
+ * - Unified tick logic for both persistent (start/stop) and serverless (runTick)
+ *
  * Factory function returns a Scheduler object with start/stop lifecycle.
  * Singleton via getScheduler() / _resetScheduler().
  */
 
+import { Effect, Schedule, Duration, Fiber } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
 import {
   getTasksDueForExecution,
@@ -27,7 +35,20 @@ export interface Scheduler {
 }
 
 // ---------------------------------------------------------------------------
-// Shared helpers (used by both createScheduler and runTick)
+// Config helper
+// ---------------------------------------------------------------------------
+
+function getSchedulerConfig() {
+  const config = getConfig();
+  return {
+    maxConcurrentTasks: config?.scheduler?.maxConcurrentTasks ?? 5,
+    taskTimeout: config?.scheduler?.taskTimeout ?? 60_000,
+    tickIntervalSeconds: config?.scheduler?.tickIntervalSeconds ?? 60,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Shared helpers
 // ---------------------------------------------------------------------------
 
 async function rescheduleTask(taskId: string) {
@@ -47,79 +68,161 @@ async function rescheduleTask(taskId: string) {
   }
 }
 
-function createScheduler(): Scheduler {
-  let timer: ReturnType<typeof setInterval> | null = null;
-  let running = false;
-  let activeTasks = 0;
+// ---------------------------------------------------------------------------
+// Per-task execution Effect (used by both persistent and serverless)
+// ---------------------------------------------------------------------------
 
-  function getSchedulerConfig() {
-    const config = getConfig();
-    return {
-      maxConcurrentTasks: config?.scheduler?.maxConcurrentTasks ?? 5,
-      taskTimeout: config?.scheduler?.taskTimeout ?? 60_000,
-      tickIntervalSeconds: config?.scheduler?.tickIntervalSeconds ?? 60,
-    };
-  }
+type TaskOutcome = "completed" | "failed";
 
-  async function tick() {
-    const cfg = getSchedulerConfig();
+/**
+ * Execute a single task: lock → create run → execute → complete.
+ * Returns the outcome without throwing — all errors are caught and logged.
+ * Returns null when the task could not be locked (skip, not a failure).
+ */
+function executeAndDeliverEffect(
+  taskId: string,
+  timeoutMs: number,
+): Effect.Effect<TaskOutcome | null> {
+  return Effect.gen(function* () {
+    // Attempt lock
+    const lockResult = yield* Effect.tryPromise({
+      try: () => lockTaskForExecution(taskId),
+      catch: (err) => (err instanceof Error ? err.message : String(err)),
+    }).pipe(
+      Effect.catchAll((errMsg) => {
+        log.error({ taskId, err: errMsg }, "Lock error");
+        return Effect.succeed(null as boolean | null);
+      }),
+    );
 
-    if (activeTasks >= cfg.maxConcurrentTasks) {
-      log.debug({ activeTasks, max: cfg.maxConcurrentTasks }, "Scheduler tick skipped — at capacity");
-      return;
+    if (lockResult === null) return null;
+    if (!lockResult) {
+      log.debug({ taskId }, "Task already locked by another process");
+      return null;
     }
 
-    let dueTasks;
-    try {
-      dueTasks = await getTasksDueForExecution();
-    } catch (err) {
-      log.error({ err: err instanceof Error ? err.message : String(err) }, "Failed to fetch due tasks");
-      return;
+    // Create run record
+    const runId = yield* Effect.tryPromise({
+      try: () => createTaskRun(taskId),
+      catch: (err) => (err instanceof Error ? err.message : String(err)),
+    }).pipe(
+      Effect.catchAll((errMsg) => {
+        log.error({ taskId, err: errMsg }, "Failed to create run record");
+        return Effect.succeed(null);
+      }),
+    );
+
+    if (!runId) {
+      log.error({ taskId }, "No run record — rescheduling");
+      yield* Effect.tryPromise({
+        try: () => rescheduleTask(taskId),
+        catch: () => "reschedule failed",
+      }).pipe(Effect.catchAll(() => Effect.void));
+      return "failed" as const;
     }
 
-    if (dueTasks.length === 0) return;
+    // Execute + deliver, with an interrupt finalizer to avoid orphaned run records
+    const execResult = yield* Effect.tryPromise({
+      try: () => executeScheduledTask(taskId, runId, timeoutMs),
+      catch: (err) => (err instanceof Error ? err.message : String(err)),
+    }).pipe(
+      Effect.catchAll((errMsg) => {
+        completeTaskRun(runId, "failed", { error: errMsg });
+        log.error({ taskId, runId, err: errMsg }, "Scheduled task failed");
+        return Effect.succeed(null);
+      }),
+      Effect.onInterrupt(() =>
+        Effect.sync(() => {
+          completeTaskRun(runId, "failed", { error: "Interrupted (scheduler stopped)" });
+          log.warn({ taskId, runId }, "Task interrupted — marked as failed");
+        }),
+      ),
+    );
+
+    if (execResult === null) return "failed" as const;
+
+    completeTaskRun(runId, "success", { tokensUsed: execResult.tokensUsed });
+    log.info({ taskId, runId, tokensUsed: execResult.tokensUsed }, "Scheduled task completed successfully");
+    return "completed" as const;
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Core tick Effect
+// ---------------------------------------------------------------------------
+
+/**
+ * Single tick: fetch due tasks, dispatch up to maxConcurrent with semaphore.
+ * Returns a TickResult summarizing what happened.
+ */
+function tickEffect(
+  semaphore: Effect.Semaphore,
+  maxConcurrent: number,
+  taskTimeout: number,
+): Effect.Effect<TickResult> {
+  return Effect.gen(function* () {
+    const fetchResult = yield* Effect.tryPromise({
+      try: () => getTasksDueForExecution(),
+      catch: (err) => (err instanceof Error ? err.message : String(err)),
+    }).pipe(
+      Effect.map((tasks) => ({ ok: true as const, tasks })),
+      Effect.catchAll((message) => {
+        log.error({ err: message }, "Failed to fetch due tasks");
+        return Effect.succeed({ ok: false as const, error: message });
+      }),
+    );
+
+    if (!fetchResult.ok) {
+      return { tasksFound: 0, tasksDispatched: 0, tasksCompleted: 0, tasksFailed: 0, error: fetchResult.error };
+    }
+    const dueTasks = fetchResult.tasks;
+
+    if (dueTasks.length === 0) {
+      return { tasksFound: 0, tasksDispatched: 0, tasksCompleted: 0, tasksFailed: 0 };
+    }
 
     log.info({ count: dueTasks.length }, "Scheduler tick — found due tasks");
 
-    const slotsAvailable = cfg.maxConcurrentTasks - activeTasks;
-    const tasksToRun = dueTasks.slice(0, slotsAvailable);
+    // Cap at maxConcurrent — remaining tasks will be picked up on the next tick
+    const tasksToRun = dueTasks.slice(0, maxConcurrent);
 
-    for (const task of tasksToRun) {
-      try {
-        const locked = await lockTaskForExecution(task.id);
-        if (!locked) {
-          log.debug({ taskId: task.id }, "Task already locked by another process");
-          continue;
-        }
+    // Execute concurrently, each acquiring a semaphore permit
+    const outcomes = yield* Effect.forEach(
+      tasksToRun,
+      (task) =>
+        semaphore.withPermits(1)(
+          executeAndDeliverEffect(task.id, taskTimeout),
+        ),
+      { concurrency: maxConcurrent },
+    );
 
-        activeTasks++;
-        executeAndDeliver(task.id, cfg.taskTimeout).finally(() => {
-          activeTasks--;
-        });
-      } catch (err) {
-        log.error({ taskId: task.id, err: err instanceof Error ? err.message : String(err) }, "Failed to lock/dispatch task");
-      }
-    }
-  }
+    let tasksDispatched = 0;
+    let tasksCompleted = 0;
+    let tasksFailed = 0;
 
-  async function executeAndDeliver(taskId: string, timeoutMs: number) {
-    const runId = await createTaskRun(taskId);
-    if (!runId) {
-      log.error({ taskId }, "Failed to create run record — attempting to reschedule");
-      await rescheduleTask(taskId);
-      return;
+    for (const outcome of outcomes) {
+      if (outcome === null) continue; // lock contention — not dispatched
+      tasksDispatched++;
+      if (outcome === "completed") tasksCompleted++;
+      else tasksFailed++;
     }
 
-    try {
-      const result = await executeScheduledTask(taskId, runId, timeoutMs);
-      completeTaskRun(runId, "success", { tokensUsed: result.tokensUsed });
-      log.info({ taskId, runId, tokensUsed: result.tokensUsed }, "Scheduled task completed successfully");
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      completeTaskRun(runId, "failed", { error: message });
-      log.error({ taskId, runId, err: message }, "Scheduled task failed");
-    }
-  }
+    return {
+      tasksFound: dueTasks.length,
+      tasksDispatched,
+      tasksCompleted,
+      tasksFailed,
+    };
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Persistent scheduler (start/stop lifecycle via Fiber)
+// ---------------------------------------------------------------------------
+
+function createScheduler(): Scheduler {
+  let fiber: Fiber.RuntimeFiber<void, never> | null = null;
+  let running = false;
 
   return {
     start() {
@@ -132,26 +235,32 @@ function createScheduler(): Scheduler {
         "Scheduler starting",
       );
 
-      // First tick fires immediately
-      void tick().catch((err) => {
-        log.error({ err: err instanceof Error ? err.message : String(err) }, "Scheduler tick crashed");
-      });
+      const semaphore = Effect.unsafeMakeSemaphore(cfg.maxConcurrentTasks);
 
-      timer = setInterval(() => {
-        void tick().catch((err) => {
-          log.error({ err: err instanceof Error ? err.message : String(err) }, "Scheduler tick crashed");
-        });
-      }, cfg.tickIntervalSeconds * 1000);
-      timer.unref();
+      // Build the repeating tick program
+      const program = tickEffect(semaphore, cfg.maxConcurrentTasks, cfg.taskTimeout).pipe(
+        Effect.catchAllCause((cause) => {
+          log.error({ err: String(cause) }, "Scheduler tick crashed");
+          return Effect.void;
+        }),
+        Effect.repeat(Schedule.spaced(Duration.seconds(cfg.tickIntervalSeconds))),
+        Effect.asVoid,
+      );
+
+      // Fork into a background fiber
+      fiber = Effect.runFork(program);
     },
 
     stop() {
       if (!running) return;
       running = false;
-      if (timer) {
-        clearInterval(timer);
-        timer = null;
+
+      if (fiber) {
+        // Interrupt the fiber — cancels the current tick and the schedule
+        Effect.runFork(Fiber.interrupt(fiber));
+        fiber = null;
       }
+
       log.info("Scheduler stopped");
     },
 
@@ -223,89 +332,16 @@ export interface TickResult {
 /**
  * Run a single scheduler tick that **awaits** all task executions.
  *
- * Unlike the in-process `tick()` (fire-and-forget inside `setInterval`),
- * this function returns only after every dispatched task has settled —
+ * Unlike the persistent scheduler (which runs on a Fiber loop), this
+ * function returns only after every dispatched task has settled —
  * required for serverless environments where the function cannot exit early.
- *
- * When the due-task query fails, the error is surfaced in `result.error`
- * so the caller can return an appropriate HTTP status (not a silent 200).
  */
 export async function runTick(): Promise<TickResult> {
-  const config = getConfig();
-  const maxConcurrent = config?.scheduler?.maxConcurrentTasks ?? 5;
-  const taskTimeout = config?.scheduler?.taskTimeout ?? 60_000;
-
-  let dueTasks;
-  try {
-    dueTasks = await getTasksDueForExecution();
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    log.error({ err: message }, "runTick: failed to fetch due tasks");
-    return { tasksFound: 0, tasksDispatched: 0, tasksCompleted: 0, tasksFailed: 0, error: message };
-  }
-
-  if (dueTasks.length === 0) {
-    return { tasksFound: 0, tasksDispatched: 0, tasksCompleted: 0, tasksFailed: 0 };
-  }
-
-  const tasksToRun = dueTasks.slice(0, maxConcurrent);
-  type TaskOutcome = "completed" | "failed";
-  const promises: Promise<TaskOutcome>[] = [];
-
-  let tasksDispatched = 0;
-
-  for (const task of tasksToRun) {
-    let locked: boolean;
-    try {
-      locked = await lockTaskForExecution(task.id);
-    } catch (err) {
-      log.error({ taskId: task.id, err: err instanceof Error ? err.message : String(err) }, "runTick: lock error");
-      continue;
-    }
-    if (!locked) {
-      log.debug({ taskId: task.id }, "runTick: task already locked");
-      continue;
-    }
-
-    tasksDispatched++;
-
-    promises.push(
-      (async (): Promise<TaskOutcome> => {
-        const runId = await createTaskRun(task.id);
-        if (!runId) {
-          log.error({ taskId: task.id }, "runTick: failed to create run record — rescheduling");
-          await rescheduleTask(task.id);
-          return "failed";
-        }
-        try {
-          const execResult = await executeScheduledTask(task.id, runId, taskTimeout);
-          completeTaskRun(runId, "success", { tokensUsed: execResult.tokensUsed });
-          log.info({ taskId: task.id, runId }, "runTick: task completed");
-          return "completed";
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          completeTaskRun(runId, "failed", { error: message });
-          log.error({ taskId: task.id, runId, err: message }, "runTick: task failed");
-          return "failed";
-        }
-      })(),
-    );
-  }
-
-  const outcomes = await Promise.allSettled(promises);
-  let tasksCompleted = 0;
-  let tasksFailed = 0;
-  for (const o of outcomes) {
-    if (o.status === "fulfilled" && o.value === "completed") tasksCompleted++;
-    else tasksFailed++;
-  }
-
-  return {
-    tasksFound: dueTasks.length,
-    tasksDispatched,
-    tasksCompleted,
-    tasksFailed,
-  };
+  const cfg = getSchedulerConfig();
+  const semaphore = Effect.unsafeMakeSemaphore(cfg.maxConcurrentTasks);
+  return Effect.runPromise(
+    tickEffect(semaphore, cfg.maxConcurrentTasks, cfg.taskTimeout),
+  );
 }
 
 /** Reset singleton for testing. */

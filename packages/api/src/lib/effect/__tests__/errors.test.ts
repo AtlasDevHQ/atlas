@@ -17,6 +17,9 @@ import {
   PluginRejectedError,
   CustomValidatorError,
   ActionTimeoutError,
+  SchedulerTaskTimeoutError,
+  SchedulerExecutionError,
+  DeliveryError,
 } from "../errors";
 
 describe("tagged errors", () => {
@@ -193,6 +196,54 @@ describe("tagged errors", () => {
     expect(err.timeoutMs).toBe(10000);
   });
 
+  it("SchedulerTaskTimeoutError carries taskId and timeoutMs", () => {
+    const err = new SchedulerTaskTimeoutError({
+      message: "Timed out",
+      taskId: "task-1",
+      timeoutMs: 60000,
+    });
+    expect(err._tag).toBe("SchedulerTaskTimeoutError");
+    expect(err.taskId).toBe("task-1");
+    expect(err.timeoutMs).toBe(60000);
+    expect(err).toBeInstanceOf(Error);
+  });
+
+  it("SchedulerExecutionError carries taskId and optional runId", () => {
+    const err = new SchedulerExecutionError({
+      message: "Agent crashed",
+      taskId: "task-1",
+      runId: "run-1",
+    });
+    expect(err._tag).toBe("SchedulerExecutionError");
+    expect(err.taskId).toBe("task-1");
+    expect(err.runId).toBe("run-1");
+
+    // runId is optional
+    const err2 = new SchedulerExecutionError({ message: "fail", taskId: "task-2" });
+    expect(err2.runId).toBeUndefined();
+  });
+
+  it("DeliveryError carries channel, recipient, and permanent flag", () => {
+    const transient = new DeliveryError({
+      message: "HTTP 500",
+      channel: "webhook",
+      recipient: "https://example.com",
+      permanent: false,
+    });
+    expect(transient._tag).toBe("DeliveryError");
+    expect(transient.channel).toBe("webhook");
+    expect(transient.recipient).toBe("https://example.com");
+    expect(transient.permanent).toBe(false);
+
+    const permanent = new DeliveryError({
+      message: "Blocked URL",
+      channel: "webhook",
+      recipient: "http://localhost",
+      permanent: true,
+    });
+    expect(permanent.permanent).toBe(true);
+  });
+
   it("all tagged errors are instances of Error", () => {
     const errors = [
       new EmptyQueryError({ message: "empty" }),
@@ -212,6 +263,9 @@ describe("tagged errors", () => {
       new PluginRejectedError({ message: "plugin", connectionId: "c" }),
       new CustomValidatorError({ message: "validator", connectionId: "c" }),
       new ActionTimeoutError({ message: "timeout", timeoutMs: 1000 }),
+      new SchedulerTaskTimeoutError({ message: "timeout", taskId: "t", timeoutMs: 1000 }),
+      new SchedulerExecutionError({ message: "exec", taskId: "t" }),
+      new DeliveryError({ message: "fail", channel: "webhook", recipient: "url", permanent: false }),
     ];
 
     for (const err of errors) {

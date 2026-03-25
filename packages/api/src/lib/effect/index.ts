@@ -35,6 +35,10 @@ export {
   CustomValidatorError,
   // Action
   ActionTimeoutError,
+  // Scheduler
+  SchedulerTaskTimeoutError,
+  SchedulerExecutionError,
+  DeliveryError,
   // Union type
   type AtlasError,
   type AtlasErrorTag,

@@ -1,5 +1,5 @@
 /**
- * Unit tests for the delivery dispatcher.
+ * Unit tests for the delivery dispatcher (Effect.ts migration).
  */
 import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
 import type { ScheduledTask } from "@atlas/api/lib/scheduled-tasks";
@@ -115,8 +115,10 @@ describe("delivery dispatcher", () => {
     if (origKey) process.env.RESEND_API_KEY = origKey;
   });
 
-  it("reports failure on webhook delivery error", async () => {
-    mockFetch.mockResolvedValueOnce(new Response("error", { status: 500 }));
+  it("reports failure on webhook delivery error (retries exhausted)", async () => {
+    // Persistent failure — all retry attempts see 500
+    mockFetch.mockReset();
+    mockFetch.mockResolvedValue(new Response("error", { status: 500 }));
 
     const task = makeTask({
       deliveryChannel: "webhook",
@@ -124,10 +126,14 @@ describe("delivery dispatcher", () => {
     });
     const summary = await deliverResult(task, makeResult());
     expect(summary).toEqual({ attempted: 1, succeeded: 0, failed: 1 });
-  });
+    // Should have retried (original + up to 3 retries)
+    expect(mockFetch.mock.calls.length).toBeGreaterThanOrEqual(2);
+  }, 30_000);
 
-  it("reports failure on fetch network error", async () => {
-    mockFetch.mockRejectedValueOnce(new Error("network error"));
+  it("reports failure on fetch network error (retries exhausted)", async () => {
+    // Persistent network error — all retry attempts fail
+    mockFetch.mockReset();
+    mockFetch.mockRejectedValue(new Error("network error"));
 
     const task = makeTask({
       deliveryChannel: "webhook",
@@ -135,7 +141,8 @@ describe("delivery dispatcher", () => {
     });
     const summary = await deliverResult(task, makeResult());
     expect(summary).toEqual({ attempted: 1, succeeded: 0, failed: 1 });
-  });
+    expect(mockFetch.mock.calls.length).toBeGreaterThanOrEqual(2);
+  }, 30_000);
 
   it("includes safe custom headers for webhook recipients", async () => {
     const task = makeTask({
@@ -188,5 +195,35 @@ describe("delivery dispatcher", () => {
     const summary = await deliverResult(task, makeResult());
     expect(summary.failed).toBe(1);
     expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it("delivers to multiple webhook recipients concurrently", async () => {
+    const task = makeTask({
+      deliveryChannel: "webhook",
+      recipients: [
+        { type: "webhook", url: "https://hook1.example.com" },
+        { type: "webhook", url: "https://hook2.example.com" },
+        { type: "webhook", url: "https://hook3.example.com" },
+      ],
+    });
+    const summary = await deliverResult(task, makeResult());
+    expect(summary).toEqual({ attempted: 3, succeeded: 3, failed: 0 });
+    expect(mockFetch).toHaveBeenCalledTimes(3);
+  });
+
+  it("handles mixed success/failure (blocked URL + valid URL)", async () => {
+    // Mix a blocked URL (permanent failure, no retry) with valid URLs
+    const task = makeTask({
+      deliveryChannel: "webhook",
+      recipients: [
+        { type: "webhook", url: "https://hook1.example.com" },
+        { type: "webhook", url: "http://localhost:3001/internal" },
+        { type: "webhook", url: "https://hook2.example.com" },
+      ],
+    });
+    const summary = await deliverResult(task, makeResult());
+    expect(summary.attempted).toBe(3);
+    expect(summary.succeeded).toBe(2);
+    expect(summary.failed).toBe(1);
   });
 });

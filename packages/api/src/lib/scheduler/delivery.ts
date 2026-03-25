@@ -1,14 +1,17 @@
 /**
  * Delivery dispatcher — routes scheduled task results to the configured channel.
  *
- * Switches on task.deliveryChannel and dispatches to the appropriate formatter
- * and transport (email, Slack, webhook). Returns a delivery summary.
+ * Effect migration (P3): sequential for-loops replaced with Effect.forEach.
+ * Transient failures get exponential backoff retry (3 attempts, 1s base).
+ * Channel-specific logic is parameterized via a handler map.
  */
 
+import { Effect, Schedule, Duration } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
+import { DeliveryError } from "@atlas/api/lib/effect/errors";
 import type { ScheduledTask } from "@atlas/api/lib/scheduled-tasks";
 import type { AgentQueryResult } from "@atlas/api/lib/agent-query";
-import type { EmailRecipient, SlackRecipient, WebhookRecipient } from "@atlas/api/lib/scheduled-task-types";
+import type { EmailRecipient, SlackRecipient, WebhookRecipient, Recipient } from "@atlas/api/lib/scheduled-task-types";
 import { formatEmailReport } from "./format-email";
 import { formatSlackReport } from "./format-slack";
 import { formatWebhookPayload } from "./format-webhook";
@@ -56,7 +59,9 @@ function isBlockedUrl(urlString: string): boolean {
     const hostname = parsed.hostname;
     return BLOCKED_HOST_PATTERNS.some((pattern) => pattern.test(hostname));
   } catch {
-    return true; // Unparseable URLs are blocked
+    // intentionally treated as blocked: unparseable URLs cannot be validated
+    log.warn({ url: urlString.slice(0, 100) }, "Unparseable webhook URL — blocked");
+    return true;
   }
 }
 
@@ -73,9 +78,224 @@ function sanitizeHeaders(headers: Record<string, string>): Record<string, string
   return safe;
 }
 
+// ── Retry policy ──────────────────────────────────────────────────
+
+/** Exponential backoff: 1s → 2s → 4s, max 3 retries. */
+const retryPolicy = Schedule.intersect(
+  Schedule.exponential(Duration.seconds(1)),
+  Schedule.recurs(3),
+);
+
+/** HTTP 4xx errors are client errors that will never succeed on retry. */
+function isHttpPermanent(status: number): boolean {
+  return status >= 400 && status < 500;
+}
+
+// ── Per-recipient delivery Effects ────────────────────────────────
+
+function deliverToEmail(
+  recipient: EmailRecipient,
+  task: ScheduledTask,
+  result: AgentQueryResult,
+): Effect.Effect<void, DeliveryError> {
+  return Effect.gen(function* () {
+    const { subject, body } = formatEmailReport(task, result);
+
+    const resendKey = process.env.RESEND_API_KEY;
+    if (!resendKey) {
+      log.warn({ taskId: task.id, recipient: recipient.address }, "RESEND_API_KEY not set — email delivery skipped");
+      return yield* Effect.fail(
+        new DeliveryError({ message: "RESEND_API_KEY not set", channel: "email", recipient: recipient.address, permanent: true }),
+      );
+    }
+
+    const fromAddress = process.env.ATLAS_EMAIL_FROM ?? "Atlas <noreply@useatlas.dev>";
+
+    const resp = yield* Effect.tryPromise({
+      try: () =>
+        fetch("https://api.resend.com/emails", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${resendKey}` },
+          body: JSON.stringify({ from: fromAddress, to: [recipient.address], subject, html: body }),
+        }),
+      catch: (err) =>
+        new DeliveryError({
+          message: err instanceof Error ? err.message : String(err),
+          channel: "email",
+          recipient: recipient.address,
+          permanent: false,
+        }),
+    });
+
+    if (!resp.ok) {
+      const text = yield* Effect.promise(() => resp.text().catch(() => ""));
+      log.error(
+        { taskId: task.id, recipient: recipient.address, status: resp.status, body: text.slice(0, 200) },
+        "Email delivery failed",
+      );
+      return yield* Effect.fail(
+        new DeliveryError({
+          message: `HTTP ${resp.status}`,
+          channel: "email",
+          recipient: recipient.address,
+          permanent: isHttpPermanent(resp.status),
+        }),
+      );
+    }
+
+    log.info({ taskId: task.id, recipient: recipient.address }, "Email delivered");
+  });
+}
+
+function deliverToSlack(
+  recipient: SlackRecipient,
+  task: ScheduledTask,
+  result: AgentQueryResult,
+): Effect.Effect<void, DeliveryError> {
+  return Effect.gen(function* () {
+    const { text, blocks } = formatSlackReport(task, result);
+
+    let token: string | null = null;
+    if (recipient.teamId) {
+      const { getBotToken } = yield* Effect.tryPromise({
+        try: () => import("@atlas/api/lib/slack/store"),
+        catch: (err) =>
+          new DeliveryError({
+            message: `Failed to load Slack store: ${err instanceof Error ? err.message : String(err)}`,
+            channel: "slack",
+            recipient: recipient.channel,
+            permanent: false,
+          }),
+      });
+      token = yield* Effect.tryPromise({
+        try: () => getBotToken(recipient.teamId!),
+        catch: (err) =>
+          new DeliveryError({
+            message: `Failed to get bot token: ${err instanceof Error ? err.message : String(err)}`,
+            channel: "slack",
+            recipient: recipient.channel,
+            permanent: false,
+          }),
+      });
+    }
+    if (!token) {
+      token = process.env.SLACK_BOT_TOKEN ?? null;
+    }
+    if (!token) {
+      log.warn({ taskId: task.id, channel: recipient.channel }, "No Slack bot token available — delivery skipped");
+      return yield* Effect.fail(
+        new DeliveryError({ message: "No Slack bot token", channel: "slack", recipient: recipient.channel, permanent: true }),
+      );
+    }
+
+    const { postMessage } = yield* Effect.tryPromise({
+      try: () => import("@atlas/api/lib/slack/api"),
+      catch: (err) =>
+        new DeliveryError({
+          message: `Failed to load Slack API: ${err instanceof Error ? err.message : String(err)}`,
+          channel: "slack",
+          recipient: recipient.channel,
+          permanent: false,
+        }),
+    });
+    const resp = yield* Effect.tryPromise({
+      try: () => postMessage(token, { channel: recipient.channel, text, blocks }),
+      catch: (err) =>
+        new DeliveryError({
+          message: err instanceof Error ? err.message : String(err),
+          channel: "slack",
+          recipient: recipient.channel,
+          permanent: false,
+        }),
+    });
+
+    if (!resp.ok) {
+      log.error({ taskId: task.id, channel: recipient.channel, error: resp.error }, "Slack delivery failed");
+      return yield* Effect.fail(
+        new DeliveryError({ message: resp.error ?? "Slack API error", channel: "slack", recipient: recipient.channel, permanent: false }),
+      );
+    }
+
+    log.info({ taskId: task.id, channel: recipient.channel }, "Slack message delivered");
+  });
+}
+
+function deliverToWebhook(
+  recipient: WebhookRecipient,
+  task: ScheduledTask,
+  result: AgentQueryResult,
+): Effect.Effect<void, DeliveryError> {
+  return Effect.gen(function* () {
+    if (isBlockedUrl(recipient.url)) {
+      log.error({ taskId: task.id, url: recipient.url }, "Webhook URL blocked — targets private/internal address");
+      return yield* Effect.fail(
+        new DeliveryError({ message: "Blocked URL", channel: "webhook", recipient: recipient.url, permanent: true }),
+      );
+    }
+
+    const payload = formatWebhookPayload(task, result);
+    const safeHeaders = sanitizeHeaders(recipient.headers ?? {});
+
+    const resp = yield* Effect.tryPromise({
+      try: () =>
+        fetch(recipient.url, {
+          method: "POST",
+          headers: { ...safeHeaders, "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+        }),
+      catch: (err) =>
+        new DeliveryError({
+          message: err instanceof Error ? err.message : String(err),
+          channel: "webhook",
+          recipient: recipient.url,
+          permanent: false,
+        }),
+    });
+
+    if (!resp.ok) {
+      const text = yield* Effect.promise(() => resp.text().catch(() => ""));
+      log.error(
+        { taskId: task.id, url: recipient.url, status: resp.status, body: text.slice(0, 200) },
+        "Webhook delivery failed",
+      );
+      return yield* Effect.fail(
+        new DeliveryError({
+          message: `HTTP ${resp.status}`,
+          channel: "webhook",
+          recipient: recipient.url,
+          permanent: isHttpPermanent(resp.status),
+        }),
+      );
+    }
+
+    log.info({ taskId: task.id, url: recipient.url }, "Webhook delivered");
+  });
+}
+
+// ── Channel routing ───────────────────────────────────────────────
+
+function deliverySingle(
+  recipient: Recipient,
+  task: ScheduledTask,
+  result: AgentQueryResult,
+): Effect.Effect<void, DeliveryError> {
+  switch (recipient.type) {
+    case "email":
+      return deliverToEmail(recipient, task, result);
+    case "slack":
+      return deliverToSlack(recipient, task, result);
+    case "webhook":
+      return deliverToWebhook(recipient, task, result);
+  }
+}
+
 /**
  * Deliver agent results to the task's configured channel and recipients.
  * Returns a delivery summary with attempted/succeeded/failed counts.
+ *
+ * Each recipient gets exponential-backoff retry (3 attempts) for transient
+ * failures. Permanent errors (blocked URLs, missing credentials, HTTP 4xx)
+ * fail immediately without retry.
  */
 export async function deliverResult(
   task: ScheduledTask,
@@ -86,163 +306,41 @@ export async function deliverResult(
     return EMPTY_SUMMARY;
   }
 
-  switch (task.deliveryChannel) {
-    case "email":
-      return deliverEmail(task, result);
-    case "slack":
-      return deliverSlack(task, result);
-    case "webhook":
-      return deliverWebhook(task, result);
-    default:
-      log.warn({ taskId: task.id, channel: task.deliveryChannel }, "Unknown delivery channel");
-      return EMPTY_SUMMARY;
+  // Filter recipients to only those matching the delivery channel
+  const channelRecipients = task.recipients.filter((r) => r.type === task.deliveryChannel);
+  if (channelRecipients.length === 0) {
+    log.debug({ taskId: task.id, channel: task.deliveryChannel }, "No matching recipients for channel");
+    return EMPTY_SUMMARY;
   }
-}
 
-async function deliverEmail(task: ScheduledTask, result: AgentQueryResult): Promise<DeliverySummary> {
-  const emailRecipients = task.recipients.filter(
-    (r): r is EmailRecipient => r.type === "email",
+  // Deliver to all recipients concurrently, with per-recipient retry.
+  // Permanent errors (blocked URL, missing credentials, HTTP 4xx) fail immediately.
+  // Transient errors (network, HTTP 5xx) get exponential backoff retry.
+  const outcomes = await Effect.runPromise(
+    Effect.forEach(
+      channelRecipients,
+      (recipient) =>
+        deliverySingle(recipient, task, result).pipe(
+          Effect.retry({
+            schedule: retryPolicy,
+            while: (err) => !err.permanent,
+          }),
+          Effect.map(() => "succeeded" as const),
+          Effect.catchTag("DeliveryError", (err) => {
+            log.warn({ taskId: task.id, channel: err.channel, recipient: err.recipient, message: err.message }, "Delivery failed after retries exhausted");
+            return Effect.succeed("failed" as const);
+          }),
+        ),
+      { concurrency: 5 },
+    ),
   );
-  if (emailRecipients.length === 0) return EMPTY_SUMMARY;
 
-  const { subject, body } = formatEmailReport(task, result);
-
-  const resendKey = process.env.RESEND_API_KEY;
-  if (!resendKey) {
-    log.warn({ taskId: task.id, count: emailRecipients.length }, "RESEND_API_KEY not set — email delivery skipped");
-    return { attempted: emailRecipients.length, succeeded: 0, failed: emailRecipients.length };
-  }
-
-  const fromAddress = process.env.ATLAS_EMAIL_FROM ?? "Atlas <noreply@useatlas.dev>";
   let succeeded = 0;
   let failed = 0;
-
-  for (const recipient of emailRecipients) {
-    try {
-      const resp = await fetch("https://api.resend.com/emails", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${resendKey}`,
-        },
-        body: JSON.stringify({
-          from: fromAddress,
-          to: [recipient.address],
-          subject,
-          html: body,
-        }),
-      });
-
-      if (!resp.ok) {
-        const text = await resp.text().catch(() => "");
-        log.error({ taskId: task.id, recipient: recipient.address, status: resp.status, body: text.slice(0, 200) }, "Email delivery failed");
-        failed++;
-      } else {
-        log.info({ taskId: task.id, recipient: recipient.address }, "Email delivered");
-        succeeded++;
-      }
-    } catch (err) {
-      log.error({ taskId: task.id, recipient: recipient.address, err: err instanceof Error ? err.message : String(err) }, "Email delivery error");
-      failed++;
-    }
+  for (const outcome of outcomes) {
+    if (outcome === "succeeded") succeeded++;
+    else failed++;
   }
 
-  return { attempted: emailRecipients.length, succeeded, failed };
-}
-
-async function deliverSlack(task: ScheduledTask, result: AgentQueryResult): Promise<DeliverySummary> {
-  const slackRecipients = task.recipients.filter(
-    (r): r is SlackRecipient => r.type === "slack",
-  );
-  if (slackRecipients.length === 0) return EMPTY_SUMMARY;
-
-  const { text, blocks } = formatSlackReport(task, result);
-  let succeeded = 0;
-  let failed = 0;
-
-  for (const recipient of slackRecipients) {
-    try {
-      let token: string | null = null;
-
-      if (recipient.teamId) {
-        const { getBotToken } = await import("@atlas/api/lib/slack/store");
-        token = await getBotToken(recipient.teamId);
-      }
-      if (!token) {
-        token = process.env.SLACK_BOT_TOKEN ?? null;
-      }
-
-      if (!token) {
-        log.warn({ taskId: task.id, channel: recipient.channel }, "No Slack bot token available — delivery skipped");
-        failed++;
-        continue;
-      }
-
-      const { postMessage } = await import("@atlas/api/lib/slack/api");
-      const resp = await postMessage(token, {
-        channel: recipient.channel,
-        text,
-        blocks,
-      });
-
-      if (!resp.ok) {
-        log.error({ taskId: task.id, channel: recipient.channel, error: resp.error }, "Slack delivery failed");
-        failed++;
-      } else {
-        log.info({ taskId: task.id, channel: recipient.channel }, "Slack message delivered");
-        succeeded++;
-      }
-    } catch (err) {
-      log.error({ taskId: task.id, channel: recipient.channel, err: err instanceof Error ? err.message : String(err) }, "Slack delivery error");
-      failed++;
-    }
-  }
-
-  return { attempted: slackRecipients.length, succeeded, failed };
-}
-
-async function deliverWebhook(task: ScheduledTask, result: AgentQueryResult): Promise<DeliverySummary> {
-  const webhookRecipients = task.recipients.filter(
-    (r): r is WebhookRecipient => r.type === "webhook",
-  );
-  if (webhookRecipients.length === 0) return EMPTY_SUMMARY;
-
-  const payload = formatWebhookPayload(task, result);
-  let succeeded = 0;
-  let failed = 0;
-
-  for (const recipient of webhookRecipients) {
-    if (isBlockedUrl(recipient.url)) {
-      log.error({ taskId: task.id, url: recipient.url }, "Webhook URL blocked — targets private/internal address");
-      failed++;
-      continue;
-    }
-
-    const safeHeaders = sanitizeHeaders(recipient.headers ?? {});
-
-    try {
-      const resp = await fetch(recipient.url, {
-        method: "POST",
-        headers: {
-          ...safeHeaders,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify(payload),
-      });
-
-      if (!resp.ok) {
-        const text = await resp.text().catch(() => "");
-        log.error({ taskId: task.id, url: recipient.url, status: resp.status, body: text.slice(0, 200) }, "Webhook delivery failed");
-        failed++;
-      } else {
-        log.info({ taskId: task.id, url: recipient.url }, "Webhook delivered");
-        succeeded++;
-      }
-    } catch (err) {
-      log.error({ taskId: task.id, url: recipient.url, err: err instanceof Error ? err.message : String(err) }, "Webhook delivery error");
-      failed++;
-    }
-  }
-
-  return { attempted: webhookRecipients.length, succeeded, failed };
+  return { attempted: channelRecipients.length, succeeded, failed };
 }

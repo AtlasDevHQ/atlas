@@ -6,11 +6,15 @@
  * (status/completedAt) — callers (engine.ts) own run completion to avoid
  * double-writes. Delivery status is written here because only the executor
  * knows the delivery outcome.
+ *
+ * Effect migration (P3): Promise.race timeout replaced with Effect.timeout.
  */
 
+import { Effect, Duration } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
 import { getScheduledTask, updateRunDeliveryStatus } from "@atlas/api/lib/scheduled-tasks";
 import { executeAgentQuery } from "@atlas/api/lib/agent-query";
+import { SchedulerTaskTimeoutError, SchedulerExecutionError } from "@atlas/api/lib/effect/errors";
 import { deliverResult } from "./delivery";
 
 const log = createLogger("scheduler-executor");
@@ -20,6 +24,38 @@ export interface ExecutionResult {
   deliveryAttempted: number;
   deliverySucceeded: number;
   deliveryFailed: number;
+}
+
+/**
+ * Build an Effect program that runs the agent query with a timeout.
+ * Fails with SchedulerTaskTimeoutError on timeout, SchedulerExecutionError
+ * on any other failure.
+ */
+function agentQueryEffect(
+  question: string,
+  requestId: string,
+  taskId: string,
+  timeoutMs: number,
+) {
+  return Effect.tryPromise({
+    try: () => executeAgentQuery(question, requestId),
+    catch: (err) =>
+      new SchedulerExecutionError({
+        message: err instanceof Error ? err.message : String(err),
+        taskId,
+      }),
+  }).pipe(
+    Effect.timeout(Duration.millis(timeoutMs)),
+    Effect.catchTag("TimeoutException", () =>
+      Effect.fail(
+        new SchedulerTaskTimeoutError({
+          message: `Task execution timed out after ${timeoutMs}ms`,
+          taskId,
+          timeoutMs,
+        }),
+      ),
+    ),
+  );
 }
 
 /**
@@ -42,19 +78,16 @@ export async function executeScheduledTask(
 
   log.info({ taskId, runId, question: task.question.slice(0, 100) }, "Executing scheduled task");
 
-  // Run agent with timeout — clear timer to avoid resource leak
-  let timer: ReturnType<typeof setTimeout>;
-  const agentPromise = executeAgentQuery(task.question, requestId);
-  const timeoutPromise = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(`Task execution timed out after ${timeoutMs}ms`)), timeoutMs);
-  });
-
-  let agentResult;
-  try {
-    agentResult = await Promise.race([agentPromise, timeoutPromise]);
-  } finally {
-    clearTimeout(timer!);
-  }
+  // Convert tagged errors to plain Errors at the Effect→Promise boundary
+  // so callers get clean messages, not FiberFailure wrappers.
+  const agentResult = await Effect.runPromise(
+    agentQueryEffect(task.question, requestId, taskId, timeoutMs).pipe(
+      Effect.catchTags({
+        SchedulerTaskTimeoutError: (e) => Effect.die(new Error(e.message)),
+        SchedulerExecutionError: (e) => Effect.die(new Error(e.message)),
+      }),
+    ),
+  );
 
   // Only attempt delivery when recipients are configured
   const delivery = await deliverResult(task, agentResult);

@@ -12,9 +12,9 @@
 
 import { createRoute, z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
-import { runHandler } from "@atlas/api/lib/effect/hono";
-import { EnterpriseError } from "@atlas/ee/index";
+import { runHandler, type DomainErrorMapping } from "@atlas/api/lib/effect/hono";
 import { ResidencyError, type ResidencyErrorCode } from "@atlas/ee/platform/residency";
+import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createPlatformRouter } from "./admin-router";
 
@@ -145,13 +145,17 @@ const listAssignmentsRoute = createRoute({
 
 type ResidencyModule = typeof import("@atlas/ee/platform/residency");
 
-const RESIDENCY_ERROR_STATUS: Record<ResidencyErrorCode, number> = {
+const RESIDENCY_ERROR_STATUS: Record<ResidencyErrorCode, ContentfulStatusCode> = {
   not_configured: 404,
   invalid_region: 400,
   already_assigned: 409,
   workspace_not_found: 404,
   no_internal_db: 503,
 };
+
+const residencyDomainErrors: DomainErrorMapping[] = [
+  [ResidencyError, RESIDENCY_ERROR_STATUS],
+];
 
 async function loadResidency(): Promise<ResidencyModule | null> {
   try {
@@ -166,24 +170,6 @@ async function loadResidency(): Promise<ResidencyModule | null> {
     );
     throw err;
   }
-}
-
-function handleResidencyError(err: unknown, requestId: string): { error: string; message: string; status: number; requestId: string } {
-  const message = err instanceof Error ? err.message : String(err);
-
-  // Typed residency errors — handle known residency-specific codes
-  if (err instanceof ResidencyError) {
-    const code = err.code;
-    const status = RESIDENCY_ERROR_STATUS[code];
-    return { error: code, message, status, requestId };
-  }
-
-  // Enterprise feature gate → 403 (sanitize to avoid leaking config details)
-  if (err instanceof EnterpriseError) {
-    return { error: "enterprise_required", message: "This feature requires an enterprise license. Visit https://useatlas.dev/enterprise for licensing options.", status: 403, requestId };
-  }
-
-  return { error: "internal_error", message: `Unexpected error (ref: ${requestId.slice(0, 8)})`, status: 500, requestId };
 }
 
 // ---------------------------------------------------------------------------
@@ -202,18 +188,10 @@ platformResidency.openapi(listRegionsRoute, async (c) => runHandler(c, "list reg
     return c.json({ error: "not_available", message: "Data residency requires enterprise features to be enabled.", requestId }, 404);
   }
 
-  try {
-    const regions = await mod.listRegions();
-    const defaultRegion = mod.getDefaultRegion();
-    return c.json({ regions, defaultRegion }, 200);
-  } catch (err) {
-    const result = handleResidencyError(err, requestId);
-    if (result.error === "internal_error") throw err;
-    const logFn = result.status >= 500 ? log.error : log.warn;
-    logFn({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to list regions");
-    return c.json({ error: result.error, message: result.message, requestId: result.requestId }, result.status as 403);
-  }
-}));
+  const regions = await mod.listRegions();
+  const defaultRegion = mod.getDefaultRegion();
+  return c.json({ regions, defaultRegion }, 200);
+}, { domainErrors: residencyDomainErrors }));
 
 // ── Get workspace region ─────────────────────────────────────────────
 
@@ -226,20 +204,12 @@ platformResidency.openapi(getWorkspaceRegionRoute, async (c) => runHandler(c, "g
     return c.json({ error: "not_available", message: "Data residency requires enterprise features to be enabled.", requestId }, 404);
   }
 
-  try {
-    const assignment = await mod.getWorkspaceRegionAssignment(workspaceId);
-    if (!assignment) {
-      return c.json({ error: "not_found", message: `Workspace "${workspaceId}" has no region assigned.`, requestId }, 404);
-    }
-    return c.json(assignment, 200);
-  } catch (err) {
-    const result = handleResidencyError(err, requestId);
-    if (result.error === "internal_error") throw err;
-    const logFn = result.status >= 500 ? log.error : log.warn;
-    logFn({ err: err instanceof Error ? err : new Error(String(err)), workspaceId, requestId }, "Failed to get workspace region");
-    return c.json({ error: result.error, message: result.message, requestId: result.requestId }, result.status as 403);
+  const assignment = await mod.getWorkspaceRegionAssignment(workspaceId);
+  if (!assignment) {
+    return c.json({ error: "not_found", message: `Workspace "${workspaceId}" has no region assigned.`, requestId }, 404);
   }
-}));
+  return c.json(assignment, 200);
+}, { domainErrors: residencyDomainErrors }));
 
 // ── Assign region to workspace ───────────────────────────────────────
 
@@ -253,18 +223,10 @@ platformResidency.openapi(assignRegionRoute, async (c) => runHandler(c, "assign 
     return c.json({ error: "not_available", message: "Data residency requires enterprise features to be enabled.", requestId }, 404);
   }
 
-  try {
-    const assignment = await mod.assignWorkspaceRegion(workspaceId, body.region);
-    log.info({ workspaceId, region: body.region, requestId }, "Region assigned to workspace");
-    return c.json(assignment, 200);
-  } catch (err) {
-    const result = handleResidencyError(err, requestId);
-    if (result.error === "internal_error") throw err;
-    const logFn = result.status >= 500 ? log.error : log.warn;
-    logFn({ err: err instanceof Error ? err : new Error(String(err)), workspaceId, region: body.region, requestId }, "Failed to assign region");
-    return c.json({ error: result.error, message: result.message, requestId: result.requestId }, result.status as 400);
-  }
-}));
+  const assignment = await mod.assignWorkspaceRegion(workspaceId, body.region);
+  log.info({ workspaceId, region: body.region, requestId }, "Region assigned to workspace");
+  return c.json(assignment, 200);
+}, { domainErrors: residencyDomainErrors }));
 
 // ── List all assignments ─────────────────────────────────────────────
 
@@ -276,16 +238,8 @@ platformResidency.openapi(listAssignmentsRoute, async (c) => runHandler(c, "list
     return c.json({ error: "not_available", message: "Data residency requires enterprise features to be enabled.", requestId }, 404);
   }
 
-  try {
-    const assignments = await mod.listWorkspaceRegions();
-    return c.json({ assignments }, 200);
-  } catch (err) {
-    const result = handleResidencyError(err, requestId);
-    if (result.error === "internal_error") throw err;
-    const logFn = result.status >= 500 ? log.error : log.warn;
-    logFn({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to list region assignments");
-    return c.json({ error: result.error, message: result.message, requestId: result.requestId }, result.status as 403);
-  }
-}));
+  const assignments = await mod.listWorkspaceRegions();
+  return c.json({ assignments }, 200);
+}, { domainErrors: residencyDomainErrors }));
 
 export { platformResidency };

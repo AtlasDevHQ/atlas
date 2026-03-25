@@ -11,7 +11,9 @@
 
 import { Effect } from "effect";
 import { RateLimitExceededError, ConcurrencyLimitError } from "@atlas/api/lib/effect/errors";
+import { createLogger } from "@atlas/api/lib/logger";
 
+const log = createLogger("source-rate-limit");
 const WINDOW_MS = 60_000;
 
 export interface SourceRateLimit {
@@ -121,7 +123,12 @@ export const withSourceSlot = <A, E>(
     () =>
       Effect.sync(() => {
         const state = states.get(sourceId);
-        if (state) state.active = Math.max(0, state.active - 1);
+        if (state) {
+          if (state.active <= 0) {
+            log.warn({ sourceId, active: state.active }, "Rate limit slot double-release detected — active count already zero");
+          }
+          state.active = Math.max(0, state.active - 1);
+        }
       }),
   );
 

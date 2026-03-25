@@ -600,7 +600,13 @@ function executeAndAuditEffect(opts: {
       if (orgId) {
         import("@atlas/ee/sla/index")
           .then(({ recordQueryMetric }) => recordQueryMetric(orgId, durationMs, true))
-          .catch(() => { /* ee/sla module not installed */ });
+          .catch((slaErr) => {
+            // Dynamic import failure = ee not installed (expected in non-enterprise).
+            // Runtime error from recordQueryMetric = log warning for diagnostics.
+            if (slaErr instanceof Error && !slaErr.message.includes("Cannot find module")) {
+              log.warn({ err: slaErr.message, connectionId: connId }, "SLA metric recording failed");
+            }
+          });
       }
 
       try {
@@ -627,94 +633,116 @@ function executeAndAuditEffect(opts: {
   }).pipe(
     // Success path: metrics, cache, audit, hooks, masking
     Effect.flatMap((result) =>
-      Effect.promise(async () => {
-        const durationMs = Math.round(performance.now() - start);
-        const truncated = result.rows.length >= rowLimit;
+      Effect.tryPromise({
+        try: async () => {
+          const durationMs = Math.round(performance.now() - start);
+          const truncated = result.rows.length >= rowLimit;
 
-        connections.recordQuery(connId, durationMs, orgId);
-        connections.recordSuccess(connId, orgId);
+          connections.recordQuery(connId, durationMs, orgId);
+          connections.recordSuccess(connId, orgId);
 
-        // SLA metric (fire-and-forget, enterprise feature)
-        if (orgId) {
-          try {
-            const { recordQueryMetric } = await import("@atlas/ee/sla/index");
-            recordQueryMetric(orgId, durationMs, false);
-          } catch { /* ee/sla module not installed */ }
-        }
-
-        // Cache write (fail open)
-        if (cacheKey) {
-          try {
-            getCache().set(cacheKey, {
-              columns: result.columns, rows: result.rows,
-              cachedAt: Date.now(), ttl: getDefaultTtl(),
-            });
-          } catch (cacheErr) {
-            log.error({ err: cacheErr, connectionId: connId }, "Cache write failed — result not cached");
+          // SLA metric (fire-and-forget, enterprise feature)
+          if (orgId) {
+            try {
+              const { recordQueryMetric } = await import("@atlas/ee/sla/index");
+              recordQueryMetric(orgId, durationMs, false);
+            } catch (err) {
+              // Dynamic import failure = ee not installed (expected in non-enterprise).
+              // Runtime error from recordQueryMetric = log warning for diagnostics.
+              if (err instanceof Error && !err.message.includes("Cannot find module")) {
+                log.warn({ err: err.message, connectionId: connId }, "SLA metric recording failed");
+              }
+            }
           }
-        }
 
-        try {
-          logQueryAudit({
-            sql: querySql, durationMs, rowCount: result.rows.length, success: true,
-            sourceId: connId, sourceType: dbType, targetHost,
-            tablesAccessed: classification?.tablesAccessed,
-            columnsAccessed: classification?.columnsAccessed,
-          });
-        } catch (auditErr) {
-          log.warn({ err: auditErr }, "Failed to write query audit log");
-        }
+          // Cache write (fail open)
+          if (cacheKey) {
+            try {
+              getCache().set(cacheKey, {
+                columns: result.columns, rows: result.rows,
+                cachedAt: Date.now(), ttl: getDefaultTtl(),
+              });
+            } catch (cacheErr) {
+              log.error({ err: cacheErr, connectionId: connId }, "Cache write failed — result not cached");
+            }
+          }
 
-        await dispatchHook("afterQuery", {
-          sql: querySql, connectionId: connId,
-          result: { columns: result.columns, rows: result.rows },
-          durationMs,
-        });
-
-        // Pattern learning (fire-and-forget)
-        proposePatternIfNovel({
-          sql: querySql, dialect: parserDatabase(dbType, connId), connectionId: connId,
-        });
-
-        // PII masking (fails open)
-        let maskedRows = result.rows;
-        let maskingApplied = false;
-        if (classification?.tablesAccessed.length && orgId) {
           try {
-            const { applyMasking } = await import("@atlas/ee/compliance/masking");
-            const maskCtx = getRequestContext();
-            maskedRows = await applyMasking({
-              columns: result.columns, rows: result.rows,
-              tablesAccessed: classification.tablesAccessed,
-              orgId, userRole: maskCtx?.user?.role,
+            logQueryAudit({
+              sql: querySql, durationMs, rowCount: result.rows.length, success: true,
+              sourceId: connId, sourceType: dbType, targetHost,
+              tablesAccessed: classification?.tablesAccessed,
+              columnsAccessed: classification?.columnsAccessed,
             });
-            maskingApplied = maskedRows !== result.rows;
-          } catch (err) {
+          } catch (auditErr) {
+            log.warn({ err: auditErr }, "Failed to write query audit log");
+          }
+
+          try {
+            await dispatchHook("afterQuery", {
+              sql: querySql, connectionId: connId,
+              result: { columns: result.columns, rows: result.rows },
+              durationMs,
+            });
+          } catch (hookErr) {
             log.warn(
-              { err: err instanceof Error ? err.message : String(err), connectionId: connId },
-              "PII masking failed — returning unmasked results",
+              { err: hookErr instanceof Error ? hookErr.message : String(hookErr), connectionId: connId },
+              "afterQuery hook failed — query result unaffected",
             );
           }
-        }
 
-        const hasHookMeta = Object.keys(hookMetadata).length > 0;
-        return {
-          success: true,
-          explanation,
-          row_count: maskedRows.length,
-          columns: result.columns,
-          rows: maskedRows,
-          truncated,
-          cached: false,
-          maskingApplied,
-          ...(hasHookMeta && { metadata: hookMetadata }),
-        } as Record<string, unknown>;
+          // Pattern learning (fire-and-forget)
+          proposePatternIfNovel({
+            sql: querySql, dialect: parserDatabase(dbType, connId), connectionId: connId,
+          });
+
+          // PII masking (fails open)
+          let maskedRows = result.rows;
+          let maskingApplied = false;
+          if (classification?.tablesAccessed.length && orgId) {
+            try {
+              const { applyMasking } = await import("@atlas/ee/compliance/masking");
+              const maskCtx = getRequestContext();
+              maskedRows = await applyMasking({
+                columns: result.columns, rows: result.rows,
+                tablesAccessed: classification.tablesAccessed,
+                orgId, userRole: maskCtx?.user?.role,
+              });
+              maskingApplied = maskedRows !== result.rows;
+            } catch (err) {
+              log.warn(
+                { err: err instanceof Error ? err.message : String(err), connectionId: connId },
+                "PII masking failed — returning unmasked results",
+              );
+            }
+          }
+
+          const hasHookMeta = Object.keys(hookMetadata).length > 0;
+          return {
+            success: true,
+            explanation,
+            row_count: maskedRows.length,
+            columns: result.columns,
+            rows: maskedRows,
+            truncated,
+            cached: false,
+            maskingApplied,
+            ...(hasHookMeta && { metadata: hookMetadata }),
+          } as Record<string, unknown>;
+        },
+        catch: (err) => {
+          // Query succeeded but post-processing failed — return the error
+          // rather than losing the completed query result as an unrecoverable defect.
+          const message = err instanceof Error ? err.message : String(err);
+          log.error({ err, connectionId: connId }, "Post-query processing failed after successful execution");
+          return new QueryExecutionError({ message: `Query succeeded but post-processing failed: ${message}` });
+        },
       }),
     ),
   );
 }
 
-/** Map a pipeline error to the tool's {success: false} response format. */
+/** Map a pipeline error to the tool's {success: false} response format. Exhaustive over PipelineError. */
 function pipelineErrorToResponse(error: PipelineError): Record<string, unknown> {
   switch (error._tag) {
     case "RateLimitExceededError":
@@ -723,8 +751,18 @@ function pipelineErrorToResponse(error: PipelineError): Record<string, unknown> 
         error: error.message,
         ...(error.retryAfterMs != null && { retryAfterMs: error.retryAfterMs }),
       };
-    default:
+    case "ConcurrencyLimitError":
+    case "ConnectionNotFoundError":
+    case "PoolExhaustedError":
+    case "NoDatasourceError":
+    case "RLSError":
+    case "PluginRejectedError":
+    case "QueryExecutionError":
       return { success: false, error: error.message };
+    default: {
+      const _exhaustive: never = error;
+      return { success: false, error: `Unknown pipeline error: ${(_exhaustive as { message: string }).message}` };
+    }
   }
 }
 
@@ -787,74 +825,83 @@ Rules:
 
       // Step 3: Enterprise approval check (fail-open for availability, hard-fail for request creation)
       if (classification) {
-        const approvalResult = yield* Effect.promise(async () => {
-          // Phase 1: check availability (fail open)
-          let approvalMatch: { required: boolean; matchedRules: { id: string; name: string }[] } | null = null;
-          try {
-            const { checkApprovalRequired } = await import("@atlas/ee/governance/approval");
-            const checkReqCtx = getRequestContext();
-            const checkOrgId = checkReqCtx?.user?.activeOrganizationId;
-            approvalMatch = await checkApprovalRequired(
-              checkOrgId, classification.tablesAccessed, classification.columnsAccessed,
-            );
-          } catch (err) {
-            log.warn(
-              { err: err instanceof Error ? err.message : String(err), connectionId: connId },
-              "Approval check failed — proceeding without approval gate",
-            );
-          }
-
-          // Phase 2: create request (hard fail — governance bypass is worse than a failed query)
-          if (approvalMatch?.required) {
-            const { createApprovalRequest, hasApprovedRequest } = await import("@atlas/ee/governance/approval");
-            const reqCtxForApproval = getRequestContext();
-            const approvalOrgId = reqCtxForApproval?.user?.activeOrganizationId;
-            const userId = reqCtxForApproval?.user?.id;
-            const userEmail = reqCtxForApproval?.user?.label ?? null;
-
-            if (!userId || !approvalOrgId) {
-              log.warn(
-                { connectionId: connId, orgId: approvalOrgId },
-                "Approval required but user identity unavailable — blocking query",
+        const approvalResult = yield* Effect.tryPromise({
+          try: async () => {
+            // Phase 1: check availability (fail open)
+            let approvalMatch: { required: boolean; matchedRules: { id: string; name: string }[] } | null = null;
+            try {
+              const { checkApprovalRequired } = await import("@atlas/ee/governance/approval");
+              const checkReqCtx = getRequestContext();
+              const checkOrgId = checkReqCtx?.user?.activeOrganizationId;
+              approvalMatch = await checkApprovalRequired(
+                checkOrgId, classification.tablesAccessed, classification.columnsAccessed,
               );
-              return {
-                success: false,
-                error: "This query requires approval but the requester identity could not be determined. Please sign in and try again.",
-              };
+            } catch (err) {
+              log.warn(
+                { err: err instanceof Error ? err.message : String(err), connectionId: connId },
+                "Approval check failed — proceeding without approval gate",
+              );
             }
 
-            const alreadyApproved = await hasApprovedRequest(approvalOrgId, userId, normalizedSql);
-            if (!alreadyApproved) {
-              const firstRule = approvalMatch.matchedRules[0];
-              const approvalReq = await createApprovalRequest({
-                orgId: approvalOrgId,
-                ruleId: firstRule.id,
-                ruleName: firstRule.name,
-                requesterId: userId,
-                requesterEmail: userEmail,
-                querySql: normalizedSql,
-                explanation,
-                connectionId: connId,
-                tablesAccessed: classification.tablesAccessed,
-                columnsAccessed: classification.columnsAccessed,
-              });
-              logQueryAudit({
-                sql: normalizedSql.slice(0, 2000), durationMs: 0, rowCount: null, success: false,
-                error: `Approval required: ${firstRule.name}`,
-                sourceId: connId, sourceType: dbType, targetHost,
-              });
-              return {
-                success: false,
-                approval_required: true,
-                approval_request_id: approvalReq.id,
-                matched_rules: approvalMatch.matchedRules.map((r: { name: string }) => r.name),
-                message: `This query requires approval before execution. Rule: "${firstRule.name}". ` +
-                  `An approval request has been submitted (ID: ${approvalReq.id}). ` +
-                  `An admin must approve it before the query can run.`,
-              };
+            // Phase 2: create request (hard fail — governance bypass is worse than a failed query)
+            if (approvalMatch?.required) {
+              const { createApprovalRequest, hasApprovedRequest } = await import("@atlas/ee/governance/approval");
+              const reqCtxForApproval = getRequestContext();
+              const approvalOrgId = reqCtxForApproval?.user?.activeOrganizationId;
+              const userId = reqCtxForApproval?.user?.id;
+              const userEmail = reqCtxForApproval?.user?.label ?? null;
+
+              if (!userId || !approvalOrgId) {
+                log.warn(
+                  { connectionId: connId, orgId: approvalOrgId },
+                  "Approval required but user identity unavailable — blocking query",
+                );
+                return {
+                  success: false,
+                  error: "This query requires approval but the requester identity could not be determined. Please sign in and try again.",
+                };
+              }
+
+              const alreadyApproved = await hasApprovedRequest(approvalOrgId, userId, normalizedSql);
+              if (!alreadyApproved) {
+                const firstRule = approvalMatch.matchedRules[0];
+                const approvalReq = await createApprovalRequest({
+                  orgId: approvalOrgId,
+                  ruleId: firstRule.id,
+                  ruleName: firstRule.name,
+                  requesterId: userId,
+                  requesterEmail: userEmail,
+                  querySql: normalizedSql,
+                  explanation,
+                  connectionId: connId,
+                  tablesAccessed: classification.tablesAccessed,
+                  columnsAccessed: classification.columnsAccessed,
+                });
+                logQueryAudit({
+                  sql: normalizedSql.slice(0, 2000), durationMs: 0, rowCount: null, success: false,
+                  error: `Approval required: ${firstRule.name}`,
+                  sourceId: connId, sourceType: dbType, targetHost,
+                });
+                return {
+                  success: false,
+                  approval_required: true,
+                  approval_request_id: approvalReq.id,
+                  matched_rules: approvalMatch.matchedRules.map((r: { name: string }) => r.name),
+                  message: `This query requires approval before execution. Rule: "${firstRule.name}". ` +
+                    `An approval request has been submitted (ID: ${approvalReq.id}). ` +
+                    `An admin must approve it before the query can run.`,
+                };
+              }
             }
-          }
-          return null; // proceed to execution
+            return null; // proceed to execution
+          },
+          catch: (err) => {
+            // Phase 2 failure — governance bypass is worse than a failed query.
+            // Surface as a typed error so it reaches the agent as {success: false}.
+            const message = err instanceof Error ? err.message : String(err);
+            log.error({ err, connectionId: connId }, "Approval request creation failed — blocking query");
+            return new QueryExecutionError({ message: `Approval workflow failed: ${message}` });
+          },
         });
         if (approvalResult !== null) return approvalResult;
       }
@@ -874,31 +921,38 @@ Rules:
               success: true, sourceId: connId, sourceType: dbType, targetHost,
             });
             // Apply PII masking to cached results (same as live query path)
-            const cacheResponse = yield* Effect.promise(async () => {
-              let cachedRows = cached.rows;
-              let cachedMaskingApplied = false;
-              if (classification?.tablesAccessed.length && orgId) {
-                try {
-                  const { applyMasking } = await import("@atlas/ee/compliance/masking");
-                  cachedRows = await applyMasking({
-                    columns: cached.columns, rows: cached.rows,
-                    tablesAccessed: classification.tablesAccessed,
-                    orgId, userRole: ctx?.user?.role,
-                  });
-                  cachedMaskingApplied = cachedRows !== cached.rows;
-                } catch (err) {
-                  log.warn(
-                    { err: err instanceof Error ? err.message : String(err), connectionId: connId },
-                    "PII masking failed on cached results — returning unmasked results",
-                  );
+            const cacheResponse = yield* Effect.tryPromise({
+              try: async () => {
+                let cachedRows = cached.rows;
+                let cachedMaskingApplied = false;
+                if (classification?.tablesAccessed.length && orgId) {
+                  try {
+                    const { applyMasking } = await import("@atlas/ee/compliance/masking");
+                    cachedRows = await applyMasking({
+                      columns: cached.columns, rows: cached.rows,
+                      tablesAccessed: classification.tablesAccessed,
+                      orgId, userRole: ctx?.user?.role,
+                    });
+                    cachedMaskingApplied = cachedRows !== cached.rows;
+                  } catch (err) {
+                    log.warn(
+                      { err: err instanceof Error ? err.message : String(err), connectionId: connId },
+                      "PII masking failed on cached results — returning unmasked results",
+                    );
+                  }
                 }
-              }
-              return {
-                success: true, explanation, row_count: cachedRows.length,
-                columns: cached.columns, rows: cachedRows,
-                truncated: cachedRows.length >= getRowLimit(), cached: true,
-                maskingApplied: cachedMaskingApplied,
-              };
+                return {
+                  success: true, explanation, row_count: cachedRows.length,
+                  columns: cached.columns, rows: cachedRows,
+                  truncated: cachedRows.length >= getRowLimit(), cached: true,
+                  maskingApplied: cachedMaskingApplied,
+                };
+              },
+              catch: (err) => {
+                const message = err instanceof Error ? err.message : String(err);
+                log.error({ err, connectionId: connId }, "Cache response processing failed");
+                return new QueryExecutionError({ message: `Cache response processing failed: ${message}` });
+              },
             });
             return cacheResponse;
           }
@@ -912,9 +966,14 @@ Rules:
       return yield* withSourceSlot(connId,
         Effect.gen(function* () {
           // Plugin beforeQuery hook (may rewrite SQL)
-          const { dispatchHook, dispatchMutableHook } = yield* Effect.promise(
-            () => import("@atlas/api/lib/plugins/hooks"),
-          );
+          const { dispatchHook, dispatchMutableHook } = yield* Effect.tryPromise({
+            try: () => import("@atlas/api/lib/plugins/hooks"),
+            catch: (err) => {
+              const message = err instanceof Error ? err.message : String(err);
+              log.error({ err, connectionId: connId }, "Failed to load plugin hooks module");
+              return new PluginRejectedError({ message: `Plugin system unavailable: ${message}`, connectionId: connId });
+            },
+          });
           const hookMetadata: Record<string, unknown> = {};
           const hookCtx = { sql, connectionId: connId, metadata: hookMetadata };
           const mutatedSql = yield* Effect.tryPromise({

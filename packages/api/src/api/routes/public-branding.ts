@@ -12,7 +12,7 @@ import { validationHook } from "./validation-hook";
 import { createLogger } from "@atlas/api/lib/logger";
 import { authenticateRequest } from "@atlas/api/lib/auth/middleware";
 import { getWorkspaceBrandingPublic } from "@atlas/ee/branding/white-label";
-import { withErrorHandler } from "@atlas/api/lib/routes/error-handler";
+import { runHandler } from "@atlas/api/lib/effect/hono";
 import { withRequestId, type AuthEnv } from "./middleware";
 import { ErrorSchema } from "./shared-schemas";
 
@@ -66,7 +66,7 @@ const publicBranding = new OpenAPIHono<AuthEnv>({ defaultHook: validationHook })
 
 publicBranding.use(withRequestId);
 
-publicBranding.openapi(getBrandingRoute, withErrorHandler("get public branding", async (c) => {
+publicBranding.openapi(getBrandingRoute, async (c) => runHandler(c, "get public branding", async () => {
   const req = c.req.raw;
 
   // Try to resolve the org from the session. This is best-effort — if auth

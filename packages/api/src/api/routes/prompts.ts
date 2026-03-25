@@ -8,7 +8,7 @@
  */
 
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
-import { withErrorHandler } from "@atlas/api/lib/routes/error-handler";
+import { runHandler } from "@atlas/api/lib/effect/hono";
 import { validationHook } from "./validation-hook";
 import { z } from "zod";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
@@ -151,7 +151,7 @@ prompts.use(requestContext);
 // GET / — list collections (built-in + user's org)
 // ---------------------------------------------------------------------------
 
-prompts.openapi(listCollectionsRoute, withErrorHandler("list prompt collections", async (c) => {
+prompts.openapi(listCollectionsRoute, async (c) => runHandler(c, "list prompt collections", async () => {
   const authResult = c.get("authResult");
 
   if (!hasInternalDB()) {
@@ -179,7 +179,7 @@ prompts.openapi(listCollectionsRoute, withErrorHandler("list prompt collections"
 // GET /:id — collection detail with items
 // ---------------------------------------------------------------------------
 
-prompts.openapi(getCollectionRoute, withErrorHandler("get prompt collection", async (c) => {
+prompts.openapi(getCollectionRoute, async (c) => runHandler(c, "get prompt collection", async () => {
   const authResult = c.get("authResult");
 
   if (!hasInternalDB()) {

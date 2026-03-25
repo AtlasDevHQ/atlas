@@ -17,7 +17,7 @@
  */
 
 import { createRoute, z } from "@hono/zod-openapi";
-import { withErrorHandler } from "@atlas/api/lib/routes/error-handler";
+import { runHandler } from "@atlas/api/lib/effect/hono";
 import {
   listApprovalRules,
   createApprovalRule,
@@ -282,13 +282,13 @@ const adminApproval = createAdminRouter();
 // Registered before requireOrgContext() so the middleware does not apply.
 
 // POST /expire — manually expire stale requests (global, no org/DB needed)
-adminApproval.openapi(expireRoute, withErrorHandler("expire stale requests", async (c) => {
+adminApproval.openapi(expireRoute, async (c) => runHandler(c, "expire stale requests", async () => {
   const expired = await expireStaleRequests();
   return c.json({ expired }, 200);
-}, [ApprovalError, APPROVAL_ERROR_STATUS]));
+}, { domainErrors: [[ApprovalError, APPROVAL_ERROR_STATUS]] }));
 
 // GET /pending-count — count of pending requests (needs orgId, not hasInternalDB)
-adminApproval.openapi(pendingCountRoute, withErrorHandler("get pending approval count", async (c) => {
+adminApproval.openapi(pendingCountRoute, async (c) => runHandler(c, "get pending approval count", async () => {
   const requestId = c.get("requestId");
   const authResult = c.get("authResult");
 
@@ -299,21 +299,21 @@ adminApproval.openapi(pendingCountRoute, withErrorHandler("get pending approval 
 
   const count = await getPendingCount(orgId);
   return c.json({ count }, 200);
-}, [ApprovalError, APPROVAL_ERROR_STATUS]));
+}, { domainErrors: [[ApprovalError, APPROVAL_ERROR_STATUS]] }));
 
 // ── Handlers WITH requireOrgContext ───────────────────────────────────
 adminApproval.use(requireOrgContext());
 
 // GET /rules — list approval rules
-adminApproval.openapi(listRulesRoute, withErrorHandler("list approval rules", async (c) => {
+adminApproval.openapi(listRulesRoute, async (c) => runHandler(c, "list approval rules", async () => {
   const { orgId } = c.get("orgContext");
 
   const rules = await listApprovalRules(orgId);
   return c.json({ rules }, 200);
-}, [ApprovalError, APPROVAL_ERROR_STATUS]));
+}, { domainErrors: [[ApprovalError, APPROVAL_ERROR_STATUS]] }));
 
 // POST /rules — create approval rule
-adminApproval.openapi(createRuleRoute, withErrorHandler("create approval rule", async (c) => {
+adminApproval.openapi(createRuleRoute, async (c) => runHandler(c, "create approval rule", async () => {
   const { orgId } = c.get("orgContext");
   const body = c.req.valid("json");
 
@@ -325,20 +325,20 @@ adminApproval.openapi(createRuleRoute, withErrorHandler("create approval rule", 
     enabled: body.enabled,
   });
   return c.json({ rule }, 201);
-}, [ApprovalError, APPROVAL_ERROR_STATUS]));
+}, { domainErrors: [[ApprovalError, APPROVAL_ERROR_STATUS]] }));
 
 // PUT /rules/:id — update approval rule
-adminApproval.openapi(updateRuleRoute, withErrorHandler("update approval rule", async (c) => {
+adminApproval.openapi(updateRuleRoute, async (c) => runHandler(c, "update approval rule", async () => {
   const { orgId } = c.get("orgContext");
   const ruleId = c.req.param("id");
   const body = c.req.valid("json");
 
   const rule = await updateApprovalRule(orgId, ruleId, body);
   return c.json({ rule }, 200);
-}, [ApprovalError, APPROVAL_ERROR_STATUS]));
+}, { domainErrors: [[ApprovalError, APPROVAL_ERROR_STATUS]] }));
 
 // DELETE /rules/:id — delete approval rule
-adminApproval.openapi(deleteRuleRoute, withErrorHandler("delete approval rule", async (c) => {
+adminApproval.openapi(deleteRuleRoute, async (c) => runHandler(c, "delete approval rule", async () => {
   const { orgId } = c.get("orgContext");
   const ruleId = c.req.param("id");
 
@@ -347,10 +347,10 @@ adminApproval.openapi(deleteRuleRoute, withErrorHandler("delete approval rule", 
     return c.json({ error: "not_found", message: "Approval rule not found." }, 404);
   }
   return c.json({ message: "Approval rule deleted." }, 200);
-}, [ApprovalError, APPROVAL_ERROR_STATUS]));
+}, { domainErrors: [[ApprovalError, APPROVAL_ERROR_STATUS]] }));
 
 // GET /queue — list approval requests
-adminApproval.openapi(listQueueRoute, withErrorHandler("list approval requests", async (c) => {
+adminApproval.openapi(listQueueRoute, async (c) => runHandler(c, "list approval requests", async () => {
   const { orgId } = c.get("orgContext");
 
   const statusParam = new URL(c.req.raw.url).searchParams.get("status") as import("@useatlas/types").ApprovalStatus | null;
@@ -358,10 +358,10 @@ adminApproval.openapi(listQueueRoute, withErrorHandler("list approval requests",
   const status = statusParam && validStatuses.includes(statusParam) ? statusParam as import("@useatlas/types").ApprovalStatus : undefined;
   const requests = await listApprovalRequests(orgId, status);
   return c.json({ requests }, 200);
-}, [ApprovalError, APPROVAL_ERROR_STATUS]));
+}, { domainErrors: [[ApprovalError, APPROVAL_ERROR_STATUS]] }));
 
 // GET /queue/:id — get single approval request
-adminApproval.openapi(getQueueItemRoute, withErrorHandler("get approval request", async (c) => {
+adminApproval.openapi(getQueueItemRoute, async (c) => runHandler(c, "get approval request", async () => {
   const { orgId } = c.get("orgContext");
   const itemId = c.req.param("id");
 
@@ -370,10 +370,10 @@ adminApproval.openapi(getQueueItemRoute, withErrorHandler("get approval request"
     return c.json({ error: "not_found", message: "Approval request not found." }, 404);
   }
   return c.json({ request: item }, 200);
-}, [ApprovalError, APPROVAL_ERROR_STATUS]));
+}, { domainErrors: [[ApprovalError, APPROVAL_ERROR_STATUS]] }));
 
 // POST /queue/:id — review (approve/deny) an approval request
-adminApproval.openapi(reviewRoute, withErrorHandler("review approval request", async (c) => {
+adminApproval.openapi(reviewRoute, async (c) => runHandler(c, "review approval request", async () => {
   const { orgId } = c.get("orgContext");
   const authResult = c.get("authResult");
 
@@ -395,6 +395,6 @@ adminApproval.openapi(reviewRoute, withErrorHandler("review approval request", a
     body.comment,
   );
   return c.json({ request: result }, 200);
-}, [ApprovalError, APPROVAL_ERROR_STATUS]));
+}, { domainErrors: [[ApprovalError, APPROVAL_ERROR_STATUS]] }));
 
 export { adminApproval };

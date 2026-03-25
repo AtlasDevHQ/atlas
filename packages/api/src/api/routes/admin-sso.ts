@@ -6,7 +6,7 @@
  */
 
 import { createRoute, z } from "@hono/zod-openapi";
-import { withErrorHandler } from "@atlas/api/lib/routes/error-handler";
+import { runHandler } from "@atlas/api/lib/effect/hono";
 import {
   listSSOProviders,
   getSSOProvider,
@@ -439,15 +439,15 @@ const adminSso = createAdminRouter();
 adminSso.use(requireOrgContext());
 
 // GET /providers — list SSO providers for the active org
-adminSso.openapi(listProvidersRoute, withErrorHandler("list SSO providers", async (c) => {
+adminSso.openapi(listProvidersRoute, async (c) => runHandler(c, "list SSO providers", async () => {
   const { orgId } = c.get("orgContext");
 
   const providers = await listSSOProviders(orgId);
   return c.json({ providers: providers.map(summarizeProvider), total: providers.length }, 200);
-}, [SSOEnforcementError, SSO_ENFORCEMENT_ERROR_STATUS], [SSOError, SSO_ERROR_STATUS]));
+}, { domainErrors: [[SSOEnforcementError, SSO_ENFORCEMENT_ERROR_STATUS], [SSOError, SSO_ERROR_STATUS]] }));
 
 // GET /providers/:id — get a single SSO provider
-adminSso.openapi(getProviderRoute, withErrorHandler("get SSO provider", async (c) => {
+adminSso.openapi(getProviderRoute, async (c) => runHandler(c, "get SSO provider", async () => {
   const { orgId } = c.get("orgContext");
   const { id: providerId } = c.req.valid("param");
 
@@ -460,10 +460,10 @@ adminSso.openapi(getProviderRoute, withErrorHandler("get SSO provider", async (c
     return c.json({ error: "not_found", message: "SSO provider not found." }, 404);
   }
   return c.json({ provider: redactProvider(provider) }, 200);
-}, [SSOEnforcementError, SSO_ENFORCEMENT_ERROR_STATUS], [SSOError, SSO_ERROR_STATUS]));
+}, { domainErrors: [[SSOEnforcementError, SSO_ENFORCEMENT_ERROR_STATUS], [SSOError, SSO_ERROR_STATUS]] }));
 
 // POST /providers — create a new SSO provider
-adminSso.openapi(createProviderRoute, withErrorHandler("create SSO provider", async (c) => {
+adminSso.openapi(createProviderRoute, async (c) => runHandler(c, "create SSO provider", async () => {
   const { orgId } = c.get("orgContext");
   const body = c.req.valid("json");
 
@@ -474,10 +474,10 @@ adminSso.openapi(createProviderRoute, withErrorHandler("create SSO provider", as
 
   const provider = await createSSOProvider(orgId, body as unknown as CreateSSOProviderRequest);
   return c.json({ provider: redactProvider(provider) }, 201);
-}, [SSOEnforcementError, SSO_ENFORCEMENT_ERROR_STATUS], [SSOError, SSO_ERROR_STATUS]));
+}, { domainErrors: [[SSOEnforcementError, SSO_ENFORCEMENT_ERROR_STATUS], [SSOError, SSO_ERROR_STATUS]] }));
 
 // PATCH /providers/:id — update an SSO provider
-adminSso.openapi(updateProviderRoute, withErrorHandler("update SSO provider", async (c) => {
+adminSso.openapi(updateProviderRoute, async (c) => runHandler(c, "update SSO provider", async () => {
   const { orgId } = c.get("orgContext");
   const { id: providerId } = c.req.valid("param");
 
@@ -489,10 +489,10 @@ adminSso.openapi(updateProviderRoute, withErrorHandler("update SSO provider", as
 
   const provider = await updateSSOProvider(orgId, providerId, body);
   return c.json({ provider: redactProvider(provider) }, 200);
-}, [SSOEnforcementError, SSO_ENFORCEMENT_ERROR_STATUS], [SSOError, SSO_ERROR_STATUS]));
+}, { domainErrors: [[SSOEnforcementError, SSO_ENFORCEMENT_ERROR_STATUS], [SSOError, SSO_ERROR_STATUS]] }));
 
 // DELETE /providers/:id — delete an SSO provider
-adminSso.openapi(deleteProviderRoute, withErrorHandler("delete SSO provider", async (c) => {
+adminSso.openapi(deleteProviderRoute, async (c) => runHandler(c, "delete SSO provider", async () => {
   const { orgId } = c.get("orgContext");
   const { id: providerId } = c.req.valid("param");
 
@@ -505,23 +505,23 @@ adminSso.openapi(deleteProviderRoute, withErrorHandler("delete SSO provider", as
     return c.json({ error: "not_found", message: "SSO provider not found." }, 404);
   }
   return c.json({ message: "SSO provider deleted." }, 200);
-}, [SSOEnforcementError, SSO_ENFORCEMENT_ERROR_STATUS], [SSOError, SSO_ERROR_STATUS]));
+}, { domainErrors: [[SSOEnforcementError, SSO_ENFORCEMENT_ERROR_STATUS], [SSOError, SSO_ERROR_STATUS]] }));
 
 // GET /enforcement — get SSO enforcement status
-adminSso.openapi(getEnforcementRoute, withErrorHandler("get SSO enforcement status", async (c) => {
+adminSso.openapi(getEnforcementRoute, async (c) => runHandler(c, "get SSO enforcement status", async () => {
   const { orgId } = c.get("orgContext");
 
   const result = await isSSOEnforced(orgId);
   return c.json({ enforced: result?.enforced ?? false, orgId }, 200);
-}, [SSOEnforcementError, SSO_ENFORCEMENT_ERROR_STATUS], [SSOError, SSO_ERROR_STATUS]));
+}, { domainErrors: [[SSOEnforcementError, SSO_ENFORCEMENT_ERROR_STATUS], [SSOError, SSO_ERROR_STATUS]] }));
 
 // PUT /enforcement — set SSO enforcement
-adminSso.openapi(setEnforcementRoute, withErrorHandler("set SSO enforcement", async (c) => {
+adminSso.openapi(setEnforcementRoute, async (c) => runHandler(c, "set SSO enforcement", async () => {
   const { orgId } = c.get("orgContext");
   const { enforced } = c.req.valid("json");
 
   const result = await setSSOEnforcement(orgId, enforced);
   return c.json(result, 200);
-}, [SSOEnforcementError, SSO_ENFORCEMENT_ERROR_STATUS], [SSOError, SSO_ERROR_STATUS]));
+}, { domainErrors: [[SSOEnforcementError, SSO_ENFORCEMENT_ERROR_STATUS], [SSOError, SSO_ERROR_STATUS]] }));
 
 export { adminSso };

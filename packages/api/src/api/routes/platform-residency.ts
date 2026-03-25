@@ -12,7 +12,7 @@
 
 import { createRoute, z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
-import { withErrorHandler } from "@atlas/api/lib/routes/error-handler";
+import { runHandler } from "@atlas/api/lib/effect/hono";
 import { EnterpriseError } from "@atlas/ee/index";
 import { ResidencyError, type ResidencyErrorCode } from "@atlas/ee/platform/residency";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
@@ -194,7 +194,7 @@ const platformResidency = createPlatformRouter();
 
 // ── List regions ─────────────────────────────────────────────────────
 
-platformResidency.openapi(listRegionsRoute, withErrorHandler("list regions", async (c) => {
+platformResidency.openapi(listRegionsRoute, async (c) => runHandler(c, "list regions", async () => {
   const requestId = c.get("requestId");
 
   const mod = await loadResidency();
@@ -217,7 +217,7 @@ platformResidency.openapi(listRegionsRoute, withErrorHandler("list regions", asy
 
 // ── Get workspace region ─────────────────────────────────────────────
 
-platformResidency.openapi(getWorkspaceRegionRoute, withErrorHandler("get workspace region", async (c) => {
+platformResidency.openapi(getWorkspaceRegionRoute, async (c) => runHandler(c, "get workspace region", async () => {
   const requestId = c.get("requestId");
   const workspaceId = c.req.param("id");
 
@@ -243,7 +243,7 @@ platformResidency.openapi(getWorkspaceRegionRoute, withErrorHandler("get workspa
 
 // ── Assign region to workspace ───────────────────────────────────────
 
-platformResidency.openapi(assignRegionRoute, withErrorHandler("assign region", async (c) => {
+platformResidency.openapi(assignRegionRoute, async (c) => runHandler(c, "assign region", async () => {
   const requestId = c.get("requestId");
   const workspaceId = c.req.param("id");
   const body = c.req.valid("json");
@@ -268,7 +268,7 @@ platformResidency.openapi(assignRegionRoute, withErrorHandler("assign region", a
 
 // ── List all assignments ─────────────────────────────────────────────
 
-platformResidency.openapi(listAssignmentsRoute, withErrorHandler("list region assignments", async (c) => {
+platformResidency.openapi(listAssignmentsRoute, async (c) => runHandler(c, "list region assignments", async () => {
   const requestId = c.get("requestId");
 
   const mod = await loadResidency();

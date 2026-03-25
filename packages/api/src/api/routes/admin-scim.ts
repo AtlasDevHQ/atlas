@@ -10,7 +10,7 @@
  */
 
 import { createRoute, z } from "@hono/zod-openapi";
-import { withErrorHandler } from "@atlas/api/lib/routes/error-handler";
+import { runHandler } from "@atlas/api/lib/effect/hono";
 import {
   listConnections,
   deleteConnection,
@@ -295,7 +295,7 @@ const adminScim = createAdminRouter();
 adminScim.use(requireOrgContext());
 
 // GET / — SCIM connections and sync status
-adminScim.openapi(getStatusRoute, withErrorHandler("get SCIM status", async (c) => {
+adminScim.openapi(getStatusRoute, async (c) => runHandler(c, "get SCIM status", async () => {
   const { orgId } = c.get("orgContext");
 
   const [connections, syncStatus] = await Promise.all([
@@ -303,10 +303,10 @@ adminScim.openapi(getStatusRoute, withErrorHandler("get SCIM status", async (c) 
     getSyncStatus(orgId),
   ]);
   return c.json({ connections, syncStatus }, 200);
-}, [SCIMError, SCIM_ERROR_STATUS]));
+}, { domainErrors: [[SCIMError, SCIM_ERROR_STATUS]] }));
 
 // DELETE /connections/:id — revoke a SCIM connection
-adminScim.openapi(deleteConnectionRoute, withErrorHandler("delete SCIM connection", async (c) => {
+adminScim.openapi(deleteConnectionRoute, async (c) => runHandler(c, "delete SCIM connection", async () => {
   const { orgId } = c.get("orgContext");
   const { id: connectionId } = c.req.valid("param");
 
@@ -319,18 +319,18 @@ adminScim.openapi(deleteConnectionRoute, withErrorHandler("delete SCIM connectio
     return c.json({ error: "not_found", message: "SCIM connection not found." }, 404);
   }
   return c.json({ message: "SCIM connection deleted." }, 200);
-}, [SCIMError, SCIM_ERROR_STATUS]));
+}, { domainErrors: [[SCIMError, SCIM_ERROR_STATUS]] }));
 
 // GET /group-mappings — list group→role mappings
-adminScim.openapi(listGroupMappingsRoute, withErrorHandler("list SCIM group mappings", async (c) => {
+adminScim.openapi(listGroupMappingsRoute, async (c) => runHandler(c, "list SCIM group mappings", async () => {
   const { orgId } = c.get("orgContext");
 
   const mappings = await listGroupMappings(orgId);
   return c.json({ mappings, total: mappings.length }, 200);
-}, [SCIMError, SCIM_ERROR_STATUS]));
+}, { domainErrors: [[SCIMError, SCIM_ERROR_STATUS]] }));
 
 // POST /group-mappings — create a group→role mapping
-adminScim.openapi(createGroupMappingRoute, withErrorHandler("create SCIM group mapping", async (c) => {
+adminScim.openapi(createGroupMappingRoute, async (c) => runHandler(c, "create SCIM group mapping", async () => {
   const { orgId } = c.get("orgContext");
 
   const { scimGroupName, roleName } = c.req.valid("json");
@@ -340,10 +340,10 @@ adminScim.openapi(createGroupMappingRoute, withErrorHandler("create SCIM group m
 
   const mapping = await createGroupMapping(orgId, scimGroupName, roleName);
   return c.json({ mapping }, 201);
-}, [SCIMError, SCIM_ERROR_STATUS]));
+}, { domainErrors: [[SCIMError, SCIM_ERROR_STATUS]] }));
 
 // DELETE /group-mappings/:id — delete a group mapping
-adminScim.openapi(deleteGroupMappingRoute, withErrorHandler("delete SCIM group mapping", async (c) => {
+adminScim.openapi(deleteGroupMappingRoute, async (c) => runHandler(c, "delete SCIM group mapping", async () => {
   const { orgId } = c.get("orgContext");
   const { id: mappingId } = c.req.valid("param");
 
@@ -356,6 +356,6 @@ adminScim.openapi(deleteGroupMappingRoute, withErrorHandler("delete SCIM group m
     return c.json({ error: "not_found", message: "SCIM group mapping not found." }, 404);
   }
   return c.json({ message: "SCIM group mapping deleted." }, 200);
-}, [SCIMError, SCIM_ERROR_STATUS]));
+}, { domainErrors: [[SCIMError, SCIM_ERROR_STATUS]] }));
 
 export { adminScim };

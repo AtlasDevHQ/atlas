@@ -13,7 +13,7 @@ import { z } from "zod";
 import { HTTPException } from "hono/http-exception";
 import Stripe from "stripe";
 import { createLogger } from "@atlas/api/lib/logger";
-import { withErrorHandler } from "@atlas/api/lib/routes/error-handler";
+import { runHandler } from "@atlas/api/lib/effect/hono";
 import { validationHook } from "./validation-hook";
 import {
   hasInternalDB,
@@ -209,7 +209,7 @@ billing.use(standardAuth);
 billing.use(requestContext);
 
 // GET / — billing status for the active workspace
-billing.openapi(getBillingStatusRoute, withErrorHandler("fetch billing status", async (c) => {
+billing.openapi(getBillingStatusRoute, async (c) => runHandler(c, "fetch billing status", async () => {
   const authResult = c.get("authResult");
 
   if (!hasInternalDB()) {
@@ -302,7 +302,7 @@ billing.openapi(getBillingStatusRoute, withErrorHandler("fetch billing status", 
 // at /api/v1/billing — both /api/v1/billing and /api/v1/billing/status work.
 
 // POST /portal — create Stripe Customer Portal session
-billing.openapi(createPortalSessionRoute, withErrorHandler("create portal session", async (c) => {
+billing.openapi(createPortalSessionRoute, async (c) => runHandler(c, "create portal session", async () => {
   const requestId = c.get("requestId");
   const authResult = c.get("authResult");
 
@@ -339,7 +339,7 @@ billing.openapi(createPortalSessionRoute, withErrorHandler("create portal sessio
 }));
 
 // POST /byot — toggle BYOT (Bring Your Own Token) mode
-billing.openapi(toggleByotRoute, withErrorHandler("update BYOT setting", async (c) => {
+billing.openapi(toggleByotRoute, async (c) => runHandler(c, "update BYOT setting", async () => {
   const requestId = c.get("requestId");
   const authResult = c.get("authResult");
 

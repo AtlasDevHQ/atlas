@@ -8,7 +8,7 @@
 
 import * as path from "path";
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
-import { withErrorHandler } from "@atlas/api/lib/routes/error-handler";
+import { runHandler } from "@atlas/api/lib/effect/hono";
 import { validationHook } from "./validation-hook";
 import { createLogger } from "@atlas/api/lib/logger";
 import {
@@ -132,7 +132,7 @@ semantic.use(standardAuth);
 semantic.use(requestContext);
 
 // GET /entities — list all entities (public summary: drops measureCount, connection, source)
-semantic.openapi(listEntitiesRoute, withErrorHandler("load entity list", async (c) => {
+semantic.openapi(listEntitiesRoute, async (c) => runHandler(c, "load entity list", async () => {
   const root = getSemanticRoot();
   const result = discoverEntities(root);
   const entities = result.entities.map(({ table, description, columnCount, joinCount, type }) => ({
@@ -145,7 +145,7 @@ semantic.openapi(listEntitiesRoute, withErrorHandler("load entity list", async (
 }));
 
 // GET /entities/{name} — full entity detail
-semantic.openapi(getEntityRoute, withErrorHandler("parse entity file", async (c) => {
+semantic.openapi(getEntityRoute, async (c) => runHandler(c, "parse entity file", async () => {
   const requestId = c.get("requestId");
 
   const { name } = c.req.valid("param");

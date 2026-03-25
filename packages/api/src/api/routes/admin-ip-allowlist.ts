@@ -6,7 +6,7 @@
  */
 
 import { createRoute, z } from "@hono/zod-openapi";
-import { withErrorHandler } from "@atlas/api/lib/routes/error-handler";
+import { runHandler } from "@atlas/api/lib/effect/hono";
 import { getClientIP } from "@atlas/api/lib/auth/middleware";
 import {
   listIPAllowlistEntries,
@@ -206,17 +206,17 @@ const adminIPAllowlist = createAdminRouter();
 adminIPAllowlist.use(requireOrgContext());
 
 // GET / — list IP allowlist entries for the active org
-adminIPAllowlist.openapi(listEntriesRoute, withErrorHandler("list IP allowlist entries", async (c) => {
+adminIPAllowlist.openapi(listEntriesRoute, async (c) => runHandler(c, "list IP allowlist entries", async () => {
   const { orgId } = c.get("orgContext");
 
   const callerIP = getClientIP(c.req.raw);
 
   const entries = await listIPAllowlistEntries(orgId);
   return c.json({ entries, total: entries.length, callerIP }, 200);
-}, [IPAllowlistError, IP_ALLOWLIST_ERROR_STATUS]));
+}, { domainErrors: [[IPAllowlistError, IP_ALLOWLIST_ERROR_STATUS]] }));
 
 // POST / — add a CIDR range to the allowlist
-adminIPAllowlist.openapi(addEntryRoute, withErrorHandler("add IP allowlist entry", async (c) => {
+adminIPAllowlist.openapi(addEntryRoute, async (c) => runHandler(c, "add IP allowlist entry", async () => {
   const { orgId } = c.get("orgContext");
   const authResult = c.get("authResult");
 
@@ -233,10 +233,10 @@ adminIPAllowlist.openapi(addEntryRoute, withErrorHandler("add IP allowlist entry
     authResult.user?.id ?? null,
   );
   return c.json({ entry }, 201);
-}, [IPAllowlistError, IP_ALLOWLIST_ERROR_STATUS]));
+}, { domainErrors: [[IPAllowlistError, IP_ALLOWLIST_ERROR_STATUS]] }));
 
 // DELETE /:id — remove an IP allowlist entry
-adminIPAllowlist.openapi(deleteEntryRoute, withErrorHandler("remove IP allowlist entry", async (c) => {
+adminIPAllowlist.openapi(deleteEntryRoute, async (c) => runHandler(c, "remove IP allowlist entry", async () => {
   const { orgId } = c.get("orgContext");
   const { id: entryId } = c.req.valid("param");
 
@@ -249,6 +249,6 @@ adminIPAllowlist.openapi(deleteEntryRoute, withErrorHandler("remove IP allowlist
     return c.json({ error: "not_found", message: "IP allowlist entry not found." }, 404);
   }
   return c.json({ message: "IP allowlist entry removed." }, 200);
-}, [IPAllowlistError, IP_ALLOWLIST_ERROR_STATUS]));
+}, { domainErrors: [[IPAllowlistError, IP_ALLOWLIST_ERROR_STATUS]] }));
 
 export { adminIPAllowlist };

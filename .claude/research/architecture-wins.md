@@ -311,3 +311,30 @@ Tracking module-deepening refactors discovered by the `improve-codebase-architec
 - Unblocks P5–P9 (plugin lifecycle, server startup, route handlers, auth context)
 
 **Category:** Global singleton with imperative lifecycle replaced by Effect-managed scoped service.
+
+## 15. Route handlers → Effect boundaries (P7)
+
+**Date:** 2026-03-25
+**Issue:** #910
+**PR:** #TBD
+
+**Problem:** 166 route handlers across 33 files used `withErrorHandler` HOF to wrap try-catch blocks. The HOF caught errors, called `throwIfEEError` to map enterprise/domain errors to HTTP status codes, and returned 500 with requestId for unknowns. Error-to-HTTP mapping was split across three modules: `error-handler.ts` (96 lines, HOF + `DomainErrorMapping` type), `ee-error-handler.ts` (79 lines, `throwIfEEError` + `eeOnError`), and the `mapTaggedError` switch in `hono.ts`. Every route handler was wrapped in a HOF that hid the error-to-HTTP mapping.
+
+**Solution:** Centralized all error-to-HTTP mapping in the Effect bridge (`lib/effect/hono.ts`):
+- Added `classifyError` function: HTTPException passthrough → EnterpriseError → 403 → domain error mappings → AtlasError `mapTaggedError` — one function, all error categories
+- Added `runHandler` convenience wrapper: `runEffect` + `Effect.tryPromise` for handlers still using async/await
+- Migrated all 166 handlers from `withErrorHandler("label", async (c) => { ... })` to `async (c) => runHandler(c, "label", async () => { ... })`
+- Handler bodies unchanged — same async/await, same response shapes
+- Deleted `error-handler.ts` (96 lines) and its test (280 lines)
+- Removed `throwIfEEError` from `ee-error-handler.ts` (kept `eeOnError` for router-level JSON error formatting)
+
+**Impact:**
+- **-437 net lines** (409 added, 846 removed across 39 files)
+- Error-to-HTTP mapping consolidated from 3 modules into 1 (`classifyError` in `hono.ts`)
+- `withErrorHandler` HOF eliminated (166 call sites)
+- `throwIfEEError` eliminated — domain errors handled automatically by the bridge
+- `error-handler.ts` + test deleted (376 lines)
+- All 25 test suites pass, all 5 CI gates green
+- Handler bodies unchanged — zero behavioral changes, backwards compatible
+
+**Category:** Per-handler HOF error wrapping replaced by centralized Effect bridge with typed error classification.

@@ -6,7 +6,7 @@
  */
 
 import { createRoute, z } from "@hono/zod-openapi";
-import { withErrorHandler } from "@atlas/api/lib/routes/error-handler";
+import { runHandler } from "@atlas/api/lib/effect/hono";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import {
   getOnboardingStatuses,
@@ -106,7 +106,7 @@ const getSequenceRoute = createRoute({
 
 export const adminOnboardingEmails = createAdminRouter();
 
-adminOnboardingEmails.openapi(listStatusesRoute, withErrorHandler("fetch onboarding statuses", async (c) => {
+adminOnboardingEmails.openapi(listStatusesRoute, async (c) => runHandler(c, "fetch onboarding statuses", async () => {
   const authResult = c.get("authResult");
   const orgId = authResult.user?.activeOrganizationId;
 

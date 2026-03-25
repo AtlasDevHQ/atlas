@@ -14,7 +14,7 @@
 
 import { createRoute, z } from "@hono/zod-openapi";
 import { HTTPException } from "hono/http-exception";
-import { withErrorHandler } from "@atlas/api/lib/routes/error-handler";
+import { runHandler } from "@atlas/api/lib/effect/hono";
 import {
   listPIIClassifications,
   updatePIIClassification,
@@ -135,16 +135,16 @@ export const adminCompliance = createAdminRouter();
 adminCompliance.use(requireOrgContext());
 
 // GET /classifications
-adminCompliance.openapi(listRoute, withErrorHandler("list PII classifications", async (c) => {
+adminCompliance.openapi(listRoute, async (c) => runHandler(c, "list PII classifications", async () => {
   const { orgId } = c.get("orgContext");
   const { connectionId } = c.req.valid("query");
 
   const classifications = await listPIIClassifications(orgId, connectionId);
   return c.json({ classifications }, 200);
-}, [ComplianceError, COMPLIANCE_ERROR_STATUS], [ReportError, REPORT_ERROR_STATUS]));
+}, { domainErrors: [[ComplianceError, COMPLIANCE_ERROR_STATUS], [ReportError, REPORT_ERROR_STATUS]] }));
 
 // PUT /classifications/:id
-adminCompliance.openapi(updateRoute, withErrorHandler("update PII classification", async (c) => {
+adminCompliance.openapi(updateRoute, async (c) => runHandler(c, "update PII classification", async () => {
   const { orgId } = c.get("orgContext");
   const id = c.req.param("id");
   const body = c.req.valid("json");
@@ -157,17 +157,17 @@ adminCompliance.openapi(updateRoute, withErrorHandler("update PII classification
   });
   invalidateClassificationCache(orgId);
   return c.json({ classification: updated }, 200);
-}, [ComplianceError, COMPLIANCE_ERROR_STATUS], [ReportError, REPORT_ERROR_STATUS]));
+}, { domainErrors: [[ComplianceError, COMPLIANCE_ERROR_STATUS], [ReportError, REPORT_ERROR_STATUS]] }));
 
 // DELETE /classifications/:id
-adminCompliance.openapi(deleteRoute, withErrorHandler("delete PII classification", async (c) => {
+adminCompliance.openapi(deleteRoute, async (c) => runHandler(c, "delete PII classification", async () => {
   const { orgId } = c.get("orgContext");
   const id = c.req.param("id");
 
   await deletePIIClassification(orgId, id);
   invalidateClassificationCache(orgId);
   return c.json({ deleted: true }, 200);
-}, [ComplianceError, COMPLIANCE_ERROR_STATUS], [ReportError, REPORT_ERROR_STATUS]));
+}, { domainErrors: [[ComplianceError, COMPLIANCE_ERROR_STATUS], [ReportError, REPORT_ERROR_STATUS]] }));
 
 // ── Report schemas ──────────────────────────────────────────────
 
@@ -276,7 +276,7 @@ const userActivityReportRoute = createRoute({
 // ── Report handlers ─────────────────────────────────────────────
 
 // GET /reports/data-access
-adminCompliance.openapi(dataAccessReportRoute, withErrorHandler("generate data access report", async (c) => {
+adminCompliance.openapi(dataAccessReportRoute, async (c) => runHandler(c, "generate data access report", async () => {
   const { orgId } = c.get("orgContext");
   const query = c.req.valid("query");
 
@@ -305,10 +305,10 @@ adminCompliance.openapi(dataAccessReportRoute, withErrorHandler("generate data a
   }
 
   return c.json(report, 200);
-}, [ComplianceError, COMPLIANCE_ERROR_STATUS], [ReportError, REPORT_ERROR_STATUS]));
+}, { domainErrors: [[ComplianceError, COMPLIANCE_ERROR_STATUS], [ReportError, REPORT_ERROR_STATUS]] }));
 
 // GET /reports/user-activity
-adminCompliance.openapi(userActivityReportRoute, withErrorHandler("generate user activity report", async (c) => {
+adminCompliance.openapi(userActivityReportRoute, async (c) => runHandler(c, "generate user activity report", async () => {
   const { orgId } = c.get("orgContext");
   const query = c.req.valid("query");
 
@@ -337,4 +337,4 @@ adminCompliance.openapi(userActivityReportRoute, withErrorHandler("generate user
   }
 
   return c.json(report, 200);
-}, [ComplianceError, COMPLIANCE_ERROR_STATUS], [ReportError, REPORT_ERROR_STATUS]));
+}, { domainErrors: [[ComplianceError, COMPLIANCE_ERROR_STATUS], [ReportError, REPORT_ERROR_STATUS]] }));

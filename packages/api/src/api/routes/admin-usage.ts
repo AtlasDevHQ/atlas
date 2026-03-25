@@ -8,7 +8,7 @@
 
 import { createRoute, z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
-import { withErrorHandler } from "@atlas/api/lib/routes/error-handler";
+import { runHandler } from "@atlas/api/lib/effect/hono";
 import { getWorkspaceDetails } from "@atlas/api/lib/db/internal";
 import {
   getCurrentPeriodUsage,
@@ -265,7 +265,7 @@ const adminUsage = createAdminRouter();
 adminUsage.use(requireOrgContext());
 
 // GET / — current period usage summary for the active workspace
-adminUsage.openapi(getCurrentUsageRoute, withErrorHandler("fetch current usage", async (c) => {
+adminUsage.openapi(getCurrentUsageRoute, async (c) => runHandler(c, "fetch current usage", async () => {
   const { orgId } = c.get("orgContext");
 
   const usage = await getCurrentPeriodUsage(orgId);
@@ -273,7 +273,7 @@ adminUsage.openapi(getCurrentUsageRoute, withErrorHandler("fetch current usage",
 }));
 
 // GET /summary — combined usage dashboard payload
-adminUsage.openapi(getUsageSummaryRoute, withErrorHandler("fetch usage summary", async (c) => {
+adminUsage.openapi(getUsageSummaryRoute, async (c) => runHandler(c, "fetch usage summary", async () => {
   const { requestId, orgId } = c.get("orgContext");
 
   // Aggregate today's daily summary before fetching history.
@@ -333,7 +333,7 @@ adminUsage.openapi(getUsageSummaryRoute, withErrorHandler("fetch usage summary",
 }));
 
 // GET /history — historical usage summaries
-adminUsage.openapi(getUsageHistoryRoute, withErrorHandler("fetch usage history", async (c) => {
+adminUsage.openapi(getUsageHistoryRoute, async (c) => runHandler(c, "fetch usage history", async () => {
   const { orgId } = c.get("orgContext");
 
   const period = c.req.query("period") === "daily" ? "daily" as const : "monthly" as const;
@@ -360,7 +360,7 @@ adminUsage.openapi(getUsageHistoryRoute, withErrorHandler("fetch usage history",
 }));
 
 // GET /breakdown — per-user usage breakdown
-adminUsage.openapi(getUsageBreakdownRoute, withErrorHandler("fetch usage breakdown", async (c) => {
+adminUsage.openapi(getUsageBreakdownRoute, async (c) => runHandler(c, "fetch usage breakdown", async () => {
   const { orgId } = c.get("orgContext");
 
   const startDate = c.req.query("startDate");

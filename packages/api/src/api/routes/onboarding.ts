@@ -7,7 +7,7 @@
  */
 
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
-import { withErrorHandler } from "@atlas/api/lib/routes/error-handler";
+import { runHandler } from "@atlas/api/lib/effect/hono";
 import { validationHook } from "./validation-hook";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
@@ -524,7 +524,7 @@ const tourResetRoute = createRoute({
 // GET /tour-status
 // ---------------------------------------------------------------------------
 
-onboarding.openapi(tourStatusRoute, withErrorHandler("fetch tour status", async (c) => {
+onboarding.openapi(tourStatusRoute, async (c) => runHandler(c, "fetch tour status", async () => {
   const requestId = c.get("requestId");
   const authResult = c.get("authResult");
 
@@ -555,7 +555,7 @@ onboarding.openapi(tourStatusRoute, withErrorHandler("fetch tour status", async 
 // POST /tour-complete
 // ---------------------------------------------------------------------------
 
-onboarding.openapi(tourCompleteRoute, withErrorHandler("save tour completion", async (c) => {
+onboarding.openapi(tourCompleteRoute, async (c) => runHandler(c, "save tour completion", async () => {
   const requestId = c.get("requestId");
   const authResult = c.get("authResult");
 
@@ -586,7 +586,7 @@ onboarding.openapi(tourCompleteRoute, withErrorHandler("save tour completion", a
 // POST /tour-reset
 // ---------------------------------------------------------------------------
 
-onboarding.openapi(tourResetRoute, withErrorHandler("reset tour", async (c) => {
+onboarding.openapi(tourResetRoute, async (c) => runHandler(c, "reset tour", async () => {
   const requestId = c.get("requestId");
   const authResult = c.get("authResult");
 

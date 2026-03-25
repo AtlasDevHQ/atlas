@@ -7,7 +7,7 @@
  */
 
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
-import { withErrorHandler } from "@atlas/api/lib/routes/error-handler";
+import { runHandler } from "@atlas/api/lib/effect/hono";
 import { validationHook } from "./validation-hook";
 import { z } from "zod";
 import { getSemanticRoot, discoverTables } from "@atlas/api/lib/semantic/files";
@@ -57,7 +57,7 @@ tables.use(standardAuth);
 tables.use(requestContext);
 
 // GET / — list all tables with columns
-tables.openapi(tablesRoute, withErrorHandler("load table list", async (c) => {
+tables.openapi(tablesRoute, async (c) => runHandler(c, "load table list", async () => {
   const root = getSemanticRoot();
   const result = discoverTables(root);
   return c.json({

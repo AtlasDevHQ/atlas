@@ -8,7 +8,7 @@
  */
 
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
-import { withErrorHandler } from "@atlas/api/lib/routes/error-handler";
+import { runHandler } from "@atlas/api/lib/effect/hono";
 import { validationHook } from "./validation-hook";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
@@ -650,7 +650,7 @@ authed.openapi(deleteTaskRoute, async (c) => {
 // POST /:id/run — trigger immediate execution
 // ---------------------------------------------------------------------------
 
-authed.openapi(triggerTaskRoute, withErrorHandler("trigger task execution", async (c) => {
+authed.openapi(triggerTaskRoute, async (c) => runHandler(c, "trigger task execution", async () => {
   const requestId = c.get("requestId");
 
   if (!hasInternalDB()) {
@@ -679,7 +679,7 @@ authed.openapi(triggerTaskRoute, withErrorHandler("trigger task execution", asyn
 // POST /:id/preview — dry-run delivery format with mock data
 // ---------------------------------------------------------------------------
 
-authed.openapi(previewTaskRoute, withErrorHandler("generate delivery preview", async (c) => {
+authed.openapi(previewTaskRoute, async (c) => runHandler(c, "generate delivery preview", async () => {
   const requestId = c.get("requestId");
 
   if (!hasInternalDB()) {

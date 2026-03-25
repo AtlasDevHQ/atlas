@@ -20,7 +20,7 @@ import {
 import { connections } from "@atlas/api/lib/db/connection";
 import { flushCache } from "@atlas/api/lib/cache/index";
 import { invalidatePlanCache } from "@atlas/api/lib/billing/enforcement";
-import { withErrorHandler } from "@atlas/api/lib/routes/error-handler";
+import { runHandler } from "@atlas/api/lib/effect/hono";
 import { ErrorSchema, AuthErrorSchema, createIdParamSchema } from "./shared-schemas";
 import { createAdminRouter } from "./admin-router";
 
@@ -512,7 +512,7 @@ const adminOrgs = createAdminRouter();
 // GET / — list all organizations (platform admin view)
 // ---------------------------------------------------------------------------
 
-adminOrgs.openapi(listOrgsRoute, withErrorHandler("list organizations", async (c) => {
+adminOrgs.openapi(listOrgsRoute, async (c) => runHandler(c, "list organizations", async () => {
   if (!hasInternalDB()) {
     return c.json({ error: "not_available", message: "No internal database configured." }, 404);
   }
@@ -553,7 +553,7 @@ adminOrgs.openapi(listOrgsRoute, withErrorHandler("list organizations", async (c
 // GET /:id — get organization details with members
 // ---------------------------------------------------------------------------
 
-adminOrgs.openapi(getOrgRoute, withErrorHandler("get organization", async (c) => {
+adminOrgs.openapi(getOrgRoute, async (c) => runHandler(c, "get organization", async () => {
   const { id: orgId } = c.req.valid("param");
 
   if (!hasInternalDB()) {
@@ -634,7 +634,7 @@ adminOrgs.openapi(getOrgRoute, withErrorHandler("get organization", async (c) =>
 // GET /:id/stats — org stats (conversations, members, queries)
 // ---------------------------------------------------------------------------
 
-adminOrgs.openapi(getOrgStatsRoute, withErrorHandler("get org stats", async (c) => {
+adminOrgs.openapi(getOrgStatsRoute, async (c) => runHandler(c, "get org stats", async () => {
   const { id: orgId } = c.req.valid("param");
 
   if (!hasInternalDB()) {
@@ -658,7 +658,7 @@ adminOrgs.openapi(getOrgStatsRoute, withErrorHandler("get org stats", async (c) 
 // PATCH /:id/suspend — suspend a workspace
 // ---------------------------------------------------------------------------
 
-adminOrgs.openapi(suspendOrgRoute, withErrorHandler("suspend workspace", async (c) => {
+adminOrgs.openapi(suspendOrgRoute, async (c) => runHandler(c, "suspend workspace", async () => {
   const requestId = c.get("requestId");
   const authResult = c.get("authResult");
   const { id: orgId } = c.req.valid("param");
@@ -698,7 +698,7 @@ adminOrgs.openapi(suspendOrgRoute, withErrorHandler("suspend workspace", async (
 // PATCH /:id/activate — reactivate a suspended workspace
 // ---------------------------------------------------------------------------
 
-adminOrgs.openapi(activateOrgRoute, withErrorHandler("activate workspace", async (c) => {
+adminOrgs.openapi(activateOrgRoute, async (c) => runHandler(c, "activate workspace", async () => {
   const requestId = c.get("requestId");
   const authResult = c.get("authResult");
   const { id: orgId } = c.req.valid("param");
@@ -733,7 +733,7 @@ adminOrgs.openapi(activateOrgRoute, withErrorHandler("activate workspace", async
 // DELETE /:id — soft-delete a workspace with cascading cleanup
 // ---------------------------------------------------------------------------
 
-adminOrgs.openapi(deleteOrgRoute, withErrorHandler("delete workspace", async (c) => {
+adminOrgs.openapi(deleteOrgRoute, async (c) => runHandler(c, "delete workspace", async () => {
   const requestId = c.get("requestId");
   const authResult = c.get("authResult");
   const { id: orgId } = c.req.valid("param");
@@ -789,7 +789,7 @@ adminOrgs.openapi(deleteOrgRoute, withErrorHandler("delete workspace", async (c)
 // GET /:id/status — workspace health summary
 // ---------------------------------------------------------------------------
 
-adminOrgs.openapi(getOrgStatusRoute, withErrorHandler("get workspace status", async (c) => {
+adminOrgs.openapi(getOrgStatusRoute, async (c) => runHandler(c, "get workspace status", async () => {
   const { id: orgId } = c.req.valid("param");
 
   if (!hasInternalDB()) {
@@ -834,7 +834,7 @@ adminOrgs.openapi(getOrgStatusRoute, withErrorHandler("get workspace status", as
 
 const VALID_PLAN_TIERS = new Set<PlanTier>(["free", "trial", "team", "enterprise"]);
 
-adminOrgs.openapi(updatePlanRoute, withErrorHandler("update plan tier", async (c) => {
+adminOrgs.openapi(updatePlanRoute, async (c) => runHandler(c, "update plan tier", async () => {
   const requestId = c.get("requestId");
   const authResult = c.get("authResult");
   const { id: orgId } = c.req.valid("param");

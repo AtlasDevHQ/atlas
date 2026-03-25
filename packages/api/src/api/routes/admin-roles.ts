@@ -6,7 +6,7 @@
  */
 
 import { createRoute, z } from "@hono/zod-openapi";
-import { withErrorHandler } from "@atlas/api/lib/routes/error-handler";
+import { runHandler } from "@atlas/api/lib/effect/hono";
 import {
   listRoles,
   createRole,
@@ -377,7 +377,7 @@ const adminRoles = createAdminRouter();
 adminRoles.use(requireOrgContext());
 
 // GET / — list all roles for the active org
-adminRoles.openapi(listRolesRoute, withErrorHandler("list roles", async (c) => {
+adminRoles.openapi(listRolesRoute, async (c) => runHandler(c, "list roles", async () => {
   const { orgId } = c.get("orgContext");
 
   const roles = await listRoles(orgId);
@@ -386,10 +386,10 @@ adminRoles.openapi(listRolesRoute, withErrorHandler("list roles", async (c) => {
     permissions: [...PERMISSIONS],
     total: roles.length,
   }, 200);
-}, [RoleError, ROLE_ERROR_STATUS]));
+}, { domainErrors: [[RoleError, ROLE_ERROR_STATUS]] }));
 
 // POST / — create a custom role
-adminRoles.openapi(createRoleRoute, withErrorHandler("create role", async (c) => {
+adminRoles.openapi(createRoleRoute, async (c) => runHandler(c, "create role", async () => {
   const { orgId } = c.get("orgContext");
 
   const body = c.req.valid("json");
@@ -400,10 +400,10 @@ adminRoles.openapi(createRoleRoute, withErrorHandler("create role", async (c) =>
 
   const role = await createRole(orgId, body);
   return c.json({ role }, 201);
-}, [RoleError, ROLE_ERROR_STATUS]));
+}, { domainErrors: [[RoleError, ROLE_ERROR_STATUS]] }));
 
 // PUT /:id — update a custom role
-adminRoles.openapi(updateRoleRoute, withErrorHandler("update role", async (c) => {
+adminRoles.openapi(updateRoleRoute, async (c) => runHandler(c, "update role", async () => {
   const { orgId } = c.get("orgContext");
   const { id: roleId } = c.req.valid("param");
 
@@ -415,10 +415,10 @@ adminRoles.openapi(updateRoleRoute, withErrorHandler("update role", async (c) =>
 
   const role = await updateRole(orgId, roleId, body);
   return c.json({ role }, 200);
-}, [RoleError, ROLE_ERROR_STATUS]));
+}, { domainErrors: [[RoleError, ROLE_ERROR_STATUS]] }));
 
 // DELETE /:id — delete a custom role
-adminRoles.openapi(deleteRoleRoute, withErrorHandler("delete role", async (c) => {
+adminRoles.openapi(deleteRoleRoute, async (c) => runHandler(c, "delete role", async () => {
   const { orgId } = c.get("orgContext");
   const { id: roleId } = c.req.valid("param");
 
@@ -431,10 +431,10 @@ adminRoles.openapi(deleteRoleRoute, withErrorHandler("delete role", async (c) =>
     return c.json({ error: "not_found", message: "Role not found." }, 404);
   }
   return c.json({ message: "Role deleted." }, 200);
-}, [RoleError, ROLE_ERROR_STATUS]));
+}, { domainErrors: [[RoleError, ROLE_ERROR_STATUS]] }));
 
 // GET /:id/members — list members with a specific role
-adminRoles.openapi(listRoleMembersRoute, withErrorHandler("list role members", async (c) => {
+adminRoles.openapi(listRoleMembersRoute, async (c) => runHandler(c, "list role members", async () => {
   const { orgId } = c.get("orgContext");
   const { id: roleId } = c.req.valid("param");
 
@@ -444,10 +444,10 @@ adminRoles.openapi(listRoleMembersRoute, withErrorHandler("list role members", a
 
   const members = await listRoleMembers(orgId, roleId);
   return c.json({ members, total: members.length }, 200);
-}, [RoleError, ROLE_ERROR_STATUS]));
+}, { domainErrors: [[RoleError, ROLE_ERROR_STATUS]] }));
 
 // PUT /users/:userId/role — assign a role to a user
-adminRoles.openapi(assignRoleRoute, withErrorHandler("assign role", async (c) => {
+adminRoles.openapi(assignRoleRoute, async (c) => runHandler(c, "assign role", async () => {
   const { orgId } = c.get("orgContext");
   const { userId } = c.req.valid("param");
 
@@ -459,6 +459,6 @@ adminRoles.openapi(assignRoleRoute, withErrorHandler("assign role", async (c) =>
 
   const result = await assignRole(orgId, userId, roleName);
   return c.json(result, 200);
-}, [RoleError, ROLE_ERROR_STATUS]));
+}, { domainErrors: [[RoleError, ROLE_ERROR_STATUS]] }));
 
 export { adminRoles };

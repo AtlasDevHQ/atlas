@@ -12,7 +12,7 @@
  */
 
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
-import { withErrorHandler } from "@atlas/api/lib/routes/error-handler";
+import { runHandler } from "@atlas/api/lib/effect/hono";
 import { validationHook } from "./validation-hook";
 import { z } from "zod";
 import { createLogger } from "@atlas/api/lib/logger";
@@ -169,7 +169,7 @@ suggestions.use(standardAuth);
 suggestions.use(requestContext);
 
 // GET / — contextual suggestions by table
-suggestions.openapi(listSuggestionsRoute, withErrorHandler("fetch suggestions", async (c) => {
+suggestions.openapi(listSuggestionsRoute, async (c) => runHandler(c, "fetch suggestions", async () => {
   const authResult = c.get("authResult");
 
   if (!hasInternalDB()) {
@@ -189,7 +189,7 @@ suggestions.openapi(listSuggestionsRoute, withErrorHandler("fetch suggestions", 
 }));
 
 // GET /popular — top suggestions across all tables
-suggestions.openapi(listPopularRoute, withErrorHandler("fetch suggestions", async (c) => {
+suggestions.openapi(listPopularRoute, async (c) => runHandler(c, "fetch suggestions", async () => {
   const authResult = c.get("authResult");
 
   if (!hasInternalDB()) {

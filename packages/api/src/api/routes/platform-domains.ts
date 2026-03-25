@@ -12,7 +12,7 @@
 
 import { createRoute, z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
-import { withErrorHandler } from "@atlas/api/lib/routes/error-handler";
+import { runHandler } from "@atlas/api/lib/effect/hono";
 import { EnterpriseError } from "@atlas/ee/index";
 import { DomainError, type DomainErrorCode } from "@atlas/ee/platform/domains";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
@@ -200,7 +200,7 @@ const platformDomains = createPlatformRouter();
 
 // ── List all domains ─────────────────────────────────────────────────
 
-platformDomains.openapi(listDomainsRoute, withErrorHandler("list domains", async (c) => {
+platformDomains.openapi(listDomainsRoute, async (c) => runHandler(c, "list domains", async () => {
   const requestId = c.get("requestId");
 
   const mod = await loadDomains();
@@ -222,7 +222,7 @@ platformDomains.openapi(listDomainsRoute, withErrorHandler("list domains", async
 
 // ── Register domain ──────────────────────────────────────────────────
 
-platformDomains.openapi(registerDomainRoute, withErrorHandler("register domain", async (c) => {
+platformDomains.openapi(registerDomainRoute, async (c) => runHandler(c, "register domain", async () => {
   const requestId = c.get("requestId");
   const body = c.req.valid("json");
 
@@ -246,7 +246,7 @@ platformDomains.openapi(registerDomainRoute, withErrorHandler("register domain",
 
 // ── Verify domain ────────────────────────────────────────────────────
 
-platformDomains.openapi(verifyDomainRoute, withErrorHandler("verify domain", async (c) => {
+platformDomains.openapi(verifyDomainRoute, async (c) => runHandler(c, "verify domain", async () => {
   const requestId = c.get("requestId");
   const domainId = c.req.param("id");
 
@@ -269,7 +269,7 @@ platformDomains.openapi(verifyDomainRoute, withErrorHandler("verify domain", asy
 
 // ── Delete domain ────────────────────────────────────────────────────
 
-platformDomains.openapi(deleteDomainRoute, withErrorHandler("delete domain", async (c) => {
+platformDomains.openapi(deleteDomainRoute, async (c) => runHandler(c, "delete domain", async () => {
   const requestId = c.get("requestId");
   const domainId = c.req.param("id");
 

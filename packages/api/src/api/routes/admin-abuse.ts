@@ -12,7 +12,7 @@ import {
   getAbuseEvents,
   getAbuseConfig,
 } from "@atlas/api/lib/security/abuse";
-import { withErrorHandler } from "@atlas/api/lib/routes/error-handler";
+import { runHandler } from "@atlas/api/lib/effect/hono";
 import { ErrorSchema, AuthErrorSchema, createListResponseSchema } from "./shared-schemas";
 import { createAdminRouter } from "./admin-router";
 
@@ -167,7 +167,7 @@ const getConfigRoute = createRoute({
 const adminAbuse = createAdminRouter();
 
 // GET / — list flagged workspaces
-adminAbuse.openapi(listFlaggedRoute, withErrorHandler("list flagged workspaces", async (c) => {
+adminAbuse.openapi(listFlaggedRoute, async (c) => runHandler(c, "list flagged workspaces", async () => {
   const workspaces = listFlaggedWorkspaces();
 
   // Enrich with recent events from DB
@@ -182,7 +182,7 @@ adminAbuse.openapi(listFlaggedRoute, withErrorHandler("list flagged workspaces",
 }));
 
 // POST /:workspaceId/reinstate — reinstate a workspace
-adminAbuse.openapi(reinstateRoute, withErrorHandler("reinstate workspace", async (c) => {
+adminAbuse.openapi(reinstateRoute, async (c) => runHandler(c, "reinstate workspace", async () => {
   const requestId = c.get("requestId");
   const authResult = c.get("authResult");
   const { workspaceId } = c.req.valid("param");
@@ -204,7 +204,7 @@ adminAbuse.openapi(reinstateRoute, withErrorHandler("reinstate workspace", async
 }));
 
 // GET /config — current threshold configuration
-adminAbuse.openapi(getConfigRoute, withErrorHandler("read abuse config", async (c) => {
+adminAbuse.openapi(getConfigRoute, async (c) => runHandler(c, "read abuse config", async () => {
   return c.json(getAbuseConfig(), 200);
 }));
 

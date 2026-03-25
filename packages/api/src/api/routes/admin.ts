@@ -61,7 +61,7 @@ import { adminBranding } from "./admin-branding";
 import { adminOnboardingEmails } from "./admin-onboarding-emails";
 import { adminAbuse } from "./admin-abuse";
 import { ErrorSchema, AuthErrorSchema, parsePagination } from "./shared-schemas";
-import { withErrorHandler } from "@atlas/api/lib/routes/error-handler";
+import { runHandler } from "@atlas/api/lib/effect/hono";
 
 const log = createLogger("admin-routes");
 
@@ -2096,7 +2096,7 @@ admin.openapi(getSemanticDiffRoute, async (c) => {
 
 // -- Org-scoped semantic CRUD -----------------------------------------------
 
-admin.openapi(listOrgEntitiesRoute, withErrorHandler("list org semantic entities", async (c) => {
+admin.openapi(listOrgEntitiesRoute, async (c) => runHandler(c, "list org semantic entities", async () => {
   const { authResult } = await adminAuthAndContext(c);
 
   const orgId = authResult.user?.activeOrganizationId;
@@ -2127,7 +2127,7 @@ admin.openapi(listOrgEntitiesRoute, withErrorHandler("list org semantic entities
   }, 200);
 }));
 
-admin.openapi(getOrgEntityRoute, withErrorHandler("get org semantic entity", async (c) => {
+admin.openapi(getOrgEntityRoute, async (c) => runHandler(c, "get org semantic entity", async () => {
 
   const { name } = c.req.valid("param");
   const { authResult } = await adminAuthAndContext(c);
@@ -2161,7 +2161,7 @@ admin.openapi(getOrgEntityRoute, withErrorHandler("get org semantic entity", asy
   }, 200);
 }));
 
-admin.openapi(putOrgEntityRoute, withErrorHandler("save org semantic entity", async (c) => {
+admin.openapi(putOrgEntityRoute, async (c) => runHandler(c, "save org semantic entity", async () => {
 
   const { name } = c.req.valid("param");
   const { authResult, requestId } = await adminAuthAndContext(c);
@@ -2216,7 +2216,7 @@ admin.openapi(putOrgEntityRoute, withErrorHandler("save org semantic entity", as
   return c.json({ ok: true, name, entityType }, 200);
 }));
 
-admin.openapi(deleteOrgEntityRoute, withErrorHandler("delete org semantic entity", async (c) => {
+admin.openapi(deleteOrgEntityRoute, async (c) => runHandler(c, "delete org semantic entity", async () => {
 
   const { name } = c.req.valid("param");
   const { authResult, requestId } = await adminAuthAndContext(c);
@@ -2248,7 +2248,7 @@ admin.openapi(deleteOrgEntityRoute, withErrorHandler("delete org semantic entity
   return c.json({ ok: true, name, entityType }, 200);
 }));
 
-admin.openapi(importOrgEntitiesRoute, withErrorHandler("import org semantic entities", async (c) => {
+admin.openapi(importOrgEntitiesRoute, async (c) => runHandler(c, "import org semantic entities", async () => {
   const { authResult, requestId } = await adminAuthAndContext(c);
 
   const orgId = authResult.user?.activeOrganizationId;
@@ -2347,7 +2347,7 @@ admin.openapi(drainConnectionPoolRoute, async (c) => {
   }
 });
 
-admin.openapi(getCacheStatsRoute, withErrorHandler("retrieve cache statistics", async (c) => {
+admin.openapi(getCacheStatsRoute, async (c) => runHandler(c, "retrieve cache statistics", async () => {
   await adminAuthAndContext(c);
   const { getCache, cacheEnabled } = await import("@atlas/api/lib/cache/index");
   if (!cacheEnabled()) {
@@ -2360,7 +2360,7 @@ admin.openapi(getCacheStatsRoute, withErrorHandler("retrieve cache statistics", 
   return c.json({ enabled: true, ...stats, hitRate, missRate }, 200);
 }));
 
-admin.openapi(flushCacheRoute, withErrorHandler("flush cache", async (c) => {
+admin.openapi(flushCacheRoute, async (c) => runHandler(c, "flush cache", async () => {
   const { authResult, requestId } = await adminAuthAndContext(c);
 
   const { getCache, flushCache, cacheEnabled } = await import("@atlas/api/lib/cache/index");
@@ -2420,7 +2420,7 @@ admin.openapi(testConnectionRoute, async (c) => {
   }
 });
 
-admin.openapi(testExistingConnectionRoute, withErrorHandler("health check connection", async (c) => {
+admin.openapi(testExistingConnectionRoute, async (c) => runHandler(c, "health check connection", async () => {
 
   const { id } = c.req.valid("param");
 
@@ -2778,7 +2778,7 @@ admin.openapi(getConnectionRoute, async (c) => {
 
 // -- Audit ------------------------------------------------------------------
 
-admin.openapi(listAuditRoute, withErrorHandler("query audit log", async (c) => {
+admin.openapi(listAuditRoute, async (c) => runHandler(c, "query audit log", async () => {
 
   // Auth before feature-availability check to avoid info disclosure
   await adminAuthAndContext(c);
@@ -2833,7 +2833,7 @@ admin.openapi(listAuditRoute, withErrorHandler("query audit log", async (c) => {
   return c.json({ rows, total, limit, offset }, 200);
 }));
 
-admin.openapi(exportAuditRoute, withErrorHandler("export audit log", async (c) => {
+admin.openapi(exportAuditRoute, async (c) => runHandler(c, "export audit log", async () => {
   await adminAuthAndContext(c);
   if (!hasInternalDB()) {
     return c.json({ error: "not_available", message: "Audit log requires an internal database." }, 404);
@@ -2911,7 +2911,7 @@ admin.openapi(exportAuditRoute, withErrorHandler("export audit log", async (c) =
   });
 }));
 
-admin.openapi(getAuditStatsRoute, withErrorHandler("query audit stats", async (c) => {
+admin.openapi(getAuditStatsRoute, async (c) => runHandler(c, "query audit stats", async () => {
 
   // Auth before feature-availability check to avoid info disclosure
   await adminAuthAndContext(c);
@@ -2973,7 +2973,7 @@ admin.openapi(getAuditFacetsRoute, async (c) => {
 
 // -- Audit Analytics --------------------------------------------------------
 
-admin.openapi(auditVolumeRoute, withErrorHandler("query volume analytics", async (c) => {
+admin.openapi(auditVolumeRoute, async (c) => runHandler(c, "query volume analytics", async () => {
   await adminAuthAndContext(c);
   if (!hasInternalDB()) {
     return c.json({ error: "not_available", message: "Audit log requires an internal database." }, 404);
@@ -2999,7 +2999,7 @@ admin.openapi(auditVolumeRoute, withErrorHandler("query volume analytics", async
   }, 200);
 }));
 
-admin.openapi(auditSlowRoute, withErrorHandler("query slow analytics", async (c) => {
+admin.openapi(auditSlowRoute, async (c) => runHandler(c, "query slow analytics", async () => {
   await adminAuthAndContext(c);
   if (!hasInternalDB()) {
     return c.json({ error: "not_available", message: "Audit log requires an internal database." }, 404);
@@ -3036,7 +3036,7 @@ admin.openapi(auditSlowRoute, withErrorHandler("query slow analytics", async (c)
   }, 200);
 }));
 
-admin.openapi(auditFrequentRoute, withErrorHandler("query frequency analytics", async (c) => {
+admin.openapi(auditFrequentRoute, async (c) => runHandler(c, "query frequency analytics", async () => {
   await adminAuthAndContext(c);
   if (!hasInternalDB()) {
     return c.json({ error: "not_available", message: "Audit log requires an internal database." }, 404);
@@ -3073,7 +3073,7 @@ admin.openapi(auditFrequentRoute, withErrorHandler("query frequency analytics", 
   }, 200);
 }));
 
-admin.openapi(auditErrorsRoute, withErrorHandler("query error analytics", async (c) => {
+admin.openapi(auditErrorsRoute, async (c) => runHandler(c, "query error analytics", async () => {
   await adminAuthAndContext(c);
   if (!hasInternalDB()) {
     return c.json({ error: "not_available", message: "Audit log requires an internal database." }, 404);
@@ -3104,7 +3104,7 @@ admin.openapi(auditErrorsRoute, withErrorHandler("query error analytics", async 
   }, 200);
 }));
 
-admin.openapi(auditUsersRoute, withErrorHandler("query user analytics", async (c) => {
+admin.openapi(auditUsersRoute, async (c) => runHandler(c, "query user analytics", async () => {
   await adminAuthAndContext(c);
   if (!hasInternalDB()) {
     return c.json({ error: "not_available", message: "Audit log requires an internal database." }, 404);
@@ -3296,7 +3296,7 @@ admin.openapi(getPluginSchemaRoute, async (c) => {
   }, 200);
 });
 
-admin.openapi(updatePluginConfigRoute, withErrorHandler("save plugin configuration", async (c) => {
+admin.openapi(updatePluginConfigRoute, async (c) => runHandler(c, "save plugin configuration", async () => {
 
   const { id } = c.req.valid("param");
 
@@ -3507,7 +3507,7 @@ admin.openapi(changePasswordRoute, async (c) => {
 
 // -- Sessions ---------------------------------------------------------------
 
-admin.openapi(listSessionsRoute, withErrorHandler("list sessions", async (c) => {
+admin.openapi(listSessionsRoute, async (c) => runHandler(c, "list sessions", async () => {
   await adminAuthAndContext(c);
   if (!hasInternalDB() || detectAuthMode() !== "managed") {
     return c.json({ error: "not_available", message: "Session management requires managed auth mode." }, 404);
@@ -3573,7 +3573,7 @@ admin.openapi(listSessionsRoute, withErrorHandler("list sessions", async (c) => 
   }, 200);
 }));
 
-admin.openapi(getSessionStatsRoute, withErrorHandler("get session stats", async (c) => {
+admin.openapi(getSessionStatsRoute, async (c) => runHandler(c, "get session stats", async () => {
   await adminAuthAndContext(c);
   if (!hasInternalDB() || detectAuthMode() !== "managed") {
     return c.json({ error: "not_available", message: "Session management requires managed auth mode." }, 404);
@@ -3592,7 +3592,7 @@ admin.openapi(getSessionStatsRoute, withErrorHandler("get session stats", async 
   }, 200);
 }));
 
-admin.openapi(deleteSessionRoute, withErrorHandler("revoke session", async (c) => {
+admin.openapi(deleteSessionRoute, async (c) => runHandler(c, "revoke session", async () => {
 
   const { id: sessionId } = c.req.valid("param");
 
@@ -3614,7 +3614,7 @@ admin.openapi(deleteSessionRoute, withErrorHandler("revoke session", async (c) =
   return c.json({ success: true }, 200);
 }));
 
-admin.openapi(deleteUserSessionsRoute, withErrorHandler("revoke user sessions", async (c) => {
+admin.openapi(deleteUserSessionsRoute, async (c) => runHandler(c, "revoke user sessions", async () => {
 
   const { userId } = c.req.valid("param");
 
@@ -3639,7 +3639,7 @@ admin.openapi(deleteUserSessionsRoute, withErrorHandler("revoke user sessions", 
 
 // -- Users ------------------------------------------------------------------
 
-admin.openapi(listUsersRoute, withErrorHandler("list users", async (c) => {
+admin.openapi(listUsersRoute, async (c) => runHandler(c, "list users", async () => {
   await adminAuthAndContext(c);
   const adminApi = await getAdminApi();
   if (!adminApi) {
@@ -3679,7 +3679,7 @@ admin.openapi(listUsersRoute, withErrorHandler("list users", async (c) => {
   }, 200);
 }));
 
-admin.openapi(getUserStatsRoute, withErrorHandler("query user stats", async (c) => {
+admin.openapi(getUserStatsRoute, async (c) => runHandler(c, "query user stats", async () => {
   await adminAuthAndContext(c);
   if (!hasInternalDB() || detectAuthMode() !== "managed") {
     return c.json({ error: "not_available", message: "User management requires managed auth mode." }, 404);
@@ -3765,7 +3765,7 @@ admin.openapi(changeUserRoleRoute, async (c) => {
   }
 });
 
-admin.openapi(banUserRoute, withErrorHandler("ban user", async (c) => {
+admin.openapi(banUserRoute, async (c) => runHandler(c, "ban user", async () => {
 
   const { id: userId } = c.req.valid("param");
 
@@ -3797,7 +3797,7 @@ admin.openapi(banUserRoute, withErrorHandler("ban user", async (c) => {
   return c.json({ success: true }, 200);
 }));
 
-admin.openapi(unbanUserRoute, withErrorHandler("unban user", async (c) => {
+admin.openapi(unbanUserRoute, async (c) => runHandler(c, "unban user", async () => {
 
   const { id: userId } = c.req.valid("param");
 
@@ -3865,7 +3865,7 @@ admin.openapi(deleteUserRoute, async (c) => {
   }
 });
 
-admin.openapi(revokeUserSessionsRoute, withErrorHandler("revoke sessions", async (c) => {
+admin.openapi(revokeUserSessionsRoute, async (c) => runHandler(c, "revoke sessions", async () => {
 
   const { id: userId } = c.req.valid("param");
 
@@ -4014,7 +4014,7 @@ admin.openapi(inviteUserRoute, async (c) => {
   }
 });
 
-admin.openapi(listInvitationsRoute, withErrorHandler("list invitations", async (c) => {
+admin.openapi(listInvitationsRoute, async (c) => runHandler(c, "list invitations", async () => {
   await adminAuthAndContext(c);
   if (!hasInternalDB() || detectAuthMode() !== "managed") {
     return c.json({ error: "not_available", message: "User invitations require managed auth mode." }, 404);
@@ -4062,7 +4062,7 @@ admin.openapi(listInvitationsRoute, withErrorHandler("list invitations", async (
   return c.json({ invitations }, 200);
 }));
 
-admin.openapi(revokeInvitationRoute, withErrorHandler("revoke invitation", async (c) => {
+admin.openapi(revokeInvitationRoute, async (c) => runHandler(c, "revoke invitation", async () => {
 
   const { id: invitationId } = c.req.valid("param");
 
@@ -4087,7 +4087,7 @@ admin.openapi(revokeInvitationRoute, withErrorHandler("revoke invitation", async
 
 // -- Tokens -----------------------------------------------------------------
 
-admin.openapi(getTokenSummaryRoute, withErrorHandler("fetch token usage summary", async (c) => {
+admin.openapi(getTokenSummaryRoute, async (c) => runHandler(c, "fetch token usage summary", async () => {
   await adminAuthAndContext(c);
 
   if (!hasInternalDB()) {
@@ -4128,7 +4128,7 @@ admin.openapi(getTokenSummaryRoute, withErrorHandler("fetch token usage summary"
   }, 200);
 }));
 
-admin.openapi(getTokensByUserRoute, withErrorHandler("fetch token usage by user", async (c) => {
+admin.openapi(getTokensByUserRoute, async (c) => runHandler(c, "fetch token usage by user", async () => {
   await adminAuthAndContext(c);
 
   if (!hasInternalDB()) {
@@ -4183,7 +4183,7 @@ admin.openapi(getTokensByUserRoute, withErrorHandler("fetch token usage by user"
   }, 200);
 }));
 
-admin.openapi(getTokenTrendsRoute, withErrorHandler("fetch token usage trends", async (c) => {
+admin.openapi(getTokenTrendsRoute, async (c) => runHandler(c, "fetch token usage trends", async () => {
   await adminAuthAndContext(c);
 
   if (!hasInternalDB()) {
@@ -4239,7 +4239,7 @@ admin.openapi(getSettingsRoute, async (c) => {
   return c.json({ settings, manageable }, 200);
 });
 
-admin.openapi(updateSettingRoute, withErrorHandler("save setting", async (c) => {
+admin.openapi(updateSettingRoute, async (c) => runHandler(c, "save setting", async () => {
 
   const { key } = c.req.valid("param");
 
@@ -4304,7 +4304,7 @@ admin.openapi(updateSettingRoute, withErrorHandler("save setting", async (c) => 
   return c.json({ success: true, key, value }, 200);
 }));
 
-admin.openapi(deleteSettingRoute, withErrorHandler("delete setting", async (c) => {
+admin.openapi(deleteSettingRoute, async (c) => runHandler(c, "delete setting", async () => {
 
   const { key } = c.req.valid("param");
 

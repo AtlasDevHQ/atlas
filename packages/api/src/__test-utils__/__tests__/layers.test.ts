@@ -154,7 +154,7 @@ describe("buildTestLayer", () => {
     const layer = buildTestLayer({
       connection: {
         list: () => ["pg", "mysql"],
-        getDBType: () => "mysql" as "postgres",
+        getDBType: () => "mysql",
       },
     });
 
@@ -219,5 +219,90 @@ describe("buildTestLayer", () => {
     expect(result.requestId).toBe("test-request-id");
     expect(result.authMode).toBe("none");
     expect(result.connections).toEqual(["default"]);
+  });
+
+  test("partial connection override preserves non-overridden defaults", async () => {
+    const layer = buildTestLayer({
+      connection: { list: () => ["custom"] },
+    });
+
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const registry = yield* ConnectionRegistry;
+        const conn = registry.getDefault();
+        const qr = yield* Effect.promise(() => conn.query("SELECT 1"));
+        return {
+          list: registry.list(),
+          has: registry.has("default"),
+          rows: qr.rows,
+        };
+      }).pipe(Effect.provide(layer)),
+    );
+
+    expect(result.list).toEqual(["custom"]);
+    expect(result.has).toBe(true); // non-overridden default preserved
+    expect(result.rows).toEqual([]); // default mock query still works
+  });
+});
+
+// ── PluginRegistry ─────────────────────────────────────────────────
+
+describe("PluginRegistry re-export", () => {
+  test("createPluginTestLayer provides working service", async () => {
+    const { createPluginTestLayer, PluginRegistry } = await import("../layers");
+
+    const layer = createPluginTestLayer({
+      getAll: () => [],
+      describe: () => [],
+      get size() { return 0; },
+    });
+
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const registry = yield* PluginRegistry;
+        return { all: registry.getAll(), size: registry.size };
+      }).pipe(Effect.provide(layer)),
+    );
+
+    expect(result.all).toEqual([]);
+    expect(result.size).toBe(0);
+  });
+
+  test("proxy throws for un-stubbed plugin methods", async () => {
+    const { createPluginTestLayer, PluginRegistry } = await import("../layers");
+
+    const layer = createPluginTestLayer({
+      getAll: () => [],
+    });
+
+    const exit = await Effect.runPromiseExit(
+      Effect.gen(function* () {
+        const registry = yield* PluginRegistry;
+        registry.get("nonexistent"); // not provided — should throw
+      }).pipe(Effect.provide(layer)),
+    );
+
+    expect(exit._tag).toBe("Failure");
+  });
+});
+
+// ── Proxy fail-fast behavior ───────────────────────────────────────
+
+describe("Proxy stub fail-fast", () => {
+  test("createTestLayer (low-level) throws on un-provided methods", async () => {
+    const { createTestLayer } = await import("@atlas/api/lib/effect/services");
+    const { ConnectionRegistry } = await import("../layers");
+
+    // Only provide list — all other methods use Proxy and should throw
+    const layer = createTestLayer({ list: () => ["test"] });
+
+    const exit = await Effect.runPromiseExit(
+      Effect.gen(function* () {
+        const registry = yield* ConnectionRegistry;
+        registry.getDBType("test"); // not provided — proxy should throw
+      }).pipe(Effect.provide(layer)),
+    );
+
+    expect(exit._tag).toBe("Failure");
   });
 });

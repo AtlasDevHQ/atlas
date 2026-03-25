@@ -28,7 +28,6 @@
 import { Effect, Layer } from "effect";
 import {
   ConnectionRegistry,
-  createTestLayer as createConnectionRegistryTestLayer,
   type ConnectionRegistryShape,
   RequestContext,
   createRequestContextTestLayer,
@@ -40,11 +39,12 @@ import {
   createPluginTestLayer,
   type PluginRegistryShape,
 } from "@atlas/api/lib/effect/services";
+import { createConnectionTestLayer } from "../__mocks__/connection";
 
 // ── Re-exports for convenience ──────────────────────────────────────
 
 export {
-  createConnectionRegistryTestLayer,
+  createConnectionTestLayer,
   createRequestContextTestLayer,
   createAuthContextTestLayer,
   createPluginTestLayer,
@@ -58,73 +58,17 @@ export {
   type PluginRegistryShape,
 };
 
-// ── Default test values ─────────────────────────────────────────────
+// ── Default connection layer ────────────────────────────────────────
 
-const defaultMockConnection = {
-  query: async () => ({
-    columns: [] as string[],
-    rows: [] as Record<string, unknown>[],
-  }),
-  close: async () => {},
-};
-
-/** Default ConnectionRegistry stub — all methods return safe defaults. */
+/**
+ * Default ConnectionRegistry test layer with safe defaults.
+ * Delegates to createConnectionTestLayer from __mocks__/connection.ts
+ * (single source of truth for connection stub shape).
+ */
 function defaultConnectionLayer(
   overrides?: Partial<ConnectionRegistryShape>,
 ): Layer.Layer<ConnectionRegistry> {
-  return createConnectionRegistryTestLayer({
-    get: () => defaultMockConnection,
-    getDefault: () => defaultMockConnection,
-    getForOrg: () => defaultMockConnection,
-    list: () => ["default"],
-    has: () => true,
-    getDBType: () => "postgres" as const,
-    getTargetHost: () => "localhost",
-    getValidator: () => undefined,
-    getParserDialect: () => undefined,
-    getForbiddenPatterns: () => [],
-    healthCheck: async () => ({ status: "healthy" as const, latencyMs: 1, checkedAt: new Date() }),
-    drain: async () => ({ drained: true, message: "test" }),
-    drainOrg: async () => ({ drained: 0 }),
-    warmup: async () => {},
-    recordQuery: () => {},
-    recordError: () => {},
-    recordSuccess: () => {},
-    getPoolMetrics: () => ({
-      connectionId: "default",
-      dbType: "postgres",
-      pool: null,
-      totalQueries: 0,
-      totalErrors: 0,
-      avgQueryTimeMs: 0,
-      consecutiveFailures: 0,
-      lastDrainAt: null,
-    }),
-    getAllPoolMetrics: () => [],
-    getOrgPoolMetrics: () => [],
-    setOrgPoolConfig: () => {},
-    isOrgPoolingEnabled: () => false,
-    getOrgPoolConfig: () => ({
-      enabled: false,
-      maxConnections: 5,
-      idleTimeoutMs: 30000,
-      maxOrgs: 50,
-      warmupProbes: 2,
-      drainThreshold: 5,
-    }),
-    getPoolWarnings: () => [],
-    listOrgs: () => [],
-    listOrgConnections: () => [],
-    hasOrgPool: () => false,
-    setMaxTotalConnections: () => {},
-    register: () => {},
-    registerDirect: () => {},
-    unregister: () => false,
-    describe: () => [],
-    shutdown: async () => {},
-    _reset: () => {},
-    ...overrides,
-  });
+  return createConnectionTestLayer(overrides);
 }
 
 // ── Pre-built scenario Layers ───────────────────────────────────────

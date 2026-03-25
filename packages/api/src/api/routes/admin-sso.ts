@@ -24,7 +24,7 @@ import type {
   CreateSSOProviderRequest,
   UpdateSSOProviderRequest,
 } from "@useatlas/types";
-import { ErrorSchema, AuthErrorSchema, isValidId, MAX_ID_LENGTH } from "./shared-schemas";
+import { ErrorSchema, AuthErrorSchema, isValidId, createIdParamSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 
 const SSO_ERROR_STATUS = { not_found: 404, conflict: 409, validation: 400 } as const;
@@ -60,12 +60,7 @@ const SSOProviderDetailSchema = z.object({
   config: z.record(z.string(), z.unknown()),
 }).passthrough();
 
-const ProviderIdParamSchema = z.object({
-  id: z.string().min(1).max(MAX_ID_LENGTH).openapi({
-    param: { name: "id", in: "path" },
-    example: "prov_abc123",
-  }),
-});
+const ProviderIdParamSchema = createIdParamSchema("prov_abc123");
 
 const CreateSSOProviderBodySchema = z.object({
   type: z.enum(["saml", "oidc"]),

@@ -21,7 +21,7 @@ import { connections } from "@atlas/api/lib/db/connection";
 import { flushCache } from "@atlas/api/lib/cache/index";
 import { invalidatePlanCache } from "@atlas/api/lib/billing/enforcement";
 import { withErrorHandler } from "@atlas/api/lib/routes/error-handler";
-import { ErrorSchema, AuthErrorSchema, MAX_ID_LENGTH } from "./shared-schemas";
+import { ErrorSchema, AuthErrorSchema, createIdParamSchema } from "./shared-schemas";
 import { createAdminRouter } from "./admin-router";
 
 const log = createLogger("admin-orgs");
@@ -32,12 +32,7 @@ const log = createLogger("admin-orgs");
 // ---------------------------------------------------------------------------
 
 
-const OrgIdParamSchema = z.object({
-  id: z.string().min(1).max(MAX_ID_LENGTH).openapi({
-    param: { name: "id", in: "path" },
-    example: "org_abc123",
-  }),
-});
+const OrgIdParamSchema = createIdParamSchema("org_abc123");
 
 const OrgSummarySchema = z.object({
   id: z.string(),

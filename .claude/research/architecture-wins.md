@@ -239,3 +239,23 @@ Tracking module-deepening refactors discovered by the `improve-codebase-architec
 - 248-line test file covers expand/collapse, error boundary, badge rendering, headerExtra
 
 **Category:** Duplicated card shell extracted into shared component with error boundary.
+
+---
+
+## 12. Extract OpenAPI schema factories for admin routes
+
+**Date:** 2026-03-25
+**Issue:** #893
+**PR:** #915
+
+**Problem:** 10+ admin route files independently defined nearly identical Zod schemas for common OpenAPI patterns: ID path parameters (`z.object({ id: z.string().min(1).max(MAX_ID_LENGTH).openapi(...) })`), list response shapes (`{ items: T[], total }` with varying field names), deleted response schemas (`{ deleted: boolean }`), and success responses. Each file imported `MAX_ID_LENGTH` and hand-rolled the same boilerplate with inconsistent `.openapi()` metadata.
+
+**Solution:** Added factory functions to `shared-schemas.ts`: `createIdParamSchema(example?)` for `id` params, `createParamSchema(name, example?)` for custom-named params (e.g. `userId`, `collectionId`), `createListResponseSchema(fieldName, itemSchema, extra?)` for list + total patterns, `createSuccessResponseSchema()`, `createErrorResponseSchema()`, and `DeletedResponseSchema` constant. Migrated 10 admin route files to use the factories.
+
+**Impact:**
+- **-107 lines removed, +290 added** across 13 files (includes 181-line test additions)
+- Net route file reduction: **-107 lines** of duplicated schema boilerplate across 10 admin files
+- Consistent `MAX_ID_LENGTH` validation via factory (no direct `MAX_ID_LENGTH` imports in admin routes)
+- 48 tests covering all factories (boundary cases: empty string, max length, extra fields, missing fields)
+
+**Category:** Duplicated OpenAPI schemas consolidated into factory functions with consistent validation.

@@ -12,7 +12,7 @@ import { withErrorHandler } from "@atlas/api/lib/routes/error-handler";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { LEARNED_PATTERN_STATUSES, type LearnedPattern } from "@useatlas/types";
 import { invalidatePatternCache } from "@atlas/api/lib/learn/pattern-cache";
-import { ErrorSchema, AuthErrorSchema, parsePagination } from "./shared-schemas";
+import { ErrorSchema, AuthErrorSchema, parsePagination, createIdParamSchema, createListResponseSchema, DeletedResponseSchema } from "./shared-schemas";
 import { createAdminRouter } from "./admin-router";
 
 const log = createLogger("admin-learned-patterns");
@@ -86,9 +86,7 @@ const LearnedPatternSchema = z.object({
   reviewedAt: z.string().nullable(),
 });
 
-const ListResponseSchema = z.object({
-  patterns: z.array(LearnedPatternSchema),
-  total: z.number(),
+const ListResponseSchema = createListResponseSchema("patterns", LearnedPatternSchema, {
   limit: z.number(),
   offset: z.number(),
 });
@@ -99,9 +97,7 @@ const BulkResponseSchema = z.object({
   errors: z.array(z.object({ id: z.string(), error: z.string() })).optional(),
 });
 
-const DeletedSchema = z.object({
-  deleted: z.boolean(),
-});
+const DeletedSchema = DeletedResponseSchema;
 
 
 // ---------------------------------------------------------------------------
@@ -164,9 +160,7 @@ const getPatternRoute = createRoute({
   summary: "Get a learned pattern",
   description: "Returns a single learned pattern by ID.",
   request: {
-    params: z.object({
-      id: z.string().openapi({ param: { name: "id", in: "path" }, example: "abc123" }),
-    }),
+    params: createIdParamSchema(),
   },
   responses: {
     200: {
@@ -203,9 +197,7 @@ const updatePatternRoute = createRoute({
   summary: "Update a learned pattern",
   description: "Updates a learned pattern's description and/or status. Setting a status records the reviewer and review timestamp.",
   request: {
-    params: z.object({
-      id: z.string().openapi({ param: { name: "id", in: "path" }, example: "abc123" }),
-    }),
+    params: createIdParamSchema(),
     body: {
       content: {
         "application/json": {
@@ -256,9 +248,7 @@ const deletePatternRoute = createRoute({
   summary: "Delete a learned pattern",
   description: "Permanently removes a learned pattern by ID and invalidates the pattern cache.",
   request: {
-    params: z.object({
-      id: z.string().openapi({ param: { name: "id", in: "path" }, example: "abc123" }),
-    }),
+    params: createIdParamSchema(),
   },
   responses: {
     200: {

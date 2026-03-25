@@ -117,6 +117,17 @@ The current milestone. Module-deepening refactors from systematic codebase explo
 
 ---
 
+## 0.9.4 — Effect.ts Migration
+
+Incremental adoption of [Effect.ts](https://effect.website) across the API server. Typed errors replace untyped catch blocks, dependency injection via Effect Layers replaces global singletons, scoped resources guarantee cleanup for database pools and plugin lifecycles, and structured concurrency replaces manual timer management in the scheduler.
+
+- **Foundation** — Tagged error types, Effect-to-Hono bridge for route handlers
+- **Infrastructure** — SQL pipeline, rate limiting, scheduler, and connection pools rewritten with Effect primitives
+- **Services** — Plugin lifecycle, server startup, auth, and request context as composable Effect Layers
+- **Testing** — Layer-based test setup replaces `mock.module()` across 36+ test files
+
+---
+
 ## 1.0.0 — SaaS Launch
 
 Public launch of hosted Atlas at app.useatlas.dev.

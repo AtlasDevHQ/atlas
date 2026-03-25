@@ -520,6 +520,30 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 
 ---
 
+## 0.9.4 — Effect.ts Migration
+
+**Incremental adoption of Effect.ts** across `packages/api/`. Typed errors, dependency injection via Layers, scoped resource lifecycle, structured concurrency. Backend only — frontend stays React/Zod.
+
+### Foundation
+- [ ] P0: Effect.ts foundation — install, tagged errors, Hono bridge (#903)
+
+### Infrastructure Primitives (P1–P4)
+- [ ] P1: SQL validation & query execution → Effect.gen with tagged errors (#904)
+- [ ] P2: Rate limiting → Effect Semaphore and Ref (#905)
+- [ ] P3: Scheduler and delivery → Effect Schedule, Semaphore, retry (#906)
+- [ ] P4: ConnectionRegistry → Effect Layer/Service with scoped resources (#907)
+
+### Service Architecture (P5–P8)
+- [ ] P5: Plugin lifecycle → Effect Layer composition (#908)
+- [ ] P6: Server startup → Effect Layer DAG (#909)
+- [ ] P7: Route handlers → Effect boundaries with typed error mapping (#910)
+- [ ] P8: Auth and request context → Effect Context replacing AsyncLocalStorage (#911)
+
+### Test Infrastructure
+- [ ] P9: Test infrastructure → Effect Layer-based test setup (#912)
+
+---
+
 ## 1.0.0 — SaaS Launch
 
 **app.useatlas.dev goes live.** The hosted product where teams sign up, connect their database, and have a production-ready AI data analyst without deploying anything.

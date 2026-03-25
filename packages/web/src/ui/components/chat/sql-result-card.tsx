@@ -14,6 +14,7 @@ const ResultChart = dynamic(
 import { LoadingCard } from "./loading-card";
 import { DataTable } from "./data-table";
 import { SQLBlock } from "./sql-block";
+import { ResultCardBase, ResultCardErrorBoundary } from "./result-card-base";
 
 /** Convert structured rows (Record<string, unknown>[]) to string[][] for chart detection. */
 function toStringRows(columns: string[], rows: Record<string, unknown>[]): string[][] {
@@ -22,13 +23,21 @@ function toStringRows(columns: string[], rows: Record<string, unknown>[]): strin
 
 
 export function SQLResultCard({ part }: { part: unknown }) {
+  return (
+    <ResultCardErrorBoundary label="SQL">
+      <SQLResultCardInner part={part} />
+    </ResultCardErrorBoundary>
+  );
+}
+
+function SQLResultCardInner({ part }: { part: unknown }) {
   const dark = useContext(DarkModeContext);
   const args = getToolArgs(part);
   const result = getToolResult(part) as Record<string, unknown> | null;
   const done = isToolComplete(part);
-  const [open, setOpen] = useState(true);
   const [sqlOpen, setSqlOpen] = useState(false);
   const [viewMode, setViewMode] = useState<"both" | "chart" | "table">("both");
+  const [excelError, setExcelError] = useState(false);
 
   const columns = useMemo(
     () => (done && result?.success ? ((result.columns as string[]) ?? []) : []),
@@ -69,94 +78,93 @@ export function SQLResultCard({ part }: { part: unknown }) {
   const showTable = viewMode === "table" || viewMode === "both" || !chartResult.chartable;
 
   return (
-    <div className="my-2 overflow-hidden rounded-lg border border-zinc-200 bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900">
-      <button
-        onClick={() => setOpen(!open)}
-        className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs transition-colors hover:bg-zinc-100/60 dark:hover:bg-zinc-800/60"
-      >
-        <span className="rounded bg-blue-100 text-blue-700 dark:bg-blue-600/20 dark:text-blue-400 px-1.5 py-0.5 font-medium">
-          SQL
-        </span>
-        <span className="flex-1 truncate text-zinc-500 dark:text-zinc-400">
-          {String(args.explanation ?? "Query result")}
-        </span>
+    <ResultCardBase
+      badge="SQL"
+      badgeClassName="bg-blue-100 text-blue-700 dark:bg-blue-600/20 dark:text-blue-400"
+      title={String(args.explanation ?? "Query result")}
+      headerExtra={
         <span className="text-zinc-500">
           {rows.length} row{rows.length !== 1 ? "s" : ""}
           {result.truncated ? "+" : ""}
         </span>
-        <span className="text-zinc-400 dark:text-zinc-600">{open ? "\u25BE" : "\u25B8"}</span>
-      </button>
-      {open && (
-        <div className="border-t border-zinc-100 dark:border-zinc-800">
-          {hasData && chartResult.chartable && (
-            <div className="flex gap-1 px-3 pt-2">
-              {(["chart", "both", "table"] as const).map((mode) => (
-                <button
-                  key={mode}
-                  onClick={() => setViewMode(mode)}
-                  className={`rounded px-2.5 py-1 text-xs font-medium transition-colors ${
-                    viewMode === mode
-                      ? "bg-zinc-200 text-zinc-800 dark:bg-zinc-700 dark:text-zinc-200"
-                      : "text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-200"
-                  }`}
-                >
-                  {mode === "chart" ? "Chart" : mode === "both" ? "Both" : "Table"}
-                </button>
-              ))}
-            </div>
-          )}
-
-          {hasData && showChart && (
-            <div className="px-3 py-2">
-              <ResultChart headers={columns} rows={stringRows} dark={dark} detectionResult={chartResult} />
-            </div>
-          )}
-
-          {hasData && showTable && <DataTable columns={columns} rows={rows} />}
-
-          {!hasData && (
-            <div className="px-3 py-2 text-xs text-zinc-500 dark:text-zinc-400">
-              Query returned 0 rows.
-            </div>
-          )}
-
-          <div className="flex flex-wrap items-center gap-2 px-3 py-2">
-            {sql && (
-              <button
-                onClick={() => setSqlOpen(!sqlOpen)}
-                className="rounded border border-zinc-200 px-2 py-1.5 text-xs text-zinc-500 transition-colors hover:border-zinc-400 hover:text-zinc-800 dark:border-zinc-700 dark:text-zinc-400 dark:hover:border-zinc-500 dark:hover:text-zinc-200"
-              >
-                {sqlOpen ? "Hide SQL" : "Show SQL"}
-              </button>
-            )}
-            {hasData && (
-              <button
-                onClick={() => downloadCSV(toCsvString(columns, rows))}
-                className="inline-flex items-center gap-1.5 rounded border border-zinc-200 px-2 py-1.5 text-xs text-zinc-500 transition-colors hover:border-zinc-400 hover:text-zinc-800 dark:border-zinc-700 dark:text-zinc-400 dark:hover:border-zinc-500 dark:hover:text-zinc-200"
-                title="Download CSV"
-              >
-                <FileDown className="size-3.5" />
-                <span className="hidden sm:inline">CSV</span>
-              </button>
-            )}
-            {hasData && (
-              <button
-                onClick={() => { downloadExcel(columns, rows).catch((err) => { console.warn("Excel download failed:", err); }); }}
-                className="inline-flex items-center gap-1.5 rounded border border-zinc-200 px-2 py-1.5 text-xs text-zinc-500 transition-colors hover:border-zinc-400 hover:text-zinc-800 dark:border-zinc-700 dark:text-zinc-400 dark:hover:border-zinc-500 dark:hover:text-zinc-200"
-                title="Download Excel"
-              >
-                <FileSpreadsheet className="size-3.5" />
-                <span className="hidden sm:inline">Excel</span>
-              </button>
-            )}
-          </div>
-          {sqlOpen && sql && (
-            <div className="px-3 pb-2">
-              <SQLBlock sql={sql} />
-            </div>
-          )}
+      }
+    >
+      {hasData && chartResult.chartable && (
+        <div className="flex gap-1 px-3 pt-2">
+          {(["chart", "both", "table"] as const).map((mode) => (
+            <button
+              key={mode}
+              onClick={() => setViewMode(mode)}
+              className={`rounded px-2.5 py-1 text-xs font-medium transition-colors ${
+                viewMode === mode
+                  ? "bg-zinc-200 text-zinc-800 dark:bg-zinc-700 dark:text-zinc-200"
+                  : "text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-200"
+              }`}
+            >
+              {mode === "chart" ? "Chart" : mode === "both" ? "Both" : "Table"}
+            </button>
+          ))}
         </div>
       )}
-    </div>
+
+      {hasData && showChart && (
+        <div className="px-3 py-2">
+          <ResultChart headers={columns} rows={stringRows} dark={dark} detectionResult={chartResult} />
+        </div>
+      )}
+
+      {hasData && showTable && <DataTable columns={columns} rows={rows} />}
+
+      {!hasData && (
+        <div className="px-3 py-2 text-xs text-zinc-500 dark:text-zinc-400">
+          Query returned 0 rows.
+        </div>
+      )}
+
+      <div className="flex flex-wrap items-center gap-2 px-3 py-2">
+        {sql && (
+          <button
+            onClick={() => setSqlOpen(!sqlOpen)}
+            className="rounded border border-zinc-200 px-2 py-1.5 text-xs text-zinc-500 transition-colors hover:border-zinc-400 hover:text-zinc-800 dark:border-zinc-700 dark:text-zinc-400 dark:hover:border-zinc-500 dark:hover:text-zinc-200"
+          >
+            {sqlOpen ? "Hide SQL" : "Show SQL"}
+          </button>
+        )}
+        {hasData && (
+          <button
+            onClick={() => downloadCSV(toCsvString(columns, rows))}
+            className="inline-flex items-center gap-1.5 rounded border border-zinc-200 px-2 py-1.5 text-xs text-zinc-500 transition-colors hover:border-zinc-400 hover:text-zinc-800 dark:border-zinc-700 dark:text-zinc-400 dark:hover:border-zinc-500 dark:hover:text-zinc-200"
+            title="Download CSV"
+          >
+            <FileDown className="size-3.5" />
+            <span className="hidden sm:inline">CSV</span>
+          </button>
+        )}
+        {hasData && (
+          <button
+            onClick={() => {
+              setExcelError(false);
+              downloadExcel(columns, rows).catch((err: unknown) => {
+                console.warn("Excel download failed:", err);
+                setExcelError(true);
+              });
+            }}
+            className="inline-flex items-center gap-1.5 rounded border border-zinc-200 px-2 py-1.5 text-xs text-zinc-500 transition-colors hover:border-zinc-400 hover:text-zinc-800 dark:border-zinc-700 dark:text-zinc-400 dark:hover:border-zinc-500 dark:hover:text-zinc-200"
+            title="Download Excel"
+          >
+            <FileSpreadsheet className="size-3.5" />
+            <span className="hidden sm:inline">Excel</span>
+          </button>
+        )}
+        {excelError && (
+          <span className="text-xs text-red-500 dark:text-red-400">Excel download failed</span>
+        )}
+      </div>
+      {sqlOpen && sql && (
+        <div className="px-3 pb-2">
+          <SQLBlock sql={sql} />
+        </div>
+      )}
+    </ResultCardBase>
   );
 }

@@ -5,6 +5,7 @@ import { useQueryStates } from "nuqs";
 import { orgsSearchParams } from "./search-params";
 import type { ColumnDef } from "@tanstack/react-table";
 import { useAtlasConfig } from "@/ui/context";
+import { LoadingState } from "@/ui/components/admin/loading-state";
 import { Badge } from "@/components/ui/badge";
 import { DataTable } from "@/components/data-table/data-table";
 import { DataTableToolbar } from "@/components/data-table/data-table-toolbar";

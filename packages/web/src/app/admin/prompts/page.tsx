@@ -9,6 +9,7 @@ import { PROMPT_INDUSTRIES } from "@/ui/lib/types";
 import { promptsSearchParams } from "./search-params";
 import { getPromptCollectionColumns, industryBadge } from "./columns";
 import { useAtlasConfig } from "@/ui/context";
+import { LoadingState } from "@/ui/components/admin/loading-state";
 import { DataTable } from "@/components/data-table/data-table";
 import { DataTableToolbar } from "@/components/data-table/data-table-toolbar";
 import { DataTableSortList } from "@/components/data-table/data-table-sort-list";

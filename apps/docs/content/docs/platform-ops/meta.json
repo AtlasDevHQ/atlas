@@ -4,6 +4,8 @@
   "icon": "Server",
   "pages": [
     "platform-admin",
+    "observability",
+    "custom-domains",
     "sla-monitoring",
     "backups",
     "data-residency",

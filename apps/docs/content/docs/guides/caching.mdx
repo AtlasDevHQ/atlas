@@ -1,6 +1,6 @@
 ---
-title: Query Caching
-description: Cache query results for faster repeated queries with tenant-isolated, claim-scoped cache keys.
+title: Cache Monitoring
+description: Monitor query cache performance and manage cached entries from the admin console.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
@@ -10,6 +10,7 @@ Atlas caches query results in-memory so that identical queries return instantly 
 <Callout title="Prerequisites">
 - Atlas server running (`bun run dev`)
 - Caching is **enabled by default** — no configuration needed to start
+- Admin role for cache management endpoints
 </Callout>
 
 ## How It Works
@@ -22,33 +23,6 @@ Atlas caches query results in-memory so that identical queries return instantly 
 2. The key is a SHA-256 hash of these components, so different orgs or RLS contexts never share cached results
 3. On a **cache hit**, the stored result is returned instantly (0ms query duration, marked `cached: true` in audit logs)
 4. On a **cache miss**, the query runs against the database, and the result is stored in the cache for the configured TTL
-
----
-
-## Configuration
-
-### Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `ATLAS_CACHE_ENABLED` | `true` | Enable/disable query result caching |
-| `ATLAS_CACHE_TTL` | `300000` | Cache TTL in milliseconds (default: 5 minutes) |
-| `ATLAS_CACHE_MAX_SIZE` | `1000` | Maximum cached entries. LRU eviction when full |
-
-### Config File
-
-```typescript
-// atlas.config.ts
-export default defineConfig({
-  cache: {
-    enabled: true,       // default: true
-    ttl: 300_000,        // 5 minutes in ms
-    maxSize: 1000,       // max cached entries
-  },
-});
-```
-
-See [Configuration](/reference/config#query-cache) for full details.
 
 ---
 
@@ -104,30 +78,6 @@ Clears all cached entries. Returns the count of flushed entries. The cache is al
 
 ---
 
-## External Cache Backend (Redis)
-
-Plugins can replace the default in-memory LRU cache with an external backend (e.g., Redis) by implementing the `PluginCacheBackend` interface from `@useatlas/plugin-sdk`:
-
-```typescript
-import type { PluginCacheBackend, PluginCacheEntry } from "@useatlas/plugin-sdk";
-
-const redisCacheBackend: PluginCacheBackend = {
-  get(key: string): PluginCacheEntry | null { /* ... */ },
-  set(key: string, entry: PluginCacheEntry): void { /* ... */ },
-  delete(key: string): boolean { /* ... */ },
-  flush(): void { /* ... */ },
-  stats() { /* return { hits, misses, entryCount, maxSize, ttl } */ },
-};
-```
-
-Return `cacheBackend` from your plugin object and Atlas will use it instead of the built-in LRU. Only one plugin cache backend is supported per server — the first plugin with a `cacheBackend` wins.
-
-If the plugin backend fails to initialize at startup, Atlas logs the error and continues with the built-in LRU cache.
-
-See [Plugin Authoring Guide](/plugins/authoring-guide) for building custom plugins.
-
----
-
 ## Troubleshooting
 
 ### Cache not reducing query latency
@@ -152,7 +102,7 @@ See [Plugin Authoring Guide](/plugins/authoring-guide) for building custom plugi
 
 ## See Also
 
+- [Cache Configuration](/deployment/cache-configuration) — Environment variables, `atlas.config.ts` settings, and external cache backends
 - [Configuration](/reference/config#query-cache) — Cache config options in `atlas.config.ts`
 - [Environment Variables](/reference/environment-variables) — `ATLAS_CACHE_*` variables
 - [Admin Console](/guides/admin-console) — Cache stats and flush UI
-- [Plugin Authoring Guide](/plugins/authoring-guide) — Building a custom cache backend plugin

@@ -29,16 +29,12 @@
     "admin-console",
     "embedding-widget",
     "sharing-conversations",
-    "multi-datasource",
-    "schema-evolution",
     "multi-tenancy",
     "caching",
     "model-routing",
     "white-labeling",
     "self-hosted-models",
     "rate-limiting",
-    "troubleshooting",
-    "custom-domains",
-    "observability"
+    "troubleshooting"
   ]
 }

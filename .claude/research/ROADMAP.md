@@ -498,7 +498,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [ ] Reframe deployment/config pages for SaaS vs self-hosted audiences (#878)
 - [ ] Reframe enterprise feature guides from customer perspective (#880)
 - [ ] Add persona sections to security reference pages (#881)
-- [ ] Relocate misplaced operator/developer guides to correct sections (#882)
+- [x] Relocate misplaced operator/developer guides to correct sections (#882)
 - [ ] Add persona sections to mixed-audience pages (#883)
 - [ ] Improve plugin interaction pages — chat SDK split, email digest sections (#884)
 

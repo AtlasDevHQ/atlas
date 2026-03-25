@@ -28,6 +28,7 @@
  */
 
 import { HTTPException } from "hono/http-exception";
+import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { createLogger } from "@atlas/api/lib/logger";
 import { throwIfEEError } from "../../api/routes/ee-error-handler";
 
@@ -36,11 +37,13 @@ const log = createLogger("route-error-handler");
 /**
  * A domain error class → HTTP status code mapping pair.
  * Passed to throwIfEEError to convert known domain errors into HTTPExceptions.
+ *
+ * Single source of truth — also used by throwIfEEError in ee-error-handler.ts.
  */
 export type DomainErrorMapping = [
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- constructor signatures vary across EE error classes; { code: string } ensures the statusMap lookup is valid
   errorClass: new (...args: any[]) => Error & { code: string },
-  statusMap: Record<string, number>,
+  statusMap: Record<string, ContentfulStatusCode>,
 ];
 
 /**
@@ -82,7 +85,7 @@ export function withErrorHandler<H extends (c: any) => any>(
 
       // Unexpected error — log and return 500
       const error = err instanceof Error ? err : new Error(String(err));
-      const requestId = c.get("requestId") as string;
+      const requestId = (c.get("requestId") as string | undefined) ?? "unknown";
       log.error({ err: error, requestId }, `Failed to ${label}`);
       return c.json(
         { error: "internal_error", message: `Failed to ${label}.`, requestId },

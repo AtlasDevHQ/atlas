@@ -55,7 +55,7 @@ class TestApprovalError extends Error {
   }
 }
 
-const TEST_ERROR_STATUS = { validation: 400, not_found: 404, conflict: 409 };
+const TEST_ERROR_STATUS = { validation: 400, not_found: 404, conflict: 409 } as const;
 
 // ---------------------------------------------------------------------------
 // Tests

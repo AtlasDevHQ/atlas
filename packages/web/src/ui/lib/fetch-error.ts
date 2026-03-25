@@ -1,4 +1,8 @@
-/** Structured error from a failed HTTP response. */
+/**
+ * Structured error from a failed fetch operation.
+ * May represent an HTTP error response (with status and optional requestId)
+ * or a network-level failure (status undefined).
+ */
 export interface FetchError {
   message: string;
   status?: number;
@@ -20,13 +24,21 @@ export async function extractFetchError(res: Response): Promise<FetchError> {
       if (typeof obj.message === "string") message = obj.message;
       if (typeof obj.requestId === "string") requestId = obj.requestId;
     }
-  } catch {
-    // intentionally ignored: body wasn't JSON — keep the status-only message
+  } catch (err) {
+    // Non-JSON body is expected — log unexpected errors (e.g. body already consumed) for debugging.
+    if (!(err instanceof SyntaxError)) {
+      console.debug("extractFetchError: unexpected error reading response body", err);
+    }
   }
   return { message, status: res.status, ...(requestId && { requestId }) };
 }
 
-/** Map HTTP status codes to user-friendly messages for admin pages. Appends request ID for log correlation when available. */
+/**
+ * Convert a FetchError into a user-friendly message.
+ * Replaces known HTTP status codes (401, 403, 404, 503) with admin-specific
+ * guidance; falls back to the raw error message for other codes or non-HTTP
+ * errors. Appends request ID for log correlation when available.
+ */
 export function friendlyError(err: FetchError): string {
   let msg: string;
   if (err.status === 401) msg = "Not authenticated. Please sign in.";

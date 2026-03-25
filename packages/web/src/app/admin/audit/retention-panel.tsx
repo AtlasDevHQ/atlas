@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useAtlasConfig } from "@/ui/context";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { extractFetchError } from "@/ui/lib/fetch-error";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -53,17 +54,6 @@ function daysFromPreset(preset: RetentionPreset, customDays: number): number | n
   if (preset === "90") return 90;
   if (preset === "365") return 365;
   return customDays;
-}
-
-/** Extract server error message from a non-ok response. */
-async function extractError(res: Response, fallback: string): Promise<string> {
-  try {
-    const body = await res.json();
-    if (body?.message) return String(body.message);
-  } catch {
-    // intentionally ignored: body wasn't JSON
-  }
-  return `${fallback}: HTTP ${res.status}`;
 }
 
 // ── Component ─────────────────────────────────────────────────────
@@ -118,8 +108,8 @@ export function RetentionPanel() {
             if (!cancelled) setError("Enterprise license required for audit retention settings.");
             return;
           }
-          const msg = await extractError(res, "Failed to load retention policy");
-          if (!cancelled) setError(msg);
+          const e = await extractFetchError(res);
+          if (!cancelled) setError(e.message);
           return;
         }
         const data = await res.json();
@@ -176,8 +166,8 @@ export function RetentionPanel() {
         }),
       });
       if (!res.ok) {
-        const msg = await extractError(res, "Export failed");
-        setExportError(msg);
+        const e = await extractFetchError(res);
+        setExportError(e.message);
         return;
       }
 

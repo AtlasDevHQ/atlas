@@ -4,7 +4,8 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { useAtlasConfig } from "@/ui/context";
 import { extractFetchError, type FetchError } from "@/ui/lib/fetch-error";
 
-// Re-export from canonical location so existing consumers don't break.
+// Re-export from @/ui/lib/fetch-error (canonical location) for backward
+// compatibility. New code should import directly from @/ui/lib/fetch-error.
 export { type FetchError, friendlyError } from "@/ui/lib/fetch-error";
 
 /**

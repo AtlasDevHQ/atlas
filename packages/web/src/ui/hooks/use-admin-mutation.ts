@@ -131,8 +131,11 @@ export function useAdminMutation<TResponse = unknown>(
 
         if (!res.ok) {
           const fetchError = await extractFetchError(res);
-          setError(fetchError.message);
-          return { ok: false, error: fetchError.message };
+          const msg = fetchError.requestId
+            ? `${fetchError.message} (Request ID: ${fetchError.requestId})`
+            : fetchError.message;
+          setError(msg);
+          return { ok: false, error: msg };
         }
 
         // Parse response (handle 204 No Content)

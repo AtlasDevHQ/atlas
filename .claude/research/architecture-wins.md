@@ -217,3 +217,25 @@ Tracking module-deepening refactors discovered by the `improve-codebase-architec
 - EE domain error mappings now declarative (rest args) instead of inline catch-block calls
 
 **Category:** Repeated per-handler error boilerplate consolidated into a single higher-order function.
+
+---
+
+## 11. Extract ResultCardBase for SQL and Python result cards
+
+**Date:** 2026-03-25
+**Issue:** #897
+**PR:** #899
+**Commit:** b44256d
+
+**Problem:** `sql-result-card.tsx` (~170 lines) and `python-result-card.tsx` (~250 lines) duplicated the same collapsible card shell: header with badge + title + collapse arrow, expand/collapse state, border/background styling, and error boundary wrapping. Changes to card chrome required synchronized edits in both files.
+
+**Solution:** Extracted `ResultCardBase` component and `ResultCardErrorBoundary` class into `result-card-base.tsx`. The base component accepts `badge`, `badgeClassName`, `title`, `headerExtra`, `children`, and `defaultOpen` props. Both SQL and Python cards now render their tool-specific content inside `ResultCardBase`, eliminating duplicated shell markup. Error boundary provides consistent crash recovery with component-level logging.
+
+**Impact:**
+- **+312 net lines** (468 added, 156 removed across 4 files — includes 248-line test file)
+- Unified card chrome across SQL and Python result cards
+- Shared error boundary with labeled crash messages
+- New card types (future: chart, notebook) get consistent shell for free
+- 248-line test file covers expand/collapse, error boundary, badge rendering, headerExtra
+
+**Category:** Duplicated card shell extracted into shared component with error boundary.

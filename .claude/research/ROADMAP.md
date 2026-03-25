@@ -516,7 +516,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] Extract shared fetch error utility for admin hooks (PR #898) — quick win: deduped error parsing from `useAdminFetch` + `useAdminMutation` into `extractFetchError()`
 - [ ] Extract plugin SDK utilities — health check, lazy loading, route helpers (#895)
 - [ ] Extract conversation fetch client from use-conversations hook (#896)
-- [ ] Extract shared ResultCardBase for SQL and Python result cards (#897)
+- [x] Extract shared ResultCardBase for SQL and Python result cards (#897, PR #899)
 
 ---
 

@@ -24,6 +24,15 @@ import type {
 } from "@atlas/api/lib/db/connection";
 import type { PoolMetrics, OrgPoolMetrics } from "@useatlas/types";
 import { createLogger } from "@atlas/api/lib/logger";
+import type {
+  PluginRegistry as PluginRegistryClass,
+  PluginLike,
+  PluginContextLike,
+  PluginHealthResult,
+  PluginType,
+  PluginStatus,
+  PluginDescription,
+} from "@atlas/api/lib/plugins/registry";
 
 const log = createLogger("effect:connection");
 
@@ -279,4 +288,319 @@ export function createTestLayer(
 
   const stubService = new Proxy({} as ConnectionRegistryShape, handler);
   return Layer.succeed(ConnectionRegistry, stubService);
+}
+
+// ══════════════════════════════════════════════════════════════════════
+// ██  Plugin Registry Service (P5)
+// ══════════════════════════════════════════════════════════════════════
+
+const pluginLog = createLogger("effect:plugin");
+
+// ── Service interface ────────────────────────────────────────────────
+
+/** Typed contract for the PluginRegistry Effect service. */
+export interface PluginRegistryShape {
+  // --- Registration ---
+  register(plugin: PluginLike): void;
+
+  // --- Lifecycle ---
+  initializeAll(
+    ctx: PluginContextLike,
+  ): Promise<{ succeeded: string[]; failed: string[] }>;
+  healthCheckAll(): Promise<
+    Map<string, PluginHealthResult & { status: PluginStatus }>
+  >;
+  teardownAll(): Promise<void>;
+
+  // --- Query ---
+  get(id: string): PluginLike | undefined;
+  getStatus(id: string): PluginStatus | undefined;
+  getByType(type: PluginType): PluginLike[];
+  getAll(): PluginLike[];
+  getAllHealthy(): PluginLike[];
+  describe(): PluginDescription[];
+
+  // --- Enable/disable ---
+  enable(id: string): boolean;
+  disable(id: string): boolean;
+  isEnabled(id: string): boolean;
+
+  // --- Size ---
+  readonly size: number;
+
+  // --- Lifecycle (managed by Effect scope — callers should not call directly) ---
+  _reset(): void;
+}
+
+// ── Context.Tag ──────────────────────────────────────────────────────
+
+export class PluginRegistry extends Context.Tag("PluginRegistry")<
+  PluginRegistry,
+  PluginRegistryShape
+>() {}
+
+const PLUGIN_HEALTH_CHECK_INTERVAL_MS = 60_000;
+
+// ── Shared Layer internals ───────────────────────────────────────────
+
+/**
+ * Build the PluginRegistry service + health-check fiber + scope finalizer.
+ * Shared between makePluginRegistryLive and makeWiredPluginRegistryLive.
+ */
+function buildPluginService(impl: PluginRegistryClass) {
+  return Effect.gen(function* () {
+    // --- Health check fiber (replaces on-demand-only checks) ---
+    const healthCheckCycle = Effect.tryPromise({
+      try: () => impl.healthCheckAll(),
+      catch: (err) => (err instanceof Error ? err.message : String(err)),
+    }).pipe(
+      Effect.catchAll((errMsg) => {
+        pluginLog.warn({ err: errMsg }, "Periodic plugin health check failed");
+        return Effect.void;
+      }),
+    );
+
+    const healthFiber = yield* Effect.fork(
+      healthCheckCycle.pipe(
+        Effect.catchAllCause((cause) => {
+          pluginLog.warn(
+            { err: cause.toString() },
+            "Plugin health check cycle failed",
+          );
+          return Effect.void;
+        }),
+        Effect.repeat(
+          Schedule.spaced(Duration.millis(PLUGIN_HEALTH_CHECK_INTERVAL_MS)),
+        ),
+        Effect.asVoid,
+      ),
+    );
+
+    // --- Scope finalizer for graceful shutdown (automatic reverse ordering) ---
+    yield* Effect.addFinalizer(() =>
+      Effect.gen(function* () {
+        yield* Fiber.interrupt(healthFiber);
+        yield* Effect.promise(() => impl.teardownAll());
+        pluginLog.info("PluginRegistry shut down via Effect scope");
+      }),
+    );
+
+    // --- Build service interface (delegates to underlying impl) ---
+    const service: PluginRegistryShape = {
+      register: (plugin) => impl.register(plugin),
+      initializeAll: (ctx) => impl.initializeAll(ctx),
+      healthCheckAll: () => impl.healthCheckAll(),
+      teardownAll: () => impl.teardownAll(),
+      get: (id) => impl.get(id),
+      getStatus: (id) => impl.getStatus(id),
+      getByType: (type) => impl.getByType(type),
+      getAll: () => impl.getAll(),
+      getAllHealthy: () => impl.getAllHealthy(),
+      describe: () => impl.describe(),
+      enable: (id) => impl.enable(id),
+      disable: (id) => impl.disable(id),
+      isEnabled: (id) => impl.isEnabled(id),
+      get size() {
+        return impl.size;
+      },
+      _reset: () => impl._reset(),
+    };
+
+    return service;
+  });
+}
+
+/** Create the underlying PluginRegistry class instance. */
+function createPluginImpl(createImpl?: () => PluginRegistryClass) {
+  return createImpl
+    ? Effect.sync(createImpl)
+    : Effect.sync(() => {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const mod = require("@atlas/api/lib/plugins/registry");
+        return new mod.PluginRegistry() as PluginRegistryClass;
+      });
+}
+
+// ── Live Layer ───────────────────────────────────────────────────────
+
+/**
+ * Create the Live layer for PluginRegistry.
+ *
+ * Wraps a PluginRegistryClass instance with Effect-managed lifecycle:
+ * - Health checks: Effect.repeat + Schedule.spaced (60s interval)
+ * - Teardown: Effect.addFinalizer (automatic reverse ordering)
+ *
+ * @param createImpl - Factory for the underlying registry instance.
+ *   Defaults to creating a new PluginRegistryClass from the plugin module.
+ */
+export function makePluginRegistryLive(
+  createImpl?: () => PluginRegistryClass,
+): Layer.Layer<PluginRegistry> {
+  return Layer.scoped(
+    PluginRegistry,
+    Effect.gen(function* () {
+      const impl = yield* createPluginImpl(createImpl);
+      return yield* buildPluginService(impl);
+    }),
+  );
+}
+
+/** Default Live layer using the global PluginRegistry constructor. */
+export const PluginRegistryLive: Layer.Layer<PluginRegistry> =
+  makePluginRegistryLive();
+
+// ── Wired Layer ──────────────────────────────────────────────────────
+
+/**
+ * Config for building a PluginRegistry Layer that registers, initializes,
+ * and wires plugins as part of Layer construction.
+ */
+export interface PluginWiringConfig {
+  /** Plugins to register (from atlas.config.ts). */
+  readonly plugins: ReadonlyArray<PluginLike>;
+  /** Context passed to plugin.initialize(). */
+  readonly context: PluginContextLike;
+  /** Hono app instance for mounting interaction plugin routes. */
+  readonly app?: unknown;
+  /** Tool registry for action plugin tools. */
+  readonly toolRegistry?: unknown;
+  /** Schema migration callback (runs before initialize). */
+  readonly runMigrations?: (
+    allPlugins: ReadonlyArray<PluginLike>,
+  ) => Promise<void>;
+}
+
+/**
+ * Create a Layer that registers, initializes, and wires plugins.
+ *
+ * Declares ConnectionRegistry as a dependency — the type system enforces
+ * that connections must be available before plugin datasources can be wired.
+ * This replaces the imperative startup sequence in server.ts with type-safe
+ * Layer composition where dependency ordering is enforced at the type level.
+ *
+ * Startup sequence:
+ *   register → migrate → initialize → wire datasources → wire actions →
+ *   wire context → wire interactions → health check loop → teardown
+ */
+export function makeWiredPluginRegistryLive(
+  config: PluginWiringConfig,
+  createImpl?: () => PluginRegistryClass,
+): Layer.Layer<PluginRegistry, never, ConnectionRegistry> {
+  return Layer.scoped(
+    PluginRegistry,
+    Effect.gen(function* () {
+      // Dependency: ConnectionRegistry must be provided before wiring.
+      // This is enforced at the type level — the Layer won't compile
+      // without ConnectionRegistry in the provided context.
+      const connRegistry = yield* ConnectionRegistry;
+
+      const impl = yield* createPluginImpl(createImpl);
+
+      // --- Registration ---
+      for (const plugin of config.plugins) {
+        impl.register(plugin);
+      }
+
+      // --- Schema migrations (before initialize so plugins can use their tables) ---
+      if (config.runMigrations) {
+        yield* Effect.promise(() => config.runMigrations!(impl.getAll()));
+      }
+
+      // --- Initialize all ---
+      const { succeeded, failed } = yield* Effect.promise(() =>
+        impl.initializeAll(config.context),
+      );
+      if (failed.length > 0) {
+        pluginLog.error(
+          { succeeded, failed },
+          `Plugin initialization completed with ${failed.length} failure(s)`,
+        );
+      } else if (succeeded.length > 0) {
+        pluginLog.info({ succeeded }, "All plugins initialized");
+      }
+
+      // --- Wire datasources (ConnectionRegistry from Layer context) ---
+      yield* Effect.promise(async () => {
+        const { wireDatasourcePlugins } = await import(
+          "@atlas/api/lib/plugins/wiring"
+        );
+        // Bridge: PluginRegistryShape ↔ class (structural match for getByType)
+        return wireDatasourcePlugins(
+          impl,
+          connRegistry as unknown as ConnectionRegistryClass,
+        );
+      });
+
+      // --- Wire actions ---
+      if (config.toolRegistry) {
+        yield* Effect.promise(async () => {
+          const { wireActionPlugins } = await import(
+            "@atlas/api/lib/plugins/wiring"
+          );
+          return wireActionPlugins(impl, config.toolRegistry as never);
+        });
+      }
+
+      // --- Wire context ---
+      yield* Effect.promise(async () => {
+        const { wireContextPlugins } = await import(
+          "@atlas/api/lib/plugins/wiring"
+        );
+        return wireContextPlugins(impl);
+      });
+
+      // --- Wire interaction routes ---
+      if (config.app) {
+        yield* Effect.promise(async () => {
+          const { wireInteractionPlugins } = await import(
+            "@atlas/api/lib/plugins/wiring"
+          );
+          return wireInteractionPlugins(impl, config.app);
+        });
+      }
+
+      return yield* buildPluginService(impl);
+    }),
+  );
+}
+
+// ── Test helper ──────────────────────────────────────────────────────
+
+/**
+ * Create a test Layer from a partial PluginRegistry service implementation.
+ *
+ * Provides a PluginRegistry service backed by stub methods.
+ * Unspecified methods throw with a descriptive error.
+ *
+ * @example
+ * ```ts
+ * const TestLayer = createPluginTestLayer({
+ *   getAll: () => [],
+ *   describe: () => [],
+ * });
+ * const result = await Effect.runPromise(
+ *   program.pipe(Effect.provide(TestLayer))
+ * );
+ * ```
+ */
+export function createPluginTestLayer(
+  partial: Partial<PluginRegistryShape>,
+): Layer.Layer<PluginRegistry> {
+  const handler: ProxyHandler<PluginRegistryShape> = {
+    get(_target, prop: string | symbol) {
+      if (typeof prop === "symbol") return undefined;
+      if (prop === "then" || prop === "toJSON") return undefined;
+      if (prop in partial) {
+        return (partial as Record<string, unknown>)[prop];
+      }
+      return (..._args: unknown[]) => {
+        throw new Error(
+          `PluginRegistry test stub: "${prop}" was called but not provided in createPluginTestLayer()`,
+        );
+      };
+    },
+  };
+
+  const stubService = new Proxy({} as PluginRegistryShape, handler);
+  return Layer.succeed(PluginRegistry, stubService);
 }

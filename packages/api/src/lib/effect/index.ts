@@ -54,4 +54,12 @@ export {
   makeConnectionRegistryLive,
   createTestLayer,
   type ConnectionRegistryShape,
+  // Plugin Registry (P5)
+  PluginRegistry,
+  PluginRegistryLive,
+  makePluginRegistryLive,
+  makeWiredPluginRegistryLive,
+  createPluginTestLayer,
+  type PluginRegistryShape,
+  type PluginWiringConfig,
 } from "./services";

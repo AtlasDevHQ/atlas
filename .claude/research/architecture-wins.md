@@ -338,3 +338,32 @@ Tracking module-deepening refactors discovered by the `improve-codebase-architec
 - Handler bodies unchanged — zero behavioral changes, backwards compatible
 
 **Category:** Per-handler HOF error wrapping replaced by centralized Effect bridge with typed error classification.
+
+## 16. PluginRegistry → Effect Layer/Service (P5)
+
+**Date:** 2026-03-25
+**Issue:** #908
+**PR:** #926
+
+**Problem:** `PluginRegistry` (289 lines) and plugin wiring (`wiring.ts`, 397 lines) managed a sequential init/teardown lifecycle with implicit ordering assumptions. Plugins had to init after connections, tools after plugins, etc. — but nothing enforced this at the type level. Teardown was manual LIFO with no per-plugin timeout. Health checks ran only on-demand via the admin API, not periodically.
+
+**Solution:** Converted plugin lifecycle to Effect Layer composition:
+- `PluginRegistry` as `Context.Tag("PluginRegistry")` with `PluginRegistryShape` interface
+- Health checks: on-demand-only → `Effect.repeat` + `Schedule.spaced(60s)` + `Fiber` (auto-cancelled on shutdown)
+- Teardown: manual LIFO → `Effect.addFinalizer` (delegates to class LIFO teardown, scope-managed)
+- `makePluginRegistryLive()` wraps the class with scope-managed health checks and teardown
+- `makeWiredPluginRegistryLive(config)` declares `ConnectionRegistry` as a type-level dependency — plugin datasource wiring can't happen before connections are available
+- `createPluginTestLayer()` proxy-based helper for Layer-based test setup
+- Shared `buildPluginService()` helper eliminates duplication between basic and wired layers
+- Backward-compatible: existing `PluginRegistry` class, `plugins` singleton, and wiring functions unchanged
+
+**Impact:**
+- **+324 lines** new in services.ts (PluginRegistryShape, Tag, Live Layer, Wired Layer, test helper)
+- **+8 lines** in index.ts (barrel exports)
+- **+343 lines** new test file (14 tests covering service creation, teardown via finalizer, wired layer, test layer)
+- Plugin health checks now run periodically (60s) instead of on-demand only
+- Dependency ordering (plugins → connections) enforced at the type level via Layer composition
+- All existing plugin tests (164 tests across 7 files) continue to pass unchanged
+- Unblocks P6 (server startup → Effect Layer DAG)
+
+**Category:** Plugin lifecycle with implicit ordering replaced by Effect Layer composition with type-safe dependencies.

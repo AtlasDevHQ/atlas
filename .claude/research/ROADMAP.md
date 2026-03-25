@@ -508,13 +508,13 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 
 **Module-deepening refactors** from systematic codebase exploration. Reduce duplication, improve testability, and make the codebase more navigable before the 1.0.0 launch.
 
-- [ ] Extract plugin initialization factory in plugin SDK (#890)
+- ~Extract plugin initialization factory in plugin SDK (#890)~ — superseded by #908 (P5: Effect Layer composition)
 - [x] Complete AdminContentWrapper adoption across all admin pages (#891, PR #899)
 - [x] Extract route handler error wrapper for consistent 500 responses (#892, PR #902)
 - [ ] Extract OpenAPI schema factories for admin routes (#893)
 - [x] Deduplicate auth error classification between admin-auth and middleware (#894, PR #898)
 - [x] Extract shared fetch error utility for admin hooks (PR #898) — quick win: deduped error parsing from `useAdminFetch` + `useAdminMutation` into `extractFetchError()`
-- [ ] Extract plugin SDK utilities — health check, lazy loading, route helpers (#895)
+- ~Extract plugin SDK utilities — health check, lazy loading, route helpers (#895)~ — superseded by #908 (P5: Effect Layer composition)
 - [ ] Extract conversation fetch client from use-conversations hook (#896)
 - [x] Extract shared ResultCardBase for SQL and Python result cards (#897, PR #899)
 

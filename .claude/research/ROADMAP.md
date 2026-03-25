@@ -539,6 +539,10 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [ ] P7: Route handlers → Effect boundaries with typed error mapping (#910)
 - [ ] P8: Auth and request context → Effect Context replacing AsyncLocalStorage (#911)
 
+### AI & Database (P10–P11)
+- [ ] P10: Agent loop → @effect/ai with AiToolkit and provider Layers (#913)
+- [ ] P11: Database client → @effect/sql-pg and @effect/sql-mysql2 (#914)
+
 ### Test Infrastructure
 - [ ] P9: Test infrastructure → Effect Layer-based test setup (#912)
 

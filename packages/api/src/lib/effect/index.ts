@@ -1,11 +1,11 @@
 /**
  * Effect.ts foundation for Atlas.
  *
- * Re-exports tagged error types and the Hono bridge so consumers can
- * import from a single entry point:
+ * Re-exports tagged error types, the Hono bridge, and Effect services
+ * so consumers can import from a single entry point:
  *
  * ```ts
- * import { runEffect, EmptyQueryError, ParseError } from "@atlas/api/lib/effect";
+ * import { runEffect, EmptyQueryError, ConnectionRegistry } from "@atlas/api/lib/effect";
  * ```
  */
 
@@ -45,3 +45,13 @@ export {
 } from "./errors";
 
 export { runEffect, mapTaggedError } from "./hono";
+
+// ── Effect Services (P4+) ───────────────────────────────────────────
+
+export {
+  ConnectionRegistry,
+  ConnectionRegistryLive,
+  makeConnectionRegistryLive,
+  createTestLayer,
+  type ConnectionRegistryShape,
+} from "./services";

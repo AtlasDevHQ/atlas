@@ -7,6 +7,7 @@
  */
 
 import * as crypto from "crypto";
+import { Effect, Schedule, Duration, Fiber } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
 
 const log = createLogger("internal-db");
@@ -187,14 +188,81 @@ let _consecutiveFailures = 0;
 const MAX_CONSECUTIVE_FAILURES = 5;
 let _circuitOpen = false;
 let _droppedCount = 0;
+/** Recovery fiber — when set, a background fiber is attempting exponential backoff recovery. */
+let _recoveryFiber: Fiber.RuntimeFiber<void, never> | null = null;
+
+/**
+ * Exponential backoff recovery schedule for the circuit breaker.
+ * Starts at 30s, doubles each attempt, caps at 5 minutes.
+ * Retries up to 5 times with increasing delays (30s, 60s, 120s, 240s, 300s).
+ * If all retries fail, circuit remains open and recovery re-triggers on next write.
+ */
+const RECOVERY_SCHEDULE = Schedule.exponential(Duration.seconds(30)).pipe(
+  Schedule.union(Schedule.spaced(Duration.minutes(5))),
+  // Cap at 5 retries (30s → 60s → 120s → 240s → 300s)
+  Schedule.intersect(Schedule.recurs(5)),
+  Schedule.map(([duration]) => duration),
+);
+
+/**
+ * Start an exponential-backoff recovery probe. On success, re-opens the circuit.
+ * On exhaustion of retries, the circuit remains open and the recovery fiber clears
+ * itself so the next internalExecute call re-triggers recovery.
+ *
+ * After an initial 30s delay, makes the first probe attempt. On failure, retries
+ * up to 5 times with exponential backoff (30s, 60s, 120s, 240s, 300s).
+ * Worst-case recovery takes ~13 minutes from circuit trip to retry exhaustion.
+ */
+function _startRecovery(): void {
+  if (_recoveryFiber) return;
+
+  const probe = Effect.gen(function* () {
+    const pool = getInternalDB();
+    yield* Effect.tryPromise({
+      try: () => pool.query("SELECT 1"),
+      catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+    });
+  });
+
+  const recovery = Effect.sleep(Duration.seconds(30)).pipe(
+    Effect.andThen(
+      probe.pipe(Effect.retry(RECOVERY_SCHEDULE)),
+    ),
+    Effect.andThen(
+      Effect.sync(() => {
+        const dropped = _droppedCount;
+        _circuitOpen = false;
+        _consecutiveFailures = 0;
+        _droppedCount = 0;
+        _recoveryFiber = null;
+        log.info({ droppedCount: dropped }, "Internal DB circuit breaker recovered — fire-and-forget writes resumed");
+      }),
+    ),
+    Effect.catchAll((err) => {
+      // All retries exhausted — keep circuit open, clear fiber so next write re-triggers recovery
+      _recoveryFiber = null;
+      log.error(
+        { err: err instanceof Error ? err.message : String(err), droppedCount: _droppedCount },
+        "Internal DB circuit breaker recovery exhausted — circuit remains open, will re-attempt on next write",
+      );
+      return Effect.void;
+    }),
+  );
+
+  _recoveryFiber = Effect.runFork(recovery);
+}
 
 /** Fire-and-forget query — async errors are logged, never thrown.
- * After 5 consecutive failures, a circuit breaker trips and silently
- * drops all calls for 60s before retrying. Throws synchronously if
- * DATABASE_URL is not set (callers should check hasInternalDB() first). */
+ * After 5 consecutive failures, a circuit breaker trips and drops
+ * all calls until recovery succeeds. Recovery uses exponential backoff
+ * (30s → 60s → 120s → 240s → 300s) via Effect.retry. Throws
+ * synchronously if DATABASE_URL is not set (callers should check
+ * hasInternalDB() first). */
 export function internalExecute(sql: string, params?: unknown[]): void {
   if (_circuitOpen) {
     _droppedCount++;
+    // Re-trigger recovery if previous attempt exhausted retries
+    if (!_recoveryFiber) _startRecovery();
     return;
   }
   const pool = getInternalDB();
@@ -205,14 +273,7 @@ export function internalExecute(sql: string, params?: unknown[]): void {
       if (_consecutiveFailures >= MAX_CONSECUTIVE_FAILURES && !_circuitOpen) {
         _circuitOpen = true;
         log.error("Internal DB circuit breaker open — fire-and-forget writes disabled until recovery");
-        // Try to recover every 60s
-        setTimeout(() => {
-          const dropped = _droppedCount;
-          _circuitOpen = false;
-          _consecutiveFailures = 0;
-          _droppedCount = 0;
-          log.info({ droppedCount: dropped }, "Internal DB circuit breaker recovered — fire-and-forget writes resumed");
-        }, 60_000).unref();
+        _startRecovery();
       }
       if (!_circuitOpen) {
         log.error(
@@ -232,6 +293,10 @@ export function _resetCircuitBreaker(): void {
   _consecutiveFailures = 0;
   _circuitOpen = false;
   _droppedCount = 0;
+  if (_recoveryFiber) {
+    Effect.runFork(Fiber.interrupt(_recoveryFiber));
+    _recoveryFiber = null;
+  }
 }
 
 /** Idempotent migration: creates all Atlas internal tables and indexes. */

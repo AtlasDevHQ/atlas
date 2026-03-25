@@ -63,3 +63,27 @@ export {
   type PluginRegistryShape,
   type PluginWiringConfig,
 } from "./services";
+
+// ── Startup Layers (P6) ─────────────────────────────────────────────
+
+export {
+  Telemetry,
+  TelemetryLive,
+  Config,
+  ConfigLive,
+  Migration,
+  MigrationLive,
+  SemanticSync,
+  SemanticSyncLive,
+  Settings,
+  SettingsLive,
+  SchedulerService,
+  makeSchedulerLive,
+  buildAppLayer,
+  type TelemetryShape,
+  type ConfigShape,
+  type MigrationShape,
+  type SemanticSyncShape,
+  type SettingsShape,
+  type SchedulerShape,
+} from "./layers";

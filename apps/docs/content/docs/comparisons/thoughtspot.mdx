@@ -1,0 +1,61 @@
+---
+title: Atlas vs ThoughtSpot
+description: Comparing Atlas and ThoughtSpot -- open-source embeddable agent vs enterprise agentic analytics platform.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+[ThoughtSpot](https://www.thoughtspot.com/) is an enterprise analytics platform recognized in [Gartner's 2026 Market Guide for Agentic Analytics](https://go.thoughtspot.com/analyst-report-gartner-market-guide-for-agentic-analytics.html). Its Spotter agent provides AI-driven data exploration on top of ThoughtSpot's search-based analytics engine. Atlas and ThoughtSpot target different ends of the market.
+
+## Quick Comparison
+
+| | Atlas | ThoughtSpot |
+|---|---|---|
+| **Category** | Open-source embeddable text-to-SQL agent | Enterprise agentic analytics platform |
+| **License** | AGPL-3.0 core, MIT client libs | Proprietary (SaaS + on-prem) |
+| **Pricing** | Self-hosted free, cloud starts at Team tier | Enterprise pricing (typically six-figure contracts) |
+| **Semantic layer** | YAML files (code-first, auto-generated) | TML (ThoughtSpot Modeling Language) + UI |
+| **AI agent** | Multi-step agent with tool use (SQL, Python, explore) | Spotter agent with conversational analytics |
+| **Embeddable** | Script tag, React component, API, SDK | ThoughtSpot Embedded (SDK) |
+| **Deployment** | Docker, Railway, Vercel, embedded in Next.js | SaaS or on-premises appliance |
+| **Databases** | 7 via plugins (Postgres, MySQL, BigQuery, ClickHouse, DuckDB, Snowflake, Salesforce) | Cloud data warehouses (Snowflake, Databricks, BigQuery, Redshift, etc.) |
+| **SQL validation** | 7-layer pipeline | Query engine optimizes and governs |
+| **Plugin system** | Plugin SDK + 20 plugins | SpotApps marketplace |
+| **Open source** | Yes (full product) | No |
+
+## Different Markets
+
+**ThoughtSpot** is built for large enterprises. It replaces or complements existing BI tools (Tableau, Looker) with search-based analytics. Spotter, their AI agent, adds conversational data exploration. Typical deployments involve data engineering teams, weeks of onboarding, and enterprise contracts.
+
+**Atlas** is built for developers and small-to-mid teams who want to add natural language data querying to their own applications. It's open-source, deploys in minutes, and is designed to be embedded — not to be a standalone analytics platform.
+
+**Trade-off:** ThoughtSpot gives you a complete enterprise analytics suite with governance, certified data models, and organizational-scale features. Atlas gives you a focused, embeddable agent you control end-to-end.
+
+## Semantic Layer
+
+**ThoughtSpot** uses TML (ThoughtSpot Modeling Language) to define data models, relationships, and business logic. Models are managed through the ThoughtSpot UI or exported as YAML-like files. The platform includes a governance layer for certifying trusted data sources and managing access.
+
+**Atlas** uses plain YAML files on disk. Run `atlas init` to auto-profile your database, then enrich the generated entities with descriptions, metrics, and glossary terms. The semantic layer lives in your git repository and deploys as static files.
+
+**Trade-off:** ThoughtSpot's modeling is richer and includes governance features (certified models, usage analytics, lineage). Atlas's approach is simpler, code-first, and designed for teams that manage their data model in git.
+
+## Embedding
+
+Both products offer embedding, but the model is different.
+
+**ThoughtSpot Embedded** provides a React SDK for embedding search, visualizations, liveboards, and the Spotter AI agent. Embedding requires a ThoughtSpot license and access to the ThoughtSpot backend.
+
+**Atlas** embedding is fully decoupled. The frontend (`@useatlas/react`, `@useatlas/sdk`) communicates over HTTP with no dependency on the backend package. You can embed a script tag widget, use the React component, or hit the API directly from any framework. Client libraries are MIT-licensed.
+
+## When to Choose ThoughtSpot
+
+- You need a complete enterprise analytics platform, not just natural language querying
+- Your organization has hundreds or thousands of analytics users
+- Certified data models, lineage tracking, and governance are requirements
+- You have the budget for enterprise software and a data team to manage it
+- You need search-based analytics (keyword search, not just conversational AI)
+- Integration with existing enterprise data infrastructure (Snowflake, Databricks) is critical
+
+<Callout type="info">
+  Atlas and ThoughtSpot aren't direct competitors. ThoughtSpot is an enterprise platform that replaces BI tools. Atlas is a developer tool that adds AI querying to your own product. An organization could use both — ThoughtSpot for internal analytics and Atlas embedded in their customer-facing application.
+</Callout>

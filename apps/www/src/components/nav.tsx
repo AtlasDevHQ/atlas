@@ -2,6 +2,7 @@ import { AtlasLogo } from "./shared";
 
 const NAV_LINKS = [
   { href: "/pricing", label: "Pricing" },
+  { href: "/blog", label: "Blog" },
   { href: "https://docs.useatlas.dev", label: "Docs" },
   { href: "https://github.com/AtlasDevHQ/atlas", label: "GitHub" },
 ];

@@ -16,12 +16,15 @@ import { Callout } from "fumadocs-ui/components/callout";
 | **Approach** | Semantic layer (YAML) | RAG training (DDL + docs + SQL pairs) |
 | **Embeddable** | Script tag, React component, API | Web component (`<vanna-chat>`), Flask UI, Streamlit |
 | **Deployment** | API server (Hono) + frontend (Next.js) | Python script or notebook |
-| **Plugin system** | Plugin SDK + 15 official plugins | Swappable LLM/vector store backends |
+| **Plugin system** | Plugin SDK + 20 official plugins | Swappable LLM/vector store backends |
 | **Databases** | Postgres, MySQL + plugins for BigQuery, ClickHouse, DuckDB, Salesforce, Snowflake | Postgres, MySQL, BigQuery, Snowflake, DuckDB, SQLite, and more |
-| **Auth model** | Managed, BYOT, API key | BYOT (`UserResolver` class) |
-| **Admin console** | Built-in | No |
+| **Auth model** | Managed (Better Auth), BYOT, API key, SSO/SCIM | BYOT (`UserResolver` class) |
+| **Admin console** | Built-in (connections, users, plugins, analytics) | No |
 | **MCP server** | Yes | No |
-| **SQL validation** | 7-layer pipeline (empty check, regex guard, AST parse, table whitelist, RLS, auto-LIMIT, timeout) | None built-in |
+| **Chat integrations** | Slack, Teams, Discord, Telegram, Google Chat, GitHub, Linear, WhatsApp (via Chat SDK) | No |
+| **SQL validation** | 7-layer pipeline (empty check, regex guard, AST parse, table whitelist, RLS, auto-LIMIT, timeout) | Basic (parameterized queries, RLS in v2.0) |
+| **Enterprise features** | SSO, SCIM, custom roles, IP allowlists, approval workflows, audit retention | None |
+| **Backend architecture** | Effect.ts for key subsystems (structured concurrency, typed errors, circuit breaking) | Standard Python |
 
 ## Context Approach
 
@@ -43,7 +46,7 @@ import { Callout } from "fumadocs-ui/components/callout";
 
 Atlas enforces read-only access through a [7-layer SQL validation pipeline](/security/sql-validation): empty check, regex mutation guard, AST parsing (single SELECT only), table whitelist (only semantic layer entities), RLS injection, auto LIMIT, and statement timeout.
 
-Vanna does not include built-in SQL validation. The generated SQL is passed directly to your database connection. You're responsible for adding guardrails -- read-only database users, query validation, and timeout enforcement.
+Vanna v2.0 added parameterized queries and row-level security, but does not include multi-layer SQL validation. The generated SQL is passed to your database connection with basic guardrails. You're responsible for adding additional protections -- read-only database users, mutation guards, and timeout enforcement.
 
 <Callout type="warn">
   If you use Vanna in production, ensure your database connection uses a read-only user and implement your own query validation layer.
@@ -51,9 +54,15 @@ Vanna does not include built-in SQL validation. The generated SQL is passed dire
 
 ## Ecosystem
 
-Atlas has a typed Plugin SDK with 15+ official plugins covering datasource adapters, sandbox backends, interaction channels (Slack, MCP), and action triggers (email, JIRA). You can build custom plugins with `bun create @useatlas/plugin`.
+Atlas has a typed Plugin SDK with 20+ official plugins covering datasource adapters, sandbox backends, interaction channels (Slack, Teams, Discord, Telegram, Google Chat, GitHub, Linear, WhatsApp via Chat SDK, and MCP), and action triggers (email, JIRA, webhooks). You can build custom plugins with `bun create @useatlas/plugin`.
 
 Vanna has a modular architecture where you can swap the LLM backend (OpenAI, Mistral, Ollama, etc.) and vector store (ChromaDB, Pinecone, etc.). This is closer to a library with pluggable backends than a plugin ecosystem.
+
+## Enterprise Readiness
+
+Atlas ships with enterprise features out of the box: SSO (SAML/OIDC) and SCIM provisioning, custom role definitions, IP allowlists, approval workflows for sensitive operations, configurable audit log retention with CSV export, and data residency controls. The backend uses Effect.ts for structured concurrency, typed errors, graceful shutdown, and circuit breaking.
+
+Vanna v2.0 added RLS, audit logs, and rate limiting, but enterprise identity management (SSO, SCIM), approval workflows, and structured error handling are not part of the library.
 
 ## When to Choose Vanna
 

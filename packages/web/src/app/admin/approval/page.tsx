@@ -36,9 +36,8 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
-import { LoadingState } from "@/ui/components/admin/loading-state";
-import { FeatureGate } from "@/ui/components/admin/feature-disabled";
-import { useAdminFetch, friendlyError } from "@/ui/hooks/use-admin-fetch";
+import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
+import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import {
@@ -170,11 +169,7 @@ function ApprovalPageContent() {
     clearReviewError();
   }
 
-  // Gate on auth/feature errors
   const gateError = rulesError ?? queueError;
-  if (gateError && (gateError.status === 401 || gateError.status === 403 || gateError.status === 404)) {
-    return <FeatureGate status={gateError.status as 401 | 403 | 404} feature="Approval Workflows" />;
-  }
 
   // Create rule handler
   async function handleCreateRule(values: z.infer<typeof createRuleSchema>) {
@@ -235,10 +230,15 @@ function ApprovalPageContent() {
       </div>
 
       {mutationError && <ErrorBanner message={mutationError} onRetry={clearMutationError} />}
-      {rulesError && !gateError && <ErrorBanner message={friendlyError(rulesError)} />}
-      {queueError && !gateError && <ErrorBanner message={friendlyError(queueError)} />}
 
-      <Tabs defaultValue="rules">
+      <AdminContentWrapper
+        loading={isLoading}
+        error={gateError}
+        feature="Approval Workflows"
+        onRetry={() => { refetchRules(); refetchQueue(); }}
+      >
+
+        <Tabs defaultValue="rules">
         <TabsList>
           <TabsTrigger value="rules">Rules</TabsTrigger>
           <TabsTrigger value="queue">
@@ -542,6 +542,7 @@ function ApprovalPageContent() {
           </Card>
         </TabsContent>
       </Tabs>
+      </AdminContentWrapper>
     </div>
   );
 }

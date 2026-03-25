@@ -2,17 +2,16 @@
 
 import { useState } from "react";
 import dynamic from "next/dynamic";
-import { useAdminFetch, friendlyError } from "@/ui/hooks/use-admin-fetch";
+import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { useDarkMode } from "@/ui/hooks/use-dark-mode";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { StatCard } from "@/ui/components/admin/stat-card";
-import { LoadingState } from "@/ui/components/admin/loading-state";
 import { EmptyState } from "@/ui/components/admin/empty-state";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
-import { FeatureGate } from "@/ui/components/admin/feature-disabled";
+import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { DataTable } from "@/components/data-table/data-table";
 import { DataTableToolbar } from "@/components/data-table/data-table-toolbar";
 import { DataTableSortList } from "@/components/data-table/data-table-sort-list";
@@ -115,11 +114,6 @@ export default function UsageDashboardPage() {
     getRowId: (row) => row.user_id,
   });
 
-  // Gate: auth/availability errors
-  if (!loading && error?.status && [401, 403, 404].includes(error.status)) {
-    return <FeatureGate status={error.status as 401 | 403 | 404} feature="Usage Dashboard" />;
-  }
-
   async function openBillingPortal() {
     const result = await portalMutate({
       body: { returnUrl: window.location.href },
@@ -163,15 +157,14 @@ export default function UsageDashboardPage() {
         {/* Portal error */}
         {(portalError ?? portalUrlError) && <ErrorBanner message={(portalError ?? portalUrlError)!} onRetry={() => { setPortalUrlError(null); openBillingPortal(); }} />}
 
-        {/* Error state */}
-        {error && <ErrorBanner message={friendlyError(error)} onRetry={refetch} />}
-
-        {/* Loading state */}
-        {loading && <LoadingState message="Loading usage data..." />}
-
-        {/* Content */}
-        {data && (
-          <>
+        <AdminContentWrapper
+          loading={loading}
+          error={error}
+          feature="Usage Dashboard"
+          onRetry={refetch}
+          loadingMessage="Loading usage data..."
+        >
+          {data && <>
             {/* Usage metrics with progress toward limits */}
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
               <UsageMetricCard
@@ -245,8 +238,8 @@ export default function UsageDashboardPage() {
                 )}
               </CardContent>
             </Card>
-          </>
-        )}
+          </>}
+        </AdminContentWrapper>
       </div>
     </div>
     </ErrorBoundary>

@@ -23,17 +23,15 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { EmptyState } from "@/ui/components/admin/empty-state";
+import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
-import { LoadingState } from "@/ui/components/admin/loading-state";
-import { FeatureGate } from "@/ui/components/admin/feature-disabled";
 import { DataTable } from "@/components/data-table/data-table";
 import { DataTableToolbar } from "@/components/data-table/data-table-toolbar";
 import { getConnectionColumns } from "./columns";
 import { useDataTable } from "@/hooks/use-data-table";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Cable, Loader2, Plus, Pencil, Trash2, Eye, EyeOff, Activity, ChevronDown, ChevronUp, Droplets } from "lucide-react";
-import { useAdminFetch, friendlyError } from "@/ui/hooks/use-admin-fetch";
+import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import {
@@ -660,19 +658,6 @@ export default function ConnectionsPage() {
     setLocalConnections(null);
   }
 
-  // Gate: 401/403/404
-  if (!loading && error?.status && [401, 403, 404].includes(error.status)) {
-    return (
-      <div className="flex h-[calc(100dvh-3rem)] flex-col">
-        <div className="border-b px-6 py-4">
-          <h1 className="text-2xl font-bold tracking-tight">Connections</h1>
-          <p className="text-sm text-muted-foreground">Manage datasource connections</p>
-        </div>
-        <FeatureGate status={error.status as 401 | 403 | 404} feature="Connections" />
-      </div>
-    );
-  }
-
   async function testConnection(id: string) {
     setMutationError(null);
     const result = await testMutation.mutate({
@@ -743,28 +728,27 @@ export default function ConnectionsPage() {
 
       <ErrorBoundary>
       <div className="flex-1 overflow-auto p-6 space-y-6">
-        {error && <ErrorBanner message={friendlyError(error)} onRetry={refetch} />}
         {mutationError && <ErrorBanner message={mutationError} onRetry={() => setMutationError(null)} />}
         {testMutation.error && !mutationError && <ErrorBanner message={testMutation.error} onRetry={testMutation.clearError} />}
 
         <PoolStatsSection onError={setMutationError} />
 
-        {loading ? (
-          <div className="flex h-64 items-center justify-center">
-            <LoadingState message="Loading connections..." />
-          </div>
-        ) : displayConnections.length === 0 && !error ? (
-          <EmptyState
-            icon={Cable}
-            title="No datasource connections"
-            description="Add a connection to start querying your data"
-            action={{ label: "Add connection", onClick: handleAdd }}
-          />
-        ) : displayConnections.length > 0 ? (
+        <AdminContentWrapper
+          loading={loading}
+          error={error}
+          feature="Connections"
+          onRetry={refetch}
+          loadingMessage="Loading connections..."
+          emptyIcon={Cable}
+          emptyTitle="No datasource connections"
+          emptyDescription="Add a connection to start querying your data"
+          emptyAction={{ label: "Add connection", onClick: handleAdd }}
+          isEmpty={displayConnections.length === 0}
+        >
           <DataTable table={connTable}>
             <DataTableToolbar table={connTable} />
           </DataTable>
-        ) : null}
+        </AdminContentWrapper>
       </div>
       </ErrorBoundary>
 

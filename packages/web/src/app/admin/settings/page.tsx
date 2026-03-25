@@ -23,9 +23,8 @@ import {
 } from "@/components/form-dialog";
 import { Separator } from "@/components/ui/separator";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
-import { LoadingState } from "@/ui/components/admin/loading-state";
-import { FeatureGate } from "@/ui/components/admin/feature-disabled";
-import { useAdminFetch, friendlyError } from "@/ui/hooks/use-admin-fetch";
+import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
+import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { Settings, Pencil, RotateCcw, Loader2, Info, Lock, RefreshCw, Palette } from "lucide-react";
@@ -415,19 +414,6 @@ export default function SettingsPage() {
   const settings = data?.settings ?? [];
   const manageable = data?.manageable ?? false;
 
-  // Gate: 401/403/404
-  if (!loading && error?.status && [401, 403, 404].includes(error.status)) {
-    return (
-      <div className="flex h-[calc(100dvh-3rem)] flex-col">
-        <div className="border-b px-6 py-4">
-          <h1 className="text-2xl font-bold tracking-tight">Settings</h1>
-          <p className="text-sm text-muted-foreground">Manage application configuration</p>
-        </div>
-        <FeatureGate status={error.status as 401 | 403 | 404} feature="Settings" />
-      </div>
-    );
-  }
-
   // Pull out brand color for dedicated card; group rest by section
   const brandColorSetting = settings.find((s) => s.key === "ATLAS_BRAND_COLOR");
   const sections = new Map<string, SettingWithValue[]>();
@@ -456,38 +442,44 @@ export default function SettingsPage() {
 
       <ErrorBoundary>
       <div className="flex-1 overflow-auto p-6">
-        {error && <ErrorBanner message={friendlyError(error)} onRetry={refetch} />}
         {mutationError && (
           <ErrorBanner message={mutationError} onRetry={clearMutationError} />
         )}
 
-        {!manageable && !loading && !error && (
-          <div className="mb-6 flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-4 py-3">
-            <Info className="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-400" />
-            <p className="text-sm text-amber-700 dark:text-amber-300">
-              Settings are read-only. To enable overrides, configure{" "}
-              <code className="rounded bg-amber-500/10 px-1 font-mono text-xs">DATABASE_URL</code>{" "}
-              for the internal database.
-            </p>
-          </div>
-        )}
+        <AdminContentWrapper
+          loading={loading}
+          error={error}
+          feature="Settings"
+          onRetry={refetch}
+          loadingMessage="Loading settings..."
+          emptyIcon={Settings}
+          emptyTitle="No settings available"
+          isEmpty={settings.length === 0}
+        >
+          {!manageable && (
+            <div className="mb-6 flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-4 py-3">
+              <Info className="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-400" />
+              <p className="text-sm text-amber-700 dark:text-amber-300">
+                Settings are read-only. To enable overrides, configure{" "}
+                <code className="rounded bg-amber-500/10 px-1 font-mono text-xs">DATABASE_URL</code>{" "}
+                for the internal database.
+              </p>
+            </div>
+          )}
 
-        {manageable && !loading && !error && (
-          <div className="mb-6 flex items-start gap-2 rounded-md border border-blue-500/30 bg-blue-500/5 px-4 py-3">
-            <Info className="mt-0.5 size-4 shrink-0 text-blue-600 dark:text-blue-400" />
-            <p className="text-sm text-blue-700 dark:text-blue-300">
-              Setting overrides are saved to the database. Settings marked{" "}
-              <span className="font-medium">Live</span> take effect immediately.
-              Settings marked{" "}
-              <span className="font-medium">Requires restart</span> need a server
-              restart.
-            </p>
-          </div>
-        )}
+          {manageable && (
+            <div className="mb-6 flex items-start gap-2 rounded-md border border-blue-500/30 bg-blue-500/5 px-4 py-3">
+              <Info className="mt-0.5 size-4 shrink-0 text-blue-600 dark:text-blue-400" />
+              <p className="text-sm text-blue-700 dark:text-blue-300">
+                Setting overrides are saved to the database. Settings marked{" "}
+                <span className="font-medium">Live</span> take effect immediately.
+                Settings marked{" "}
+                <span className="font-medium">Requires restart</span> need a server
+                restart.
+              </p>
+            </div>
+          )}
 
-        {loading ? (
-          <LoadingState message="Loading settings..." />
-        ) : settings.length > 0 ? (
           <div className="space-y-6">
             <BrandColorCard
               setting={brandColorSetting}
@@ -521,12 +513,7 @@ export default function SettingsPage() {
               </Card>
             ))}
           </div>
-        ) : !error ? (
-          <div className="flex flex-col items-center justify-center py-16 text-center">
-            <Settings className="mb-3 size-10 text-muted-foreground/50" />
-            <p className="text-sm text-muted-foreground">No settings available</p>
-          </div>
-        ) : null}
+        </AdminContentWrapper>
       </div>
       </ErrorBoundary>
 

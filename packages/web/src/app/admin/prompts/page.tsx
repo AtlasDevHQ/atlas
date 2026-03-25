@@ -50,10 +50,8 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { StatCard } from "@/ui/components/admin/stat-card";
-import { EmptyState } from "@/ui/components/admin/empty-state";
+import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
-import { LoadingState } from "@/ui/components/admin/loading-state";
-import { FeatureGate } from "@/ui/components/admin/feature-disabled";
 import {
   FormDialog,
   FormField,
@@ -62,10 +60,7 @@ import {
   FormControl,
   FormMessage,
 } from "@/components/form-dialog";
-import {
-  friendlyError,
-  type FetchError,
-} from "@/ui/hooks/use-admin-fetch";
+import type { FetchError } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import {
@@ -454,25 +449,6 @@ export default function PromptsPage() {
     totalItems: Array.from(itemCounts.values()).reduce((a, b) => a + b, 0),
   };
 
-  // -- Auth/feature gate ------------------------------------------------------
-
-  if (!loading && error?.status && [401, 403, 404].includes(error.status)) {
-    return (
-      <div className="flex h-[calc(100dvh-3rem)] flex-col">
-        <div className="border-b px-6 py-4">
-          <h1 className="text-2xl font-bold tracking-tight">Prompt Library</h1>
-          <p className="text-sm text-muted-foreground">
-            Manage prompt collections and starter questions
-          </p>
-        </div>
-        <FeatureGate
-          status={error.status as 401 | 403 | 404}
-          feature="Prompt Library"
-        />
-      </div>
-    );
-  }
-
   const hasFilters = !!params.industry;
 
   return (
@@ -562,34 +538,21 @@ export default function PromptsPage() {
           {deleteCollectionMutation.error && <ErrorBanner message={deleteCollectionMutation.error} onRetry={deleteCollectionMutation.clearError} />}
           {addItemMutation.error && <ErrorBanner message={addItemMutation.error} onRetry={addItemMutation.clearError} />}
           {deleteItemMutation.error && <ErrorBanner message={deleteItemMutation.error} onRetry={deleteItemMutation.clearError} />}
-          {error &&
-          (!error.status || ![401, 403, 404].includes(error.status)) ? (
-            <ErrorBanner
-              message={friendlyError(error)}
-              onRetry={() => setFetchKey((k) => k + 1)}
-            />
-          ) : loading ? (
-            <div className="flex h-64 items-center justify-center">
-              <LoadingState message="Loading prompt collections..." />
-            </div>
-          ) : filtered.length === 0 && !hasFilters ? (
-            <EmptyState
-              icon={BookOpen}
-              title="No prompt collections"
-              description="Create a collection to add starter questions for your users."
-              action={{ label: "Create collection", onClick: openCreateDialog }}
-            />
-          ) : filtered.length === 0 && hasFilters ? (
-            <EmptyState
-              icon={BookOpen}
-              title="No matching collections"
-              description="Try adjusting your filters."
-              action={{
-                label: "Clear filters",
-                onClick: () => setParams({ industry: "", page: 1 }),
-              }}
-            />
-          ) : (
+
+          <AdminContentWrapper
+            loading={loading}
+            error={error}
+            feature="Prompt Library"
+            onRetry={() => setFetchKey((k) => k + 1)}
+            loadingMessage="Loading prompt collections..."
+            emptyIcon={BookOpen}
+            emptyTitle="No prompt collections"
+            emptyDescription="Create a collection to add starter questions for your users."
+            emptyAction={{ label: "Create collection", onClick: openCreateDialog }}
+            isEmpty={filtered.length === 0}
+            hasFilters={hasFilters}
+            onClearFilters={() => setParams({ industry: "", page: 1 })}
+          >
             <DataTable
               table={table}
               onRowClick={(row, e) => {
@@ -606,7 +569,7 @@ export default function PromptsPage() {
                 <DataTableSortList table={table} />
               </DataTableToolbar>
             </DataTable>
-          )}
+          </AdminContentWrapper>
         </div>
       </ErrorBoundary>
 

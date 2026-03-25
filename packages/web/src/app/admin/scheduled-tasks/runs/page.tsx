@@ -15,17 +15,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { EmptyState } from "@/ui/components/admin/empty-state";
-import { ErrorBanner } from "@/ui/components/admin/error-banner";
-import { LoadingState } from "@/ui/components/admin/loading-state";
-import { FeatureGate } from "@/ui/components/admin/feature-disabled";
+import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import {
   History,
   ExternalLink,
   ArrowLeft,
 } from "lucide-react";
 import type { FetchError } from "@/ui/hooks/use-admin-fetch";
-import { friendlyError } from "@/ui/hooks/use-admin-fetch";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { ExpandableDataTable } from "@/components/data-table/data-table-expandable";
 import { DataTableToolbar } from "@/components/data-table/data-table-toolbar";
@@ -201,19 +197,6 @@ export default function RunHistoryPage() {
     );
   };
 
-  // Gate: 401/403/404
-  if (!loading && error?.status && [401, 403, 404].includes(error.status)) {
-    return (
-      <div className="flex h-[calc(100dvh-3rem)] flex-col">
-        <div className="border-b px-6 py-4">
-          <h1 className="text-2xl font-bold tracking-tight">Run History</h1>
-          <p className="text-sm text-muted-foreground">Scheduled task execution history</p>
-        </div>
-        <FeatureGate status={error.status as 401 | 403 | 404} feature="Scheduled Tasks" />
-      </div>
-    );
-  }
-
   function resetFilters() {
     setParams({ page: 1, task: null, status: "all", dateFrom: null, dateTo: null, expandedRun: null });
   }
@@ -303,15 +286,18 @@ export default function RunHistoryPage() {
 
       <ErrorBoundary>
       <div className="flex-1 overflow-auto p-6 space-y-6">
-        {error && <ErrorBanner message={friendlyError(error)} onRetry={() => setRefetchKey((k) => k + 1)} />}
-
-        {loading ? (
-          <div className="flex h-64 items-center justify-center">
-            <LoadingState message="Loading run history..." />
-          </div>
-        ) : runs.length === 0 && !error ? (
-          <EmptyState icon={History} title="No runs found" />
-        ) : runs.length > 0 ? (
+        <AdminContentWrapper
+          loading={loading}
+          error={error}
+          feature="Scheduled Tasks"
+          onRetry={() => setRefetchKey((k) => k + 1)}
+          loadingMessage="Loading run history..."
+          emptyIcon={History}
+          emptyTitle="No runs found"
+          isEmpty={runs.length === 0}
+          hasFilters={!!hasFilters}
+          onClearFilters={resetFilters}
+        >
           <ExpandableDataTable
             table={runsTable}
             onRowClick={handleRunRowClick}
@@ -322,7 +308,7 @@ export default function RunHistoryPage() {
               <DataTableSortList table={runsTable} />
             </DataTableToolbar>
           </ExpandableDataTable>
-        ) : null}
+        </AdminContentWrapper>
       </div>
       </ErrorBoundary>
     </div>

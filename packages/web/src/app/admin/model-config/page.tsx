@@ -25,9 +25,8 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
-import { LoadingState } from "@/ui/components/admin/loading-state";
-import { FeatureGate } from "@/ui/components/admin/feature-disabled";
-import { useAdminFetch, friendlyError } from "@/ui/hooks/use-admin-fetch";
+import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
+import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { Cpu, Loader2, CheckCircle2, XCircle, RotateCcw, Eye, EyeOff } from "lucide-react";
@@ -118,19 +117,6 @@ export default function ModelConfigPage() {
     clearTestError();
   }, [data, loading]); // reset when server data changes or loading completes
 
-  // Gate: 401/403/404
-  if (!loading && error?.status && [401, 403, 404].includes(error.status)) {
-    return (
-      <div className="flex h-[calc(100dvh-3rem)] flex-col">
-        <div className="border-b px-6 py-4">
-          <h1 className="text-2xl font-bold tracking-tight">AI Provider</h1>
-          <p className="text-sm text-muted-foreground">Configure your workspace LLM provider</p>
-        </div>
-        <FeatureGate status={error.status as 401 | 403 | 404} feature="AI Provider" />
-      </div>
-    );
-  }
-
   async function handleSave(values: z.infer<typeof modelConfigSchema>) {
     if (!values.apiKey && !existingConfig) {
       form.setError("apiKey", { message: "API key is required for new configurations." });
@@ -205,14 +191,17 @@ export default function ModelConfigPage() {
 
       <ErrorBoundary>
         <div className="flex-1 overflow-auto p-6">
-          {error && <ErrorBanner message={friendlyError(error)} onRetry={refetch} />}
           {mutationError && (
             <ErrorBanner message={mutationError} onRetry={() => { clearSaveError(); clearDeleteError(); clearTestError(); }} />
           )}
 
-          {loading ? (
-            <LoadingState message="Loading model configuration..." />
-          ) : (
+          <AdminContentWrapper
+            loading={loading}
+            error={error}
+            feature="AI Provider"
+            onRetry={refetch}
+            loadingMessage="Loading model configuration..."
+          >
             <div className="mx-auto max-w-2xl space-y-6">
               {/* Current status */}
               <Card className="shadow-none">
@@ -452,7 +441,7 @@ export default function ModelConfigPage() {
                 </CardContent>
               </Card>
             </div>
-          )}
+          </AdminContentWrapper>
         </div>
       </ErrorBoundary>
     </div>

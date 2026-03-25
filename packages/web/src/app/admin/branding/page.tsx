@@ -5,9 +5,9 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { Paintbrush, Loader2, RotateCcw, Eye } from "lucide-react";
-import { useAdminFetch, friendlyError } from "@/ui/hooks/use-admin-fetch";
+import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
-import { FeatureGate } from "@/ui/components/admin/feature-disabled";
+import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -72,11 +72,6 @@ export default function BrandingPage() {
     }
   }, [data, loading]); // intentionally reset when data changes (after save/refetch)
 
-  // Gate on 401/403/404
-  if (!loading && error?.status && [401, 403, 404].includes(error.status)) {
-    return <FeatureGate status={error.status as 401 | 403 | 404} feature="Branding" />;
-  }
-
   const primaryColor = form.watch("primaryColor");
   const logoUrl = form.watch("logoUrl");
   const logoText = form.watch("logoText");
@@ -115,20 +110,13 @@ export default function BrandingPage() {
         </p>
       </div>
 
-      {loading && (
-        <div className="flex items-center gap-2 text-sm text-muted-foreground">
-          <Loader2 className="size-4 animate-spin" />
-          Loading branding settings...
-        </div>
-      )}
-
-      {!loading && error && !([401, 403, 404].includes(error.status ?? 0)) && (
-        <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          {friendlyError(error)}
-        </div>
-      )}
-
-      {!loading && !error && (
+      <AdminContentWrapper
+        loading={loading}
+        error={error}
+        feature="Branding"
+        onRetry={refetch}
+        loadingMessage="Loading branding settings..."
+      >
         <>
           {/* Form */}
           <Card className="shadow-none">
@@ -302,7 +290,7 @@ export default function BrandingPage() {
             </CardContent>
           </Card>
         </>
-      )}
+      </AdminContentWrapper>
     </div>
   );
 }

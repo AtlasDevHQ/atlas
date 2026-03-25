@@ -13,12 +13,12 @@ import { EntityDetail, type EntityData } from "@/ui/components/admin/entity-deta
 import { EmptyState } from "@/ui/components/admin/empty-state";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { LoadingState } from "@/ui/components/admin/loading-state";
-import { FeatureGate } from "@/ui/components/admin/feature-disabled";
+import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import {
   SemanticFileTree,
   type SemanticSelection,
 } from "@/ui/components/admin/semantic-file-tree";
-import { friendlyError, type FetchError } from "@/ui/hooks/use-admin-fetch";
+import { type FetchError } from "@/ui/hooks/use-admin-fetch";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 
 // ── Types ─────────────────────────────────────────────────────────
@@ -315,6 +315,7 @@ export default function SemanticPage() {
   const [catalog, setCatalog] = useState<CatalogMeta | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<FetchError | null>(null);
+  const [fetchKey, setFetchKey] = useState(0);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [{ file: fileParam, view: viewMode }, setParams] = useQueryStates(semanticSearchParams);
   const [, startTransition] = useTransition();
@@ -378,7 +379,7 @@ export default function SemanticPage() {
       if (!cancelled) setLoading(false);
     });
     return () => { cancelled = true; };
-  }, [apiUrl]);
+  }, [apiUrl, fetchKey]);
 
   const handleSelect = (sel: SemanticSelection) => {
     startTransition(() => {
@@ -458,44 +459,6 @@ export default function SemanticPage() {
     return [...files].toSorted();
   })();
 
-  if (loading) {
-    return (
-      <div className="flex h-[calc(100dvh-3rem)] flex-col">
-        <div className="border-b px-6 py-4">
-          <h1 className="text-2xl font-bold tracking-tight">Semantic Layer</h1>
-          <p className="text-sm text-muted-foreground">Browse entities, glossary, metrics, and catalog</p>
-        </div>
-        <LoadingState message="Loading semantic layer..." />
-      </div>
-    );
-  }
-
-  if (error?.status && [401, 403, 404].includes(error.status)) {
-    return (
-      <div className="flex h-[calc(100dvh-3rem)] flex-col">
-        <div className="border-b px-6 py-4">
-          <h1 className="text-2xl font-bold tracking-tight">Semantic Layer</h1>
-          <p className="text-sm text-muted-foreground">Browse entities, glossary, metrics, and catalog</p>
-        </div>
-        <FeatureGate status={error.status as 401 | 403 | 404} feature="Semantic Layer" />
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="flex h-[calc(100dvh-3rem)] flex-col">
-        <div className="border-b px-6 py-4">
-          <h1 className="text-2xl font-bold tracking-tight">Semantic Layer</h1>
-          <p className="text-sm text-muted-foreground">Browse entities, glossary, metrics, and catalog</p>
-        </div>
-        <div className="p-6">
-          <ErrorBanner message={friendlyError(error)} />
-        </div>
-      </div>
-    );
-  }
-
   return (
     <div className="flex h-[calc(100dvh-3rem)] flex-col">
       <div className="border-b px-6 py-4">
@@ -503,6 +466,13 @@ export default function SemanticPage() {
         <p className="text-sm text-muted-foreground">Browse entities, glossary, metrics, and catalog</p>
       </div>
 
+      <AdminContentWrapper
+        loading={loading}
+        error={error}
+        feature="Semantic Layer"
+        onRetry={() => setFetchKey((k) => k + 1)}
+        loadingMessage="Loading semantic layer..."
+      >
       <div className="flex items-center gap-2 border-b bg-muted/30 px-6 py-2.5 text-xs text-muted-foreground">
         <Terminal className="size-3.5 shrink-0" />
         <span>
@@ -577,6 +547,7 @@ export default function SemanticPage() {
         </div>
       </div>
       </ErrorBoundary>
+      </AdminContentWrapper>
     </div>
   );
 }

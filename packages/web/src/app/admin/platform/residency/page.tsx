@@ -30,8 +30,8 @@ import {
 import { Label } from "@/components/ui/label";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { LoadingState } from "@/ui/components/admin/loading-state";
-import { FeatureGate } from "@/ui/components/admin/feature-disabled";
 import { StatCard } from "@/ui/components/admin/stat-card";
+import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
@@ -79,15 +79,6 @@ function ResidencyPageContent() {
   const [assignDialog, setAssignDialog] = useState<{ workspaceId: string; workspaceName?: string } | null>(null);
   const [selectedRegion, setSelectedRegion] = useState<string>("");
 
-  // Feature gate
-  if (regionsError?.status === 503) return <FeatureGate status={503} feature="Data Residency" />;
-  if (regionsError?.status === 404) return <FeatureGate status={404} feature="Data Residency" />;
-  if (regionsError?.status === 403) return <FeatureGate status={403} feature="Data Residency" />;
-  if (regionsError?.status === 401) return <FeatureGate status={401} feature="Data Residency" />;
-
-  if (regionsLoading) return <LoadingState message="Loading regions..." />;
-  if (regionsError) return <ErrorBanner message={regionsError.message} />;
-
   const regions = regionsData?.regions ?? [];
   const defaultRegion = regionsData?.defaultRegion ?? "";
   const assignments = assignmentsData?.assignments ?? [];
@@ -107,6 +98,13 @@ function ResidencyPageContent() {
   }
 
   return (
+    <AdminContentWrapper
+      loading={regionsLoading}
+      error={regionsError}
+      feature="Data Residency"
+      onRetry={refetchRegions}
+      loadingMessage="Loading regions..."
+    >
     <div className="space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
@@ -274,6 +272,7 @@ function ResidencyPageContent() {
         </DialogContent>
       </Dialog>
     </div>
+    </AdminContentWrapper>
   );
 }
 

@@ -24,13 +24,11 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { HealthBadge } from "@/ui/components/admin/health-badge";
-import { EmptyState } from "@/ui/components/admin/empty-state";
+import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
-import { LoadingState } from "@/ui/components/admin/loading-state";
-import { FeatureGate } from "@/ui/components/admin/feature-disabled";
 import { Puzzle, Loader2, Settings2 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { useAdminFetch, friendlyError } from "@/ui/hooks/use-admin-fetch";
+import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 
@@ -293,19 +291,6 @@ export default function PluginsPage() {
   const displayPlugins = data?.plugins ?? [];
   const manageable = data?.manageable ?? false;
 
-  // Gate: 401/403/404
-  if (!loading && error?.status && [401, 403, 404].includes(error.status)) {
-    return (
-      <div className="flex h-[calc(100dvh-3rem)] flex-col">
-        <div className="border-b px-6 py-4">
-          <h1 className="text-2xl font-bold tracking-tight">Plugins</h1>
-          <p className="text-sm text-muted-foreground">Manage installed plugins</p>
-        </div>
-        <FeatureGate status={error.status as 401 | 403 | 404} feature="Plugins" />
-      </div>
-    );
-  }
-
   async function handleHealthCheck(id: string) {
     setMutationError(null);
     const result = await checkMutation.mutate({
@@ -340,20 +325,21 @@ export default function PluginsPage() {
 
       <ErrorBoundary>
       <div className="flex-1 overflow-auto p-6">
-        {error && <ErrorBanner message={friendlyError(error)} onRetry={refetch} />}
         {mutationError && (
           <ErrorBanner message={mutationError} onRetry={() => setMutationError(null)} />
         )}
 
-        {loading ? (
-          <LoadingState message="Loading plugins..." />
-        ) : displayPlugins.length === 0 && !error ? (
-          <EmptyState
-            icon={Puzzle}
-            title="No plugins installed"
-            description="Plugins extend Atlas with additional datasources, tools, and integrations"
-          />
-        ) : displayPlugins.length > 0 ? (
+        <AdminContentWrapper
+          loading={loading}
+          error={error}
+          feature="Plugins"
+          onRetry={refetch}
+          loadingMessage="Loading plugins..."
+          emptyIcon={Puzzle}
+          emptyTitle="No plugins installed"
+          emptyDescription="Plugins extend Atlas with additional datasources, tools, and integrations"
+          isEmpty={displayPlugins.length === 0}
+        >
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
             {displayPlugins.map((plugin) => (
               <Card
@@ -423,7 +409,7 @@ export default function PluginsPage() {
               </Card>
             ))}
           </div>
-        ) : null}
+        </AdminContentWrapper>
       </div>
       </ErrorBoundary>
 

@@ -281,3 +281,33 @@ Tracking module-deepening refactors discovered by the `improve-codebase-architec
 - `starConversation` optimistic rollback simplified from double-guard to single catch
 
 **Category:** Duplicated fetch boilerplate extracted into typed client with shared error handling.
+
+---
+
+## 14. ConnectionRegistry → Effect Layer/Service (P4)
+
+**Date:** 2026-03-25
+**Issue:** #907
+**PR:** #921
+
+**Problem:** `ConnectionRegistry` was a 1,265-line global singleton with manual lifecycle management: `setInterval` for health checks, `Date.now()` arithmetic for drain cooldown, `setTimeout` for circuit breaker recovery, and manual ordering in `shutdown()` (`stopHealthChecks → close pools → clear maps`). 36+ test files used `mock.module()` to replace it. The internal DB circuit breaker (42 lines, 4 global variables) used `setTimeout` for recovery with no backoff.
+
+**Solution:** Converted lifecycle primitives to Effect.ts:
+- Health checks: `setInterval` → `Effect.repeat` + `Schedule.spaced` + `Fiber` (auto-cancelled on shutdown)
+- Drain cooldown: `Date.now() - lastDrainAt < DRAIN_COOLDOWN_MS` → `Set<string>` + `Effect.sleep(Duration.millis(DRAIN_COOLDOWN_MS))`
+- Circuit breaker: `setTimeout(60_000)` → `Effect.sleep(30s)` + `Effect.retry(Schedule.exponential(30s))` (5 retries, capped at 5 min)
+- Shutdown: manual ordering → `Fiber.interrupt` + `Effect.addFinalizer` via `Layer.scoped`
+- Defined `ConnectionRegistry` as `Context.Tag("ConnectionRegistry")` with `ConnectionRegistryShape` interface
+- Live layer (`makeConnectionRegistryLive`) wraps the class with scope-managed health checks and drain cooldown
+- `createTestLayer()` proxy-based helper for Layer-based test setup (replaces `mock.module`)
+- `createConnectionTestLayer()` in mock factory for incremental migration
+
+**Impact:**
+- **+320 lines** new (services.ts), **+196 net lines** modified (connection.ts +50, internal.ts +63, mock +83)
+- Eliminated `setInterval`, `clearInterval`, `Date.now()` arithmetic, and `setTimeout` from lifecycle management
+- Circuit breaker now has exponential backoff (30s → 60s → 120s → 240s → 300s) instead of fixed 60s
+- 6 new test files (26 tests) covering Effect service, Layer lifecycle, drain cooldown, bridge, health fiber, and circuit breaker
+- All 166 existing API tests continue to pass (backward-compatible bridge)
+- Unblocks P5–P9 (plugin lifecycle, server startup, route handlers, auth context)
+
+**Category:** Global singleton with imperative lifecycle replaced by Effect-managed scoped service.

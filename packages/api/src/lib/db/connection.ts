@@ -16,6 +16,7 @@
  */
 
 import { matchError } from "@useatlas/types";
+import { Effect, Schedule, Duration, Fiber } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
 import { _resetWhitelists } from "@atlas/api/lib/semantic";
 import type { HealthStatus } from "@atlas/api/lib/connection-types";
@@ -428,7 +429,9 @@ const DEFAULT_ORG_POOL_SETTINGS: OrgPoolSettings = {
 export class ConnectionRegistry {
   private entries = new Map<string, RegistryEntry>();
   private maxTotalConnections = 100;
-  private healthCheckInterval: ReturnType<typeof setInterval> | null = null;
+  private healthFiber: Fiber.RuntimeFiber<void, never> | null = null;
+  /** Connections currently in drain cooldown — managed via Effect.sleep. */
+  private drainCooldownSet = new Set<string>();
 
   // --- Org-scoped pool isolation ---
   /** Org pool entries keyed by "orgId:connectionId". */
@@ -852,12 +855,14 @@ export class ConnectionRegistry {
     // Auto-drain when consecutive query failures exceed threshold
     const threshold = orgId ? this.orgPoolSettings.drainThreshold : getPoolDrainThreshold();
     if (entry.consecutiveQueryFailures >= threshold && entry.config) {
-      if (entry.lastDrainAt && Date.now() - entry.lastDrainAt < DRAIN_COOLDOWN_MS) {
+      const drainKey = orgId ? this._orgKey(orgId, id) : id;
+      if (this.drainCooldownSet.has(drainKey)) {
         log.debug({ connectionId: id, orgId }, "Pool drain skipped — cooldown active");
         return;
       }
       log.warn({ connectionId: id, orgId, consecutiveQueryFailures: entry.consecutiveQueryFailures }, "Pool drain triggered: consecutive error threshold exceeded");
-      this._drainAndRecreate(orgId ? this._orgKey(orgId, id) : id, entry);
+      this._drainAndRecreate(drainKey, entry);
+      this._startDrainCooldown(drainKey);
     }
   }
 
@@ -980,24 +985,47 @@ export class ConnectionRegistry {
     }
   }
 
-  /** Start periodic health checks for all connections. Idempotent. */
+  /** Start periodic health checks via Effect.repeat + Schedule.spaced. Idempotent. */
   startHealthChecks(intervalMs = 60_000): void {
-    if (this.healthCheckInterval) return;
-    this.healthCheckInterval = setInterval(() => {
-      for (const id of this.entries.keys()) {
-        this.healthCheck(id).catch((err) => {
-          log.warn({ err: err instanceof Error ? err.message : String(err), connectionId: id }, "Periodic health check failed");
-        });
-      }
-    }, intervalMs);
-    this.healthCheckInterval.unref();
+    if (this.healthFiber) return;
+
+    const listFn = () => this.list();
+    const checkFn = (id: string) => this.healthCheck(id);
+    const healthCheckAll = Effect.gen(function* () {
+      const ids = listFn();
+      yield* Effect.forEach(
+        ids,
+        (id) =>
+          Effect.tryPromise({
+            try: () => checkFn(id),
+            catch: (err) => (err instanceof Error ? err.message : String(err)),
+          }).pipe(
+            Effect.catchAll((errMsg) => {
+              log.warn({ connectionId: id, err: errMsg }, "Periodic health check failed");
+              return Effect.void;
+            }),
+          ),
+        { concurrency: "unbounded" },
+      );
+    });
+
+    this.healthFiber = Effect.runFork(
+      healthCheckAll.pipe(
+        Effect.catchAllCause((cause) => {
+          log.warn({ err: String(cause) }, "Health check cycle crashed");
+          return Effect.void;
+        }),
+        Effect.repeat(Schedule.spaced(Duration.millis(intervalMs))),
+        Effect.asVoid,
+      ),
+    );
   }
 
-  /** Stop periodic health checks. */
+  /** Stop periodic health checks by interrupting the Effect fiber. */
   stopHealthChecks(): void {
-    if (this.healthCheckInterval) {
-      clearInterval(this.healthCheckInterval);
-      this.healthCheckInterval = null;
+    if (this.healthFiber) {
+      Effect.runFork(Fiber.interrupt(this.healthFiber));
+      this.healthFiber = null;
     }
   }
 
@@ -1041,6 +1069,8 @@ export class ConnectionRegistry {
    * Only works for config-registered connections (not plugin/direct connections).
    * The old pool is closed asynchronously in the background; the returned
    * promise resolves once the new pool is created, not when the old finishes closing.
+   *
+   * Drain cooldown is managed via Effect.sleep — no Date.now arithmetic.
    */
   async drain(id: string): Promise<{ drained: boolean; message: string }> {
     const entry = this.entries.get(id);
@@ -1050,12 +1080,12 @@ export class ConnectionRegistry {
       return { drained: false, message: "Cannot drain plugin-managed connection — plugin must re-register it" };
     }
 
-    if (entry.lastDrainAt && Date.now() - entry.lastDrainAt < DRAIN_COOLDOWN_MS) {
-      const remainingSec = Math.ceil((DRAIN_COOLDOWN_MS - (Date.now() - entry.lastDrainAt)) / 1000);
-      return { drained: false, message: `Drain cooldown active — wait ${remainingSec}s` };
+    if (this.drainCooldownSet.has(id)) {
+      return { drained: false, message: "Drain cooldown active — wait before retrying" };
     }
 
     this._drainAndRecreate(id, entry);
+    this._startDrainCooldown(id);
     return { drained: true, message: "Pool drained and recreated" };
   }
 
@@ -1088,6 +1118,23 @@ export class ConnectionRegistry {
     oldConn.close().catch((err) => {
       log.warn({ err: err instanceof Error ? err.message : String(err), connectionId: id }, "Failed to close drained pool");
     });
+  }
+
+  /**
+   * Start a drain cooldown for a connection via Effect.sleep.
+   * Replaces Date.now() arithmetic with Effect-managed timer.
+   */
+  private _startDrainCooldown(id: string): void {
+    this.drainCooldownSet.add(id);
+    Effect.runFork(
+      Effect.sleep(Duration.millis(DRAIN_COOLDOWN_MS)).pipe(
+        Effect.andThen(
+          Effect.sync(() => {
+            this.drainCooldownSet.delete(id);
+          }),
+        ),
+      ),
+    );
   }
 
   /** Return pool metrics for a specific connection. */
@@ -1167,10 +1214,12 @@ export class ConnectionRegistry {
 
   /**
    * Graceful shutdown: stop health checks, close all connections (awaited), and
-   * reset whitelists. Use this in production shutdown paths instead of _reset().
+   * reset whitelists. When managed by Effect scope, this is called automatically
+   * via the scope finalizer — no manual ordering needed.
    */
   async shutdown(): Promise<void> {
     this.stopHealthChecks();
+    this.drainCooldownSet.clear();
     const closing: Promise<void>[] = [];
     for (const [id, entry] of this.entries.entries()) {
       closing.push(
@@ -1196,6 +1245,7 @@ export class ConnectionRegistry {
   /** Clears all registered connections (base + org) and resets the table whitelist cache. Used during graceful shutdown, tests, and the benchmark harness. */
   _reset(): void {
     this.stopHealthChecks();
+    this.drainCooldownSet.clear();
     for (const [id, entry] of this.entries.entries()) {
       entry.conn.close().catch((err) => {
         log.warn({ err: err instanceof Error ? err.message : String(err), connectionId: id }, "Failed to close connection during registry reset");

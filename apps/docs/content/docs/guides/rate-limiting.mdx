@@ -6,6 +6,10 @@ description: Configure server-side rate limits and handle 429 responses in your 
 import { Callout } from "fumadocs-ui/components/callout";
 import { Tabs, Tab } from "fumadocs-ui/components/tabs";
 
+<Callout type="info">
+This page covers content for **operators** (server-side configuration) and **developers** (client-side error handling and retry logic). Jump to the section relevant to your role.
+</Callout>
+
 Atlas provides two layers of rate limiting: **per-user request limits** (RPM) and **per-datasource query limits** (QPM + concurrency). This guide covers how to configure both, handle 429 responses, and implement retry logic in your client code.
 
 <Callout title="Prerequisites">
@@ -16,7 +20,7 @@ Atlas provides two layers of rate limiting: **per-user request limits** (RPM) an
 
 ---
 
-## Server-Side Configuration
+## Server Configuration (Operators)
 
 ### Per-User Rate Limiting
 
@@ -66,7 +70,11 @@ Per-datasource limits are checked when the agent calls `executeSQL`. If the limi
 
 ---
 
-## HTTP Response Format
+## Client Error Handling (Developers)
+
+The following sections cover how to detect, parse, and retry rate-limited responses in your client code — whether you are using the SDK, the widget, or a custom HTTP client.
+
+### HTTP Response Format
 
 When a rate limit is exceeded, Atlas returns a standard `429 Too Many Requests` response.
 
@@ -93,7 +101,7 @@ The SDK and built-in widget clamp `retryAfterSeconds` to `[0, 300]` when parsing
 
 ---
 
-## SDK Error Handling
+### SDK Error Handling
 
 The `@useatlas/sdk` surfaces rate limit errors as `AtlasError` instances with the `rate_limited` code, a `retryAfterSeconds` property, and `retryable: true`.
 
@@ -224,7 +232,7 @@ for (let i = 0; i < questions.length; i += batchSize) {
 
 ---
 
-## Widget & Embed Behavior
+### Widget & Embed Behavior
 
 The Atlas [chat widget](/guides/embedding-widget) and `@useatlas/react` component handle rate limits automatically. When a 429 is received:
 

@@ -9,6 +9,36 @@ The Chat SDK bridge plugin (`@useatlas/chat`) is the unified interaction layer f
 
 Instead of maintaining separate plugins per platform, `@useatlas/chat` wraps Chat SDK adapters and provides built-in state management, error scrubbing, and conversation threading — all configured from a single `chatPlugin()` call.
 
+## Quick Navigation
+
+Jump to the platform or topic you need:
+
+| Platform | Setup Guide |
+|----------|-------------|
+| Slack | [Slack adapter options](#options) / [Dedicated guide](/plugins/interactions/slack) |
+| Microsoft Teams | [Teams adapter options](#options) / [Dedicated guide](/plugins/interactions/teams) |
+| Discord | [Discord adapter options](#options) |
+| Google Chat | [Google Chat adapter options](#options) / [Dedicated guide](/plugins/interactions/gchat) |
+| Telegram | [Telegram adapter options](#options) / [Dedicated guide](/plugins/interactions/telegram) |
+| GitHub | [GitHub adapter options](#options) / [Dedicated guide](/plugins/interactions/github) |
+| Linear | [Linear adapter options](#options) / [Dedicated guide](/plugins/interactions/linear) |
+| WhatsApp | [WhatsApp adapter options](#options) / [Dedicated guide](/plugins/interactions/whatsapp) |
+
+| Topic | Section |
+|-------|---------|
+| State persistence | [State Adapters](#state-adapters) |
+| Streaming responses | [Streaming](#streaming) |
+| Rich cards & formatting | [Rich Cards](#rich-cards) |
+| Interactive buttons | [Quick-Action Buttons](#quick-action-buttons) |
+| CSV file export | [File Upload (CSV Export)](#file-upload-csv-export) |
+| Status reactions | [Status Reactions](#status-reactions) |
+| Error scrubbing | [Error Scrubbing](#error-scrubbing) |
+| Ephemeral messages | [Ephemeral Messages](#ephemeral-messages) |
+| Proactive DMs | [Proactive Direct Messages](#proactive-direct-messages) |
+| Migration from deprecated plugins | [Migrating from @useatlas/slack](#migrating-from-useatlas-slack) / [Migrating from @useatlas/teams](#migrating-from-useatlas-teams) |
+| Mounted routes reference | [Mounted Routes](#mounted-routes) |
+| Environment variables | [Environment Variables](#environment-variables) |
+
 ## Installation
 
 ```bash

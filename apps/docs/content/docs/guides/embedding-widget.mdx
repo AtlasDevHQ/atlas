@@ -7,6 +7,10 @@ import { Callout } from "fumadocs-ui/components/callout";
 import { Tabs, Tab } from "fumadocs-ui/components/tabs";
 import { Steps, Step } from "fumadocs-ui/components/steps";
 
+<Callout type="info">
+This page covers content for **developers** (installation, configuration, theming, and the programmatic API) and **end users** (using the widget and understanding error states). Most of this page is developer-focused — end users can skip to [Using the Widget](#using-the-widget) and [Error Handling](#error-handling).
+</Callout>
+
 Atlas provides a drop-in chat widget that adds a floating chat bubble to any webpage. Users click the bubble to open a panel and ask questions about your data — no React or build tooling required.
 
 <Callout type="info">
@@ -949,7 +953,7 @@ If using the script tag loader, verify the `data-api-key` attribute is set on th
 
 ## Error Handling
 
-The widget handles errors automatically with contextual UI. This section documents what happens for each error type and how to listen for errors from your host page.
+The widget handles errors automatically with contextual UI. This section documents what happens for each error type and how to listen for errors from your host page. This is primarily for **developers** integrating the widget.
 
 ### Error States
 
@@ -1635,3 +1639,29 @@ For more, see [Troubleshooting](/guides/troubleshooting).
 - [Choosing an Integration](/guides/choosing-an-integration) — Compare widget, hooks, SDK, and REST API
 - [Rate Limiting & Retry](/guides/rate-limiting#widget--embed-behavior) — How the widget handles 429 responses
 - [Authentication](/deployment/authentication) — Auth mode setup for widget deployments
+
+---
+
+## Using the Widget
+
+This section is for **end users** interacting with the Atlas widget embedded in a website or application.
+
+### Asking questions
+
+Click the chat bubble (or the embedded chat panel) to start a conversation. Type your question in natural language — for example, "What was last month's revenue?" or "Show me the top 10 customers by order count." The agent translates your question into a SQL query, runs it against your database, and returns the results with a narrative explanation.
+
+### Understanding responses
+
+Responses include:
+- **Answer text** — A plain-language summary of the results
+- **SQL query** — The exact query that was run (shown in a code block)
+- **Data table** — A formatted table of results (limited to the first rows for readability)
+- **Charts** — Visual representations when the agent generates them
+
+### Rate limits
+
+If you send too many requests in a short period, you will see a **"Too many requests"** message with a countdown timer. Wait for the countdown to complete, then try again. This limit protects the database from excessive load.
+
+### Error messages
+
+If something goes wrong, the widget shows a contextual error message with a recovery action (e.g., "Try again" button, or "Your session has expired" with a re-authentication prompt). You do not need to do anything technical — the widget handles errors and guides you toward resolution.

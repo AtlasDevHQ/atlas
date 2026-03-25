@@ -87,7 +87,7 @@ export function createConnectionMock(overrides?: ConnectionMockOverrides) {
       getTargetHost: () => "localhost",
       getValidator: () => undefined,
       getParserDialect: () => undefined,
-      getForbiddenPatterns: () => [] as string[],
+      getForbiddenPatterns: () => [] as RegExp[],
       list: () => ["default"],
       has: () => true,
       isOrgPoolingEnabled: () => false,

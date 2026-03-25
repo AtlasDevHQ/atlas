@@ -193,8 +193,9 @@ let _recoveryFiber: Fiber.RuntimeFiber<void, never> | null = null;
 
 /**
  * Exponential backoff recovery schedule for the circuit breaker.
- * Starts at 30s, doubles each attempt, caps at 5 minutes, runs until
- * a probe succeeds (probe failure is caught and retried).
+ * Starts at 30s, doubles each attempt, caps at 5 minutes.
+ * Retries up to 5 times with increasing delays (30s, 60s, 120s, 240s, 300s).
+ * If all retries fail, circuit remains open and recovery re-triggers on next write.
  */
 const RECOVERY_SCHEDULE = Schedule.exponential(Duration.seconds(30)).pipe(
   Schedule.union(Schedule.spaced(Duration.minutes(5))),
@@ -205,10 +206,12 @@ const RECOVERY_SCHEDULE = Schedule.exponential(Duration.seconds(30)).pipe(
 
 /**
  * Start an exponential-backoff recovery probe. On success, re-opens the circuit.
- * On exhaustion of retries, logs and resets for the next batch of writes to re-trigger.
+ * On exhaustion of retries, the circuit remains open and the recovery fiber clears
+ * itself so the next internalExecute call re-triggers recovery.
  *
- * The first probe is delayed by 30 seconds (matching the exponential base),
- * then retries with exponential backoff: 30s → 60s → 120s → 240s → 300s.
+ * After an initial 30s delay, makes the first probe attempt. On failure, retries
+ * up to 5 times with exponential backoff (30s, 60s, 120s, 240s, 300s).
+ * Worst-case recovery takes ~13 minutes from circuit trip to retry exhaustion.
  */
 function _startRecovery(): void {
   if (_recoveryFiber) return;
@@ -236,15 +239,12 @@ function _startRecovery(): void {
       }),
     ),
     Effect.catchAll((err) => {
-      // All retries exhausted — reset state so next write attempt retriggers
-      _circuitOpen = false;
-      _consecutiveFailures = 0;
+      // All retries exhausted — keep circuit open, clear fiber so next write re-triggers recovery
       _recoveryFiber = null;
       log.error(
         { err: err instanceof Error ? err.message : String(err), droppedCount: _droppedCount },
-        "Internal DB circuit breaker recovery exhausted — will retry on next write batch",
+        "Internal DB circuit breaker recovery exhausted — circuit remains open, will re-attempt on next write",
       );
-      _droppedCount = 0;
       return Effect.void;
     }),
   );
@@ -261,6 +261,8 @@ function _startRecovery(): void {
 export function internalExecute(sql: string, params?: unknown[]): void {
   if (_circuitOpen) {
     _droppedCount++;
+    // Re-trigger recovery if previous attempt exhausted retries
+    if (!_recoveryFiber) _startRecovery();
     return;
   }
   const pool = getInternalDB();

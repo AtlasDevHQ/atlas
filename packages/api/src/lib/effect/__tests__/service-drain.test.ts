@@ -87,7 +87,7 @@ describe("ConnectionRegistry drain cooldown (Effect.sleep)", () => {
     expect(() => registry.drain("nonexistent")).toThrow("not registered");
   });
 
-  it("auto-drain via recordError respects cooldown", () => {
+  it("auto-drain via recordError respects cooldown", async () => {
     registry.register("test", { url: "postgresql://test@localhost/db" });
 
     // Trigger auto-drain by exceeding failure threshold (default 5)
@@ -96,12 +96,14 @@ describe("ConnectionRegistry drain cooldown (Effect.sleep)", () => {
     }
 
     // The first auto-drain should have set the cooldown.
-    // Trigger more errors — should not drain again (cooldown active)
+    // Verify cooldown is active — second drain should be rejected
+    const result = await registry.drain("test");
+    expect(result.drained).toBe(false);
+    expect(result.message).toContain("cooldown");
+
+    // Trigger more errors — should not drain again (cooldown active, no crash)
     for (let i = 0; i < 5; i++) {
       registry.recordError("test");
     }
-
-    // If we got here without errors, cooldown is working
-    expect(true).toBe(true);
   });
 });

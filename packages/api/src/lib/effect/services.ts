@@ -7,12 +7,11 @@
  * ConnectionRegistry service (P4):
  * - Pool lifecycle via Effect.acquireRelease
  * - Health checks via Effect.repeat + Schedule.spaced (no setInterval)
- * - Drain cooldown via Effect.Ref + Effect.sleep (no Date.now arithmetic)
+ * - Drain cooldown managed by ConnectionRegistry class via Set + Effect.sleep
  * - Graceful shutdown via Effect.Scope (no manual ordering)
- * - Circuit breaker via Effect.retry + Schedule.exponential
  */
 
-import { Context, Effect, Layer, Duration, Schedule, Fiber, Ref } from "effect";
+import { Context, Effect, Layer, Duration, Schedule, Fiber } from "effect";
 import type {
   ConnectionRegistry as ConnectionRegistryClass,
   DBConnection,
@@ -99,9 +98,6 @@ export class ConnectionRegistry extends Context.Tag("ConnectionRegistry")<
   ConnectionRegistryShape
 >() {}
 
-// ── Drain cooldown constants ─────────────────────────────────────────
-
-const DRAIN_COOLDOWN_MS = 30_000;
 const HEALTH_CHECK_INTERVAL_MS = 60_000;
 
 // ── Live Layer ───────────────────────────────────────────────────────
@@ -132,11 +128,7 @@ export function makeConnectionRegistryLive(
             return new mod.ConnectionRegistry() as ConnectionRegistryClass;
           });
 
-      // Drain cooldown tracking: set of connection IDs currently in cooldown
-      const drainCooldowns = yield* Ref.make(new Set<string>());
-
       // --- Health check fiber ---
-      // Replaces setInterval-based health checks with Effect.repeat
       const healthCheckAll = Effect.gen(function* () {
         const ids = impl.list();
         yield* Effect.forEach(
@@ -158,8 +150,12 @@ export function makeConnectionRegistryLive(
 
       const healthFiber = yield* Effect.fork(
         healthCheckAll.pipe(
+          // Catch expected failures but let defects (programming errors) crash the fiber.
+          // The inner forEach already catches individual health check failures, so this
+          // outer handler is a safety net for unexpected errors in the cycle itself.
           Effect.catchAllCause((cause) => {
-            log.warn({ err: String(cause) }, "Health check cycle crashed");
+            const msg = cause.toString();
+            log.warn({ err: msg }, "Health check cycle failed");
             return Effect.void;
           }),
           Effect.repeat(Schedule.spaced(Duration.millis(HEALTH_CHECK_INTERVAL_MS))),
@@ -175,44 +171,6 @@ export function makeConnectionRegistryLive(
           log.info("ConnectionRegistry shut down via Effect scope");
         }),
       );
-
-      // --- Drain with Effect-managed cooldown ---
-      const drainWithCooldown = async (
-        id: string,
-      ): Promise<{ drained: boolean; message: string }> => {
-        return Effect.runPromise(
-          Effect.gen(function* () {
-            const cooldowns = yield* Ref.get(drainCooldowns);
-            if (cooldowns.has(id)) {
-              return { drained: false, message: "Drain cooldown active — wait before retrying" };
-            }
-
-            // Delegate actual drain to the impl (which handles pool recreation)
-            const result = yield* Effect.promise(() => impl.drain(id));
-            if (!result.drained) return result;
-
-            // Set cooldown: add to set, fork a sleep to remove after cooldown
-            yield* Ref.update(drainCooldowns, (s) => {
-              const next = new Set(s);
-              next.add(id);
-              return next;
-            });
-            yield* Effect.fork(
-              Effect.sleep(Duration.millis(DRAIN_COOLDOWN_MS)).pipe(
-                Effect.andThen(
-                  Ref.update(drainCooldowns, (s) => {
-                    const next = new Set(s);
-                    next.delete(id);
-                    return next;
-                  }),
-                ),
-              ),
-            );
-
-            return result;
-          }),
-        );
-      };
 
       // --- Build service interface ---
       const service: ConnectionRegistryShape = {
@@ -240,8 +198,8 @@ export function makeConnectionRegistryLive(
         // Health — managed by the fiber, but expose direct access too
         healthCheck: (id) => impl.healthCheck(id),
 
-        // Pool management — drain uses Effect-managed cooldown
-        drain: drainWithCooldown,
+        // Pool management — drain cooldown is managed by the impl via Set + Effect.sleep
+        drain: (id) => impl.drain(id),
         drainOrg: (orgId) => impl.drainOrg(orgId),
         warmup: (count) => impl.warmup(count),
 
@@ -303,7 +261,11 @@ export function createTestLayer(
   partial: Partial<ConnectionRegistryShape>,
 ): Layer.Layer<ConnectionRegistry> {
   const handler: ProxyHandler<ConnectionRegistryShape> = {
-    get(_target, prop: string) {
+    get(_target, prop: string | symbol) {
+      // Ignore symbols (Symbol.toPrimitive, Symbol.toStringTag, etc.) and
+      // well-known properties that runtimes/libraries probe for (then, toJSON)
+      if (typeof prop === "symbol") return undefined;
+      if (prop === "then" || prop === "toJSON") return undefined;
       if (prop in partial) {
         return (partial as Record<string, unknown>)[prop];
       }

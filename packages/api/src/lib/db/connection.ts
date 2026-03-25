@@ -432,6 +432,8 @@ export class ConnectionRegistry {
   private healthFiber: Fiber.RuntimeFiber<void, never> | null = null;
   /** Connections currently in drain cooldown — managed via Effect.sleep. */
   private drainCooldownSet = new Set<string>();
+  /** Tracks cooldown expiry timestamps for remaining-time messages. */
+  private drainCooldownExpiry = new Map<string, number>();
 
   // --- Org-scoped pool isolation ---
   /** Org pool entries keyed by "orgId:connectionId". */
@@ -1011,8 +1013,12 @@ export class ConnectionRegistry {
 
     this.healthFiber = Effect.runFork(
       healthCheckAll.pipe(
+        // Catch expected failures but let defects (programming errors) crash the fiber.
+        // The inner forEach already catches individual health check failures, so this
+        // outer handler is a safety net for unexpected errors in the cycle itself.
         Effect.catchAllCause((cause) => {
-          log.warn({ err: String(cause) }, "Health check cycle crashed");
+          const msg = cause.toString();
+          log.warn({ err: msg }, "Health check cycle failed");
           return Effect.void;
         }),
         Effect.repeat(Schedule.spaced(Duration.millis(intervalMs))),
@@ -1081,7 +1087,9 @@ export class ConnectionRegistry {
     }
 
     if (this.drainCooldownSet.has(id)) {
-      return { drained: false, message: "Drain cooldown active — wait before retrying" };
+      const expiresAt = this.drainCooldownExpiry.get(id) ?? 0;
+      const remainingSec = Math.max(1, Math.ceil((expiresAt - Date.now()) / 1000));
+      return { drained: false, message: `Drain cooldown active — wait ${remainingSec}s` };
     }
 
     this._drainAndRecreate(id, entry);
@@ -1121,16 +1129,20 @@ export class ConnectionRegistry {
   }
 
   /**
-   * Start a drain cooldown for a connection via Effect.sleep.
-   * Replaces Date.now() arithmetic with Effect-managed timer.
+   * Manages drain cooldown by forking an Effect.sleep fiber that removes
+   * the connection ID from drainCooldownSet after DRAIN_COOLDOWN_MS.
+   * The fiber is fire-and-forget — if the process exits before the timer
+   * fires, the cooldown is implicitly cleared via shutdown()/reset().
    */
   private _startDrainCooldown(id: string): void {
     this.drainCooldownSet.add(id);
+    this.drainCooldownExpiry.set(id, Date.now() + DRAIN_COOLDOWN_MS);
     Effect.runFork(
       Effect.sleep(Duration.millis(DRAIN_COOLDOWN_MS)).pipe(
         Effect.andThen(
           Effect.sync(() => {
             this.drainCooldownSet.delete(id);
+            this.drainCooldownExpiry.delete(id);
           }),
         ),
       ),
@@ -1220,6 +1232,7 @@ export class ConnectionRegistry {
   async shutdown(): Promise<void> {
     this.stopHealthChecks();
     this.drainCooldownSet.clear();
+    this.drainCooldownExpiry.clear();
     const closing: Promise<void>[] = [];
     for (const [id, entry] of this.entries.entries()) {
       closing.push(
@@ -1246,6 +1259,7 @@ export class ConnectionRegistry {
   _reset(): void {
     this.stopHealthChecks();
     this.drainCooldownSet.clear();
+    this.drainCooldownExpiry.clear();
     for (const [id, entry] of this.entries.entries()) {
       entry.conn.close().catch((err) => {
         log.warn({ err: err instanceof Error ? err.message : String(err), connectionId: id }, "Failed to close connection during registry reset");

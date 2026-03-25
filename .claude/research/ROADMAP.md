@@ -513,6 +513,9 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [ ] Extract route handler error wrapper for consistent 500 responses (#892)
 - [ ] Extract OpenAPI schema factories for admin routes (#893)
 - [ ] Deduplicate auth error classification between admin-auth and middleware (#894)
+- [ ] Extract plugin SDK utilities — health check, lazy loading, route helpers (#895)
+- [ ] Extract conversation fetch client from use-conversations hook (#896)
+- [ ] Extract shared ResultCardBase for SQL and Python result cards (#897)
 
 ---
 

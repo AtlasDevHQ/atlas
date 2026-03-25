@@ -535,7 +535,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 
 ### Service Architecture (P5–P8)
 - [x] P5: Plugin lifecycle → Effect Layer composition (#908, PR #926)
-- [x] P6: Server startup → Effect Layer DAG (#909, PR #TBD)
+- [x] P6: Server startup → Effect Layer DAG (#909, PR #928)
 - [x] P7: Route handlers → Effect boundaries with typed error mapping (#910, PR #925)
 - [ ] P8: Auth and request context → Effect Context replacing AsyncLocalStorage (#911)
 
@@ -544,7 +544,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [ ] P11: Database client → @effect/sql-pg and @effect/sql-mysql2 (#914)
 
 ### Follow-ups
-- [ ] Migrate platform-residency and platform-domains inner error handling to domainErrors (#927)
+- [x] Migrate platform-residency and platform-domains inner error handling to domainErrors (#927)
 
 ### Test Infrastructure
 - [ ] P9: Test infrastructure → Effect Layer-based test setup (#912)

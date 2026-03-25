@@ -547,7 +547,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] Migrate platform-residency and platform-domains inner error handling to domainErrors (#927)
 
 ### Test Infrastructure
-- [ ] P9: Test infrastructure → Effect Layer-based test setup (#912)
+- [x] P9: Test infrastructure → Effect Layer-based test setup (#912)
 
 ---
 

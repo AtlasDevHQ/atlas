@@ -217,6 +217,18 @@ describe("createParamSchema", () => {
     const schema = createParamSchema("userId");
     expect(() => schema.parse({ userId: "a".repeat(MAX_ID_LENGTH + 1) })).toThrow();
   });
+
+  it("supports merge for composite params", () => {
+    const merged = createParamSchema("collectionId").merge(createParamSchema("itemId", "def456"));
+    const result = merged.parse({ collectionId: "col_1", itemId: "item_2" });
+    expect(result.collectionId).toBe("col_1");
+    expect(result.itemId).toBe("item_2");
+  });
+
+  it("rejects merged schema when a field is missing", () => {
+    const merged = createParamSchema("collectionId").merge(createParamSchema("itemId"));
+    expect(() => merged.parse({ collectionId: "col_1" })).toThrow();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -259,6 +271,16 @@ describe("createListResponseSchema", () => {
   it("rejects when total is missing", () => {
     const schema = createListResponseSchema("items", ItemSchema);
     expect(() => schema.parse({ items: [] })).toThrow();
+  });
+
+  it("rejects invalid items within the array", () => {
+    const schema = createListResponseSchema("items", ItemSchema);
+    expect(() => schema.parse({ items: [{ id: "1" }], total: 1 })).toThrow();
+  });
+
+  it("rejects wrong field name", () => {
+    const schema = createListResponseSchema("patterns", ItemSchema);
+    expect(() => schema.parse({ items: [], total: 0 })).toThrow();
   });
 });
 

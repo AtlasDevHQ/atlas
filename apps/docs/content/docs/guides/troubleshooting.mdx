@@ -5,7 +5,73 @@ description: Diagnose and fix common Atlas issues — startup errors, connection
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-## atlas doctor
+This page covers troubleshooting for both **users** (common issues when using Atlas) and **operators** (diagnosing deployment and configuration problems). Jump to the section that applies to you:
+
+- [User Troubleshooting](#user-troubleshooting) — SQL validation errors, auth issues, common questions
+- [Operator Debugging](#operator-debugging) — `atlas doctor`, startup errors, connection issues, sandbox problems, debug logs
+
+---
+
+## User Troubleshooting
+
+These issues can occur on any Atlas deployment, including [app.useatlas.dev](https://app.useatlas.dev).
+
+### SQL Validation Errors
+
+#### "Query rejected: DML/DDL detected"
+
+The SQL contains mutation keywords (INSERT, UPDATE, DELETE, DROP, etc.). Atlas only allows SELECT queries.
+
+#### "Table not in whitelist"
+
+The query references a table that is not in the semantic layer. Ask your administrator to add the table, or rephrase your question to use available tables.
+
+#### "Failed to parse SQL"
+
+The SQL could not be parsed. This typically means:
+
+- Database-specific syntax that the parser does not support
+- A syntax error in the generated SQL
+- Complex CTEs or window functions that the parser mishandles
+
+If this persists, try rephrasing your question or ask about simpler queries first.
+
+### Auth Issues (Users)
+
+#### 401 Responses
+
+| Auth Mode | Common Causes |
+|-----------|---------------|
+| Simple Key | Wrong key, missing `Authorization: Bearer` header |
+| Managed | Session expired (7-day lifetime), cookie not sent (cross-origin without `credentials: 'include'`) |
+| BYOT | JWT expired, wrong issuer, JWKS endpoint unreachable |
+
+### Row-Level Security
+
+#### Queries Return Empty Results
+
+RLS is working but the claim value does not match any rows. This usually means the claim value in your JWT or session does not match the values in the filtered column. Contact your administrator to verify your tenant assignment.
+
+### Scheduled Tasks (Users)
+
+#### Delivery Failures
+
+- **Email**: Verify the recipient address is correct and check spam folders
+- **Slack**: Ensure the Atlas bot has been added to the target channel
+
+### Runtime Error Codes
+
+For chat and API runtime errors (rate limiting, provider failures, authentication errors, etc.), see the [Error Codes Reference](/reference/error-codes). That page covers every `ChatErrorCode` and `ClientErrorCode` with HTTP status, retryable classification, and fix guidance.
+
+---
+
+## Operator Debugging
+
+<Callout type="warn" title="Self-Hosted Operators">
+  The sections below are for operators managing their own Atlas deployment. On [app.useatlas.dev](https://app.useatlas.dev), infrastructure diagnostics are handled by the Atlas platform team. If you encounter persistent issues on the hosted platform, contact support.
+</Callout>
+
+### atlas doctor
 
 Run `atlas doctor` to check your Atlas configuration and diagnose issues:
 
@@ -28,11 +94,11 @@ Each check reports **pass**, **warn**, or **fail** with actionable guidance.
 
 ---
 
-## Startup Errors
+### Startup Errors
 
 Atlas validates its environment on first request and reports structured diagnostic codes.
 
-### `MISSING_DATASOURCE_URL`
+#### `MISSING_DATASOURCE_URL`
 
 No analytics datasource configured.
 
@@ -41,7 +107,7 @@ No analytics datasource configured.
 ATLAS_DATASOURCE_URL=postgresql://user:pass@host:5432/db
 ```
 
-### `DB_UNREACHABLE`
+#### `DB_UNREACHABLE`
 
 Cannot connect to the analytics datasource. Check:
 
@@ -50,7 +116,7 @@ Cannot connect to the analytics datasource. Check:
 - SSL configuration (try `?sslmode=require` for PostgreSQL, `?ssl=true` for MySQL)
 - Firewall rules and security groups
 
-### `MISSING_API_KEY`
+#### `MISSING_API_KEY`
 
 LLM provider API key not set. Atlas needs one to run the agent.
 
@@ -60,7 +126,7 @@ ATLAS_PROVIDER=anthropic
 ANTHROPIC_API_KEY=sk-ant-...
 ```
 
-### `MISSING_SEMANTIC_LAYER`
+#### `MISSING_SEMANTIC_LAYER`
 
 No `semantic/entities/*.yml` files found. Generate them:
 
@@ -69,7 +135,7 @@ bun run atlas -- init                    # Profile your database
 bun run atlas -- init --demo             # Use demo data instead
 ```
 
-### `INVALID_SCHEMA`
+#### `INVALID_SCHEMA`
 
 The `ATLAS_SCHEMA` value is not a valid SQL identifier or doesn't exist in the database.
 
@@ -78,7 +144,7 @@ The `ATLAS_SCHEMA` value is not a valid SQL identifier or doesn't exist in the d
 psql "$ATLAS_DATASOURCE_URL" -c "SELECT schema_name FROM information_schema.schemata"
 ```
 
-### `WEAK_AUTH_SECRET`
+#### `WEAK_AUTH_SECRET`
 
 `BETTER_AUTH_SECRET` is shorter than 32 characters. Generate a strong secret:
 
@@ -86,27 +152,27 @@ psql "$ATLAS_DATASOURCE_URL" -c "SELECT schema_name FROM information_schema.sche
 openssl rand -base64 48
 ```
 
-### `MISSING_AUTH_ISSUER`
+#### `MISSING_AUTH_ISSUER`
 
 BYOT mode requires `ATLAS_AUTH_ISSUER` when `ATLAS_AUTH_JWKS_URL` is set.
 
-### `MISSING_AUTH_PREREQ`
+#### `MISSING_AUTH_PREREQ`
 
 Auth mode is set explicitly but required variables are missing. For example, `ATLAS_AUTH_MODE=api-key` without `ATLAS_API_KEY`.
 
-### `ACTIONS_REQUIRE_AUTH`
+#### `ACTIONS_REQUIRE_AUTH`
 
 The action framework requires authentication. Set up any auth mode other than `none`.
 
-### `INVALID_CONFIG`
+#### `INVALID_CONFIG`
 
 `atlas.config.ts` failed to load. Check for syntax errors or missing dependencies.
 
 ---
 
-## Connection Issues
+### Connection Issues
 
-### PostgreSQL SSL
+#### PostgreSQL SSL
 
 Most managed Postgres providers require SSL:
 
@@ -118,7 +184,7 @@ ATLAS_DATASOURCE_URL=postgresql://user:pass@host:5432/db?sslmode=require
 ATLAS_DATASOURCE_URL=postgresql://user:pass@host:5432/db?sslmode=no-verify
 ```
 
-### MySQL Timeouts
+#### MySQL Timeouts
 
 If MySQL connections drop, check:
 
@@ -126,7 +192,7 @@ If MySQL connections drop, check:
 - Connection pool idle timeout (configure via `atlas.config.ts`)
 - Network latency between Atlas and MySQL
 
-### Connection Refused
+#### Connection Refused
 
 - Verify the host and port are correct
 - Check that the database server is running
@@ -135,34 +201,26 @@ If MySQL connections drop, check:
 
 ---
 
-## SQL Validation Errors
+### SQL Validation Errors (Operator Details)
 
-### "Query rejected: DML/DDL detected"
+For user-facing descriptions, see [User Troubleshooting](#sql-validation-errors) above. The operator-specific details below cover remediation steps that require config access.
 
-The SQL contains mutation keywords (INSERT, UPDATE, DELETE, DROP, etc.). Atlas only allows SELECT queries.
+#### "Table not in whitelist" — Operator Fix
 
-### "Table not in whitelist"
-
-The query references a table that doesn't have an entity YAML file in `semantic/entities/`. Either:
+The query references a table that does not have an entity YAML file in `semantic/entities/`. Either:
 
 - Add the table: `bun run atlas -- init --tables <table_name>`
 - Or set `ATLAS_TABLE_WHITELIST=false` to disable (not recommended for production)
 
-### "Failed to parse SQL"
-
-The SQL couldn't be parsed by `node-sql-parser`. This typically means:
-
-- Database-specific syntax that the parser doesn't support
-- A syntax error in the generated SQL
-- Complex CTEs or window functions that the parser mishandles
+#### "Failed to parse SQL" — Operator Fix
 
 Check `ATLAS_LOG_LEVEL=debug` for the full SQL that was rejected.
 
 ---
 
-## Sandbox Issues
+### Sandbox Issues
 
-### "nsjail not found"
+#### "nsjail not found"
 
 nsjail is not on `PATH` and `ATLAS_NSJAIL_PATH` is not set.
 
@@ -170,7 +228,7 @@ nsjail is not on `PATH` and `ATLAS_NSJAIL_PATH` is not set.
 - **Local dev:** nsjail is not needed -- `bun run db:up` starts a sidecar container that provides production-like isolation
 - **Explicit mode:** If `ATLAS_SANDBOX=nsjail` is set, nsjail must be available (hard fail)
 
-### "Sidecar unreachable"
+#### "Sidecar unreachable"
 
 When `ATLAS_SANDBOX_URL` is set, Atlas expects the sidecar service to be running at that URL.
 
@@ -181,7 +239,7 @@ curl http://localhost:8080/health
 
 Verify the sidecar container is running (`docker compose ps sandbox`) and the URL is correct. Run `bun run db:up` to start both Postgres and the sidecar.
 
-### "Permission denied" in nsjail
+#### "Permission denied" in nsjail
 
 nsjail requires specific Linux kernel capabilities. Check:
 
@@ -191,17 +249,20 @@ nsjail requires specific Linux kernel capabilities. Check:
 
 ---
 
-## Auth Issues
+### Auth Issues (Operator)
 
-### 401 Responses
+#### 401 Responses
 
-| Auth Mode | Common Causes |
-|-----------|---------------|
-| Simple Key | Wrong key, missing `Authorization: Bearer` header |
-| Managed | Session expired (7-day lifetime), cookie not sent (cross-origin without `credentials: 'include'`) |
-| BYOT | JWT expired, wrong issuer, JWKS endpoint unreachable |
+See [User Troubleshooting > Auth Issues](#auth-issues-users) for common 401 causes by auth mode.
 
-### CORS with Managed Auth
+**Operator-specific remediation:**
+
+- Verify auth environment variables are set correctly (`ATLAS_API_KEY`, `BETTER_AUTH_SECRET`, or `ATLAS_AUTH_JWKS_URL` depending on mode). Run `atlas doctor` to validate
+- Enable debug logging with `ATLAS_LOG_LEVEL=debug` to see auth decisions, mode detection, and role extraction for each request
+- For BYOT: confirm the JWKS endpoint is reachable from the Atlas server (`curl $ATLAS_AUTH_JWKS_URL`) and that `ATLAS_AUTH_ISSUER` matches the `iss` claim in your JWTs
+- Check `ATLAS_AUTH_MODE` is not set to an unintended value — when set explicitly, it overrides auto-detection
+
+#### CORS with Managed Auth
 
 Cross-origin managed auth requires both CORS and CSRF configuration:
 
@@ -213,7 +274,7 @@ BETTER_AUTH_URL=https://api.example.com
 
 See [Authentication - Cross-origin deployment](/deployment/authentication#cross-origin-deployment).
 
-### JWKS Fetch Failures (BYOT)
+#### JWKS Fetch Failures (BYOT)
 
 Atlas caches JWKS keys but needs to reach the endpoint on startup. If your JWKS URL is unreachable:
 
@@ -223,9 +284,9 @@ Atlas caches JWKS keys but needs to reach the endpoint on startup. If your JWKS 
 
 ---
 
-## Scheduled Tasks
+### Scheduled Tasks (Operator)
 
-### Tasks Never Trigger
+#### Tasks Never Trigger
 
 - Verify `ATLAS_SCHEDULER_ENABLED=true` is set
 - Check the scheduler backend matches your deployment: `bun` (in-process), `webhook` (external cron), or `vercel` (Vercel Cron)
@@ -233,34 +294,34 @@ Atlas caches JWKS keys but needs to reach the endpoint on startup. If your JWKS 
 - For `webhook` backend: ensure your external cron is hitting `POST /api/v1/scheduled-tasks/:id/run` with the correct `ATLAS_SCHEDULER_SECRET`
 - For `vercel` backend: ensure `CRON_SECRET` is set and the `/tick` endpoint is configured in `vercel.json`
 
-### Delivery Failures
+#### Delivery Failures (Operator)
 
 - **Email**: Verify `RESEND_API_KEY` is set and valid. Check `ATLAS_EMAIL_FROM` format (default: `Atlas <noreply@useatlas.dev>`)
 - **Slack**: Ensure `SLACK_BOT_TOKEN` (or OAuth) is configured and the bot has `chat:write` scope for the target channel
 - **Webhook**: Check the endpoint URL is reachable. Webhook delivery includes a timeout -- check debug logs for the response status
 
-### "Lock contention" or Duplicate Runs
+#### "Lock contention" or Duplicate Runs
 
 The scheduler uses an in-process lock to prevent overlapping ticks. If you see duplicate executions, check that only one instance is running the scheduler. For multi-instance deployments, use the `webhook` backend with an external scheduler service.
 
 ---
 
-## Action Framework
+### Action Framework (Operator)
 
-### Actions Not Appearing
+#### Actions Not Appearing
 
 - Verify `ATLAS_ACTIONS_ENABLED=true`
 - Actions require authentication (any mode except `none`)
 - Without `DATABASE_URL`, actions use in-memory storage (action log is lost on restart). Set `DATABASE_URL` for persistent tracking
 - Check that the action plugin is loaded (built-in actions like `email:send` and `jira:create` register automatically)
 
-### Approval Stuck in "Pending"
+#### Approval Stuck in "Pending"
 
 - The user approving must have the required role: `analyst` for `manual` mode, `admin` for `admin-only` mode
 - In `admin-only` mode, the requesting user cannot approve or deny their own action (separation of duties)
 - Check that the action hasn't expired or been superseded
 
-### Execution Failed
+#### Execution Failed
 
 - Check credentials: `RESEND_API_KEY` for email, `JIRA_BASE_URL` + `JIRA_EMAIL` + `JIRA_API_TOKEN` for JIRA
 - For email: verify `ATLAS_EMAIL_ALLOWED_DOMAINS` if set (restricts recipient domains)
@@ -268,14 +329,14 @@ The scheduler uses an in-process lock to prevent overlapping ticks. If you see d
 
 ---
 
-## Row-Level Security
+### Row-Level Security (Operator)
 
-### All Queries Blocked
+#### All Queries Blocked
 
 - If `ATLAS_AUTH_MODE=none` with RLS enabled, all queries are blocked (no user context to resolve claims). This is by design -- see [Row-Level Security](/security/row-level-security#auth-mode-compatibility)
 - Verify the auth mode provides claims (BYOT or managed auth)
 
-### "RLS policy requires claim X but it is missing"
+#### "RLS policy requires claim X but it is missing"
 
 The JWT doesn't contain the expected claim path. Check:
 
@@ -283,13 +344,13 @@ The JWT doesn't contain the expected claim path. Check:
 - For nested paths like `app_metadata.tenant`, verify the JWT contains the full nested structure
 - Use `ATLAS_LOG_LEVEL=debug` to see the resolved claims
 
-### Queries Return Empty Results
+#### Queries Return Empty Results
 
-RLS is working but the claim value doesn't match any rows. This usually means the claim value in the JWT doesn't match the values in the filtered column. Check debug logs for the injected WHERE conditions.
+RLS is working but the claim value does not match any rows. This usually means the claim value in the JWT does not match the values in the filtered column. Check debug logs for the injected WHERE conditions.
 
 ---
 
-## Debug Logging
+### Debug Logging
 
 Enable debug logs to see detailed agent actions, SQL validation steps, and request traces:
 
@@ -305,12 +366,6 @@ Key things to look for in debug logs:
 - **SQL validation** -- Which layer rejected a query and why
 - **Auth decisions** -- Mode detection, role extraction, rate limit checks
 - **Sandbox execution** -- Command sent, stdout/stderr, exit code
-
----
-
-## Runtime Error Codes
-
-For chat and API runtime errors (rate limiting, provider failures, authentication errors, etc.), see the [Error Codes Reference](/reference/error-codes). That page covers every `ChatErrorCode` and `ClientErrorCode` with HTTP status, retryable classification, and fix guidance.
 
 ---
 

@@ -10,6 +10,10 @@ import { Accordions, Accordion } from "fumadocs-ui/components/accordion";
 
 Connect Atlas to your database. Atlas has built-in support for **PostgreSQL** and **MySQL**. Additional datasources — **BigQuery**, **ClickHouse**, **Snowflake**, **DuckDB** (CSV/Parquet), and **Salesforce** — are available as plugins.
 
+<Callout type="info" title="Using app.useatlas.dev?">
+  On the hosted SaaS platform, go to **Admin &gt; Connections** to add a datasource through the UI. You do not need to set environment variables or edit config files — the platform manages connection configuration, SSL, and pooling for you. The database-specific setup below (creating read-only users, SSL settings) still applies when preparing your database for Atlas access.
+</Callout>
+
 Pick your database below and follow the steps. Each section is self-contained.
 
 ---
@@ -40,6 +44,8 @@ ALTER DEFAULT PRIVILEGES IN SCHEMA public
 
 <Step>
 ### Set the PostgreSQL connection string
+
+On **app.useatlas.dev**, paste the connection string into **Admin &gt; Connections &gt; Add Connection**. For **self-hosted** deployments, set the environment variable:
 
 ```bash
 ATLAS_DATASOURCE_URL=postgresql://atlas_reader:your-strong-password@your-host:5432/your_db
@@ -139,6 +145,8 @@ Atlas also enforces `SET SESSION TRANSACTION READ ONLY` on every connection as a
 
 <Step>
 ### Set the MySQL connection string
+
+On **app.useatlas.dev**, paste the connection string into **Admin &gt; Connections &gt; Add Connection**. For **self-hosted** deployments, set the environment variable:
 
 ```bash
 ATLAS_DATASOURCE_URL=mysql://atlas_reader:your-strong-password@your-host:3306/your_db
@@ -714,7 +722,11 @@ Confirm the health response includes a source with `dbType` set to `"salesforce"
 
 ## Generate the semantic layer
 
-After configuring any datasource, generate the YAML files the agent reads before writing queries:
+<Callout type="info" title="Using app.useatlas.dev?">
+  The hosted platform generates the semantic layer automatically when you add a connection. You can review and edit entity files in **Admin &gt; Semantic Layer**.
+</Callout>
+
+After configuring any datasource (self-hosted), generate the YAML files the agent reads before writing queries:
 
 ```bash
 bun run atlas -- init
@@ -778,7 +790,11 @@ The agent's `executeSQL` tool accepts an optional `connectionId` parameter to ta
 
 ## Safety configuration
 
-Atlas enforces several safety limits. Tune them via environment variables:
+<Callout type="info" title="Using app.useatlas.dev?">
+  Safety limits are pre-configured on the hosted platform. You can adjust row limits and query timeouts in **Admin &gt; Settings**.
+</Callout>
+
+Atlas enforces several safety limits. Self-hosted operators can tune them via environment variables:
 
 | Variable | Default | Description |
 |----------|---------|-------------|

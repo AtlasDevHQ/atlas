@@ -1,12 +1,12 @@
 "use client";
 
-import { Component, type ReactNode, type ErrorInfo, useContext, useState, useRef, useEffect } from "react";
+import { useContext, useState, useRef, useEffect } from "react";
 import { getToolArgs, getToolResult, isToolComplete } from "../../lib/helpers";
 import { DarkModeContext } from "../../hooks/use-dark-mode";
 import dynamic from "next/dynamic";
 import { LoadingCard } from "./loading-card";
 import { DataTable } from "./data-table";
-import { ResultCardBase } from "./result-card-base";
+import { ResultCardBase, ResultCardErrorBoundary } from "./result-card-base";
 import type { ChartDetectionResult, ChartType } from "../chart/chart-detection";
 
 const ResultChart = dynamic(
@@ -35,47 +35,14 @@ export type PythonProgressData =
 const ALLOWED_IMAGE_MIME = new Set(["image/png", "image/jpeg"]);
 
 /* ------------------------------------------------------------------ */
-/*  Error boundary                                                     */
-/* ------------------------------------------------------------------ */
-
-class PythonErrorBoundary extends Component<
-  { children: ReactNode },
-  { hasError: boolean; error?: Error }
-> {
-  constructor(props: { children: ReactNode }) {
-    super(props);
-    this.state = { hasError: false };
-  }
-
-  static getDerivedStateFromError(error: Error) {
-    return { hasError: true, error };
-  }
-
-  componentDidCatch(error: Error, info: ErrorInfo) {
-    console.error("PythonResultCard rendering failed:", error, info.componentStack);
-  }
-
-  render() {
-    if (this.state.hasError) {
-      return (
-        <div className="my-2 rounded-lg border border-red-300 bg-red-50 px-3 py-2 text-xs text-red-700 dark:border-red-900/50 dark:bg-red-950/20 dark:text-red-400">
-          Python result could not be rendered: {this.state.error?.message ?? "unknown error"}
-        </div>
-      );
-    }
-    return this.props.children;
-  }
-}
-
-/* ------------------------------------------------------------------ */
 /*  Main component                                                     */
 /* ------------------------------------------------------------------ */
 
 export function PythonResultCard({ part, progressEvents }: { part: unknown; progressEvents?: PythonProgressData[] }) {
   return (
-    <PythonErrorBoundary>
+    <ResultCardErrorBoundary label="Python">
       <PythonResultCardInner part={part} progressEvents={progressEvents} />
-    </PythonErrorBoundary>
+    </ResultCardErrorBoundary>
   );
 }
 

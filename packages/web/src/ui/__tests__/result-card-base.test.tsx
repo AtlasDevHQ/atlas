@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import type React from "react";
 import { render, fireEvent } from "@testing-library/react";
-import { ResultCardBase } from "../components/chat/result-card-base";
+import { ResultCardBase, ResultCardErrorBoundary } from "../components/chat/result-card-base";
 
 describe("ResultCardBase", () => {
   test("renders badge text", () => {
@@ -33,6 +34,25 @@ describe("ResultCardBase", () => {
       </ResultCardBase>,
     );
     expect(container.textContent).toContain("5 rows");
+  });
+
+  test("headerExtra remains visible after collapse", () => {
+    const { container } = render(
+      <ResultCardBase
+        badge="SQL"
+        badgeClassName="bg-blue-100"
+        title="Query"
+        headerExtra={<span data-testid="row-count">5 rows</span>}
+      >
+        <div>content</div>
+      </ResultCardBase>,
+    );
+
+    const toggleBtn = container.querySelector("button")!;
+    fireEvent.click(toggleBtn);
+    // headerExtra is in the header, not the body — should persist
+    expect(container.textContent).toContain("5 rows");
+    expect(container.querySelector("[data-testid='row-count']")).not.toBeNull();
   });
 
   test("renders children when expanded (default)", () => {
@@ -137,5 +157,92 @@ describe("ResultCardBase", () => {
       </ResultCardBase>,
     );
     expect(container.textContent).toContain("\u25B8");
+  });
+
+  test("toggle button has aria-expanded=true when open", () => {
+    const { container } = render(
+      <ResultCardBase badge="SQL" badgeClassName="bg-blue-100" title="Query">
+        <div>content</div>
+      </ResultCardBase>,
+    );
+    const toggleBtn = container.querySelector("button")!;
+    expect(toggleBtn.getAttribute("aria-expanded")).toBe("true");
+  });
+
+  test("toggle button has aria-expanded=false when collapsed", () => {
+    const { container } = render(
+      <ResultCardBase badge="SQL" badgeClassName="bg-blue-100" title="Query">
+        <div>content</div>
+      </ResultCardBase>,
+    );
+    const toggleBtn = container.querySelector("button")!;
+    fireEvent.click(toggleBtn);
+    expect(toggleBtn.getAttribute("aria-expanded")).toBe("false");
+  });
+});
+
+describe("ResultCardErrorBoundary", () => {
+  // Suppress console.error from the error boundary during tests
+  const originalError = console.error;
+  const suppress = () => { console.error = () => {}; };
+  const restore = () => { console.error = originalError; };
+
+  test("renders children when no error", () => {
+    const { container } = render(
+      <ResultCardErrorBoundary label="SQL">
+        <div data-testid="child">hello</div>
+      </ResultCardErrorBoundary>,
+    );
+    expect(container.querySelector("[data-testid='child']")).not.toBeNull();
+  });
+
+  test("renders error message when child throws", () => {
+    suppress();
+    function ThrowingChild(): React.ReactElement {
+      throw new Error("render boom");
+    }
+
+    const { container } = render(
+      <ResultCardErrorBoundary label="SQL">
+        <ThrowingChild />
+      </ResultCardErrorBoundary>,
+    );
+    restore();
+
+    expect(container.textContent).toContain("SQL result could not be rendered");
+    expect(container.textContent).toContain("render boom");
+  });
+
+  test("uses label prop in error message", () => {
+    suppress();
+    function ThrowingChild(): React.ReactElement {
+      throw new Error("oops");
+    }
+
+    const { container } = render(
+      <ResultCardErrorBoundary label="Python">
+        <ThrowingChild />
+      </ResultCardErrorBoundary>,
+    );
+    restore();
+
+    expect(container.textContent).toContain("Python result could not be rendered");
+  });
+
+  test("shows fallback when error has no message", () => {
+    suppress();
+    function ThrowingChild(): React.ReactElement {
+      throw new Error();
+    }
+
+    const { container } = render(
+      <ResultCardErrorBoundary label="Test">
+        <ThrowingChild />
+      </ResultCardErrorBoundary>,
+    );
+    restore();
+
+    expect(container.textContent).toContain("Test result could not be rendered");
+    expect(container.textContent).toContain("unknown error");
   });
 });

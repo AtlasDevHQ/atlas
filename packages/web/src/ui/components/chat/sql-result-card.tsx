@@ -14,7 +14,7 @@ const ResultChart = dynamic(
 import { LoadingCard } from "./loading-card";
 import { DataTable } from "./data-table";
 import { SQLBlock } from "./sql-block";
-import { ResultCardBase } from "./result-card-base";
+import { ResultCardBase, ResultCardErrorBoundary } from "./result-card-base";
 
 /** Convert structured rows (Record<string, unknown>[]) to string[][] for chart detection. */
 function toStringRows(columns: string[], rows: Record<string, unknown>[]): string[][] {
@@ -23,12 +23,21 @@ function toStringRows(columns: string[], rows: Record<string, unknown>[]): strin
 
 
 export function SQLResultCard({ part }: { part: unknown }) {
+  return (
+    <ResultCardErrorBoundary label="SQL">
+      <SQLResultCardInner part={part} />
+    </ResultCardErrorBoundary>
+  );
+}
+
+function SQLResultCardInner({ part }: { part: unknown }) {
   const dark = useContext(DarkModeContext);
   const args = getToolArgs(part);
   const result = getToolResult(part) as Record<string, unknown> | null;
   const done = isToolComplete(part);
   const [sqlOpen, setSqlOpen] = useState(false);
   const [viewMode, setViewMode] = useState<"both" | "chart" | "table">("both");
+  const [excelError, setExcelError] = useState(false);
 
   const columns = useMemo(
     () => (done && result?.success ? ((result.columns as string[]) ?? []) : []),
@@ -133,13 +142,22 @@ export function SQLResultCard({ part }: { part: unknown }) {
         )}
         {hasData && (
           <button
-            onClick={() => { downloadExcel(columns, rows).catch((err) => { console.warn("Excel download failed:", err); }); }}
+            onClick={() => {
+              setExcelError(false);
+              downloadExcel(columns, rows).catch((err: unknown) => {
+                console.warn("Excel download failed:", err);
+                setExcelError(true);
+              });
+            }}
             className="inline-flex items-center gap-1.5 rounded border border-zinc-200 px-2 py-1.5 text-xs text-zinc-500 transition-colors hover:border-zinc-400 hover:text-zinc-800 dark:border-zinc-700 dark:text-zinc-400 dark:hover:border-zinc-500 dark:hover:text-zinc-200"
             title="Download Excel"
           >
             <FileSpreadsheet className="size-3.5" />
             <span className="hidden sm:inline">Excel</span>
           </button>
+        )}
+        {excelError && (
+          <span className="text-xs text-red-500 dark:text-red-400">Excel download failed</span>
         )}
       </div>
       {sqlOpen && sql && (

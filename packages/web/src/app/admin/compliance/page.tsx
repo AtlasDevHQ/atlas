@@ -34,7 +34,7 @@ import { z } from "zod";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { LoadingState } from "@/ui/components/admin/loading-state";
-import { FeatureGate } from "@/ui/components/admin/feature-disabled";
+import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
@@ -190,10 +190,6 @@ function ClassificationsTab() {
     invalidates: refetch,
   });
 
-  if (error?.status === 401 || error?.status === 403 || error?.status === 404) {
-    return <FeatureGate status={error.status} feature="PII Compliance" />;
-  }
-
   const classifications = data?.classifications ?? [];
 
   async function handleUpdate(id: string, values: { category: string; maskingStrategy: string }) {
@@ -233,6 +229,17 @@ function ClassificationsTab() {
   const editingItem = classifications.find((c) => c.id === editingId);
 
   return (
+    <AdminContentWrapper
+      loading={loading}
+      error={error}
+      feature="PII Compliance"
+      onRetry={refetch}
+      loadingMessage="Loading PII classifications..."
+      emptyIcon={ShieldCheck}
+      emptyTitle="No PII columns detected"
+      emptyDescription="Run the profiler to scan your database."
+      isEmpty={classifications.length === 0}
+    >
     <div className="space-y-6">
       {unreviewedCount > 0 && (
         <div className="flex justify-end">
@@ -292,74 +299,66 @@ function ClassificationsTab() {
           </CardDescription>
         </CardHeader>
         <CardContent>
-          {loading ? (
-            <LoadingState message="Loading PII classifications..." />
-          ) : classifications.length === 0 ? (
-            <p className="text-muted-foreground py-8 text-center text-sm">
-              No PII columns detected. Run the profiler to scan your database.
-            </p>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Table</TableHead>
-                  <TableHead>Column</TableHead>
-                  <TableHead>Category</TableHead>
-                  <TableHead>Confidence</TableHead>
-                  <TableHead>Masking</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead className="text-right">Actions</TableHead>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Table</TableHead>
+                <TableHead>Column</TableHead>
+                <TableHead>Category</TableHead>
+                <TableHead>Confidence</TableHead>
+                <TableHead>Masking</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead className="text-right">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {classifications.map((cls) => (
+                <TableRow key={cls.id}>
+                  <TableCell className="font-mono text-sm">{cls.tableName}</TableCell>
+                  <TableCell className="font-mono text-sm">{cls.columnName}</TableCell>
+                  <TableCell>{CATEGORY_LABELS[cls.category] ?? cls.category}</TableCell>
+                  <TableCell>{confidenceBadge(cls.confidence)}</TableCell>
+                  <TableCell>
+                    <div className="flex items-center gap-1.5">
+                      {strategyIcon(cls.maskingStrategy)}
+                      <span className="text-sm">{STRATEGY_LABELS[cls.maskingStrategy] ?? cls.maskingStrategy}</span>
+                    </div>
+                  </TableCell>
+                  <TableCell>
+                    {cls.reviewed ? (
+                      <Badge variant="outline" className="gap-1 border-green-500 text-green-600">
+                        <CheckCircle2 className="size-3" />Reviewed
+                      </Badge>
+                    ) : (
+                      <Badge variant="outline" className="gap-1 border-yellow-500 text-yellow-600">
+                        Pending
+                      </Badge>
+                    )}
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <div className="flex justify-end gap-1">
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => setEditingId(cls.id)}
+                      >
+                        Edit
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="text-muted-foreground"
+                        onClick={() => handleDismiss(cls.id)}
+                        disabled={saving}
+                      >
+                        Dismiss
+                      </Button>
+                    </div>
+                  </TableCell>
                 </TableRow>
-              </TableHeader>
-              <TableBody>
-                {classifications.map((cls) => (
-                  <TableRow key={cls.id}>
-                    <TableCell className="font-mono text-sm">{cls.tableName}</TableCell>
-                    <TableCell className="font-mono text-sm">{cls.columnName}</TableCell>
-                    <TableCell>{CATEGORY_LABELS[cls.category] ?? cls.category}</TableCell>
-                    <TableCell>{confidenceBadge(cls.confidence)}</TableCell>
-                    <TableCell>
-                      <div className="flex items-center gap-1.5">
-                        {strategyIcon(cls.maskingStrategy)}
-                        <span className="text-sm">{STRATEGY_LABELS[cls.maskingStrategy] ?? cls.maskingStrategy}</span>
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      {cls.reviewed ? (
-                        <Badge variant="outline" className="gap-1 border-green-500 text-green-600">
-                          <CheckCircle2 className="size-3" />Reviewed
-                        </Badge>
-                      ) : (
-                        <Badge variant="outline" className="gap-1 border-yellow-500 text-yellow-600">
-                          Pending
-                        </Badge>
-                      )}
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <div className="flex justify-end gap-1">
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          onClick={() => setEditingId(cls.id)}
-                        >
-                          Edit
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          className="text-muted-foreground"
-                          onClick={() => handleDismiss(cls.id)}
-                          disabled={saving}
-                        >
-                          Dismiss
-                        </Button>
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          )}
+              ))}
+            </TableBody>
+          </Table>
         </CardContent>
       </Card>
 
@@ -440,6 +439,7 @@ function ClassificationsTab() {
         )}
       </FormDialog>
     </div>
+    </AdminContentWrapper>
   );
 }
 

@@ -27,8 +27,8 @@ import {
 import { Label } from "@/components/ui/label";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { LoadingState } from "@/ui/components/admin/loading-state";
-import { FeatureGate } from "@/ui/components/admin/feature-disabled";
 import { StatCard } from "@/ui/components/admin/stat-card";
+import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { useAdminFetch, friendlyError } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
@@ -166,11 +166,6 @@ function SLAPageContent() {
   // Evaluate mutation
   const { mutate: evalMutate, saving: evalSaving } = useAdminMutation({ invalidates: refetchAlerts });
 
-  // ── Feature gate (after all hooks) ──
-  if (slaError?.status === 404) return <FeatureGate status={404} feature="SLA Monitoring" />;
-  if (slaError?.status === 403) return <FeatureGate status={403} feature="SLA Monitoring" />;
-  if (slaError?.status === 401) return <FeatureGate status={401} feature="SLA Monitoring" />;
-
   function toggleSort(field: SortField) {
     if (sortField === field) {
       setSortDir((d) => (d === "asc" ? "desc" : "asc"));
@@ -226,6 +221,12 @@ function SLAPageContent() {
   const defaultThreshold = thresholdsData?.latencyP99Ms ?? 5000;
 
   return (
+    <AdminContentWrapper
+      loading={false}
+      error={slaError}
+      feature="SLA Monitoring"
+      onRetry={() => {}}
+    >
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <div>
@@ -541,5 +542,6 @@ function SLAPageContent() {
         </DialogContent>
       </Dialog>
     </div>
+    </AdminContentWrapper>
   );
 }

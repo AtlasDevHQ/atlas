@@ -12,7 +12,7 @@ import { StatCard } from "@/ui/components/admin/stat-card";
 import { LoadingState } from "@/ui/components/admin/loading-state";
 import { EmptyState } from "@/ui/components/admin/empty-state";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
-import { FeatureGate } from "@/ui/components/admin/feature-disabled";
+import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { DataTable } from "@/components/data-table/data-table";
 import { DataTableToolbar } from "@/components/data-table/data-table-toolbar";
 import { DataTableSortList } from "@/components/data-table/data-table-sort-list";
@@ -100,9 +100,6 @@ export default function TokenUsagePage() {
 
   // Gate: auth/availability errors surface as FeatureGate
   const gateError = findGateError(summaryError, trendsError, usersError);
-  if (gateError?.status && [401, 403, 404].includes(gateError.status)) {
-    return <FeatureGate status={gateError.status as 401 | 403 | 404} feature="Token Usage" />;
-  }
 
   function applyFilters() {
     setParams({ from: filters.from, to: filters.to });
@@ -124,6 +121,12 @@ export default function TokenUsagePage() {
       </div>
 
       <div className="flex-1 overflow-auto p-6 space-y-6">
+      <AdminContentWrapper
+        loading={false}
+        error={gateError}
+        feature="Token Usage"
+        onRetry={() => window.location.reload()}
+      >
       {/* Date range filter */}
       <Card className="shadow-none">
         <CardContent className="flex flex-wrap items-end gap-3 pt-4">
@@ -247,6 +250,7 @@ export default function TokenUsagePage() {
           )}
         </CardContent>
       </Card>
+      </AdminContentWrapper>
       </div>
     </div>
     </ErrorBoundary>

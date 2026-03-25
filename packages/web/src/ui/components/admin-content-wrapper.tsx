@@ -12,16 +12,16 @@ import { friendlyError, type FetchError } from "@/ui/hooks/use-admin-fetch";
 export interface AdminContentWrapperProps {
   loading: boolean;
   error: FetchError | null;
-  feature: string;
+  feature?: string;
   onRetry: () => void;
   loadingMessage?: string;
-  emptyIcon: LucideIcon;
-  emptyTitle: string;
+  emptyIcon?: LucideIcon;
+  emptyTitle?: string;
   emptyDescription?: string;
   emptyAction?: { label: string; onClick: () => void };
   hasFilters?: boolean;
   onClearFilters?: () => void;
-  isEmpty: boolean;
+  isEmpty?: boolean;
   children: ReactNode;
 }
 
@@ -40,7 +40,7 @@ export function AdminContentWrapper({
   isEmpty,
   children,
 }: AdminContentWrapperProps) {
-  if (!loading && error?.status && [401, 403, 404, 503].includes(error.status)) {
+  if (feature && !loading && error?.status && [401, 403, 404, 503].includes(error.status)) {
     return <FeatureGate status={error.status as 401 | 403 | 404 | 503} feature={feature} />;
   }
 
@@ -52,7 +52,7 @@ export function AdminContentWrapper({
     return <LoadingState message={loadingMessage} />;
   }
 
-  if (isEmpty && !hasFilters) {
+  if (isEmpty && emptyIcon && emptyTitle && !hasFilters) {
     return (
       <EmptyState
         icon={emptyIcon}
@@ -63,7 +63,7 @@ export function AdminContentWrapper({
     );
   }
 
-  if (isEmpty && hasFilters) {
+  if (isEmpty && emptyIcon && emptyTitle && hasFilters) {
     return (
       <EmptyState
         icon={Search}

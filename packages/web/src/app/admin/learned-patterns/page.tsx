@@ -46,13 +46,9 @@ import {
 } from "@/components/ui/sheet";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { StatCard } from "@/ui/components/admin/stat-card";
-import { EmptyState } from "@/ui/components/admin/empty-state";
-import { ErrorBanner } from "@/ui/components/admin/error-banner";
-import { LoadingState } from "@/ui/components/admin/loading-state";
-import { FeatureGate } from "@/ui/components/admin/feature-disabled";
+import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import {
   useInProgressSet,
-  friendlyError,
   type FetchError,
 } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
@@ -369,20 +365,6 @@ export default function LearnedPatternsPage() {
 
   const selectedCount = table.getSelectedRowModel().rows.length;
 
-  // ── Auth/feature gate ───────────────────────────────────────────
-
-  if (!loading && error?.status && [401, 403, 404].includes(error.status)) {
-    return (
-      <div className="flex h-[calc(100dvh-3rem)] flex-col">
-        <div className="border-b px-6 py-4">
-          <h1 className="text-2xl font-bold tracking-tight">Learned Patterns</h1>
-          <p className="text-sm text-muted-foreground">Review and manage agent-proposed query patterns</p>
-        </div>
-        <FeatureGate status={error.status as 401 | 403 | 404} feature="Learned Patterns" />
-      </div>
-    );
-  }
-
   const hasFilters = !!params.status || !!params.source_entity;
 
   return (
@@ -487,29 +469,19 @@ export default function LearnedPatternsPage() {
           </div>
 
           {/* Content */}
-          {error && (!error.status || ![401, 403, 404].includes(error.status)) ? (
-            <ErrorBanner message={friendlyError(error)} onRetry={() => setFetchKey((k) => k + 1)} />
-          ) : loading ? (
-            <div className="flex h-64 items-center justify-center">
-              <LoadingState message="Loading learned patterns..." />
-            </div>
-          ) : patterns.length === 0 && !hasFilters ? (
-            <EmptyState
-              icon={Brain}
-              title="No learned patterns"
-              description="Patterns will appear here when the agent or atlas learn CLI proposes new query patterns."
-            />
-          ) : patterns.length === 0 && hasFilters ? (
-            <EmptyState
-              icon={Brain}
-              title="No matching patterns"
-              description="Try adjusting your filters."
-              action={{
-                label: "Clear filters",
-                onClick: () => setParams({ status: "", source_entity: "", page: 1 }),
-              }}
-            />
-          ) : (
+          <AdminContentWrapper
+            loading={loading}
+            error={error}
+            feature="Learned Patterns"
+            onRetry={() => setFetchKey((k) => k + 1)}
+            loadingMessage="Loading learned patterns..."
+            emptyIcon={Brain}
+            emptyTitle="No learned patterns"
+            emptyDescription="Patterns will appear here when the agent or atlas learn CLI proposes new query patterns."
+            isEmpty={patterns.length === 0}
+            hasFilters={hasFilters}
+            onClearFilters={() => setParams({ status: "", source_entity: "", page: 1 })}
+          >
             <DataTable
               table={table}
               onRowClick={(row, e) => {
@@ -521,7 +493,7 @@ export default function LearnedPatternsPage() {
                 <DataTableSortList table={table} />
               </DataTableToolbar>
             </DataTable>
-          )}
+          </AdminContentWrapper>
         </div>
       </ErrorBoundary>
 

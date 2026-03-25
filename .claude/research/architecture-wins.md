@@ -175,3 +175,24 @@ Tracking module-deepening refactors discovered by the `improve-codebase-architec
 - 5 tests for requireOrgContext middleware (404 no DB, 400 no org, 200 passthrough)
 
 **Category:** Repeated router setup and per-handler boilerplate consolidated into factory functions and typed middleware.
+
+---
+
+## 9. Complete AdminContentWrapper adoption
+
+**Date:** 2026-03-25
+**Issue:** #891
+**PR:** #899
+
+**Problem:** AdminContentWrapper was extracted in PR #857 to encapsulate the 4-branch rendering chain (FeatureGate → ErrorBanner → LoadingState → EmptyState → children) that every admin page implements. However, only 8 of 30 applicable admin pages used it. The remaining 22 pages still manually implemented ~15 lines of identical branching logic each, including FeatureGate early returns, error/loading/empty ternaries, and filter-aware empty states.
+
+**Solution:** Extended AdminContentWrapper with optional `feature`, `emptyIcon`, `emptyTitle`, and `isEmpty` props to support pages without FeatureGate (dashboards), pages without empty states (forms/config), and tabbed pages where only one tab needs the full flow. Migrated all 22 remaining applicable admin pages. Two dashboard pages (overview, platform admin) intentionally not migrated — they have no FeatureGate and use custom multi-section layouts.
+
+**Impact:**
+- **-302 net lines** (803 removed, 501 added across 24 files)
+- 30 of 32 admin pages now use AdminContentWrapper (8 prior + 22 new)
+- Eliminated ~330 lines of duplicated gate/error/loading/empty branching
+- Every admin page with a FeatureGate now uses the wrapper — impossible to forget a gate status code
+- Empty state with filters ("No matches" + "Clear filters") is automatic via `hasFilters` prop
+
+**Category:** Shallow wrapper deepened with optional props, then adopted across all applicable pages to eliminate duplicated rendering logic.

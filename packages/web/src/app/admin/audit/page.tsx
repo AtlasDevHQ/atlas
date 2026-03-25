@@ -21,14 +21,12 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { StatCard } from "@/ui/components/admin/stat-card";
-import { EmptyState } from "@/ui/components/admin/empty-state";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
-import { LoadingState } from "@/ui/components/admin/loading-state";
-import { FeatureGate } from "@/ui/components/admin/feature-disabled";
+import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { ScrollText, Search, AlertTriangle, Database, BarChart3, Download, X, Shield } from "lucide-react";
 import { RetentionPanel } from "./retention-panel";
 import { useAdminFetch, type FetchError } from "@/ui/hooks/use-admin-fetch";
-import { extractFetchError, friendlyError } from "@/ui/lib/fetch-error";
+import { extractFetchError } from "@/ui/lib/fetch-error";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 
 // ── Types ─────────────────────────────────────────────────────────
@@ -238,19 +236,6 @@ export default function AuditPage() {
 
   function clearFilters() {
     setParams({ search: "", connection: "", table: "", column: "", status: "", from: "", to: "" });
-  }
-
-  // Gate: 401/403/404 (applies to both tabs via stats endpoint)
-  if (!loading && error?.status && [401, 403, 404].includes(error.status)) {
-    return (
-      <div className="flex h-[calc(100dvh-3rem)] flex-col">
-        <div className="border-b px-6 py-4">
-          <h1 className="text-2xl font-bold tracking-tight">Audit Log</h1>
-          <p className="text-sm text-muted-foreground">View query history and access logs</p>
-        </div>
-        <FeatureGate status={error.status as 401 | 403 | 404} feature="Audit Log" />
-      </div>
-    );
   }
 
   return (
@@ -493,31 +478,25 @@ export default function AuditPage() {
           </div>
 
           {/* Content */}
-          {error ? (
-            <ErrorBanner message={friendlyError(error)} onRetry={() => { table.setPageIndex(0); }} />
-          ) : loading ? (
-            <div className="flex h-64 items-center justify-center">
-              <LoadingState message="Loading audit log..." />
-            </div>
-          ) : rows.length === 0 && !hasFilters ? (
-            <EmptyState
-              icon={ScrollText}
-              title="No query activity recorded yet"
-              description="Query activity will appear here once users start asking questions"
-            />
-          ) : rows.length === 0 && hasFilters ? (
-            <EmptyState
-              icon={Search}
-              title="No matching entries"
-              description="Try adjusting your search or filters"
-            />
-          ) : (
+          <AdminContentWrapper
+            loading={loading}
+            error={error}
+            feature="Audit Log"
+            onRetry={() => { table.setPageIndex(0); }}
+            loadingMessage="Loading audit log..."
+            emptyIcon={ScrollText}
+            emptyTitle="No query activity recorded yet"
+            emptyDescription="Query activity will appear here once users start asking questions"
+            isEmpty={rows.length === 0}
+            hasFilters={hasFilters}
+            onClearFilters={clearFilters}
+          >
             <DataTable table={table}>
               <DataTableToolbar table={table}>
                 <DataTableSortList table={table} />
               </DataTableToolbar>
             </DataTable>
-          )}
+          </AdminContentWrapper>
         </TabsContent>
 
         <TabsContent value="retention" className="flex-1 overflow-auto p-6">

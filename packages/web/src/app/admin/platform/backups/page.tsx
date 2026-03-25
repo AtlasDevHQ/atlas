@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Card, CardContent } from "@/components/ui/card";
+import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -33,10 +33,9 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Label } from "@/components/ui/label";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
-import { LoadingState } from "@/ui/components/admin/loading-state";
-import { FeatureGate } from "@/ui/components/admin/feature-disabled";
 import { StatCard } from "@/ui/components/admin/stat-card";
-import { useAdminFetch, friendlyError } from "@/ui/hooks/use-admin-fetch";
+import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
+import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import type { BackupEntry, BackupConfig, BackupStatus } from "@/ui/lib/types";
@@ -127,11 +126,6 @@ function BackupsPageContent() {
   const [restoreBackupId, setRestoreBackupId] = useState<string | null>(null);
   const [confirmToken, setConfirmToken] = useState<string | null>(null);
 
-  // Feature gate (after all hooks)
-  if (backupsError?.status === 404) return <FeatureGate status={404} feature="Backups" />;
-  if (backupsError?.status === 403) return <FeatureGate status={403} feature="Backups" />;
-  if (backupsError?.status === 401) return <FeatureGate status={401} feature="Backups" />;
-
   const backups = backupsData?.backups ?? [];
   const completedBackups = backups.filter((b) => b.status === "completed" || b.status === "verified");
   const totalSize = backups.reduce((sum, b) => sum + (b.sizeBytes ?? 0), 0);
@@ -196,8 +190,18 @@ function BackupsPageContent() {
         </div>
       </div>
 
-      {/* Stat cards */}
-      {!backupsLoading && !backupsError && (
+      <AdminContentWrapper
+        loading={backupsLoading}
+        error={backupsError}
+        feature="Backups"
+        onRetry={refetchBackups}
+        loadingMessage="Loading backups..."
+        emptyIcon={Database}
+        emptyTitle="No backups yet"
+        emptyDescription="Create your first backup to protect your data."
+        isEmpty={backups.length === 0}
+      >
+        {/* Stat cards */}
         <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
           <StatCard
             title="Total Backups"
@@ -221,21 +225,8 @@ function BackupsPageContent() {
             description={configData ? `Schedule: ${configData.schedule}` : undefined}
           />
         </div>
-      )}
 
-      {/* Backups table */}
-      {backupsLoading ? (
-        <LoadingState message="Loading backups..." />
-      ) : backupsError ? (
-        <ErrorBanner message={friendlyError(backupsError)} />
-      ) : backups.length === 0 ? (
-        <Card className="shadow-none">
-          <CardContent className="flex flex-col items-center justify-center py-12 text-muted-foreground">
-            <Database className="mb-2 size-8" />
-            <p>No backups yet. Create your first backup to protect your data.</p>
-          </CardContent>
-        </Card>
-      ) : (
+        {/* Backups table */}
         <Card className="shadow-none">
           <Table>
             <TableHeader>
@@ -280,7 +271,7 @@ function BackupsPageContent() {
             </TableBody>
           </Table>
         </Card>
-      )}
+      </AdminContentWrapper>
 
       {/* Restore confirmation dialog */}
       <AlertDialog open={!!confirmToken} onOpenChange={(open) => { if (!open) { setConfirmToken(null); setRestoreBackupId(null); } }}>

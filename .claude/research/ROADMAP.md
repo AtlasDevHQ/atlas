@@ -509,7 +509,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 **Module-deepening refactors** from systematic codebase exploration. Reduce duplication, improve testability, and make the codebase more navigable before the 1.0.0 launch.
 
 - [ ] Extract plugin initialization factory in plugin SDK (#890)
-- [ ] Complete AdminContentWrapper adoption across all admin pages (#891)
+- [x] Complete AdminContentWrapper adoption across all admin pages (#891, PR #899)
 - [ ] Extract route handler error wrapper for consistent 500 responses (#892)
 - [ ] Extract OpenAPI schema factories for admin routes (#893)
 - [x] Deduplicate auth error classification between admin-auth and middleware (#894, PR #898)

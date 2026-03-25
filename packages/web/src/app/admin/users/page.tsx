@@ -53,10 +53,8 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { StatCard } from "@/ui/components/admin/stat-card";
-import { EmptyState } from "@/ui/components/admin/empty-state";
+import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
-import { LoadingState } from "@/ui/components/admin/loading-state";
-import { FeatureGate } from "@/ui/components/admin/feature-disabled";
 import {
   FormDialog,
   FormField,
@@ -67,7 +65,6 @@ import {
 } from "@/components/form-dialog";
 import {
   useAdminFetch,
-  friendlyError,
   type FetchError,
 } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
@@ -420,19 +417,6 @@ export default function UsersPage() {
     });
   }
 
-  // Gate: 401/403/404
-  if (!loading && error?.status && [401, 403, 404].includes(error.status)) {
-    return (
-      <div className="flex h-[calc(100dvh-3rem)] flex-col">
-        <div className="border-b px-6 py-4">
-          <h1 className="text-2xl font-bold tracking-tight">Users</h1>
-          <p className="text-sm text-muted-foreground">Manage user accounts and roles</p>
-        </div>
-        <FeatureGate status={error.status as 401 | 403 | 404} feature="User Management" />
-      </div>
-    );
-  }
-
   const pendingInvitations = invitations.filter((i) => i.status === "pending");
 
   return (
@@ -527,35 +511,27 @@ export default function UsersPage() {
         {/* Content */}
         {adminAction.error && <ErrorBanner message={adminAction.error} onRetry={adminAction.clearError} />}
         {revokeInvitation.error && <ErrorBanner message={revokeInvitation.error} onRetry={revokeInvitation.clearError} />}
-        {error && error.status !== 401 && error.status !== 403 && error.status !== 404 ? (
-          <ErrorBanner message={friendlyError(error)} onRetry={() => setParams({ page: 1 })} />
-        ) : loading ? (
-          <div className="flex h-64 items-center justify-center">
-            <LoadingState message="Loading users..." />
-          </div>
-        ) : users.length === 0 ? (
-          params.search || params.role ? (
-            <EmptyState
-              icon={Search}
-              title="No users match your filters"
-              description="Try adjusting your search or role filter"
-              action={{ label: "Clear filters", onClick: () => setParams({ search: "", role: "", page: 1 }) }}
-            />
-          ) : (
-            <EmptyState
-              icon={Users}
-              title="No users yet"
-              description="Invite your first team member to get started"
-              action={{ label: "Invite user", onClick: () => { resetInviteDialog(); setInviteOpen(true); } }}
-            />
-          )
-        ) : (
+
+        <AdminContentWrapper
+          loading={loading}
+          error={error}
+          feature="User Management"
+          onRetry={() => setParams({ page: 1 })}
+          loadingMessage="Loading users..."
+          emptyIcon={Users}
+          emptyTitle="No users yet"
+          emptyDescription="Invite your first team member to get started"
+          emptyAction={{ label: "Invite user", onClick: () => { resetInviteDialog(); setInviteOpen(true); } }}
+          isEmpty={users.length === 0}
+          hasFilters={!!(params.search || params.role)}
+          onClearFilters={() => setParams({ search: "", role: "", page: 1 })}
+        >
           <DataTable table={usersTable}>
             <DataTableToolbar table={usersTable}>
               <DataTableSortList table={usersTable} />
             </DataTableToolbar>
           </DataTable>
-        )}
+        </AdminContentWrapper>
 
         {/* Pending Invitations */}
         {!invitationsLoading && invitationsError && (

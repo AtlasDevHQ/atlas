@@ -24,10 +24,9 @@ import {
 import { ActionStatusBadge } from "@/ui/components/actions/action-status-badge";
 import type { ActionDisplayStatus } from "@/ui/lib/action-types";
 import type { ActionLogEntry } from "@/ui/lib/types";
+import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { EmptyState } from "@/ui/components/admin/empty-state";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
-import { LoadingState } from "@/ui/components/admin/loading-state";
-import { FeatureGate } from "@/ui/components/admin/feature-disabled";
 import {
   Zap,
   Check,
@@ -45,7 +44,7 @@ import {
   Inbox,
   Undo2,
 } from "lucide-react";
-import { type FetchError, friendlyError } from "@/ui/hooks/use-admin-fetch";
+import type { FetchError } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 
@@ -193,19 +192,6 @@ export default function ActionsPage() {
     })();
     return () => { cancelled = true; };
   }, [apiUrl, statusFilter, refetchKey, credentials]);
-
-  // Gate: 401/403/404
-  if (!loading && error?.status && [401, 403, 404].includes(error.status)) {
-    return (
-      <div className="flex h-[calc(100dvh-3rem)] flex-col">
-        <div className="border-b px-6 py-4">
-          <h1 className="text-2xl font-bold tracking-tight">Actions</h1>
-          <p className="text-sm text-muted-foreground">Review and manage action approvals.</p>
-        </div>
-        <FeatureGate status={error.status as 401 | 403 | 404} feature="Actions" />
-      </div>
-    );
-  }
 
   const pendingActions = actions.filter((a) => a.status === "pending");
   const allSelectableSelected = pendingActions.length > 0 && pendingActions.every((a) => selectedIds.has(a.id));
@@ -377,28 +363,31 @@ export default function ActionsPage() {
 
         <ErrorBoundary>
         <div className="flex-1 overflow-auto p-6 space-y-6">
-          {error && <ErrorBanner message={friendlyError(error)} onRetry={() => setRefetchKey((k) => k + 1)} />}
           {mutationError && <ErrorBanner message={mutationError} onRetry={() => setMutationError(null)} />}
           {approveMutation.error && <ErrorBanner message={approveMutation.error} onRetry={approveMutation.clearError} />}
           {denyMutation.error && <ErrorBanner message={denyMutation.error} onRetry={denyMutation.clearError} />}
           {rollbackMutation.error && <ErrorBanner message={rollbackMutation.error} onRetry={rollbackMutation.clearError} />}
 
-          {loading ? (
-            <div className="flex h-64 items-center justify-center">
-              <LoadingState message="Loading actions..." />
-            </div>
-          ) : actions.length === 0 && !error ? (
-            <EmptyState
-              icon={statusFilter === "pending" ? Inbox : Zap}
-              title={EMPTY_MESSAGES[statusFilter]}
-            >
-              {statusFilter === "pending" && (
-                <p className="mt-1 text-xs text-muted-foreground/70">
-                  Actions requiring approval will appear here.
-                </p>
-              )}
-            </EmptyState>
-          ) : actions.length > 0 ? (
+          <AdminContentWrapper
+            loading={loading}
+            error={error}
+            feature="Actions"
+            onRetry={() => setRefetchKey((k) => k + 1)}
+            loadingMessage="Loading actions..."
+            isEmpty={false}
+          >
+            {actions.length === 0 ? (
+              <EmptyState
+                icon={statusFilter === "pending" ? Inbox : Zap}
+                title={EMPTY_MESSAGES[statusFilter]}
+              >
+                {statusFilter === "pending" && (
+                  <p className="mt-1 text-xs text-muted-foreground/70">
+                    Actions requiring approval will appear here.
+                  </p>
+                )}
+              </EmptyState>
+            ) : (
             <div className="rounded-md border">
             <Table>
               <TableHeader>
@@ -622,7 +611,8 @@ export default function ActionsPage() {
               </TableBody>
             </Table>
             </div>
-          ) : null}
+            )}
+          </AdminContentWrapper>
         </div>
         </ErrorBoundary>
       </div>

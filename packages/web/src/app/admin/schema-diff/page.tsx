@@ -3,12 +3,9 @@
 import { useState } from "react";
 import { useQueryStates } from "nuqs";
 import { schemaDiffSearchParams } from "./search-params";
-import { useAdminFetch, friendlyError } from "@/ui/hooks/use-admin-fetch";
-import { LoadingState } from "@/ui/components/admin/loading-state";
-import { ErrorBanner } from "@/ui/components/admin/error-banner";
-import { EmptyState } from "@/ui/components/admin/empty-state";
-import { FeatureGate } from "@/ui/components/admin/feature-disabled";
+import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { StatCard } from "@/ui/components/admin/stat-card";
+import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -64,53 +61,7 @@ export default function SchemaDiffPage() {
 
   const multipleConnections = connectionsData && connectionsData.length > 1;
 
-  if (loading) {
-    return (
-      <PageShell connectionSelector={multipleConnections ? (
-        <ConnectionSelector
-          connections={connectionsData!}
-          value={connectionId}
-          onChange={setConnectionId}
-        />
-      ) : null}>
-        <LoadingState message="Computing schema diff..." />
-      </PageShell>
-    );
-  }
-
-  if (error?.status && [401, 403, 404].includes(error.status)) {
-    return (
-      <PageShell>
-        <FeatureGate status={error.status as 401 | 403 | 404} feature="Schema Diff" />
-      </PageShell>
-    );
-  }
-
-  if (error) {
-    return (
-      <PageShell connectionSelector={multipleConnections ? (
-        <ConnectionSelector
-          connections={connectionsData!}
-          value={connectionId}
-          onChange={setConnectionId}
-        />
-      ) : null}>
-        <div className="p-6">
-          <ErrorBanner message={friendlyError(error)} onRetry={refetch} />
-        </div>
-      </PageShell>
-    );
-  }
-
-  if (!diff) {
-    return (
-      <PageShell>
-        <EmptyState icon={GitCompareArrows} title="No diff data available" />
-      </PageShell>
-    );
-  }
-
-  const hasDrift = diff.summary.new > 0 || diff.summary.removed > 0 || diff.summary.changed > 0;
+  const hasDrift = diff ? diff.summary.new > 0 || diff.summary.removed > 0 || diff.summary.changed > 0 : false;
 
   return (
     <PageShell connectionSelector={multipleConnections ? (
@@ -120,7 +71,17 @@ export default function SchemaDiffPage() {
         onChange={setConnectionId}
       />
     ) : null}>
-      <ErrorBoundary>
+      <AdminContentWrapper
+        loading={loading}
+        error={error}
+        feature="Schema Diff"
+        onRetry={refetch}
+        loadingMessage="Computing schema diff..."
+        emptyIcon={GitCompareArrows}
+        emptyTitle="No diff data available"
+        isEmpty={!diff}
+      >
+      {diff && <ErrorBoundary>
         <div className="space-y-6 p-6">
           {/* Summary stats */}
           <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -268,7 +229,8 @@ export default function SchemaDiffPage() {
             </Button>
           </div>
         </div>
-      </ErrorBoundary>
+      </ErrorBoundary>}
+      </AdminContentWrapper>
     </PageShell>
   );
 }

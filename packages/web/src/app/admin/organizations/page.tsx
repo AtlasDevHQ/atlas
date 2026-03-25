@@ -24,14 +24,8 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { StatCard } from "@/ui/components/admin/stat-card";
-import { EmptyState } from "@/ui/components/admin/empty-state";
-import { ErrorBanner } from "@/ui/components/admin/error-banner";
-import { LoadingState } from "@/ui/components/admin/loading-state";
-import { FeatureGate } from "@/ui/components/admin/feature-disabled";
-import {
-  friendlyError,
-  type FetchError,
-} from "@/ui/hooks/use-admin-fetch";
+import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
+import type { FetchError } from "@/ui/hooks/use-admin-fetch";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import {
   Building2,
@@ -226,19 +220,6 @@ export default function OrganizationsPage() {
     getRowId: (row) => row.id,
   });
 
-  // Gate: 401/403/404
-  if (!loading && error?.status && [401, 403, 404].includes(error.status)) {
-    return (
-      <div className="flex h-[calc(100dvh-3rem)] flex-col">
-        <div className="border-b px-6 py-4">
-          <h1 className="text-2xl font-bold tracking-tight">Organizations</h1>
-          <p className="text-sm text-muted-foreground">Manage organizations and tenants</p>
-        </div>
-        <FeatureGate status={error.status as 401 | 403 | 404} feature="Organization Management" />
-      </div>
-    );
-  }
-
   return (
     <div className="flex h-[calc(100dvh-3rem)] flex-col">
       {/* Header */}
@@ -287,34 +268,25 @@ export default function OrganizationsPage() {
           </div>
 
           {/* Content */}
-          {error && error.status !== 401 && error.status !== 403 && error.status !== 404 ? (
-            <ErrorBanner message={friendlyError(error)} onRetry={() => setParams({ page: 1 })} />
-          ) : loading ? (
-            <div className="flex h-64 items-center justify-center">
-              <LoadingState message="Loading organizations..." />
-            </div>
-          ) : orgs.length === 0 ? (
-            params.search ? (
-              <EmptyState
-                icon={Search}
-                title="No organizations match your search"
-                description="Try adjusting your search terms"
-                action={{ label: "Clear search", onClick: () => setParams({ search: "", page: 1 }) }}
-              />
-            ) : (
-              <EmptyState
-                icon={Building2}
-                title="No organizations yet"
-                description="Organizations are created when users sign up and go through the first-run flow"
-              />
-            )
-          ) : (
+          <AdminContentWrapper
+            loading={loading}
+            error={error}
+            feature="Organization Management"
+            onRetry={() => setParams({ page: 1 })}
+            loadingMessage="Loading organizations..."
+            emptyIcon={Building2}
+            emptyTitle="No organizations yet"
+            emptyDescription="Organizations are created when users sign up and go through the first-run flow"
+            isEmpty={orgs.length === 0}
+            hasFilters={!!params.search}
+            onClearFilters={() => setParams({ search: "", page: 1 })}
+          >
             <DataTable table={table}>
               <DataTableToolbar table={table}>
                 <DataTableSortList table={table} />
               </DataTableToolbar>
             </DataTable>
-          )}
+          </AdminContentWrapper>
         </div>
       </ErrorBoundary>
 

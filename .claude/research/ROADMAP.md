@@ -525,13 +525,13 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 **Incremental adoption of Effect.ts** across `packages/api/`. Typed errors, dependency injection via Layers, scoped resource lifecycle, structured concurrency. Backend only — frontend stays React/Zod.
 
 ### Foundation
-- [x] P0: Effect.ts foundation — install, tagged errors, Hono bridge (#903)
+- [x] P0: Effect.ts foundation — install, tagged errors, Hono bridge (#903, PR #918)
 
 ### Infrastructure Primitives (P1–P4)
-- [x] P1: SQL validation & query execution → Effect.gen with tagged errors (#904)
-- [x] P2: Rate limiting → Effect Semaphore and Ref (#905)
+- [x] P1: SQL validation & query execution → Effect.gen with tagged errors (#904, PR #920)
+- [x] P2: Rate limiting → Effect Semaphore and Ref (#905, PR #920)
 - [x] P3: Scheduler and delivery → Effect Schedule, Semaphore, retry (#906, PR #919)
-- [x] P4: ConnectionRegistry → Effect Layer/Service with scoped resources (#907, PR #921)
+- [x] P4: ConnectionRegistry → Effect Layer/Service with scoped resources (#907, PR #923)
 
 ### Service Architecture (P5–P8)
 - [ ] P5: Plugin lifecycle → Effect Layer composition (#908)
@@ -552,13 +552,13 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 
 **app.useatlas.dev goes live.** The hosted product where teams sign up, connect their database, and have a production-ready AI data analyst without deploying anything.
 
-- [ ] Public pricing page on useatlas.dev (#871)
+- [x] Public pricing page on useatlas.dev (#871, PR #922)
 - [ ] SLA commitments — uptime guarantee, query latency targets, support response times (#872)
 - [ ] Terms of service, privacy policy, DPA for enterprise (#873)
 - [ ] Launch content — blog post, Show HN, comparison pages updated (#874)
 - [ ] Migration tooling — self-hosted to hosted (export/import conversations, semantic layers, settings) (#875)
 - [ ] Documentation for hosted users — separate onboarding flow from self-hosted docs (#876)
-- [ ] Status page — public incident communication (#877)
+- [x] Status page — public incident communication (#877, PR #921)
 
 ---
 

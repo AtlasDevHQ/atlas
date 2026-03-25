@@ -288,7 +288,7 @@ Tracking module-deepening refactors discovered by the `improve-codebase-architec
 
 **Date:** 2026-03-25
 **Issue:** #907
-**PR:** #921
+**PR:** #923
 
 **Problem:** `ConnectionRegistry` was a 1,265-line global singleton with manual lifecycle management: `setInterval` for health checks, `Date.now()` arithmetic for drain cooldown, `setTimeout` for circuit breaker recovery, and manual ordering in `shutdown()` (`stopHealthChecks → close pools → clear maps`). 36+ test files used `mock.module()` to replace it. The internal DB circuit breaker (42 lines, 4 global variables) used `setTimeout` for recovery with no backoff.
 

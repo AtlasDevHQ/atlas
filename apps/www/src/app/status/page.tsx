@@ -21,30 +21,26 @@ interface ServiceState {
 
 const POLL_INTERVAL_MS = 30_000;
 
-const SERVICES: { name: string; description: string; url: string; kind: "api" | "http" }[] = [
+const SERVICES: { name: string; description: string; url: string }[] = [
   {
     name: "API",
     description: "Core API and agent engine",
     url: "https://api.useatlas.dev/api/health",
-    kind: "api",
   },
   {
     name: "Web App",
     description: "Atlas Cloud dashboard",
     url: "https://app.useatlas.dev",
-    kind: "http",
   },
   {
     name: "Documentation",
     description: "Docs and reference",
     url: "https://docs.useatlas.dev",
-    kind: "http",
   },
   {
     name: "Landing Page",
     description: "Marketing site",
     url: "https://useatlas.dev",
-    kind: "http",
   },
 ];
 
@@ -60,49 +56,29 @@ async function checkService(
 
   try {
     const start = performance.now();
+    // no-cors avoids CORS preflight failures when checking cross-origin
+    // services from the landing page domain. Returns opaque response
+    // (status 0) when reachable, throws on genuine network failure.
     const res = await fetch(svc.url, {
-      method: svc.kind === "http" ? "HEAD" : "GET",
+      method: "HEAD",
       signal: controller.signal,
-      // no-cors for HTTP services: returns opaque response (status 0) when
-      // reachable, throws on genuine network failure. Avoids false positives
-      // from CORS preflight blocks on cross-origin HEAD requests.
-      mode: svc.kind === "http" ? "no-cors" : "cors",
+      mode: "no-cors",
       cache: "no-store",
     });
     const latencyMs = Math.round(performance.now() - start);
 
-    // no-cors produces opaque responses — a successful fetch means reachable
-    if (svc.kind === "http") {
-      return { status: "operational", latencyMs };
-    }
-
-    // API health endpoint — expects { status: "ok" | "degraded" | "error" }
-    // per HealthResponseSchema in packages/api/src/api/routes/health.ts
-    if (!res.ok) return { status: "down", latencyMs };
-    try {
-      const body = (await res.json()) as { status?: string };
-      if (body.status === "ok") return { status: "operational", latencyMs };
-      if (body.status === "degraded") return { status: "degraded", latencyMs };
-      // Any unrecognized status (including "error", though !res.ok catches 503)
-      return { status: "degraded", latencyMs };
-    } catch (err) {
-      console.debug(
-        `[status] JSON parse failed for ${svc.name}:`,
-        err instanceof Error ? err.message : String(err),
-      );
-      return { status: "degraded", latencyMs };
-    }
+    // no-cors produces opaque responses (type "opaque", status 0) — a
+    // successful fetch without throwing means the service is reachable.
+    void res;
+    return { status: "operational", latencyMs };
   } catch (err) {
     console.debug(
       `[status] Health check failed for ${svc.name}:`,
       err instanceof Error ? err.message : String(err),
     );
-    // Timeout means unresponsive — that's down regardless of service type
     if (err instanceof DOMException && err.name === "AbortError") {
       return { status: "down" };
     }
-    // For API, any network error is down. For HTTP with no-cors, a thrown
-    // error means the server is genuinely unreachable (not just CORS).
     return { status: "down" };
   } finally {
     clearTimeout(timeout);

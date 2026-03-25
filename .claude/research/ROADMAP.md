@@ -504,6 +504,18 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 
 ---
 
+## 0.9.3 — Architecture Deepening
+
+**Module-deepening refactors** from systematic codebase exploration. Reduce duplication, improve testability, and make the codebase more navigable before the 1.0.0 launch.
+
+- [ ] Extract plugin initialization factory in plugin SDK (#890)
+- [ ] Complete AdminContentWrapper adoption across all admin pages (#891)
+- [ ] Extract route handler error wrapper for consistent 500 responses (#892)
+- [ ] Extract OpenAPI schema factories for admin routes (#893)
+- [ ] Deduplicate auth error classification between admin-auth and middleware (#894)
+
+---
+
 ## 1.0.0 — SaaS Launch
 
 **app.useatlas.dev goes live.** The hosted product where teams sign up, connect their database, and have a production-ready AI data analyst without deploying anything.

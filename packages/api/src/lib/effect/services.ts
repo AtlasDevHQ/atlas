@@ -9,6 +9,11 @@
  * - Health checks via Effect.repeat + Schedule.spaced (no setInterval)
  * - Drain cooldown managed by ConnectionRegistry class via Set + Effect.sleep
  * - Graceful shutdown via Effect.Scope (no manual ordering)
+ *
+ * PluginRegistry service (P5):
+ * - Health checks via Effect.repeat + Schedule.spaced (60s periodic)
+ * - Teardown via Effect.addFinalizer (delegates to class LIFO teardown)
+ * - Wired layer variant with type-level ConnectionRegistry dependency
  */
 
 import { Context, Effect, Layer, Duration, Schedule, Fiber } from "effect";
@@ -328,7 +333,7 @@ export interface PluginRegistryShape {
   // --- Size ---
   readonly size: number;
 
-  // --- Lifecycle (managed by Effect scope — callers should not call directly) ---
+  // --- Test only ---
   _reset(): void;
 }
 
@@ -376,11 +381,21 @@ function buildPluginService(impl: PluginRegistryClass) {
       ),
     );
 
-    // --- Scope finalizer for graceful shutdown (automatic reverse ordering) ---
+    // --- Scope finalizer for graceful shutdown ---
+    // addFinalizer triggers teardownAll on scope close;
+    // teardownAll iterates plugins in reverse registration order (LIFO) internally.
     yield* Effect.addFinalizer(() =>
       Effect.gen(function* () {
         yield* Fiber.interrupt(healthFiber);
-        yield* Effect.promise(() => impl.teardownAll());
+        yield* Effect.tryPromise({
+          try: () => impl.teardownAll(),
+          catch: (err) => (err instanceof Error ? err.message : String(err)),
+        }).pipe(
+          Effect.catchAll((errMsg) => {
+            pluginLog.error({ err: errMsg }, "PluginRegistry teardownAll failed during shutdown");
+            return Effect.void;
+          }),
+        );
         pluginLog.info("PluginRegistry shut down via Effect scope");
       }),
     );
@@ -428,7 +443,7 @@ function createPluginImpl(createImpl?: () => PluginRegistryClass) {
  *
  * Wraps a PluginRegistryClass instance with Effect-managed lifecycle:
  * - Health checks: Effect.repeat + Schedule.spaced (60s interval)
- * - Teardown: Effect.addFinalizer (automatic reverse ordering)
+ * - Teardown: Effect.addFinalizer (delegates to impl.teardownAll which runs LIFO)
  *
  * @param createImpl - Factory for the underlying registry instance.
  *   Defaults to creating a new PluginRegistryClass from the plugin module.
@@ -461,9 +476,9 @@ export interface PluginWiringConfig {
   /** Context passed to plugin.initialize(). */
   readonly context: PluginContextLike;
   /** Hono app instance for mounting interaction plugin routes. */
-  readonly app?: unknown;
+  readonly app?: { route(path: string, subApp: unknown): void };
   /** Tool registry for action plugin tools. */
-  readonly toolRegistry?: unknown;
+  readonly toolRegistry?: { register(tool: unknown): void };
   /** Schema migration callback (runs before initialize). */
   readonly runMigrations?: (
     allPlugins: ReadonlyArray<PluginLike>,
@@ -503,12 +518,26 @@ export function makeWiredPluginRegistryLive(
 
       // --- Schema migrations (before initialize so plugins can use their tables) ---
       if (config.runMigrations) {
-        yield* Effect.promise(() => config.runMigrations!(impl.getAll()));
+        yield* Effect.tryPromise({
+          try: () => config.runMigrations!(impl.getAll()),
+          catch: (err) => (err instanceof Error ? err.message : String(err)),
+        }).pipe(
+          Effect.catchAll((errMsg) => {
+            pluginLog.error({ err: errMsg }, "Plugin schema migrations failed");
+            return Effect.void;
+          }),
+        );
       }
 
       // --- Initialize all ---
-      const { succeeded, failed } = yield* Effect.promise(() =>
-        impl.initializeAll(config.context),
+      const { succeeded, failed } = yield* Effect.tryPromise({
+        try: () => impl.initializeAll(config.context),
+        catch: (err) => (err instanceof Error ? err.message : String(err)),
+      }).pipe(
+        Effect.catchAll((errMsg) => {
+          pluginLog.error({ err: errMsg }, "Plugin initializeAll threw unexpectedly");
+          return Effect.succeed({ succeeded: [] as string[], failed: [] as string[] });
+        }),
       );
       if (failed.length > 0) {
         pluginLog.error(
@@ -520,43 +549,87 @@ export function makeWiredPluginRegistryLive(
       }
 
       // --- Wire datasources (ConnectionRegistry from Layer context) ---
-      yield* Effect.promise(async () => {
-        const { wireDatasourcePlugins } = await import(
-          "@atlas/api/lib/plugins/wiring"
-        );
-        // Bridge: PluginRegistryShape ↔ class (structural match for getByType)
-        return wireDatasourcePlugins(
-          impl,
-          connRegistry as unknown as ConnectionRegistryClass,
-        );
-      });
+      // Bridge: ConnectionRegistryShape ↔ class (structural match for registerDirect)
+      const dsResult = yield* Effect.tryPromise({
+        try: async () => {
+          const { wireDatasourcePlugins } = await import(
+            "@atlas/api/lib/plugins/wiring"
+          );
+          return wireDatasourcePlugins(
+            impl,
+            connRegistry as unknown as ConnectionRegistryClass,
+          );
+        },
+        catch: (err) => (err instanceof Error ? err.message : String(err)),
+      }).pipe(
+        Effect.catchAll((errMsg) => {
+          pluginLog.error({ err: errMsg }, "Datasource wiring failed entirely");
+          return Effect.succeed({ wired: [] as string[], failed: [] as Array<{ pluginId: string; error: string }>, dialectHints: [] as Array<{ pluginId: string; dialect: string }>, entityFailures: [] as Array<{ pluginId: string; error: string }> });
+        }),
+      );
+      if (dsResult.failed.length > 0) {
+        pluginLog.error({ failed: dsResult.failed }, "Some datasource plugins failed to wire");
+      }
 
       // --- Wire actions ---
       if (config.toolRegistry) {
-        yield* Effect.promise(async () => {
-          const { wireActionPlugins } = await import(
-            "@atlas/api/lib/plugins/wiring"
-          );
-          return wireActionPlugins(impl, config.toolRegistry as never);
-        });
+        const actResult = yield* Effect.tryPromise({
+          try: async () => {
+            const { wireActionPlugins } = await import(
+              "@atlas/api/lib/plugins/wiring"
+            );
+            return wireActionPlugins(impl, config.toolRegistry as never);
+          },
+          catch: (err) => (err instanceof Error ? err.message : String(err)),
+        }).pipe(
+          Effect.catchAll((errMsg) => {
+            pluginLog.error({ err: errMsg }, "Action wiring failed entirely");
+            return Effect.succeed({ wired: [] as string[], failed: [] as Array<{ pluginId: string; error: string }> });
+          }),
+        );
+        if (actResult.failed.length > 0) {
+          pluginLog.error({ failed: actResult.failed }, "Some action plugins failed to wire");
+        }
       }
 
       // --- Wire context ---
-      yield* Effect.promise(async () => {
-        const { wireContextPlugins } = await import(
-          "@atlas/api/lib/plugins/wiring"
-        );
-        return wireContextPlugins(impl);
-      });
+      const ctxResult = yield* Effect.tryPromise({
+        try: async () => {
+          const { wireContextPlugins } = await import(
+            "@atlas/api/lib/plugins/wiring"
+          );
+          return wireContextPlugins(impl);
+        },
+        catch: (err) => (err instanceof Error ? err.message : String(err)),
+      }).pipe(
+        Effect.catchAll((errMsg) => {
+          pluginLog.error({ err: errMsg }, "Context wiring failed entirely");
+          return Effect.succeed({ fragments: [] as string[], failed: [] as Array<{ pluginId: string; error: string }> });
+        }),
+      );
+      if (ctxResult.failed.length > 0) {
+        pluginLog.error({ failed: ctxResult.failed }, "Some context plugins failed to load");
+      }
 
       // --- Wire interaction routes ---
       if (config.app) {
-        yield* Effect.promise(async () => {
-          const { wireInteractionPlugins } = await import(
-            "@atlas/api/lib/plugins/wiring"
-          );
-          return wireInteractionPlugins(impl, config.app);
-        });
+        const intResult = yield* Effect.tryPromise({
+          try: async () => {
+            const { wireInteractionPlugins } = await import(
+              "@atlas/api/lib/plugins/wiring"
+            );
+            return wireInteractionPlugins(impl, config.app);
+          },
+          catch: (err) => (err instanceof Error ? err.message : String(err)),
+        }).pipe(
+          Effect.catchAll((errMsg) => {
+            pluginLog.error({ err: errMsg }, "Interaction wiring failed entirely");
+            return Effect.succeed({ wired: [] as string[], failed: [] as Array<{ pluginId: string; error: string }> });
+          }),
+        );
+        if (intResult.failed.length > 0) {
+          pluginLog.error({ failed: intResult.failed }, "Some interaction plugins failed to wire");
+        }
       }
 
       return yield* buildPluginService(impl);

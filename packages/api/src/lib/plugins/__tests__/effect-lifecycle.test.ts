@@ -103,7 +103,7 @@ describe("PluginRegistry Effect Service", () => {
         }).pipe(Effect.provide(layer)),
       );
 
-      // teardownAll runs in LIFO order via addFinalizer when scope closes
+      // addFinalizer triggers teardownAll on scope close; teardownAll iterates LIFO internally
       expect(teardownOrder).toEqual(["second", "first"]);
     });
 
@@ -288,8 +288,51 @@ describe("PluginRegistry Effect Service", () => {
         }).pipe(Effect.provide(fullLayer)),
       );
 
-      // LIFO teardown via addFinalizer
+      // LIFO teardown via addFinalizer → teardownAll (reverse order internally)
       expect(teardownOrder).toEqual(["b", "a"]);
+    });
+
+    test("continues when some plugins fail to initialize", async () => {
+      const config: PluginWiringConfig = {
+        plugins: [
+          makePlugin({ id: "good" }),
+          makePlugin({
+            id: "bad",
+            initialize: async () => {
+              throw new Error("init boom");
+            },
+          }),
+          makePlugin({ id: "also-good" }),
+        ],
+        context: minimalCtx,
+      };
+
+      const pluginLayer = makeWiredPluginRegistryLive(
+        config,
+        () => new PluginRegistryClass(),
+      );
+      const connLayer = createTestLayer({
+        list: () => [],
+        registerDirect: () => {},
+      });
+      const fullLayer = Layer.provide(pluginLayer, connLayer);
+
+      const result = await Effect.runPromise(
+        Effect.gen(function* () {
+          const registry = yield* PluginRegistry;
+          return {
+            descriptions: registry.describe(),
+            healthy: registry.getAllHealthy().map((p) => p.id),
+          };
+        }).pipe(Effect.provide(fullLayer)),
+      );
+
+      // Layer constructed successfully despite partial failure
+      expect(result.descriptions).toHaveLength(3);
+      expect(result.healthy).toEqual(["good", "also-good"]);
+      expect(
+        result.descriptions.find((d) => d.id === "bad")?.status,
+      ).toBe("unhealthy");
     });
   });
 

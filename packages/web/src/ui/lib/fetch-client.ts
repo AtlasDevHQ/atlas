@@ -1,7 +1,7 @@
 /**
  * Lightweight typed fetch wrapper for Atlas API calls.
  * Centralizes URL construction, header injection, credential handling,
- * and error behavior so callers don't repeat the same 6-line pattern.
+ * and error behavior so callers don't repeat the same fetch pattern.
  */
 
 export interface AtlasFetchOptions {
@@ -25,17 +25,25 @@ export function createAtlasFetch(opts: AtlasFetchOptions): AtlasFetch {
     path: string,
     body?: unknown,
   ): Promise<Response> {
-    return fetch(`${opts.apiUrl}${path}`, {
-      method,
-      headers: {
-        ...opts.getHeaders(),
-        ...(body !== undefined
-          ? { "Content-Type": "application/json" }
-          : {}),
-      },
-      credentials: opts.getCredentials(),
-      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
-    });
+    try {
+      return await fetch(`${opts.apiUrl}${path}`, {
+        method,
+        headers: {
+          ...opts.getHeaders(),
+          ...(body !== undefined
+            ? { "Content-Type": "application/json" }
+            : {}),
+        },
+        credentials: opts.getCredentials(),
+        ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`fetch ${method} ${path}: network error:`, msg);
+      throw new Error(`Network error during ${method} ${path}: ${msg}`, {
+        cause: err,
+      });
+    }
   }
 
   async function request<T>(
@@ -53,7 +61,16 @@ export function createAtlasFetch(opts: AtlasFetchOptions): AtlasFetch {
     // Handle 204 No Content
     if (res.status === 204) return undefined as T;
 
-    return res.json() as Promise<T>;
+    try {
+      return (await res.json()) as T;
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`fetch ${method} ${path}: invalid JSON response:`, msg);
+      throw new Error(
+        `Invalid JSON response from ${method} ${path} (HTTP ${res.status})`,
+        { cause: err },
+      );
+    }
   }
 
   return {

@@ -124,6 +124,32 @@ describe("createAtlasFetch", () => {
         "Failed to POST /bad (HTTP 400)",
       );
     });
+
+    it("wraps network errors with context", async () => {
+      fetchSpy.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+      const api = createAtlasFetch(defaultOpts);
+      await expect(api.get("/items")).rejects.toThrow(
+        "Network error during GET /items: Failed to fetch",
+      );
+    });
+
+    it("wraps network errors for raw() with context", async () => {
+      fetchSpy.mockRejectedValueOnce(new TypeError("Failed to fetch"));
+      const api = createAtlasFetch(defaultOpts);
+      await expect(api.raw("POST", "/test")).rejects.toThrow(
+        "Network error during POST /test: Failed to fetch",
+      );
+    });
+
+    it("wraps JSON parse errors with context", async () => {
+      fetchSpy.mockResolvedValueOnce(
+        new Response("not json", { status: 200 }),
+      );
+      const api = createAtlasFetch(defaultOpts);
+      await expect(api.get("/html")).rejects.toThrow(
+        "Invalid JSON response from GET /html (HTTP 200)",
+      );
+    });
   });
 
   describe("204 No Content", () => {

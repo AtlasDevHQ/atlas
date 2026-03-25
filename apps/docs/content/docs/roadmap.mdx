@@ -104,22 +104,15 @@ Documentation and hardening companion to 0.9.0. Guide pages for all SaaS feature
 
 Systematic audit of all 354 docs pages for persona clarity. Phase 1 classified every page by audience (end user, workspace admin, platform operator) and identified framing issues. Phase 2 reframed deployment/config and enterprise guides for correct audiences, relocated misplaced operator/developer guides, added persona callout sections to mixed-audience and security reference pages, and improved plugin interaction docs with Chat SDK adapter splits and email digest sections.
 
----
+### 0.9.3 — Architecture Deepening
 
-## 0.9.3 — Architecture Deepening
-
-The current milestone. Module-deepening refactors from systematic codebase exploration to reduce duplication, improve testability, and make the codebase more navigable before the 1.0.0 launch.
-
-- **Plugin SDK** — Plugin initialization factory, health check and lazy-loading utilities
-- **API routes** — OpenAPI schema factories for admin routes
-- **Frontend** — Conversation fetch client extraction
-- **Shipped** — Route handler error wrapper, AdminContentWrapper adoption, ResultCardBase, auth error dedup, shared fetch error utility
+Systematic module-deepening refactors from codebase exploration. Route handler error wrapper eliminated 155 try-catch blocks across 33 files (-852 lines). AdminContentWrapper adopted across all 30 admin pages (-302 lines). OpenAPI schema factories consolidated duplicated Zod schemas across 10 admin route files. Conversation fetch client extracted 10 duplicated fetch patterns into a typed client. ResultCardBase unified SQL and Python card rendering. Shared utilities shipped for admin error handling, pagination, and EE test mocks. Plugin SDK refactors deferred to 0.9.4 Effect.ts migration.
 
 ---
 
 ## 0.9.4 — Effect.ts Migration
 
-Incremental adoption of [Effect.ts](https://effect.website) across the API server. Typed errors replace untyped catch blocks, dependency injection via Effect Layers replaces global singletons, scoped resources guarantee cleanup for database pools and plugin lifecycles, and structured concurrency replaces manual timer management in the scheduler.
+The current milestone. Incremental adoption of [Effect.ts](https://effect.website) across the API server. Typed errors replace untyped catch blocks, dependency injection via Effect Layers replaces global singletons, scoped resources guarantee cleanup for database pools and plugin lifecycles, and structured concurrency replaces manual timer management in the scheduler.
 
 - **Foundation** — Tagged error types, Effect-to-Hono bridge for route handlers
 - **Infrastructure** — SQL pipeline, rate limiting, scheduler, and connection pools rewritten with Effect primitives

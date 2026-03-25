@@ -72,13 +72,13 @@ export function withErrorHandler<H extends (c: any) => any>(
       // within the handler, and adminAuthAndContext auth failures.
       if (err instanceof HTTPException) throw err;
 
-      // Map known domain/enterprise errors to HTTPExceptions.
+      // Map known enterprise/domain errors to HTTPExceptions.
       // throwIfEEError always checks EnterpriseError (→ 403) first, then each
       // provided mapping. If the error matches, it throws an HTTPException
       // which propagates to the router's onError handler (eeOnError).
-      if (domainErrors.length > 0) {
-        throwIfEEError(err, ...domainErrors);
-      }
+      // Called unconditionally so EnterpriseError is always surfaced as 403,
+      // even for handlers that don't provide domain error mappings.
+      throwIfEEError(err, ...domainErrors);
 
       // Unexpected error — log and return 500
       const error = err instanceof Error ? err : new Error(String(err));

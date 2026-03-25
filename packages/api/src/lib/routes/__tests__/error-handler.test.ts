@@ -199,9 +199,9 @@ describe("withErrorHandler", () => {
     expect(body.message).toBe("Failed to update resource.");
   });
 
-  // ── Without domain mappings → no throwIfEEError call ───────────────
+  // ── Without domain mappings → domain errors fall to 500 ─────────────
 
-  it("returns 500 without attempting domain mapping when no mappings provided", async () => {
+  it("returns 500 for domain errors when no mappings provided", async () => {
     const app = createApp();
     app.get(
       "/no-mappings",
@@ -216,6 +216,47 @@ describe("withErrorHandler", () => {
     expect(res.status).toBe(500);
     const body = (await res.json()) as Record<string, unknown>;
     expect(body.error).toBe("internal_error");
+  });
+
+  // ── EnterpriseError always maps to 403 ─────────────────────────────
+
+  it("maps EnterpriseError to 403 even without domain mappings", async () => {
+    // Dynamically import EnterpriseError to match real usage
+    const { EnterpriseError } = await import("@atlas/ee/index");
+
+    const app = createApp();
+    app.get(
+      "/ee-no-mappings",
+      withErrorHandler("enterprise action", async () => {
+        throw new EnterpriseError("Feature requires enterprise license.");
+      }),
+    );
+
+    const res = await app.request("/ee-no-mappings");
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.error).toBe("enterprise_required");
+  });
+
+  it("maps EnterpriseError to 403 even when domain mappings are provided", async () => {
+    const { EnterpriseError } = await import("@atlas/ee/index");
+
+    const app = createApp();
+    app.get(
+      "/ee-with-mappings",
+      withErrorHandler(
+        "enterprise with mappings",
+        async () => {
+          throw new EnterpriseError("Enterprise only.");
+        },
+        [TestApprovalError, TEST_ERROR_STATUS],
+      ),
+    );
+
+    const res = await app.request("/ee-with-mappings");
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.error).toBe("enterprise_required");
   });
 
   // ── Preserves handler return type ──────────────────────────────────

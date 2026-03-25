@@ -21,11 +21,12 @@ interface ServiceState {
 
 const POLL_INTERVAL_MS = 30_000;
 
-const SERVICES: { name: string; description: string; url: string }[] = [
+const SERVICES: { name: string; description: string; url: string; proxy?: boolean }[] = [
   {
     name: "API",
     description: "Core API and agent engine",
-    url: "https://api.useatlas.dev/api/health",
+    url: "/api/health",
+    proxy: true,
   },
   {
     name: "Web App",
@@ -56,21 +57,32 @@ async function checkService(
 
   try {
     const start = performance.now();
-    // no-cors avoids CORS preflight failures when checking cross-origin
-    // services from the landing page domain. Returns opaque response
-    // (status 0) when reachable, throws on genuine network failure.
-    const res = await fetch(svc.url, {
+
+    if (svc.proxy) {
+      // Same-origin proxy route — fetches API health server-side, no CORS.
+      // Returns { status: "operational" | "degraded" | "down", latencyMs? }
+      const res = await fetch(svc.url, {
+        signal: controller.signal,
+        cache: "no-store",
+      });
+      const latencyMs = Math.round(performance.now() - start);
+      const body = (await res.json()) as { status?: string; latencyMs?: number };
+      const status: ServiceStatus =
+        body.status === "operational" || body.status === "degraded"
+          ? body.status
+          : "down";
+      return { status, latencyMs: body.latencyMs ?? latencyMs };
+    }
+
+    // Cross-origin services: no-cors avoids CORS preflight failures.
+    // Returns opaque response when reachable, throws on network failure.
+    await fetch(svc.url, {
       method: "HEAD",
       signal: controller.signal,
       mode: "no-cors",
       cache: "no-store",
     });
-    const latencyMs = Math.round(performance.now() - start);
-
-    // no-cors produces opaque responses (type "opaque", status 0) — a
-    // successful fetch without throwing means the service is reachable.
-    void res;
-    return { status: "operational", latencyMs };
+    return { status: "operational", latencyMs: Math.round(performance.now() - start) };
   } catch (err) {
     console.debug(
       `[status] Health check failed for ${svc.name}:`,

@@ -1,130 +1,193 @@
 /**
- * Tests for per-source rate limiting.
+ * Tests for per-source rate limiting (Effect-based).
  */
 import { describe, it, expect, afterEach } from "bun:test";
+import { Effect, Exit, Cause, Option } from "effect";
 import {
-  checkSourceRateLimit,
   registerSourceRateLimit,
   clearSourceRateLimit,
-  incrementSourceConcurrency,
-  decrementSourceConcurrency,
+  acquireSlot,
+  withSourceSlot,
   _resetSourceRateLimits,
-  _stopSourceRateLimitCleanup,
 } from "../source-rate-limit";
+import { RateLimitExceededError, ConcurrencyLimitError } from "@atlas/api/lib/effect/errors";
 
 afterEach(() => {
   _resetSourceRateLimits();
 });
 
-// Stop cleanup timer so it doesn't keep test runner alive
-afterEach(() => {
-  _stopSourceRateLimitCleanup();
-});
+// ── Helpers ────────────────────────────────────────────────────────
 
-describe("per-source rate limiting", () => {
+/** Run acquireSlot and return the Exit (success or tagged error). */
+const tryAcquire = (sourceId: string) =>
+  Effect.runPromiseExit(acquireSlot(sourceId));
+
+/** Extract the typed failure from an Exit, or undefined on success. */
+function getFailure(exit: Exit.Exit<void, RateLimitExceededError | ConcurrencyLimitError>) {
+  if (Exit.isFailure(exit)) {
+    const opt = Cause.failureOption(exit.cause);
+    return Option.isSome(opt) ? opt.value : undefined;
+  }
+  return undefined;
+}
+
+// ── Tests ──────────────────────────────────────────────────────────
+
+describe("per-source rate limiting (Effect)", () => {
   describe("QPM enforcement", () => {
-    it("allows queries under the limit", () => {
+    it("allows queries under the limit", async () => {
       registerSourceRateLimit("test", { queriesPerMinute: 5, concurrency: 10 });
       for (let i = 0; i < 5; i++) {
-        expect(checkSourceRateLimit("test").allowed).toBe(true);
+        const exit = await tryAcquire("test");
+        expect(Exit.isSuccess(exit)).toBe(true);
       }
     });
 
-    it("blocks queries over the QPM limit", () => {
+    it("blocks queries over the QPM limit", async () => {
       registerSourceRateLimit("test", { queriesPerMinute: 3, concurrency: 10 });
-      expect(checkSourceRateLimit("test").allowed).toBe(true);
-      expect(checkSourceRateLimit("test").allowed).toBe(true);
-      expect(checkSourceRateLimit("test").allowed).toBe(true);
-      const result = checkSourceRateLimit("test");
-      expect(result.allowed).toBe(false);
-      expect(result.reason).toContain("QPM limit reached");
-      expect(result.retryAfterMs).toBeGreaterThan(0);
+      await Effect.runPromise(acquireSlot("test"));
+      await Effect.runPromise(acquireSlot("test"));
+      await Effect.runPromise(acquireSlot("test"));
+
+      const exit = await tryAcquire("test");
+      expect(Exit.isFailure(exit)).toBe(true);
+      const err = getFailure(exit);
+      expect(err).toBeInstanceOf(RateLimitExceededError);
+      expect(err!.message).toContain("QPM limit reached");
+      expect((err as RateLimitExceededError).retryAfterMs).toBeGreaterThan(0);
     });
 
-    it("uses default limit (60 QPM) when no custom limit is set", () => {
+    it("uses default limit (60 QPM) when no custom limit is set", async () => {
+      // Use withSourceSlot so concurrency is released between calls
       for (let i = 0; i < 60; i++) {
-        expect(checkSourceRateLimit("unregistered").allowed).toBe(true);
+        await Effect.runPromise(withSourceSlot("unregistered", Effect.void));
       }
-      expect(checkSourceRateLimit("unregistered").allowed).toBe(false);
+      const exit = await tryAcquire("unregistered");
+      expect(Exit.isFailure(exit)).toBe(true);
     });
   });
 
   describe("concurrency enforcement", () => {
-    it("allows queries under the concurrency limit", () => {
+    it("allows queries under the concurrency limit", async () => {
       registerSourceRateLimit("test", { queriesPerMinute: 100, concurrency: 2 });
-      incrementSourceConcurrency("test");
-      expect(checkSourceRateLimit("test").allowed).toBe(true);
+      await Effect.runPromise(acquireSlot("test"));
+      const exit = await tryAcquire("test");
+      expect(Exit.isSuccess(exit)).toBe(true);
     });
 
-    it("blocks queries at the concurrency limit", () => {
+    it("blocks queries at the concurrency limit", async () => {
       registerSourceRateLimit("test", { queriesPerMinute: 100, concurrency: 2 });
-      incrementSourceConcurrency("test");
-      incrementSourceConcurrency("test");
-      const result = checkSourceRateLimit("test");
-      expect(result.allowed).toBe(false);
-      expect(result.reason).toContain("concurrency limit reached");
+      await Effect.runPromise(acquireSlot("test"));
+      await Effect.runPromise(acquireSlot("test"));
+
+      const exit = await tryAcquire("test");
+      expect(Exit.isFailure(exit)).toBe(true);
+      const err = getFailure(exit);
+      expect(err).toBeInstanceOf(ConcurrencyLimitError);
+      expect(err!.message).toContain("concurrency limit reached");
     });
 
-    it("allows queries after decrementing concurrency", () => {
+    it("allows queries after withSourceSlot releases", async () => {
       registerSourceRateLimit("test", { queriesPerMinute: 100, concurrency: 1 });
-      incrementSourceConcurrency("test");
-      expect(checkSourceRateLimit("test").allowed).toBe(false);
-      decrementSourceConcurrency("test");
-      expect(checkSourceRateLimit("test").allowed).toBe(true);
+
+      // withSourceSlot acquires, runs the effect, and releases
+      await Effect.runPromise(withSourceSlot("test", Effect.void));
+
+      // Slot is released — next acquire should succeed
+      const exit = await tryAcquire("test");
+      expect(Exit.isSuccess(exit)).toBe(true);
+    });
+  });
+
+  describe("withSourceSlot scoped resource", () => {
+    it("releases slot on success", async () => {
+      registerSourceRateLimit("test", { queriesPerMinute: 100, concurrency: 1 });
+
+      await Effect.runPromise(
+        withSourceSlot("test", Effect.succeed("ok")),
+      );
+
+      // Concurrency released — can acquire again
+      const exit = await tryAcquire("test");
+      expect(Exit.isSuccess(exit)).toBe(true);
     });
 
-    it("concurrency does not go below zero", () => {
-      decrementSourceConcurrency("test");
-      decrementSourceConcurrency("test");
-      // Should not throw, count stays at 0
-      expect(checkSourceRateLimit("test").allowed).toBe(true);
+    it("releases slot on failure", async () => {
+      registerSourceRateLimit("test", { queriesPerMinute: 100, concurrency: 1 });
+
+      const exit = await Effect.runPromiseExit(
+        withSourceSlot("test", Effect.fail("boom")),
+      );
+      expect(Exit.isFailure(exit)).toBe(true);
+
+      // Concurrency released even though inner effect failed
+      const nextExit = await tryAcquire("test");
+      expect(Exit.isSuccess(nextExit)).toBe(true);
+    });
+
+    it("returns the inner effect result on success", async () => {
+      const result = await Effect.runPromise(
+        withSourceSlot("test", Effect.succeed(42)),
+      );
+      expect(result).toBe(42);
+    });
+
+    it("propagates rate-limit error without acquiring", async () => {
+      registerSourceRateLimit("test", { queriesPerMinute: 1, concurrency: 10 });
+      await Effect.runPromise(acquireSlot("test")); // exhaust QPM
+
+      const exit = await Effect.runPromiseExit(
+        withSourceSlot("test", Effect.succeed("should not reach")),
+      );
+      expect(Exit.isFailure(exit)).toBe(true);
+      const err = getFailure(exit as Exit.Exit<void, RateLimitExceededError | ConcurrencyLimitError>);
+      expect(err).toBeInstanceOf(RateLimitExceededError);
     });
   });
 
   describe("per-source isolation", () => {
-    it("limits are independent per source", () => {
+    it("limits are independent per source", async () => {
       registerSourceRateLimit("a", { queriesPerMinute: 2, concurrency: 10 });
       registerSourceRateLimit("b", { queriesPerMinute: 2, concurrency: 10 });
 
-      expect(checkSourceRateLimit("a").allowed).toBe(true);
-      expect(checkSourceRateLimit("a").allowed).toBe(true);
-      expect(checkSourceRateLimit("a").allowed).toBe(false); // a is at limit
+      await Effect.runPromise(acquireSlot("a"));
+      await Effect.runPromise(acquireSlot("a"));
+      expect(Exit.isFailure(await tryAcquire("a"))).toBe(true); // a is at limit
 
-      expect(checkSourceRateLimit("b").allowed).toBe(true); // b is independent
-      expect(checkSourceRateLimit("b").allowed).toBe(true);
+      expect(Exit.isSuccess(await tryAcquire("b"))).toBe(true); // b is independent
+      expect(Exit.isSuccess(await tryAcquire("b"))).toBe(true);
     });
   });
 
   describe("registerSourceRateLimit + clearSourceRateLimit", () => {
-    it("custom limits override defaults", () => {
-      registerSourceRateLimit("test", { queriesPerMinute: 2, concurrency: 1 });
-      expect(checkSourceRateLimit("test").allowed).toBe(true);
-      expect(checkSourceRateLimit("test").allowed).toBe(true);
-      expect(checkSourceRateLimit("test").allowed).toBe(false);
+    it("custom limits override defaults", async () => {
+      registerSourceRateLimit("test", { queriesPerMinute: 2, concurrency: 10 });
+      await Effect.runPromise(withSourceSlot("test", Effect.void));
+      await Effect.runPromise(withSourceSlot("test", Effect.void));
+      expect(Exit.isFailure(await tryAcquire("test"))).toBe(true); // QPM exhausted (2 used)
     });
 
-    it("clearSourceRateLimit reverts to defaults", () => {
+    it("clearSourceRateLimit reverts to defaults", async () => {
       registerSourceRateLimit("test", { queriesPerMinute: 1, concurrency: 10 });
-      expect(checkSourceRateLimit("test").allowed).toBe(true);
-      expect(checkSourceRateLimit("test").allowed).toBe(false);
+      await Effect.runPromise(acquireSlot("test"));
+      expect(Exit.isFailure(await tryAcquire("test"))).toBe(true);
 
       _resetSourceRateLimits();
       clearSourceRateLimit("test");
       // Should use default (60 QPM) — should allow
-      expect(checkSourceRateLimit("test").allowed).toBe(true);
+      expect(Exit.isSuccess(await tryAcquire("test"))).toBe(true);
     });
   });
 
   describe("_resetSourceRateLimits", () => {
-    it("clears all state", () => {
+    it("clears all state", async () => {
       registerSourceRateLimit("test", { queriesPerMinute: 1, concurrency: 1 });
-      incrementSourceConcurrency("test");
-      checkSourceRateLimit("test");
+      await Effect.runPromise(acquireSlot("test"));
 
       _resetSourceRateLimits();
 
       // After reset, limits/concurrency/windows are cleared
-      expect(checkSourceRateLimit("test").allowed).toBe(true);
+      expect(Exit.isSuccess(await tryAcquire("test"))).toBe(true);
     });
   });
 });

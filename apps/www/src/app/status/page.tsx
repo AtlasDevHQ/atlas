@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback, type ReactNode } from "react";
+import { useEffect, useState } from "react";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -63,33 +63,46 @@ async function checkService(
     const res = await fetch(svc.url, {
       method: svc.kind === "http" ? "HEAD" : "GET",
       signal: controller.signal,
-      mode: "cors",
+      // no-cors for HTTP services: returns opaque response (status 0) when
+      // reachable, throws on genuine network failure. Avoids false positives
+      // from CORS preflight blocks on cross-origin HEAD requests.
+      mode: svc.kind === "http" ? "no-cors" : "cors",
       cache: "no-store",
     });
     const latencyMs = Math.round(performance.now() - start);
 
-    if (svc.kind === "api") {
-      if (!res.ok) return { status: "down", latencyMs };
-      try {
-        const body = (await res.json()) as { status?: string };
-        if (body.status === "degraded") return { status: "degraded", latencyMs };
-        if (body.status === "error") return { status: "down", latencyMs };
-      } catch {
-        // JSON parse failed — still got a response, treat as degraded
-        return { status: "degraded", latencyMs };
-      }
+    // no-cors produces opaque responses — a successful fetch means reachable
+    if (svc.kind === "http") {
       return { status: "operational", latencyMs };
     }
 
-    // HTTP-only services — any 2xx/3xx is operational
-    return { status: res.ok ? "operational" : "down", latencyMs };
-  } catch {
-    // Network error, CORS block, or timeout — cannot determine status
-    // For non-API services, CORS blocks on HEAD are expected (opaque response),
-    // so we fall back to "operational" assumption when we can't reach them
-    if (svc.kind === "http") {
-      return { status: "operational" };
+    // API health endpoint — expects { status: "ok" | "degraded" | "error" }
+    // per HealthResponseSchema in packages/api/src/api/routes/health.ts
+    if (!res.ok) return { status: "down", latencyMs };
+    try {
+      const body = (await res.json()) as { status?: string };
+      if (body.status === "ok") return { status: "operational", latencyMs };
+      if (body.status === "degraded") return { status: "degraded", latencyMs };
+      // Any unrecognized status (including "error", though !res.ok catches 503)
+      return { status: "degraded", latencyMs };
+    } catch (err) {
+      console.debug(
+        `[status] JSON parse failed for ${svc.name}:`,
+        err instanceof Error ? err.message : String(err),
+      );
+      return { status: "degraded", latencyMs };
     }
+  } catch (err) {
+    console.debug(
+      `[status] Health check failed for ${svc.name}:`,
+      err instanceof Error ? err.message : String(err),
+    );
+    // Timeout means unresponsive — that's down regardless of service type
+    if (err instanceof DOMException && err.name === "AbortError") {
+      return { status: "down" };
+    }
+    // For API, any network error is down. For HTTP with no-cors, a thrown
+    // error means the server is genuinely unreachable (not just CORS).
     return { status: "down" };
   } finally {
     clearTimeout(timeout);
@@ -113,31 +126,27 @@ function deriveOverallStatus(services: ServiceState[]): ServiceStatus {
 
 const STATUS_CONFIG: Record<
   ServiceStatus,
-  { label: string; dotClass: string; textClass: string; bgClass: string }
+  { label: string; dotClass: string; textClass: string }
 > = {
   operational: {
     label: "Operational",
-    dotClass: "bg-emerald-500",
+    dotClass: "bg-emerald-500 shadow-[0_0_6px_rgba(16,185,129,0.4)]",
     textClass: "text-emerald-400",
-    bgClass: "bg-emerald-500/10 border-emerald-500/20",
   },
   degraded: {
     label: "Degraded",
-    dotClass: "bg-amber-500",
+    dotClass: "bg-amber-500 shadow-[0_0_6px_rgba(245,158,11,0.4)]",
     textClass: "text-amber-400",
-    bgClass: "bg-amber-500/10 border-amber-500/20",
   },
   down: {
     label: "Down",
-    dotClass: "bg-red-500",
+    dotClass: "bg-red-500 shadow-[0_0_6px_rgba(239,68,68,0.4)]",
     textClass: "text-red-400",
-    bgClass: "bg-red-500/10 border-red-500/20",
   },
   checking: {
     label: "Checking...",
     dotClass: "bg-zinc-500 animate-pulse",
     textClass: "text-zinc-500",
-    bgClass: "bg-zinc-500/10 border-zinc-500/20",
   },
 };
 
@@ -161,7 +170,11 @@ const OVERALL_BANNERS: Record<ServiceStatus, { message: string; className: strin
 };
 
 function StatusDot({ status }: { status: ServiceStatus }) {
-  return <span className={`inline-block h-2 w-2 rounded-full ${STATUS_CONFIG[status].dotClass}`} />;
+  return (
+    <span
+      className={`inline-block h-2 w-2 shrink-0 rounded-full transition-colors duration-500 ${STATUS_CONFIG[status].dotClass}`}
+    />
+  );
 }
 
 function formatTime(date: Date): string {
@@ -193,7 +206,13 @@ function AtlasLogo({ className }: { className?: string }) {
 
 function ArrowLeftIcon() {
   return (
-    <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+    <svg
+      className="h-4 w-4 transition-transform duration-200 group-hover:-translate-x-0.5"
+      fill="none"
+      viewBox="0 0 24 24"
+      stroke="currentColor"
+      strokeWidth={2}
+    >
       <path strokeLinecap="round" strokeLinejoin="round" d="M10.5 19.5L3 12m0 0l7.5-7.5M3 12h18" />
     </svg>
   );
@@ -209,27 +228,29 @@ export default function StatusPage() {
   );
   const [lastChecked, setLastChecked] = useState<Date | null>(null);
 
-  const runChecks = useCallback(async () => {
-    const results = await Promise.all(
-      SERVICES.map(async (svc) => {
-        const result = await checkService(svc);
-        return {
-          name: svc.name,
-          description: svc.description,
-          status: result.status,
-          latencyMs: result.latencyMs,
-        };
-      }),
-    );
-    setServices(results);
-    setLastChecked(new Date());
-  }, []);
-
   useEffect(() => {
+    async function runChecks() {
+      try {
+        const results = await Promise.all(
+          SERVICES.map(async (svc) => ({
+            name: svc.name,
+            description: svc.description,
+            ...(await checkService(svc)),
+          })),
+        );
+        setServices(results);
+        setLastChecked(new Date());
+      } catch (err) {
+        console.warn(
+          "[status] Health check polling failed:",
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+    }
     runChecks();
     const id = setInterval(runChecks, POLL_INTERVAL_MS);
     return () => clearInterval(id);
-  }, [runChecks]);
+  }, []);
 
   const overall = deriveOverallStatus(services);
   const banner = OVERALL_BANNERS[overall];
@@ -246,10 +267,10 @@ export default function StatusPage() {
       />
 
       {/* Header */}
-      <header className="mx-auto max-w-3xl px-6 pt-12 pb-8">
+      <header className="animate-fade-in-up mx-auto max-w-3xl px-6 pt-12 pb-8">
         <a
           href="/"
-          className="mb-8 inline-flex items-center gap-2 text-xs text-zinc-600 transition-colors hover:text-zinc-400"
+          className="group mb-8 inline-flex items-center gap-2 text-xs text-zinc-600 transition-colors hover:text-zinc-400"
         >
           <ArrowLeftIcon />
           Back to Atlas
@@ -263,8 +284,10 @@ export default function StatusPage() {
       </header>
 
       {/* Overall status banner */}
-      <div className="mx-auto max-w-3xl px-6 pb-8">
-        <div className={`rounded-xl border px-6 py-5 ${banner.className}`}>
+      <div className="animate-fade-in-up delay-100 mx-auto max-w-3xl px-6 pb-8">
+        <div
+          className={`rounded-xl border px-6 py-5 transition-colors duration-500 ${banner.className}`}
+        >
           <div className="flex items-center gap-3">
             <StatusDot status={overall} />
             <span className="font-mono text-sm font-medium">{banner.message}</span>
@@ -273,28 +296,32 @@ export default function StatusPage() {
       </div>
 
       {/* Service list */}
-      <div className="mx-auto max-w-3xl px-6 pb-12">
+      <div className="animate-fade-in-up delay-200 mx-auto max-w-3xl px-6 pb-12">
         <div className="overflow-hidden rounded-xl border border-zinc-800/60">
           {services.map((svc, i) => {
             const config = STATUS_CONFIG[svc.status];
             return (
               <div
                 key={svc.name}
-                className={`flex items-center justify-between px-6 py-4${
+                className={`flex items-center justify-between gap-4 px-6 py-4 transition-colors duration-150 hover:bg-zinc-900/30${
                   i < services.length - 1 ? " border-b border-zinc-800/40" : ""
                 }`}
               >
-                <div>
+                <div className="min-w-0">
                   <p className="font-mono text-sm font-medium text-zinc-200">{svc.name}</p>
                   <p className="mt-0.5 text-xs text-zinc-500">{svc.description}</p>
                 </div>
-                <div className="flex items-center gap-3">
+                <div className="flex shrink-0 items-center gap-3">
                   {svc.latencyMs !== undefined && (
-                    <span className="font-mono text-xs text-zinc-600">{svc.latencyMs}ms</span>
+                    <span className="hidden font-mono text-xs text-zinc-600 sm:inline">
+                      {svc.latencyMs}ms
+                    </span>
                   )}
                   <div className="flex items-center gap-2">
                     <StatusDot status={svc.status} />
-                    <span className={`font-mono text-xs font-medium ${config.textClass}`}>
+                    <span
+                      className={`font-mono text-xs font-medium transition-colors duration-500 ${config.textClass}`}
+                    >
                       {config.label}
                     </span>
                   </div>
@@ -318,7 +345,7 @@ export default function StatusPage() {
       </div>
 
       {/* Incident history */}
-      <div className="mx-auto max-w-3xl px-6 py-12">
+      <div className="animate-fade-in delay-300 mx-auto max-w-3xl px-6 py-12">
         <h2 className="mb-6 font-mono text-xs tracking-widest text-brand/80 uppercase">
           Incident History
         </h2>

@@ -12,6 +12,7 @@
  */
 
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
+import { withErrorHandler } from "@atlas/api/lib/routes/error-handler";
 import { validationHook } from "./validation-hook";
 import { z } from "zod";
 import { createLogger } from "@atlas/api/lib/logger";
@@ -168,8 +169,7 @@ suggestions.use(standardAuth);
 suggestions.use(requestContext);
 
 // GET / — contextual suggestions by table
-suggestions.openapi(listSuggestionsRoute, async (c) => {
-  const requestId = c.get("requestId");
+suggestions.openapi(listSuggestionsRoute, withErrorHandler("fetch suggestions", async (c) => {
   const authResult = c.get("authResult");
 
   if (!hasInternalDB()) {
@@ -184,18 +184,12 @@ suggestions.openapi(listSuggestionsRoute, async (c) => {
   const { limit } = parsePagination(c, { limit: 10, maxLimit: 50 });
   const orgId = authResult.user?.activeOrganizationId ?? null;
 
-  try {
-    const rows = await getSuggestionsByTables(orgId, tables, limit);
-    return c.json({ suggestions: rows.map(toQuerySuggestion), total: rows.length }, 200);
-  } catch (err) {
-    log.error({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to fetch suggestions");
-    return c.json({ error: "internal_error", message: "Failed to fetch suggestions.", requestId }, 500);
-  }
-});
+  const rows = await getSuggestionsByTables(orgId, tables, limit);
+  return c.json({ suggestions: rows.map(toQuerySuggestion), total: rows.length }, 200);
+}));
 
 // GET /popular — top suggestions across all tables
-suggestions.openapi(listPopularRoute, async (c) => {
-  const requestId = c.get("requestId");
+suggestions.openapi(listPopularRoute, withErrorHandler("fetch suggestions", async (c) => {
   const authResult = c.get("authResult");
 
   if (!hasInternalDB()) {
@@ -205,14 +199,9 @@ suggestions.openapi(listPopularRoute, async (c) => {
   const { limit } = parsePagination(c, { limit: 10, maxLimit: 50 });
   const orgId = authResult.user?.activeOrganizationId ?? null;
 
-  try {
-    const rows = await getPopularSuggestions(orgId, limit);
-    return c.json({ suggestions: rows.map(toQuerySuggestion), total: rows.length }, 200);
-  } catch (err) {
-    log.error({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to fetch popular suggestions");
-    return c.json({ error: "internal_error", message: "Failed to fetch suggestions.", requestId }, 500);
-  }
-});
+  const rows = await getPopularSuggestions(orgId, limit);
+  return c.json({ suggestions: rows.map(toQuerySuggestion), total: rows.length }, 200);
+}));
 
 // POST /:id/click — track engagement
 suggestions.openapi(trackClickRoute, async (c) => {

@@ -13,13 +13,10 @@
  */
 
 import { createRoute, z } from "@hono/zod-openapi";
-import { createLogger } from "@atlas/api/lib/logger";
 import { RetentionError } from "@atlas/ee/audit/retention";
-import { throwIfEEError } from "./ee-error-handler";
+import { withErrorHandler } from "@atlas/api/lib/routes/error-handler";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
-
-const log = createLogger("admin-audit-retention");
 
 const RETENTION_ERROR_STATUS = { validation: 400, not_found: 404 } as const;
 
@@ -307,79 +304,52 @@ const adminAuditRetention = createAdminRouter();
 adminAuditRetention.use(requireOrgContext());
 
 // GET / — get current retention policy
-adminAuditRetention.openapi(getRetentionRoute, async (c) => {
-  const { requestId, orgId } = c.get("orgContext");
+adminAuditRetention.openapi(getRetentionRoute, withErrorHandler("get retention policy", async (c) => {
+  const { orgId } = c.get("orgContext");
 
-  try {
-    const { getRetentionPolicy } = await import("@atlas/ee/audit/retention");
-    const policy = await getRetentionPolicy(orgId);
-    return c.json({ policy }, 200);
-  } catch (err) {
-    throwIfEEError(err, [RetentionError, RETENTION_ERROR_STATUS]);
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to get retention policy");
-    return c.json({ error: "internal_error", message: "Failed to get retention policy.", requestId }, 500);
-  }
-});
+  const { getRetentionPolicy } = await import("@atlas/ee/audit/retention");
+  const policy = await getRetentionPolicy(orgId);
+  return c.json({ policy }, 200);
+}, [RetentionError, RETENTION_ERROR_STATUS]));
 
 // PUT / — update retention policy
-adminAuditRetention.openapi(updateRetentionRoute, async (c) => {
-  const { requestId, orgId } = c.get("orgContext");
+adminAuditRetention.openapi(updateRetentionRoute, withErrorHandler("update retention policy", async (c) => {
+  const { orgId } = c.get("orgContext");
   const authResult = c.get("authResult");
 
   const body = c.req.valid("json");
 
-  try {
-    const { setRetentionPolicy } = await import("@atlas/ee/audit/retention");
-    const policy = await setRetentionPolicy(
-      orgId,
-      {
-        retentionDays: body.retentionDays,
-        hardDeleteDelayDays: body.hardDeleteDelayDays,
-      },
-      authResult.user?.id ?? null,
-    );
-    return c.json({ policy }, 200);
-  } catch (err) {
-    throwIfEEError(err, [RetentionError, RETENTION_ERROR_STATUS]);
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to update retention policy");
-    return c.json({ error: "internal_error", message: "Failed to update retention policy.", requestId }, 500);
-  }
-});
+  const { setRetentionPolicy } = await import("@atlas/ee/audit/retention");
+  const policy = await setRetentionPolicy(
+    orgId,
+    {
+      retentionDays: body.retentionDays,
+      hardDeleteDelayDays: body.hardDeleteDelayDays,
+    },
+    authResult.user?.id ?? null,
+  );
+  return c.json({ policy }, 200);
+}, [RetentionError, RETENTION_ERROR_STATUS]));
 
 // POST /export — compliance export
-adminAuditRetention.openapi(exportRoute, async (c) => {
-  const { requestId, orgId } = c.get("orgContext");
+adminAuditRetention.openapi(exportRoute, withErrorHandler("export audit log", async (c) => {
+  const { orgId } = c.get("orgContext");
 
   const body = c.req.valid("json");
 
-  try {
-    const { exportAuditLog } = await import("@atlas/ee/audit/retention");
-    const result = await exportAuditLog({
-      orgId,
-      format: body.format,
-      startDate: body.startDate,
-      endDate: body.endDate,
-    });
+  const { exportAuditLog } = await import("@atlas/ee/audit/retention");
+  const result = await exportAuditLog({
+    orgId,
+    format: body.format,
+    startDate: body.startDate,
+    endDate: body.endDate,
+  });
 
-    if (result.format === "csv") {
-      const filename = `audit-log-${orgId}-${new Date().toISOString().slice(0, 10)}.csv`;
-      return new Response(result.content, {
-        headers: {
-          "Content-Type": "text/csv; charset=utf-8",
-          "Content-Disposition": `attachment; filename="${filename}"`,
-          ...(result.truncated && {
-            "X-Export-Truncated": "true",
-            "X-Export-Total": String(result.totalAvailable),
-          }),
-        },
-      });
-    }
-
-    // JSON format
-    const filename = `audit-log-${orgId}-${new Date().toISOString().slice(0, 10)}.json`;
+  if (result.format === "csv") {
+    const filename = `audit-log-${orgId}-${new Date().toISOString().slice(0, 10)}.csv`;
     return new Response(result.content, {
       headers: {
-        "Content-Type": "application/json; charset=utf-8",
+        "Content-Type": "text/csv; charset=utf-8",
         "Content-Disposition": `attachment; filename="${filename}"`,
         ...(result.truncated && {
           "X-Export-Truncated": "true",
@@ -387,41 +357,38 @@ adminAuditRetention.openapi(exportRoute, async (c) => {
         }),
       },
     });
-  } catch (err) {
-    throwIfEEError(err, [RetentionError, RETENTION_ERROR_STATUS]);
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to export audit log");
-    return c.json({ error: "internal_error", message: "Failed to export audit log.", requestId }, 500);
   }
-});
+
+  // JSON format
+  const filename = `audit-log-${orgId}-${new Date().toISOString().slice(0, 10)}.json`;
+  return new Response(result.content, {
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+      "Content-Disposition": `attachment; filename="${filename}"`,
+      ...(result.truncated && {
+        "X-Export-Truncated": "true",
+        "X-Export-Total": String(result.totalAvailable),
+      }),
+    },
+  });
+}, [RetentionError, RETENTION_ERROR_STATUS]));
 
 // POST /purge — manual soft-delete purge
-adminAuditRetention.openapi(purgeRoute, async (c) => {
-  const { requestId, orgId } = c.get("orgContext");
+adminAuditRetention.openapi(purgeRoute, withErrorHandler("purge audit log entries", async (c) => {
+  const { orgId } = c.get("orgContext");
 
-  try {
-    const { purgeExpiredEntries } = await import("@atlas/ee/audit/retention");
-    const results = await purgeExpiredEntries(orgId);
-    return c.json({ results }, 200);
-  } catch (err) {
-    throwIfEEError(err, [RetentionError, RETENTION_ERROR_STATUS]);
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to purge audit log");
-    return c.json({ error: "internal_error", message: "Failed to purge audit log entries.", requestId }, 500);
-  }
-});
+  const { purgeExpiredEntries } = await import("@atlas/ee/audit/retention");
+  const results = await purgeExpiredEntries(orgId);
+  return c.json({ results }, 200);
+}, [RetentionError, RETENTION_ERROR_STATUS]));
 
 // POST /hard-delete — manual hard-delete cleanup
-adminAuditRetention.openapi(hardDeleteRoute, async (c) => {
-  const { requestId, orgId } = c.get("orgContext");
+adminAuditRetention.openapi(hardDeleteRoute, withErrorHandler("hard-delete audit log entries", async (c) => {
+  const { orgId } = c.get("orgContext");
 
-  try {
-    const { hardDeleteExpired } = await import("@atlas/ee/audit/retention");
-    const result = await hardDeleteExpired(orgId);
-    return c.json(result, 200);
-  } catch (err) {
-    throwIfEEError(err, [RetentionError, RETENTION_ERROR_STATUS]);
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to hard-delete audit log entries");
-    return c.json({ error: "internal_error", message: "Failed to hard-delete audit log entries.", requestId }, 500);
-  }
-});
+  const { hardDeleteExpired } = await import("@atlas/ee/audit/retention");
+  const result = await hardDeleteExpired(orgId);
+  return c.json(result, 200);
+}, [RetentionError, RETENTION_ERROR_STATUS]));
 
 export { adminAuditRetention };

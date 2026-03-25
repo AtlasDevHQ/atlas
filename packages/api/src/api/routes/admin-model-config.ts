@@ -6,9 +6,8 @@
  */
 
 import { createRoute, z } from "@hono/zod-openapi";
-import { createLogger } from "@atlas/api/lib/logger";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
-import { throwIfEEError } from "./ee-error-handler";
+import { withErrorHandler } from "@atlas/api/lib/routes/error-handler";
 import {
   getWorkspaceModelConfig,
   setWorkspaceModelConfig,
@@ -18,8 +17,6 @@ import {
 } from "@atlas/ee/platform/model-routing";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter } from "./admin-router";
-
-const log = createLogger("admin-model-config");
 
 const MODEL_CONFIG_ERROR_STATUS = { validation: 400, not_found: 404, test_failed: 422 } as const;
 
@@ -271,7 +268,7 @@ const adminModelConfig = createAdminRouter();
 // external API keys without touching the internal database.
 
 // GET / — get workspace model configuration
-adminModelConfig.openapi(getConfigRoute, async (c) => {
+adminModelConfig.openapi(getConfigRoute, withErrorHandler("get workspace model config", async (c) => {
   const requestId = c.get("requestId");
   const authResult = c.get("authResult");
 
@@ -284,18 +281,12 @@ adminModelConfig.openapi(getConfigRoute, async (c) => {
     return c.json({ error: "bad_request", message: "No active organization. Set an active org first.", requestId }, 400);
   }
 
-  try {
-    const config = await getWorkspaceModelConfig(orgId);
-    return c.json({ config }, 200);
-  } catch (err) {
-    throwIfEEError(err, [ModelConfigError, MODEL_CONFIG_ERROR_STATUS]);
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to get workspace model config");
-    return c.json({ error: "internal_error", message: "Failed to get workspace model configuration.", requestId }, 500);
-  }
-});
+  const config = await getWorkspaceModelConfig(orgId);
+  return c.json({ config }, 200);
+}, [ModelConfigError, MODEL_CONFIG_ERROR_STATUS]));
 
 // PUT / — set workspace model configuration
-adminModelConfig.openapi(setConfigRoute, async (c) => {
+adminModelConfig.openapi(setConfigRoute, withErrorHandler("set workspace model config", async (c) => {
   const requestId = c.get("requestId");
   const authResult = c.get("authResult");
 
@@ -318,23 +309,17 @@ adminModelConfig.openapi(setConfigRoute, async (c) => {
     }
   }
 
-  try {
-    const config = await setWorkspaceModelConfig(orgId, {
-      provider: body.provider,
-      model: body.model,
-      apiKey: body.apiKey,
-      baseUrl: body.baseUrl,
-    });
-    return c.json({ config }, 200);
-  } catch (err) {
-    throwIfEEError(err, [ModelConfigError, MODEL_CONFIG_ERROR_STATUS]);
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to set workspace model config");
-    return c.json({ error: "internal_error", message: "Failed to save workspace model configuration.", requestId }, 500);
-  }
-});
+  const config = await setWorkspaceModelConfig(orgId, {
+    provider: body.provider,
+    model: body.model,
+    apiKey: body.apiKey,
+    baseUrl: body.baseUrl,
+  });
+  return c.json({ config }, 200);
+}, [ModelConfigError, MODEL_CONFIG_ERROR_STATUS]));
 
 // DELETE / — reset workspace model configuration
-adminModelConfig.openapi(deleteConfigRoute, async (c) => {
+adminModelConfig.openapi(deleteConfigRoute, withErrorHandler("delete workspace model config", async (c) => {
   const requestId = c.get("requestId");
   const authResult = c.get("authResult");
 
@@ -347,21 +332,15 @@ adminModelConfig.openapi(deleteConfigRoute, async (c) => {
     return c.json({ error: "bad_request", message: "No active organization. Set an active org first.", requestId }, 400);
   }
 
-  try {
-    const deleted = await deleteWorkspaceModelConfig(orgId);
-    if (!deleted) {
-      return c.json({ error: "not_found", message: "No custom model configuration found." }, 404);
-    }
-    return c.json({ message: "Model configuration reset to platform default." }, 200);
-  } catch (err) {
-    throwIfEEError(err, [ModelConfigError, MODEL_CONFIG_ERROR_STATUS]);
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to delete workspace model config");
-    return c.json({ error: "internal_error", message: "Failed to reset workspace model configuration.", requestId }, 500);
+  const deleted = await deleteWorkspaceModelConfig(orgId);
+  if (!deleted) {
+    return c.json({ error: "not_found", message: "No custom model configuration found." }, 404);
   }
-});
+  return c.json({ message: "Model configuration reset to platform default." }, 200);
+}, [ModelConfigError, MODEL_CONFIG_ERROR_STATUS]));
 
 // POST /test — test model configuration (no hasInternalDB — tests external APIs only)
-adminModelConfig.openapi(testConfigRoute, async (c) => {
+adminModelConfig.openapi(testConfigRoute, withErrorHandler("test model config", async (c) => {
   const requestId = c.get("requestId");
   const authResult = c.get("authResult");
 
@@ -372,19 +351,13 @@ adminModelConfig.openapi(testConfigRoute, async (c) => {
 
   const body = c.req.valid("json");
 
-  try {
-    const result = await testModelConfig({
-      provider: body.provider,
-      model: body.model,
-      apiKey: body.apiKey,
-      baseUrl: body.baseUrl,
-    });
-    return c.json(result, 200);
-  } catch (err) {
-    throwIfEEError(err, [ModelConfigError, MODEL_CONFIG_ERROR_STATUS]);
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to test model config");
-    return c.json({ error: "internal_error", message: "Failed to test model configuration.", requestId }, 500);
-  }
-});
+  const result = await testModelConfig({
+    provider: body.provider,
+    model: body.model,
+    apiKey: body.apiKey,
+    baseUrl: body.baseUrl,
+  });
+  return c.json(result, 200);
+}, [ModelConfigError, MODEL_CONFIG_ERROR_STATUS]));
 
 export { adminModelConfig };

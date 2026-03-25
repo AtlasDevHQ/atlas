@@ -6,7 +6,7 @@
  */
 
 import { createRoute, z } from "@hono/zod-openapi";
-import { createLogger } from "@atlas/api/lib/logger";
+import { withErrorHandler } from "@atlas/api/lib/routes/error-handler";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import {
   getOnboardingStatuses,
@@ -16,8 +16,6 @@ import { ONBOARDING_SEQUENCE } from "@atlas/api/lib/email/sequence";
 import { ONBOARDING_EMAIL_STEPS, ONBOARDING_MILESTONES } from "@useatlas/types";
 import { ErrorSchema, AuthErrorSchema, parsePagination } from "./shared-schemas";
 import { createAdminRouter } from "./admin-router";
-
-const log = createLogger("admin-onboarding-emails");
 
 const stepEnum = z.enum(ONBOARDING_EMAIL_STEPS);
 const milestoneEnum = z.enum(ONBOARDING_MILESTONES);
@@ -108,8 +106,7 @@ const getSequenceRoute = createRoute({
 
 export const adminOnboardingEmails = createAdminRouter();
 
-adminOnboardingEmails.openapi(listStatusesRoute, async (c) => {
-  const requestId = c.get("requestId");
+adminOnboardingEmails.openapi(listStatusesRoute, withErrorHandler("fetch onboarding statuses", async (c) => {
   const authResult = c.get("authResult");
   const orgId = authResult.user?.activeOrganizationId;
 
@@ -123,18 +120,13 @@ adminOnboardingEmails.openapi(listStatusesRoute, async (c) => {
 
   const { limit, offset } = parsePagination(c);
 
-  try {
-    const result = await getOnboardingStatuses(orgId, limit, offset);
-    return c.json({
-      enabled: isOnboardingEmailEnabled(),
-      statuses: result.statuses,
-      total: result.total,
-    }, 200);
-  } catch (err) {
-    log.error({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to fetch onboarding statuses");
-    return c.json({ error: "internal_error", message: "Failed to fetch onboarding email statuses.", requestId }, 500);
-  }
-});
+  const result = await getOnboardingStatuses(orgId, limit, offset);
+  return c.json({
+    enabled: isOnboardingEmailEnabled(),
+    statuses: result.statuses,
+    total: result.total,
+  }, 200);
+}));
 
 adminOnboardingEmails.openapi(getSequenceRoute, async (c) => {
   return c.json({

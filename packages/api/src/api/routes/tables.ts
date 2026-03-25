@@ -7,14 +7,12 @@
  */
 
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
+import { withErrorHandler } from "@atlas/api/lib/routes/error-handler";
 import { validationHook } from "./validation-hook";
 import { z } from "zod";
-import { createLogger } from "@atlas/api/lib/logger";
 import { getSemanticRoot, discoverTables } from "@atlas/api/lib/semantic/files";
 import { ErrorSchema } from "./shared-schemas";
 import { standardAuth, requestContext, type AuthEnv } from "./middleware";
-
-const log = createLogger("tables-route");
 
 const TablesResponseSchema = z.object({
   tables: z.array(z.record(z.string(), z.unknown())),
@@ -59,18 +57,11 @@ tables.use(standardAuth);
 tables.use(requestContext);
 
 // GET / — list all tables with columns
-tables.openapi(tablesRoute, async (c) => {
-  const requestId = c.get("requestId");
-
+tables.openapi(tablesRoute, withErrorHandler("load table list", async (c) => {
   const root = getSemanticRoot();
-  try {
-    const result = discoverTables(root);
-    return c.json({
-      tables: result.tables,
-      ...(result.warnings.length > 0 && { warnings: result.warnings }),
-    }, 200);
-  } catch (err) {
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), root, requestId }, "Failed to discover tables");
-    return c.json({ error: "internal_error", message: "Failed to load table list.", requestId }, 500);
-  }
-});
+  const result = discoverTables(root);
+  return c.json({
+    tables: result.tables,
+    ...(result.warnings.length > 0 && { warnings: result.warnings }),
+  }, 200);
+}));

@@ -6,6 +6,7 @@
  */
 
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
+import { withErrorHandler } from "@atlas/api/lib/routes/error-handler";
 import { validationHook } from "./validation-hook";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
@@ -317,7 +318,7 @@ actions.onError((err, c) => {
 // GET / — list actions (default: pending)
 // ---------------------------------------------------------------------------
 
-actions.openapi(listActionsRoute, async (c) => {
+actions.openapi(listActionsRoute, withErrorHandler("list actions", async (c) => {
   const requestId = c.get("requestId");
   const authResult = c.get("authResult");
 
@@ -325,30 +326,25 @@ actions.openapi(listActionsRoute, async (c) => {
     return c.json({ error: "not_available", message: "Action tracking is not available (no internal database configured).", requestId }, 404);
   }
 
-  try {
-    const rawStatus = c.req.query("status") ?? "pending";
-    const status: ActionStatus | undefined = (ACTION_STATUSES as readonly string[]).includes(rawStatus)
-      ? (rawStatus as ActionStatus)
-      : undefined;
-    const { limit } = parsePagination(c, { limit: 50, maxLimit: 100 });
+  const rawStatus = c.req.query("status") ?? "pending";
+  const status: ActionStatus | undefined = (ACTION_STATUSES as readonly string[]).includes(rawStatus)
+    ? (rawStatus as ActionStatus)
+    : undefined;
+  const { limit } = parsePagination(c, { limit: 50, maxLimit: 100 });
 
-    const result = await listPendingActions({
-      status,
-      userId: authResult.user?.id,
-      limit,
-    });
-    return c.json({ actions: result }, 200);
-  } catch (err) {
-    log.error({ err: err instanceof Error ? err.message : String(err), requestId, op: "listActions" }, "Failed to list actions");
-    return c.json({ error: "internal_error", message: "Failed to list actions.", requestId }, 500);
-  }
-});
+  const result = await listPendingActions({
+    status,
+    userId: authResult.user?.id,
+    limit,
+  });
+  return c.json({ actions: result }, 200);
+}));
 
 // ---------------------------------------------------------------------------
 // GET /:id — get single action
 // ---------------------------------------------------------------------------
 
-actions.openapi(getActionRoute, async (c) => {
+actions.openapi(getActionRoute, withErrorHandler("retrieve action", async (c) => {
   const requestId = c.get("requestId");
   const authResult = c.get("authResult");
 
@@ -361,23 +357,18 @@ actions.openapi(getActionRoute, async (c) => {
     return c.json({ error: "invalid_request", message: "Invalid action ID format." }, 400);
   }
 
-  try {
-    const action = await getAction(id);
-    if (!action || action.requested_by !== authResult.user?.id) {
-      return c.json({ error: "not_found", message: "Action not found." }, 404);
-    }
-    return c.json(action, 200);
-  } catch (err) {
-    log.error({ err: err instanceof Error ? err.message : String(err), requestId, op: "getAction" }, "Failed to get action");
-    return c.json({ error: "internal_error", message: "Failed to retrieve action.", requestId }, 500);
+  const action = await getAction(id);
+  if (!action || action.requested_by !== authResult.user?.id) {
+    return c.json({ error: "not_found", message: "Action not found." }, 404);
   }
-});
+  return c.json(action, 200);
+}));
 
 // ---------------------------------------------------------------------------
 // POST /:id/approve — approve a pending action
 // ---------------------------------------------------------------------------
 
-actions.openapi(approveActionRoute, async (c) => {
+actions.openapi(approveActionRoute, withErrorHandler("approve action", async (c) => {
   const requestId = c.get("requestId");
   const authResult = c.get("authResult");
 
@@ -390,38 +381,33 @@ actions.openapi(approveActionRoute, async (c) => {
     return c.json({ error: "invalid_request", message: "Invalid action ID format." }, 400);
   }
 
-  try {
-    const approverId = authResult.user?.id ?? "anonymous";
+  const approverId = authResult.user?.id ?? "anonymous";
 
-    // Look up action and executor
-    const action = await getAction(id);
-    if (!action) {
-      return c.json({ error: "not_found", message: "Action not found." }, 404);
-    }
-
-    const cfg = getActionConfig(action.action_type);
-
-    if (!canApprove(authResult.user, cfg.approval, cfg.requiredRole)) {
-      return c.json({ error: "forbidden", message: "Insufficient role to approve this action.", requestId }, 403);
-    }
-
-    // Enforce admin-only separation of duties: requester cannot approve their own admin-only action
-    if (cfg.approval === "admin-only" && authResult.user?.id === action.requested_by) {
-      return c.json({ error: "forbidden", message: "admin-only actions cannot be approved by the requester", requestId }, 403);
-    }
-
-    const executor = getActionExecutor(id);
-
-    const result = await approveAction(id, approverId, executor);
-    if (!result) {
-      return c.json({ error: "conflict", message: "Action has already been resolved." }, 409);
-    }
-    return c.json(result, 200);
-  } catch (err) {
-    log.error({ err: err instanceof Error ? err.message : String(err), requestId, op: "approveAction" }, "Failed to approve action");
-    return c.json({ error: "internal_error", message: "Failed to approve action.", requestId }, 500);
+  // Look up action and executor
+  const action = await getAction(id);
+  if (!action) {
+    return c.json({ error: "not_found", message: "Action not found." }, 404);
   }
-});
+
+  const cfg = getActionConfig(action.action_type);
+
+  if (!canApprove(authResult.user, cfg.approval, cfg.requiredRole)) {
+    return c.json({ error: "forbidden", message: "Insufficient role to approve this action.", requestId }, 403);
+  }
+
+  // Enforce admin-only separation of duties: requester cannot approve their own admin-only action
+  if (cfg.approval === "admin-only" && authResult.user?.id === action.requested_by) {
+    return c.json({ error: "forbidden", message: "admin-only actions cannot be approved by the requester", requestId }, 403);
+  }
+
+  const executor = getActionExecutor(id);
+
+  const result = await approveAction(id, approverId, executor);
+  if (!result) {
+    return c.json({ error: "conflict", message: "Action has already been resolved." }, 409);
+  }
+  return c.json(result, 200);
+}));
 
 // ---------------------------------------------------------------------------
 // POST /:id/deny — deny a pending action
@@ -429,7 +415,7 @@ actions.openapi(approveActionRoute, async (c) => {
 
 actions.openapi(
   denyActionRoute,
-  async (c) => {
+  withErrorHandler("deny action", async (c) => {
     const requestId = c.get("requestId");
     const authResult = c.get("authResult");
 
@@ -442,52 +428,47 @@ actions.openapi(
       return c.json({ error: "invalid_request", message: "Invalid action ID format." }, 400);
     }
 
-    try {
-      const denierId = authResult.user?.id ?? "anonymous";
+    const denierId = authResult.user?.id ?? "anonymous";
 
-      // Look up action for permission enforcement
-      const action = await getAction(id);
-      if (!action) {
-        return c.json({ error: "not_found", message: "Action not found." }, 404);
-      }
-
-      const cfg = getActionConfig(action.action_type);
-
-      // Deny requires the same minimum role as approve — consistent permission model for all action operations.
-      if (!canApprove(authResult.user, cfg.approval, cfg.requiredRole)) {
-        return c.json({ error: "forbidden", message: "Insufficient role to deny this action.", requestId }, 403);
-      }
-
-      // Enforce admin-only separation of duties: requester cannot deny their own admin-only action
-      if (cfg.approval === "admin-only" && authResult.user?.id === action.requested_by) {
-        return c.json({ error: "forbidden", message: "admin-only actions cannot be denied by the requester", requestId }, 403);
-      }
-
-      // Body is optional — extract reason if provided
-      let reason: string | undefined;
-      const contentType = c.req.header("content-type") ?? "";
-      if (contentType.includes("application/json")) {
-        try {
-          const body = await c.req.json();
-          if (body && typeof body.reason === "string") {
-            reason = body.reason;
-          }
-        } catch (err) {
-          log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse deny action request body");
-          return c.json({ error: "invalid_request", message: "Invalid JSON body." }, 400);
-        }
-      }
-
-      const result = await denyAction(id, denierId, reason);
-      if (!result) {
-        return c.json({ error: "conflict", message: "Action has already been resolved." }, 409);
-      }
-      return c.json(result, 200);
-    } catch (err) {
-      log.error({ err: err instanceof Error ? err.message : String(err), requestId, op: "denyAction" }, "Failed to deny action");
-      return c.json({ error: "internal_error", message: "Failed to deny action.", requestId }, 500);
+    // Look up action for permission enforcement
+    const action = await getAction(id);
+    if (!action) {
+      return c.json({ error: "not_found", message: "Action not found." }, 404);
     }
-  },
+
+    const cfg = getActionConfig(action.action_type);
+
+    // Deny requires the same minimum role as approve — consistent permission model for all action operations.
+    if (!canApprove(authResult.user, cfg.approval, cfg.requiredRole)) {
+      return c.json({ error: "forbidden", message: "Insufficient role to deny this action.", requestId }, 403);
+    }
+
+    // Enforce admin-only separation of duties: requester cannot deny their own admin-only action
+    if (cfg.approval === "admin-only" && authResult.user?.id === action.requested_by) {
+      return c.json({ error: "forbidden", message: "admin-only actions cannot be denied by the requester", requestId }, 403);
+    }
+
+    // Body is optional — extract reason if provided
+    let reason: string | undefined;
+    const contentType = c.req.header("content-type") ?? "";
+    if (contentType.includes("application/json")) {
+      try {
+        const body = await c.req.json();
+        if (body && typeof body.reason === "string") {
+          reason = body.reason;
+        }
+      } catch (err) {
+        log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse deny action request body");
+        return c.json({ error: "invalid_request", message: "Invalid JSON body." }, 400);
+      }
+    }
+
+    const result = await denyAction(id, denierId, reason);
+    if (!result) {
+      return c.json({ error: "conflict", message: "Action has already been resolved." }, 409);
+    }
+    return c.json(result, 200);
+  }),
   (result, c) => {
     if (!result.success) {
       return c.json(
@@ -502,7 +483,7 @@ actions.openapi(
 // POST /:id/rollback — rollback an executed action
 // ---------------------------------------------------------------------------
 
-actions.openapi(rollbackActionRoute, async (c) => {
+actions.openapi(rollbackActionRoute, withErrorHandler("rollback action", async (c) => {
   const requestId = c.get("requestId");
   const authResult = c.get("authResult");
 
@@ -515,35 +496,30 @@ actions.openapi(rollbackActionRoute, async (c) => {
     return c.json({ error: "invalid_request", message: "Invalid action ID format." }, 400);
   }
 
-  try {
-    const action = await getAction(id);
-    if (!action) {
-      return c.json({ error: "not_found", message: "Action not found." }, 404);
-    }
-
-    const cfg = getActionConfig(action.action_type);
-
-    if (!canApprove(authResult.user, cfg.approval, cfg.requiredRole)) {
-      return c.json({ error: "forbidden", message: "Insufficient role to rollback this action.", requestId }, 403);
-    }
-
-    if (!action.rollback_info) {
-      return c.json({ error: "conflict", message: "Action does not have rollback information." }, 409);
-    }
-
-    const rollbackerId = authResult.user?.id ?? "anonymous";
-    const result = await rollbackAction(id, rollbackerId);
-    if (!result) {
-      return c.json({ error: "conflict", message: "Action cannot be rolled back. It may have been rolled back already or changed state." }, 409);
-    }
-    if (result.error) {
-      return c.json({ ...result, warning: "Rollback status updated but the rollback handler reported an error. The side-effect may not have been reversed." }, 200);
-    }
-    return c.json(result, 200);
-  } catch (err) {
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, op: "rollbackAction" }, "Failed to rollback action");
-    return c.json({ error: "internal_error", message: "Failed to rollback action.", requestId }, 500);
+  const action = await getAction(id);
+  if (!action) {
+    return c.json({ error: "not_found", message: "Action not found." }, 404);
   }
-});
+
+  const cfg = getActionConfig(action.action_type);
+
+  if (!canApprove(authResult.user, cfg.approval, cfg.requiredRole)) {
+    return c.json({ error: "forbidden", message: "Insufficient role to rollback this action.", requestId }, 403);
+  }
+
+  if (!action.rollback_info) {
+    return c.json({ error: "conflict", message: "Action does not have rollback information." }, 409);
+  }
+
+  const rollbackerId = authResult.user?.id ?? "anonymous";
+  const result = await rollbackAction(id, rollbackerId);
+  if (!result) {
+    return c.json({ error: "conflict", message: "Action cannot be rolled back. It may have been rolled back already or changed state." }, 409);
+  }
+  if (result.error) {
+    return c.json({ ...result, warning: "Rollback status updated but the rollback handler reported an error. The side-effect may not have been reversed." }, 200);
+  }
+  return c.json(result, 200);
+}));
 
 export { actions };

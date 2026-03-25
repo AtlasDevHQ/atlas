@@ -43,6 +43,7 @@ import {
   captureDemoLead,
   countDemoConversations,
 } from "@atlas/api/lib/demo";
+import { withErrorHandler } from "@atlas/api/lib/routes/error-handler";
 
 const log = createLogger("demo");
 
@@ -620,7 +621,7 @@ demo.openapi(demoChatRoute, async (c) => {
 });
 
 // GET /conversations — list demo user's conversations
-demo.openapi(listDemoConversationsRoute, async (c) => {
+demo.openapi(listDemoConversationsRoute, withErrorHandler("list demo conversations", async (c) => {
   const requestId = crypto.randomUUID();
   const email = extractDemoEmail(c.req.raw);
   if (!email) {
@@ -631,51 +632,29 @@ demo.openapi(listDemoConversationsRoute, async (c) => {
     return c.json({ conversations: [], total: 0 }, 200);
   }
 
-  try {
-    const userId = demoUserId(email);
-    const { limit, offset } = parsePagination(c, { limit: 50, maxLimit: 100 });
-    const result = await listConversations({ userId, limit, offset });
-    return c.json(result, 200);
-  } catch (err) {
-    log.error(
-      { err: err instanceof Error ? err : new Error(String(err)), requestId },
-      "Failed to list demo conversations",
-    );
-    return c.json(
-      { error: "internal_error", message: "Failed to load conversations.", requestId },
-      500,
-    );
-  }
-});
+  const userId = demoUserId(email);
+  const { limit, offset } = parsePagination(c, { limit: 50, maxLimit: 100 });
+  const result = await listConversations({ userId, limit, offset });
+  return c.json(result, 200);
+}));
 
 // GET /conversations/:id — get demo conversation with messages
-demo.openapi(getDemoConversationRoute, async (c) => {
+demo.openapi(getDemoConversationRoute, withErrorHandler("get demo conversation", async (c) => {
   const requestId = crypto.randomUUID();
   const email = extractDemoEmail(c.req.raw);
   if (!email) {
     return c.json({ error: "auth_error", message: "Valid demo token required.", requestId }, 401);
   }
 
-  try {
-    const userId = demoUserId(email);
-    const id = c.req.param("id");
-    const result = await getConversation(id, userId);
+  const userId = demoUserId(email);
+  const id = c.req.param("id");
+  const result = await getConversation(id, userId);
 
-    if (!result.ok) {
-      return c.json({ error: "not_found", message: "Conversation not found.", requestId }, 404);
-    }
-
-    return c.json(result.data, 200);
-  } catch (err) {
-    log.error(
-      { err: err instanceof Error ? err : new Error(String(err)), requestId },
-      "Failed to get demo conversation",
-    );
-    return c.json(
-      { error: "internal_error", message: "Failed to load conversation.", requestId },
-      500,
-    );
+  if (!result.ok) {
+    return c.json({ error: "not_found", message: "Conversation not found.", requestId }, 404);
   }
-});
+
+  return c.json(result.data, 200);
+}));
 
 export { demo };

@@ -17,8 +17,7 @@
  */
 
 import { createRoute, z } from "@hono/zod-openapi";
-import { createLogger } from "@atlas/api/lib/logger";
-import { throwIfEEError } from "./ee-error-handler";
+import { withErrorHandler } from "@atlas/api/lib/routes/error-handler";
 import {
   listApprovalRules,
   createApprovalRule,
@@ -33,8 +32,6 @@ import {
 } from "@atlas/ee/governance/approval";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
-
-const log = createLogger("admin-approval");
 
 const APPROVAL_ERROR_STATUS = { validation: 400, not_found: 404, conflict: 409, expired: 410 } as const;
 
@@ -285,21 +282,13 @@ const adminApproval = createAdminRouter();
 // Registered before requireOrgContext() so the middleware does not apply.
 
 // POST /expire — manually expire stale requests (global, no org/DB needed)
-adminApproval.openapi(expireRoute, async (c) => {
-  const requestId = c.get("requestId");
-
-  try {
-    const expired = await expireStaleRequests();
-    return c.json({ expired }, 200);
-  } catch (err) {
-    throwIfEEError(err, [ApprovalError, APPROVAL_ERROR_STATUS]);
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to expire stale requests");
-    return c.json({ error: "internal_error", message: "Failed to expire stale requests.", requestId }, 500);
-  }
-});
+adminApproval.openapi(expireRoute, withErrorHandler("expire stale requests", async (c) => {
+  const expired = await expireStaleRequests();
+  return c.json({ expired }, 200);
+}, [ApprovalError, APPROVAL_ERROR_STATUS]));
 
 // GET /pending-count — count of pending requests (needs orgId, not hasInternalDB)
-adminApproval.openapi(pendingCountRoute, async (c) => {
+adminApproval.openapi(pendingCountRoute, withErrorHandler("get pending approval count", async (c) => {
   const requestId = c.get("requestId");
   const authResult = c.get("authResult");
 
@@ -308,126 +297,84 @@ adminApproval.openapi(pendingCountRoute, async (c) => {
     return c.json({ error: "bad_request", message: "No active organization. Set an active org first.", requestId }, 400);
   }
 
-  try {
-    const count = await getPendingCount(orgId);
-    return c.json({ count }, 200);
-  } catch (err) {
-    throwIfEEError(err, [ApprovalError, APPROVAL_ERROR_STATUS]);
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to get pending count");
-    return c.json({ error: "internal_error", message: "Failed to get pending approval count.", requestId }, 500);
-  }
-});
+  const count = await getPendingCount(orgId);
+  return c.json({ count }, 200);
+}, [ApprovalError, APPROVAL_ERROR_STATUS]));
 
 // ── Handlers WITH requireOrgContext ───────────────────────────────────
 adminApproval.use(requireOrgContext());
 
 // GET /rules — list approval rules
-adminApproval.openapi(listRulesRoute, async (c) => {
-  const { requestId, orgId } = c.get("orgContext");
+adminApproval.openapi(listRulesRoute, withErrorHandler("list approval rules", async (c) => {
+  const { orgId } = c.get("orgContext");
 
-  try {
-    const rules = await listApprovalRules(orgId);
-    return c.json({ rules }, 200);
-  } catch (err) {
-    throwIfEEError(err, [ApprovalError, APPROVAL_ERROR_STATUS]);
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to list approval rules");
-    return c.json({ error: "internal_error", message: "Failed to list approval rules.", requestId }, 500);
-  }
-});
+  const rules = await listApprovalRules(orgId);
+  return c.json({ rules }, 200);
+}, [ApprovalError, APPROVAL_ERROR_STATUS]));
 
 // POST /rules — create approval rule
-adminApproval.openapi(createRuleRoute, async (c) => {
-  const { requestId, orgId } = c.get("orgContext");
+adminApproval.openapi(createRuleRoute, withErrorHandler("create approval rule", async (c) => {
+  const { orgId } = c.get("orgContext");
   const body = c.req.valid("json");
 
-  try {
-    const rule = await createApprovalRule(orgId, {
-      name: body.name,
-      ruleType: body.ruleType,
-      pattern: body.pattern,
-      threshold: body.threshold ?? null,
-      enabled: body.enabled,
-    });
-    return c.json({ rule }, 201);
-  } catch (err) {
-    throwIfEEError(err, [ApprovalError, APPROVAL_ERROR_STATUS]);
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to create approval rule");
-    return c.json({ error: "internal_error", message: "Failed to create approval rule.", requestId }, 500);
-  }
-});
+  const rule = await createApprovalRule(orgId, {
+    name: body.name,
+    ruleType: body.ruleType,
+    pattern: body.pattern,
+    threshold: body.threshold ?? null,
+    enabled: body.enabled,
+  });
+  return c.json({ rule }, 201);
+}, [ApprovalError, APPROVAL_ERROR_STATUS]));
 
 // PUT /rules/:id — update approval rule
-adminApproval.openapi(updateRuleRoute, async (c) => {
-  const { requestId, orgId } = c.get("orgContext");
+adminApproval.openapi(updateRuleRoute, withErrorHandler("update approval rule", async (c) => {
+  const { orgId } = c.get("orgContext");
   const ruleId = c.req.param("id");
   const body = c.req.valid("json");
 
-  try {
-    const rule = await updateApprovalRule(orgId, ruleId, body);
-    return c.json({ rule }, 200);
-  } catch (err) {
-    throwIfEEError(err, [ApprovalError, APPROVAL_ERROR_STATUS]);
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to update approval rule");
-    return c.json({ error: "internal_error", message: "Failed to update approval rule.", requestId }, 500);
-  }
-});
+  const rule = await updateApprovalRule(orgId, ruleId, body);
+  return c.json({ rule }, 200);
+}, [ApprovalError, APPROVAL_ERROR_STATUS]));
 
 // DELETE /rules/:id — delete approval rule
-adminApproval.openapi(deleteRuleRoute, async (c) => {
-  const { requestId, orgId } = c.get("orgContext");
+adminApproval.openapi(deleteRuleRoute, withErrorHandler("delete approval rule", async (c) => {
+  const { orgId } = c.get("orgContext");
   const ruleId = c.req.param("id");
 
-  try {
-    const deleted = await deleteApprovalRule(orgId, ruleId);
-    if (!deleted) {
-      return c.json({ error: "not_found", message: "Approval rule not found." }, 404);
-    }
-    return c.json({ message: "Approval rule deleted." }, 200);
-  } catch (err) {
-    throwIfEEError(err, [ApprovalError, APPROVAL_ERROR_STATUS]);
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to delete approval rule");
-    return c.json({ error: "internal_error", message: "Failed to delete approval rule.", requestId }, 500);
+  const deleted = await deleteApprovalRule(orgId, ruleId);
+  if (!deleted) {
+    return c.json({ error: "not_found", message: "Approval rule not found." }, 404);
   }
-});
+  return c.json({ message: "Approval rule deleted." }, 200);
+}, [ApprovalError, APPROVAL_ERROR_STATUS]));
 
 // GET /queue — list approval requests
-adminApproval.openapi(listQueueRoute, async (c) => {
-  const { requestId, orgId } = c.get("orgContext");
+adminApproval.openapi(listQueueRoute, withErrorHandler("list approval requests", async (c) => {
+  const { orgId } = c.get("orgContext");
 
-  try {
-    const statusParam = new URL(c.req.raw.url).searchParams.get("status") as import("@useatlas/types").ApprovalStatus | null;
-    const validStatuses = ["pending", "approved", "denied", "expired"];
-    const status = statusParam && validStatuses.includes(statusParam) ? statusParam as import("@useatlas/types").ApprovalStatus : undefined;
-    const requests = await listApprovalRequests(orgId, status);
-    return c.json({ requests }, 200);
-  } catch (err) {
-    throwIfEEError(err, [ApprovalError, APPROVAL_ERROR_STATUS]);
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to list approval requests");
-    return c.json({ error: "internal_error", message: "Failed to list approval requests.", requestId }, 500);
-  }
-});
+  const statusParam = new URL(c.req.raw.url).searchParams.get("status") as import("@useatlas/types").ApprovalStatus | null;
+  const validStatuses = ["pending", "approved", "denied", "expired"];
+  const status = statusParam && validStatuses.includes(statusParam) ? statusParam as import("@useatlas/types").ApprovalStatus : undefined;
+  const requests = await listApprovalRequests(orgId, status);
+  return c.json({ requests }, 200);
+}, [ApprovalError, APPROVAL_ERROR_STATUS]));
 
 // GET /queue/:id — get single approval request
-adminApproval.openapi(getQueueItemRoute, async (c) => {
-  const { requestId, orgId } = c.get("orgContext");
+adminApproval.openapi(getQueueItemRoute, withErrorHandler("get approval request", async (c) => {
+  const { orgId } = c.get("orgContext");
   const itemId = c.req.param("id");
 
-  try {
-    const item = await getApprovalRequest(orgId, itemId);
-    if (!item) {
-      return c.json({ error: "not_found", message: "Approval request not found." }, 404);
-    }
-    return c.json({ request: item }, 200);
-  } catch (err) {
-    throwIfEEError(err, [ApprovalError, APPROVAL_ERROR_STATUS]);
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to get approval request");
-    return c.json({ error: "internal_error", message: "Failed to get approval request.", requestId }, 500);
+  const item = await getApprovalRequest(orgId, itemId);
+  if (!item) {
+    return c.json({ error: "not_found", message: "Approval request not found." }, 404);
   }
-});
+  return c.json({ request: item }, 200);
+}, [ApprovalError, APPROVAL_ERROR_STATUS]));
 
 // POST /queue/:id — review (approve/deny) an approval request
-adminApproval.openapi(reviewRoute, async (c) => {
-  const { requestId, orgId } = c.get("orgContext");
+adminApproval.openapi(reviewRoute, withErrorHandler("review approval request", async (c) => {
+  const { orgId } = c.get("orgContext");
   const authResult = c.get("authResult");
 
   const itemId = c.req.param("id");
@@ -439,21 +386,15 @@ adminApproval.openapi(reviewRoute, async (c) => {
     return c.json({ error: "bad_request", message: "Reviewer user ID unavailable." }, 400);
   }
 
-  try {
-    const result = await reviewApprovalRequest(
-      orgId,
-      itemId,
-      reviewerId,
-      reviewerEmail,
-      body.action,
-      body.comment,
-    );
-    return c.json({ request: result }, 200);
-  } catch (err) {
-    throwIfEEError(err, [ApprovalError, APPROVAL_ERROR_STATUS]);
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to review approval request");
-    return c.json({ error: "internal_error", message: "Failed to review approval request.", requestId }, 500);
-  }
-});
+  const result = await reviewApprovalRequest(
+    orgId,
+    itemId,
+    reviewerId,
+    reviewerEmail,
+    body.action,
+    body.comment,
+  );
+  return c.json({ request: result }, 200);
+}, [ApprovalError, APPROVAL_ERROR_STATUS]));
 
 export { adminApproval };

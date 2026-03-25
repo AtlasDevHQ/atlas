@@ -12,6 +12,8 @@ import { validationHook } from "./validation-hook";
 import { createLogger } from "@atlas/api/lib/logger";
 import { authenticateRequest } from "@atlas/api/lib/auth/middleware";
 import { getWorkspaceBrandingPublic } from "@atlas/ee/branding/white-label";
+import { withErrorHandler } from "@atlas/api/lib/routes/error-handler";
+import { withRequestId, type AuthEnv } from "./middleware";
 import { ErrorSchema } from "./shared-schemas";
 
 const log = createLogger("public-branding");
@@ -60,49 +62,45 @@ const getBrandingRoute = createRoute({
 // Router
 // ---------------------------------------------------------------------------
 
-const publicBranding = new OpenAPIHono({ defaultHook: validationHook });
+const publicBranding = new OpenAPIHono<AuthEnv>({ defaultHook: validationHook });
 
-publicBranding.openapi(getBrandingRoute, async (c) => {
+publicBranding.use(withRequestId);
+
+publicBranding.openapi(getBrandingRoute, withErrorHandler("get public branding", async (c) => {
   const req = c.req.raw;
-  const requestId = crypto.randomUUID();
 
+  // Try to resolve the org from the session. This is best-effort — if auth
+  // fails or there's no session, we return null branding.
+  let orgId: string | undefined;
   try {
-    // Try to resolve the org from the session. This is best-effort — if auth
-    // fails or there's no session, we return null branding.
-    let orgId: string | undefined;
-    try {
-      const authResult = await authenticateRequest(req);
-      if (authResult.authenticated) {
-        orgId = authResult.user?.activeOrganizationId ?? undefined;
-      }
-    } catch (err) {
-      // intentionally ignored: auth failure is expected for unauthenticated visitors
-      log.debug({ err: err instanceof Error ? err.message : String(err) }, "Public branding: auth resolution failed, returning null branding");
+    const authResult = await authenticateRequest(req);
+    if (authResult.authenticated) {
+      orgId = authResult.user?.activeOrganizationId ?? undefined;
     }
-
-    if (!orgId) {
-      return c.json({ branding: null }, 200);
-    }
-
-    const branding = await getWorkspaceBrandingPublic(orgId);
-    if (!branding) {
-      return c.json({ branding: null }, 200);
-    }
-
-    // Return only public-safe fields (no internal IDs or timestamps)
-    return c.json({
-      branding: {
-        logoUrl: branding.logoUrl,
-        logoText: branding.logoText,
-        primaryColor: branding.primaryColor,
-        faviconUrl: branding.faviconUrl,
-        hideAtlasBranding: branding.hideAtlasBranding,
-      },
-    }, 200);
   } catch (err) {
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to get public branding");
-    return c.json({ error: "internal_error", message: "Failed to load branding.", requestId }, 500);
+    // intentionally ignored: auth failure is expected for unauthenticated visitors
+    log.debug({ err: err instanceof Error ? err.message : String(err) }, "Public branding: auth resolution failed, returning null branding");
   }
-});
+
+  if (!orgId) {
+    return c.json({ branding: null }, 200);
+  }
+
+  const branding = await getWorkspaceBrandingPublic(orgId);
+  if (!branding) {
+    return c.json({ branding: null }, 200);
+  }
+
+  // Return only public-safe fields (no internal IDs or timestamps)
+  return c.json({
+    branding: {
+      logoUrl: branding.logoUrl,
+      logoText: branding.logoText,
+      primaryColor: branding.primaryColor,
+      faviconUrl: branding.faviconUrl,
+      hideAtlasBranding: branding.hideAtlasBranding,
+    },
+  }, 200);
+}));
 
 export { publicBranding };

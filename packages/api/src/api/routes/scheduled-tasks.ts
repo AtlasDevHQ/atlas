@@ -8,6 +8,7 @@
  */
 
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
+import { withErrorHandler } from "@atlas/api/lib/routes/error-handler";
 import { validationHook } from "./validation-hook";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
@@ -649,7 +650,7 @@ authed.openapi(deleteTaskRoute, async (c) => {
 // POST /:id/run — trigger immediate execution
 // ---------------------------------------------------------------------------
 
-authed.openapi(triggerTaskRoute, async (c) => {
+authed.openapi(triggerTaskRoute, withErrorHandler("trigger task execution", async (c) => {
   const requestId = c.get("requestId");
 
   if (!hasInternalDB()) {
@@ -669,21 +670,16 @@ authed.openapi(triggerTaskRoute, async (c) => {
     return c.json(fail.body, fail.status);
   }
 
-  try {
-    const { triggerTask } = await import("@atlas/api/lib/scheduler/engine");
-    await triggerTask(id);
-    return c.json({ message: "Task triggered successfully.", taskId: id }, 200);
-  } catch (err) {
-    log.error({ err: err instanceof Error ? err.message : String(err), taskId: id }, "Trigger failed");
-    return c.json({ error: "internal_error", message: "Failed to trigger task execution.", requestId }, 500);
-  }
-});
+  const { triggerTask } = await import("@atlas/api/lib/scheduler/engine");
+  await triggerTask(id);
+  return c.json({ message: "Task triggered successfully.", taskId: id }, 200);
+}));
 
 // ---------------------------------------------------------------------------
 // POST /:id/preview — dry-run delivery format with mock data
 // ---------------------------------------------------------------------------
 
-authed.openapi(previewTaskRoute, async (c) => {
+authed.openapi(previewTaskRoute, withErrorHandler("generate delivery preview", async (c) => {
   const requestId = c.get("requestId");
 
   if (!hasInternalDB()) {
@@ -703,15 +699,10 @@ authed.openapi(previewTaskRoute, async (c) => {
     return c.json(fail.body, fail.status);
   }
 
-  try {
-    const { generateDeliveryPreview } = await import("@atlas/api/lib/scheduler/preview");
-    const preview = generateDeliveryPreview(task.data);
-    return c.json(preview, 200);
-  } catch (err) {
-    log.error({ err: err instanceof Error ? err.message : String(err), taskId: id }, "Preview generation failed");
-    return c.json({ error: "internal_error", message: "Failed to generate delivery preview.", requestId }, 500);
-  }
-});
+  const { generateDeliveryPreview } = await import("@atlas/api/lib/scheduler/preview");
+  const preview = generateDeliveryPreview(task.data);
+  return c.json(preview, 200);
+}));
 
 // ---------------------------------------------------------------------------
 // GET /:id/runs — list past runs

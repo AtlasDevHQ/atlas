@@ -6,8 +6,7 @@
  */
 
 import { createRoute, z } from "@hono/zod-openapi";
-import { createLogger } from "@atlas/api/lib/logger";
-import { throwIfEEError } from "./ee-error-handler";
+import { withErrorHandler } from "@atlas/api/lib/routes/error-handler";
 import {
   listRoles,
   createRole,
@@ -20,8 +19,6 @@ import {
 } from "@atlas/ee/auth/roles";
 import { ErrorSchema, AuthErrorSchema, isValidId, MAX_ID_LENGTH } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
-
-const log = createLogger("admin-roles");
 
 const ROLE_ERROR_STATUS = { not_found: 404, conflict: 409, validation: 400, builtin_protected: 403 } as const;
 
@@ -390,26 +387,20 @@ const adminRoles = createAdminRouter();
 adminRoles.use(requireOrgContext());
 
 // GET / — list all roles for the active org
-adminRoles.openapi(listRolesRoute, async (c) => {
-  const { requestId, orgId } = c.get("orgContext");
+adminRoles.openapi(listRolesRoute, withErrorHandler("list roles", async (c) => {
+  const { orgId } = c.get("orgContext");
 
-  try {
-    const roles = await listRoles(orgId);
-    return c.json({
-      roles,
-      permissions: [...PERMISSIONS],
-      total: roles.length,
-    }, 200);
-  } catch (err) {
-    throwIfEEError(err, [RoleError, ROLE_ERROR_STATUS]);
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to list roles");
-    return c.json({ error: "internal_error", message: "Failed to list roles.", requestId }, 500);
-  }
-});
+  const roles = await listRoles(orgId);
+  return c.json({
+    roles,
+    permissions: [...PERMISSIONS],
+    total: roles.length,
+  }, 200);
+}, [RoleError, ROLE_ERROR_STATUS]));
 
 // POST / — create a custom role
-adminRoles.openapi(createRoleRoute, async (c) => {
-  const { requestId, orgId } = c.get("orgContext");
+adminRoles.openapi(createRoleRoute, withErrorHandler("create role", async (c) => {
+  const { orgId } = c.get("orgContext");
 
   const body = c.req.valid("json");
 
@@ -417,19 +408,13 @@ adminRoles.openapi(createRoleRoute, async (c) => {
     return c.json({ error: "bad_request", message: "Missing required fields: name, permissions." }, 400);
   }
 
-  try {
-    const role = await createRole(orgId, body);
-    return c.json({ role }, 201);
-  } catch (err) {
-    throwIfEEError(err, [RoleError, ROLE_ERROR_STATUS]);
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to create role");
-    return c.json({ error: "internal_error", message: "Failed to create role.", requestId }, 500);
-  }
-});
+  const role = await createRole(orgId, body);
+  return c.json({ role }, 201);
+}, [RoleError, ROLE_ERROR_STATUS]));
 
 // PUT /:id — update a custom role
-adminRoles.openapi(updateRoleRoute, async (c) => {
-  const { requestId, orgId } = c.get("orgContext");
+adminRoles.openapi(updateRoleRoute, withErrorHandler("update role", async (c) => {
+  const { orgId } = c.get("orgContext");
   const { id: roleId } = c.req.valid("param");
 
   if (!isValidId(roleId)) {
@@ -438,60 +423,42 @@ adminRoles.openapi(updateRoleRoute, async (c) => {
 
   const body = c.req.valid("json");
 
-  try {
-    const role = await updateRole(orgId, roleId, body);
-    return c.json({ role }, 200);
-  } catch (err) {
-    throwIfEEError(err, [RoleError, ROLE_ERROR_STATUS]);
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId, roleId }, "Failed to update role");
-    return c.json({ error: "internal_error", message: "Failed to update role.", requestId }, 500);
-  }
-});
+  const role = await updateRole(orgId, roleId, body);
+  return c.json({ role }, 200);
+}, [RoleError, ROLE_ERROR_STATUS]));
 
 // DELETE /:id — delete a custom role
-adminRoles.openapi(deleteRoleRoute, async (c) => {
-  const { requestId, orgId } = c.get("orgContext");
+adminRoles.openapi(deleteRoleRoute, withErrorHandler("delete role", async (c) => {
+  const { orgId } = c.get("orgContext");
   const { id: roleId } = c.req.valid("param");
 
   if (!isValidId(roleId)) {
     return c.json({ error: "bad_request", message: "Invalid role ID." }, 400);
   }
 
-  try {
-    const deleted = await deleteRole(orgId, roleId);
-    if (!deleted) {
-      return c.json({ error: "not_found", message: "Role not found." }, 404);
-    }
-    return c.json({ message: "Role deleted." }, 200);
-  } catch (err) {
-    throwIfEEError(err, [RoleError, ROLE_ERROR_STATUS]);
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId, roleId }, "Failed to delete role");
-    return c.json({ error: "internal_error", message: "Failed to delete role.", requestId }, 500);
+  const deleted = await deleteRole(orgId, roleId);
+  if (!deleted) {
+    return c.json({ error: "not_found", message: "Role not found." }, 404);
   }
-});
+  return c.json({ message: "Role deleted." }, 200);
+}, [RoleError, ROLE_ERROR_STATUS]));
 
 // GET /:id/members — list members with a specific role
-adminRoles.openapi(listRoleMembersRoute, async (c) => {
-  const { requestId, orgId } = c.get("orgContext");
+adminRoles.openapi(listRoleMembersRoute, withErrorHandler("list role members", async (c) => {
+  const { orgId } = c.get("orgContext");
   const { id: roleId } = c.req.valid("param");
 
   if (!isValidId(roleId)) {
     return c.json({ error: "bad_request", message: "Invalid role ID." }, 400);
   }
 
-  try {
-    const members = await listRoleMembers(orgId, roleId);
-    return c.json({ members, total: members.length }, 200);
-  } catch (err) {
-    throwIfEEError(err, [RoleError, ROLE_ERROR_STATUS]);
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId, roleId }, "Failed to list role members");
-    return c.json({ error: "internal_error", message: "Failed to list role members.", requestId }, 500);
-  }
-});
+  const members = await listRoleMembers(orgId, roleId);
+  return c.json({ members, total: members.length }, 200);
+}, [RoleError, ROLE_ERROR_STATUS]));
 
 // PUT /users/:userId/role — assign a role to a user
-adminRoles.openapi(assignRoleRoute, async (c) => {
-  const { requestId, orgId } = c.get("orgContext");
+adminRoles.openapi(assignRoleRoute, withErrorHandler("assign role", async (c) => {
+  const { orgId } = c.get("orgContext");
   const { userId } = c.req.valid("param");
 
   if (!isValidId(userId)) {
@@ -500,14 +467,8 @@ adminRoles.openapi(assignRoleRoute, async (c) => {
 
   const { role: roleName } = c.req.valid("json");
 
-  try {
-    const result = await assignRole(orgId, userId, roleName);
-    return c.json(result, 200);
-  } catch (err) {
-    throwIfEEError(err, [RoleError, ROLE_ERROR_STATUS]);
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId, userId }, "Failed to assign role");
-    return c.json({ error: "internal_error", message: "Failed to assign role.", requestId }, 500);
-  }
-});
+  const result = await assignRole(orgId, userId, roleName);
+  return c.json(result, 200);
+}, [RoleError, ROLE_ERROR_STATUS]));
 
 export { adminRoles };

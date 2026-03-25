@@ -14,8 +14,7 @@
 
 import { createRoute, z } from "@hono/zod-openapi";
 import { HTTPException } from "hono/http-exception";
-import { createLogger } from "@atlas/api/lib/logger";
-import { throwIfEEError } from "./ee-error-handler";
+import { withErrorHandler } from "@atlas/api/lib/routes/error-handler";
 import {
   listPIIClassifications,
   updatePIIClassification,
@@ -34,8 +33,6 @@ import {
 import type { PIICategory, MaskingStrategy } from "@useatlas/types";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
-
-const log = createLogger("admin-compliance");
 
 const COMPLIANCE_ERROR_STATUS = { validation: 400, not_found: 404, conflict: 409 } as const;
 const REPORT_ERROR_STATUS = { validation: 400, not_available: 404 } as const satisfies Record<ReportErrorCode, number>;
@@ -138,57 +135,39 @@ export const adminCompliance = createAdminRouter();
 adminCompliance.use(requireOrgContext());
 
 // GET /classifications
-adminCompliance.openapi(listRoute, async (c) => {
-  const { requestId, orgId } = c.get("orgContext");
+adminCompliance.openapi(listRoute, withErrorHandler("list PII classifications", async (c) => {
+  const { orgId } = c.get("orgContext");
   const { connectionId } = c.req.valid("query");
 
-  try {
-    const classifications = await listPIIClassifications(orgId, connectionId);
-    return c.json({ classifications }, 200);
-  } catch (err) {
-    throwIfEEError(err, [ComplianceError, COMPLIANCE_ERROR_STATUS], [ReportError, REPORT_ERROR_STATUS]);
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to list PII classifications");
-    return c.json({ error: "internal_error", message: "Failed to list PII classifications.", requestId }, 500);
-  }
-});
+  const classifications = await listPIIClassifications(orgId, connectionId);
+  return c.json({ classifications }, 200);
+}, [ComplianceError, COMPLIANCE_ERROR_STATUS], [ReportError, REPORT_ERROR_STATUS]));
 
 // PUT /classifications/:id
-adminCompliance.openapi(updateRoute, async (c) => {
-  const { requestId, orgId } = c.get("orgContext");
+adminCompliance.openapi(updateRoute, withErrorHandler("update PII classification", async (c) => {
+  const { orgId } = c.get("orgContext");
   const id = c.req.param("id");
   const body = c.req.valid("json");
 
-  try {
-    const updated = await updatePIIClassification(orgId, id, {
-      category: body.category as PIICategory | undefined,
-      maskingStrategy: body.maskingStrategy as MaskingStrategy | undefined,
-      dismissed: body.dismissed,
-      reviewed: body.reviewed,
-    });
-    invalidateClassificationCache(orgId);
-    return c.json({ classification: updated }, 200);
-  } catch (err) {
-    throwIfEEError(err, [ComplianceError, COMPLIANCE_ERROR_STATUS], [ReportError, REPORT_ERROR_STATUS]);
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to update PII classification");
-    return c.json({ error: "internal_error", message: "Failed to update PII classification.", requestId }, 500);
-  }
-});
+  const updated = await updatePIIClassification(orgId, id, {
+    category: body.category as PIICategory | undefined,
+    maskingStrategy: body.maskingStrategy as MaskingStrategy | undefined,
+    dismissed: body.dismissed,
+    reviewed: body.reviewed,
+  });
+  invalidateClassificationCache(orgId);
+  return c.json({ classification: updated }, 200);
+}, [ComplianceError, COMPLIANCE_ERROR_STATUS], [ReportError, REPORT_ERROR_STATUS]));
 
 // DELETE /classifications/:id
-adminCompliance.openapi(deleteRoute, async (c) => {
-  const { requestId, orgId } = c.get("orgContext");
+adminCompliance.openapi(deleteRoute, withErrorHandler("delete PII classification", async (c) => {
+  const { orgId } = c.get("orgContext");
   const id = c.req.param("id");
 
-  try {
-    await deletePIIClassification(orgId, id);
-    invalidateClassificationCache(orgId);
-    return c.json({ deleted: true }, 200);
-  } catch (err) {
-    throwIfEEError(err, [ComplianceError, COMPLIANCE_ERROR_STATUS], [ReportError, REPORT_ERROR_STATUS]);
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to delete PII classification");
-    return c.json({ error: "internal_error", message: "Failed to delete PII classification.", requestId }, 500);
-  }
-});
+  await deletePIIClassification(orgId, id);
+  invalidateClassificationCache(orgId);
+  return c.json({ deleted: true }, 200);
+}, [ComplianceError, COMPLIANCE_ERROR_STATUS], [ReportError, REPORT_ERROR_STATUS]));
 
 // ── Report schemas ──────────────────────────────────────────────
 
@@ -297,77 +276,65 @@ const userActivityReportRoute = createRoute({
 // ── Report handlers ─────────────────────────────────────────────
 
 // GET /reports/data-access
-adminCompliance.openapi(dataAccessReportRoute, async (c) => {
-  const { requestId, orgId } = c.get("orgContext");
+adminCompliance.openapi(dataAccessReportRoute, withErrorHandler("generate data access report", async (c) => {
+  const { orgId } = c.get("orgContext");
   const query = c.req.valid("query");
 
-  try {
-    const report = await generateDataAccessReport(orgId, {
-      startDate: query.startDate,
-      endDate: query.endDate,
-      userId: query.userId,
-      role: query.role,
-      table: query.table,
+  const report = await generateDataAccessReport(orgId, {
+    startDate: query.startDate,
+    endDate: query.endDate,
+    userId: query.userId,
+    role: query.role,
+    table: query.table,
+  });
+
+  if (query.format === "csv") {
+    const csv = dataAccessReportToCSV(report);
+    const safeOrgId = orgId.replace(/[^a-zA-Z0-9_-]/g, "");
+    const filename = `data-access-report-${safeOrgId}-${new Date().toISOString().slice(0, 10)}.csv`;
+    // CSV responses bypass OpenAPI typed returns via HTTPException + res
+    throw new HTTPException(200, {
+      res: new Response(csv, {
+        status: 200,
+        headers: {
+          "Content-Type": "text/csv; charset=utf-8",
+          "Content-Disposition": `attachment; filename="${filename}"`,
+        },
+      }),
     });
-
-    if (query.format === "csv") {
-      const csv = dataAccessReportToCSV(report);
-      const safeOrgId = orgId.replace(/[^a-zA-Z0-9_-]/g, "");
-      const filename = `data-access-report-${safeOrgId}-${new Date().toISOString().slice(0, 10)}.csv`;
-      // CSV responses bypass OpenAPI typed returns via HTTPException + res
-      throw new HTTPException(200, {
-        res: new Response(csv, {
-          status: 200,
-          headers: {
-            "Content-Type": "text/csv; charset=utf-8",
-            "Content-Disposition": `attachment; filename="${filename}"`,
-          },
-        }),
-      });
-    }
-
-    return c.json(report, 200);
-  } catch (err) {
-    throwIfEEError(err, [ComplianceError, COMPLIANCE_ERROR_STATUS], [ReportError, REPORT_ERROR_STATUS]);
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to generate data access report");
-    return c.json({ error: "internal_error", message: "Failed to generate data access report.", requestId }, 500);
   }
-});
+
+  return c.json(report, 200);
+}, [ComplianceError, COMPLIANCE_ERROR_STATUS], [ReportError, REPORT_ERROR_STATUS]));
 
 // GET /reports/user-activity
-adminCompliance.openapi(userActivityReportRoute, async (c) => {
-  const { requestId, orgId } = c.get("orgContext");
+adminCompliance.openapi(userActivityReportRoute, withErrorHandler("generate user activity report", async (c) => {
+  const { orgId } = c.get("orgContext");
   const query = c.req.valid("query");
 
-  try {
-    const report = await generateUserActivityReport(orgId, {
-      startDate: query.startDate,
-      endDate: query.endDate,
-      userId: query.userId,
-      role: query.role,
-      table: query.table,
+  const report = await generateUserActivityReport(orgId, {
+    startDate: query.startDate,
+    endDate: query.endDate,
+    userId: query.userId,
+    role: query.role,
+    table: query.table,
+  });
+
+  if (query.format === "csv") {
+    const csv = userActivityReportToCSV(report);
+    const safeOrgId = orgId.replace(/[^a-zA-Z0-9_-]/g, "");
+    const filename = `user-activity-report-${safeOrgId}-${new Date().toISOString().slice(0, 10)}.csv`;
+    // CSV responses bypass OpenAPI typed returns via HTTPException + res
+    throw new HTTPException(200, {
+      res: new Response(csv, {
+        status: 200,
+        headers: {
+          "Content-Type": "text/csv; charset=utf-8",
+          "Content-Disposition": `attachment; filename="${filename}"`,
+        },
+      }),
     });
-
-    if (query.format === "csv") {
-      const csv = userActivityReportToCSV(report);
-      const safeOrgId = orgId.replace(/[^a-zA-Z0-9_-]/g, "");
-      const filename = `user-activity-report-${safeOrgId}-${new Date().toISOString().slice(0, 10)}.csv`;
-      // CSV responses bypass OpenAPI typed returns via HTTPException + res
-      throw new HTTPException(200, {
-        res: new Response(csv, {
-          status: 200,
-          headers: {
-            "Content-Type": "text/csv; charset=utf-8",
-            "Content-Disposition": `attachment; filename="${filename}"`,
-          },
-        }),
-      });
-    }
-
-    return c.json(report, 200);
-  } catch (err) {
-    throwIfEEError(err, [ComplianceError, COMPLIANCE_ERROR_STATUS], [ReportError, REPORT_ERROR_STATUS]);
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Failed to generate user activity report");
-    return c.json({ error: "internal_error", message: "Failed to generate user activity report.", requestId }, 500);
   }
-});
+
+  return c.json(report, 200);
+}, [ComplianceError, COMPLIANCE_ERROR_STATUS], [ReportError, REPORT_ERROR_STATUS]));

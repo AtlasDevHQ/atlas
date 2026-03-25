@@ -7,6 +7,7 @@
  */
 
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
+import { withErrorHandler } from "@atlas/api/lib/routes/error-handler";
 import { validationHook } from "./validation-hook";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
@@ -523,7 +524,7 @@ const tourResetRoute = createRoute({
 // GET /tour-status
 // ---------------------------------------------------------------------------
 
-onboarding.openapi(tourStatusRoute, async (c) => {
+onboarding.openapi(tourStatusRoute, withErrorHandler("fetch tour status", async (c) => {
   const requestId = c.get("requestId");
   const authResult = c.get("authResult");
 
@@ -539,30 +540,22 @@ onboarding.openapi(tourStatusRoute, async (c) => {
     return c.json({ error: "auth_error", message: "No user ID in session.", requestId }, 401);
   }
 
-  try {
-    const rows = await internalQuery<{ tour_completed_at: string | null }>(
-      `SELECT tour_completed_at FROM user_onboarding WHERE user_id = $1`,
-      [userId],
-    );
-    const row = rows[0];
-    return c.json({
-      tourCompleted: !!row?.tour_completed_at,
-      tourCompletedAt: row?.tour_completed_at ?? null,
-    }, 200);
-  } catch (err) {
-    log.error(
-      { err: err instanceof Error ? err : new Error(String(err)), requestId },
-      "Failed to fetch tour status",
-    );
-    return c.json({ error: "internal_error", message: "Failed to fetch tour status.", requestId }, 500);
-  }
-});
+  const rows = await internalQuery<{ tour_completed_at: string | null }>(
+    `SELECT tour_completed_at FROM user_onboarding WHERE user_id = $1`,
+    [userId],
+  );
+  const row = rows[0];
+  return c.json({
+    tourCompleted: !!row?.tour_completed_at,
+    tourCompletedAt: row?.tour_completed_at ?? null,
+  }, 200);
+}));
 
 // ---------------------------------------------------------------------------
 // POST /tour-complete
 // ---------------------------------------------------------------------------
 
-onboarding.openapi(tourCompleteRoute, async (c) => {
+onboarding.openapi(tourCompleteRoute, withErrorHandler("save tour completion", async (c) => {
   const requestId = c.get("requestId");
   const authResult = c.get("authResult");
 
@@ -578,30 +571,22 @@ onboarding.openapi(tourCompleteRoute, async (c) => {
     return c.json({ error: "auth_error", message: "No user ID in session.", requestId }, 401);
   }
 
-  try {
-    const now = new Date().toISOString();
-    await internalQuery(
-      `INSERT INTO user_onboarding (user_id, tour_completed_at)
-       VALUES ($1, $2)
-       ON CONFLICT (user_id) DO UPDATE SET tour_completed_at = $2`,
-      [userId, now],
-    );
-    log.info({ requestId, userId }, "Tour marked as completed");
-    return c.json({ tourCompleted: true, tourCompletedAt: now }, 200);
-  } catch (err) {
-    log.error(
-      { err: err instanceof Error ? err : new Error(String(err)), requestId },
-      "Failed to mark tour as completed",
-    );
-    return c.json({ error: "internal_error", message: "Failed to save tour completion.", requestId }, 500);
-  }
-});
+  const now = new Date().toISOString();
+  await internalQuery(
+    `INSERT INTO user_onboarding (user_id, tour_completed_at)
+     VALUES ($1, $2)
+     ON CONFLICT (user_id) DO UPDATE SET tour_completed_at = $2`,
+    [userId, now],
+  );
+  log.info({ requestId, userId }, "Tour marked as completed");
+  return c.json({ tourCompleted: true, tourCompletedAt: now }, 200);
+}));
 
 // ---------------------------------------------------------------------------
 // POST /tour-reset
 // ---------------------------------------------------------------------------
 
-onboarding.openapi(tourResetRoute, async (c) => {
+onboarding.openapi(tourResetRoute, withErrorHandler("reset tour", async (c) => {
   const requestId = c.get("requestId");
   const authResult = c.get("authResult");
 
@@ -617,20 +602,12 @@ onboarding.openapi(tourResetRoute, async (c) => {
     return c.json({ error: "auth_error", message: "No user ID in session.", requestId }, 401);
   }
 
-  try {
-    await internalQuery(
-      `UPDATE user_onboarding SET tour_completed_at = NULL WHERE user_id = $1`,
-      [userId],
-    );
-    log.info({ requestId, userId }, "Tour reset for replay");
-    return c.json({ tourCompleted: false, tourCompletedAt: null }, 200);
-  } catch (err) {
-    log.error(
-      { err: err instanceof Error ? err : new Error(String(err)), requestId },
-      "Failed to reset tour",
-    );
-    return c.json({ error: "internal_error", message: "Failed to reset tour.", requestId }, 500);
-  }
-});
+  await internalQuery(
+    `UPDATE user_onboarding SET tour_completed_at = NULL WHERE user_id = $1`,
+    [userId],
+  );
+  log.info({ requestId, userId }, "Tour reset for replay");
+  return c.json({ tourCompleted: false, tourCompletedAt: null }, 200);
+}));
 
 export { onboarding };

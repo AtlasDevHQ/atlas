@@ -12,6 +12,7 @@
 
 import { createRoute, z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
+import { withErrorHandler } from "@atlas/api/lib/routes/error-handler";
 import { EnterpriseError } from "@atlas/ee/index";
 import { DomainError, type DomainErrorCode } from "@atlas/ee/platform/domains";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
@@ -199,7 +200,7 @@ const platformDomains = createPlatformRouter();
 
 // ── List all domains ─────────────────────────────────────────────────
 
-platformDomains.openapi(listDomainsRoute, async (c) => {
+platformDomains.openapi(listDomainsRoute, withErrorHandler("list domains", async (c) => {
   const requestId = c.get("requestId");
 
   const mod = await loadDomains();
@@ -212,15 +213,16 @@ platformDomains.openapi(listDomainsRoute, async (c) => {
     return c.json({ domains }, 200);
   } catch (err) {
     const result = handleDomainError(err, requestId);
+    if (result.error === "internal_error") throw err;
     const logFn = result.status >= 500 ? log.error : log.warn;
     logFn({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to list domains");
     return c.json({ error: result.error, message: result.message, requestId: result.requestId }, result.status as 403);
   }
-});
+}));
 
 // ── Register domain ──────────────────────────────────────────────────
 
-platformDomains.openapi(registerDomainRoute, async (c) => {
+platformDomains.openapi(registerDomainRoute, withErrorHandler("register domain", async (c) => {
   const requestId = c.get("requestId");
   const body = c.req.valid("json");
 
@@ -235,15 +237,16 @@ platformDomains.openapi(registerDomainRoute, async (c) => {
     return c.json(domain, 201);
   } catch (err) {
     const result = handleDomainError(err, requestId);
+    if (result.error === "internal_error") throw err;
     const logFn = result.status >= 500 ? log.error : log.warn;
     logFn({ err: err instanceof Error ? err : new Error(String(err)), domain: body.domain, requestId }, "Failed to register domain");
     return c.json({ error: result.error, message: result.message, requestId: result.requestId }, result.status as 400);
   }
-});
+}));
 
 // ── Verify domain ────────────────────────────────────────────────────
 
-platformDomains.openapi(verifyDomainRoute, async (c) => {
+platformDomains.openapi(verifyDomainRoute, withErrorHandler("verify domain", async (c) => {
   const requestId = c.get("requestId");
   const domainId = c.req.param("id");
 
@@ -257,15 +260,16 @@ platformDomains.openapi(verifyDomainRoute, async (c) => {
     return c.json(domain, 200);
   } catch (err) {
     const result = handleDomainError(err, requestId);
+    if (result.error === "internal_error") throw err;
     const logFn = result.status >= 500 ? log.error : log.warn;
     logFn({ err: err instanceof Error ? err : new Error(String(err)), domainId, requestId }, "Failed to verify domain");
     return c.json({ error: result.error, message: result.message, requestId: result.requestId }, result.status as 404);
   }
-});
+}));
 
 // ── Delete domain ────────────────────────────────────────────────────
 
-platformDomains.openapi(deleteDomainRoute, async (c) => {
+platformDomains.openapi(deleteDomainRoute, withErrorHandler("delete domain", async (c) => {
   const requestId = c.get("requestId");
   const domainId = c.req.param("id");
 
@@ -280,10 +284,11 @@ platformDomains.openapi(deleteDomainRoute, async (c) => {
     return c.json({ deleted: true }, 200);
   } catch (err) {
     const result = handleDomainError(err, requestId);
+    if (result.error === "internal_error") throw err;
     const logFn = result.status >= 500 ? log.error : log.warn;
     logFn({ err: err instanceof Error ? err : new Error(String(err)), domainId, requestId }, "Failed to delete domain");
     return c.json({ error: result.error, message: result.message, requestId: result.requestId }, result.status as 404);
   }
-});
+}));
 
 export { platformDomains };

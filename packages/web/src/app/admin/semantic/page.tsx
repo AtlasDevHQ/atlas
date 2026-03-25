@@ -315,6 +315,7 @@ export default function SemanticPage() {
   const [catalog, setCatalog] = useState<CatalogMeta | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<FetchError | null>(null);
+  const [fetchKey, setFetchKey] = useState(0);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [{ file: fileParam, view: viewMode }, setParams] = useQueryStates(semanticSearchParams);
   const [, startTransition] = useTransition();
@@ -378,7 +379,7 @@ export default function SemanticPage() {
       if (!cancelled) setLoading(false);
     });
     return () => { cancelled = true; };
-  }, [apiUrl]);
+  }, [apiUrl, fetchKey]);
 
   const handleSelect = (sel: SemanticSelection) => {
     startTransition(() => {
@@ -469,7 +470,7 @@ export default function SemanticPage() {
         loading={loading}
         error={error}
         feature="Semantic Layer"
-        onRetry={() => {}}
+        onRetry={() => setFetchKey((k) => k + 1)}
         loadingMessage="Loading semantic layer..."
       >
       <div className="flex items-center gap-2 border-b bg-muted/30 px-6 py-2.5 text-xs text-muted-foreground">

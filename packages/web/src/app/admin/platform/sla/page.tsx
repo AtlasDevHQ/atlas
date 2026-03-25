@@ -130,7 +130,7 @@ function SLAPageContent() {
   const [tab, setTab] = useQueryState("tab", parseAsStringEnum(["overview", "alerts"]).withDefault("overview"));
 
   // Data
-  const { data: slaData, loading: slaLoading, error: slaError } = useAdminFetch<{ workspaces: WorkspaceSLASummary[]; hoursBack: number }>(
+  const { data: slaData, loading: slaLoading, error: slaError, refetch: refetchSLA } = useAdminFetch<{ workspaces: WorkspaceSLASummary[]; hoursBack: number }>(
     "/api/v1/platform/sla",
   );
   const { data: alertsData, loading: alertsLoading, error: alertsError, refetch: refetchAlerts } = useAdminFetch<{ alerts: SLAAlert[] }>(
@@ -225,7 +225,7 @@ function SLAPageContent() {
       loading={false}
       error={slaError}
       feature="SLA Monitoring"
-      onRetry={() => {}}
+      onRetry={refetchSLA}
     >
     <div className="space-y-6">
       <div className="flex items-center justify-between">

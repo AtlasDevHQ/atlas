@@ -164,7 +164,7 @@ export default function UsageDashboardPage() {
           onRetry={refetch}
           loadingMessage="Loading usage data..."
         >
-          <>
+          {data && <>
             {/* Usage metrics with progress toward limits */}
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
               <UsageMetricCard
@@ -238,7 +238,7 @@ export default function UsageDashboardPage() {
                 )}
               </CardContent>
             </Card>
-          </>
+          </>}
         </AdminContentWrapper>
       </div>
     </div>

@@ -37,7 +37,7 @@ import {
 } from "@/components/ui/form";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
-import { useAdminFetch, friendlyError } from "@/ui/hooks/use-admin-fetch";
+import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import {
@@ -233,16 +233,10 @@ function ApprovalPageContent() {
 
       <AdminContentWrapper
         loading={isLoading}
-        error={gateError?.status && [401, 403, 404].includes(gateError.status) ? gateError : null}
+        error={gateError}
         feature="Approval Workflows"
         onRetry={() => { refetchRules(); refetchQueue(); }}
       >
-        {rulesError && !(rulesError.status && [401, 403, 404].includes(rulesError.status)) && (
-          <ErrorBanner message={friendlyError(rulesError)} />
-        )}
-        {queueError && !(queueError.status && [401, 403, 404].includes(queueError.status)) && (
-          <ErrorBanner message={friendlyError(queueError)} />
-        )}
 
         <Tabs defaultValue="rules">
         <TabsList>

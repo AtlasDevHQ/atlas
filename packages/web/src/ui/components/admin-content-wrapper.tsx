@@ -13,7 +13,7 @@ export interface AdminContentWrapperProps {
   loading: boolean;
   error: FetchError | null;
   feature?: string;
-  onRetry: () => void;
+  onRetry?: () => void;
   loadingMessage?: string;
   emptyIcon?: LucideIcon;
   emptyTitle?: string;
@@ -52,28 +52,27 @@ export function AdminContentWrapper({
     return <LoadingState message={loadingMessage} />;
   }
 
-  if (isEmpty && emptyIcon && emptyTitle && !hasFilters) {
+  if (isEmpty && emptyIcon && emptyTitle) {
+    if (hasFilters) {
+      return (
+        <EmptyState
+          icon={Search}
+          title="No matches"
+          description="Try adjusting your filters."
+          action={
+            onClearFilters
+              ? { label: "Clear filters", onClick: onClearFilters }
+              : undefined
+          }
+        />
+      );
+    }
     return (
       <EmptyState
         icon={emptyIcon}
         title={emptyTitle}
         description={emptyDescription}
         action={emptyAction}
-      />
-    );
-  }
-
-  if (isEmpty && emptyIcon && emptyTitle && hasFilters) {
-    return (
-      <EmptyState
-        icon={Search}
-        title="No matches"
-        description="Try adjusting your filters."
-        action={
-          onClearFilters
-            ? { label: "Clear filters", onClick: onClearFilters }
-            : undefined
-        }
       />
     );
   }

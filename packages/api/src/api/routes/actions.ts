@@ -321,7 +321,7 @@ actions.onError((err, c) => {
 // ---------------------------------------------------------------------------
 
 actions.openapi(listActionsRoute, async (c) => {
-  const result = await runEffect(c, Effect.gen(function* () {
+  return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
     const { user } = yield* AuthContext;
 
@@ -342,7 +342,6 @@ actions.openapi(listActionsRoute, async (c) => {
     }));
     return c.json({ actions: items }, 200);
   }), { label: "list actions" });
-  return result;
 });
 
 // ---------------------------------------------------------------------------
@@ -350,7 +349,7 @@ actions.openapi(listActionsRoute, async (c) => {
 // ---------------------------------------------------------------------------
 
 actions.openapi(getActionRoute, async (c) => {
-  const result = await runEffect(c, Effect.gen(function* () {
+  return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
     const { user } = yield* AuthContext;
 
@@ -369,7 +368,6 @@ actions.openapi(getActionRoute, async (c) => {
     }
     return c.json(action, 200);
   }), { label: "retrieve action" });
-  return result;
 });
 
 // ---------------------------------------------------------------------------
@@ -377,7 +375,7 @@ actions.openapi(getActionRoute, async (c) => {
 // ---------------------------------------------------------------------------
 
 actions.openapi(approveActionRoute, async (c) => {
-  const result = await runEffect(c, Effect.gen(function* () {
+  return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
     const { user } = yield* AuthContext;
 
@@ -417,7 +415,6 @@ actions.openapi(approveActionRoute, async (c) => {
     }
     return c.json(approveResult, 200);
   }), { label: "approve action" });
-  return result;
 });
 
 // ---------------------------------------------------------------------------
@@ -427,7 +424,7 @@ actions.openapi(approveActionRoute, async (c) => {
 actions.openapi(
   denyActionRoute,
   async (c) => {
-    const result = await runEffect(c, Effect.gen(function* () {
+    return runEffect(c, Effect.gen(function* () {
       const { requestId } = yield* RequestContext;
       const { user } = yield* AuthContext;
 
@@ -485,7 +482,6 @@ actions.openapi(
       }
       return c.json(denyResult, 200);
     }), { label: "deny action" });
-    return result;
   },
   (result, c) => {
     if (!result.success) {
@@ -502,7 +498,7 @@ actions.openapi(
 // ---------------------------------------------------------------------------
 
 actions.openapi(rollbackActionRoute, async (c) => {
-  const result = await runEffect(c, Effect.gen(function* () {
+  return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
     const { user } = yield* AuthContext;
 
@@ -540,7 +536,6 @@ actions.openapi(rollbackActionRoute, async (c) => {
     }
     return c.json(rollbackResult, 200);
   }), { label: "rollback action" });
-  return result;
 });
 
 export { actions };

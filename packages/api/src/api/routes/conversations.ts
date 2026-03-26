@@ -576,7 +576,7 @@ conversations.onError((err, c) => {
 // ---------------------------------------------------------------------------
 
 conversations.openapi(listConversationsRoute, async (c) => {
-  const result = await runEffect(c, Effect.gen(function* () {
+  return runEffect(c, Effect.gen(function* () {
     if (!hasInternalDB()) {
       return c.json({ error: "not_available", message: "Conversation history is not available (no internal database configured)." }, 404);
     }
@@ -595,7 +595,6 @@ conversations.openapi(listConversationsRoute, async (c) => {
     }));
     return c.json(items, 200);
   }), { label: "list conversations" });
-  return result;
 });
 
 // ---------------------------------------------------------------------------
@@ -603,7 +602,7 @@ conversations.openapi(listConversationsRoute, async (c) => {
 // ---------------------------------------------------------------------------
 
 conversations.openapi(getConversationRoute, async (c) => {
-  const result = await runEffect(c, Effect.gen(function* () {
+  return runEffect(c, Effect.gen(function* () {
     if (!hasInternalDB()) {
       return c.json({ error: "not_available", message: "Conversation history is not available (no internal database configured)." }, 404);
     }
@@ -623,7 +622,6 @@ conversations.openapi(getConversationRoute, async (c) => {
     }
     return c.json(conv.data, 200);
   }), { label: "get conversation" });
-  return result;
 });
 
 // ---------------------------------------------------------------------------
@@ -631,7 +629,7 @@ conversations.openapi(getConversationRoute, async (c) => {
 // ---------------------------------------------------------------------------
 
 conversations.openapi(starConversationRoute, async (c) => {
-  const result = await runEffect(c, Effect.gen(function* () {
+  return runEffect(c, Effect.gen(function* () {
     if (!hasInternalDB()) {
       return c.json({ error: "not_available", message: "Conversation history is not available (no internal database configured)." }, 404);
     }
@@ -653,7 +651,6 @@ conversations.openapi(starConversationRoute, async (c) => {
     }
     return c.json({ id, starred: parsed.starred }, 200);
   }), { label: "star conversation" });
-  return result;
 });
 
 // ---------------------------------------------------------------------------
@@ -661,7 +658,7 @@ conversations.openapi(starConversationRoute, async (c) => {
 // ---------------------------------------------------------------------------
 
 conversations.openapi(notebookStateRoute, async (c) => {
-  const result = await runEffect(c, Effect.gen(function* () {
+  return runEffect(c, Effect.gen(function* () {
     if (!hasInternalDB()) {
       return c.json({ error: "not_available", message: "Conversation history is not available (no internal database configured)." }, 404);
     }
@@ -683,7 +680,6 @@ conversations.openapi(notebookStateRoute, async (c) => {
     }
     return c.json({ id, notebookState: parsed }, 200);
   }), { label: "update notebook state" });
-  return result;
 });
 
 // ---------------------------------------------------------------------------
@@ -691,7 +687,7 @@ conversations.openapi(notebookStateRoute, async (c) => {
 // ---------------------------------------------------------------------------
 
 conversations.openapi(forkConversationRoute, async (c) => {
-  const result = await runEffect(c, Effect.gen(function* () {
+  return runEffect(c, Effect.gen(function* () {
     if (!hasInternalDB()) {
       return c.json({ error: "not_available", message: "Conversation history is not available (no internal database configured)." }, 404);
     }
@@ -777,7 +773,6 @@ conversations.openapi(forkConversationRoute, async (c) => {
       ...(metadataWarning ? { warning: metadataWarning } : {}),
     }, 200);
   }), { label: "fork conversation" });
-  return result;
 });
 
 // ---------------------------------------------------------------------------
@@ -785,7 +780,7 @@ conversations.openapi(forkConversationRoute, async (c) => {
 // ---------------------------------------------------------------------------
 
 conversations.openapi(getShareStatusRoute, async (c) => {
-  const result = await runEffect(c, Effect.gen(function* () {
+  return runEffect(c, Effect.gen(function* () {
     if (!hasInternalDB()) {
       return c.json({ error: "not_available", message: "Conversation history is not available (no internal database configured)." }, 404);
     }
@@ -818,7 +813,6 @@ conversations.openapi(getShareStatusRoute, async (c) => {
       shareMode: shareResult.data.shareMode,
     }, 200);
   }), { label: "get share status" });
-  return result;
 });
 
 // ---------------------------------------------------------------------------
@@ -826,7 +820,7 @@ conversations.openapi(getShareStatusRoute, async (c) => {
 // ---------------------------------------------------------------------------
 
 conversations.openapi(shareConversationRoute, async (c) => {
-  const result = await runEffect(c, Effect.gen(function* () {
+  return runEffect(c, Effect.gen(function* () {
     if (!hasInternalDB()) {
       return c.json({ error: "not_available", message: "Conversation history is not available (no internal database configured)." }, 404);
     }
@@ -874,7 +868,6 @@ conversations.openapi(shareConversationRoute, async (c) => {
       shareMode: shareResult.data.shareMode,
     }, 200);
   }), { label: "share conversation" });
-  return result;
 });
 
 // ---------------------------------------------------------------------------
@@ -882,7 +875,7 @@ conversations.openapi(shareConversationRoute, async (c) => {
 // ---------------------------------------------------------------------------
 
 conversations.openapi(unshareConversationRoute, async (c) => {
-  const result = await runEffect(c, Effect.gen(function* () {
+  return runEffect(c, Effect.gen(function* () {
     if (!hasInternalDB()) {
       return c.json({ error: "not_available", message: "Conversation history is not available (no internal database configured)." }, 404);
     }
@@ -902,7 +895,6 @@ conversations.openapi(unshareConversationRoute, async (c) => {
     }
     return c.body(null, 204);
   }), { label: "unshare conversation" });
-  return result;
 });
 
 // ---------------------------------------------------------------------------
@@ -910,7 +902,7 @@ conversations.openapi(unshareConversationRoute, async (c) => {
 // ---------------------------------------------------------------------------
 
 conversations.openapi(deleteConversationRoute, async (c) => {
-  const result = await runEffect(c, Effect.gen(function* () {
+  return runEffect(c, Effect.gen(function* () {
     if (!hasInternalDB()) {
       return c.json({ error: "not_available", message: "Conversation history is not available (no internal database configured)." }, 404);
     }
@@ -930,7 +922,6 @@ conversations.openapi(deleteConversationRoute, async (c) => {
     }
     return c.body(null, 204);
   }), { label: "delete conversation" });
-  return result;
 });
 
 // ---------------------------------------------------------------------------

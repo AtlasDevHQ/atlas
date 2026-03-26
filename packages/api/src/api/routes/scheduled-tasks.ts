@@ -392,7 +392,7 @@ scheduledTasks.onError((err, c) => {
 // ---------------------------------------------------------------------------
 
 authed.openapi(listTasksRoute, async (c) => {
-  const result = await runEffect(c, Effect.gen(function* () {
+  return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
     const { user } = yield* AuthContext;
 
@@ -412,7 +412,6 @@ authed.openapi(listTasksRoute, async (c) => {
     }));
     return c.json(items, 200);
   }), { label: "list scheduled tasks" });
-  return result;
 });
 
 // ---------------------------------------------------------------------------
@@ -422,7 +421,7 @@ authed.openapi(listTasksRoute, async (c) => {
 authed.openapi(
   createTaskRoute,
   async (c) => {
-    const result = await runEffect(c, Effect.gen(function* () {
+    return runEffect(c, Effect.gen(function* () {
       const { requestId } = yield* RequestContext;
       const { user } = yield* AuthContext;
 
@@ -456,7 +455,6 @@ authed.openapi(
 
       return c.json(createResult.data, 201);
     }), { label: "create scheduled task" });
-    return result;
   },
   (result, c) => {
     if (!result.success) {
@@ -473,7 +471,7 @@ authed.openapi(
 // ---------------------------------------------------------------------------
 
 scheduledTasks.openapi(tickRoute, async (c) => {
-  const result = await runEffect(c, Effect.gen(function* () {
+  return runEffect(c, Effect.gen(function* () {
     const req = c.req.raw;
     const requestId = crypto.randomUUID();
 
@@ -505,19 +503,25 @@ scheduledTasks.openapi(tickRoute, async (c) => {
       log.warn("POST /tick called without secret — allowing because NODE_ENV is not 'production'");
     }
 
-    try {
-      const { runTick } = yield* Effect.promise(() => import("@atlas/api/lib/scheduler/engine"));
-      const tickResult = yield* Effect.promise(() => runTick());
-      if (tickResult.error) {
-        return c.json({ error: "tick_failed", message: tickResult.error, requestId }, 500);
-      }
-      return c.json(tickResult, 200);
-    } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Tick execution failed");
+    const tickOutcome = yield* Effect.tryPromise({
+      try: async () => {
+        const { runTick } = await import("@atlas/api/lib/scheduler/engine");
+        return runTick();
+      },
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    }).pipe(Effect.catchAll((err) => {
+      log.error({ err, requestId }, "Tick execution failed");
+      return Effect.succeed({ error: "internal_error" as const, requestId });
+    }));
+
+    if ("error" in tickOutcome && tickOutcome.error === "internal_error") {
       return c.json({ error: "internal_error", message: "Tick execution failed.", requestId }, 500);
     }
+    if (tickOutcome.error) {
+      return c.json({ error: "tick_failed", message: tickOutcome.error, requestId }, 500);
+    }
+    return c.json(tickOutcome, 200);
   }), { label: "scheduler tick" });
-  return result;
 });
 
 // ---------------------------------------------------------------------------
@@ -525,7 +529,7 @@ scheduledTasks.openapi(tickRoute, async (c) => {
 // ---------------------------------------------------------------------------
 
 authed.openapi(listAllRunsRoute, async (c) => {
-  const result = await runEffect(c, Effect.gen(function* () {
+  return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
 
     if (!hasInternalDB()) {
@@ -549,7 +553,6 @@ authed.openapi(listAllRunsRoute, async (c) => {
     const runs = yield* Effect.promise(() => listAllRuns({ taskId, status, dateFrom, dateTo, limit, offset }));
     return c.json(runs, 200);
   }), { label: "list all runs" });
-  return result;
 });
 
 // ---------------------------------------------------------------------------
@@ -557,7 +560,7 @@ authed.openapi(listAllRunsRoute, async (c) => {
 // ---------------------------------------------------------------------------
 
 authed.openapi(getTaskRoute, async (c) => {
-  const result = await runEffect(c, Effect.gen(function* () {
+  return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
     const { user } = yield* AuthContext;
 
@@ -579,7 +582,6 @@ authed.openapi(getTaskRoute, async (c) => {
     const runs = yield* Effect.promise(() => listTaskRuns(id, { limit: 10 }));
     return c.json({ ...taskResult.data, recentRuns: runs }, 200);
   }), { label: "get scheduled task" });
-  return result;
 });
 
 // ---------------------------------------------------------------------------
@@ -589,7 +591,7 @@ authed.openapi(getTaskRoute, async (c) => {
 authed.openapi(
   updateTaskRoute,
   async (c) => {
-    const result = await runEffect(c, Effect.gen(function* () {
+    return runEffect(c, Effect.gen(function* () {
       const { requestId } = yield* RequestContext;
       const { user } = yield* AuthContext;
 
@@ -625,7 +627,6 @@ authed.openapi(
       }
       return c.json(updated.data, 200);
     }), { label: "update scheduled task" });
-    return result;
   },
   (result, c) => {
     if (!result.success) {
@@ -642,7 +643,7 @@ authed.openapi(
 // ---------------------------------------------------------------------------
 
 authed.openapi(deleteTaskRoute, async (c) => {
-  const result = await runEffect(c, Effect.gen(function* () {
+  return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
     const { user } = yield* AuthContext;
 
@@ -662,7 +663,6 @@ authed.openapi(deleteTaskRoute, async (c) => {
     }
     return c.body(null, 204);
   }), { label: "delete scheduled task" });
-  return result;
 });
 
 // ---------------------------------------------------------------------------
@@ -670,7 +670,7 @@ authed.openapi(deleteTaskRoute, async (c) => {
 // ---------------------------------------------------------------------------
 
 authed.openapi(triggerTaskRoute, async (c) => {
-  const result = await runEffect(c, Effect.gen(function* () {
+  return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
     const { user } = yield* AuthContext;
 
@@ -693,7 +693,6 @@ authed.openapi(triggerTaskRoute, async (c) => {
     yield* Effect.promise(() => triggerTask(id));
     return c.json({ message: "Task triggered successfully.", taskId: id }, 200);
   }), { label: "trigger task execution" });
-  return result;
 });
 
 // ---------------------------------------------------------------------------
@@ -701,7 +700,7 @@ authed.openapi(triggerTaskRoute, async (c) => {
 // ---------------------------------------------------------------------------
 
 authed.openapi(previewTaskRoute, async (c) => {
-  const result = await runEffect(c, Effect.gen(function* () {
+  return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
     const { user } = yield* AuthContext;
 
@@ -724,7 +723,6 @@ authed.openapi(previewTaskRoute, async (c) => {
     const preview = generateDeliveryPreview(task.data);
     return c.json(preview, 200);
   }), { label: "generate delivery preview" });
-  return result;
 });
 
 // ---------------------------------------------------------------------------
@@ -732,7 +730,7 @@ authed.openapi(previewTaskRoute, async (c) => {
 // ---------------------------------------------------------------------------
 
 authed.openapi(listTaskRunsRoute, async (c) => {
-  const result = await runEffect(c, Effect.gen(function* () {
+  return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
     const { user } = yield* AuthContext;
 
@@ -756,7 +754,6 @@ authed.openapi(listTaskRunsRoute, async (c) => {
     const runs = yield* Effect.promise(() => listTaskRuns(id, { limit }));
     return c.json({ runs }, 200);
   }), { label: "list task runs" });
-  return result;
 });
 
 // Mount authenticated routes on the outer app

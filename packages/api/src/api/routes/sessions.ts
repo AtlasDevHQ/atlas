@@ -132,7 +132,7 @@ sessions.use(requestContext);
 
 // GET / — list the current user's sessions
 sessions.openapi(listSessionsRoute, async (c) => {
-  const result = await runEffect(c, Effect.gen(function* () {
+  return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
     const { user } = yield* AuthContext;
 
@@ -169,12 +169,11 @@ sessions.openapi(listSessionsRoute, async (c) => {
       })),
     }, 200);
   }), { label: "list sessions" });
-  return result;
 });
 
 // DELETE /:id — revoke one of the current user's sessions
 sessions.openapi(revokeSessionRoute, async (c) => {
-  const result = await runEffect(c, Effect.gen(function* () {
+  return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
     const { user } = yield* AuthContext;
 
@@ -206,7 +205,6 @@ sessions.openapi(revokeSessionRoute, async (c) => {
     log.info({ requestId, sessionId, userId }, "User revoked own session");
     return c.json({ success: true }, 200);
   }), { label: "revoke session" });
-  return result;
 });
 
 export { sessions };

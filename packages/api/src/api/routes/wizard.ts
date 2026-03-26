@@ -15,7 +15,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
-import { Effect, Either } from "effect";
+import { Effect } from "effect";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
 import { HTTPException } from "hono/http-exception";
@@ -420,7 +420,7 @@ wizard.onError((err, c) => {
 // ---------------------------------------------------------------------------
 
 wizard.openapi(profileRoute, async (c) => {
-  const result = await runEffect(c, Effect.gen(function* () {
+  return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
     const { user } = yield* AuthContext;
 
@@ -432,7 +432,7 @@ wizard.openapi(profileRoute, async (c) => {
       catch: (err) => err instanceof Error ? err : new Error(String(err)),
     }).pipe(Effect.either);
 
-    if (Either.isLeft(connUrlResult)) {
+    if (connUrlResult._tag === "Left") {
       const err = connUrlResult.left;
       log.error({ err, requestId, connectionId }, "Failed to resolve connection URL");
       return c.json({
@@ -466,7 +466,7 @@ wizard.openapi(profileRoute, async (c) => {
       catch: (err) => err instanceof Error ? err : new Error(String(err)),
     }).pipe(Effect.either);
 
-    if (Either.isLeft(profileResult)) {
+    if (profileResult._tag === "Left") {
       const err = profileResult.left;
       log.error({ err, requestId, connectionId }, "Wizard profile failed");
       return c.json({
@@ -496,7 +496,6 @@ wizard.openapi(profileRoute, async (c) => {
       })),
     }, 200);
   }), { label: "wizard profile" });
-  return result;
 });
 
 // ---------------------------------------------------------------------------
@@ -504,7 +503,7 @@ wizard.openapi(profileRoute, async (c) => {
 // ---------------------------------------------------------------------------
 
 wizard.openapi(generateRoute, async (c) => {
-  const result = await runEffect(c, Effect.gen(function* () {
+  return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
     const { user } = yield* AuthContext;
 
@@ -515,7 +514,7 @@ wizard.openapi(generateRoute, async (c) => {
       catch: (err) => err instanceof Error ? err : new Error(String(err)),
     }).pipe(Effect.either);
 
-    if (Either.isLeft(connUrlResult)) {
+    if (connUrlResult._tag === "Left") {
       const err = connUrlResult.left;
       log.error({ err, requestId, connectionId }, "Failed to resolve connection URL");
       return c.json({
@@ -594,7 +593,7 @@ wizard.openapi(generateRoute, async (c) => {
       catch: (err) => err instanceof Error ? err : new Error(String(err)),
     }).pipe(Effect.either);
 
-    if (Either.isLeft(genResult)) {
+    if (genResult._tag === "Left") {
       const err = genResult.left;
       log.error({ err, requestId, connectionId }, "Wizard generate failed");
       return c.json({
@@ -628,7 +627,6 @@ wizard.openapi(generateRoute, async (c) => {
       errors: genData.errors,
     }, 200);
   }), { label: "wizard generate" });
-  return result;
 });
 
 // ---------------------------------------------------------------------------
@@ -636,31 +634,30 @@ wizard.openapi(generateRoute, async (c) => {
 // ---------------------------------------------------------------------------
 
 wizard.openapi(previewRoute, async (c) => {
-  const result = await runEffect(c, Effect.gen(function* () {
+  return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
 
     const { question, entities } = c.req.valid("json");
 
-  // Build a semantic context summary from the provided entity YAMLs
-  // (Zod already validated that entities are { tableName: string; yaml: string }[])
-  const entitySummaries = entities
-    .map((e) => `--- ${e.tableName} ---\n${e.yaml}`)
-    .join("\n\n");
-
-  // Generate a preview response showing what the agent would see
-  const preview = {
-    question,
-    semanticContext: `The agent would see ${entities.length} entity definitions when answering this question.`,
-    availableTables: entities.map((e) => e.tableName),
-    entityCount: entities.length,
-    sampleEntityYaml: entitySummaries.slice(0, 2000),
-  };
-
-  log.info({ requestId, question, entityCount: entities.length }, "Wizard preview generated");
-
-  return c.json(preview, 200);
+    // Build a semantic context summary from the provided entity YAMLs
+    // (Zod already validated that entities are { tableName: string; yaml: string }[])
+    const entitySummaries = entities
+      .map((e) => `--- ${e.tableName} ---\n${e.yaml}`)
+      .join("\n\n");
+  
+    // Generate a preview response showing what the agent would see
+    const preview = {
+      question,
+      semanticContext: `The agent would see ${entities.length} entity definitions when answering this question.`,
+      availableTables: entities.map((e) => e.tableName),
+      entityCount: entities.length,
+      sampleEntityYaml: entitySummaries.slice(0, 2000),
+    };
+  
+    log.info({ requestId, question, entityCount: entities.length }, "Wizard preview generated");
+  
+    return c.json(preview, 200);
   }), { label: "wizard preview" });
-  return result;
 });
 
 // ---------------------------------------------------------------------------
@@ -668,118 +665,117 @@ wizard.openapi(previewRoute, async (c) => {
 // ---------------------------------------------------------------------------
 
 wizard.openapi(saveRoute, async (c) => {
-  const result = await runEffect(c, Effect.gen(function* () {
+  return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
     const { user } = yield* AuthContext;
 
     const orgId = user?.activeOrganizationId;
-  if (!orgId) {
-    return c.json({ error: "no_organization", message: "No active organization. Create a workspace first." }, 400);
-  }
-
-  const body = c.req.valid("json");
-  const { connectionId, entities } = body;
-
-  // Path traversal protection: validate all table names before writing any files
-  const SAFE_TABLE_NAME = /^[a-zA-Z_][a-zA-Z0-9_.-]*$/;
-  for (const entity of entities) {
-    if (!SAFE_TABLE_NAME.test(entity.tableName) || entity.tableName.includes("..")) {
-      return c.json({
-        error: "invalid_request",
-        message: `Invalid table name: "${entity.tableName}". Only letters, digits, underscores, hyphens, and dots are allowed.`,
-      }, 400);
+    if (!orgId) {
+      return c.json({ error: "no_organization", message: "No active organization. Create a workspace first." }, 400);
     }
-  }
-
-  try {
-    // Write entities to disk (org-scoped)
-    const sourceId = connectionId === "default" ? "default" : connectionId;
-    const outputBase = outputDirForDatasource(sourceId, orgId);
-    const entitiesDir = path.join(outputBase, "entities");
-    const metricsDir = path.join(outputBase, "metrics");
-
-    fs.mkdirSync(entitiesDir, { recursive: true });
-    fs.mkdirSync(metricsDir, { recursive: true });
-
-    const savedFiles: string[] = [];
-
-    // Write entity YAMLs (table names already validated above)
+  
+    const body = c.req.valid("json");
+    const { connectionId, entities } = body;
+  
+    // Path traversal protection: validate all table names before writing any files
+    const SAFE_TABLE_NAME = /^[a-zA-Z_][a-zA-Z0-9_.-]*$/;
     for (const entity of entities) {
-      const safeName = path.basename(entity.tableName);
-      const filePath = path.join(entitiesDir, `${safeName}.yml`);
-      fs.writeFileSync(filePath, entity.yaml, "utf-8");
-      savedFiles.push(`entities/${safeName}.yml`);
-
-      // Also write to org-scoped semantic directory (semantic/.orgs/{orgId}/)
-      // so the explore tool can discover this entity.
-      if (hasInternalDB()) {
-        yield* Effect.promise(() => syncEntityToDisk(orgId, entity.tableName, "entity", entity.yaml).catch((err) => {
-          log.warn({ err: err instanceof Error ? err.message : String(err), tableName: entity.tableName }, "Disk sync after wizard save failed");
-        }));
+      if (!SAFE_TABLE_NAME.test(entity.tableName) || entity.tableName.includes("..")) {
+        return c.json({
+          error: "invalid_request",
+          message: `Invalid table name: "${entity.tableName}". Only letters, digits, underscores, hyphens, and dots are allowed.`,
+        }, 400);
       }
     }
-
-    // Generate catalog, glossary, and metric files from raw profile data.
-    // The wizard frontend does not send raw profile data — it sends
-    // pre-generated entity YAML via { connectionId, entities } instead.
-    // This branch handles callers (e.g. future CLI integrations) that
-    // provide raw TableProfile[] data for server-side generation.
-    const { schema: bodySchema, profiles: profileData } = body;
-    if (profileData && profileData.length > 0) {
-      const profiles = profileData;
-      const resolvedSchema = bodySchema ?? "public";
-
-      const catalogYaml = generateCatalogYAML(profiles);
-      const catalogPath = path.join(outputBase, "catalog.yml");
-      fs.writeFileSync(catalogPath, catalogYaml, "utf-8");
-      savedFiles.push("catalog.yml");
-
-      const glossaryYaml = generateGlossaryYAML(profiles);
-      const glossaryPath = path.join(outputBase, "glossary.yml");
-      fs.writeFileSync(glossaryPath, glossaryYaml, "utf-8");
-      savedFiles.push("glossary.yml");
-
-      // Generate metric files (sanitize table_name from profiles)
-      for (const profile of profiles) {
-        if (!profile.table_name || !SAFE_TABLE_NAME.test(profile.table_name)) continue;
-        const metricYaml = generateMetricYAML(profile, resolvedSchema);
-        if (metricYaml) {
-          const safeMetricName = path.basename(profile.table_name);
-          const filePath = path.join(metricsDir, `${safeMetricName}.yml`);
-          fs.writeFileSync(filePath, metricYaml, "utf-8");
-          savedFiles.push(`metrics/${safeMetricName}.yml`);
+  
+    try {
+      // Write entities to disk (org-scoped)
+      const sourceId = connectionId === "default" ? "default" : connectionId;
+      const outputBase = outputDirForDatasource(sourceId, orgId);
+      const entitiesDir = path.join(outputBase, "entities");
+      const metricsDir = path.join(outputBase, "metrics");
+  
+      fs.mkdirSync(entitiesDir, { recursive: true });
+      fs.mkdirSync(metricsDir, { recursive: true });
+  
+      const savedFiles: string[] = [];
+  
+      // Write entity YAMLs (table names already validated above)
+      for (const entity of entities) {
+        const safeName = path.basename(entity.tableName);
+        const filePath = path.join(entitiesDir, `${safeName}.yml`);
+        fs.writeFileSync(filePath, entity.yaml, "utf-8");
+        savedFiles.push(`entities/${safeName}.yml`);
+  
+        // Also write to org-scoped semantic directory (semantic/.orgs/{orgId}/)
+        // so the explore tool can discover this entity.
+        if (hasInternalDB()) {
+          yield* Effect.promise(() => syncEntityToDisk(orgId, entity.tableName, "entity", entity.yaml).catch((err) => {
+            log.warn({ err: err instanceof Error ? err.message : String(err), tableName: entity.tableName }, "Disk sync after wizard save failed");
+          }));
         }
       }
+  
+      // Generate catalog, glossary, and metric files from raw profile data.
+      // The wizard frontend does not send raw profile data — it sends
+      // pre-generated entity YAML via { connectionId, entities } instead.
+      // This branch handles callers (e.g. future CLI integrations) that
+      // provide raw TableProfile[] data for server-side generation.
+      const { schema: bodySchema, profiles: profileData } = body;
+      if (profileData && profileData.length > 0) {
+        const profiles = profileData;
+        const resolvedSchema = bodySchema ?? "public";
+  
+        const catalogYaml = generateCatalogYAML(profiles);
+        const catalogPath = path.join(outputBase, "catalog.yml");
+        fs.writeFileSync(catalogPath, catalogYaml, "utf-8");
+        savedFiles.push("catalog.yml");
+  
+        const glossaryYaml = generateGlossaryYAML(profiles);
+        const glossaryPath = path.join(outputBase, "glossary.yml");
+        fs.writeFileSync(glossaryPath, glossaryYaml, "utf-8");
+        savedFiles.push("glossary.yml");
+  
+        // Generate metric files (sanitize table_name from profiles)
+        for (const profile of profiles) {
+          if (!profile.table_name || !SAFE_TABLE_NAME.test(profile.table_name)) continue;
+          const metricYaml = generateMetricYAML(profile, resolvedSchema);
+          if (metricYaml) {
+            const safeMetricName = path.basename(profile.table_name);
+            const filePath = path.join(metricsDir, `${safeMetricName}.yml`);
+            fs.writeFileSync(filePath, metricYaml, "utf-8");
+            savedFiles.push(`metrics/${safeMetricName}.yml`);
+          }
+        }
+      }
+  
+      // Reset semantic whitelist cache so new entities are queryable
+      _resetWhitelists();
+  
+      log.info({
+        requestId,
+        orgId,
+        connectionId,
+        entityCount: entities.length,
+        fileCount: savedFiles.length,
+      }, "Wizard save complete");
+  
+      return c.json({
+        saved: true,
+        orgId,
+        connectionId,
+        entityCount: entities.length,
+        files: savedFiles,
+      }, 201);
+    } catch (err) {
+      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Wizard save failed");
+      return c.json({
+        error: "save_failed",
+        message: `Failed to save entities: ${err instanceof Error ? err.message : String(err)}`,
+        requestId,
+      }, 500);
     }
-
-    // Reset semantic whitelist cache so new entities are queryable
-    _resetWhitelists();
-
-    log.info({
-      requestId,
-      orgId,
-      connectionId,
-      entityCount: entities.length,
-      fileCount: savedFiles.length,
-    }, "Wizard save complete");
-
-    return c.json({
-      saved: true,
-      orgId,
-      connectionId,
-      entityCount: entities.length,
-      files: savedFiles,
-    }, 201);
-  } catch (err) {
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Wizard save failed");
-    return c.json({
-      error: "save_failed",
-      message: `Failed to save entities: ${err instanceof Error ? err.message : String(err)}`,
-      requestId,
-    }, 500);
-  }
   }), { label: "wizard save" });
-  return result;
 });
 
 // ---------------------------------------------------------------------------

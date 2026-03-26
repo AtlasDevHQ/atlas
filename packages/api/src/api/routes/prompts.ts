@@ -154,7 +154,7 @@ prompts.use(requestContext);
 // ---------------------------------------------------------------------------
 
 prompts.openapi(listCollectionsRoute, async (c) => {
-  const result = await runEffect(c, Effect.gen(function* () {
+  return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
 
     if (!hasInternalDB()) {
@@ -175,7 +175,6 @@ prompts.openapi(listCollectionsRoute, async (c) => {
 
     return c.json({ collections: rows.map(toPromptCollection) }, 200);
   }), { label: "list prompt collections" });
-  return result;
 });
 
 // ---------------------------------------------------------------------------
@@ -183,7 +182,7 @@ prompts.openapi(listCollectionsRoute, async (c) => {
 // ---------------------------------------------------------------------------
 
 prompts.openapi(getCollectionRoute, async (c) => {
-  const result = await runEffect(c, Effect.gen(function* () {
+  return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
 
     if (!hasInternalDB()) {
@@ -219,5 +218,4 @@ prompts.openapi(getCollectionRoute, async (c) => {
       items: items.map(toPromptItem),
     }, 200);
   }), { label: "get prompt collection" });
-  return result;
 });

@@ -23,35 +23,437 @@ const log = createLogger("admin-prompts");
 // ---------------------------------------------------------------------------
 
 function toPromptCollection(row: Record<string, unknown>): PromptCollection {
-  return { id: row.id as string, orgId: (row.org_id as string) ?? null, name: row.name as string, industry: row.industry as string, description: (row.description as string) ?? "", isBuiltin: row.is_builtin as boolean, sortOrder: row.sort_order as number, createdAt: String(row.created_at), updatedAt: String(row.updated_at) };
+  return {
+    id: row.id as string,
+    orgId: (row.org_id as string) ?? null,
+    name: row.name as string,
+    industry: row.industry as string,
+    description: (row.description as string) ?? "",
+    isBuiltin: row.is_builtin as boolean,
+    sortOrder: row.sort_order as number,
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+  };
 }
 
 function toPromptItem(row: Record<string, unknown>): PromptItem {
-  return { id: row.id as string, collectionId: row.collection_id as string, question: row.question as string, description: (row.description as string) ?? null, category: (row.category as string) ?? null, sortOrder: row.sort_order as number, createdAt: String(row.created_at), updatedAt: String(row.updated_at) };
+  return {
+    id: row.id as string,
+    collectionId: row.collection_id as string,
+    question: row.question as string,
+    description: (row.description as string) ?? null,
+    category: (row.category as string) ?? null,
+    sortOrder: row.sort_order as number,
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+  };
 }
 
 // ---------------------------------------------------------------------------
 // Schemas
 // ---------------------------------------------------------------------------
 
-const PromptCollectionSchema = z.object({ id: z.string(), orgId: z.string().nullable(), name: z.string(), industry: z.string(), description: z.string(), isBuiltin: z.boolean(), sortOrder: z.number(), createdAt: z.string(), updatedAt: z.string() });
-const PromptItemSchema = z.object({ id: z.string(), collectionId: z.string(), question: z.string(), description: z.string().nullable(), category: z.string().nullable(), sortOrder: z.number(), createdAt: z.string(), updatedAt: z.string() });
+const PromptCollectionSchema = z.object({
+  id: z.string(),
+  orgId: z.string().nullable(),
+  name: z.string(),
+  industry: z.string(),
+  description: z.string(),
+  isBuiltin: z.boolean(),
+  sortOrder: z.number(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+
+const PromptItemSchema = z.object({
+  id: z.string(),
+  collectionId: z.string(),
+  question: z.string(),
+  description: z.string().nullable(),
+  category: z.string().nullable(),
+  sortOrder: z.number(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+
 const ListCollectionsResponseSchema = createListResponseSchema("collections", PromptCollectionSchema);
+
 const DeletedSchema = DeletedResponseSchema;
-const ReorderedSchema = z.object({ reordered: z.boolean() });
+
+const ReorderedSchema = z.object({
+  reordered: z.boolean(),
+});
 
 // ---------------------------------------------------------------------------
 // Route definitions
 // ---------------------------------------------------------------------------
 
-const listCollectionsRoute = createRoute({ method: "get", path: "/", tags: ["Admin — Prompts"], summary: "List prompt collections", description: "Returns all prompt collections for the admin's active organization, including built-in collections. Ordered by sort_order then created_at.", responses: { 200: { description: "List of prompt collections", content: { "application/json": { schema: ListCollectionsResponseSchema } } }, 401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } }, 403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } }, 404: { description: "Internal database not configured", content: { "application/json": { schema: ErrorSchema } } }, 429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } }, 500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } } } });
-const createCollectionRoute = createRoute({ method: "post", path: "/", tags: ["Admin — Prompts"], summary: "Create a prompt collection", description: "Creates a new prompt collection. The handler validates that name and industry are present. The collection is always created as non-built-in.", request: { body: { content: { "application/json": { schema: z.object({ name: z.string().optional().openapi({ description: "Collection name" }), industry: z.string().optional().openapi({ description: "Industry category" }), description: z.string().optional().openapi({ description: "Optional description" }) }).passthrough() } } } }, responses: { 201: { description: "Created prompt collection", content: { "application/json": { schema: PromptCollectionSchema } } }, 400: { description: "Invalid request body", content: { "application/json": { schema: ErrorSchema } } }, 401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } }, 403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } }, 429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } }, 404: { description: "Internal database not configured", content: { "application/json": { schema: ErrorSchema } } }, 500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } } } });
-const updateCollectionRoute = createRoute({ method: "patch", path: "/{id}", tags: ["Admin — Prompts"], summary: "Update a prompt collection", description: "Updates a prompt collection's name, industry, and/or description. Built-in collections cannot be modified.", request: { params: createIdParamSchema(), body: { content: { "application/json": { schema: z.object({ name: z.string().optional(), industry: z.string().optional(), description: z.string().optional() }) } } } }, responses: { 200: { description: "Updated prompt collection", content: { "application/json": { schema: PromptCollectionSchema } } }, 400: { description: "Invalid request body", content: { "application/json": { schema: ErrorSchema } } }, 401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } }, 403: { description: "Forbidden — admin role required or built-in collection", content: { "application/json": { schema: AuthErrorSchema } } }, 404: { description: "Collection not found or internal database not configured", content: { "application/json": { schema: ErrorSchema } } }, 429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } }, 500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } } } });
-const deleteCollectionRoute = createRoute({ method: "delete", path: "/{id}", tags: ["Admin — Prompts"], summary: "Delete a prompt collection", description: "Permanently deletes a prompt collection and cascades to its items. Built-in collections cannot be deleted.", request: { params: createIdParamSchema() }, responses: { 200: { description: "Collection deleted", content: { "application/json": { schema: DeletedSchema } } }, 401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } }, 403: { description: "Forbidden — admin role required or built-in collection", content: { "application/json": { schema: AuthErrorSchema } } }, 404: { description: "Collection not found or internal database not configured", content: { "application/json": { schema: ErrorSchema } } }, 429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } }, 500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } } } });
-const createItemRoute = createRoute({ method: "post", path: "/{id}/items", tags: ["Admin — Prompts"], summary: "Create a prompt item", description: "Adds a new prompt item to a collection. The collection must not be built-in. Sort order defaults to MAX + 1 if not provided.", request: { params: createIdParamSchema(), body: { content: { "application/json": { schema: z.object({ question: z.string().openapi({ description: "Prompt question text" }), description: z.string().optional().openapi({ description: "Optional description" }), category: z.string().optional().openapi({ description: "Optional category" }), sort_order: z.number().optional().openapi({ description: "Sort position (defaults to end)" }) }) } } } }, responses: { 201: { description: "Created prompt item", content: { "application/json": { schema: PromptItemSchema } } }, 400: { description: "Invalid request body", content: { "application/json": { schema: ErrorSchema } } }, 401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } }, 403: { description: "Forbidden — admin role required or built-in collection", content: { "application/json": { schema: AuthErrorSchema } } }, 404: { description: "Collection not found or internal database not configured", content: { "application/json": { schema: ErrorSchema } } }, 429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } }, 500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } } } });
-const updateItemRoute = createRoute({ method: "patch", path: "/{collectionId}/items/{itemId}", tags: ["Admin — Prompts"], summary: "Update a prompt item", description: "Updates a prompt item's question, description, and/or category. The parent collection must not be built-in.", request: { params: createParamSchema("collectionId").merge(createParamSchema("itemId", "def456")), body: { content: { "application/json": { schema: z.object({ question: z.string().optional(), description: z.string().optional(), category: z.string().optional() }) } } } }, responses: { 200: { description: "Updated prompt item", content: { "application/json": { schema: PromptItemSchema } } }, 400: { description: "Invalid request body", content: { "application/json": { schema: ErrorSchema } } }, 401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } }, 403: { description: "Forbidden — admin role required or built-in collection", content: { "application/json": { schema: AuthErrorSchema } } }, 404: { description: "Collection or item not found, or internal database not configured", content: { "application/json": { schema: ErrorSchema } } }, 429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } }, 500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } } } });
-const deleteItemRoute = createRoute({ method: "delete", path: "/{collectionId}/items/{itemId}", tags: ["Admin — Prompts"], summary: "Delete a prompt item", description: "Permanently removes a prompt item. The parent collection must not be built-in.", request: { params: createParamSchema("collectionId").merge(createParamSchema("itemId", "def456")) }, responses: { 200: { description: "Item deleted", content: { "application/json": { schema: DeletedSchema } } }, 401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } }, 403: { description: "Forbidden — admin role required or built-in collection", content: { "application/json": { schema: AuthErrorSchema } } }, 404: { description: "Collection or item not found, or internal database not configured", content: { "application/json": { schema: ErrorSchema } } }, 429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } }, 500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } } } });
-const reorderItemsRoute = createRoute({ method: "put", path: "/{id}/reorder", tags: ["Admin — Prompts"], summary: "Reorder prompt items", description: "Reorders all items within a collection. The itemIds array must contain every item ID in the collection exactly once.", request: { params: createIdParamSchema(), body: { content: { "application/json": { schema: z.object({ itemIds: z.array(z.string()).openapi({ description: "Ordered array of all item IDs in the collection" }) }) } } } }, responses: { 200: { description: "Items reordered", content: { "application/json": { schema: ReorderedSchema } } }, 400: { description: "Invalid request body or item ID mismatch", content: { "application/json": { schema: ErrorSchema } } }, 401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } }, 403: { description: "Forbidden — admin role required or built-in collection", content: { "application/json": { schema: AuthErrorSchema } } }, 404: { description: "Collection not found or internal database not configured", content: { "application/json": { schema: ErrorSchema } } }, 429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } }, 500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } } } });
+const listCollectionsRoute = createRoute({
+  method: "get",
+  path: "/",
+  tags: ["Admin — Prompts"],
+  summary: "List prompt collections",
+  description:
+    "Returns all prompt collections for the admin's active organization, including built-in collections. Ordered by sort_order then created_at.",
+  responses: {
+    200: {
+      description: "List of prompt collections",
+      content: { "application/json": { schema: ListCollectionsResponseSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — admin role required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Internal database not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+const createCollectionRoute = createRoute({
+  method: "post",
+  path: "/",
+  tags: ["Admin — Prompts"],
+  summary: "Create a prompt collection",
+  description:
+    "Creates a new prompt collection. The handler validates that name and industry are present. The collection is always created as non-built-in.",
+  request: {
+    body: {
+      content: {
+        "application/json": {
+          schema: z.object({
+            name: z.string().optional().openapi({ description: "Collection name" }),
+            industry: z.string().optional().openapi({ description: "Industry category" }),
+            description: z.string().optional().openapi({ description: "Optional description" }),
+          }).passthrough(),
+        },
+      },
+    },
+  },
+  responses: {
+    201: {
+      description: "Created prompt collection",
+      content: { "application/json": { schema: PromptCollectionSchema } },
+    },
+    400: {
+      description: "Invalid request body",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — admin role required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Internal database not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+const updateCollectionRoute = createRoute({
+  method: "patch",
+  path: "/{id}",
+  tags: ["Admin — Prompts"],
+  summary: "Update a prompt collection",
+  description:
+    "Updates a prompt collection's name, industry, and/or description. Built-in collections cannot be modified.",
+  request: {
+    params: createIdParamSchema(),
+    body: {
+      content: {
+        "application/json": {
+          schema: z.object({
+            name: z.string().optional(),
+            industry: z.string().optional(),
+            description: z.string().optional(),
+          }),
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "Updated prompt collection",
+      content: { "application/json": { schema: PromptCollectionSchema } },
+    },
+    400: {
+      description: "Invalid request body",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — admin role required or built-in collection",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Collection not found or internal database not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+const deleteCollectionRoute = createRoute({
+  method: "delete",
+  path: "/{id}",
+  tags: ["Admin — Prompts"],
+  summary: "Delete a prompt collection",
+  description:
+    "Permanently deletes a prompt collection and cascades to its items. Built-in collections cannot be deleted.",
+  request: {
+    params: createIdParamSchema(),
+  },
+  responses: {
+    200: {
+      description: "Collection deleted",
+      content: { "application/json": { schema: DeletedSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — admin role required or built-in collection",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Collection not found or internal database not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+const createItemRoute = createRoute({
+  method: "post",
+  path: "/{id}/items",
+  tags: ["Admin — Prompts"],
+  summary: "Create a prompt item",
+  description:
+    "Adds a new prompt item to a collection. The collection must not be built-in. Sort order defaults to MAX + 1 if not provided.",
+  request: {
+    params: createIdParamSchema(),
+    body: {
+      content: {
+        "application/json": {
+          schema: z.object({
+            question: z.string().openapi({ description: "Prompt question text" }),
+            description: z.string().optional().openapi({ description: "Optional description" }),
+            category: z.string().optional().openapi({ description: "Optional category" }),
+            sort_order: z.number().optional().openapi({ description: "Sort position (defaults to end)" }),
+          }),
+        },
+      },
+    },
+  },
+  responses: {
+    201: {
+      description: "Created prompt item",
+      content: { "application/json": { schema: PromptItemSchema } },
+    },
+    400: {
+      description: "Invalid request body",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — admin role required or built-in collection",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Collection not found or internal database not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+const updateItemRoute = createRoute({
+  method: "patch",
+  path: "/{collectionId}/items/{itemId}",
+  tags: ["Admin — Prompts"],
+  summary: "Update a prompt item",
+  description:
+    "Updates a prompt item's question, description, and/or category. The parent collection must not be built-in.",
+  request: {
+    params: createParamSchema("collectionId").merge(createParamSchema("itemId", "def456")),
+    body: {
+      content: {
+        "application/json": {
+          schema: z.object({
+            question: z.string().optional(),
+            description: z.string().optional(),
+            category: z.string().optional(),
+          }),
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "Updated prompt item",
+      content: { "application/json": { schema: PromptItemSchema } },
+    },
+    400: {
+      description: "Invalid request body",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — admin role required or built-in collection",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Collection or item not found, or internal database not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+const deleteItemRoute = createRoute({
+  method: "delete",
+  path: "/{collectionId}/items/{itemId}",
+  tags: ["Admin — Prompts"],
+  summary: "Delete a prompt item",
+  description:
+    "Permanently removes a prompt item. The parent collection must not be built-in.",
+  request: {
+    params: createParamSchema("collectionId").merge(createParamSchema("itemId", "def456")),
+  },
+  responses: {
+    200: {
+      description: "Item deleted",
+      content: { "application/json": { schema: DeletedSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — admin role required or built-in collection",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Collection or item not found, or internal database not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+const reorderItemsRoute = createRoute({
+  method: "put",
+  path: "/{id}/reorder",
+  tags: ["Admin — Prompts"],
+  summary: "Reorder prompt items",
+  description:
+    "Reorders all items within a collection. The itemIds array must contain every item ID in the collection exactly once.",
+  request: {
+    params: createIdParamSchema(),
+    body: {
+      content: {
+        "application/json": {
+          schema: z.object({
+            itemIds: z.array(z.string()).openapi({ description: "Ordered array of all item IDs in the collection" }),
+          }),
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "Items reordered",
+      content: { "application/json": { schema: ReorderedSchema } },
+    },
+    400: {
+      description: "Invalid request body or item ID mismatch",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — admin role required or built-in collection",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Collection not found or internal database not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
 
 // ---------------------------------------------------------------------------
 // Router
@@ -73,7 +475,10 @@ adminPrompts.openapi(listCollectionsRoute, async (c) => {
     const { requestId } = yield* RequestContext;
     const { orgId } = yield* AuthContext;
 
-    if (!hasInternalDB()) { log.debug({ requestId }, "Prompt collections requested but no internal DB configured"); return c.json({ error: "not_available", message: "No internal database configured." }, 404); }
+    if (!hasInternalDB()) {
+      log.debug({ requestId }, "Prompt collections requested but no internal DB configured");
+      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
+    }
 
     let rows: Record<string, unknown>[];
     if (orgId) {
@@ -91,7 +496,10 @@ adminPrompts.openapi(createCollectionRoute, async (c) => {
     const { requestId } = yield* RequestContext;
     const { orgId } = yield* AuthContext;
 
-    if (!hasInternalDB()) { log.debug({ requestId }, "Prompt collections requested but no internal DB configured"); return c.json({ error: "not_available", message: "No internal database configured." }, 404); }
+    if (!hasInternalDB()) {
+      log.debug({ requestId }, "Prompt collections requested but no internal DB configured");
+      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
+    }
 
     const bodyResult = yield* Effect.tryPromise({
       try: () => c.req.json() as Promise<Record<string, unknown>>,
@@ -117,7 +525,10 @@ adminPrompts.openapi(updateCollectionRoute, async (c) => {
     const { requestId } = yield* RequestContext;
     const { orgId } = yield* AuthContext;
 
-    if (!hasInternalDB()) { log.debug({ requestId }, "Prompt collections requested but no internal DB configured"); return c.json({ error: "not_available", message: "No internal database configured." }, 404); }
+    if (!hasInternalDB()) {
+      log.debug({ requestId }, "Prompt collections requested but no internal DB configured");
+      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
+    }
 
     const { id } = c.req.valid("param");
     const existing = yield* Effect.promise(() => findCollection(orgId, id));
@@ -157,7 +568,10 @@ adminPrompts.openapi(deleteCollectionRoute, async (c) => {
     const { requestId } = yield* RequestContext;
     const { orgId } = yield* AuthContext;
 
-    if (!hasInternalDB()) { log.debug({ requestId }, "Prompt collections requested but no internal DB configured"); return c.json({ error: "not_available", message: "No internal database configured." }, 404); }
+    if (!hasInternalDB()) {
+      log.debug({ requestId }, "Prompt collections requested but no internal DB configured");
+      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
+    }
 
     const { id } = c.req.valid("param");
     const existing = yield* Effect.promise(() => findCollection(orgId, id));
@@ -175,7 +589,10 @@ adminPrompts.openapi(createItemRoute, async (c) => {
     const { requestId } = yield* RequestContext;
     const { orgId } = yield* AuthContext;
 
-    if (!hasInternalDB()) { log.debug({ requestId }, "Prompt items requested but no internal DB configured"); return c.json({ error: "not_available", message: "No internal database configured." }, 404); }
+    if (!hasInternalDB()) {
+      log.debug({ requestId }, "Prompt items requested but no internal DB configured");
+      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
+    }
 
     const { id: collectionId } = c.req.valid("param");
     const collection = yield* Effect.promise(() => findCollection(orgId, collectionId));
@@ -211,7 +628,10 @@ adminPrompts.openapi(updateItemRoute, async (c) => {
     const { requestId } = yield* RequestContext;
     const { orgId } = yield* AuthContext;
 
-    if (!hasInternalDB()) { log.debug({ requestId }, "Prompt items requested but no internal DB configured"); return c.json({ error: "not_available", message: "No internal database configured." }, 404); }
+    if (!hasInternalDB()) {
+      log.debug({ requestId }, "Prompt items requested but no internal DB configured");
+      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
+    }
 
     const { collectionId, itemId } = c.req.valid("param");
     const collection = yield* Effect.promise(() => findCollection(orgId, collectionId));
@@ -254,7 +674,10 @@ adminPrompts.openapi(deleteItemRoute, async (c) => {
     const { requestId } = yield* RequestContext;
     const { orgId } = yield* AuthContext;
 
-    if (!hasInternalDB()) { log.debug({ requestId }, "Prompt items requested but no internal DB configured"); return c.json({ error: "not_available", message: "No internal database configured." }, 404); }
+    if (!hasInternalDB()) {
+      log.debug({ requestId }, "Prompt items requested but no internal DB configured");
+      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
+    }
 
     const { collectionId, itemId } = c.req.valid("param");
     const collection = yield* Effect.promise(() => findCollection(orgId, collectionId));
@@ -275,7 +698,10 @@ adminPrompts.openapi(reorderItemsRoute, async (c) => {
     const { requestId } = yield* RequestContext;
     const { orgId } = yield* AuthContext;
 
-    if (!hasInternalDB()) { log.debug({ requestId }, "Prompt items requested but no internal DB configured"); return c.json({ error: "not_available", message: "No internal database configured." }, 404); }
+    if (!hasInternalDB()) {
+      log.debug({ requestId }, "Prompt items requested but no internal DB configured");
+      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
+    }
 
     const { id: collectionId } = c.req.valid("param");
     const collection = yield* Effect.promise(() => findCollection(orgId, collectionId));

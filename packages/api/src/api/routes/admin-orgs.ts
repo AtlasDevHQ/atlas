@@ -69,7 +69,12 @@ const MemberSchema = z.object({
   userId: z.string(),
   role: z.string(),
   createdAt: z.string(),
-  user: z.object({ id: z.string(), name: z.string(), email: z.string(), image: z.string().nullable() }),
+  user: z.object({
+    id: z.string(),
+    name: z.string(),
+    email: z.string(),
+    image: z.string().nullable(),
+  }),
 });
 
 const InvitationSchema = z.object({
@@ -82,28 +87,422 @@ const InvitationSchema = z.object({
   createdAt: z.string(),
 });
 
-const OrgStatsSchema = z.object({ members: z.number(), conversations: z.number(), queries: z.number() });
-const WorkspaceActionResponseSchema = z.object({ message: z.string(), organization: z.unknown() });
-const DeleteCascadeSchema = z.object({ message: z.string(), cascade: z.record(z.string(), z.unknown()) });
-const WorkspaceHealthSchema = z.object({
-  workspace: z.object({ id: z.string(), name: z.string(), slug: z.string(), workspaceStatus: z.string(), planTier: z.string(), suspendedAt: z.unknown().nullable(), deletedAt: z.unknown().nullable(), createdAt: z.string() }),
-  health: z.object({ members: z.unknown(), conversations: z.unknown(), queriesLast24h: z.unknown(), connections: z.unknown(), scheduledTasks: z.unknown(), poolMetrics: z.array(z.unknown()) }),
+const OrgStatsSchema = z.object({
+  members: z.number(),
+  conversations: z.number(),
+  queries: z.number(),
 });
-const ConflictErrorSchema = z.object({ error: z.string(), message: z.string() });
-const UpdatePlanBodySchema = z.object({ planTier: z.string().openapi({ example: "team" }) });
+
+const WorkspaceActionResponseSchema = z.object({
+  message: z.string(),
+  organization: z.unknown(),
+});
+
+const DeleteCascadeSchema = z.object({
+  message: z.string(),
+  cascade: z.record(z.string(), z.unknown()),
+});
+
+const WorkspaceHealthSchema = z.object({
+  workspace: z.object({
+    id: z.string(),
+    name: z.string(),
+    slug: z.string(),
+    workspaceStatus: z.string(),
+    planTier: z.string(),
+    suspendedAt: z.unknown().nullable(),
+    deletedAt: z.unknown().nullable(),
+    createdAt: z.string(),
+  }),
+  health: z.object({
+    members: z.unknown(),
+    conversations: z.unknown(),
+    queriesLast24h: z.unknown(),
+    connections: z.unknown(),
+    scheduledTasks: z.unknown(),
+    poolMetrics: z.array(z.unknown()),
+  }),
+});
+
+const ConflictErrorSchema = z.object({
+  error: z.string(),
+  message: z.string(),
+});
+
+const UpdatePlanBodySchema = z.object({
+  planTier: z.string().openapi({ example: "team" }),
+});
 
 // ---------------------------------------------------------------------------
-// Route definitions (abbreviated — schemas unchanged from before)
+// Route definitions
 // ---------------------------------------------------------------------------
 
-const listOrgsRoute = createRoute({ method: "get", path: "/", tags: ["Admin — Organizations"], summary: "List organizations", description: "Returns all organizations with member counts, workspace status, and plan tiers. Ordered by creation date descending.", responses: { 200: { description: "List of organizations", content: { "application/json": { schema: z.object({ organizations: z.array(OrgSummarySchema), total: z.number() }) } } }, 401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } }, 403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } }, 404: { description: "Internal database not configured", content: { "application/json": { schema: ErrorSchema } } }, 429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } }, 500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } } } });
-const getOrgRoute = createRoute({ method: "get", path: "/{id}", tags: ["Admin — Organizations"], summary: "Get organization details", description: "Returns full organization details including members and pending invitations.", request: { params: OrgIdParamSchema }, responses: { 200: { description: "Organization details with members and invitations", content: { "application/json": { schema: z.object({ organization: OrgDetailSchema, members: z.array(MemberSchema), invitations: z.array(InvitationSchema) }) } } }, 400: { description: "Invalid organization ID", content: { "application/json": { schema: ErrorSchema } } }, 401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } }, 403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } }, 404: { description: "Organization not found or internal database not configured", content: { "application/json": { schema: ErrorSchema } } }, 429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } }, 500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } } } });
-const getOrgStatsRoute = createRoute({ method: "get", path: "/{id}/stats", tags: ["Admin — Organizations"], summary: "Get organization stats", description: "Returns aggregate stats for an organization: member count, conversation count, and audit query count.", request: { params: OrgIdParamSchema }, responses: { 200: { description: "Organization statistics", content: { "application/json": { schema: OrgStatsSchema } } }, 400: { description: "Invalid organization ID", content: { "application/json": { schema: ErrorSchema } } }, 401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } }, 403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } }, 404: { description: "Internal database not configured", content: { "application/json": { schema: ErrorSchema } } }, 429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } }, 500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } } } });
-const suspendOrgRoute = createRoute({ method: "patch", path: "/{id}/suspend", tags: ["Admin — Organizations"], summary: "Suspend organization", description: "Suspends a workspace, blocking all queries until reactivation. Drains connection pools for the organization.", request: { params: OrgIdParamSchema }, responses: { 200: { description: "Workspace suspended", content: { "application/json": { schema: WorkspaceActionResponseSchema } } }, 400: { description: "Invalid organization ID", content: { "application/json": { schema: ErrorSchema } } }, 401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } }, 403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } }, 404: { description: "Organization not found or internal database not configured", content: { "application/json": { schema: ErrorSchema } } }, 409: { description: "Conflict — workspace already suspended or deleted", content: { "application/json": { schema: ConflictErrorSchema } } }, 429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } }, 500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } } } });
-const activateOrgRoute = createRoute({ method: "patch", path: "/{id}/activate", tags: ["Admin — Organizations"], summary: "Activate organization", description: "Reactivates a suspended workspace, resuming normal operations.", request: { params: OrgIdParamSchema }, responses: { 200: { description: "Workspace activated", content: { "application/json": { schema: WorkspaceActionResponseSchema } } }, 400: { description: "Invalid organization ID", content: { "application/json": { schema: ErrorSchema } } }, 401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } }, 403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } }, 404: { description: "Organization not found or internal database not configured", content: { "application/json": { schema: ErrorSchema } } }, 409: { description: "Conflict — workspace already active or deleted", content: { "application/json": { schema: ConflictErrorSchema } } }, 429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } }, 500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } } } });
-const deleteOrgRoute = createRoute({ method: "delete", path: "/{id}", tags: ["Admin — Organizations"], summary: "Delete organization", description: "Soft-deletes a workspace with cascading cleanup: drains connection pools, flushes cache, removes associated data, and marks the workspace as deleted.", request: { params: OrgIdParamSchema }, responses: { 200: { description: "Workspace deleted with cascade summary", content: { "application/json": { schema: DeleteCascadeSchema } } }, 400: { description: "Invalid organization ID", content: { "application/json": { schema: ErrorSchema } } }, 401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } }, 403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } }, 404: { description: "Organization not found or internal database not configured", content: { "application/json": { schema: ErrorSchema } } }, 409: { description: "Conflict — workspace already deleted", content: { "application/json": { schema: ConflictErrorSchema } } }, 429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } }, 500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } } } });
-const getOrgStatusRoute = createRoute({ method: "get", path: "/{id}/status", tags: ["Admin — Organizations"], summary: "Workspace health summary", description: "Returns a health summary for a workspace including member count, conversation count, recent queries, connection status, scheduled tasks, and pool metrics.", request: { params: OrgIdParamSchema }, responses: { 200: { description: "Workspace health summary", content: { "application/json": { schema: WorkspaceHealthSchema } } }, 400: { description: "Invalid organization ID", content: { "application/json": { schema: ErrorSchema } } }, 401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } }, 403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } }, 404: { description: "Organization not found or internal database not configured", content: { "application/json": { schema: ErrorSchema } } }, 429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } }, 500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } } } });
-const updatePlanRoute = createRoute({ method: "patch", path: "/{id}/plan", tags: ["Admin — Organizations"], summary: "Update organization plan", description: "Updates the plan tier for a workspace. Valid tiers: free, trial, team, enterprise.", request: { params: OrgIdParamSchema, body: { content: { "application/json": { schema: UpdatePlanBodySchema } } } }, responses: { 200: { description: "Plan tier updated", content: { "application/json": { schema: WorkspaceActionResponseSchema } } }, 400: { description: "Invalid organization ID or invalid plan tier", content: { "application/json": { schema: ErrorSchema } } }, 401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } }, 403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } }, 404: { description: "Organization not found or internal database not configured", content: { "application/json": { schema: ErrorSchema } } }, 409: { description: "Conflict — workspace is deleted", content: { "application/json": { schema: ConflictErrorSchema } } }, 429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } }, 500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } } } });
+const listOrgsRoute = createRoute({
+  method: "get",
+  path: "/",
+  tags: ["Admin — Organizations"],
+  summary: "List organizations",
+  description:
+    "Returns all organizations with member counts, workspace status, and plan tiers. Ordered by creation date descending.",
+  responses: {
+    200: {
+      description: "List of organizations",
+      content: {
+        "application/json": {
+          schema: z.object({
+            organizations: z.array(OrgSummarySchema),
+            total: z.number(),
+          }),
+        },
+      },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — admin role required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Internal database not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const getOrgRoute = createRoute({
+  method: "get",
+  path: "/{id}",
+  tags: ["Admin — Organizations"],
+  summary: "Get organization details",
+  description:
+    "Returns full organization details including members and pending invitations.",
+  request: {
+    params: OrgIdParamSchema,
+  },
+  responses: {
+    200: {
+      description: "Organization details with members and invitations",
+      content: {
+        "application/json": {
+          schema: z.object({
+            organization: OrgDetailSchema,
+            members: z.array(MemberSchema),
+            invitations: z.array(InvitationSchema),
+          }),
+        },
+      },
+    },
+    400: {
+      description: "Invalid organization ID",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — admin role required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Organization not found or internal database not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const getOrgStatsRoute = createRoute({
+  method: "get",
+  path: "/{id}/stats",
+  tags: ["Admin — Organizations"],
+  summary: "Get organization stats",
+  description:
+    "Returns aggregate stats for an organization: member count, conversation count, and audit query count.",
+  request: {
+    params: OrgIdParamSchema,
+  },
+  responses: {
+    200: {
+      description: "Organization statistics",
+      content: { "application/json": { schema: OrgStatsSchema } },
+    },
+    400: {
+      description: "Invalid organization ID",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — admin role required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Internal database not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const suspendOrgRoute = createRoute({
+  method: "patch",
+  path: "/{id}/suspend",
+  tags: ["Admin — Organizations"],
+  summary: "Suspend organization",
+  description:
+    "Suspends a workspace, blocking all queries until reactivation. Drains connection pools for the organization.",
+  request: {
+    params: OrgIdParamSchema,
+  },
+  responses: {
+    200: {
+      description: "Workspace suspended",
+      content: { "application/json": { schema: WorkspaceActionResponseSchema } },
+    },
+    400: {
+      description: "Invalid organization ID",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — admin role required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Organization not found or internal database not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    409: {
+      description: "Conflict — workspace already suspended or deleted",
+      content: { "application/json": { schema: ConflictErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const activateOrgRoute = createRoute({
+  method: "patch",
+  path: "/{id}/activate",
+  tags: ["Admin — Organizations"],
+  summary: "Activate organization",
+  description:
+    "Reactivates a suspended workspace, resuming normal operations.",
+  request: {
+    params: OrgIdParamSchema,
+  },
+  responses: {
+    200: {
+      description: "Workspace activated",
+      content: { "application/json": { schema: WorkspaceActionResponseSchema } },
+    },
+    400: {
+      description: "Invalid organization ID",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — admin role required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Organization not found or internal database not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    409: {
+      description: "Conflict — workspace already active or deleted",
+      content: { "application/json": { schema: ConflictErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const deleteOrgRoute = createRoute({
+  method: "delete",
+  path: "/{id}",
+  tags: ["Admin — Organizations"],
+  summary: "Delete organization",
+  description:
+    "Soft-deletes a workspace with cascading cleanup: drains connection pools, flushes cache, removes associated data, and marks the workspace as deleted.",
+  request: {
+    params: OrgIdParamSchema,
+  },
+  responses: {
+    200: {
+      description: "Workspace deleted with cascade summary",
+      content: { "application/json": { schema: DeleteCascadeSchema } },
+    },
+    400: {
+      description: "Invalid organization ID",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — admin role required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Organization not found or internal database not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    409: {
+      description: "Conflict — workspace already deleted",
+      content: { "application/json": { schema: ConflictErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const getOrgStatusRoute = createRoute({
+  method: "get",
+  path: "/{id}/status",
+  tags: ["Admin — Organizations"],
+  summary: "Workspace health summary",
+  description:
+    "Returns a health summary for a workspace including member count, conversation count, recent queries, connection status, scheduled tasks, and pool metrics.",
+  request: {
+    params: OrgIdParamSchema,
+  },
+  responses: {
+    200: {
+      description: "Workspace health summary",
+      content: { "application/json": { schema: WorkspaceHealthSchema } },
+    },
+    400: {
+      description: "Invalid organization ID",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — admin role required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Organization not found or internal database not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const updatePlanRoute = createRoute({
+  method: "patch",
+  path: "/{id}/plan",
+  tags: ["Admin — Organizations"],
+  summary: "Update organization plan",
+  description:
+    "Updates the plan tier for a workspace. Valid tiers: free, trial, team, enterprise.",
+  request: {
+    params: OrgIdParamSchema,
+    body: {
+      content: {
+        "application/json": {
+          schema: UpdatePlanBodySchema,
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "Plan tier updated",
+      content: { "application/json": { schema: WorkspaceActionResponseSchema } },
+    },
+    400: {
+      description: "Invalid organization ID or invalid plan tier",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — admin role required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Organization not found or internal database not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    409: {
+      description: "Conflict — workspace is deleted",
+      content: { "application/json": { schema: ConflictErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
 
 // ---------------------------------------------------------------------------
 // Router

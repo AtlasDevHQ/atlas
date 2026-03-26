@@ -72,26 +72,262 @@ const VALID_STATUSES = new Set<string>(LEARNED_PATTERN_STATUSES);
 // ---------------------------------------------------------------------------
 
 const LearnedPatternSchema = z.object({
-  id: z.string(), orgId: z.string().nullable(), patternSql: z.string(), description: z.string().nullable(),
-  sourceEntity: z.string().nullable(), sourceQueries: z.array(z.string()).nullable(), confidence: z.number(),
-  repetitionCount: z.number(), status: z.enum(["pending", "approved", "rejected"]),
-  proposedBy: z.enum(["agent", "atlas-learn"]).nullable(), reviewedBy: z.string().nullable(),
-  createdAt: z.string(), updatedAt: z.string(), reviewedAt: z.string().nullable(),
+  id: z.string(),
+  orgId: z.string().nullable(),
+  patternSql: z.string(),
+  description: z.string().nullable(),
+  sourceEntity: z.string().nullable(),
+  sourceQueries: z.array(z.string()).nullable(),
+  confidence: z.number(),
+  repetitionCount: z.number(),
+  status: z.enum(["pending", "approved", "rejected"]),
+  proposedBy: z.enum(["agent", "atlas-learn"]).nullable(),
+  reviewedBy: z.string().nullable(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  reviewedAt: z.string().nullable(),
 });
 
-const ListResponseSchema = createListResponseSchema("patterns", LearnedPatternSchema, { limit: z.number(), offset: z.number() });
-const BulkResponseSchema = z.object({ updated: z.array(z.string()), notFound: z.array(z.string()), errors: z.array(z.object({ id: z.string(), error: z.string() })).optional() });
+const ListResponseSchema = createListResponseSchema("patterns", LearnedPatternSchema, {
+  limit: z.number(),
+  offset: z.number(),
+});
+
+const BulkResponseSchema = z.object({
+  updated: z.array(z.string()),
+  notFound: z.array(z.string()),
+  errors: z.array(z.object({ id: z.string(), error: z.string() })).optional(),
+});
+
 const DeletedSchema = DeletedResponseSchema;
 
 // ---------------------------------------------------------------------------
 // Route definitions
 // ---------------------------------------------------------------------------
 
-const listPatternsRoute = createRoute({ method: "get", path: "/", tags: ["Admin — Learned Patterns"], summary: "List learned patterns", description: "Returns a paginated list of learned query patterns. Supports filtering by status, source entity, and confidence range.", request: { query: z.object({ status: z.string().optional().openapi({ description: "Filter by status: pending, approved, rejected" }), source_entity: z.string().optional().openapi({ description: "Filter by source entity name" }), min_confidence: z.string().optional().openapi({ description: "Minimum confidence (0–1)" }), max_confidence: z.string().optional().openapi({ description: "Maximum confidence (0–1)" }), limit: z.string().optional().openapi({ description: "Maximum results (default 50, max 200)" }), offset: z.string().optional().openapi({ description: "Pagination offset (default 0)" }) }) }, responses: { 200: { description: "Paginated list of learned patterns", content: { "application/json": { schema: ListResponseSchema } } }, 400: { description: "Invalid filter parameters", content: { "application/json": { schema: ErrorSchema } } }, 401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } }, 403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } }, 404: { description: "Internal database not configured", content: { "application/json": { schema: ErrorSchema } } }, 429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } }, 500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } } } });
-const getPatternRoute = createRoute({ method: "get", path: "/{id}", tags: ["Admin — Learned Patterns"], summary: "Get a learned pattern", description: "Returns a single learned pattern by ID.", request: { params: createIdParamSchema() }, responses: { 200: { description: "Learned pattern details", content: { "application/json": { schema: LearnedPatternSchema } } }, 401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } }, 403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } }, 404: { description: "Pattern not found or internal database not configured", content: { "application/json": { schema: ErrorSchema } } }, 429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } }, 500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } } } });
-const updatePatternRoute = createRoute({ method: "patch", path: "/{id}", tags: ["Admin — Learned Patterns"], summary: "Update a learned pattern", description: "Updates a learned pattern's description and/or status. Setting a status records the reviewer and review timestamp.", request: { params: createIdParamSchema(), body: { content: { "application/json": { schema: z.object({ description: z.string().optional().openapi({ description: "New description for the pattern" }), status: z.enum(["pending", "approved", "rejected"]).optional().openapi({ description: "New status" }) }) } } } }, responses: { 200: { description: "Updated learned pattern", content: { "application/json": { schema: LearnedPatternSchema } } }, 400: { description: "Invalid request body", content: { "application/json": { schema: ErrorSchema } } }, 401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } }, 403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } }, 404: { description: "Pattern not found or internal database not configured", content: { "application/json": { schema: ErrorSchema } } }, 429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } }, 500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } } } });
-const deletePatternRoute = createRoute({ method: "delete", path: "/{id}", tags: ["Admin — Learned Patterns"], summary: "Delete a learned pattern", description: "Permanently removes a learned pattern by ID and invalidates the pattern cache.", request: { params: createIdParamSchema() }, responses: { 200: { description: "Pattern deleted", content: { "application/json": { schema: DeletedSchema } } }, 401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } }, 403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } }, 404: { description: "Pattern not found or internal database not configured", content: { "application/json": { schema: ErrorSchema } } }, 429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } }, 500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } } } });
-const bulkStatusRoute = createRoute({ method: "post", path: "/bulk", tags: ["Admin — Learned Patterns"], summary: "Bulk status change", description: "Updates the status of multiple learned patterns at once. Maximum 100 IDs per request. Only 'approved' and 'rejected' statuses are allowed.", request: { body: { content: { "application/json": { schema: z.object({ ids: z.array(z.string()).openapi({ description: "Pattern IDs to update (max 100)" }), status: z.enum(["approved", "rejected"]).openapi({ description: "Target status" }) }) } } } }, responses: { 200: { description: "Bulk operation result", content: { "application/json": { schema: BulkResponseSchema } } }, 400: { description: "Invalid request body", content: { "application/json": { schema: ErrorSchema } } }, 401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } }, 403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } }, 404: { description: "Internal database not configured", content: { "application/json": { schema: ErrorSchema } } }, 429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } }, 500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } } } });
+const listPatternsRoute = createRoute({
+  method: "get",
+  path: "/",
+  tags: ["Admin — Learned Patterns"],
+  summary: "List learned patterns",
+  description:
+    "Returns a paginated list of learned query patterns. Supports filtering by status, source entity, and confidence range.",
+  request: {
+    query: z.object({
+      status: z.string().optional().openapi({ description: "Filter by status: pending, approved, rejected" }),
+      source_entity: z.string().optional().openapi({ description: "Filter by source entity name" }),
+      min_confidence: z.string().optional().openapi({ description: "Minimum confidence (0–1)" }),
+      max_confidence: z.string().optional().openapi({ description: "Maximum confidence (0–1)" }),
+      limit: z.string().optional().openapi({ description: "Maximum results (default 50, max 200)" }),
+      offset: z.string().optional().openapi({ description: "Pagination offset (default 0)" }),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Paginated list of learned patterns",
+      content: { "application/json": { schema: ListResponseSchema } },
+    },
+    400: {
+      description: "Invalid filter parameters",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — admin role required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Internal database not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const getPatternRoute = createRoute({
+  method: "get",
+  path: "/{id}",
+  tags: ["Admin — Learned Patterns"],
+  summary: "Get a learned pattern",
+  description: "Returns a single learned pattern by ID.",
+  request: {
+    params: createIdParamSchema(),
+  },
+  responses: {
+    200: {
+      description: "Learned pattern details",
+      content: { "application/json": { schema: LearnedPatternSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — admin role required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Pattern not found or internal database not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const updatePatternRoute = createRoute({
+  method: "patch",
+  path: "/{id}",
+  tags: ["Admin — Learned Patterns"],
+  summary: "Update a learned pattern",
+  description: "Updates a learned pattern's description and/or status. Setting a status records the reviewer and review timestamp.",
+  request: {
+    params: createIdParamSchema(),
+    body: {
+      content: {
+        "application/json": {
+          schema: z.object({
+            description: z.string().optional().openapi({ description: "New description for the pattern" }),
+            status: z.enum(["pending", "approved", "rejected"]).optional().openapi({ description: "New status" }),
+          }),
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "Updated learned pattern",
+      content: { "application/json": { schema: LearnedPatternSchema } },
+    },
+    400: {
+      description: "Invalid request body",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — admin role required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Pattern not found or internal database not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const deletePatternRoute = createRoute({
+  method: "delete",
+  path: "/{id}",
+  tags: ["Admin — Learned Patterns"],
+  summary: "Delete a learned pattern",
+  description: "Permanently removes a learned pattern by ID and invalidates the pattern cache.",
+  request: {
+    params: createIdParamSchema(),
+  },
+  responses: {
+    200: {
+      description: "Pattern deleted",
+      content: { "application/json": { schema: DeletedSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — admin role required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Pattern not found or internal database not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const bulkStatusRoute = createRoute({
+  method: "post",
+  path: "/bulk",
+  tags: ["Admin — Learned Patterns"],
+  summary: "Bulk status change",
+  description: "Updates the status of multiple learned patterns at once. Maximum 100 IDs per request. Only 'approved' and 'rejected' statuses are allowed.",
+  request: {
+    body: {
+      content: {
+        "application/json": {
+          schema: z.object({
+            ids: z.array(z.string()).openapi({ description: "Pattern IDs to update (max 100)" }),
+            status: z.enum(["approved", "rejected"]).openapi({ description: "Target status" }),
+          }),
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "Bulk operation result",
+      content: { "application/json": { schema: BulkResponseSchema } },
+    },
+    400: {
+      description: "Invalid request body",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — admin role required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Internal database not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
 
 // ---------------------------------------------------------------------------
 // Router
@@ -101,8 +337,11 @@ const adminLearnedPatterns = createAdminRouter();
 
 adminLearnedPatterns.onError((err, c) => {
   if (err instanceof HTTPException) {
+    // Our thrown HTTPExceptions carry a JSON Response
     if (err.res) return err.res;
+    // Framework 400 for malformed JSON
     if (err.status === 400) {
+      // Distinguish Zod validation errors (rich detail) from malformed JSON (generic)
       const cause = err.cause;
       if (cause && typeof cause === "object" && "issues" in cause) {
         const issues = (cause as { issues: Array<{ message: string }> }).issues;
@@ -115,7 +354,10 @@ adminLearnedPatterns.onError((err, c) => {
   throw err;
 });
 
+// ---------------------------------------------------------------------------
 // GET / — list with filters
+// ---------------------------------------------------------------------------
+
 adminLearnedPatterns.openapi(listPatternsRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
@@ -165,7 +407,10 @@ adminLearnedPatterns.openapi(listPatternsRoute, async (c) => {
   }), { label: "list learned patterns" });
 });
 
+// ---------------------------------------------------------------------------
 // GET /:id — single pattern
+// ---------------------------------------------------------------------------
+
 adminLearnedPatterns.openapi(getPatternRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
@@ -182,7 +427,10 @@ adminLearnedPatterns.openapi(getPatternRoute, async (c) => {
   }), { label: "get learned pattern" });
 });
 
+// ---------------------------------------------------------------------------
 // PATCH /:id — update
+// ---------------------------------------------------------------------------
+
 adminLearnedPatterns.openapi(updatePatternRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
@@ -215,7 +463,10 @@ adminLearnedPatterns.openapi(updatePatternRoute, async (c) => {
   }), { label: "update learned pattern" });
 });
 
+// ---------------------------------------------------------------------------
 // DELETE /:id — hard delete
+// ---------------------------------------------------------------------------
+
 adminLearnedPatterns.openapi(deletePatternRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
@@ -237,7 +488,10 @@ adminLearnedPatterns.openapi(deletePatternRoute, async (c) => {
   }), { label: "delete learned pattern" });
 });
 
+// ---------------------------------------------------------------------------
 // POST /bulk — bulk status change
+// ---------------------------------------------------------------------------
+
 adminLearnedPatterns.openapi(bulkStatusRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;

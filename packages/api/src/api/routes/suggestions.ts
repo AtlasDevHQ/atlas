@@ -172,7 +172,7 @@ suggestions.use(requestContext);
 
 // GET / — contextual suggestions by table
 suggestions.openapi(listSuggestionsRoute, async (c) => {
-  const result = await runEffect(c, Effect.gen(function* () {
+  return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
 
     if (!hasInternalDB()) {
@@ -190,12 +190,11 @@ suggestions.openapi(listSuggestionsRoute, async (c) => {
     const rows = yield* Effect.promise(() => getSuggestionsByTables(resolvedOrgId, tables, limit));
     return c.json({ suggestions: rows.map(toQuerySuggestion), total: rows.length }, 200);
   }), { label: "fetch suggestions" });
-  return result;
 });
 
 // GET /popular — top suggestions across all tables
 suggestions.openapi(listPopularRoute, async (c) => {
-  const result = await runEffect(c, Effect.gen(function* () {
+  return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
 
     if (!hasInternalDB()) {
@@ -208,12 +207,11 @@ suggestions.openapi(listPopularRoute, async (c) => {
     const rows = yield* Effect.promise(() => getPopularSuggestions(resolvedOrgId, limit));
     return c.json({ suggestions: rows.map(toQuerySuggestion), total: rows.length }, 200);
   }), { label: "fetch suggestions" });
-  return result;
 });
 
 // POST /:id/click — track engagement
 suggestions.openapi(trackClickRoute, async (c) => {
-  const result = await runEffect(c, Effect.gen(function* () {
+  return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
     const { orgId } = yield* AuthContext;
 
@@ -232,5 +230,4 @@ suggestions.openapi(trackClickRoute, async (c) => {
 
     return c.body(null, 204);
   }), { label: "track suggestion click" });
-  return result;
 });

@@ -135,7 +135,7 @@ semantic.use(requestContext);
 
 // GET /entities — list all entities (public summary: drops measureCount, connection, source)
 semantic.openapi(listEntitiesRoute, async (c) => {
-  const result = await runEffect(c, Effect.sync(() => {
+  return runEffect(c, Effect.sync(() => {
     const root = getSemanticRoot();
     const discovered = discoverEntities(root);
     const entities = discovered.entities.map(({ table, description, columnCount, joinCount, type }) => ({
@@ -146,12 +146,11 @@ semantic.openapi(listEntitiesRoute, async (c) => {
       ...(discovered.warnings.length > 0 && { warnings: discovered.warnings }),
     }, 200);
   }), { label: "load entity list" });
-  return result;
 });
 
 // GET /entities/{name} — full entity detail
 semantic.openapi(getEntityRoute, async (c) => {
-  const result = await runEffect(c, Effect.gen(function* () {
+  return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
 
     const { name } = c.req.valid("param");
@@ -177,5 +176,4 @@ semantic.openapi(getEntityRoute, async (c) => {
     const raw = readYamlFile(filePath);
     return c.json({ entity: raw }, 200);
   }), { label: "parse entity file" });
-  return result;
 });

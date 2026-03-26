@@ -293,7 +293,7 @@ demo.onError((err, c) => {
 
 // POST /start — email gate, returns demo token
 demo.openapi(demoStartRoute, async (c) => {
-  const result = await runEffect(c, Effect.gen(function* () {
+  return runEffect(c, Effect.gen(function* () {
     const requestId = crypto.randomUUID();
 
     // IP-based rate limit to prevent abuse (email enumeration, DB flooding)
@@ -359,7 +359,6 @@ demo.openapi(demoStartRoute, async (c) => {
       conversationCount,
     }, 200);
   }), { label: "demo start" });
-  return result;
 });
 
 // POST /chat — demo chat (mirrors main chat route with demo limits)
@@ -632,7 +631,7 @@ demo.openapi(demoChatRoute, async (c) => {
 
 // GET /conversations — list demo user's conversations
 demo.openapi(listDemoConversationsRoute, async (c) => {
-  const result = await runEffect(c, Effect.gen(function* () {
+  return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
     const email = extractDemoEmail(c.req.raw);
     if (!email) {
@@ -648,12 +647,11 @@ demo.openapi(listDemoConversationsRoute, async (c) => {
     const items = yield* Effect.promise(() => listConversations({ userId, limit, offset }));
     return c.json(items, 200);
   }), { label: "list demo conversations" });
-  return result;
 });
 
 // GET /conversations/:id — get demo conversation with messages
 demo.openapi(getDemoConversationRoute, async (c) => {
-  const result = await runEffect(c, Effect.gen(function* () {
+  return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
     const email = extractDemoEmail(c.req.raw);
     if (!email) {
@@ -670,7 +668,6 @@ demo.openapi(getDemoConversationRoute, async (c) => {
 
     return c.json(conv.data, 200);
   }), { label: "get demo conversation" });
-  return result;
 });
 
 export { demo };

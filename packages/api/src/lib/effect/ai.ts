@@ -71,7 +71,8 @@ export const AtlasAiModelLive: Layer.Layer<AtlasAiModel, Error> = Layer.effect(
         );
         const model = getModel();
         const providerType = getProviderType();
-        const modelId = process.env.ATLAS_MODEL ?? (model as unknown as { modelId?: string }).modelId ?? "unknown";
+        // LanguageModel type doesn't expose modelId directly — access via runtime property
+        const modelId = process.env.ATLAS_MODEL ?? (model as { modelId?: string }).modelId ?? "unknown";
         return { model, providerType, modelId };
       },
       catch: (err) =>

@@ -86,7 +86,6 @@ export {
   SemanticSyncLive,
   Settings,
   SettingsLive,
-  Scheduler as SchedulerService,
   Scheduler,
   makeSchedulerLive,
   buildAppLayer,
@@ -112,6 +111,7 @@ export {
 
 export {
   AtlasToolkit,
+  AtlasToolkitLive,
   makeAtlasToolkitLive,
   createToolkitTestLayer,
   type AtlasToolkitShape,

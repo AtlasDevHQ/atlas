@@ -130,7 +130,11 @@ export interface InternalPool {
 export interface InternalDBShape {
   /** Execute a parameterized query returning typed rows. */
   query<T extends Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]>;
-  /** Fire-and-forget write (uses circuit breaker internally). */
+  /**
+   * Fire-and-forget write (uses circuit breaker internally).
+   * Intentionally void (not Effect/Promise) — called from onFinish callbacks
+   * in the agent loop where back-pressure would block stream finalization.
+   */
   execute(sql: string, params?: unknown[]): void;
   /** Whether the internal DB is available. */
   readonly available: boolean;

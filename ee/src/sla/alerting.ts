@@ -4,10 +4,9 @@
  * Evaluates workspace metrics against configurable thresholds, creates
  * and resolves alerts, and delivers notifications via webhook.
  *
- * Enterprise-gated via requireEnterprise("sla").
+ * Access-gated via platformAdminAuth middleware (platform_admin role required).
  */
 
-import { requireEnterprise } from "../index";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 import type { SLAAlert, SLAAlertStatus, SLAAlertType, SLAThresholds } from "@useatlas/types";
@@ -25,7 +24,7 @@ const log = createLogger("ee:sla-alerting");
  * with hardcoded defaults.
  */
 export async function getThresholds(workspaceId?: string): Promise<SLAThresholds> {
-  requireEnterprise("sla");
+
 
   if (!hasInternalDB()) {
     throw new Error("Internal database not configured — SLA thresholds require DATABASE_URL");
@@ -76,7 +75,7 @@ function defaultThresholds(): SLAThresholds {
  * Update the default SLA thresholds.
  */
 export async function updateThresholds(thresholds: SLAThresholds): Promise<void> {
-  requireEnterprise("sla");
+
 
   if (!hasInternalDB()) {
     throw new Error("Internal database not configured");
@@ -104,7 +103,7 @@ export async function getAlerts(
   status?: SLAAlertStatus,
   limit = 100,
 ): Promise<SLAAlert[]> {
-  requireEnterprise("sla");
+
 
   if (!hasInternalDB()) {
     throw new Error("Internal database not configured — SLA alerts require DATABASE_URL");
@@ -148,7 +147,7 @@ export async function getAlerts(
  * Acknowledge an alert.
  */
 export async function acknowledgeAlert(alertId: string, actorId: string): Promise<boolean> {
-  requireEnterprise("sla");
+
 
   if (!hasInternalDB()) {
     throw new Error("Internal database not configured — cannot acknowledge SLA alerts");
@@ -175,7 +174,7 @@ export async function acknowledgeAlert(alertId: string, actorId: string): Promis
  * via webhook (if configured).
  */
 export async function evaluateAlerts(): Promise<SLAAlert[]> {
-  requireEnterprise("sla");
+
 
   if (!hasInternalDB()) {
     throw new Error("Internal database not configured — SLA evaluation requires DATABASE_URL");

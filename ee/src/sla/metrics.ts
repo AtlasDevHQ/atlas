@@ -9,10 +9,9 @@
  * Storage: internal DB `sla_metrics` table. Data is recorded on each query
  * execution and queried by the platform admin API.
  *
- * Enterprise-gated via requireEnterprise("sla").
+ * Access-gated via platformAdminAuth middleware (platform_admin role required).
  */
 
-import { requireEnterprise } from "../index";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 import type { WorkspaceSLASummary, WorkspaceSLADetail, SLAMetricPoint } from "@useatlas/types";
@@ -138,7 +137,7 @@ export function recordQueryMetric(
 export async function getAllWorkspaceSLA(
   hoursBack = 24,
 ): Promise<WorkspaceSLASummary[]> {
-  requireEnterprise("sla");
+
   await ensureTable();
 
   const rows = await internalQuery<{
@@ -193,7 +192,7 @@ export async function getWorkspaceSLADetail(
   workspaceId: string,
   hoursBack = 24,
 ): Promise<WorkspaceSLADetail> {
-  requireEnterprise("sla");
+
   await ensureTable();
 
   // Summary

@@ -6,6 +6,10 @@
  */
 
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
+import { Effect } from "effect";
+import { runEffect } from "@atlas/api/lib/effect/hono";
+import { RequestContext } from "@atlas/api/lib/effect/services";
+import { honoContextLayer } from "./effect-context";
 import { HTTPException } from "hono/http-exception";
 import { validationHook } from "./validation-hook";
 import { withRequestId, type AuthEnv } from "./middleware";
@@ -131,8 +135,9 @@ const chat = new OpenAPIHono<AuthEnv>({ defaultHook: validationHook });
 chat.use(withRequestId);
 
 chat.openapi(chatRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = c.get("requestId");
+  const result = await runEffect(c, Effect.gen(function* () {
+    const req = c.req.raw;
+    const { requestId } = yield* RequestContext;
 
   // Auth check — before context so user identity is available to all downstream logs
   let authResult: AuthResult;
@@ -692,6 +697,8 @@ chat.openapi(chatRoute, async (c) => {
       }
     },
   );
+  }).pipe(Effect.provide(honoContextLayer(c))), { label: "chat" });
+  return result;
 });
 
 export { chat };

@@ -44,7 +44,10 @@ import {
   countDemoConversations,
 } from "@atlas/api/lib/demo";
 import { withRequestId, type AuthEnv } from "./middleware";
-import { runHandler } from "@atlas/api/lib/effect/hono";
+import { Effect } from "effect";
+import { runEffect } from "@atlas/api/lib/effect/hono";
+import { RequestContext } from "@atlas/api/lib/effect/services";
+import { honoContextLayer } from "./effect-context";
 
 const log = createLogger("demo");
 
@@ -291,68 +294,71 @@ demo.onError((err, c) => {
 
 // POST /start — email gate, returns demo token
 demo.openapi(demoStartRoute, async (c) => {
-  const requestId = crypto.randomUUID();
+  const result = await runEffect(c, Effect.gen(function* () {
+    const requestId = crypto.randomUUID();
 
-  // IP-based rate limit to prevent abuse (email enumeration, DB flooding)
-  const ip = getClientIP(c.req.raw);
-  const startRateCheck = checkDemoRateLimit(ip ?? "anon-start");
-  if (!startRateCheck.allowed) {
-    const retryAfterSeconds = Math.ceil((startRateCheck.retryAfterMs ?? 60000) / 1000);
-    return c.json(
-      { error: "rate_limited", message: "Too many requests. Please wait.", retryAfterSeconds, requestId },
-      { status: 429, headers: { "Retry-After": String(retryAfterSeconds) } },
+    // IP-based rate limit to prevent abuse (email enumeration, DB flooding)
+    const ip = getClientIP(c.req.raw);
+    const startRateCheck = checkDemoRateLimit(ip ?? "anon-start");
+    if (!startRateCheck.allowed) {
+      const retryAfterSeconds = Math.ceil((startRateCheck.retryAfterMs ?? 60000) / 1000);
+      return c.json(
+        { error: "rate_limited", message: "Too many requests. Please wait.", retryAfterSeconds, requestId },
+        { status: 429, headers: { "Retry-After": String(retryAfterSeconds) } },
+      );
+    }
+
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch (err) {
+      log.debug({ err: err instanceof Error ? err.message : String(err) }, "Demo /start: invalid JSON body");
+      return c.json(
+        { error: "invalid_request", message: "Invalid JSON body.", requestId },
+        400,
+      );
+    }
+
+    const parsed = DemoStartSchema.safeParse(body);
+    if (!parsed.success) {
+      return c.json(
+        { error: "validation_error", message: "A valid email address is required.", requestId },
+        422,
+      );
+    }
+
+    const email = parsed.data.email.toLowerCase().trim();
+
+    // Sign token
+    const tokenResult = signDemoToken(email);
+    if (!tokenResult) {
+      log.error("Demo token signing failed — BETTER_AUTH_SECRET may not be set");
+      return c.json(
+        { error: "configuration_error", message: "Demo mode is not properly configured.", requestId },
+        500,
+      );
+    }
+
+    // Capture lead (best-effort)
+    const userAgent = c.req.header("user-agent") ?? null;
+    const [leadResult, conversationCount] = yield* Effect.promise(() => Promise.all([
+      captureDemoLead({ email, ip, userAgent }),
+      countDemoConversations(email),
+    ]));
+
+    log.info(
+      { email: email.replace(/(.{2}).*(@.*)/, "$1***$2"), returning: leadResult.returning },
+      "Demo session started",
     );
-  }
 
-  let body: unknown;
-  try {
-    body = await c.req.json();
-  } catch (err) {
-    log.debug({ err: err instanceof Error ? err.message : String(err) }, "Demo /start: invalid JSON body");
-    return c.json(
-      { error: "invalid_request", message: "Invalid JSON body.", requestId },
-      400,
-    );
-  }
-
-  const parsed = DemoStartSchema.safeParse(body);
-  if (!parsed.success) {
-    return c.json(
-      { error: "validation_error", message: "A valid email address is required.", requestId },
-      422,
-    );
-  }
-
-  const email = parsed.data.email.toLowerCase().trim();
-
-  // Sign token
-  const result = signDemoToken(email);
-  if (!result) {
-    log.error("Demo token signing failed — BETTER_AUTH_SECRET may not be set");
-    return c.json(
-      { error: "configuration_error", message: "Demo mode is not properly configured.", requestId },
-      500,
-    );
-  }
-
-  // Capture lead (best-effort)
-  const userAgent = c.req.header("user-agent") ?? null;
-  const [leadResult, conversationCount] = await Promise.all([
-    captureDemoLead({ email, ip, userAgent }),
-    countDemoConversations(email),
-  ]);
-
-  log.info(
-    { email: email.replace(/(.{2}).*(@.*)/, "$1***$2"), returning: leadResult.returning },
-    "Demo session started",
-  );
-
-  return c.json({
-    token: result.token,
-    expiresAt: result.expiresAt,
-    returning: leadResult.returning,
-    conversationCount,
-  }, 200);
+    return c.json({
+      token: tokenResult.token,
+      expiresAt: tokenResult.expiresAt,
+      returning: leadResult.returning,
+      conversationCount,
+    }, 200);
+  }).pipe(Effect.provide(honoContextLayer(c))), { label: "demo start" });
+  return result;
 });
 
 // POST /chat — demo chat (mirrors main chat route with demo limits)
@@ -624,40 +630,46 @@ demo.openapi(demoChatRoute, async (c) => {
 });
 
 // GET /conversations — list demo user's conversations
-demo.openapi(listDemoConversationsRoute, async (c) => runHandler(c, "list demo conversations", async () => {
-  const requestId = c.get("requestId");
-  const email = extractDemoEmail(c.req.raw);
-  if (!email) {
-    return c.json({ error: "auth_error", message: "Valid demo token required.", requestId }, 401);
-  }
+demo.openapi(listDemoConversationsRoute, async (c) => {
+  const result = await runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const email = extractDemoEmail(c.req.raw);
+    if (!email) {
+      return c.json({ error: "auth_error", message: "Valid demo token required.", requestId }, 401);
+    }
 
-  if (!hasInternalDB()) {
-    return c.json({ conversations: [], total: 0 }, 200);
-  }
+    if (!hasInternalDB()) {
+      return c.json({ conversations: [], total: 0 }, 200);
+    }
 
-  const userId = demoUserId(email);
-  const { limit, offset } = parsePagination(c, { limit: 50, maxLimit: 100 });
-  const result = await listConversations({ userId, limit, offset });
-  return c.json(result, 200);
-}));
+    const userId = demoUserId(email);
+    const { limit, offset } = parsePagination(c, { limit: 50, maxLimit: 100 });
+    const items = yield* Effect.promise(() => listConversations({ userId, limit, offset }));
+    return c.json(items, 200);
+  }).pipe(Effect.provide(honoContextLayer(c))), { label: "list demo conversations" });
+  return result;
+});
 
 // GET /conversations/:id — get demo conversation with messages
-demo.openapi(getDemoConversationRoute, async (c) => runHandler(c, "get demo conversation", async () => {
-  const requestId = c.get("requestId");
-  const email = extractDemoEmail(c.req.raw);
-  if (!email) {
-    return c.json({ error: "auth_error", message: "Valid demo token required.", requestId }, 401);
-  }
+demo.openapi(getDemoConversationRoute, async (c) => {
+  const result = await runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const email = extractDemoEmail(c.req.raw);
+    if (!email) {
+      return c.json({ error: "auth_error", message: "Valid demo token required.", requestId }, 401);
+    }
 
-  const userId = demoUserId(email);
-  const id = c.req.param("id");
-  const result = await getConversation(id, userId);
+    const userId = demoUserId(email);
+    const id = c.req.param("id");
+    const conv = yield* Effect.promise(() => getConversation(id, userId));
 
-  if (!result.ok) {
-    return c.json({ error: "not_found", message: "Conversation not found.", requestId }, 404);
-  }
+    if (!conv.ok) {
+      return c.json({ error: "not_found", message: "Conversation not found.", requestId }, 404);
+    }
 
-  return c.json(result.data, 200);
-}));
+    return c.json(conv.data, 200);
+  }).pipe(Effect.provide(honoContextLayer(c))), { label: "get demo conversation" });
+  return result;
+});
 
 export { demo };

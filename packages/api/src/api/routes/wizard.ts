@@ -15,6 +15,10 @@
 import * as fs from "fs";
 import * as path from "path";
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
+import { Effect } from "effect";
+import { runEffect } from "@atlas/api/lib/effect/hono";
+import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
+import { honoContextLayer } from "./effect-context";
 import { HTTPException } from "hono/http-exception";
 import { createLogger } from "@atlas/api/lib/logger";
 import { validationHook } from "./validation-hook";
@@ -417,64 +421,67 @@ wizard.onError((err, c) => {
 // ---------------------------------------------------------------------------
 
 wizard.openapi(profileRoute, async (c) => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
+  const result = await runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const { user } = yield* AuthContext;
 
-  const { connectionId } = c.req.valid("json");
+    const { connectionId } = c.req.valid("json");
 
-  // Look up the connection URL — resolveConnectionUrl throws on infrastructure errors
-  let connUrl: ResolvedConnection | null;
-  try {
-    connUrl = await resolveConnectionUrl(connectionId, authResult.user?.activeOrganizationId);
-  } catch (err) {
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, connectionId }, "Failed to resolve connection URL");
-    return c.json({
-      error: "connection_resolution_failed",
-      message: "Failed to resolve connection. Check server logs for details.",
-      requestId,
-    }, 500);
-  }
-  if (!connUrl) {
-    return c.json({ error: "not_found", message: `Connection "${connectionId}" not found.` }, 404);
-  }
-
-  const { url, dbType, schema } = connUrl;
-
-  try {
-    let objects;
-    switch (dbType) {
-      case "postgres":
-        objects = await listPostgresObjects(url, schema, log);
-        break;
-      case "mysql":
-        objects = await listMySQLObjects(url);
-        break;
-      default:
-        return c.json({
-          error: "unsupported_db",
-          message: `Wizard profiling is currently supported for PostgreSQL and MySQL. Got: ${dbType}`,
-        }, 400);
+    // Look up the connection URL — resolveConnectionUrl throws on infrastructure errors
+    let connUrl: ResolvedConnection | null;
+    try {
+      connUrl = await resolveConnectionUrl(connectionId, user?.activeOrganizationId);
+    } catch (err) {
+      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, connectionId }, "Failed to resolve connection URL");
+      return c.json({
+        error: "connection_resolution_failed",
+        message: "Failed to resolve connection. Check server logs for details.",
+        requestId,
+      }, 500);
+    }
+    if (!connUrl) {
+      return c.json({ error: "not_found", message: `Connection "${connectionId}" not found.` }, 404);
     }
 
-    log.info({ requestId, connectionId, dbType, tableCount: objects.length }, "Wizard profile complete");
+    const { url, dbType, schema } = connUrl;
 
-    return c.json({
-      connectionId,
-      dbType,
-      schema,
-      tables: objects.map((o) => ({
-        name: o.name,
-        type: o.type,
-      })),
-    }, 200);
-  } catch (err) {
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, connectionId }, "Wizard profile failed");
-    return c.json({
-      error: "profile_failed",
-      message: `Failed to list tables: ${err instanceof Error ? err.message : String(err)}`,
-      requestId,
-    }, 500);
-  }
+    try {
+      let objects;
+      switch (dbType) {
+        case "postgres":
+          objects = await listPostgresObjects(url, schema, log);
+          break;
+        case "mysql":
+          objects = await listMySQLObjects(url);
+          break;
+        default:
+          return c.json({
+            error: "unsupported_db",
+            message: `Wizard profiling is currently supported for PostgreSQL and MySQL. Got: ${dbType}`,
+          }, 400);
+      }
+
+      log.info({ requestId, connectionId, dbType, tableCount: objects.length }, "Wizard profile complete");
+
+      return c.json({
+        connectionId,
+        dbType,
+        schema,
+        tables: objects.map((o) => ({
+          name: o.name,
+          type: o.type,
+        })),
+      }, 200);
+    } catch (err) {
+      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, connectionId }, "Wizard profile failed");
+      return c.json({
+        error: "profile_failed",
+        message: `Failed to list tables: ${err instanceof Error ? err.message : String(err)}`,
+        requestId,
+      }, 500);
+    }
+  }).pipe(Effect.provide(honoContextLayer(c))), { label: "wizard profile" });
+  return result;
 });
 
 // ---------------------------------------------------------------------------
@@ -482,14 +489,15 @@ wizard.openapi(profileRoute, async (c) => {
 // ---------------------------------------------------------------------------
 
 wizard.openapi(generateRoute, async (c) => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
+  const result = await runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const { user } = yield* AuthContext;
 
-  const { connectionId, tables: tableNames } = c.req.valid("json");
+    const { connectionId, tables: tableNames } = c.req.valid("json");
 
-  let connUrl: ResolvedConnection | null;
-  try {
-    connUrl = await resolveConnectionUrl(connectionId, authResult.user?.activeOrganizationId);
+    let connUrl: ResolvedConnection | null;
+    try {
+      connUrl = await resolveConnectionUrl(connectionId, user?.activeOrganizationId);
   } catch (err) {
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, connectionId }, "Failed to resolve connection URL");
     return c.json({
@@ -587,6 +595,8 @@ wizard.openapi(generateRoute, async (c) => {
       requestId,
     }, 500);
   }
+  }).pipe(Effect.provide(honoContextLayer(c))), { label: "wizard generate" });
+  return result;
 });
 
 // ---------------------------------------------------------------------------
@@ -594,9 +604,10 @@ wizard.openapi(generateRoute, async (c) => {
 // ---------------------------------------------------------------------------
 
 wizard.openapi(previewRoute, async (c) => {
-  const requestId = c.get("requestId");
+  const result = await runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
 
-  const { question, entities } = c.req.valid("json");
+    const { question, entities } = c.req.valid("json");
 
   // Build a semantic context summary from the provided entity YAMLs
   // (Zod already validated that entities are { tableName: string; yaml: string }[])
@@ -616,6 +627,8 @@ wizard.openapi(previewRoute, async (c) => {
   log.info({ requestId, question, entityCount: entities.length }, "Wizard preview generated");
 
   return c.json(preview, 200);
+  }).pipe(Effect.provide(honoContextLayer(c))), { label: "wizard preview" });
+  return result;
 });
 
 // ---------------------------------------------------------------------------
@@ -623,10 +636,11 @@ wizard.openapi(previewRoute, async (c) => {
 // ---------------------------------------------------------------------------
 
 wizard.openapi(saveRoute, async (c) => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
+  const result = await runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const { user } = yield* AuthContext;
 
-  const orgId = authResult.user?.activeOrganizationId;
+    const orgId = user?.activeOrganizationId;
   if (!orgId) {
     return c.json({ error: "no_organization", message: "No active organization. Create a workspace first." }, 400);
   }
@@ -732,6 +746,8 @@ wizard.openapi(saveRoute, async (c) => {
       requestId,
     }, 500);
   }
+  }).pipe(Effect.provide(honoContextLayer(c))), { label: "wizard save" });
+  return result;
 });
 
 // ---------------------------------------------------------------------------

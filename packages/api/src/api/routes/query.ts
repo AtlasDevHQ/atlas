@@ -11,6 +11,10 @@
  */
 
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
+import { Effect } from "effect";
+import { runEffect } from "@atlas/api/lib/effect/hono";
+import { RequestContext } from "@atlas/api/lib/effect/services";
+import { honoContextLayer } from "./effect-context";
 import { validationHook } from "./validation-hook";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
@@ -184,16 +188,17 @@ query.onError((err, c) => {
 query.openapi(
   queryRoute,
   async (c) => {
-    const req = c.req.raw;
-    const requestId = c.get("requestId");
+    const result = await runEffect(c, Effect.gen(function* () {
+      const { requestId } = yield* RequestContext;
+      const req = c.req.raw;
 
-    // --- Auth + Rate limit ---
-    const preamble = await authPreamble(req, requestId);
-    requireAuth(preamble);
-    const { authResult } = preamble;
+      // --- Auth + Rate limit ---
+      const preamble = yield* Effect.promise(() => authPreamble(req, requestId));
+      requireAuth(preamble);
+      const { authResult } = preamble;
 
-    // Bind user identity into AsyncLocalStorage for downstream logging/audit
-    return withRequestContext({ requestId, user: authResult.user }, async () => {
+      // Bind user identity into AsyncLocalStorage for downstream logging/audit
+      return withRequestContext({ requestId, user: authResult.user }, async () => {
 
     // Workspace status check — block suspended/deleted workspaces
     const wsCheck = await checkWorkspaceStatus(authResult.user?.activeOrganizationId);
@@ -411,6 +416,8 @@ query.openapi(
       );
     }
     }); // withRequestContext
+    }).pipe(Effect.provide(honoContextLayer(c))), { label: "query" });
+    return result;
   },
   (result, c) => {
     if (!result.success) {

@@ -379,7 +379,13 @@ chat.openapi(chatRoute, async (c) => {
                 surface: "web",
                 orgId: authResult.user?.activeOrganizationId,
               });
-              if (created) conversationId = created.id;
+              if (created) {
+                conversationId = created.id;
+                // Persist the user message that triggered conversation creation
+                if (firstUserMsg) {
+                  addMessage({ conversationId, role: "user", content: firstUserMsg.parts });
+                }
+              }
             } catch (err) {
               log.warn({ err: err instanceof Error ? err.message : String(err) }, "Failed to create conversation");
             }

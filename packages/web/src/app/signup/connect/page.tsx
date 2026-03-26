@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { API_URL, IS_CROSS_ORIGIN } from "@/lib/api-url";
 import { Button } from "@/components/ui/button";
@@ -13,7 +13,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Database, CheckCircle2, XCircle, Loader2 } from "lucide-react";
+import { Database, CheckCircle2, XCircle, Loader2, Play } from "lucide-react";
 
 function getApiBase(): string {
   if (API_URL) return API_URL;
@@ -50,6 +50,20 @@ export default function ConnectPage() {
   const [testResult, setTestResult] = useState<TestResult | null>(null);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [demoAvailable, setDemoAvailable] = useState(false);
+  const [loadingDemo, setLoadingDemo] = useState(false);
+
+  // Check if a default datasource is available (for "Try demo data" option)
+  useEffect(() => {
+    fetch(`${getApiBase()}/api/health`, { credentials: getCredentials() })
+      .then((res) => res.json())
+      .then((data) => {
+        if (data?.checks?.datasource?.status === "ok") {
+          setDemoAvailable(true);
+        }
+      })
+      .catch(() => { /* health check failed — demo option won't show */ });
+  }, []);
 
   async function handleTest() {
     if (!url.trim()) return;
@@ -127,6 +141,41 @@ export default function ConnectPage() {
       );
     } finally {
       setSaving(false);
+    }
+  }
+
+  async function handleUseDemo() {
+    setLoadingDemo(true);
+    setError(null);
+
+    try {
+      const res = await fetch(`${getApiBase()}/api/v1/onboarding/use-demo`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: getCredentials(),
+      });
+
+      let data: Record<string, unknown>;
+      try {
+        data = await res.json() as Record<string, unknown>;
+      } catch {
+        setError("Server returned an unexpected response.");
+        return;
+      }
+      if (!res.ok) {
+        setError((data.message as string) ?? "Failed to set up demo data");
+        return;
+      }
+
+      router.push("/signup/success");
+    } catch (err) {
+      setError(
+        err instanceof TypeError
+          ? "Unable to reach the server"
+          : "Failed to set up demo data",
+      );
+    } finally {
+      setLoadingDemo(false);
     }
   }
 
@@ -215,13 +264,44 @@ export default function ConnectPage() {
           </Button>
         </div>
 
-        <button
-          type="button"
-          onClick={() => router.push("/signup/success")}
-          className="w-full text-center text-sm text-muted-foreground hover:text-foreground"
-        >
-          Skip for now — I&apos;ll connect later
-        </button>
+        {demoAvailable ? (
+          <div className="space-y-2">
+            <div className="relative flex items-center">
+              <div className="flex-1 border-t" />
+              <span className="px-3 text-xs text-muted-foreground">or</span>
+              <div className="flex-1 border-t" />
+            </div>
+            <Button
+              variant="outline"
+              onClick={handleUseDemo}
+              disabled={loadingDemo}
+              className="w-full"
+            >
+              {loadingDemo ? (
+                <>
+                  <Loader2 className="mr-2 size-4 animate-spin" />
+                  Setting up demo data...
+                </>
+              ) : (
+                <>
+                  <Play className="mr-2 size-4" />
+                  Try demo data
+                </>
+              )}
+            </Button>
+            <p className="text-center text-xs text-muted-foreground">
+              Explore Atlas with a sample database. You can connect your own data later.
+            </p>
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={() => router.push("/signup/success")}
+            className="w-full text-center text-sm text-muted-foreground hover:text-foreground"
+          >
+            Skip for now — I&apos;ll connect later
+          </button>
+        )}
 
         <div className="flex justify-center">
           <StepIndicator current={3} total={4} />

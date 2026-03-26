@@ -289,11 +289,57 @@ export function useNotebook({
   // intermediate truncation step where the re-run cell is temporarily absent.
   const preRerunCells = useRef<NotebookCell[]>([]);
 
-  // Reconcile cells when messages change
+  // Track which conversation's server state we last applied, so we can
+  // detect when new server state arrives (after the async fetch completes).
+  const appliedServerStateFor = useRef<string | null>(null);
+  // Suppress server saves briefly after restoring from server state,
+  // to avoid overwriting just-loaded data with a stale snapshot.
+  // Uses a timestamp so multiple rapid state changes are all suppressed.
+  const suppressSaveUntil = useRef(0);
+
+  // Reconcile cells when messages change OR when switching conversations.
   useEffect(() => {
+    const isNewConversation = appliedServerStateFor.current !== conversationId;
+
+    if (isNewConversation && initialServerState !== undefined) {
+      appliedServerStateFor.current = conversationId;
+      const freshCells = buildCellsFromMessages(chat.messages);
+
+      // Restore text cells from server state for the NEW conversation
+      if (initialServerState?.textCells) {
+        for (const [id, data] of Object.entries(initialServerState.textCells)) {
+          freshCells.push({
+            id,
+            messageId: "",
+            number: 0,
+            collapsed: false,
+            editing: false,
+            status: "idle",
+            type: "text",
+            content: data.content,
+          });
+        }
+      }
+
+      // Restore collapsed state from server
+      if (initialServerState?.cellProps) {
+        for (const cell of freshCells) {
+          const props = initialServerState.cellProps[cell.id];
+          if (props?.collapsed) cell.collapsed = true;
+        }
+      }
+
+      // Suppress saves for 1s to let React settle after the reset
+      suppressSaveUntil.current = Date.now() + 1000;
+      setCellState(freshCells);
+      setCellOrder(initialServerState?.cellOrder ?? []);
+      return;
+    }
+
+    // Same conversation — reconcile cells when messages change
     const fresh = buildCellsFromMessages(chat.messages);
     setCellState((prev) => {
-      // Preserve text cells — they are not derived from messages
+      // Preserve text cells — they belong to this conversation
       const textCells = prev.filter((c) => c.type === "text");
 
       let usedFallback = false;
@@ -314,7 +360,7 @@ export function useNotebook({
       }
       return [...queryCells, ...textCells];
     });
-  }, [chat.messages]);
+  }, [chat.messages, conversationId, initialServerState]);
 
   // Persist to localStorage (write-through cache)
   useEffect(() => {
@@ -330,6 +376,7 @@ export function useNotebook({
   // Debounced server persistence (500ms)
   useEffect(() => {
     if (!conversationId || conversationId.startsWith("temp:") || !saveToServer) return;
+    if (Date.now() < suppressSaveUntil.current) return;
 
     const timer = setTimeout(() => {
       const cellProps: Record<string, { collapsed?: boolean }> = {};

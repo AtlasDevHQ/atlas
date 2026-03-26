@@ -57,6 +57,7 @@ const NotebookStateWireSchema = z.object({
   version: z.number().int().min(1).max(10),
   cellOrder: z.array(z.string()).optional(),
   cellProps: z.record(z.string(), z.object({ collapsed: z.boolean().optional() })).optional(),
+  textCells: z.record(z.string(), z.object({ content: z.string() })).optional(),
   branches: z.array(ForkBranchWireSchema).optional(),
   forkRootId: z.string().optional(),
   forkPointCellId: z.string().optional(),

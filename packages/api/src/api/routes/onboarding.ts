@@ -18,10 +18,12 @@ import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 import { createLogger } from "@atlas/api/lib/logger";
 import { detectAuthMode } from "@atlas/api/lib/auth/detect";
-import { connections, detectDBType } from "@atlas/api/lib/db/connection";
+import { connections, detectDBType, resolveDatasourceUrl } from "@atlas/api/lib/db/connection";
 import { hasInternalDB, internalQuery, encryptUrl } from "@atlas/api/lib/db/internal";
 import { maskConnectionUrl } from "@atlas/api/lib/security";
 import { _resetWhitelists } from "@atlas/api/lib/semantic";
+import { importFromDisk } from "@atlas/api/lib/semantic/sync";
+import { getSemanticRoot } from "@atlas/api/lib/semantic/files";
 import { ErrorSchema } from "./shared-schemas";
 import { standardAuth, requestContext, type AuthEnv } from "./middleware";
 
@@ -184,6 +186,42 @@ const completeOnboardingRoute = createRoute({
   },
 });
 
+const UseDemoResponseSchema = z.object({
+  connectionId: z.string(),
+  dbType: z.string(),
+  maskedUrl: z.string(),
+  entitiesImported: z.number(),
+});
+
+const useDemoRoute = createRoute({
+  method: "post",
+  path: "/use-demo",
+  tags: ["Onboarding"],
+  summary: "Set up workspace with demo data",
+  description:
+    "Connects the workspace to the platform's default datasource (ATLAS_DATASOURCE_URL) and imports " +
+    "the disk semantic layer. Used when a user clicks 'Try demo data' during onboarding instead of " +
+    "providing their own database URL.",
+  responses: {
+    201: {
+      description: "Demo connection saved, semantic layer imported",
+      content: { "application/json": { schema: UseDemoResponseSchema } },
+    },
+    400: {
+      description: "No active organization or demo datasource not available",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    404: {
+      description: "Onboarding requires managed auth mode and DATABASE_URL",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    500: {
+      description: "Failed to set up demo connection",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
 // ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
@@ -227,6 +265,8 @@ onboarding.use("/test-connection", standardAuth);
 onboarding.use("/test-connection", requestContext);
 onboarding.use("/complete", standardAuth);
 onboarding.use("/complete", requestContext);
+onboarding.use("/use-demo", standardAuth);
+onboarding.use("/use-demo", requestContext);
 onboarding.use("/tour-status", standardAuth);
 onboarding.use("/tour-status", requestContext);
 onboarding.use("/tour-complete", standardAuth);
@@ -456,6 +496,109 @@ onboarding.openapi(
         422,
       );
     }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// POST /use-demo — connect workspace to the default datasource + import semantic layer
+// ---------------------------------------------------------------------------
+
+onboarding.openapi(
+  useDemoRoute,
+  async (c) => {
+    return runEffect(c, Effect.gen(function* () {
+      const { requestId } = yield* RequestContext;
+      const { user, orgId } = yield* AuthContext;
+
+      if (detectAuthMode() !== "managed") {
+        return c.json({ error: "not_available", message: "Onboarding requires managed auth mode.", requestId }, 404);
+      }
+
+      if (!hasInternalDB()) {
+        return c.json({ error: "not_available", message: "Onboarding requires an internal database (DATABASE_URL).", requestId }, 404);
+      }
+
+      if (!orgId) {
+        return c.json({ error: "no_organization", message: "No active organization. Create a workspace first." }, 400);
+      }
+
+      const url = resolveDatasourceUrl();
+      if (!url) {
+        return c.json({ error: "no_demo_datasource", message: "No demo datasource configured. Set ATLAS_DATASOURCE_URL." }, 400);
+      }
+
+      const id = "default";
+      let dbType: string;
+      try {
+        dbType = detectDBType(url);
+      } catch (err) {
+        log.error({ err: err instanceof Error ? err.message : String(err), requestId }, "Demo datasource URL has unsupported scheme");
+        return c.json({ error: "invalid_datasource", message: "Demo datasource URL has an unsupported scheme." }, 500);
+      }
+
+      // Encrypt and persist (same logic as /complete)
+      let encryptedUrl: string;
+      try {
+        encryptedUrl = encryptUrl(url);
+      } catch (err) {
+        log.error({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to encrypt demo connection URL");
+        return c.json({ error: "encryption_failed", message: "Failed to encrypt connection URL.", requestId }, 500);
+      }
+
+      const upsertResult = yield* Effect.tryPromise({
+        try: () => internalQuery<{ id: string }>(
+          `INSERT INTO connections (id, url, type, description, org_id)
+           VALUES ($1, $2, $3, $4, $5)
+           ON CONFLICT (id) DO UPDATE SET url = $2, type = $3, org_id = $5, updated_at = NOW()
+           WHERE connections.org_id = $5 OR connections.org_id IS NULL
+           RETURNING id`,
+          [id, encryptedUrl, dbType, `Demo ${dbType} datasource`, orgId],
+        ),
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      }).pipe(Effect.catchAll((err) => {
+        log.error({ err, requestId }, "Failed to persist demo connection");
+        return Effect.succeed(null);
+      }));
+
+      if (upsertResult === null) {
+        return c.json({ error: "internal_error", message: "Failed to save connection.", requestId }, 500);
+      }
+      if (upsertResult.length === 0) {
+        return c.json({ error: "conflict", message: "Connection ID 'default' is already in use by another organization." }, 409);
+      }
+
+      // Register in runtime
+      try {
+        if (connections.has(id)) connections.unregister(id);
+        connections.register(id, { url, description: `Demo ${dbType} datasource` });
+      } catch (err) {
+        log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Demo connection saved but runtime registration failed");
+      }
+
+      // Import disk semantic layer into this org
+      const importResult = yield* Effect.tryPromise({
+        try: () => importFromDisk(orgId, { sourceDir: getSemanticRoot() }),
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      }).pipe(Effect.catchAll((err) => {
+        log.warn({ err: err.message, requestId }, "Semantic layer import failed — workspace may need manual setup");
+        return Effect.succeed({ imported: 0, skipped: 0 });
+      }));
+      const entitiesImported = importResult.imported;
+      if (entitiesImported > 0) {
+        log.info({ orgId, imported: importResult.imported, skipped: importResult.skipped, requestId }, "Imported disk semantic layer for demo workspace");
+      }
+
+      _resetWhitelists();
+
+      log.info({ requestId, orgId, dbType, userId: user?.id, entitiesImported }, "Demo onboarding complete");
+
+      return c.json({
+        connectionId: id,
+        dbType,
+        maskedUrl: maskConnectionUrl(url),
+        entitiesImported,
+      }, 201);
+    }), { label: "use demo data" });
   },
 );
 

@@ -49,7 +49,7 @@ export interface AtlasChatProps {
   authClient?: AtlasAuthClient;
   /** Custom renderers for tool results. Keys are tool names (e.g. "executeSQL", "explore", "executePython"). */
   toolRenderers?: ToolRenderers;
-  /** Custom chat API endpoint path. Defaults to "/api/chat". */
+  /** Custom chat API endpoint path. Defaults to "/api/v1/chat". */
   chatEndpoint?: string;
   /** Custom conversations API endpoint path. Defaults to "/api/v1/conversations". */
   conversationsEndpoint?: string;
@@ -168,7 +168,7 @@ export function AtlasChat(props: AtlasChatProps) {
     schemaExplorer: schemaExplorerEnabled = false,
     authClient = noopAuthClient,
     toolRenderers,
-    chatEndpoint = "/api/chat",
+    chatEndpoint = "/api/v1/chat",
     conversationsEndpoint = "/api/v1/conversations",
   } = props;
 

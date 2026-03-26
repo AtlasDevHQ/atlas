@@ -109,7 +109,6 @@ describe("listConnections", () => {
         id: "conn-1",
         providerId: "okta-prod",
         organizationId: ORG_ID,
-        createdAt: "2026-03-22T00:00:00Z",
       },
     ]);
     const result = await listConnections(ORG_ID);

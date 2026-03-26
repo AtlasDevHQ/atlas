@@ -38,7 +38,6 @@ interface SCIMConnection {
   id: string;
   providerId: string;
   organizationId: string | null;
-  createdAt: string;
 }
 
 interface SCIMSyncStatus {
@@ -207,9 +206,6 @@ export default function SCIMPage() {
                               <span className="text-sm font-medium">{conn.providerId}</span>
                               <Badge variant="default" className="text-[10px]">Active</Badge>
                             </div>
-                            <p className="text-xs text-muted-foreground">
-                              Created {new Date(conn.createdAt).toLocaleDateString()}
-                            </p>
                           </div>
                           <Button
                             variant="ghost"

@@ -40,14 +40,12 @@ export interface SCIMConnection {
   id: string;
   providerId: string;
   organizationId: string | null;
-  createdAt: string;
 }
 
 interface SCIMConnectionRow {
   id: string;
   providerId: string;
   organizationId: string | null;
-  createdAt: string;
   [key: string]: unknown;
 }
 
@@ -108,7 +106,6 @@ function rowToConnection(row: SCIMConnectionRow): SCIMConnection {
     id: row.id,
     providerId: row.providerId,
     organizationId: row.organizationId ?? null,
-    createdAt: String(row.createdAt),
   };
 }
 
@@ -144,10 +141,10 @@ export async function listConnections(orgId: string): Promise<SCIMConnection[]> 
   if (!hasInternalDB()) return [];
 
   const rows = await internalQuery<SCIMConnectionRow>(
-    `SELECT id, "providerId", "organizationId", "createdAt"
+    `SELECT id, "providerId", "organizationId"
      FROM "scimProvider"
      WHERE "organizationId" = $1
-     ORDER BY "createdAt" ASC`,
+     ORDER BY id ASC`,
     [orgId],
   );
   return rows.map(rowToConnection);

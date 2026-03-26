@@ -35,7 +35,6 @@ const SCIMConnectionSchema = z.object({
   id: z.string(),
   providerId: z.string(),
   organizationId: z.string().nullable(),
-  createdAt: z.string(),
 });
 
 const SCIMSyncStatusSchema = z.object({

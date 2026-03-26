@@ -2,6 +2,17 @@
 
 import { useState } from "react";
 import { useAtlasConfig } from "../../context";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { Database } from "lucide-react";
 
 export function ManagedAuthCard() {
   const { authClient } = useAtlasConfig();
@@ -43,74 +54,97 @@ export function ManagedAuthCard() {
   }
 
   return (
-    <div className="flex h-full items-center justify-center">
-      <div className="w-full max-w-sm space-y-4 rounded-lg border border-zinc-200 bg-zinc-50 p-6 dark:border-zinc-700 dark:bg-zinc-900">
-        <div className="text-center">
-          <h2 className="text-lg font-semibold text-zinc-900 dark:text-zinc-100">
+    <div className="flex h-full items-center justify-center p-4">
+      <Card className="w-full max-w-sm">
+        <CardHeader className="text-center">
+          <div className="mx-auto mb-2 flex size-12 items-center justify-center rounded-lg bg-primary/10">
+            <Database className="size-6 text-primary" />
+          </div>
+          <CardTitle className="text-2xl">
             {view === "login" ? "Sign in to Atlas" : "Create an account"}
-          </h2>
-          <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-            {view === "login" ? "Enter your credentials to continue" : "Set up your Atlas account"}
+          </CardTitle>
+          <CardDescription>
+            {view === "login"
+              ? "Your AI-powered data analyst."
+              : "Get started with Atlas."}
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <form onSubmit={view === "login" ? handleLogin : handleSignup} className="space-y-4">
+            {view === "signup" && (
+              <div className="space-y-2">
+                <Label htmlFor="auth-name">Name</Label>
+                <Input
+                  id="auth-name"
+                  placeholder="Jane Doe"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                />
+              </div>
+            )}
+            <div className="space-y-2">
+              <Label htmlFor="auth-email">Email</Label>
+              <Input
+                id="auth-email"
+                type="email"
+                placeholder="jane@example.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
+                autoFocus
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="auth-password">Password</Label>
+              <Input
+                id="auth-password"
+                type="password"
+                placeholder={view === "signup" ? "At least 8 characters" : "Your password"}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+                minLength={view === "signup" ? 8 : undefined}
+              />
+            </div>
+            {error && <p className="text-sm text-destructive">{error}</p>}
+            <Button
+              type="submit"
+              className="w-full"
+              disabled={loading || !email || !password}
+            >
+              {loading
+                ? "..."
+                : view === "login"
+                  ? "Sign in"
+                  : "Create account"}
+            </Button>
+          </form>
+
+          <p className="text-center text-sm text-muted-foreground">
+            {view === "login" ? (
+              <>
+                Don&apos;t have an account?{" "}
+                <button
+                  onClick={() => { setView("signup"); setError(""); }}
+                  className="text-primary hover:underline"
+                >
+                  Create one
+                </button>
+              </>
+            ) : (
+              <>
+                Already have an account?{" "}
+                <button
+                  onClick={() => { setView("login"); setError(""); }}
+                  className="text-primary hover:underline"
+                >
+                  Sign in
+                </button>
+              </>
+            )}
           </p>
-        </div>
-
-        <form onSubmit={view === "login" ? handleLogin : handleSignup} className="space-y-3">
-          {view === "signup" && (
-            <input
-              type="text"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              placeholder="Name (optional)"
-              className="w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-900 placeholder-zinc-400 outline-none focus-visible:border-blue-500 focus-visible:ring-[3px] focus-visible:ring-blue-500/30 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100 dark:placeholder-zinc-600"
-            />
-          )}
-          <input
-            type="email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            placeholder="Email"
-            required
-            className="w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-900 placeholder-zinc-400 outline-none focus-visible:border-blue-500 focus-visible:ring-[3px] focus-visible:ring-blue-500/30 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100 dark:placeholder-zinc-600"
-          />
-          <input
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            placeholder="Password"
-            required
-            minLength={8}
-            className="w-full rounded-lg border border-zinc-200 bg-white px-3 py-2 text-sm text-zinc-900 placeholder-zinc-400 outline-none focus-visible:border-blue-500 focus-visible:ring-[3px] focus-visible:ring-blue-500/30 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-100 dark:placeholder-zinc-600"
-          />
-          {error && (
-            <p className="text-xs text-red-600 dark:text-red-400">{error}</p>
-          )}
-          <button
-            type="submit"
-            disabled={loading}
-            className="w-full rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-blue-500 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-blue-500/50 disabled:opacity-40"
-          >
-            {loading ? "..." : view === "login" ? "Sign in" : "Create account"}
-          </button>
-        </form>
-
-        <p className="text-center text-xs text-zinc-500 dark:text-zinc-400">
-          {view === "login" ? (
-            <>
-              No account?{" "}
-              <button onClick={() => { setView("signup"); setError(""); }} className="rounded text-blue-600 hover:underline focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-blue-500/50 dark:text-blue-400">
-                Create one
-              </button>
-            </>
-          ) : (
-            <>
-              Already have an account?{" "}
-              <button onClick={() => { setView("login"); setError(""); }} className="rounded text-blue-600 hover:underline focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-blue-500/50 dark:text-blue-400">
-                Sign in
-              </button>
-            </>
-          )}
-        </p>
-      </div>
+        </CardContent>
+      </Card>
     </div>
   );
 }

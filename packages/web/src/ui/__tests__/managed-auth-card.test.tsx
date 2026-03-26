@@ -35,7 +35,7 @@ describe("ManagedAuthCard", () => {
   test("renders login view by default", () => {
     const { container } = renderCard();
     expect(container.textContent).toContain("Sign in to Atlas");
-    expect(container.textContent).toContain("Enter your credentials");
+    expect(container.textContent).toContain("AI-powered data analyst");
   });
 
   test("has email and password inputs", () => {
@@ -58,7 +58,7 @@ describe("ManagedAuthCard", () => {
     const { container } = renderCard();
     switchToSignup(container);
     expect(container.textContent).toContain("Create an account");
-    expect(container.textContent).toContain("Set up your Atlas account");
+    expect(container.textContent).toContain("Get started with Atlas");
   });
 
   test("shows name field in signup view", () => {

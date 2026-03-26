@@ -9,8 +9,9 @@
  * RBAC (owner/admin/member within an org). This file handles the
  * top-level user role that determines system-wide admin privileges.
  *
- * Exported for use in both the server config (server.ts) and
- * client config (packages/web/src/lib/auth/client.ts — keep in sync).
+ * Exported for use in the server config (server.ts). A client-side
+ * mirror exists at packages/web/src/lib/auth/admin-permissions.ts —
+ * keep both files in sync.
  */
 
 import { createAccessControl } from "better-auth/plugins/access";

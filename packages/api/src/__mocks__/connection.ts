@@ -97,6 +97,7 @@ export function createConnectionMock(overrides?: ConnectionMockOverrides) {
       recordError: () => {},
       ...connectionsOverrides,
     },
+    resolveDatasourceUrl: () => process.env.ATLAS_DATASOURCE_URL || undefined,
     detectDBType: () => "postgres" as const,
     extractTargetHost: () => "localhost",
     ConnectionRegistry: class {},

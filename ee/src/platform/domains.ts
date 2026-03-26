@@ -5,9 +5,9 @@
  * TLS certificate management, and stores domain→workspace mappings in
  * the Atlas internal DB for host-based routing.
  *
- * All public functions call `requireEnterprise("custom-domains")`
- * except `resolveWorkspaceByHost`, which returns null gracefully for
- * non-enterprise deployments (used in request routing).
+ * Access-gated via platformAdminAuth middleware (platform_admin role
+ * required). `resolveWorkspaceByHost` returns null gracefully when not
+ * configured (used in request routing).
  *
  * Required env vars:
  * - RAILWAY_API_TOKEN — workspace-scoped Railway API token
@@ -16,7 +16,6 @@
  * - RAILWAY_WEB_SERVICE_ID — Railway service ID for the web service
  */
 
-import { requireEnterprise } from "../index";
 import {
   hasInternalDB,
   internalQuery,
@@ -298,7 +297,7 @@ export async function registerDomain(
   workspaceId: string,
   domain: string,
 ): Promise<CustomDomain> {
-  requireEnterprise("custom-domains");
+
   requireInternalDB();
 
   const normalized = domain.toLowerCase().trim();
@@ -371,7 +370,7 @@ export async function registerDomain(
  * Invalidates the host resolution cache on successful verification.
  */
 export async function verifyDomain(domainId: string): Promise<CustomDomain> {
-  requireEnterprise("custom-domains");
+
   requireInternalDB();
 
   const rows = await internalQuery<Record<string, unknown>>(
@@ -445,7 +444,7 @@ export async function verifyDomain(domainId: string): Promise<CustomDomain> {
  * List all custom domains for a workspace.
  */
 export async function listDomains(workspaceId: string): Promise<CustomDomain[]> {
-  requireEnterprise("custom-domains");
+
   requireInternalDB();
 
   const rows = await internalQuery<Record<string, unknown>>(
@@ -460,7 +459,7 @@ export async function listDomains(workspaceId: string): Promise<CustomDomain[]> 
  * List all custom domains across all workspaces (platform admin view).
  */
 export async function listAllDomains(): Promise<CustomDomain[]> {
-  requireEnterprise("custom-domains");
+
   requireInternalDB();
 
   const rows = await internalQuery<Record<string, unknown>>(
@@ -475,7 +474,7 @@ export async function listAllDomains(): Promise<CustomDomain[]> {
  * Delete a custom domain from both Railway and Atlas DB.
  */
 export async function deleteDomain(domainId: string): Promise<void> {
-  requireEnterprise("custom-domains");
+
   requireInternalDB();
 
   const rows = await internalQuery<Record<string, unknown>>(
@@ -521,9 +520,7 @@ export async function deleteDomain(domainId: string): Promise<void> {
  * Resolve a hostname to a workspace ID via verified custom domains.
  *
  * Uses a 60-second in-memory cache to avoid DB lookups on every request.
- * Returns null if no verified domain matches. Does NOT call
- * requireEnterprise — returns null gracefully for non-enterprise
- * deployments in the request routing path.
+ * Returns null if no verified domain matches or no internal DB configured.
  */
 export async function resolveWorkspaceByHost(hostname: string): Promise<string | null> {
   if (!hasInternalDB()) return null;

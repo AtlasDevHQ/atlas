@@ -2,17 +2,13 @@
  * Enterprise data residency — region-based tenant routing.
  *
  * Assigns workspaces to geographic regions and resolves region-specific
- * database URLs for connection routing. Most public functions call
- * `requireEnterprise("data-residency")` — exceptions are
- * `resolveRegionDatabaseUrl` (used in connection routing where graceful
- * fallback is needed) and `isConfiguredRegion` (used at workspace creation
- * for validation without requiring a license).
+ * database URLs for connection routing. Access-gated via platformAdminAuth
+ * middleware (platform_admin role required).
  *
  * Region assignment is immutable after creation — changing a workspace's
  * region requires data migration (separate future work).
  */
 
-import { requireEnterprise } from "../index";
 import { getConfig } from "@atlas/api/lib/config";
 import type { ResidencyConfig } from "@atlas/api/lib/config";
 import {
@@ -84,7 +80,7 @@ function rowToWorkspaceRegion(row: Record<string, unknown>): WorkspaceRegion {
  * List all configured regions with workspace counts and health status.
  */
 export async function listRegions(): Promise<RegionStatus[]> {
-  requireEnterprise("data-residency");
+
   const residency = getResidencyConfig();
 
   const workspaceCounts: Record<string, number> = {};
@@ -110,7 +106,7 @@ export async function listRegions(): Promise<RegionStatus[]> {
  * Get the default region for new workspaces.
  */
 export function getDefaultRegion(): string {
-  requireEnterprise("data-residency");
+
   const residency = getResidencyConfig();
   return residency.defaultRegion;
 }
@@ -119,7 +115,7 @@ export function getDefaultRegion(): string {
  * Get the configured regions map (region ID → config).
  */
 export function getConfiguredRegions(): ResidencyConfig["regions"] {
-  requireEnterprise("data-residency");
+
   const residency = getResidencyConfig();
   return residency.regions;
 }
@@ -133,7 +129,7 @@ export async function assignWorkspaceRegion(
   workspaceId: string,
   region: string,
 ): Promise<WorkspaceRegion> {
-  requireEnterprise("data-residency");
+
   const residency = getResidencyConfig();
 
   if (!hasInternalDB()) {
@@ -180,7 +176,7 @@ export async function assignWorkspaceRegion(
 export async function getWorkspaceRegionAssignment(
   workspaceId: string,
 ): Promise<WorkspaceRegion | null> {
-  requireEnterprise("data-residency");
+
 
   if (!hasInternalDB()) {
     throw new ResidencyError(
@@ -210,8 +206,7 @@ export async function getWorkspaceRegionAssignment(
  * for region-assigned workspaces. The returned `databaseUrl` is available
  * for future internal DB routing.
  *
- * Does NOT call requireEnterprise — returns null gracefully for
- * non-enterprise deployments in the connection routing path.
+ * Returns null when no region config exists or workspace has no assignment.
  */
 export async function resolveRegionDatabaseUrl(
   workspaceId: string,
@@ -242,7 +237,7 @@ export async function resolveRegionDatabaseUrl(
  * List all workspace region assignments (for admin views).
  */
 export async function listWorkspaceRegions(): Promise<WorkspaceRegion[]> {
-  requireEnterprise("data-residency");
+
 
   if (!hasInternalDB()) {
     throw new ResidencyError(

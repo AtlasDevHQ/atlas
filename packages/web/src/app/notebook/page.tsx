@@ -22,8 +22,6 @@ const GuidedTour = dynamic(
   { ssr: false },
 );
 
-const ADMIN_ROLES = new Set(["admin", "owner", "platform_admin"]);
-
 export default function NotebookPage() {
   return (
     <Suspense
@@ -50,12 +48,10 @@ function NotebookContent() {
 
   // Auth for tour
   const session = authClient.useSession();
-  const activeMember = authClient.organization.activeMember();
   const user = session.data?.user as
     | { email?: string; role?: string }
     | undefined;
-  const orgRole = (activeMember.data as Record<string, unknown> | undefined)?.role;
-  const isAdmin = ADMIN_ROLES.has(user?.role ?? "") || ADMIN_ROLES.has(String(orgRole ?? ""));
+  const isAdmin = user?.role === "admin" || user?.role === "owner" || user?.role === "platform_admin";
   const isSignedIn = !!user;
 
   // Server-side notebook state

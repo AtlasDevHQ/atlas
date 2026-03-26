@@ -52,14 +52,25 @@ function renderLayout(authClient?: AtlasAuthClient) {
 
 const originalFetch = globalThis.fetch;
 
+/** Mock fetch that returns 200 with password-status (admin allowed). */
+function mockAdminFetch() {
+  globalThis.fetch = mock(() =>
+    Promise.resolve(new Response(JSON.stringify({ passwordChangeRequired: false }), { status: 200 })),
+  ) as unknown as typeof fetch;
+}
+
+/** Mock fetch that returns 403 (admin denied). */
+function mockDeniedFetch() {
+  globalThis.fetch = mock(() =>
+    Promise.resolve(new Response(JSON.stringify({ error: "forbidden_role" }), { status: 403 })),
+  ) as unknown as typeof fetch;
+}
+
 describe("AdminLayout", () => {
   beforeEach(() => {
     mockSession = { data: null };
     mockSignOut.mockClear();
-    // Mock fetch for password-status check
-    globalThis.fetch = mock(() =>
-      Promise.resolve(new Response(JSON.stringify({ passwordChangeRequired: false }), { status: 200 })),
-    ) as unknown as typeof fetch;
+    mockAdminFetch();
   });
 
   afterEach(() => {
@@ -80,25 +91,35 @@ describe("AdminLayout", () => {
     expect(container.textContent).toContain("Sign in to Atlas");
   });
 
-  test("shows access denied for non-admin users", () => {
+  test("shows access denied for non-admin users", async () => {
+    mockDeniedFetch();
     mockSession = { data: { user: { email: "user@test.com", role: "member" } } };
     const { container } = renderLayout();
-    expect(container.textContent).toContain("Access Denied");
+    await waitFor(() => {
+      expect(container.textContent).toContain("Access Denied");
+    });
     expect(container.textContent).toContain("user@test.com");
     expect(container.textContent).toContain("member");
   });
 
-  test("shows sign out button for non-admin users", () => {
+  test("shows sign out button for non-admin users", async () => {
+    mockDeniedFetch();
     mockSession = { data: { user: { email: "user@test.com", role: "member" } } };
     const { container } = renderLayout();
-    const button = container.querySelector("button");
-    expect(button).not.toBeNull();
-    expect(button!.textContent).toContain("Sign out");
+    await waitFor(() => {
+      const button = container.querySelector("button");
+      expect(button).not.toBeNull();
+      expect(button!.textContent).toContain("Sign out");
+    });
   });
 
-  test("calls signOut when sign out button is clicked", () => {
+  test("calls signOut when sign out button is clicked", async () => {
+    mockDeniedFetch();
     mockSession = { data: { user: { email: "user@test.com", role: "member" } } };
     const { container } = renderLayout();
+    await waitFor(() => {
+      expect(container.querySelector("button")).not.toBeNull();
+    });
     const button = container.querySelector("button")!;
     fireEvent.click(button);
     expect(mockSignOut).toHaveBeenCalledTimes(1);

@@ -10,36 +10,43 @@ import { ManagedAuthCard } from "@/ui/components/chat/managed-auth-card";
 import { LoadingState } from "./loading-state";
 import { ChangePasswordDialog } from "./change-password-dialog";
 
-/** Admin-eligible roles at user level or org level. */
-const ADMIN_ROLES = new Set(["admin", "owner", "platform_admin"]);
-
 export function AdminLayout({ children }: { children: ReactNode }) {
   const { authClient, apiUrl, isCrossOrigin } = useAtlasConfig();
   const session = authClient.useSession();
-  const activeMember = authClient.organization.activeMember();
+  const [adminCheck, setAdminCheck] = useState<"pending" | "allowed" | "denied">("pending");
   const [passwordChangeRequired, setPasswordChangeRequired] = useState(false);
 
   const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
 
-  // Check if password change is required after session loads
+  // Verify admin access by calling the backend, which resolves the effective
+  // role (user-level + org member role). This is the source of truth — the
+  // Better Auth session only carries the user-level role ("member"), not the
+  // org-level role ("owner"), so client-side checks are unreliable.
   useEffect(() => {
     if (!session.data?.user) return;
 
-    async function checkPasswordStatus() {
+    async function checkAdminAccess() {
       try {
         const res = await fetch(`${apiUrl}/api/v1/admin/me/password-status`, { credentials });
-        if (!res.ok) return;
-        const data = await res.json();
-        if (data.passwordChangeRequired) setPasswordChangeRequired(true);
+        if (res.ok) {
+          setAdminCheck("allowed");
+          const data = await res.json();
+          if (data.passwordChangeRequired) setPasswordChangeRequired(true);
+        } else if (res.status === 403) {
+          setAdminCheck("denied");
+        } else {
+          // Other errors (401 session expired, 500, etc.) — treat as denied
+          setAdminCheck("denied");
+        }
       } catch {
-        // Non-critical — skip silently
+        setAdminCheck("denied");
       }
     }
-    checkPasswordStatus();
+    checkAdminAccess();
   }, [session.data?.user, apiUrl, credentials]);
 
-  // Loading session or org membership
-  if (session.isPending || activeMember.isPending) {
+  // Loading session
+  if (session.isPending) {
     return (
       <main id="main" tabIndex={-1} className="flex h-dvh items-center justify-center">
         <LoadingState message="Checking authentication..." />
@@ -56,13 +63,18 @@ export function AdminLayout({ children }: { children: ReactNode }) {
     );
   }
 
-  // Check both user-level role (admin plugin) and org-level role (org plugin).
-  // Org creators get "owner" in the member table but "member" at user level.
-  const userRole = (session.data.user as Record<string, unknown>).role;
-  const orgRole = (activeMember.data as Record<string, unknown> | undefined)?.role;
-  const isAdmin = ADMIN_ROLES.has(String(userRole ?? "")) || ADMIN_ROLES.has(String(orgRole ?? ""));
+  // Waiting for admin access check
+  if (adminCheck === "pending") {
+    return (
+      <main id="main" tabIndex={-1} className="flex h-dvh items-center justify-center">
+        <LoadingState message="Checking admin access..." />
+      </main>
+    );
+  }
 
-  if (!isAdmin) {
+  // Signed in but not admin
+  if (adminCheck === "denied") {
+    const userRole = (session.data.user as Record<string, unknown>).role;
     return (
       <main id="main" tabIndex={-1} className="flex h-dvh items-center justify-center">
         <div className="w-full max-w-sm space-y-3 rounded-lg border border-zinc-200 bg-zinc-50 p-6 text-center dark:border-zinc-700 dark:bg-zinc-900">
@@ -71,7 +83,7 @@ export function AdminLayout({ children }: { children: ReactNode }) {
           </h2>
           <p className="text-sm text-zinc-500 dark:text-zinc-400">
             The admin console requires the <strong>admin</strong> role. You are signed in
-            as <strong>{session.data.user.email}</strong> with role <strong>{String(orgRole ?? userRole ?? "member")}</strong>.
+            as <strong>{session.data.user.email}</strong> with role <strong>{String(userRole ?? "member")}</strong>.
           </p>
           <button
             onClick={() => authClient.signOut()}

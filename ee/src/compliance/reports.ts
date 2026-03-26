@@ -148,7 +148,7 @@ export async function generateDataAccessReport(
       // Role enrichment from member table
       userIds.length > 0
         ? internalQuery<{ user_id: string; role: string }>(
-            `SELECT user_id, role FROM member WHERE organization_id = $1 AND user_id IN (${userIds.map((_, i) => `$${i + 2}`).join(", ")})`,
+            `SELECT "userId" AS user_id, role FROM member WHERE "organizationId" = $1 AND "userId" IN (${userIds.map((_, i) => `$${i + 2}`).join(", ")})`,
             [orgId, ...userIds],
           )
         : Promise.resolve([]),
@@ -282,7 +282,7 @@ export async function generateUserActivityReport(
         userIds,
       ),
       internalQuery<{ user_id: string; role: string }>(
-        `SELECT user_id, role FROM member WHERE organization_id = $1 AND user_id IN (${userIds.map((_, i) => `$${i + 2}`).join(", ")})`,
+        `SELECT "userId" AS user_id, role FROM member WHERE "organizationId" = $1 AND "userId" IN (${userIds.map((_, i) => `$${i + 2}`).join(", ")})`,
         [orgId, ...userIds],
       ),
     ]);

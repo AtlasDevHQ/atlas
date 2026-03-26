@@ -4,7 +4,9 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useAtlasConfig } from "@/ui/context";
 import { useBranding } from "@/ui/hooks/use-branding";
+import type { LucideIcon } from "lucide-react";
 import {
+  ChevronRight,
   Activity,
   Ban,
   LayoutDashboard,
@@ -25,7 +27,6 @@ import {
   BookOpen,
   ShieldCheck,
   ShieldAlert,
-  RefreshCw,
   Settings,
   Shield,
   KeyRound,
@@ -34,6 +35,7 @@ import {
   Fingerprint,
   Paintbrush,
   ArrowLeft,
+  RefreshCw,
 } from "lucide-react";
 import {
   Sidebar,
@@ -45,43 +47,113 @@ import {
   SidebarMenu,
   SidebarMenuItem,
   SidebarMenuButton,
+  SidebarMenuSub,
+  SidebarMenuSubItem,
+  SidebarMenuSubButton,
   SidebarFooter,
   SidebarRail,
 } from "@/components/ui/sidebar";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@/components/ui/collapsible";
 
-const navItems = [
-  { href: "/admin", label: "Overview", icon: LayoutDashboard, exact: true },
-  { href: "/admin/semantic", label: "Semantic Layer", icon: Database },
-  { href: "/admin/schema-diff", label: "Schema Diff", icon: GitCompareArrows },
-  { href: "/admin/connections", label: "Connections", icon: Cable },
-  { href: "/admin/audit", label: "Audit", icon: ScrollText },
-  { href: "/admin/organizations", label: "Organizations", icon: Building2 },
-  { href: "/admin/users", label: "Users", icon: Users },
-  { href: "/admin/sessions", label: "Sessions", icon: Monitor },
-  { href: "/admin/plugins", label: "Plugins", icon: Puzzle },
-  { href: "/admin/scheduled-tasks", label: "Scheduled Tasks", icon: CalendarClock },
-  { href: "/admin/token-usage", label: "Token Usage", icon: Coins },
-  { href: "/admin/usage", label: "Usage", icon: BarChart3 },
-  { href: "/admin/cache", label: "Cache", icon: HardDrive },
-  { href: "/admin/learned-patterns", label: "Learned Patterns", icon: Brain },
-  { href: "/admin/prompts", label: "Prompt Library", icon: BookOpen },
-  { href: "/admin/roles", label: "Roles", icon: KeyRound },
-  { href: "/admin/ip-allowlist", label: "IP Allowlist", icon: Shield },
-  { href: "/admin/abuse", label: "Abuse Prevention", icon: Ban },
-  { href: "/admin/actions", label: "Actions", icon: Zap },
-  { href: "/admin/approval", label: "Approval Workflows", icon: ShieldAlert },
-  { href: "/admin/compliance", label: "PII Compliance", icon: Fingerprint },
-  { href: "/admin/model-config", label: "AI Provider", icon: Cpu },
-  { href: "/admin/sso", label: "SSO", icon: ShieldCheck },
-  { href: "/admin/scim", label: "SCIM", icon: RefreshCw },
-  { href: "/admin/branding", label: "Branding", icon: Paintbrush },
-  { href: "/admin/settings", label: "Settings", icon: Settings },
-  { href: "/admin/platform", label: "Platform Admin", icon: Globe, requiredRole: "platform_admin" as const },
-  { href: "/admin/platform/sla", label: "SLA Monitoring", icon: Activity, requiredRole: "platform_admin" as const },
-  { href: "/admin/platform/backups", label: "Backups", icon: HardDrive, requiredRole: "platform_admin" as const },
-  { href: "/admin/platform/residency", label: "Data Residency", icon: Globe, requiredRole: "platform_admin" as const },
-  { href: "/admin/platform/domains", label: "Custom Domains", icon: Globe, requiredRole: "platform_admin" as const },
+// ---------------------------------------------------------------------------
+// Nav data
+// ---------------------------------------------------------------------------
+
+interface NavSubItem {
+  href: string;
+  label: string;
+}
+
+interface NavGroup {
+  title: string;
+  icon: LucideIcon;
+  items: NavSubItem[];
+  requiredRole?: "platform_admin";
+}
+
+const navGroups: NavGroup[] = [
+  {
+    title: "Data",
+    icon: Database,
+    items: [
+      { href: "/admin/semantic", label: "Semantic Layer" },
+      { href: "/admin/schema-diff", label: "Schema Diff" },
+      { href: "/admin/connections", label: "Connections" },
+      { href: "/admin/cache", label: "Cache" },
+    ],
+  },
+  {
+    title: "Intelligence",
+    icon: Brain,
+    items: [
+      { href: "/admin/model-config", label: "AI Provider" },
+      { href: "/admin/learned-patterns", label: "Learned Patterns" },
+      { href: "/admin/prompts", label: "Prompt Library" },
+      { href: "/admin/actions", label: "Actions" },
+    ],
+  },
+  {
+    title: "Users & Access",
+    icon: Users,
+    items: [
+      { href: "/admin/users", label: "Users" },
+      { href: "/admin/organizations", label: "Organizations" },
+      { href: "/admin/roles", label: "Roles" },
+      { href: "/admin/sessions", label: "Sessions" },
+    ],
+  },
+  {
+    title: "Security",
+    icon: Shield,
+    items: [
+      { href: "/admin/sso", label: "SSO" },
+      { href: "/admin/scim", label: "SCIM" },
+      { href: "/admin/ip-allowlist", label: "IP Allowlist" },
+      { href: "/admin/abuse", label: "Abuse Prevention" },
+      { href: "/admin/approval", label: "Approval Workflows" },
+      { href: "/admin/compliance", label: "PII Compliance" },
+    ],
+  },
+  {
+    title: "Monitoring",
+    icon: BarChart3,
+    items: [
+      { href: "/admin/audit", label: "Audit Log" },
+      { href: "/admin/token-usage", label: "Token Usage" },
+      { href: "/admin/usage", label: "Usage" },
+      { href: "/admin/scheduled-tasks", label: "Scheduled Tasks" },
+    ],
+  },
+  {
+    title: "Configuration",
+    icon: Settings,
+    items: [
+      { href: "/admin/plugins", label: "Plugins" },
+      { href: "/admin/branding", label: "Branding" },
+      { href: "/admin/settings", label: "Settings" },
+    ],
+  },
+  {
+    title: "Platform",
+    icon: Globe,
+    requiredRole: "platform_admin",
+    items: [
+      { href: "/admin/platform", label: "Overview" },
+      { href: "/admin/platform/sla", label: "SLA Monitoring" },
+      { href: "/admin/platform/backups", label: "Backups" },
+      { href: "/admin/platform/residency", label: "Data Residency" },
+      { href: "/admin/platform/domains", label: "Custom Domains" },
+    ],
+  },
 ];
+
+// ---------------------------------------------------------------------------
+// Component
+// ---------------------------------------------------------------------------
 
 export function AdminSidebar() {
   const pathname = usePathname();
@@ -90,13 +162,16 @@ export function AdminSidebar() {
   const userRole = (session.data?.user as Record<string, unknown> | undefined)?.role as string | undefined;
   const { branding } = useBranding();
 
-  function isActive(item: (typeof navItems)[number]) {
-    if (item.exact) return pathname === item.href;
-    return pathname.startsWith(item.href);
+  function isSubItemActive(href: string) {
+    return pathname === href || pathname.startsWith(href + "/");
   }
 
-  const visibleItems = navItems.filter((item) =>
-    !item.requiredRole || item.requiredRole === userRole,
+  function isGroupActive(group: NavGroup) {
+    return group.items.some((item) => isSubItemActive(item.href));
+  }
+
+  const visibleGroups = navGroups.filter(
+    (group) => !group.requiredRole || group.requiredRole === userRole,
   );
 
   const showCustomLogo = branding?.logoUrl;
@@ -137,25 +212,63 @@ export function AdminSidebar() {
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarHeader>
+
       <SidebarContent>
+        {/* Overview — always visible, no group wrapper */}
         <SidebarGroup>
-          <SidebarGroupLabel>Navigation</SidebarGroupLabel>
           <SidebarGroupContent>
             <SidebarMenu>
-              {visibleItems.map((item) => (
-                <SidebarMenuItem key={item.href}>
-                  <SidebarMenuButton asChild isActive={isActive(item)} tooltip={item.label}>
-                    <Link href={item.href}>
-                      <item.icon />
-                      <span>{item.label}</span>
-                    </Link>
-                  </SidebarMenuButton>
-                </SidebarMenuItem>
-              ))}
+              <SidebarMenuItem>
+                <SidebarMenuButton asChild isActive={pathname === "/admin"} tooltip="Overview">
+                  <Link href="/admin">
+                    <LayoutDashboard />
+                    <span>Overview</span>
+                  </Link>
+                </SidebarMenuButton>
+              </SidebarMenuItem>
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
+
+        {/* Collapsible nav groups */}
+        <SidebarGroup>
+          <SidebarGroupLabel>Manage</SidebarGroupLabel>
+          <SidebarMenu>
+            {visibleGroups.map((group) => (
+              <Collapsible
+                key={group.title}
+                asChild
+                defaultOpen={isGroupActive(group)}
+                className="group/collapsible"
+              >
+                <SidebarMenuItem>
+                  <CollapsibleTrigger asChild>
+                    <SidebarMenuButton tooltip={group.title}>
+                      <group.icon />
+                      <span>{group.title}</span>
+                      <ChevronRight className="ml-auto transition-transform duration-200 group-data-[state=open]/collapsible:rotate-90" />
+                    </SidebarMenuButton>
+                  </CollapsibleTrigger>
+                  <CollapsibleContent>
+                    <SidebarMenuSub>
+                      {group.items.map((item) => (
+                        <SidebarMenuSubItem key={item.href}>
+                          <SidebarMenuSubButton asChild isActive={isSubItemActive(item.href)}>
+                            <Link href={item.href}>
+                              <span>{item.label}</span>
+                            </Link>
+                          </SidebarMenuSubButton>
+                        </SidebarMenuSubItem>
+                      ))}
+                    </SidebarMenuSub>
+                  </CollapsibleContent>
+                </SidebarMenuItem>
+              </Collapsible>
+            ))}
+          </SidebarMenu>
+        </SidebarGroup>
       </SidebarContent>
+
       <SidebarFooter>
         <SidebarMenu>
           <SidebarMenuItem>

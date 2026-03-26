@@ -81,7 +81,7 @@ describe("AdminLayout", () => {
   test("shows loading state when session is pending", () => {
     mockSession = { isPending: true };
     const { container } = renderLayout();
-    expect(container.textContent).toContain("Checking authentication");
+    expect(container.textContent).toContain("Checking access");
   });
 
   test("shows loading when not signed in (proxy handles redirect)", () => {
@@ -95,24 +95,23 @@ describe("AdminLayout", () => {
     mockSession = { data: { user: { email: "user@test.com", role: "member" } } };
     const { container } = renderLayout();
     await waitFor(() => {
-      expect(container.textContent).toContain("Access Denied");
+      expect(container.textContent).toContain("Access denied");
     });
-    expect(container.textContent).toContain("user@test.com");
-    expect(container.textContent).toContain("member");
+    expect(container.textContent).toContain("admin console requires the admin role");
   });
 
-  test("shows sign out button for non-admin users", async () => {
+  test("shows sign-in-as-different-user button for non-admin users", async () => {
     mockDeniedFetch();
     mockSession = { data: { user: { email: "user@test.com", role: "member" } } };
     const { container } = renderLayout();
     await waitFor(() => {
       const button = container.querySelector("button");
       expect(button).not.toBeNull();
-      expect(button!.textContent).toContain("Sign out");
+      expect(button!.textContent).toContain("Sign in as a different user");
     });
   });
 
-  test("calls signOut when sign out button is clicked", async () => {
+  test("calls signOut when sign-in-as-different-user button is clicked", async () => {
     mockDeniedFetch();
     mockSession = { data: { user: { email: "user@test.com", role: "member" } } };
     const { container } = renderLayout();

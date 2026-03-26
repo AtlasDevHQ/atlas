@@ -45,13 +45,11 @@ function Wrapper({ children }: { children: ReactNode }) {
 }
 
 describe("AdminSidebar", () => {
-  test("renders all navigation items", () => {
+  test("renders group titles and overview", () => {
     const { container } = render(<AdminSidebar />, { wrapper: Wrapper });
-    const labels = [
-      "Overview", "Semantic Layer", "Connections", "Audit",
-      "Users", "Sessions", "Plugins", "Scheduled Tasks", "Actions",
-    ];
-    for (const label of labels) {
+    // Group titles are always visible in collapsed sidebar
+    const groups = ["Overview", "Data", "Intelligence", "Users & Access", "Security", "Monitoring", "Configuration"];
+    for (const label of groups) {
       expect(container.textContent).toContain(label);
     }
   });
@@ -67,19 +65,12 @@ describe("AdminSidebar", () => {
     expect(container.textContent).toContain("Admin Console");
   });
 
-  test("renders correct navigation hrefs", () => {
+  test("renders overview and back-to-chat hrefs", () => {
     const { container } = render(<AdminSidebar />, { wrapper: Wrapper });
     const links = container.querySelectorAll("a");
     const hrefs = Array.from(links).map((a) => a.getAttribute("href"));
+    // Overview link and back-to-chat are always rendered
     expect(hrefs).toContain("/admin");
-    expect(hrefs).toContain("/admin/semantic");
-    expect(hrefs).toContain("/admin/connections");
-    expect(hrefs).toContain("/admin/audit");
-    expect(hrefs).toContain("/admin/users");
-    expect(hrefs).toContain("/admin/sessions");
-    expect(hrefs).toContain("/admin/plugins");
-    expect(hrefs).toContain("/admin/scheduled-tasks");
-    expect(hrefs).toContain("/admin/actions");
     expect(hrefs).toContain("/");
   });
 });

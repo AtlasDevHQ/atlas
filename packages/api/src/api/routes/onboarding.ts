@@ -215,6 +215,10 @@ const useDemoRoute = createRoute({
       description: "Onboarding requires managed auth mode and DATABASE_URL",
       content: { "application/json": { schema: ErrorSchema } },
     },
+    409: {
+      description: "Connection ID already in use by another organization",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
     500: {
       description: "Failed to set up demo connection",
       content: { "application/json": { schema: ErrorSchema } },

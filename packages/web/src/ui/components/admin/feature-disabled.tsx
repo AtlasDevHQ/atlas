@@ -14,9 +14,12 @@ import { Ban, DatabaseZap, ShieldX } from "lucide-react";
 export function FeatureGate({
   status,
   feature,
+  message,
 }: {
   status: 401 | 403 | 404 | 503;
   feature: string;
+  /** Optional override for the description text. */
+  message?: string;
 }) {
   if (status === 503) {
     return (
@@ -38,8 +41,8 @@ export function FeatureGate({
         <div className="text-center">
           <Ban className="mx-auto size-10 text-muted-foreground/50" />
           <p className="mt-3 text-sm font-medium">{feature} not enabled</p>
-          <p className="mt-1 text-xs text-muted-foreground">
-            Enable this feature in your server configuration to use this page.
+          <p className="mt-1 max-w-sm text-xs text-muted-foreground">
+            {message ?? "Enable this feature in your server configuration to use this page."}
           </p>
         </div>
       </div>

@@ -41,7 +41,13 @@ export function AdminContentWrapper({
   children,
 }: AdminContentWrapperProps) {
   if (feature && !loading && error?.status && [401, 403, 404, 503].includes(error.status)) {
-    return <FeatureGate status={error.status as 401 | 403 | 404 | 503} feature={feature} />;
+    // Enterprise-required errors come back as 403 but are config issues, not
+    // role issues. Show them as feature-not-enabled (404 style) so the admin
+    // sees "not enabled" + the actual message instead of "Access denied".
+    const isEnterpriseRequired = error.status === 403 && error.message.includes("Enterprise features");
+    const gateStatus = isEnterpriseRequired ? 404 : error.status;
+    const gateMessage = isEnterpriseRequired ? error.message : undefined;
+    return <FeatureGate status={gateStatus as 401 | 403 | 404 | 503} feature={feature} message={gateMessage} />;
   }
 
   if (error) {

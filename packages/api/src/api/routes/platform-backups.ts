@@ -14,8 +14,12 @@
  */
 
 import { createRoute, z } from "@hono/zod-openapi";
+import { Effect } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
-import { runHandler } from "@atlas/api/lib/effect/hono";
+import { runEffect } from "@atlas/api/lib/effect/hono";
+import {
+  RequestContext,
+} from "@atlas/api/lib/effect/services";
 import { BACKUP_STATUSES } from "@useatlas/types";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createPlatformRouter } from "./admin-router";
@@ -247,165 +251,186 @@ const platformBackups = createPlatformRouter();
 
 // ── List backups ─────────────────────────────────────────────────────
 
-platformBackups.openapi(listBackupsRoute, async (c) => runHandler(c, "list backups", async () => {
-  const requestId = c.get("requestId");
+platformBackups.openapi(listBackupsRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
 
-  const backups = await loadBackups();
-  if (!backups) {
-    return c.json({ error: "not_available", message: "Backups require enterprise features to be enabled.", requestId }, 404);
-  }
+    const backups = yield* Effect.promise(() => loadBackups());
+    if (!backups) {
+      return c.json({ error: "not_available", message: "Backups require enterprise features to be enabled.", requestId }, 404);
+    }
 
-  const rows = await backups.listBackups(100);
-  return c.json({ backups: rows.map(toBackupEntry) }, 200);
-}));
+    const rows = yield* Effect.promise(() => backups.listBackups(100));
+    return c.json({ backups: rows.map(toBackupEntry) }, 200);
+  }), { label: "list backups" });
+});
 
 // ── Create backup ────────────────────────────────────────────────────
 
-platformBackups.openapi(createBackupRoute, async (c) => runHandler(c, "create backup", async () => {
-  const requestId = c.get("requestId");
+platformBackups.openapi(createBackupRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
 
-  const backupsMod = await loadBackups();
-  if (!backupsMod) {
-    return c.json({ error: "not_available", message: "Backups require enterprise features to be enabled.", requestId }, 404);
-  }
+    const backupsMod = yield* Effect.promise(() => loadBackups());
+    if (!backupsMod) {
+      return c.json({ error: "not_available", message: "Backups require enterprise features to be enabled.", requestId }, 404);
+    }
 
-  const result = await backupsMod.createBackup();
-  log.info({ backupId: result.id, requestId }, "Manual backup created by platform admin");
-  const row = await backupsMod.getBackupById(result.id);
-  const backup = row ? toBackupEntry(row) : {
-    id: result.id,
-    createdAt: new Date().toISOString(),
-    sizeBytes: result.sizeBytes,
-    status: result.status,
-    storagePath: result.storagePath,
-    retentionExpiresAt: new Date().toISOString(),
-    errorMessage: null,
-  };
-  return c.json({ message: "Backup created successfully.", backup }, 200);
-}));
+    const result = yield* Effect.promise(() => backupsMod.createBackup());
+    log.info({ backupId: result.id, requestId }, "Manual backup created by platform admin");
+    const row = yield* Effect.promise(() => backupsMod.getBackupById(result.id));
+    const backup = row ? toBackupEntry(row) : {
+      id: result.id,
+      createdAt: new Date().toISOString(),
+      sizeBytes: result.sizeBytes,
+      status: result.status,
+      storagePath: result.storagePath,
+      retentionExpiresAt: new Date().toISOString(),
+      errorMessage: null,
+    };
+    return c.json({ message: "Backup created successfully.", backup }, 200);
+  }), { label: "create backup" });
+});
 
 // ── Verify backup ────────────────────────────────────────────────────
 
-platformBackups.openapi(verifyBackupRoute, async (c) => runHandler(c, "verify backup", async () => {
-  const requestId = c.get("requestId");
+platformBackups.openapi(verifyBackupRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
 
-  const backupsMod = await loadBackups();
-  if (!backupsMod) {
-    return c.json({ error: "not_available", message: "Backups require enterprise features to be enabled.", requestId }, 404);
-  }
-
-  const backupId = c.req.param("id");
-
-  try {
-    const result = await backupsMod.verifyBackup(backupId);
-    log.info({ backupId, verified: result.verified, requestId }, "Backup verification completed");
-    return c.json(result, 200);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    if (message.includes("not found")) {
-      return c.json({ error: "not_found", message: "Backup not found.", requestId }, 404);
+    const backupsMod = yield* Effect.promise(() => loadBackups());
+    if (!backupsMod) {
+      return c.json({ error: "not_available", message: "Backups require enterprise features to be enabled.", requestId }, 404);
     }
-    if (message.includes("Cannot verify")) {
-      return c.json({ error: "invalid_state", message, requestId }, 400);
+
+    const backupId = c.req.param("id");
+
+    const verifyResult = yield* Effect.tryPromise({
+      try: () => backupsMod.verifyBackup(backupId),
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    }).pipe(Effect.either);
+    if (verifyResult._tag === "Left") {
+      const message = verifyResult.left.message;
+      if (message.includes("not found")) {
+        return c.json({ error: "not_found", message: "Backup not found.", requestId }, 404);
+      }
+      if (message.includes("Cannot verify")) {
+        return c.json({ error: "invalid_state", message, requestId }, 400);
+      }
+      throw verifyResult.left;
     }
-    throw err;
-  }
-}));
+    log.info({ backupId, verified: verifyResult.right.verified, requestId }, "Backup verification completed");
+    return c.json(verifyResult.right, 200);
+  }), { label: "verify backup" });
+});
 
 // ── Request restore ──────────────────────────────────────────────────
 
-platformBackups.openapi(requestRestoreRoute, async (c) => runHandler(c, "request restore", async () => {
-  const requestId = c.get("requestId");
+platformBackups.openapi(requestRestoreRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
 
-  const backupsMod = await loadBackups();
-  if (!backupsMod) {
-    return c.json({ error: "not_available", message: "Backups require enterprise features to be enabled.", requestId }, 404);
-  }
+    const backupsMod = yield* Effect.promise(() => loadBackups());
+    if (!backupsMod) {
+      return c.json({ error: "not_available", message: "Backups require enterprise features to be enabled.", requestId }, 404);
+    }
 
-  const backupId = c.req.param("id");
+    const backupId = c.req.param("id");
 
-  try {
-    const result = await backupsMod.requestRestore(backupId);
+    const restoreResult = yield* Effect.tryPromise({
+      try: () => backupsMod.requestRestore(backupId),
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    }).pipe(Effect.either);
+    if (restoreResult._tag === "Left") {
+      const message = restoreResult.left.message;
+      if (message.includes("not found")) {
+        return c.json({ error: "not_found", message: "Backup not found.", requestId }, 404);
+      }
+      if (message.includes("Cannot restore")) {
+        return c.json({ error: "invalid_state", message, requestId }, 400);
+      }
+      throw restoreResult.left;
+    }
     log.warn({ backupId, requestId }, "Restore requested by platform admin");
-    return c.json(result, 200);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    if (message.includes("not found")) {
-      return c.json({ error: "not_found", message: "Backup not found.", requestId }, 404);
-    }
-    if (message.includes("Cannot restore")) {
-      return c.json({ error: "invalid_state", message, requestId }, 400);
-    }
-    throw err;
-  }
-}));
+    return c.json(restoreResult.right, 200);
+  }), { label: "request restore" });
+});
 
 // ── Confirm restore ──────────────────────────────────────────────────
 
-platformBackups.openapi(confirmRestoreRoute, async (c) => runHandler(c, "execute restore", async () => {
-  const requestId = c.get("requestId");
+platformBackups.openapi(confirmRestoreRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
 
-  const backupsMod = await loadBackups();
-  if (!backupsMod) {
-    return c.json({ error: "not_available", message: "Backups require enterprise features to be enabled.", requestId }, 404);
-  }
-
-  const body = c.req.valid("json");
-
-  try {
-    const result = await backupsMod.executeRestore(body.confirmationToken);
-    log.warn({ backupId: c.req.param("id"), preRestoreBackupId: result.preRestoreBackupId, requestId }, "Database restore executed by platform admin");
-    return c.json(result, 200);
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    if (message.includes("Invalid or expired") || message.includes("expired")) {
-      return c.json({ error: "invalid_token", message, requestId }, 400);
+    const backupsMod = yield* Effect.promise(() => loadBackups());
+    if (!backupsMod) {
+      return c.json({ error: "not_available", message: "Backups require enterprise features to be enabled.", requestId }, 404);
     }
-    throw err;
-  }
-}));
+
+    const body = c.req.valid("json");
+
+    return yield* Effect.tryPromise({
+      try: async () => {
+        const result = await backupsMod.executeRestore(body.confirmationToken);
+        log.warn({ backupId: c.req.param("id"), preRestoreBackupId: result.preRestoreBackupId, requestId }, "Database restore executed by platform admin");
+        return c.json(result, 200);
+      },
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    }).pipe(Effect.catchAll((err) => {
+      const message = err.message;
+      if (message.includes("Invalid or expired") || message.includes("expired")) {
+        return Effect.succeed(c.json({ error: "invalid_token", message, requestId }, 400));
+      }
+      return Effect.die(err);
+    }));
+  }), { label: "execute restore" });
+});
 
 // ── Get config ───────────────────────────────────────────────────────
 
-platformBackups.openapi(getConfigRoute, async (c) => runHandler(c, "read backup config", async () => {
-  const requestId = c.get("requestId");
+platformBackups.openapi(getConfigRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
 
-  const backupsMod = await loadBackups();
-  if (!backupsMod) {
-    return c.json({ error: "not_available", message: "Backups require enterprise features to be enabled.", requestId }, 404);
-  }
+    const backupsMod = yield* Effect.promise(() => loadBackups());
+    if (!backupsMod) {
+      return c.json({ error: "not_available", message: "Backups require enterprise features to be enabled.", requestId }, 404);
+    }
 
-  const config = await backupsMod.getBackupConfig();
-  return c.json({
-    schedule: config.schedule,
-    retentionDays: config.retention_days,
-    storagePath: config.storage_path,
-  }, 200);
-}));
-
-// ── Update config ────────────────────────────────────────────────────
-
-platformBackups.openapi(updateConfigRoute, async (c) => runHandler(c, "update backup config", async () => {
-  const requestId = c.get("requestId");
-
-  const backupsMod = await loadBackups();
-  if (!backupsMod) {
-    return c.json({ error: "not_available", message: "Backups require enterprise features to be enabled.", requestId }, 404);
-  }
-
-  const body = c.req.valid("json");
-
-  await backupsMod.updateBackupConfig(body);
-  const config = await backupsMod.getBackupConfig();
-  log.info({ config, requestId }, "Backup config updated by platform admin");
-  return c.json({
-    message: "Configuration updated.",
-    config: {
+    const config = yield* Effect.promise(() => backupsMod.getBackupConfig());
+    return c.json({
       schedule: config.schedule,
       retentionDays: config.retention_days,
       storagePath: config.storage_path,
-    },
-  }, 200);
-}));
+    }, 200);
+  }), { label: "read backup config" });
+});
+
+// ── Update config ────────────────────────────────────────────────────
+
+platformBackups.openapi(updateConfigRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+
+    const backupsMod = yield* Effect.promise(() => loadBackups());
+    if (!backupsMod) {
+      return c.json({ error: "not_available", message: "Backups require enterprise features to be enabled.", requestId }, 404);
+    }
+
+    const body = c.req.valid("json");
+
+    yield* Effect.promise(() => backupsMod.updateBackupConfig(body));
+    const config = yield* Effect.promise(() => backupsMod.getBackupConfig());
+    log.info({ config, requestId }, "Backup config updated by platform admin");
+    return c.json({
+      message: "Configuration updated.",
+      config: {
+        schedule: config.schedule,
+        retentionDays: config.retention_days,
+        storagePath: config.storage_path,
+      },
+    }, 200);
+  }), { label: "update backup config" });
+});
 
 export { platformBackups };

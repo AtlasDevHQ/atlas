@@ -8,7 +8,9 @@
  */
 
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
-import { runHandler } from "@atlas/api/lib/effect/hono";
+import { Effect } from "effect";
+import { runEffect } from "@atlas/api/lib/effect/hono";
+import { AuthContext } from "@atlas/api/lib/effect/services";
 import { validationHook } from "./validation-hook";
 import { z } from "zod";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
@@ -151,68 +153,69 @@ prompts.use(requestContext);
 // GET / — list collections (built-in + user's org)
 // ---------------------------------------------------------------------------
 
-prompts.openapi(listCollectionsRoute, async (c) => runHandler(c, "list prompt collections", async () => {
-  const authResult = c.get("authResult");
+prompts.openapi(listCollectionsRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { orgId } = yield* AuthContext;
 
-  if (!hasInternalDB()) {
-    return c.json({ collections: [] }, 200);
-  }
+    if (!hasInternalDB()) {
+      return c.json({ collections: [] }, 200);
+    }
 
-  const orgId = authResult.user?.activeOrganizationId;
+    let rows: Record<string, unknown>[];
+    if (orgId) {
+      rows = yield* Effect.promise(() => internalQuery<Record<string, unknown>>(
+        `SELECT * FROM prompt_collections WHERE org_id IS NULL OR org_id = $1 ORDER BY sort_order ASC, created_at ASC`,
+        [orgId],
+      ));
+    } else {
+      rows = yield* Effect.promise(() => internalQuery<Record<string, unknown>>(
+        `SELECT * FROM prompt_collections WHERE org_id IS NULL ORDER BY sort_order ASC, created_at ASC`,
+      ));
+    }
 
-  let rows: Record<string, unknown>[];
-  if (orgId) {
-    rows = await internalQuery<Record<string, unknown>>(
-      `SELECT * FROM prompt_collections WHERE org_id IS NULL OR org_id = $1 ORDER BY sort_order ASC, created_at ASC`,
-      [orgId],
-    );
-  } else {
-    rows = await internalQuery<Record<string, unknown>>(
-      `SELECT * FROM prompt_collections WHERE org_id IS NULL ORDER BY sort_order ASC, created_at ASC`,
-    );
-  }
-
-  return c.json({ collections: rows.map(toPromptCollection) }, 200);
-}));
+    return c.json({ collections: rows.map(toPromptCollection) }, 200);
+  }), { label: "list prompt collections" });
+});
 
 // ---------------------------------------------------------------------------
 // GET /:id — collection detail with items
 // ---------------------------------------------------------------------------
 
-prompts.openapi(getCollectionRoute, async (c) => runHandler(c, "get prompt collection", async () => {
-  const authResult = c.get("authResult");
+prompts.openapi(getCollectionRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { orgId } = yield* AuthContext;
 
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_found", message: "Prompt collection not found." }, 404);
-  }
+    if (!hasInternalDB()) {
+      return c.json({ error: "not_found", message: "Prompt collection not found." }, 404);
+    }
 
-  const { id } = c.req.valid("param");
-  const orgId = authResult.user?.activeOrganizationId;
+    const { id } = c.req.valid("param");
 
-  let collectionRows: Record<string, unknown>[];
-  if (orgId) {
-    collectionRows = await internalQuery<Record<string, unknown>>(
-      `SELECT * FROM prompt_collections WHERE id = $1 AND (org_id IS NULL OR org_id = $2)`,
-      [id, orgId],
-    );
-  } else {
-    collectionRows = await internalQuery<Record<string, unknown>>(
-      `SELECT * FROM prompt_collections WHERE id = $1 AND org_id IS NULL`,
+    let collectionRows: Record<string, unknown>[];
+    if (orgId) {
+      collectionRows = yield* Effect.promise(() => internalQuery<Record<string, unknown>>(
+        `SELECT * FROM prompt_collections WHERE id = $1 AND (org_id IS NULL OR org_id = $2)`,
+        [id, orgId],
+      ));
+    } else {
+      collectionRows = yield* Effect.promise(() => internalQuery<Record<string, unknown>>(
+        `SELECT * FROM prompt_collections WHERE id = $1 AND org_id IS NULL`,
+        [id],
+      ));
+    }
+
+    if (collectionRows.length === 0) {
+      return c.json({ error: "not_found", message: "Prompt collection not found." }, 404);
+    }
+
+    const items = yield* Effect.promise(() => internalQuery<Record<string, unknown>>(
+      `SELECT * FROM prompt_items WHERE collection_id = $1 ORDER BY sort_order ASC, created_at ASC`,
       [id],
-    );
-  }
+    ));
 
-  if (collectionRows.length === 0) {
-    return c.json({ error: "not_found", message: "Prompt collection not found." }, 404);
-  }
-
-  const items = await internalQuery<Record<string, unknown>>(
-    `SELECT * FROM prompt_items WHERE collection_id = $1 ORDER BY sort_order ASC, created_at ASC`,
-    [id],
-  );
-
-  return c.json({
-    collection: toPromptCollection(collectionRows[0]),
-    items: items.map(toPromptItem),
-  }, 200);
-}));
+    return c.json({
+      collection: toPromptCollection(collectionRows[0]),
+      items: items.map(toPromptItem),
+    }, 200);
+  }), { label: "get prompt collection" });
+});

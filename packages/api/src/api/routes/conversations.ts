@@ -7,6 +7,9 @@
  */
 
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
+import { Effect } from "effect";
+import { runEffect } from "@atlas/api/lib/effect/hono";
+import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
 import { z } from "zod";
 import { HTTPException } from "hono/http-exception";
 import { createLogger } from "@atlas/api/lib/logger";
@@ -573,23 +576,25 @@ conversations.onError((err, c) => {
 // ---------------------------------------------------------------------------
 
 conversations.openapi(listConversationsRoute, async (c) => {
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "Conversation history is not available (no internal database configured)." }, 404);
-  }
+  return runEffect(c, Effect.gen(function* () {
+    if (!hasInternalDB()) {
+      return c.json({ error: "not_available", message: "Conversation history is not available (no internal database configured)." }, 404);
+    }
 
-  const authResult = c.get("authResult");
+    const { user } = yield* AuthContext;
 
-  const { limit, offset } = parsePagination(c, { limit: 20, maxLimit: 100 });
-  const starredParam = c.req.valid("query").starred;
-  const starred = starredParam === "true" ? true : starredParam === "false" ? false : undefined;
-  const result = await listConversations({
-    userId: authResult.user?.id,
-    orgId: authResult.user?.activeOrganizationId,
-    starred,
-    limit,
-    offset,
-  });
-  return c.json(result, 200);
+    const { limit, offset } = parsePagination(c, { limit: 20, maxLimit: 100 });
+    const starredParam = c.req.valid("query").starred;
+    const starred = starredParam === "true" ? true : starredParam === "false" ? false : undefined;
+    const items = yield* Effect.promise(() => listConversations({
+      userId: user?.id,
+      orgId: user?.activeOrganizationId,
+      starred,
+      limit,
+      offset,
+    }));
+    return c.json(items, 200);
+  }), { label: "list conversations" });
 });
 
 // ---------------------------------------------------------------------------
@@ -597,24 +602,26 @@ conversations.openapi(listConversationsRoute, async (c) => {
 // ---------------------------------------------------------------------------
 
 conversations.openapi(getConversationRoute, async (c) => {
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "Conversation history is not available (no internal database configured)." }, 404);
-  }
+  return runEffect(c, Effect.gen(function* () {
+    if (!hasInternalDB()) {
+      return c.json({ error: "not_available", message: "Conversation history is not available (no internal database configured)." }, 404);
+    }
 
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
+    const { requestId } = yield* RequestContext;
+    const { user } = yield* AuthContext;
 
-  const { id } = c.req.valid("param");
-  if (!UUID_RE.test(id)) {
-    return c.json({ error: "invalid_request", message: "Invalid conversation ID format." }, 400);
-  }
+    const { id } = c.req.valid("param");
+    if (!UUID_RE.test(id)) {
+      return c.json({ error: "invalid_request", message: "Invalid conversation ID format." }, 400);
+    }
 
-  const result = await getConversation(id, authResult.user?.id);
-  if (!result.ok) {
-    const fail = crudFailResponse(result.reason, requestId);
-    return c.json(fail.body, fail.status);
-  }
-  return c.json(result.data, 200);
+    const conv = yield* Effect.promise(() => getConversation(id, user?.id));
+    if (!conv.ok) {
+      const fail = crudFailResponse(conv.reason, requestId);
+      return c.json(fail.body, fail.status);
+    }
+    return c.json(conv.data, 200);
+  }), { label: "get conversation" });
 });
 
 // ---------------------------------------------------------------------------
@@ -622,26 +629,28 @@ conversations.openapi(getConversationRoute, async (c) => {
 // ---------------------------------------------------------------------------
 
 conversations.openapi(starConversationRoute, async (c) => {
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "Conversation history is not available (no internal database configured)." }, 404);
-  }
+  return runEffect(c, Effect.gen(function* () {
+    if (!hasInternalDB()) {
+      return c.json({ error: "not_available", message: "Conversation history is not available (no internal database configured)." }, 404);
+    }
 
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
+    const { requestId } = yield* RequestContext;
+    const { user } = yield* AuthContext;
 
-  const { id } = c.req.valid("param");
-  if (!UUID_RE.test(id)) {
-    return c.json({ error: "invalid_request", message: "Invalid conversation ID format." }, 400);
-  }
+    const { id } = c.req.valid("param");
+    if (!UUID_RE.test(id)) {
+      return c.json({ error: "invalid_request", message: "Invalid conversation ID format." }, 400);
+    }
 
-  const parsed = c.req.valid("json");
+    const parsed = c.req.valid("json");
 
-  const result = await starConversation(id, parsed.starred, authResult.user?.id);
-  if (!result.ok) {
-    const fail = crudFailResponse(result.reason, requestId);
-    return c.json(fail.body, fail.status);
-  }
-  return c.json({ id, starred: parsed.starred }, 200);
+    const starResult = yield* Effect.promise(() => starConversation(id, parsed.starred, user?.id));
+    if (!starResult.ok) {
+      const fail = crudFailResponse(starResult.reason, requestId);
+      return c.json(fail.body, fail.status);
+    }
+    return c.json({ id, starred: parsed.starred }, 200);
+  }), { label: "star conversation" });
 });
 
 // ---------------------------------------------------------------------------
@@ -649,26 +658,28 @@ conversations.openapi(starConversationRoute, async (c) => {
 // ---------------------------------------------------------------------------
 
 conversations.openapi(notebookStateRoute, async (c) => {
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "Conversation history is not available (no internal database configured)." }, 404);
-  }
+  return runEffect(c, Effect.gen(function* () {
+    if (!hasInternalDB()) {
+      return c.json({ error: "not_available", message: "Conversation history is not available (no internal database configured)." }, 404);
+    }
 
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
+    const { requestId } = yield* RequestContext;
+    const { user } = yield* AuthContext;
 
-  const { id } = c.req.valid("param");
-  if (!UUID_RE.test(id)) {
-    return c.json({ error: "invalid_request", message: "Invalid conversation ID format." }, 400);
-  }
+    const { id } = c.req.valid("param");
+    if (!UUID_RE.test(id)) {
+      return c.json({ error: "invalid_request", message: "Invalid conversation ID format." }, 400);
+    }
 
-  const parsed = c.req.valid("json");
+    const parsed = c.req.valid("json");
 
-  const result = await updateNotebookState(id, parsed, authResult.user?.id);
-  if (!result.ok) {
-    const fail = crudFailResponse(result.reason, requestId);
-    return c.json(fail.body, fail.status);
-  }
-  return c.json({ id, notebookState: parsed }, 200);
+    const nbResult = yield* Effect.promise(() => updateNotebookState(id, parsed, user?.id));
+    if (!nbResult.ok) {
+      const fail = crudFailResponse(nbResult.reason, requestId);
+      return c.json(fail.body, fail.status);
+    }
+    return c.json({ id, notebookState: parsed }, 200);
+  }), { label: "update notebook state" });
 });
 
 // ---------------------------------------------------------------------------
@@ -676,90 +687,92 @@ conversations.openapi(notebookStateRoute, async (c) => {
 // ---------------------------------------------------------------------------
 
 conversations.openapi(forkConversationRoute, async (c) => {
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "Conversation history is not available (no internal database configured)." }, 404);
-  }
+  return runEffect(c, Effect.gen(function* () {
+    if (!hasInternalDB()) {
+      return c.json({ error: "not_available", message: "Conversation history is not available (no internal database configured)." }, 404);
+    }
 
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
+    const { requestId } = yield* RequestContext;
+    const { user } = yield* AuthContext;
 
-  const { id } = c.req.valid("param");
-  if (!UUID_RE.test(id)) {
-    return c.json({ error: "invalid_request", message: "Invalid conversation ID format." }, 400);
-  }
+    const { id } = c.req.valid("param");
+    if (!UUID_RE.test(id)) {
+      return c.json({ error: "invalid_request", message: "Invalid conversation ID format." }, 400);
+    }
 
-  const parsed = c.req.valid("json");
+    const parsed = c.req.valid("json");
 
-  const result = await forkConversation({
-    sourceId: id,
-    forkPointMessageId: parsed.forkPointMessageId,
-    userId: authResult.user?.id,
-    orgId: authResult.user?.activeOrganizationId,
-  });
-  if (!result.ok) {
-    const fail = crudFailResponse(result.reason, requestId);
-    return c.json(fail.body, fail.status);
-  }
+    const forkResult = yield* Effect.promise(() => forkConversation({
+      sourceId: id,
+      forkPointMessageId: parsed.forkPointMessageId,
+      userId: user?.id,
+      orgId: user?.activeOrganizationId,
+    }));
+    if (!forkResult.ok) {
+      const fail = crudFailResponse(forkResult.reason, requestId);
+      return c.json(fail.body, fail.status);
+    }
 
-  // Update notebook_state on source and new conversation
-  const label = parsed.label ?? `Fork from cell`;
-  const branch = {
-    conversationId: result.data.id,
-    forkPointCellId: parsed.forkPointMessageId,
-    label,
-    createdAt: new Date().toISOString(),
-  };
+    // Update notebook_state on source and new conversation
+    const label = parsed.label ?? `Fork from cell`;
+    const branch = {
+      conversationId: forkResult.data.id,
+      forkPointCellId: parsed.forkPointMessageId,
+      label,
+      createdAt: new Date().toISOString(),
+    };
 
-  // Read current notebook_state from source to preserve existing data
-  const sourceConv = await getConversation(id, authResult.user?.id);
-  if (!sourceConv.ok) {
-    log.error({ requestId, conversationId: id, reason: sourceConv.reason }, "Failed to read source conversation for branch metadata");
+    // Read current notebook_state from source to preserve existing data
+    const sourceConv = yield* Effect.promise(() => getConversation(id, user?.id));
+    if (!sourceConv.ok) {
+      log.error({ requestId, conversationId: id, reason: sourceConv.reason }, "Failed to read source conversation for branch metadata");
+      return c.json({
+        id: forkResult.data.id,
+        messageCount: forkResult.data.messageCount,
+        branches: [branch],
+        warning: "Fork created but branch metadata could not be saved to source conversation.",
+      }, 200);
+    }
+
+    const existing = sourceConv.data.notebookState ?? { version: 3 };
+    const existingBranches = existing.branches ?? [];
+
+    const updatedSourceState = {
+      ...existing,
+      version: existing.version || 3,
+      branches: [...existingBranches, branch],
+    };
+
+    const sourceRoot = existing.forkRootId;
+    const forkChildState = {
+      version: 3,
+      forkRootId: sourceRoot ?? id,
+      forkPointCellId: parsed.forkPointMessageId,
+    };
+
+    // Write both notebook_state updates in parallel
+    const [sourceResult, forkMetaResult] = yield* Effect.promise(() => Promise.all([
+      updateNotebookState(id, updatedSourceState, user?.id),
+      updateNotebookState(forkResult.data.id, forkChildState, user?.id),
+    ]));
+
+    let metadataWarning: string | undefined;
+    if (!sourceResult.ok) {
+      log.error({ requestId, conversationId: id, reason: sourceResult.reason }, "Failed to update source notebook_state after fork");
+      metadataWarning = "Fork created but branch metadata could not be fully saved.";
+    }
+    if (!forkMetaResult.ok) {
+      log.error({ requestId, conversationId: forkResult.data.id, reason: forkMetaResult.reason }, "Failed to set fork metadata on new conversation");
+      metadataWarning = "Fork created but branch metadata could not be fully saved.";
+    }
+
     return c.json({
-      id: result.data.id,
-      messageCount: result.data.messageCount,
-      branches: [branch],
-      warning: "Fork created but branch metadata could not be saved to source conversation.",
+      id: forkResult.data.id,
+      messageCount: forkResult.data.messageCount,
+      branches: [...existingBranches, branch],
+      ...(metadataWarning ? { warning: metadataWarning } : {}),
     }, 200);
-  }
-
-  const existing = sourceConv.data.notebookState ?? { version: 3 };
-  const existingBranches = existing.branches ?? [];
-
-  const updatedSourceState = {
-    ...existing,
-    version: existing.version || 3,
-    branches: [...existingBranches, branch],
-  };
-
-  const sourceRoot = existing.forkRootId;
-  const forkChildState = {
-    version: 3,
-    forkRootId: sourceRoot ?? id,
-    forkPointCellId: parsed.forkPointMessageId,
-  };
-
-  // Write both notebook_state updates in parallel
-  const [sourceResult, forkResult] = await Promise.all([
-    updateNotebookState(id, updatedSourceState, authResult.user?.id),
-    updateNotebookState(result.data.id, forkChildState, authResult.user?.id),
-  ]);
-
-  let metadataWarning: string | undefined;
-  if (!sourceResult.ok) {
-    log.error({ requestId, conversationId: id, reason: sourceResult.reason }, "Failed to update source notebook_state after fork");
-    metadataWarning = "Fork created but branch metadata could not be fully saved.";
-  }
-  if (!forkResult.ok) {
-    log.error({ requestId, conversationId: result.data.id, reason: forkResult.reason }, "Failed to set fork metadata on new conversation");
-    metadataWarning = "Fork created but branch metadata could not be fully saved.";
-  }
-
-  return c.json({
-    id: result.data.id,
-    messageCount: result.data.messageCount,
-    branches: [...existingBranches, branch],
-    ...(metadataWarning ? { warning: metadataWarning } : {}),
-  }, 200);
+  }), { label: "fork conversation" });
 });
 
 // ---------------------------------------------------------------------------
@@ -767,37 +780,39 @@ conversations.openapi(forkConversationRoute, async (c) => {
 // ---------------------------------------------------------------------------
 
 conversations.openapi(getShareStatusRoute, async (c) => {
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "Conversation history is not available (no internal database configured)." }, 404);
-  }
-
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
-
-  const { id } = c.req.valid("param");
-  if (!UUID_RE.test(id)) {
-    return c.json({ error: "invalid_request", message: "Invalid conversation ID format." }, 400);
-  }
-
-  const result = await getShareStatus(id, authResult.user?.id);
-  if (!result.ok) {
-    if (result.reason === "error") {
-      log.error({ requestId, conversationId: id }, "Share status fetch failed due to DB error");
+  return runEffect(c, Effect.gen(function* () {
+    if (!hasInternalDB()) {
+      return c.json({ error: "not_available", message: "Conversation history is not available (no internal database configured)." }, 404);
     }
-    const fail = crudFailResponse(result.reason, requestId);
-    return c.json(fail.body, fail.status);
-  }
-  if (!result.data.shared) {
-    return c.json({ shared: false as const }, 200);
-  }
-  const baseUrl = new URL(c.req.raw.url).origin;
-  return c.json({
-    shared: true as const,
-    token: result.data.token,
-    url: `${baseUrl}/shared/${result.data.token}`,
-    expiresAt: result.data.expiresAt,
-    shareMode: result.data.shareMode,
-  }, 200);
+
+    const { requestId } = yield* RequestContext;
+    const { user } = yield* AuthContext;
+
+    const { id } = c.req.valid("param");
+    if (!UUID_RE.test(id)) {
+      return c.json({ error: "invalid_request", message: "Invalid conversation ID format." }, 400);
+    }
+
+    const shareResult = yield* Effect.promise(() => getShareStatus(id, user?.id));
+    if (!shareResult.ok) {
+      if (shareResult.reason === "error") {
+        log.error({ requestId, conversationId: id }, "Share status fetch failed due to DB error");
+      }
+      const fail = crudFailResponse(shareResult.reason, requestId);
+      return c.json(fail.body, fail.status);
+    }
+    if (!shareResult.data.shared) {
+      return c.json({ shared: false as const }, 200);
+    }
+    const baseUrl = new URL(c.req.raw.url).origin;
+    return c.json({
+      shared: true as const,
+      token: shareResult.data.token,
+      url: `${baseUrl}/shared/${shareResult.data.token}`,
+      expiresAt: shareResult.data.expiresAt,
+      shareMode: shareResult.data.shareMode,
+    }, 200);
+  }), { label: "get share status" });
 });
 
 // ---------------------------------------------------------------------------
@@ -805,48 +820,54 @@ conversations.openapi(getShareStatusRoute, async (c) => {
 // ---------------------------------------------------------------------------
 
 conversations.openapi(shareConversationRoute, async (c) => {
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "Conversation history is not available (no internal database configured)." }, 404);
-  }
+  return runEffect(c, Effect.gen(function* () {
+    if (!hasInternalDB()) {
+      return c.json({ error: "not_available", message: "Conversation history is not available (no internal database configured)." }, 404);
+    }
 
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
+    const { requestId } = yield* RequestContext;
+    const { user } = yield* AuthContext;
 
-  const { id } = c.req.valid("param");
-  if (!UUID_RE.test(id)) {
-    return c.json({ error: "invalid_request", message: "Invalid conversation ID format." }, 400);
-  }
+    const { id } = c.req.valid("param");
+    if (!UUID_RE.test(id)) {
+      return c.json({ error: "invalid_request", message: "Invalid conversation ID format." }, 400);
+    }
 
-  let body: unknown = undefined;
-  try {
-    const text = await c.req.raw.text();
-    if (text) body = JSON.parse(text);
-  } catch (err) {
-    log.debug({ err: err instanceof Error ? err.message : String(err) }, "Invalid JSON body in POST share");
-    return c.json({ error: "invalid_request", message: "Invalid JSON body." }, 400);
-  }
+    const bodyResult = yield* Effect.tryPromise({
+      try: async () => {
+        const text = await c.req.raw.text();
+        return text ? JSON.parse(text) as unknown : undefined;
+      },
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    }).pipe(Effect.either);
+    if (bodyResult._tag === "Left") {
+      log.debug({ err: bodyResult.left.message }, "Invalid JSON body in POST share");
+      return c.json({ error: "invalid_request", message: "Invalid JSON body." }, 400);
+    }
+    const body: unknown = bodyResult.right;
 
-  const parsed = ShareConversationBodySchema.safeParse(body);
-  if (!parsed.success) {
-    return c.json({ error: "invalid_request", message: "Invalid share options." }, 400);
-  }
+    const parsed = ShareConversationBodySchema.safeParse(body);
+    if (!parsed.success) {
+      return c.json({ error: "invalid_request", message: "Invalid share options." }, 400);
+    }
 
-  const opts = parsed.data;
-  const result = await shareConversation(id, authResult.user?.id, {
-    expiresIn: opts?.expiresIn,
-    shareMode: opts?.shareMode,
-  });
-  if (!result.ok) {
-    const fail = crudFailResponse(result.reason, requestId);
-    return c.json(fail.body, fail.status);
-  }
-  const baseUrl = new URL(c.req.raw.url).origin;
-  return c.json({
-    token: result.data.token,
-    url: `${baseUrl}/shared/${result.data.token}`,
-    expiresAt: result.data.expiresAt,
-    shareMode: result.data.shareMode,
-  }, 200);
+    const opts = parsed.data;
+    const shareResult = yield* Effect.promise(() => shareConversation(id, user?.id, {
+      expiresIn: opts?.expiresIn,
+      shareMode: opts?.shareMode,
+    }));
+    if (!shareResult.ok) {
+      const fail = crudFailResponse(shareResult.reason, requestId);
+      return c.json(fail.body, fail.status);
+    }
+    const baseUrl = new URL(c.req.raw.url).origin;
+    return c.json({
+      token: shareResult.data.token,
+      url: `${baseUrl}/shared/${shareResult.data.token}`,
+      expiresAt: shareResult.data.expiresAt,
+      shareMode: shareResult.data.shareMode,
+    }, 200);
+  }), { label: "share conversation" });
 });
 
 // ---------------------------------------------------------------------------
@@ -854,24 +875,26 @@ conversations.openapi(shareConversationRoute, async (c) => {
 // ---------------------------------------------------------------------------
 
 conversations.openapi(unshareConversationRoute, async (c) => {
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "Conversation history is not available (no internal database configured)." }, 404);
-  }
+  return runEffect(c, Effect.gen(function* () {
+    if (!hasInternalDB()) {
+      return c.json({ error: "not_available", message: "Conversation history is not available (no internal database configured)." }, 404);
+    }
 
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
+    const { requestId } = yield* RequestContext;
+    const { user } = yield* AuthContext;
 
-  const { id } = c.req.valid("param");
-  if (!UUID_RE.test(id)) {
-    return c.json({ error: "invalid_request", message: "Invalid conversation ID format." }, 400);
-  }
+    const { id } = c.req.valid("param");
+    if (!UUID_RE.test(id)) {
+      return c.json({ error: "invalid_request", message: "Invalid conversation ID format." }, 400);
+    }
 
-  const result = await unshareConversation(id, authResult.user?.id);
-  if (!result.ok) {
-    const fail = crudFailResponse(result.reason, requestId);
-    return c.json(fail.body, fail.status);
-  }
-  return c.body(null, 204);
+    const unshareResult = yield* Effect.promise(() => unshareConversation(id, user?.id));
+    if (!unshareResult.ok) {
+      const fail = crudFailResponse(unshareResult.reason, requestId);
+      return c.json(fail.body, fail.status);
+    }
+    return c.body(null, 204);
+  }), { label: "unshare conversation" });
 });
 
 // ---------------------------------------------------------------------------
@@ -879,24 +902,26 @@ conversations.openapi(unshareConversationRoute, async (c) => {
 // ---------------------------------------------------------------------------
 
 conversations.openapi(deleteConversationRoute, async (c) => {
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "Conversation history is not available (no internal database configured)." }, 404);
-  }
+  return runEffect(c, Effect.gen(function* () {
+    if (!hasInternalDB()) {
+      return c.json({ error: "not_available", message: "Conversation history is not available (no internal database configured)." }, 404);
+    }
 
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
+    const { requestId } = yield* RequestContext;
+    const { user } = yield* AuthContext;
 
-  const { id } = c.req.valid("param");
-  if (!UUID_RE.test(id)) {
-    return c.json({ error: "invalid_request", message: "Invalid conversation ID format." }, 400);
-  }
+    const { id } = c.req.valid("param");
+    if (!UUID_RE.test(id)) {
+      return c.json({ error: "invalid_request", message: "Invalid conversation ID format." }, 400);
+    }
 
-  const result = await deleteConversation(id, authResult.user?.id);
-  if (!result.ok) {
-    const fail = crudFailResponse(result.reason, requestId);
-    return c.json(fail.body, fail.status);
-  }
-  return c.body(null, 204);
+    const delResult = yield* Effect.promise(() => deleteConversation(id, user?.id));
+    if (!delResult.ok) {
+      const fail = crudFailResponse(delResult.reason, requestId);
+      return c.json(fail.body, fail.status);
+    }
+    return c.body(null, 204);
+  }), { label: "delete conversation" });
 });
 
 // ---------------------------------------------------------------------------

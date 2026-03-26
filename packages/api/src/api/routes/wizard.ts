@@ -15,6 +15,9 @@
 import * as fs from "fs";
 import * as path from "path";
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
+import { Effect } from "effect";
+import { runEffect } from "@atlas/api/lib/effect/hono";
+import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
 import { HTTPException } from "hono/http-exception";
 import { createLogger } from "@atlas/api/lib/logger";
 import { validationHook } from "./validation-hook";
@@ -417,64 +420,82 @@ wizard.onError((err, c) => {
 // ---------------------------------------------------------------------------
 
 wizard.openapi(profileRoute, async (c) => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const { user } = yield* AuthContext;
 
-  const { connectionId } = c.req.valid("json");
+    const { connectionId } = c.req.valid("json");
 
-  // Look up the connection URL — resolveConnectionUrl throws on infrastructure errors
-  let connUrl: ResolvedConnection | null;
-  try {
-    connUrl = await resolveConnectionUrl(connectionId, authResult.user?.activeOrganizationId);
-  } catch (err) {
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, connectionId }, "Failed to resolve connection URL");
-    return c.json({
-      error: "connection_resolution_failed",
-      message: "Failed to resolve connection. Check server logs for details.",
-      requestId,
-    }, 500);
-  }
-  if (!connUrl) {
-    return c.json({ error: "not_found", message: `Connection "${connectionId}" not found.` }, 404);
-  }
+    // Look up the connection URL — resolveConnectionUrl throws on infrastructure errors
+    const connUrlResult = yield* Effect.tryPromise({
+      try: () => resolveConnectionUrl(connectionId, user?.activeOrganizationId),
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    }).pipe(Effect.either);
 
-  const { url, dbType, schema } = connUrl;
-
-  try {
-    let objects;
-    switch (dbType) {
-      case "postgres":
-        objects = await listPostgresObjects(url, schema, log);
-        break;
-      case "mysql":
-        objects = await listMySQLObjects(url);
-        break;
-      default:
-        return c.json({
-          error: "unsupported_db",
-          message: `Wizard profiling is currently supported for PostgreSQL and MySQL. Got: ${dbType}`,
-        }, 400);
+    if (connUrlResult._tag === "Left") {
+      const err = connUrlResult.left;
+      log.error({ err, requestId, connectionId }, "Failed to resolve connection URL");
+      return c.json({
+        error: "connection_resolution_failed",
+        message: "Failed to resolve connection. Check server logs for details.",
+        requestId,
+      }, 500);
+    }
+    const connUrl = connUrlResult.right;
+    if (!connUrl) {
+      return c.json({ error: "not_found", message: `Connection "${connectionId}" not found.` }, 404);
     }
 
-    log.info({ requestId, connectionId, dbType, tableCount: objects.length }, "Wizard profile complete");
+    const { url, dbType, schema } = connUrl;
+
+    const profileResult = yield* Effect.tryPromise({
+      try: async () => {
+        let objects;
+        switch (dbType) {
+          case "postgres":
+            objects = await listPostgresObjects(url, schema, log);
+            break;
+          case "mysql":
+            objects = await listMySQLObjects(url);
+            break;
+          default:
+            return { error: "unsupported_db" as const, dbType };
+        }
+        return { ok: true as const, objects };
+      },
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    }).pipe(Effect.either);
+
+    if (profileResult._tag === "Left") {
+      const err = profileResult.left;
+      log.error({ err, requestId, connectionId }, "Wizard profile failed");
+      return c.json({
+        error: "profile_failed",
+        message: `Failed to list tables: ${err.message}`,
+        requestId,
+      }, 500);
+    }
+
+    const profileData = profileResult.right;
+    if ("error" in profileData) {
+      return c.json({
+        error: "unsupported_db",
+        message: `Wizard profiling is currently supported for PostgreSQL and MySQL. Got: ${profileData.dbType}`,
+      }, 400);
+    }
+
+    log.info({ requestId, connectionId, dbType, tableCount: profileData.objects.length }, "Wizard profile complete");
 
     return c.json({
       connectionId,
       dbType,
       schema,
-      tables: objects.map((o) => ({
+      tables: profileData.objects.map((o) => ({
         name: o.name,
         type: o.type,
       })),
     }, 200);
-  } catch (err) {
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, connectionId }, "Wizard profile failed");
-    return c.json({
-      error: "profile_failed",
-      message: `Failed to list tables: ${err instanceof Error ? err.message : String(err)}`,
-      requestId,
-    }, 500);
-  }
+  }), { label: "wizard profile" });
 });
 
 // ---------------------------------------------------------------------------
@@ -482,111 +503,130 @@ wizard.openapi(profileRoute, async (c) => {
 // ---------------------------------------------------------------------------
 
 wizard.openapi(generateRoute, async (c) => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const { user } = yield* AuthContext;
 
-  const { connectionId, tables: tableNames } = c.req.valid("json");
+    const { connectionId, tables: tableNames } = c.req.valid("json");
 
-  let connUrl: ResolvedConnection | null;
-  try {
-    connUrl = await resolveConnectionUrl(connectionId, authResult.user?.activeOrganizationId);
-  } catch (err) {
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, connectionId }, "Failed to resolve connection URL");
-    return c.json({
-      error: "connection_resolution_failed",
-      message: "Failed to resolve connection. Check server logs for details.",
-      requestId,
-    }, 500);
-  }
-  if (!connUrl) {
-    return c.json({ error: "not_found", message: `Connection "${connectionId}" not found.` }, 404);
-  }
+    const connUrlResult = yield* Effect.tryPromise({
+      try: () => resolveConnectionUrl(connectionId, user?.activeOrganizationId),
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    }).pipe(Effect.either);
 
-  const { url, dbType, schema } = connUrl;
-
-  try {
-    let result: ProfilingResult;
-    switch (dbType) {
-      case "postgres":
-        result = await profilePostgres(url, tableNames, undefined, schema, undefined, log);
-        break;
-      case "mysql":
-        result = await profileMySQL(url, tableNames, undefined, undefined, log);
-        break;
-      default:
-        return c.json({
-          error: "unsupported_db",
-          message: `Wizard profiling is currently supported for PostgreSQL and MySQL. Got: ${dbType}`,
-        }, 400);
+    if (connUrlResult._tag === "Left") {
+      const err = connUrlResult.left;
+      log.error({ err, requestId, connectionId }, "Failed to resolve connection URL");
+      return c.json({
+        error: "connection_resolution_failed",
+        message: "Failed to resolve connection. Check server logs for details.",
+        requestId,
+      }, 500);
+    }
+    const connUrl = connUrlResult.right;
+    if (!connUrl) {
+      return c.json({ error: "not_found", message: `Connection "${connectionId}" not found.` }, 404);
     }
 
-    // Run heuristics (returns new array — no mutation)
-    const analyzedProfiles = analyzeTableProfiles(result.profiles);
+    const { url, dbType, schema } = connUrl;
 
-    // Generate entity YAML for each profile
-    const sourceId = connectionId === "default" ? undefined : connectionId;
-    const entities = analyzedProfiles.map((profile) => ({
-      tableName: profile.table_name,
-      objectType: profile.object_type,
-      rowCount: profile.row_count,
-      columnCount: profile.columns.length,
-      yaml: generateEntityYAML(profile, analyzedProfiles, dbType, schema, sourceId),
-      profile: {
-        columns: profile.columns.map((col) => ({
-          name: col.name,
-          type: col.type,
-          mappedType: col.is_enum_like ? "enum" : undefined,
-          nullable: col.nullable,
-          isPrimaryKey: col.is_primary_key,
-          isForeignKey: col.is_foreign_key,
-          isEnumLike: col.is_enum_like,
-          sampleValues: col.sample_values.slice(0, 5),
-          uniqueCount: col.unique_count,
-          nullCount: col.null_count,
-        })),
-        primaryKeys: profile.primary_key_columns,
-        foreignKeys: profile.foreign_keys.map((fk) => ({
-          fromColumn: fk.from_column,
-          toTable: fk.to_table,
-          toColumn: fk.to_column,
-          source: fk.source,
-        })),
-        inferredForeignKeys: profile.inferred_foreign_keys.map((fk) => ({
-          fromColumn: fk.from_column,
-          toTable: fk.to_table,
-          toColumn: fk.to_column,
-        })),
-        flags: {
-          possiblyAbandoned: profile.table_flags.possibly_abandoned,
-          possiblyDenormalized: profile.table_flags.possibly_denormalized,
-        },
-        notes: profile.profiler_notes,
+    const genResult = yield* Effect.tryPromise({
+      try: async () => {
+        let result: ProfilingResult;
+        switch (dbType) {
+          case "postgres":
+            result = await profilePostgres(url, tableNames, undefined, schema, undefined, log);
+            break;
+          case "mysql":
+            result = await profileMySQL(url, tableNames, undefined, undefined, log);
+            break;
+          default:
+            return { error: "unsupported_db" as const, dbType };
+        }
+
+        // Run heuristics (returns new array — no mutation)
+        const analyzedProfiles = analyzeTableProfiles(result.profiles);
+
+        // Generate entity YAML for each profile
+        const sourceId = connectionId === "default" ? undefined : connectionId;
+        const entities = analyzedProfiles.map((profile) => ({
+          tableName: profile.table_name,
+          objectType: profile.object_type,
+          rowCount: profile.row_count,
+          columnCount: profile.columns.length,
+          yaml: generateEntityYAML(profile, analyzedProfiles, dbType, schema, sourceId),
+          profile: {
+            columns: profile.columns.map((col) => ({
+              name: col.name,
+              type: col.type,
+              mappedType: col.is_enum_like ? "enum" : undefined,
+              nullable: col.nullable,
+              isPrimaryKey: col.is_primary_key,
+              isForeignKey: col.is_foreign_key,
+              isEnumLike: col.is_enum_like,
+              sampleValues: col.sample_values.slice(0, 5),
+              uniqueCount: col.unique_count,
+              nullCount: col.null_count,
+            })),
+            primaryKeys: profile.primary_key_columns,
+            foreignKeys: profile.foreign_keys.map((fk) => ({
+              fromColumn: fk.from_column,
+              toTable: fk.to_table,
+              toColumn: fk.to_column,
+              source: fk.source,
+            })),
+            inferredForeignKeys: profile.inferred_foreign_keys.map((fk) => ({
+              fromColumn: fk.from_column,
+              toTable: fk.to_table,
+              toColumn: fk.to_column,
+            })),
+            flags: {
+              possiblyAbandoned: profile.table_flags.possibly_abandoned,
+              possiblyDenormalized: profile.table_flags.possibly_denormalized,
+            },
+            notes: profile.profiler_notes,
+          },
+        }));
+
+        return { ok: true as const, analyzedProfiles, entities, errors: result.errors };
       },
-    }));
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    }).pipe(Effect.either);
+
+    if (genResult._tag === "Left") {
+      const err = genResult.left;
+      log.error({ err, requestId, connectionId }, "Wizard generate failed");
+      return c.json({
+        error: "generate_failed",
+        message: `Failed to profile tables: ${err.message}`,
+        requestId,
+      }, 500);
+    }
+
+    const genData = genResult.right;
+    if ("error" in genData) {
+      return c.json({
+        error: "unsupported_db",
+        message: `Wizard profiling is currently supported for PostgreSQL and MySQL. Got: ${genData.dbType}`,
+      }, 400);
+    }
 
     log.info({
       requestId,
       connectionId,
       dbType,
-      profiledCount: analyzedProfiles.length,
-      errorCount: result.errors.length,
+      profiledCount: genData.analyzedProfiles.length,
+      errorCount: genData.errors.length,
     }, "Wizard generate complete");
 
     return c.json({
       connectionId,
       dbType,
       schema,
-      entities,
-      errors: result.errors,
+      entities: genData.entities,
+      errors: genData.errors,
     }, 200);
-  } catch (err) {
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, connectionId }, "Wizard generate failed");
-    return c.json({
-      error: "generate_failed",
-      message: `Failed to profile tables: ${err instanceof Error ? err.message : String(err)}`,
-      requestId,
-    }, 500);
-  }
+  }), { label: "wizard generate" });
 });
 
 // ---------------------------------------------------------------------------
@@ -594,28 +634,30 @@ wizard.openapi(generateRoute, async (c) => {
 // ---------------------------------------------------------------------------
 
 wizard.openapi(previewRoute, async (c) => {
-  const requestId = c.get("requestId");
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
 
-  const { question, entities } = c.req.valid("json");
+    const { question, entities } = c.req.valid("json");
 
-  // Build a semantic context summary from the provided entity YAMLs
-  // (Zod already validated that entities are { tableName: string; yaml: string }[])
-  const entitySummaries = entities
-    .map((e) => `--- ${e.tableName} ---\n${e.yaml}`)
-    .join("\n\n");
-
-  // Generate a preview response showing what the agent would see
-  const preview = {
-    question,
-    semanticContext: `The agent would see ${entities.length} entity definitions when answering this question.`,
-    availableTables: entities.map((e) => e.tableName),
-    entityCount: entities.length,
-    sampleEntityYaml: entitySummaries.slice(0, 2000),
-  };
-
-  log.info({ requestId, question, entityCount: entities.length }, "Wizard preview generated");
-
-  return c.json(preview, 200);
+    // Build a semantic context summary from the provided entity YAMLs
+    // (Zod already validated that entities are { tableName: string; yaml: string }[])
+    const entitySummaries = entities
+      .map((e) => `--- ${e.tableName} ---\n${e.yaml}`)
+      .join("\n\n");
+  
+    // Generate a preview response showing what the agent would see
+    const preview = {
+      question,
+      semanticContext: `The agent would see ${entities.length} entity definitions when answering this question.`,
+      availableTables: entities.map((e) => e.tableName),
+      entityCount: entities.length,
+      sampleEntityYaml: entitySummaries.slice(0, 2000),
+    };
+  
+    log.info({ requestId, question, entityCount: entities.length }, "Wizard preview generated");
+  
+    return c.json(preview, 200);
+  }), { label: "wizard preview" });
 });
 
 // ---------------------------------------------------------------------------
@@ -623,115 +665,117 @@ wizard.openapi(previewRoute, async (c) => {
 // ---------------------------------------------------------------------------
 
 wizard.openapi(saveRoute, async (c) => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const { user } = yield* AuthContext;
 
-  const orgId = authResult.user?.activeOrganizationId;
-  if (!orgId) {
-    return c.json({ error: "no_organization", message: "No active organization. Create a workspace first." }, 400);
-  }
-
-  const body = c.req.valid("json");
-  const { connectionId, entities } = body;
-
-  // Path traversal protection: validate all table names before writing any files
-  const SAFE_TABLE_NAME = /^[a-zA-Z_][a-zA-Z0-9_.-]*$/;
-  for (const entity of entities) {
-    if (!SAFE_TABLE_NAME.test(entity.tableName) || entity.tableName.includes("..")) {
-      return c.json({
-        error: "invalid_request",
-        message: `Invalid table name: "${entity.tableName}". Only letters, digits, underscores, hyphens, and dots are allowed.`,
-      }, 400);
+    const orgId = user?.activeOrganizationId;
+    if (!orgId) {
+      return c.json({ error: "no_organization", message: "No active organization. Create a workspace first." }, 400);
     }
-  }
-
-  try {
-    // Write entities to disk (org-scoped)
-    const sourceId = connectionId === "default" ? "default" : connectionId;
-    const outputBase = outputDirForDatasource(sourceId, orgId);
-    const entitiesDir = path.join(outputBase, "entities");
-    const metricsDir = path.join(outputBase, "metrics");
-
-    fs.mkdirSync(entitiesDir, { recursive: true });
-    fs.mkdirSync(metricsDir, { recursive: true });
-
-    const savedFiles: string[] = [];
-
-    // Write entity YAMLs (table names already validated above)
+  
+    const body = c.req.valid("json");
+    const { connectionId, entities } = body;
+  
+    // Path traversal protection: validate all table names before writing any files
+    const SAFE_TABLE_NAME = /^[a-zA-Z_][a-zA-Z0-9_.-]*$/;
     for (const entity of entities) {
-      const safeName = path.basename(entity.tableName);
-      const filePath = path.join(entitiesDir, `${safeName}.yml`);
-      fs.writeFileSync(filePath, entity.yaml, "utf-8");
-      savedFiles.push(`entities/${safeName}.yml`);
-
-      // Also write to org-scoped semantic directory (semantic/.orgs/{orgId}/)
-      // so the explore tool can discover this entity.
-      if (hasInternalDB()) {
-        await syncEntityToDisk(orgId, entity.tableName, "entity", entity.yaml).catch((err) => {
-          log.warn({ err: err instanceof Error ? err.message : String(err), tableName: entity.tableName }, "Disk sync after wizard save failed");
-        });
+      if (!SAFE_TABLE_NAME.test(entity.tableName) || entity.tableName.includes("..")) {
+        return c.json({
+          error: "invalid_request",
+          message: `Invalid table name: "${entity.tableName}". Only letters, digits, underscores, hyphens, and dots are allowed.`,
+        }, 400);
       }
     }
-
-    // Generate catalog, glossary, and metric files from raw profile data.
-    // The wizard frontend does not send raw profile data — it sends
-    // pre-generated entity YAML via { connectionId, entities } instead.
-    // This branch handles callers (e.g. future CLI integrations) that
-    // provide raw TableProfile[] data for server-side generation.
-    const { schema: bodySchema, profiles: profileData } = body;
-    if (profileData && profileData.length > 0) {
-      const profiles = profileData;
-      const resolvedSchema = bodySchema ?? "public";
-
-      const catalogYaml = generateCatalogYAML(profiles);
-      const catalogPath = path.join(outputBase, "catalog.yml");
-      fs.writeFileSync(catalogPath, catalogYaml, "utf-8");
-      savedFiles.push("catalog.yml");
-
-      const glossaryYaml = generateGlossaryYAML(profiles);
-      const glossaryPath = path.join(outputBase, "glossary.yml");
-      fs.writeFileSync(glossaryPath, glossaryYaml, "utf-8");
-      savedFiles.push("glossary.yml");
-
-      // Generate metric files (sanitize table_name from profiles)
-      for (const profile of profiles) {
-        if (!profile.table_name || !SAFE_TABLE_NAME.test(profile.table_name)) continue;
-        const metricYaml = generateMetricYAML(profile, resolvedSchema);
-        if (metricYaml) {
-          const safeMetricName = path.basename(profile.table_name);
-          const filePath = path.join(metricsDir, `${safeMetricName}.yml`);
-          fs.writeFileSync(filePath, metricYaml, "utf-8");
-          savedFiles.push(`metrics/${safeMetricName}.yml`);
+  
+    try {
+      // Write entities to disk (org-scoped)
+      const sourceId = connectionId === "default" ? "default" : connectionId;
+      const outputBase = outputDirForDatasource(sourceId, orgId);
+      const entitiesDir = path.join(outputBase, "entities");
+      const metricsDir = path.join(outputBase, "metrics");
+  
+      fs.mkdirSync(entitiesDir, { recursive: true });
+      fs.mkdirSync(metricsDir, { recursive: true });
+  
+      const savedFiles: string[] = [];
+  
+      // Write entity YAMLs (table names already validated above)
+      for (const entity of entities) {
+        const safeName = path.basename(entity.tableName);
+        const filePath = path.join(entitiesDir, `${safeName}.yml`);
+        fs.writeFileSync(filePath, entity.yaml, "utf-8");
+        savedFiles.push(`entities/${safeName}.yml`);
+  
+        // Also write to org-scoped semantic directory (semantic/.orgs/{orgId}/)
+        // so the explore tool can discover this entity.
+        if (hasInternalDB()) {
+          yield* Effect.promise(() => syncEntityToDisk(orgId, entity.tableName, "entity", entity.yaml).catch((err) => {
+            log.warn({ err: err instanceof Error ? err.message : String(err), tableName: entity.tableName }, "Disk sync after wizard save failed");
+          }));
         }
       }
+  
+      // Generate catalog, glossary, and metric files from raw profile data.
+      // The wizard frontend does not send raw profile data — it sends
+      // pre-generated entity YAML via { connectionId, entities } instead.
+      // This branch handles callers (e.g. future CLI integrations) that
+      // provide raw TableProfile[] data for server-side generation.
+      const { schema: bodySchema, profiles: profileData } = body;
+      if (profileData && profileData.length > 0) {
+        const profiles = profileData;
+        const resolvedSchema = bodySchema ?? "public";
+  
+        const catalogYaml = generateCatalogYAML(profiles);
+        const catalogPath = path.join(outputBase, "catalog.yml");
+        fs.writeFileSync(catalogPath, catalogYaml, "utf-8");
+        savedFiles.push("catalog.yml");
+  
+        const glossaryYaml = generateGlossaryYAML(profiles);
+        const glossaryPath = path.join(outputBase, "glossary.yml");
+        fs.writeFileSync(glossaryPath, glossaryYaml, "utf-8");
+        savedFiles.push("glossary.yml");
+  
+        // Generate metric files (sanitize table_name from profiles)
+        for (const profile of profiles) {
+          if (!profile.table_name || !SAFE_TABLE_NAME.test(profile.table_name)) continue;
+          const metricYaml = generateMetricYAML(profile, resolvedSchema);
+          if (metricYaml) {
+            const safeMetricName = path.basename(profile.table_name);
+            const filePath = path.join(metricsDir, `${safeMetricName}.yml`);
+            fs.writeFileSync(filePath, metricYaml, "utf-8");
+            savedFiles.push(`metrics/${safeMetricName}.yml`);
+          }
+        }
+      }
+  
+      // Reset semantic whitelist cache so new entities are queryable
+      _resetWhitelists();
+  
+      log.info({
+        requestId,
+        orgId,
+        connectionId,
+        entityCount: entities.length,
+        fileCount: savedFiles.length,
+      }, "Wizard save complete");
+  
+      return c.json({
+        saved: true,
+        orgId,
+        connectionId,
+        entityCount: entities.length,
+        files: savedFiles,
+      }, 201);
+    } catch (err) {
+      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Wizard save failed");
+      return c.json({
+        error: "save_failed",
+        message: `Failed to save entities: ${err instanceof Error ? err.message : String(err)}`,
+        requestId,
+      }, 500);
     }
-
-    // Reset semantic whitelist cache so new entities are queryable
-    _resetWhitelists();
-
-    log.info({
-      requestId,
-      orgId,
-      connectionId,
-      entityCount: entities.length,
-      fileCount: savedFiles.length,
-    }, "Wizard save complete");
-
-    return c.json({
-      saved: true,
-      orgId,
-      connectionId,
-      entityCount: entities.length,
-      files: savedFiles,
-    }, 201);
-  } catch (err) {
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Wizard save failed");
-    return c.json({
-      error: "save_failed",
-      message: `Failed to save entities: ${err instanceof Error ? err.message : String(err)}`,
-      requestId,
-    }, 500);
-  }
+  }), { label: "wizard save" });
 });
 
 // ---------------------------------------------------------------------------

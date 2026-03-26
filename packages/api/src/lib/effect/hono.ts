@@ -275,10 +275,16 @@ export interface RunEffectOptions {
  */
 export async function runEffect<A, E>(
   c: Context,
-  program: Effect.Effect<A, E, never>,
+  program: Effect.Effect<A, E, RequestContext | AuthContext> | Effect.Effect<A, E, never>,
   options?: RunEffectOptions,
 ): Promise<A> {
-  const exit = await Effect.runPromiseExit(program);
+  // Provide Hono context as Effect Context layers (same bridge as runHandler)
+  const contextLayer = buildContextLayer(c);
+  const provided = contextLayer
+    ? (program as Effect.Effect<A, E, RequestContext | AuthContext>).pipe(Effect.provide(contextLayer))
+    : program as Effect.Effect<A, E, never>;
+
+  const exit = await Effect.runPromiseExit(provided);
 
   if (Exit.isSuccess(exit)) {
     return exit.value;

@@ -5,8 +5,10 @@
  * Provides visibility into the onboarding email sequence for workspace users.
  */
 
+import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
-import { runHandler } from "@atlas/api/lib/effect/hono";
+import { runEffect } from "@atlas/api/lib/effect/hono";
+import { AuthContext } from "@atlas/api/lib/effect/services";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import {
   getOnboardingStatuses,
@@ -106,27 +108,28 @@ const getSequenceRoute = createRoute({
 
 export const adminOnboardingEmails = createAdminRouter();
 
-adminOnboardingEmails.openapi(listStatusesRoute, async (c) => runHandler(c, "fetch onboarding statuses", async () => {
-  const authResult = c.get("authResult");
-  const orgId = authResult.user?.activeOrganizationId;
+adminOnboardingEmails.openapi(listStatusesRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { orgId } = yield* AuthContext;
 
-  if (!orgId || !hasInternalDB()) {
+    if (!orgId || !hasInternalDB()) {
+      return c.json({
+        enabled: false,
+        statuses: [],
+        total: 0,
+      }, 200);
+    }
+
+    const { limit, offset } = parsePagination(c);
+
+    const result = yield* Effect.promise(() => getOnboardingStatuses(orgId, limit, offset));
     return c.json({
-      enabled: false,
-      statuses: [],
-      total: 0,
+      enabled: isOnboardingEmailEnabled(),
+      statuses: result.statuses,
+      total: result.total,
     }, 200);
-  }
-
-  const { limit, offset } = parsePagination(c);
-
-  const result = await getOnboardingStatuses(orgId, limit, offset);
-  return c.json({
-    enabled: isOnboardingEmailEnabled(),
-    statuses: result.statuses,
-    total: result.total,
-  }, 200);
-}));
+  }), { label: "fetch onboarding statuses" });
+});
 
 adminOnboardingEmails.openapi(getSequenceRoute, async (c) => {
   return c.json({

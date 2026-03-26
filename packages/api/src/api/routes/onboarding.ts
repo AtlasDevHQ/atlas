@@ -7,7 +7,12 @@
  */
 
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
-import { runHandler } from "@atlas/api/lib/effect/hono";
+import { Effect } from "effect";
+import { runEffect } from "@atlas/api/lib/effect/hono";
+import {
+  RequestContext,
+  AuthContext,
+} from "@atlas/api/lib/effect/services";
 import { validationHook } from "./validation-hook";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
@@ -236,48 +241,56 @@ onboarding.use("/tour-reset", requestContext);
 onboarding.openapi(
   testConnectionRoute,
   async (c) => {
-    const requestId = c.get("requestId");
+    return runEffect(c, Effect.gen(function* () {
+      const { requestId } = yield* RequestContext;
 
-    if (detectAuthMode() !== "managed") {
-      return c.json({ error: "not_available", message: "Onboarding requires managed auth mode.", requestId }, 404);
-    }
-
-    const { url } = c.req.valid("json");
-
-    // Validate URL scheme
-    let dbType: string;
-    try {
-      dbType = detectDBType(url);
-    } catch (err) {
-      log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Invalid database URL scheme");
-      return c.json({
-        error: "invalid_url",
-        message: "Unsupported database URL scheme. Use postgresql:// or mysql://.",
-      }, 400);
-    }
-
-    // Register a temporary connection, test it, then always clean up
-    const tempId = `_onboard_${Date.now()}`;
-    try {
-      connections.register(tempId, { url });
-      const result = await connections.healthCheck(tempId);
-      return c.json({
-        status: result.status,
-        latencyMs: result.latencyMs,
-        dbType,
-        maskedUrl: maskConnectionUrl(url),
-      }, 200);
-    } catch (err) {
-      log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Connection test failed");
-      return c.json({
-        error: "connection_failed",
-        message: "Connection test failed. Check the URL, credentials, and that the database is reachable.",
-      }, 400);
-    } finally {
-      if (connections.has(tempId)) {
-        connections.unregister(tempId);
+      if (detectAuthMode() !== "managed") {
+        return c.json({ error: "not_available", message: "Onboarding requires managed auth mode.", requestId }, 404);
       }
-    }
+
+      const { url } = c.req.valid("json");
+
+      // Validate URL scheme
+      let dbType: string;
+      try {
+        dbType = detectDBType(url);
+      } catch (err) {
+        log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Invalid database URL scheme");
+        return c.json({
+          error: "invalid_url",
+          message: "Unsupported database URL scheme. Use postgresql:// or mysql://.",
+        }, 400);
+      }
+
+      // Register a temporary connection, test it, then always clean up
+      const tempId = `_onboard_${Date.now()}`;
+      return yield* Effect.tryPromise({
+        try: async () => {
+          connections.register(tempId, { url });
+          const result = await connections.healthCheck(tempId);
+          return c.json({
+            status: result.status,
+            latencyMs: result.latencyMs,
+            dbType,
+            maskedUrl: maskConnectionUrl(url),
+          }, 200);
+        },
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      }).pipe(
+        Effect.catchAll((err) => {
+          log.warn({ err: err.message, requestId }, "Connection test failed");
+          return Effect.succeed(c.json({
+            error: "connection_failed",
+            message: "Connection test failed. Check the URL, credentials, and that the database is reachable.",
+          }, 400));
+        }),
+        Effect.ensuring(Effect.sync(() => {
+          if (connections.has(tempId)) {
+            connections.unregister(tempId);
+          }
+        })),
+      );
+    }), { label: "test connection" });
   },
   (result, c) => {
     if (!result.success) {
@@ -296,126 +309,145 @@ onboarding.openapi(
 onboarding.openapi(
   completeOnboardingRoute,
   async (c) => {
-    const requestId = c.get("requestId");
-    const authResult = c.get("authResult");
+    return runEffect(c, Effect.gen(function* () {
+      const { requestId } = yield* RequestContext;
+      const { user, orgId } = yield* AuthContext;
 
-    if (detectAuthMode() !== "managed") {
-      return c.json({ error: "not_available", message: "Onboarding requires managed auth mode.", requestId }, 404);
-    }
+      if (detectAuthMode() !== "managed") {
+        return c.json({ error: "not_available", message: "Onboarding requires managed auth mode.", requestId }, 404);
+      }
 
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "Onboarding requires an internal database (DATABASE_URL).", requestId }, 404);
-    }
+      if (!hasInternalDB()) {
+        return c.json({ error: "not_available", message: "Onboarding requires an internal database (DATABASE_URL).", requestId }, 404);
+      }
 
-    const orgId = authResult.user?.activeOrganizationId;
-    if (!orgId) {
-      return c.json({ error: "no_organization", message: "No active organization. Create a workspace first." }, 400);
-    }
+      if (!orgId) {
+        return c.json({ error: "no_organization", message: "No active organization. Create a workspace first." }, 400);
+      }
 
-    const { url, connectionId: rawConnectionId } = c.req.valid("json");
+      const { url, connectionId: rawConnectionId } = c.req.valid("json");
 
-    const id = typeof rawConnectionId === "string" && rawConnectionId.trim()
-      ? rawConnectionId.trim()
-      : "default";
+      const id = typeof rawConnectionId === "string" && rawConnectionId.trim()
+        ? rawConnectionId.trim()
+        : "default";
 
-    // Validate connectionId format (skip for default)
-    if (id !== "default" && !CONNECTION_ID_PATTERN.test(id)) {
-      return c.json({
-        error: "invalid_request",
-        message: "Connection ID must be 2-64 lowercase alphanumeric characters, hyphens, or underscores.",
-      }, 400);
-    }
+      // Validate connectionId format (skip for default)
+      if (id !== "default" && !CONNECTION_ID_PATTERN.test(id)) {
+        return c.json({
+          error: "invalid_request",
+          message: "Connection ID must be 2-64 lowercase alphanumeric characters, hyphens, or underscores.",
+        }, 400);
+      }
 
-    // Validate URL scheme
-    let dbType: string;
-    try {
-      dbType = detectDBType(url);
-    } catch (err) {
-      log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Invalid database URL scheme");
-      return c.json({
-        error: "invalid_url",
-        message: "Unsupported database URL scheme. Use postgresql:// or mysql://.",
-      }, 400);
-    }
+      // Validate URL scheme
+      let dbType: string;
+      try {
+        dbType = detectDBType(url);
+      } catch (err) {
+        log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Invalid database URL scheme");
+        return c.json({
+          error: "invalid_url",
+          message: "Unsupported database URL scheme. Use postgresql:// or mysql://.",
+        }, 400);
+      }
 
-    // Test the connection before persisting
-    const tempId = `_onboard_complete_${Date.now()}`;
-    try {
-      connections.register(tempId, { url });
-      await connections.healthCheck(tempId);
-    } catch (err) {
-      if (connections.has(tempId)) connections.unregister(tempId);
-      log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Connection test failed during onboarding");
-      return c.json({
-        error: "connection_failed",
-        message: "Connection test failed. Check the URL, credentials, and that the database is reachable.",
-      }, 400);
-    } finally {
-      if (connections.has(tempId)) connections.unregister(tempId);
-    }
-
-    // Encrypt and persist to internal DB
-    let encryptedUrl: string;
-    try {
-      encryptedUrl = encryptUrl(url);
-    } catch (err) {
-      log.error({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to encrypt connection URL during onboarding");
-      return c.json({ error: "encryption_failed", message: "Failed to encrypt connection URL.", requestId }, 500);
-    }
-
-    // Org-scoped upsert: only update if the existing row belongs to the same org
-    try {
-      const result = await internalQuery<{ id: string }>(
-        `INSERT INTO connections (id, url, type, description, org_id)
-         VALUES ($1, $2, $3, $4, $5)
-         ON CONFLICT (id) DO UPDATE SET url = $2, type = $3, org_id = $5, updated_at = NOW()
-         WHERE connections.org_id = $5 OR connections.org_id IS NULL
-         RETURNING id`,
-        [id, encryptedUrl, dbType, `${dbType} datasource`, orgId],
+      // Test the connection before persisting
+      const tempId = `_onboard_complete_${Date.now()}`;
+      const testResult = yield* Effect.tryPromise({
+        try: async () => {
+          connections.register(tempId, { url });
+          await connections.healthCheck(tempId);
+          return { ok: true as const };
+        },
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      }).pipe(
+        Effect.catchAll((err) => {
+          log.warn({ err: err.message, requestId }, "Connection test failed during onboarding");
+          return Effect.succeed({ ok: false as const, response: c.json({
+            error: "connection_failed",
+            message: "Connection test failed. Check the URL, credentials, and that the database is reachable.",
+          }, 400) });
+        }),
+        Effect.ensuring(Effect.sync(() => {
+          if (connections.has(tempId)) connections.unregister(tempId);
+        })),
       );
-      if (result.length === 0) {
+      if (!testResult.ok) {
+        return testResult.response;
+      }
+
+      // Encrypt and persist to internal DB
+      let encryptedUrl: string;
+      try {
+        encryptedUrl = encryptUrl(url);
+      } catch (err) {
+        log.error({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to encrypt connection URL during onboarding");
+        return c.json({ error: "encryption_failed", message: "Failed to encrypt connection URL.", requestId }, 500);
+      }
+
+      // Org-scoped upsert: only update if the existing row belongs to the same org
+      const upsertResult = yield* Effect.tryPromise({
+        try: () => internalQuery<{ id: string }>(
+          `INSERT INTO connections (id, url, type, description, org_id)
+           VALUES ($1, $2, $3, $4, $5)
+           ON CONFLICT (id) DO UPDATE SET url = $2, type = $3, org_id = $5, updated_at = NOW()
+           WHERE connections.org_id = $5 OR connections.org_id IS NULL
+           RETURNING id`,
+          [id, encryptedUrl, dbType, `${dbType} datasource`, orgId],
+        ),
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      }).pipe(Effect.catchAll((err) => {
+        log.error({ err, requestId }, "Failed to persist onboarding connection");
+        return Effect.succeed(null);
+      }));
+
+      if (upsertResult === null) {
+        return c.json({ error: "internal_error", message: "Failed to save connection.", requestId }, 500);
+      }
+      if (upsertResult.length === 0) {
         return c.json({
           error: "conflict",
           message: `Connection ID "${id}" is already in use by another organization.`,
         }, 409);
       }
-    } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to persist onboarding connection");
-      return c.json({ error: "internal_error", message: "Failed to save connection.", requestId }, 500);
-    }
 
-    // Register the connection in the runtime registry
-    try {
-      if (connections.has(id)) connections.unregister(id);
-      connections.register(id, { url, description: `${dbType} datasource` });
-    } catch (err) {
-      log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Connection saved but runtime registration failed — will load on next restart");
-    }
-
-    _resetWhitelists();
-
-    log.info({ requestId, connectionId: id, orgId, dbType, userId: authResult.user?.id }, "Onboarding complete — connection saved");
-
-    // Trigger onboarding milestone: database connected (fire-and-forget)
-    // AtlasUser.label is the user's email in managed auth mode.
-    if (authResult.user?.id && authResult.user.label?.includes("@")) {
+      // Register the connection in the runtime registry
       try {
-        const { onDatabaseConnected } = await import("@atlas/api/lib/email/hooks");
-        onDatabaseConnected({
-          userId: authResult.user.id,
-          email: authResult.user.label,
-          orgId,
-        });
+        if (connections.has(id)) connections.unregister(id);
+        connections.register(id, { url, description: `${dbType} datasource` });
       } catch (err) {
-        log.debug({ err: err instanceof Error ? err.message : String(err) }, "Onboarding email hook not available");
+        log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Connection saved but runtime registration failed — will load on next restart");
       }
-    }
 
-    return c.json({
-      connectionId: id,
-      dbType,
-      maskedUrl: maskConnectionUrl(url),
-    }, 201);
+      _resetWhitelists();
+
+      log.info({ requestId, connectionId: id, orgId, dbType, userId: user?.id }, "Onboarding complete — connection saved");
+
+      // Trigger onboarding milestone: database connected (fire-and-forget)
+      // AtlasUser.label is the user's email in managed auth mode.
+      if (user?.id && user.label?.includes("@")) {
+        yield* Effect.tryPromise({
+          try: async () => {
+            const { onDatabaseConnected } = await import("@atlas/api/lib/email/hooks");
+            onDatabaseConnected({
+              userId: user.id,
+              email: user.label!,
+              orgId,
+            });
+          },
+          catch: (err) => err instanceof Error ? err : new Error(String(err)),
+        }).pipe(Effect.catchAll((err) => {
+          log.debug({ err: err.message }, "Onboarding email hook not available");
+          return Effect.void;
+        }));
+      }
+
+      return c.json({
+        connectionId: id,
+        dbType,
+        maskedUrl: maskConnectionUrl(url),
+      }, 201);
+    }), { label: "complete onboarding" });
   },
   (result, c) => {
     if (!result.success) {
@@ -524,90 +556,96 @@ const tourResetRoute = createRoute({
 // GET /tour-status
 // ---------------------------------------------------------------------------
 
-onboarding.openapi(tourStatusRoute, async (c) => runHandler(c, "fetch tour status", async () => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
+onboarding.openapi(tourStatusRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const { user } = yield* AuthContext;
 
-  if (detectAuthMode() !== "managed") {
-    return c.json({ error: "not_available", message: "Tour tracking requires managed auth mode.", requestId }, 404);
-  }
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "Tour tracking requires an internal database (DATABASE_URL).", requestId }, 404);
-  }
+    if (detectAuthMode() !== "managed") {
+      return c.json({ error: "not_available", message: "Tour tracking requires managed auth mode.", requestId }, 404);
+    }
+    if (!hasInternalDB()) {
+      return c.json({ error: "not_available", message: "Tour tracking requires an internal database (DATABASE_URL).", requestId }, 404);
+    }
 
-  const userId = authResult.user?.id;
-  if (!userId) {
-    return c.json({ error: "auth_error", message: "No user ID in session.", requestId }, 401);
-  }
+    const userId = user?.id;
+    if (!userId) {
+      return c.json({ error: "auth_error", message: "No user ID in session.", requestId }, 401);
+    }
 
-  const rows = await internalQuery<{ tour_completed_at: string | null }>(
-    `SELECT tour_completed_at FROM user_onboarding WHERE user_id = $1`,
-    [userId],
-  );
-  const row = rows[0];
-  return c.json({
-    tourCompleted: !!row?.tour_completed_at,
-    tourCompletedAt: row?.tour_completed_at ?? null,
-  }, 200);
-}));
+    const rows = yield* Effect.promise(() => internalQuery<{ tour_completed_at: string | null }>(
+      `SELECT tour_completed_at FROM user_onboarding WHERE user_id = $1`,
+      [userId],
+    ));
+    const row = rows[0];
+    return c.json({
+      tourCompleted: !!row?.tour_completed_at,
+      tourCompletedAt: row?.tour_completed_at ?? null,
+    }, 200);
+  }), { label: "fetch tour status" });
+});
 
 // ---------------------------------------------------------------------------
 // POST /tour-complete
 // ---------------------------------------------------------------------------
 
-onboarding.openapi(tourCompleteRoute, async (c) => runHandler(c, "save tour completion", async () => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
+onboarding.openapi(tourCompleteRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const { user } = yield* AuthContext;
 
-  if (detectAuthMode() !== "managed") {
-    return c.json({ error: "not_available", message: "Tour tracking requires managed auth mode.", requestId }, 404);
-  }
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "Tour tracking requires an internal database (DATABASE_URL).", requestId }, 404);
-  }
+    if (detectAuthMode() !== "managed") {
+      return c.json({ error: "not_available", message: "Tour tracking requires managed auth mode.", requestId }, 404);
+    }
+    if (!hasInternalDB()) {
+      return c.json({ error: "not_available", message: "Tour tracking requires an internal database (DATABASE_URL).", requestId }, 404);
+    }
 
-  const userId = authResult.user?.id;
-  if (!userId) {
-    return c.json({ error: "auth_error", message: "No user ID in session.", requestId }, 401);
-  }
+    const userId = user?.id;
+    if (!userId) {
+      return c.json({ error: "auth_error", message: "No user ID in session.", requestId }, 401);
+    }
 
-  const now = new Date().toISOString();
-  await internalQuery(
-    `INSERT INTO user_onboarding (user_id, tour_completed_at)
-     VALUES ($1, $2)
-     ON CONFLICT (user_id) DO UPDATE SET tour_completed_at = $2`,
-    [userId, now],
-  );
-  log.info({ requestId, userId }, "Tour marked as completed");
-  return c.json({ tourCompleted: true, tourCompletedAt: now }, 200);
-}));
+    const now = new Date().toISOString();
+    yield* Effect.promise(() => internalQuery(
+      `INSERT INTO user_onboarding (user_id, tour_completed_at)
+       VALUES ($1, $2)
+       ON CONFLICT (user_id) DO UPDATE SET tour_completed_at = $2`,
+      [userId, now],
+    ));
+    log.info({ requestId, userId }, "Tour marked as completed");
+    return c.json({ tourCompleted: true, tourCompletedAt: now }, 200);
+  }), { label: "save tour completion" });
+});
 
 // ---------------------------------------------------------------------------
 // POST /tour-reset
 // ---------------------------------------------------------------------------
 
-onboarding.openapi(tourResetRoute, async (c) => runHandler(c, "reset tour", async () => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
+onboarding.openapi(tourResetRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const { user } = yield* AuthContext;
 
-  if (detectAuthMode() !== "managed") {
-    return c.json({ error: "not_available", message: "Tour tracking requires managed auth mode.", requestId }, 404);
-  }
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "Tour tracking requires an internal database (DATABASE_URL).", requestId }, 404);
-  }
+    if (detectAuthMode() !== "managed") {
+      return c.json({ error: "not_available", message: "Tour tracking requires managed auth mode.", requestId }, 404);
+    }
+    if (!hasInternalDB()) {
+      return c.json({ error: "not_available", message: "Tour tracking requires an internal database (DATABASE_URL).", requestId }, 404);
+    }
 
-  const userId = authResult.user?.id;
-  if (!userId) {
-    return c.json({ error: "auth_error", message: "No user ID in session.", requestId }, 401);
-  }
+    const userId = user?.id;
+    if (!userId) {
+      return c.json({ error: "auth_error", message: "No user ID in session.", requestId }, 401);
+    }
 
-  await internalQuery(
-    `UPDATE user_onboarding SET tour_completed_at = NULL WHERE user_id = $1`,
-    [userId],
-  );
-  log.info({ requestId, userId }, "Tour reset for replay");
-  return c.json({ tourCompleted: false, tourCompletedAt: null }, 200);
-}));
+    yield* Effect.promise(() => internalQuery(
+      `UPDATE user_onboarding SET tour_completed_at = NULL WHERE user_id = $1`,
+      [userId],
+    ));
+    log.info({ requestId, userId }, "Tour reset for replay");
+    return c.json({ tourCompleted: false, tourCompletedAt: null }, 200);
+  }), { label: "reset tour" });
+});
 
 export { onboarding };

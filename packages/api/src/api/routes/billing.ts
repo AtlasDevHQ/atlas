@@ -12,8 +12,13 @@ import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
 import { z } from "zod";
 import { HTTPException } from "hono/http-exception";
 import Stripe from "stripe";
+import { Effect } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
-import { runHandler } from "@atlas/api/lib/effect/hono";
+import { runEffect } from "@atlas/api/lib/effect/hono";
+import {
+  RequestContext,
+  AuthContext,
+} from "@atlas/api/lib/effect/services";
 import { validationHook } from "./validation-hook";
 import {
   hasInternalDB,
@@ -209,164 +214,171 @@ billing.use(standardAuth);
 billing.use(requestContext);
 
 // GET / — billing status for the active workspace
-billing.openapi(getBillingStatusRoute, async (c) => runHandler(c, "fetch billing status", async () => {
-  const authResult = c.get("authResult");
+billing.openapi(getBillingStatusRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { orgId } = yield* AuthContext;
 
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "Billing is not available (no internal database)." }, 404);
-  }
-
-  const orgId = authResult.user?.activeOrganizationId;
-  if (!orgId) {
-    return c.json({ error: "org_required", message: "No active organization. Select a workspace first." }, 400);
-  }
-
-  const [workspace, usage] = await Promise.all([
-    getWorkspaceDetails(orgId),
-    getCurrentPeriodUsage(orgId),
-  ]);
-
-  if (!workspace) {
-    return c.json({ error: "not_found", message: "Workspace not found." }, 404);
-  }
-
-  const plan = getPlanDefinition(workspace.plan_tier);
-  const limits = getPlanLimits(workspace.plan_tier);
-
-  // Fetch active subscription from Better Auth's subscription table (if exists)
-  let subscription: { stripeSubscriptionId: string; plan: string; status: string } | null = null;
-  try {
-    const subRows = await internalQuery<{
-      stripeSubscriptionId: string;
-      plan: string;
-      status: string;
-    }>(
-      `SELECT "stripeSubscriptionId", plan, status FROM subscription WHERE "referenceId" = $1 AND status IN ('active', 'trialing') LIMIT 1`,
-      [orgId],
-    );
-    if (subRows.length > 0) {
-      subscription = subRows[0];
+    if (!hasInternalDB()) {
+      return c.json({ error: "not_available", message: "Billing is not available (no internal database)." }, 404);
     }
-  } catch (err) {
-    // Subscription table may not exist if Stripe plugin hasn't run migrations yet.
-    log.debug(
-      { err: err instanceof Error ? err.message : String(err), orgId },
-      "Failed to query subscription table — may not exist yet",
-    );
-  }
 
-  // Compute overage status for each metered dimension (reuses shared thresholds from enforcement)
-  const queryLimit = isUnlimited(limits.queriesPerMonth) ? null : limits.queriesPerMonth;
-  const tokenLimit = isUnlimited(limits.tokensPerMonth) ? null : limits.tokensPerMonth;
+    if (!orgId) {
+      return c.json({ error: "org_required", message: "No active organization. Select a workspace first." }, 400);
+    }
 
-  const queryOverage = queryLimit !== null
-    ? buildMetricStatus("queries", usage.queryCount, queryLimit)
-    : { usagePercent: 0, status: "ok" as const };
-  const tokenOverage = tokenLimit !== null
-    ? buildMetricStatus("tokens", usage.tokenCount, tokenLimit)
-    : { usagePercent: 0, status: "ok" as const };
+    const [workspace, usage] = yield* Effect.promise(() => Promise.all([
+      getWorkspaceDetails(orgId),
+      getCurrentPeriodUsage(orgId),
+    ]));
 
-  return c.json({
-    workspaceId: orgId,
-    plan: {
-      tier: workspace.plan_tier,
-      displayName: plan.displayName,
-      byot: workspace.byot,
-      trialEndsAt: workspace.trial_ends_at,
-    },
-    limits: {
-      queriesPerMonth: queryLimit,
-      tokensPerMonth: tokenLimit,
-      maxMembers: isUnlimited(limits.maxMembers) ? null : limits.maxMembers,
-      maxConnections: isUnlimited(limits.maxConnections) ? null : limits.maxConnections,
-    },
-    usage: {
-      queryCount: usage.queryCount,
-      tokenCount: usage.tokenCount,
-      queryUsagePercent: queryOverage.usagePercent,
-      tokenUsagePercent: tokenOverage.usagePercent,
-      queryOverageStatus: queryOverage.status,
-      tokenOverageStatus: tokenOverage.status,
-      periodStart: usage.periodStart,
-      periodEnd: usage.periodEnd,
-    },
-    subscription: subscription ? {
-      stripeSubscriptionId: subscription.stripeSubscriptionId,
-      plan: subscription.plan,
-      status: subscription.status,
-    } : null,
-  }, 200);
-}));
+    if (!workspace) {
+      return c.json({ error: "not_found", message: "Workspace not found." }, 404);
+    }
+
+    const plan = getPlanDefinition(workspace.plan_tier);
+    const limits = getPlanLimits(workspace.plan_tier);
+
+    // Fetch active subscription from Better Auth's subscription table (if exists)
+    let subscription: { stripeSubscriptionId: string; plan: string; status: string } | null = null;
+    const subResult = yield* Effect.tryPromise({
+      try: () => internalQuery<{
+        stripeSubscriptionId: string;
+        plan: string;
+        status: string;
+      }>(
+        `SELECT "stripeSubscriptionId", plan, status FROM subscription WHERE "referenceId" = $1 AND status IN ('active', 'trialing') LIMIT 1`,
+        [orgId],
+      ),
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    }).pipe(Effect.catchAll((err) => {
+      // Subscription table may not exist if Stripe plugin hasn't run migrations yet.
+      log.debug(
+        { err: err.message, orgId },
+        "Failed to query subscription table — may not exist yet",
+      );
+      return Effect.succeed([] as Array<{ stripeSubscriptionId: string; plan: string; status: string }>);
+    }));
+    if (subResult.length > 0) {
+      subscription = subResult[0];
+    }
+
+    // Compute overage status for each metered dimension (reuses shared thresholds from enforcement)
+    const queryLimit = isUnlimited(limits.queriesPerMonth) ? null : limits.queriesPerMonth;
+    const tokenLimit = isUnlimited(limits.tokensPerMonth) ? null : limits.tokensPerMonth;
+
+    const queryOverage = queryLimit !== null
+      ? buildMetricStatus("queries", usage.queryCount, queryLimit)
+      : { usagePercent: 0, status: "ok" as const };
+    const tokenOverage = tokenLimit !== null
+      ? buildMetricStatus("tokens", usage.tokenCount, tokenLimit)
+      : { usagePercent: 0, status: "ok" as const };
+
+    return c.json({
+      workspaceId: orgId,
+      plan: {
+        tier: workspace.plan_tier,
+        displayName: plan.displayName,
+        byot: workspace.byot,
+        trialEndsAt: workspace.trial_ends_at,
+      },
+      limits: {
+        queriesPerMonth: queryLimit,
+        tokensPerMonth: tokenLimit,
+        maxMembers: isUnlimited(limits.maxMembers) ? null : limits.maxMembers,
+        maxConnections: isUnlimited(limits.maxConnections) ? null : limits.maxConnections,
+      },
+      usage: {
+        queryCount: usage.queryCount,
+        tokenCount: usage.tokenCount,
+        queryUsagePercent: queryOverage.usagePercent,
+        tokenUsagePercent: tokenOverage.usagePercent,
+        queryOverageStatus: queryOverage.status,
+        tokenOverageStatus: tokenOverage.status,
+        periodStart: usage.periodStart,
+        periodEnd: usage.periodEnd,
+      },
+      subscription: subscription ? {
+        stripeSubscriptionId: subscription.stripeSubscriptionId,
+        plan: subscription.plan,
+        status: subscription.status,
+      } : null,
+    }, 200);
+  }), { label: "fetch billing status" });
+});
 
 // GET /status is accessible via the root handler since billing is mounted
 // at /api/v1/billing — both /api/v1/billing and /api/v1/billing/status work.
 
 // POST /portal — create Stripe Customer Portal session
-billing.openapi(createPortalSessionRoute, async (c) => runHandler(c, "create portal session", async () => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
+billing.openapi(createPortalSessionRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const { orgId } = yield* AuthContext;
 
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "Billing is not available." }, 404);
-  }
+    if (!hasInternalDB()) {
+      return c.json({ error: "not_available", message: "Billing is not available." }, 404);
+    }
 
-  const orgId = authResult.user?.activeOrganizationId;
-  if (!orgId) {
-    return c.json({ error: "org_required", message: "No active organization." }, 400);
-  }
+    if (!orgId) {
+      return c.json({ error: "org_required", message: "No active organization." }, 400);
+    }
 
-  const workspace = await getWorkspaceDetails(orgId);
-  if (!workspace?.stripe_customer_id) {
-    return c.json({ error: "no_customer", message: "No Stripe customer associated with this workspace. Subscribe to a plan first." }, 400);
-  }
+    const workspace = yield* Effect.promise(() => getWorkspaceDetails(orgId));
+    if (!workspace?.stripe_customer_id) {
+      return c.json({ error: "no_customer", message: "No Stripe customer associated with this workspace. Subscribe to a plan first." }, 400);
+    }
 
-  let returnUrl: string | undefined;
-  try {
-    const body = c.req.valid("json");
-    returnUrl = body.returnUrl;
-  } catch (err) {
-    // No body is fine — returnUrl is optional. Log if validation failed on a present body.
-    log.debug({ err: err instanceof Error ? err.message : String(err), requestId }, "Portal body parse/validation skipped — using default returnUrl");
-  }
+    let returnUrl: string | undefined;
+    try {
+      const body = c.req.valid("json");
+      returnUrl = body.returnUrl;
+    } catch (err) {
+      // No body is fine — returnUrl is optional. Log if validation failed on a present body.
+      log.debug({ err: err instanceof Error ? err.message : String(err), requestId }, "Portal body parse/validation skipped — using default returnUrl");
+    }
 
-  const stripeClient = new Stripe(process.env.STRIPE_SECRET_KEY!);
-  const session = await stripeClient.billingPortal.sessions.create({
-    customer: workspace.stripe_customer_id,
-    return_url: returnUrl || process.env.BETTER_AUTH_URL || "http://localhost:3000",
-  });
+    // Non-null: guarded by the !workspace?.stripe_customer_id check above
+    const customerId = workspace.stripe_customer_id!;
+    const stripeClient = new Stripe(process.env.STRIPE_SECRET_KEY!);
+    const session = yield* Effect.promise(() => stripeClient.billingPortal.sessions.create({
+      customer: customerId,
+      return_url: returnUrl || process.env.BETTER_AUTH_URL || "http://localhost:3000",
+    }));
 
-  return c.json({ url: session.url }, 200);
-}));
+    return c.json({ url: session.url }, 200);
+  }), { label: "create portal session" });
+});
 
 // POST /byot — toggle BYOT (Bring Your Own Token) mode
-billing.openapi(toggleByotRoute, async (c) => runHandler(c, "update BYOT setting", async () => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
+billing.openapi(toggleByotRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const { mode, user, orgId } = yield* AuthContext;
 
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "Billing is not available." }, 404);
-  }
+    if (!hasInternalDB()) {
+      return c.json({ error: "not_available", message: "Billing is not available." }, 404);
+    }
 
-  // Require admin or owner role for BYOT toggle
-  if (authResult.mode !== "none" && (!authResult.user || (authResult.user.role !== "admin" && authResult.user.role !== "owner"))) {
-    return c.json({ error: "forbidden_role", message: "Admin or owner role required to change BYOT setting.", requestId }, 403);
-  }
+    // Require admin or owner role for BYOT toggle
+    if (mode !== "none" && (!user || (user.role !== "admin" && user.role !== "owner"))) {
+      return c.json({ error: "forbidden_role", message: "Admin or owner role required to change BYOT setting.", requestId }, 403);
+    }
 
-  const orgId = authResult.user?.activeOrganizationId;
-  if (!orgId) {
-    return c.json({ error: "org_required", message: "No active organization." }, 400);
-  }
+    if (!orgId) {
+      return c.json({ error: "org_required", message: "No active organization." }, 400);
+    }
 
-  const { enabled } = c.req.valid("json");
+    const { enabled } = c.req.valid("json");
 
-  const updated = await updateWorkspaceByot(orgId, enabled);
-  if (!updated) {
-    return c.json({ error: "not_found", message: "Workspace not found." }, 404);
-  }
+    const updated = yield* Effect.promise(() => updateWorkspaceByot(orgId, enabled));
+    if (!updated) {
+      return c.json({ error: "not_found", message: "Workspace not found." }, 404);
+    }
 
-  log.info({ orgId, byot: enabled, userId: authResult.user?.id }, "BYOT mode toggled");
-  return c.json({ workspaceId: orgId, byot: enabled }, 200);
-}));
+    log.info({ orgId, byot: enabled, userId: user?.id }, "BYOT mode toggled");
+    return c.json({ workspaceId: orgId, byot: enabled }, 200);
+  }), { label: "update BYOT setting" });
+});
 
 // ---------------------------------------------------------------------------
 // Error handler — catches malformed JSON on POST routes

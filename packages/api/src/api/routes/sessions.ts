@@ -7,7 +7,9 @@
  */
 
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
-import { runHandler } from "@atlas/api/lib/effect/hono";
+import { Effect } from "effect";
+import { runEffect } from "@atlas/api/lib/effect/hono";
+import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
 import { validationHook } from "./validation-hook";
 import { z } from "zod";
 import { createLogger } from "@atlas/api/lib/logger";
@@ -129,78 +131,80 @@ sessions.use(standardAuth);
 sessions.use(requestContext);
 
 // GET / — list the current user's sessions
-sessions.openapi(listSessionsRoute, async (c) => runHandler(c, "list sessions", async () => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
+sessions.openapi(listSessionsRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const { user } = yield* AuthContext;
 
-  const user = authResult.user;
-  if (!hasInternalDB() || detectAuthMode() !== "managed" || !user) {
-    return c.json({ error: "not_available", message: "Session management requires managed auth mode.", requestId }, 404);
-  }
+    if (!hasInternalDB() || detectAuthMode() !== "managed" || !user) {
+      return c.json({ error: "not_available", message: "Session management requires managed auth mode.", requestId }, 404);
+    }
 
-  const userId = user.id;
+    const userId = user.id;
 
-  const rows = await internalQuery<{
-    id: string;
-    createdAt: string;
-    updatedAt: string;
-    expiresAt: string;
-    ipAddress: string | null;
-    userAgent: string | null;
-  }>(
-    `SELECT id, "createdAt", "updatedAt", "expiresAt", "ipAddress", "userAgent"
-     FROM session
-     WHERE "userId" = $1
-     ORDER BY "updatedAt" DESC
-     LIMIT 100`,
-    [userId],
-  );
+    const rows = yield* Effect.promise(() => internalQuery<{
+      id: string;
+      createdAt: string;
+      updatedAt: string;
+      expiresAt: string;
+      ipAddress: string | null;
+      userAgent: string | null;
+    }>(
+      `SELECT id, "createdAt", "updatedAt", "expiresAt", "ipAddress", "userAgent"
+       FROM session
+       WHERE "userId" = $1
+       ORDER BY "updatedAt" DESC
+       LIMIT 100`,
+      [userId],
+    ));
 
-  return c.json({
-    sessions: rows.map((r) => ({
-      id: r.id,
-      createdAt: r.createdAt,
-      updatedAt: r.updatedAt,
-      expiresAt: r.expiresAt,
-      ipAddress: r.ipAddress,
-      userAgent: r.userAgent,
-    })),
-  }, 200);
-}));
+    return c.json({
+      sessions: rows.map((r) => ({
+        id: r.id,
+        createdAt: r.createdAt,
+        updatedAt: r.updatedAt,
+        expiresAt: r.expiresAt,
+        ipAddress: r.ipAddress,
+        userAgent: r.userAgent,
+      })),
+    }, 200);
+  }), { label: "list sessions" });
+});
 
 // DELETE /:id — revoke one of the current user's sessions
-sessions.openapi(revokeSessionRoute, async (c) => runHandler(c, "revoke session", async () => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
+sessions.openapi(revokeSessionRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const { user } = yield* AuthContext;
 
-  const user = authResult.user;
-  if (!hasInternalDB() || detectAuthMode() !== "managed" || !user) {
-    return c.json({ error: "not_available", message: "Session management requires managed auth mode.", requestId }, 404);
-  }
-
-  const userId = user.id;
-  const { id: sessionId } = c.req.valid("param");
-
-  // Atomic delete scoped to the current user — returns empty if
-  // the session doesn't exist or belongs to another user.
-  const deleted = await internalQuery<{ id: string }>(
-    `DELETE FROM session WHERE id = $1 AND "userId" = $2 RETURNING id`,
-    [sessionId, userId],
-  );
-  if (deleted.length === 0) {
-    // Distinguish "not found" from "wrong user" for a clear error message
-    const exists = await internalQuery<{ userId: string }>(
-      `SELECT "userId" FROM session WHERE id = $1`,
-      [sessionId],
-    );
-    if (exists.length === 0) {
-      return c.json({ error: "not_found", message: "Session not found." }, 404);
+    if (!hasInternalDB() || detectAuthMode() !== "managed" || !user) {
+      return c.json({ error: "not_available", message: "Session management requires managed auth mode.", requestId }, 404);
     }
-    return c.json({ error: "forbidden", message: "Cannot revoke another user's session.", requestId }, 403);
-  }
 
-  log.info({ requestId, sessionId, userId }, "User revoked own session");
-  return c.json({ success: true }, 200);
-}));
+    const userId = user.id;
+    const { id: sessionId } = c.req.valid("param");
+
+    // Atomic delete scoped to the current user — returns empty if
+    // the session doesn't exist or belongs to another user.
+    const deleted = yield* Effect.promise(() => internalQuery<{ id: string }>(
+      `DELETE FROM session WHERE id = $1 AND "userId" = $2 RETURNING id`,
+      [sessionId, userId],
+    ));
+    if (deleted.length === 0) {
+      // Distinguish "not found" from "wrong user" for a clear error message
+      const exists = yield* Effect.promise(() => internalQuery<{ userId: string }>(
+        `SELECT "userId" FROM session WHERE id = $1`,
+        [sessionId],
+      ));
+      if (exists.length === 0) {
+        return c.json({ error: "not_found", message: "Session not found." }, 404);
+      }
+      return c.json({ error: "forbidden", message: "Cannot revoke another user's session.", requestId }, 403);
+    }
+
+    log.info({ requestId, sessionId, userId }, "User revoked own session");
+    return c.json({ success: true }, 200);
+  }), { label: "revoke session" });
+});
 
 export { sessions };

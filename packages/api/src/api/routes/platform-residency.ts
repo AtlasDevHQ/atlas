@@ -11,8 +11,12 @@
  */
 
 import { createRoute, z } from "@hono/zod-openapi";
+import { Effect } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
-import { runHandler, type DomainErrorMapping } from "@atlas/api/lib/effect/hono";
+import { runEffect, type DomainErrorMapping } from "@atlas/api/lib/effect/hono";
+import {
+  RequestContext,
+} from "@atlas/api/lib/effect/services";
 import { ResidencyError, type ResidencyErrorCode } from "@atlas/ee/platform/residency";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
@@ -180,66 +184,74 @@ const platformResidency = createPlatformRouter();
 
 // ── List regions ─────────────────────────────────────────────────────
 
-platformResidency.openapi(listRegionsRoute, async (c) => runHandler(c, "list regions", async () => {
-  const requestId = c.get("requestId");
+platformResidency.openapi(listRegionsRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
 
-  const mod = await loadResidency();
-  if (!mod) {
-    return c.json({ error: "not_available", message: "Data residency requires enterprise features to be enabled.", requestId }, 404);
-  }
+    const mod = yield* Effect.promise(() => loadResidency());
+    if (!mod) {
+      return c.json({ error: "not_available", message: "Data residency requires enterprise features to be enabled.", requestId }, 404);
+    }
 
-  const regions = await mod.listRegions();
-  const defaultRegion = mod.getDefaultRegion();
-  return c.json({ regions, defaultRegion }, 200);
-}, { domainErrors: residencyDomainErrors }));
+    const regions = yield* Effect.promise(() => mod.listRegions());
+    const defaultRegion = mod.getDefaultRegion();
+    return c.json({ regions, defaultRegion }, 200);
+  }), { label: "list regions", domainErrors: residencyDomainErrors });
+});
 
 // ── Get workspace region ─────────────────────────────────────────────
 
-platformResidency.openapi(getWorkspaceRegionRoute, async (c) => runHandler(c, "get workspace region", async () => {
-  const requestId = c.get("requestId");
-  const workspaceId = c.req.param("id");
+platformResidency.openapi(getWorkspaceRegionRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const workspaceId = c.req.param("id");
 
-  const mod = await loadResidency();
-  if (!mod) {
-    return c.json({ error: "not_available", message: "Data residency requires enterprise features to be enabled.", requestId }, 404);
-  }
+    const mod = yield* Effect.promise(() => loadResidency());
+    if (!mod) {
+      return c.json({ error: "not_available", message: "Data residency requires enterprise features to be enabled.", requestId }, 404);
+    }
 
-  const assignment = await mod.getWorkspaceRegionAssignment(workspaceId);
-  if (!assignment) {
-    return c.json({ error: "not_found", message: `Workspace "${workspaceId}" has no region assigned.`, requestId }, 404);
-  }
-  return c.json(assignment, 200);
-}, { domainErrors: residencyDomainErrors }));
+    const assignment = yield* Effect.promise(() => mod.getWorkspaceRegionAssignment(workspaceId));
+    if (!assignment) {
+      return c.json({ error: "not_found", message: `Workspace "${workspaceId}" has no region assigned.`, requestId }, 404);
+    }
+    return c.json(assignment, 200);
+  }), { label: "get workspace region", domainErrors: residencyDomainErrors });
+});
 
 // ── Assign region to workspace ───────────────────────────────────────
 
-platformResidency.openapi(assignRegionRoute, async (c) => runHandler(c, "assign region", async () => {
-  const requestId = c.get("requestId");
-  const workspaceId = c.req.param("id");
-  const body = c.req.valid("json");
+platformResidency.openapi(assignRegionRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const workspaceId = c.req.param("id");
+    const body = c.req.valid("json");
 
-  const mod = await loadResidency();
-  if (!mod) {
-    return c.json({ error: "not_available", message: "Data residency requires enterprise features to be enabled.", requestId }, 404);
-  }
+    const mod = yield* Effect.promise(() => loadResidency());
+    if (!mod) {
+      return c.json({ error: "not_available", message: "Data residency requires enterprise features to be enabled.", requestId }, 404);
+    }
 
-  const assignment = await mod.assignWorkspaceRegion(workspaceId, body.region);
-  log.info({ workspaceId, region: body.region, requestId }, "Region assigned to workspace");
-  return c.json(assignment, 200);
-}, { domainErrors: residencyDomainErrors }));
+    const assignment = yield* Effect.promise(() => mod.assignWorkspaceRegion(workspaceId, body.region));
+    log.info({ workspaceId, region: body.region, requestId }, "Region assigned to workspace");
+    return c.json(assignment, 200);
+  }), { label: "assign region", domainErrors: residencyDomainErrors });
+});
 
 // ── List all assignments ─────────────────────────────────────────────
 
-platformResidency.openapi(listAssignmentsRoute, async (c) => runHandler(c, "list region assignments", async () => {
-  const requestId = c.get("requestId");
+platformResidency.openapi(listAssignmentsRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
 
-  const mod = await loadResidency();
-  if (!mod) {
-    return c.json({ error: "not_available", message: "Data residency requires enterprise features to be enabled.", requestId }, 404);
-  }
+    const mod = yield* Effect.promise(() => loadResidency());
+    if (!mod) {
+      return c.json({ error: "not_available", message: "Data residency requires enterprise features to be enabled.", requestId }, 404);
+    }
 
-  const assignments = await mod.listWorkspaceRegions();
-  return c.json({ assignments }, 200);
-}, { domainErrors: residencyDomainErrors }));
+    const assignments = yield* Effect.promise(() => mod.listWorkspaceRegions());
+    return c.json({ assignments }, 200);
+  }), { label: "list region assignments", domainErrors: residencyDomainErrors });
+});
 
 export { platformResidency };

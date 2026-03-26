@@ -12,7 +12,9 @@
  */
 
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
-import { runHandler } from "@atlas/api/lib/effect/hono";
+import { Effect } from "effect";
+import { runEffect } from "@atlas/api/lib/effect/hono";
+import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
 import { validationHook } from "./validation-hook";
 import { z } from "zod";
 import { createLogger } from "@atlas/api/lib/logger";
@@ -169,57 +171,63 @@ suggestions.use(standardAuth);
 suggestions.use(requestContext);
 
 // GET / — contextual suggestions by table
-suggestions.openapi(listSuggestionsRoute, async (c) => runHandler(c, "fetch suggestions", async () => {
-  const authResult = c.get("authResult");
+suggestions.openapi(listSuggestionsRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { orgId } = yield* AuthContext;
 
-  if (!hasInternalDB()) {
-    return c.json({ suggestions: [], total: 0 }, 200);
-  }
+    if (!hasInternalDB()) {
+      return c.json({ suggestions: [], total: 0 }, 200);
+    }
 
-  const tables = c.req.queries("table") ?? [];
-  if (tables.length === 0) {
-    return c.json({ error: "At least one 'table' query parameter is required" }, { status: 400 });
-  }
+    const tables = c.req.queries("table") ?? [];
+    if (tables.length === 0) {
+      return c.json({ error: "At least one 'table' query parameter is required" }, { status: 400 });
+    }
 
-  const { limit } = parsePagination(c, { limit: 10, maxLimit: 50 });
-  const orgId = authResult.user?.activeOrganizationId ?? null;
+    const { limit } = parsePagination(c, { limit: 10, maxLimit: 50 });
+    const resolvedOrgId = orgId ?? null;
 
-  const rows = await getSuggestionsByTables(orgId, tables, limit);
-  return c.json({ suggestions: rows.map(toQuerySuggestion), total: rows.length }, 200);
-}));
+    const rows = yield* Effect.promise(() => getSuggestionsByTables(resolvedOrgId, tables, limit));
+    return c.json({ suggestions: rows.map(toQuerySuggestion), total: rows.length }, 200);
+  }), { label: "fetch suggestions" });
+});
 
 // GET /popular — top suggestions across all tables
-suggestions.openapi(listPopularRoute, async (c) => runHandler(c, "fetch suggestions", async () => {
-  const authResult = c.get("authResult");
+suggestions.openapi(listPopularRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { orgId } = yield* AuthContext;
 
-  if (!hasInternalDB()) {
-    return c.json({ suggestions: [], total: 0 }, 200);
-  }
+    if (!hasInternalDB()) {
+      return c.json({ suggestions: [], total: 0 }, 200);
+    }
 
-  const { limit } = parsePagination(c, { limit: 10, maxLimit: 50 });
-  const orgId = authResult.user?.activeOrganizationId ?? null;
+    const { limit } = parsePagination(c, { limit: 10, maxLimit: 50 });
+    const resolvedOrgId = orgId ?? null;
 
-  const rows = await getPopularSuggestions(orgId, limit);
-  return c.json({ suggestions: rows.map(toQuerySuggestion), total: rows.length }, 200);
-}));
+    const rows = yield* Effect.promise(() => getPopularSuggestions(resolvedOrgId, limit));
+    return c.json({ suggestions: rows.map(toQuerySuggestion), total: rows.length }, 200);
+  }), { label: "fetch suggestions" });
+});
 
 // POST /:id/click — track engagement
 suggestions.openapi(trackClickRoute, async (c) => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const { orgId } = yield* AuthContext;
 
-  const orgId = authResult.user?.activeOrganizationId ?? null;
-  const { id } = c.req.valid("param");
+    const resolvedOrgId = orgId ?? null;
+    const { id } = c.req.valid("param");
 
-  // Fire-and-forget: always return 204
-  try {
-    incrementSuggestionClick(id, orgId);
-  } catch (err) {
-    log.warn(
-      { err: err instanceof Error ? err.message : String(err), requestId },
-      "Click tracking failed",
-    );
-  }
+    // Fire-and-forget: always return 204
+    try {
+      incrementSuggestionClick(id, resolvedOrgId);
+    } catch (err) {
+      log.warn(
+        { err: err instanceof Error ? err.message : String(err), requestId },
+        "Click tracking failed",
+      );
+    }
 
-  return c.body(null, 204);
+    return c.body(null, 204);
+  }), { label: "track suggestion click" });
 });

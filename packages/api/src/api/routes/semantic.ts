@@ -8,7 +8,9 @@
 
 import * as path from "path";
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
-import { runHandler } from "@atlas/api/lib/effect/hono";
+import { Effect } from "effect";
+import { runEffect } from "@atlas/api/lib/effect/hono";
+import { RequestContext } from "@atlas/api/lib/effect/services";
 import { validationHook } from "./validation-hook";
 import { createLogger } from "@atlas/api/lib/logger";
 import {
@@ -132,42 +134,46 @@ semantic.use(standardAuth);
 semantic.use(requestContext);
 
 // GET /entities — list all entities (public summary: drops measureCount, connection, source)
-semantic.openapi(listEntitiesRoute, async (c) => runHandler(c, "load entity list", async () => {
-  const root = getSemanticRoot();
-  const result = discoverEntities(root);
-  const entities = result.entities.map(({ table, description, columnCount, joinCount, type }) => ({
-    table, description, columnCount, joinCount, type: type ?? "",
-  }));
-  return c.json({
-    entities,
-    ...(result.warnings.length > 0 && { warnings: result.warnings }),
-  }, 200);
-}));
+semantic.openapi(listEntitiesRoute, async (c) => {
+  return runEffect(c, Effect.sync(() => {
+    const root = getSemanticRoot();
+    const discovered = discoverEntities(root);
+    const entities = discovered.entities.map(({ table, description, columnCount, joinCount, type }) => ({
+      table, description, columnCount, joinCount, type: type ?? "",
+    }));
+    return c.json({
+      entities,
+      ...(discovered.warnings.length > 0 && { warnings: discovered.warnings }),
+    }, 200);
+  }), { label: "load entity list" });
+});
 
 // GET /entities/{name} — full entity detail
-semantic.openapi(getEntityRoute, async (c) => runHandler(c, "parse entity file", async () => {
-  const requestId = c.get("requestId");
+semantic.openapi(getEntityRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
 
-  const { name } = c.req.valid("param");
+    const { name } = c.req.valid("param");
 
-  if (!isValidEntityName(name)) {
-    log.warn({ requestId, name }, "Rejected invalid entity name");
-    return c.json({ error: "invalid_request", message: "Invalid entity name." }, 400);
-  }
+    if (!isValidEntityName(name)) {
+      log.warn({ requestId, name }, "Rejected invalid entity name");
+      return c.json({ error: "invalid_request", message: "Invalid entity name." }, 400);
+    }
 
-  const root = getSemanticRoot();
-  const filePath = findEntityFile(root, name);
-  if (!filePath) {
-    return c.json({ error: "not_found", message: `Entity "${name}" not found.` }, 404);
-  }
+    const root = getSemanticRoot();
+    const filePath = findEntityFile(root, name);
+    if (!filePath) {
+      return c.json({ error: "not_found", message: `Entity "${name}" not found.` }, 404);
+    }
 
-  // Defense-in-depth: verify resolved path is within semantic root
-  const resolved = path.resolve(filePath);
-  if (!resolved.startsWith(path.resolve(root))) {
-    log.error({ requestId, name, resolved, root }, "Resolved entity path escaped semantic root");
-    return c.json({ error: "forbidden", message: "Access denied.", requestId }, 403);
-  }
+    // Defense-in-depth: verify resolved path is within semantic root
+    const resolved = path.resolve(filePath);
+    if (!resolved.startsWith(path.resolve(root))) {
+      log.error({ requestId, name, resolved, root }, "Resolved entity path escaped semantic root");
+      return c.json({ error: "forbidden", message: "Access denied.", requestId }, 403);
+    }
 
-  const raw = readYamlFile(filePath);
-  return c.json({ entity: raw }, 200);
-}));
+    const raw = readYamlFile(filePath);
+    return c.json({ entity: raw }, 200);
+  }), { label: "parse entity file" });
+});

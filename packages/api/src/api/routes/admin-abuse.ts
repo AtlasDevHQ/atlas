@@ -5,6 +5,7 @@
  * Provides listing of flagged workspaces, reinstatement, and threshold config.
  */
 
+import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
 import {
   listFlaggedWorkspaces,
@@ -12,7 +13,8 @@ import {
   getAbuseEvents,
   getAbuseConfig,
 } from "@atlas/api/lib/security/abuse";
-import { runHandler } from "@atlas/api/lib/effect/hono";
+import { runEffect } from "@atlas/api/lib/effect/hono";
+import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
 import { ErrorSchema, AuthErrorSchema, createListResponseSchema } from "./shared-schemas";
 import { createAdminRouter } from "./admin-router";
 
@@ -167,45 +169,51 @@ const getConfigRoute = createRoute({
 const adminAbuse = createAdminRouter();
 
 // GET / — list flagged workspaces
-adminAbuse.openapi(listFlaggedRoute, async (c) => runHandler(c, "list flagged workspaces", async () => {
-  const workspaces = listFlaggedWorkspaces();
+adminAbuse.openapi(listFlaggedRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const workspaces = listFlaggedWorkspaces();
 
-  // Enrich with recent events from DB
-  const enriched = await Promise.all(
-    workspaces.map(async (ws) => {
-      const events = await getAbuseEvents(ws.workspaceId, 10);
-      return { ...ws, events };
-    }),
-  );
+    // Enrich with recent events from DB
+    const enriched = yield* Effect.promise(() => Promise.all(
+      workspaces.map(async (ws) => {
+        const events = await getAbuseEvents(ws.workspaceId, 10);
+        return { ...ws, events };
+      }),
+    ));
 
-  return c.json({ workspaces: enriched, total: enriched.length }, 200);
-}));
+    return c.json({ workspaces: enriched, total: enriched.length }, 200);
+  }), { label: "list flagged workspaces" });
+});
 
 // POST /:workspaceId/reinstate — reinstate a workspace
-adminAbuse.openapi(reinstateRoute, async (c) => runHandler(c, "reinstate workspace", async () => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
-  const { workspaceId } = c.req.valid("param");
-  const actorId = authResult.user?.id ?? "unknown";
+adminAbuse.openapi(reinstateRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const { user } = yield* AuthContext;
+    const { workspaceId } = c.req.valid("param");
+    const actorId = user?.id ?? "unknown";
 
-  const success = reinstateWorkspace(workspaceId, actorId);
-  if (!success) {
-    return c.json(
-      { error: "not_flagged", message: "Workspace is not currently flagged for abuse.", requestId },
-      400,
-    );
-  }
+    const success = reinstateWorkspace(workspaceId, actorId);
+    if (!success) {
+      return c.json(
+        { error: "not_flagged", message: "Workspace is not currently flagged for abuse.", requestId },
+        400,
+      );
+    }
 
-  return c.json({
-    success: true,
-    workspaceId,
-    message: "Workspace reinstated successfully.",
-  }, 200);
-}));
+    return c.json({
+      success: true,
+      workspaceId,
+      message: "Workspace reinstated successfully.",
+    }, 200);
+  }), { label: "reinstate workspace" });
+});
 
 // GET /config — current threshold configuration
-adminAbuse.openapi(getConfigRoute, async (c) => runHandler(c, "read abuse config", async () => {
-  return c.json(getAbuseConfig(), 200);
-}));
+adminAbuse.openapi(getConfigRoute, async (c) => {
+  return runEffect(c, Effect.sync(() => {
+    return c.json(getAbuseConfig(), 200);
+  }), { label: "read abuse config" });
+});
 
 export { adminAbuse };

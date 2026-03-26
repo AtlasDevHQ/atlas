@@ -11,8 +11,12 @@
  */
 
 import { createRoute, z } from "@hono/zod-openapi";
+import { Effect } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
-import { runHandler, type DomainErrorMapping } from "@atlas/api/lib/effect/hono";
+import { runEffect, type DomainErrorMapping } from "@atlas/api/lib/effect/hono";
+import {
+  RequestContext,
+} from "@atlas/api/lib/effect/services";
 import { DomainError, type DomainErrorCode } from "@atlas/ee/platform/domains";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
@@ -201,78 +205,95 @@ const platformDomains = createPlatformRouter();
 
 // ── List all domains ─────────────────────────────────────────────────
 
-platformDomains.openapi(listDomainsRoute, async (c) => runHandler(c, "list domains", async () => {
-  const requestId = c.get("requestId");
+platformDomains.openapi(listDomainsRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
 
-  const mod = await loadDomains();
-  if (!mod) {
-    return c.json({ error: "not_available", message: "Custom domains require enterprise features to be enabled.", requestId }, 404);
-  }
+    const mod = yield* Effect.promise(() => loadDomains());
+    if (!mod) {
+      return c.json({ error: "not_available", message: "Custom domains require enterprise features to be enabled.", requestId }, 404);
+    }
 
-  const domains = await mod.listAllDomains();
-  return c.json({ domains }, 200);
-}, { domainErrors: domainDomainErrors }));
+    const domains = yield* Effect.promise(() => mod.listAllDomains());
+    return c.json({ domains }, 200);
+  }), { label: "list domains", domainErrors: domainDomainErrors });
+});
 
 // ── Register domain ──────────────────────────────────────────────────
 
-platformDomains.openapi(registerDomainRoute, async (c) => runHandler(c, "register domain", async () => {
-  const requestId = c.get("requestId");
-  const body = c.req.valid("json");
+platformDomains.openapi(registerDomainRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const body = c.req.valid("json");
 
-  const mod = await loadDomains();
-  if (!mod) {
-    return c.json({ error: "not_available", message: "Custom domains require enterprise features to be enabled.", requestId }, 404);
-  }
+    const mod = yield* Effect.promise(() => loadDomains());
+    if (!mod) {
+      return c.json({ error: "not_available", message: "Custom domains require enterprise features to be enabled.", requestId }, 404);
+    }
 
-  try {
-    const domain = await mod.registerDomain(body.workspaceId, body.domain);
-    log.info({ workspaceId: body.workspaceId, domain: body.domain, requestId }, "Custom domain registered");
-    return c.json(domain, 201);
-  } catch (err) {
-    sanitizeDomainError(err, requestId);
-    throw err;
-  }
-}, { domainErrors: domainDomainErrors }));
+    return yield* Effect.tryPromise({
+      try: async () => {
+        const domain = await mod.registerDomain(body.workspaceId, body.domain);
+        log.info({ workspaceId: body.workspaceId, domain: body.domain, requestId }, "Custom domain registered");
+        return c.json(domain, 201);
+      },
+      catch: (err) => {
+        sanitizeDomainError(err, requestId);
+        return err instanceof Error ? err : new Error(String(err));
+      },
+    });
+  }), { label: "register domain", domainErrors: domainDomainErrors });
+});
 
 // ── Verify domain ────────────────────────────────────────────────────
 
-platformDomains.openapi(verifyDomainRoute, async (c) => runHandler(c, "verify domain", async () => {
-  const requestId = c.get("requestId");
-  const domainId = c.req.param("id");
+platformDomains.openapi(verifyDomainRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const domainId = c.req.param("id");
 
-  const mod = await loadDomains();
-  if (!mod) {
-    return c.json({ error: "not_available", message: "Custom domains require enterprise features to be enabled.", requestId }, 404);
-  }
+    const mod = yield* Effect.promise(() => loadDomains());
+    if (!mod) {
+      return c.json({ error: "not_available", message: "Custom domains require enterprise features to be enabled.", requestId }, 404);
+    }
 
-  try {
-    const domain = await mod.verifyDomain(domainId);
-    return c.json(domain, 200);
-  } catch (err) {
-    sanitizeDomainError(err, requestId);
-    throw err;
-  }
-}, { domainErrors: domainDomainErrors }));
+    return yield* Effect.tryPromise({
+      try: async () => {
+        const domain = await mod.verifyDomain(domainId);
+        return c.json(domain, 200);
+      },
+      catch: (err) => {
+        sanitizeDomainError(err, requestId);
+        return err instanceof Error ? err : new Error(String(err));
+      },
+    });
+  }), { label: "verify domain", domainErrors: domainDomainErrors });
+});
 
 // ── Delete domain ────────────────────────────────────────────────────
 
-platformDomains.openapi(deleteDomainRoute, async (c) => runHandler(c, "delete domain", async () => {
-  const requestId = c.get("requestId");
-  const domainId = c.req.param("id");
+platformDomains.openapi(deleteDomainRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const domainId = c.req.param("id");
 
-  const mod = await loadDomains();
-  if (!mod) {
-    return c.json({ error: "not_available", message: "Custom domains require enterprise features to be enabled.", requestId }, 404);
-  }
+    const mod = yield* Effect.promise(() => loadDomains());
+    if (!mod) {
+      return c.json({ error: "not_available", message: "Custom domains require enterprise features to be enabled.", requestId }, 404);
+    }
 
-  try {
-    await mod.deleteDomain(domainId);
-    log.info({ domainId, requestId }, "Custom domain deleted");
-    return c.json({ deleted: true }, 200);
-  } catch (err) {
-    sanitizeDomainError(err, requestId);
-    throw err;
-  }
-}, { domainErrors: domainDomainErrors }));
+    return yield* Effect.tryPromise({
+      try: async () => {
+        await mod.deleteDomain(domainId);
+        log.info({ domainId, requestId }, "Custom domain deleted");
+        return c.json({ deleted: true }, 200);
+      },
+      catch: (err) => {
+        sanitizeDomainError(err, requestId);
+        return err instanceof Error ? err : new Error(String(err));
+      },
+    });
+  }), { label: "delete domain", domainErrors: domainDomainErrors });
+});
 
 export { platformDomains };

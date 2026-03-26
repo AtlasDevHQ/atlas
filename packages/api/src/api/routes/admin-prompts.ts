@@ -6,9 +6,11 @@
  * (is_builtin = true) are read-only — mutations return 403.
  */
 
+import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
-import { runHandler } from "@atlas/api/lib/effect/hono";
+import { runEffect } from "@atlas/api/lib/effect/hono";
+import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import type { PromptCollection, PromptItem } from "@useatlas/types";
 import { ErrorSchema, AuthErrorSchema, createIdParamSchema, createParamSchema, createListResponseSchema, DeletedResponseSchema } from "./shared-schemas";
@@ -82,7 +84,6 @@ const ReorderedSchema = z.object({
   reordered: z.boolean(),
 });
 
-
 // ---------------------------------------------------------------------------
 // Route definitions
 // ---------------------------------------------------------------------------
@@ -121,7 +122,6 @@ const listCollectionsRoute = createRoute({
     },
   },
 });
-
 const createCollectionRoute = createRoute({
   method: "post",
   path: "/",
@@ -173,7 +173,6 @@ const createCollectionRoute = createRoute({
     },
   },
 });
-
 const updateCollectionRoute = createRoute({
   method: "patch",
   path: "/{id}",
@@ -187,9 +186,9 @@ const updateCollectionRoute = createRoute({
       content: {
         "application/json": {
           schema: z.object({
-            name: z.string().optional().openapi({ description: "New collection name" }),
-            industry: z.string().optional().openapi({ description: "New industry category" }),
-            description: z.string().optional().openapi({ description: "New description" }),
+            name: z.string().optional(),
+            industry: z.string().optional(),
+            description: z.string().optional(),
           }),
         },
       },
@@ -226,7 +225,6 @@ const updateCollectionRoute = createRoute({
     },
   },
 });
-
 const deleteCollectionRoute = createRoute({
   method: "delete",
   path: "/{id}",
@@ -264,7 +262,6 @@ const deleteCollectionRoute = createRoute({
     },
   },
 });
-
 const createItemRoute = createRoute({
   method: "post",
   path: "/{id}/items",
@@ -318,7 +315,6 @@ const createItemRoute = createRoute({
     },
   },
 });
-
 const updateItemRoute = createRoute({
   method: "patch",
   path: "/{collectionId}/items/{itemId}",
@@ -332,9 +328,9 @@ const updateItemRoute = createRoute({
       content: {
         "application/json": {
           schema: z.object({
-            question: z.string().optional().openapi({ description: "New question text" }),
-            description: z.string().optional().openapi({ description: "New description" }),
-            category: z.string().optional().openapi({ description: "New category" }),
+            question: z.string().optional(),
+            description: z.string().optional(),
+            category: z.string().optional(),
           }),
         },
       },
@@ -371,7 +367,6 @@ const updateItemRoute = createRoute({
     },
   },
 });
-
 const deleteItemRoute = createRoute({
   method: "delete",
   path: "/{collectionId}/items/{itemId}",
@@ -409,7 +404,6 @@ const deleteItemRoute = createRoute({
     },
   },
 });
-
 const reorderItemsRoute = createRoute({
   method: "put",
   path: "/{id}/reorder",
@@ -467,535 +461,273 @@ const reorderItemsRoute = createRoute({
 
 export const adminPrompts = createAdminRouter();
 
-// ---------------------------------------------------------------------------
-// GET / — list all collections (admin view)
-// ---------------------------------------------------------------------------
-
-adminPrompts.openapi(listCollectionsRoute, async (c) => runHandler(c, "list prompt collections", async () => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
-
-  if (!hasInternalDB()) {
-    log.debug({ requestId }, "Prompt collections requested but no internal DB configured");
-    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-  }
-
-  const orgId = authResult.user?.activeOrganizationId;
-
-  let rows: Record<string, unknown>[];
+// Helper to look up collection with org scoping
+async function findCollection(orgId: string | undefined, collectionId: string) {
   if (orgId) {
-    rows = await internalQuery<Record<string, unknown>>(
-      `SELECT * FROM prompt_collections WHERE org_id IS NULL OR org_id = $1 ORDER BY sort_order ASC, created_at ASC`,
-      [orgId],
-    );
-  } else {
-    rows = await internalQuery<Record<string, unknown>>(
-      `SELECT * FROM prompt_collections ORDER BY sort_order ASC, created_at ASC`,
-    );
+    return internalQuery<Record<string, unknown>>(`SELECT * FROM prompt_collections WHERE id = $1 AND (org_id IS NULL OR org_id = $2)`, [collectionId, orgId]);
   }
-
-  return c.json({ collections: rows.map(toPromptCollection), total: rows.length }, 200);
-}));
-
-// ---------------------------------------------------------------------------
-// POST / — create collection
-// ---------------------------------------------------------------------------
-
-adminPrompts.openapi(createCollectionRoute, async (c) => runHandler(c, "create prompt collection", async () => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
-
-  if (!hasInternalDB()) {
-    log.debug({ requestId }, "Prompt collections requested but no internal DB configured");
-    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-  }
-
-  let body: Record<string, unknown>;
-  try {
-    body = await c.req.json();
-  } catch (err) {
-    log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse JSON body");
-    return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400);
-  }
-
-  const name = body.name as string | undefined;
-  const industry = body.industry as string | undefined;
-  const description = (body.description as string) ?? "";
-
-  if (!name || typeof name !== "string") {
-    return c.json({ error: "bad_request", message: "name is required and must be a string." }, 400);
-  }
-  if (!industry || typeof industry !== "string") {
-    return c.json({ error: "bad_request", message: "industry is required and must be a string." }, 400);
-  }
-
-  const orgId = authResult.user?.activeOrganizationId ?? null;
-
-  const rows = await internalQuery<Record<string, unknown>>(
-    `INSERT INTO prompt_collections (org_id, name, industry, description, is_builtin) VALUES ($1, $2, $3, $4, false) RETURNING *`,
-    [orgId, name, industry, description],
-  );
-
-  return c.json(toPromptCollection(rows[0]), 201);
-}));
-
-// ---------------------------------------------------------------------------
-// PATCH /:id — update collection
-// ---------------------------------------------------------------------------
-
-adminPrompts.openapi(updateCollectionRoute, async (c) => runHandler(c, "update prompt collection", async () => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
-
-  if (!hasInternalDB()) {
-    log.debug({ requestId }, "Prompt collections requested but no internal DB configured");
-    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-  }
-
-  const { id } = c.req.valid("param");
-  const orgId = authResult.user?.activeOrganizationId;
-
-  // Lookup collection with org check
-  let existing: Record<string, unknown>[];
-  if (orgId) {
-    existing = await internalQuery<Record<string, unknown>>(
-      `SELECT * FROM prompt_collections WHERE id = $1 AND (org_id IS NULL OR org_id = $2)`,
-      [id, orgId],
-    );
-  } else {
-    existing = await internalQuery<Record<string, unknown>>(
-      `SELECT * FROM prompt_collections WHERE id = $1`,
-      [id],
-    );
-  }
-
-  if (existing.length === 0) {
-    return c.json({ error: "not_found", message: "Prompt collection not found." }, 404);
-  }
-
-  if (existing[0].is_builtin === true) {
-    return c.json({ error: "forbidden", message: "Built-in collections cannot be modified.", requestId }, 403);
-  }
-
-  let body: Record<string, unknown>;
-  try {
-    body = await c.req.json();
-  } catch (err) {
-    log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse JSON body");
-    return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400);
-  }
-
-  const name = body.name as string | undefined;
-  const industry = body.industry as string | undefined;
-  const description = body.description as string | undefined;
-
-  if (name === undefined && industry === undefined && description === undefined) {
-    return c.json({ error: "bad_request", message: "No recognized fields to update. Supported: name, industry, description." }, 400);
-  }
-
-  // Build dynamic UPDATE
-  const setClauses: string[] = ["updated_at = now()"];
-  const updateParams: unknown[] = [];
-  let paramIdx = 1;
-
-  if (name !== undefined) {
-    updateParams.push(name);
-    setClauses.push(`name = $${paramIdx}`);
-    paramIdx++;
-  }
-
-  if (industry !== undefined) {
-    updateParams.push(industry);
-    setClauses.push(`industry = $${paramIdx}`);
-    paramIdx++;
-  }
-
-  if (description !== undefined) {
-    updateParams.push(description);
-    setClauses.push(`description = $${paramIdx}`);
-    paramIdx++;
-  }
-
-  updateParams.push(id);
-  const idIdx = paramIdx;
-
-  const updated = await internalQuery<Record<string, unknown>>(
-    `UPDATE prompt_collections SET ${setClauses.join(", ")} WHERE id = $${idIdx} RETURNING *`,
-    updateParams,
-  );
-
-  if (updated.length === 0) {
-    return c.json({ error: "not_found", message: "Collection was deleted before update completed." }, 404);
-  }
-
-  return c.json(toPromptCollection(updated[0]), 200);
-}));
-
-// ---------------------------------------------------------------------------
-// DELETE /:id — delete collection (cascades to items)
-// ---------------------------------------------------------------------------
-
-adminPrompts.openapi(deleteCollectionRoute, async (c) => runHandler(c, "delete prompt collection", async () => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
-
-  if (!hasInternalDB()) {
-    log.debug({ requestId }, "Prompt collections requested but no internal DB configured");
-    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-  }
-
-  const { id } = c.req.valid("param");
-  const orgId = authResult.user?.activeOrganizationId;
-
-  // Lookup collection with org check
-  let existing: Record<string, unknown>[];
-  if (orgId) {
-    existing = await internalQuery<Record<string, unknown>>(
-      `SELECT * FROM prompt_collections WHERE id = $1 AND (org_id IS NULL OR org_id = $2)`,
-      [id, orgId],
-    );
-  } else {
-    existing = await internalQuery<Record<string, unknown>>(
-      `SELECT * FROM prompt_collections WHERE id = $1`,
-      [id],
-    );
-  }
-
-  if (existing.length === 0) {
-    return c.json({ error: "not_found", message: "Prompt collection not found." }, 404);
-  }
-
-  if (existing[0].is_builtin === true) {
-    return c.json({ error: "forbidden", message: "Built-in collections cannot be modified.", requestId }, 403);
-  }
-
-  await internalQuery(
-    `DELETE FROM prompt_collections WHERE id = $1`,
-    [id],
-  );
-
-  return c.json({ deleted: true }, 200);
-}));
-
-// ---------------------------------------------------------------------------
-// POST /:id/items — add item to collection
-// ---------------------------------------------------------------------------
-
-adminPrompts.openapi(createItemRoute, async (c) => runHandler(c, "create prompt item", async () => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
-
-  if (!hasInternalDB()) {
-    log.debug({ requestId }, "Prompt items requested but no internal DB configured");
-    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-  }
-
-  const { id: collectionId } = c.req.valid("param");
-  const orgId = authResult.user?.activeOrganizationId;
-
-  // Verify collection exists and ownership
-  let collection: Record<string, unknown>[];
-  if (orgId) {
-    collection = await internalQuery<Record<string, unknown>>(
-      `SELECT * FROM prompt_collections WHERE id = $1 AND (org_id IS NULL OR org_id = $2)`,
-      [collectionId, orgId],
-    );
-  } else {
-    collection = await internalQuery<Record<string, unknown>>(
-      `SELECT * FROM prompt_collections WHERE id = $1`,
-      [collectionId],
-    );
-  }
-
-  if (collection.length === 0) {
-    return c.json({ error: "not_found", message: "Prompt collection not found." }, 404);
-  }
-
-  if (collection[0].is_builtin === true) {
-    return c.json({ error: "forbidden", message: "Built-in collections cannot be modified.", requestId }, 403);
-  }
-
-  let body: Record<string, unknown>;
-  try {
-    body = await c.req.json();
-  } catch (err) {
-    log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse JSON body");
-    return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400);
-  }
-
-  const question = body.question as string | undefined;
-  const description = (body.description as string) ?? null;
-  const category = (body.category as string) ?? null;
-
-  if (!question || typeof question !== "string") {
-    return c.json({ error: "bad_request", message: "question is required and must be a string." }, 400);
-  }
-
-  // Determine sort_order: use provided value or MAX + 1
-  let sortOrder: number;
-  if (typeof body.sort_order === "number") {
-    sortOrder = body.sort_order;
-  } else {
-    const maxRows = await internalQuery<{ max: number | null }>(
-      `SELECT MAX(sort_order) as max FROM prompt_items WHERE collection_id = $1`,
-      [collectionId],
-    );
-    sortOrder = (maxRows[0]?.max ?? -1) + 1;
-  }
-
-  const rows = await internalQuery<Record<string, unknown>>(
-    `INSERT INTO prompt_items (collection_id, question, description, category, sort_order) VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-    [collectionId, question, description, category, sortOrder],
-  );
-
-  return c.json(toPromptItem(rows[0]), 201);
-}));
-
-// ---------------------------------------------------------------------------
-// PATCH /:collectionId/items/:itemId — update item
-// ---------------------------------------------------------------------------
-
-adminPrompts.openapi(updateItemRoute, async (c) => runHandler(c, "update prompt item", async () => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
-
-  if (!hasInternalDB()) {
-    log.debug({ requestId }, "Prompt items requested but no internal DB configured");
-    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-  }
-
-  const { collectionId, itemId } = c.req.valid("param");
-  const orgId = authResult.user?.activeOrganizationId;
-
-  // Verify collection ownership + not built-in
-  let collection: Record<string, unknown>[];
-  if (orgId) {
-    collection = await internalQuery<Record<string, unknown>>(
-      `SELECT * FROM prompt_collections WHERE id = $1 AND (org_id IS NULL OR org_id = $2)`,
-      [collectionId, orgId],
-    );
-  } else {
-    collection = await internalQuery<Record<string, unknown>>(
-      `SELECT * FROM prompt_collections WHERE id = $1`,
-      [collectionId],
-    );
-  }
-
-  if (collection.length === 0) {
-    return c.json({ error: "not_found", message: "Prompt collection not found." }, 404);
-  }
-
-  if (collection[0].is_builtin === true) {
-    return c.json({ error: "forbidden", message: "Built-in collections cannot be modified.", requestId }, 403);
-  }
-
-  // Verify item exists and belongs to collection
-  const existingItem = await internalQuery<Record<string, unknown>>(
-    `SELECT * FROM prompt_items WHERE id = $1 AND collection_id = $2`,
-    [itemId, collectionId],
-  );
-
-  if (existingItem.length === 0) {
-    return c.json({ error: "not_found", message: "Prompt item not found." }, 404);
-  }
-
-  let body: Record<string, unknown>;
-  try {
-    body = await c.req.json();
-  } catch (err) {
-    log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse JSON body");
-    return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400);
-  }
-
-  const question = body.question as string | undefined;
-  const description = body.description as string | undefined;
-  const category = body.category as string | undefined;
-
-  if (question === undefined && description === undefined && category === undefined) {
-    return c.json({ error: "bad_request", message: "No recognized fields to update. Supported: question, description, category." }, 400);
-  }
-
-  // Build dynamic UPDATE
-  const setClauses: string[] = ["updated_at = now()"];
-  const updateParams: unknown[] = [];
-  let paramIdx = 1;
-
-  if (question !== undefined) {
-    updateParams.push(question);
-    setClauses.push(`question = $${paramIdx}`);
-    paramIdx++;
-  }
-
-  if (description !== undefined) {
-    updateParams.push(description);
-    setClauses.push(`description = $${paramIdx}`);
-    paramIdx++;
-  }
-
-  if (category !== undefined) {
-    updateParams.push(category);
-    setClauses.push(`category = $${paramIdx}`);
-    paramIdx++;
-  }
-
-  updateParams.push(itemId);
-  const idIdx = paramIdx;
-
-  const updated = await internalQuery<Record<string, unknown>>(
-    `UPDATE prompt_items SET ${setClauses.join(", ")} WHERE id = $${idIdx} RETURNING *`,
-    updateParams,
-  );
-
-  if (updated.length === 0) {
-    return c.json({ error: "not_found", message: "Item was deleted before update completed." }, 404);
-  }
-
-  return c.json(toPromptItem(updated[0]), 200);
-}));
-
-// ---------------------------------------------------------------------------
-// DELETE /:collectionId/items/:itemId — delete item
-// ---------------------------------------------------------------------------
-
-adminPrompts.openapi(deleteItemRoute, async (c) => runHandler(c, "delete prompt item", async () => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
-
-  if (!hasInternalDB()) {
-    log.debug({ requestId }, "Prompt items requested but no internal DB configured");
-    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-  }
-
-  const { collectionId, itemId } = c.req.valid("param");
-  const orgId = authResult.user?.activeOrganizationId;
-
-  // Verify collection ownership + not built-in
-  let collection: Record<string, unknown>[];
-  if (orgId) {
-    collection = await internalQuery<Record<string, unknown>>(
-      `SELECT * FROM prompt_collections WHERE id = $1 AND (org_id IS NULL OR org_id = $2)`,
-      [collectionId, orgId],
-    );
-  } else {
-    collection = await internalQuery<Record<string, unknown>>(
-      `SELECT * FROM prompt_collections WHERE id = $1`,
-      [collectionId],
-    );
-  }
-
-  if (collection.length === 0) {
-    return c.json({ error: "not_found", message: "Prompt collection not found." }, 404);
-  }
-
-  if (collection[0].is_builtin === true) {
-    return c.json({ error: "forbidden", message: "Built-in collections cannot be modified.", requestId }, 403);
-  }
-
-  // Verify item exists
-  const existingItem = await internalQuery<Record<string, unknown>>(
-    `SELECT id FROM prompt_items WHERE id = $1 AND collection_id = $2`,
-    [itemId, collectionId],
-  );
-
-  if (existingItem.length === 0) {
-    return c.json({ error: "not_found", message: "Prompt item not found." }, 404);
-  }
-
-  await internalQuery(
-    `DELETE FROM prompt_items WHERE id = $1`,
-    [itemId],
-  );
-
-  return c.json({ deleted: true }, 200);
-}));
-
-// ---------------------------------------------------------------------------
-// PUT /:id/reorder — reorder items within a collection
-// ---------------------------------------------------------------------------
-
-adminPrompts.openapi(reorderItemsRoute, async (c) => runHandler(c, "reorder prompt items", async () => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
-
-  if (!hasInternalDB()) {
-    log.debug({ requestId }, "Prompt items requested but no internal DB configured");
-    return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-  }
-
-  const { id: collectionId } = c.req.valid("param");
-  const orgId = authResult.user?.activeOrganizationId;
-
-  // Verify collection ownership + not built-in
-  let collection: Record<string, unknown>[];
-  if (orgId) {
-    collection = await internalQuery<Record<string, unknown>>(
-      `SELECT * FROM prompt_collections WHERE id = $1 AND (org_id IS NULL OR org_id = $2)`,
-      [collectionId, orgId],
-    );
-  } else {
-    collection = await internalQuery<Record<string, unknown>>(
-      `SELECT * FROM prompt_collections WHERE id = $1`,
-      [collectionId],
-    );
-  }
-
-  if (collection.length === 0) {
-    return c.json({ error: "not_found", message: "Prompt collection not found." }, 404);
-  }
-
-  if (collection[0].is_builtin === true) {
-    return c.json({ error: "forbidden", message: "Built-in collections cannot be modified.", requestId }, 403);
-  }
-
-  let body: Record<string, unknown>;
-  try {
-    body = await c.req.json();
-  } catch (err) {
-    log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse JSON body");
-    return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400);
-  }
-
-  const itemIds = body.itemIds as string[] | undefined;
-
-  if (!Array.isArray(itemIds) || itemIds.length === 0) {
-    return c.json({ error: "bad_request", message: "itemIds must be a non-empty array of item IDs." }, 400);
-  }
-
-  // Fetch all item IDs for the collection
-  const existingItems = await internalQuery<{ id: string }>(
-    `SELECT id FROM prompt_items WHERE collection_id = $1`,
-    [collectionId],
-  );
-
-  const existingIds = new Set(existingItems.map((r) => r.id));
-  const providedIds = new Set(itemIds);
-
-  // Verify exact match: same count, same set
-  if (existingIds.size !== providedIds.size) {
-    return c.json({
-      error: "bad_request",
-      message: `itemIds count (${providedIds.size}) does not match existing items count (${existingIds.size}). All items must be included.`,
-    }, 400);
-  }
-
-  for (const id of itemIds) {
-    if (!existingIds.has(id)) {
-      return c.json({
-        error: "bad_request",
-        message: `Item ID "${id}" does not belong to this collection.`,
-      }, 400);
+  return internalQuery<Record<string, unknown>>(`SELECT * FROM prompt_collections WHERE id = $1`, [collectionId]);
+}
+
+// GET / — list all collections
+adminPrompts.openapi(listCollectionsRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const { orgId } = yield* AuthContext;
+
+    if (!hasInternalDB()) {
+      log.debug({ requestId }, "Prompt collections requested but no internal DB configured");
+      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
     }
-  }
 
-  // Execute updates sequentially — each UPDATE is individually atomic.
-  // No transaction needed: validation above ensures all itemIds are valid,
-  // and partial reorder is recoverable (admin can retry).
-  for (let i = 0; i < itemIds.length; i++) {
-    await internalQuery(
-      `UPDATE prompt_items SET sort_order = $1, updated_at = now() WHERE id = $2`,
-      [i, itemIds[i]],
-    );
-  }
+    let rows: Record<string, unknown>[];
+    if (orgId) {
+      rows = yield* Effect.promise(() => internalQuery<Record<string, unknown>>(`SELECT * FROM prompt_collections WHERE org_id IS NULL OR org_id = $1 ORDER BY sort_order ASC, created_at ASC`, [orgId]));
+    } else {
+      rows = yield* Effect.promise(() => internalQuery<Record<string, unknown>>(`SELECT * FROM prompt_collections ORDER BY sort_order ASC, created_at ASC`));
+    }
+    return c.json({ collections: rows.map(toPromptCollection), total: rows.length }, 200);
+  }), { label: "list prompt collections" });
+});
 
-  return c.json({ reordered: true }, 200);
-}));
+// POST / — create collection
+adminPrompts.openapi(createCollectionRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const { orgId } = yield* AuthContext;
+
+    if (!hasInternalDB()) {
+      log.debug({ requestId }, "Prompt collections requested but no internal DB configured");
+      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
+    }
+
+    const bodyResult = yield* Effect.tryPromise({
+      try: () => c.req.json() as Promise<Record<string, unknown>>,
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    }).pipe(Effect.either);
+    if (bodyResult._tag === "Left") { log.warn({ err: bodyResult.left.message, requestId }, "Failed to parse JSON body"); return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400); }
+    const body = bodyResult.right;
+
+    const name = body.name as string | undefined;
+    const industry = body.industry as string | undefined;
+    const description = (body.description as string) ?? "";
+    if (!name || typeof name !== "string") return c.json({ error: "bad_request", message: "name is required and must be a string." }, 400);
+    if (!industry || typeof industry !== "string") return c.json({ error: "bad_request", message: "industry is required and must be a string." }, 400);
+
+    const rows = yield* Effect.promise(() => internalQuery<Record<string, unknown>>(`INSERT INTO prompt_collections (org_id, name, industry, description, is_builtin) VALUES ($1, $2, $3, $4, false) RETURNING *`, [orgId ?? null, name, industry, description]));
+    return c.json(toPromptCollection(rows[0]), 201);
+  }), { label: "create prompt collection" });
+});
+
+// PATCH /:id — update collection
+adminPrompts.openapi(updateCollectionRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const { orgId } = yield* AuthContext;
+
+    if (!hasInternalDB()) {
+      log.debug({ requestId }, "Prompt collections requested but no internal DB configured");
+      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
+    }
+
+    const { id } = c.req.valid("param");
+    const existing = yield* Effect.promise(() => findCollection(orgId, id));
+    if (existing.length === 0) return c.json({ error: "not_found", message: "Prompt collection not found." }, 404);
+    if (existing[0].is_builtin === true) return c.json({ error: "forbidden", message: "Built-in collections cannot be modified.", requestId }, 403);
+
+    const bodyResult = yield* Effect.tryPromise({
+      try: () => c.req.json() as Promise<Record<string, unknown>>,
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    }).pipe(Effect.either);
+    if (bodyResult._tag === "Left") { log.warn({ err: bodyResult.left.message, requestId }, "Failed to parse JSON body"); return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400); }
+    const body = bodyResult.right;
+
+    const name = body.name as string | undefined;
+    const industry = body.industry as string | undefined;
+    const description = body.description as string | undefined;
+    if (name === undefined && industry === undefined && description === undefined) return c.json({ error: "bad_request", message: "No recognized fields to update. Supported: name, industry, description." }, 400);
+
+    const setClauses: string[] = ["updated_at = now()"];
+    const updateParams: unknown[] = [];
+    let paramIdx = 1;
+    if (name !== undefined) { updateParams.push(name); setClauses.push(`name = $${paramIdx}`); paramIdx++; }
+    if (industry !== undefined) { updateParams.push(industry); setClauses.push(`industry = $${paramIdx}`); paramIdx++; }
+    if (description !== undefined) { updateParams.push(description); setClauses.push(`description = $${paramIdx}`); paramIdx++; }
+    updateParams.push(id);
+    const idIdx = paramIdx;
+
+    const updated = yield* Effect.promise(() => internalQuery<Record<string, unknown>>(`UPDATE prompt_collections SET ${setClauses.join(", ")} WHERE id = $${idIdx} RETURNING *`, updateParams));
+    if (updated.length === 0) return c.json({ error: "not_found", message: "Collection was deleted before update completed." }, 404);
+    return c.json(toPromptCollection(updated[0]), 200);
+  }), { label: "update prompt collection" });
+});
+
+// DELETE /:id — delete collection
+adminPrompts.openapi(deleteCollectionRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const { orgId } = yield* AuthContext;
+
+    if (!hasInternalDB()) {
+      log.debug({ requestId }, "Prompt collections requested but no internal DB configured");
+      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
+    }
+
+    const { id } = c.req.valid("param");
+    const existing = yield* Effect.promise(() => findCollection(orgId, id));
+    if (existing.length === 0) return c.json({ error: "not_found", message: "Prompt collection not found." }, 404);
+    if (existing[0].is_builtin === true) return c.json({ error: "forbidden", message: "Built-in collections cannot be modified.", requestId }, 403);
+
+    yield* Effect.promise(() => internalQuery(`DELETE FROM prompt_collections WHERE id = $1`, [id]));
+    return c.json({ deleted: true }, 200);
+  }), { label: "delete prompt collection" });
+});
+
+// POST /:id/items — add item
+adminPrompts.openapi(createItemRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const { orgId } = yield* AuthContext;
+
+    if (!hasInternalDB()) {
+      log.debug({ requestId }, "Prompt items requested but no internal DB configured");
+      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
+    }
+
+    const { id: collectionId } = c.req.valid("param");
+    const collection = yield* Effect.promise(() => findCollection(orgId, collectionId));
+    if (collection.length === 0) return c.json({ error: "not_found", message: "Prompt collection not found." }, 404);
+    if (collection[0].is_builtin === true) return c.json({ error: "forbidden", message: "Built-in collections cannot be modified.", requestId }, 403);
+
+    const bodyResult = yield* Effect.tryPromise({
+      try: () => c.req.json() as Promise<Record<string, unknown>>,
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    }).pipe(Effect.either);
+    if (bodyResult._tag === "Left") { log.warn({ err: bodyResult.left.message, requestId }, "Failed to parse JSON body"); return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400); }
+    const body = bodyResult.right;
+
+    const question = body.question as string | undefined;
+    const description = (body.description as string) ?? null;
+    const category = (body.category as string) ?? null;
+    if (!question || typeof question !== "string") return c.json({ error: "bad_request", message: "question is required and must be a string." }, 400);
+
+    let sortOrder: number;
+    if (typeof body.sort_order === "number") { sortOrder = body.sort_order; } else {
+      const maxRows = yield* Effect.promise(() => internalQuery<{ max: number | null }>(`SELECT MAX(sort_order) as max FROM prompt_items WHERE collection_id = $1`, [collectionId]));
+      sortOrder = (maxRows[0]?.max ?? -1) + 1;
+    }
+
+    const rows = yield* Effect.promise(() => internalQuery<Record<string, unknown>>(`INSERT INTO prompt_items (collection_id, question, description, category, sort_order) VALUES ($1, $2, $3, $4, $5) RETURNING *`, [collectionId, question, description, category, sortOrder]));
+    return c.json(toPromptItem(rows[0]), 201);
+  }), { label: "create prompt item" });
+});
+
+// PATCH /:collectionId/items/:itemId — update item
+adminPrompts.openapi(updateItemRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const { orgId } = yield* AuthContext;
+
+    if (!hasInternalDB()) {
+      log.debug({ requestId }, "Prompt items requested but no internal DB configured");
+      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
+    }
+
+    const { collectionId, itemId } = c.req.valid("param");
+    const collection = yield* Effect.promise(() => findCollection(orgId, collectionId));
+    if (collection.length === 0) return c.json({ error: "not_found", message: "Prompt collection not found." }, 404);
+    if (collection[0].is_builtin === true) return c.json({ error: "forbidden", message: "Built-in collections cannot be modified.", requestId }, 403);
+
+    const existingItem = yield* Effect.promise(() => internalQuery<Record<string, unknown>>(`SELECT * FROM prompt_items WHERE id = $1 AND collection_id = $2`, [itemId, collectionId]));
+    if (existingItem.length === 0) return c.json({ error: "not_found", message: "Prompt item not found." }, 404);
+
+    const bodyResult = yield* Effect.tryPromise({
+      try: () => c.req.json() as Promise<Record<string, unknown>>,
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    }).pipe(Effect.either);
+    if (bodyResult._tag === "Left") { log.warn({ err: bodyResult.left.message, requestId }, "Failed to parse JSON body"); return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400); }
+    const body = bodyResult.right;
+
+    const question = body.question as string | undefined;
+    const description = body.description as string | undefined;
+    const category = body.category as string | undefined;
+    if (question === undefined && description === undefined && category === undefined) return c.json({ error: "bad_request", message: "No recognized fields to update. Supported: question, description, category." }, 400);
+
+    const setClauses: string[] = ["updated_at = now()"];
+    const updateParams: unknown[] = [];
+    let paramIdx = 1;
+    if (question !== undefined) { updateParams.push(question); setClauses.push(`question = $${paramIdx}`); paramIdx++; }
+    if (description !== undefined) { updateParams.push(description); setClauses.push(`description = $${paramIdx}`); paramIdx++; }
+    if (category !== undefined) { updateParams.push(category); setClauses.push(`category = $${paramIdx}`); paramIdx++; }
+    updateParams.push(itemId);
+    const idIdx = paramIdx;
+
+    const updated = yield* Effect.promise(() => internalQuery<Record<string, unknown>>(`UPDATE prompt_items SET ${setClauses.join(", ")} WHERE id = $${idIdx} RETURNING *`, updateParams));
+    if (updated.length === 0) return c.json({ error: "not_found", message: "Item was deleted before update completed." }, 404);
+    return c.json(toPromptItem(updated[0]), 200);
+  }), { label: "update prompt item" });
+});
+
+// DELETE /:collectionId/items/:itemId — delete item
+adminPrompts.openapi(deleteItemRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const { orgId } = yield* AuthContext;
+
+    if (!hasInternalDB()) {
+      log.debug({ requestId }, "Prompt items requested but no internal DB configured");
+      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
+    }
+
+    const { collectionId, itemId } = c.req.valid("param");
+    const collection = yield* Effect.promise(() => findCollection(orgId, collectionId));
+    if (collection.length === 0) return c.json({ error: "not_found", message: "Prompt collection not found." }, 404);
+    if (collection[0].is_builtin === true) return c.json({ error: "forbidden", message: "Built-in collections cannot be modified.", requestId }, 403);
+
+    const existingItem = yield* Effect.promise(() => internalQuery<Record<string, unknown>>(`SELECT id FROM prompt_items WHERE id = $1 AND collection_id = $2`, [itemId, collectionId]));
+    if (existingItem.length === 0) return c.json({ error: "not_found", message: "Prompt item not found." }, 404);
+
+    yield* Effect.promise(() => internalQuery(`DELETE FROM prompt_items WHERE id = $1`, [itemId]));
+    return c.json({ deleted: true }, 200);
+  }), { label: "delete prompt item" });
+});
+
+// PUT /:id/reorder — reorder items
+adminPrompts.openapi(reorderItemsRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const { orgId } = yield* AuthContext;
+
+    if (!hasInternalDB()) {
+      log.debug({ requestId }, "Prompt items requested but no internal DB configured");
+      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
+    }
+
+    const { id: collectionId } = c.req.valid("param");
+    const collection = yield* Effect.promise(() => findCollection(orgId, collectionId));
+    if (collection.length === 0) return c.json({ error: "not_found", message: "Prompt collection not found." }, 404);
+    if (collection[0].is_builtin === true) return c.json({ error: "forbidden", message: "Built-in collections cannot be modified.", requestId }, 403);
+
+    const bodyResult = yield* Effect.tryPromise({
+      try: () => c.req.json() as Promise<Record<string, unknown>>,
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    }).pipe(Effect.either);
+    if (bodyResult._tag === "Left") { log.warn({ err: bodyResult.left.message, requestId }, "Failed to parse JSON body"); return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400); }
+    const body = bodyResult.right;
+
+    const itemIds = body.itemIds as string[] | undefined;
+    if (!Array.isArray(itemIds) || itemIds.length === 0) return c.json({ error: "bad_request", message: "itemIds must be a non-empty array of item IDs." }, 400);
+
+    const existingItems = yield* Effect.promise(() => internalQuery<{ id: string }>(`SELECT id FROM prompt_items WHERE collection_id = $1`, [collectionId]));
+    const existingIds = new Set(existingItems.map((r) => r.id));
+    const providedIds = new Set(itemIds);
+
+    if (existingIds.size !== providedIds.size) return c.json({ error: "bad_request", message: `itemIds count (${providedIds.size}) does not match existing items count (${existingIds.size}). All items must be included.` }, 400);
+    for (const id of itemIds) { if (!existingIds.has(id)) return c.json({ error: "bad_request", message: `Item ID "${id}" does not belong to this collection.` }, 400); }
+
+    for (let i = 0; i < itemIds.length; i++) {
+      yield* Effect.promise(() => internalQuery(`UPDATE prompt_items SET sort_order = $1, updated_at = now() WHERE id = $2`, [i, itemIds[i]]));
+    }
+    return c.json({ reordered: true }, 200);
+  }), { label: "reorder prompt items" });
+});

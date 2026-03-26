@@ -14,8 +14,13 @@
  */
 
 import { createRoute, z } from "@hono/zod-openapi";
+import { Effect } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
-import { runHandler } from "@atlas/api/lib/effect/hono";
+import { runEffect } from "@atlas/api/lib/effect/hono";
+import {
+  RequestContext,
+  AuthContext,
+} from "@atlas/api/lib/effect/services";
 import {
   SLA_ALERT_STATUSES,
   SLA_ALERT_TYPES,
@@ -236,125 +241,139 @@ const platformSLA = createPlatformRouter();
 
 // ── List all workspaces SLA ──────────────────────────────────────────
 
-platformSLA.openapi(listSLARoute, async (c) => runHandler(c, "fetch SLA summary", async () => {
-  const requestId = c.get("requestId");
+platformSLA.openapi(listSLARoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
 
-  const sla = await loadSLA();
-  if (!sla) {
-    return c.json({ error: "not_available", message: "SLA monitoring requires enterprise features to be enabled.", requestId }, 404);
-  }
+    const sla = yield* Effect.promise(() => loadSLA());
+    if (!sla) {
+      return c.json({ error: "not_available", message: "SLA monitoring requires enterprise features to be enabled.", requestId }, 404);
+    }
 
-  const hoursBack = Math.min(Math.max(parseInt(c.req.query("hours") ?? "24", 10) || 24, 1), 720);
+    const hoursBack = Math.min(Math.max(parseInt(c.req.query("hours") ?? "24", 10) || 24, 1), 720);
 
-  const workspaces = await sla.getAllWorkspaceSLA(hoursBack);
-  return c.json({ workspaces, hoursBack }, 200);
-}));
+    const workspaces = yield* Effect.promise(() => sla.getAllWorkspaceSLA(hoursBack));
+    return c.json({ workspaces, hoursBack }, 200);
+  }), { label: "fetch SLA summary" });
+});
 
 // ── Get workspace SLA detail ─────────────────────────────────────────
 
-platformSLA.openapi(getWorkspaceSLARoute, async (c) => runHandler(c, "fetch workspace SLA detail", async () => {
-  const requestId = c.get("requestId");
+platformSLA.openapi(getWorkspaceSLARoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
 
-  const sla = await loadSLA();
-  if (!sla) {
-    return c.json({ error: "not_available", message: "SLA monitoring requires enterprise features to be enabled.", requestId }, 404);
-  }
+    const sla = yield* Effect.promise(() => loadSLA());
+    if (!sla) {
+      return c.json({ error: "not_available", message: "SLA monitoring requires enterprise features to be enabled.", requestId }, 404);
+    }
 
-  const workspaceId = c.req.param("workspaceId");
-  const hoursBack = Math.min(Math.max(parseInt(c.req.query("hours") ?? "24", 10) || 24, 1), 720);
+    const workspaceId = c.req.param("workspaceId");
+    const hoursBack = Math.min(Math.max(parseInt(c.req.query("hours") ?? "24", 10) || 24, 1), 720);
 
-  const detail = await sla.getWorkspaceSLADetail(workspaceId, hoursBack);
-  return c.json(detail, 200);
-}));
+    const detail = yield* Effect.promise(() => sla.getWorkspaceSLADetail(workspaceId, hoursBack));
+    return c.json(detail, 200);
+  }), { label: "fetch workspace SLA detail" });
+});
 
 // ── List alerts ──────────────────────────────────────────────────────
 
-platformSLA.openapi(listAlertsRoute, async (c) => runHandler(c, "fetch SLA alerts", async () => {
-  const requestId = c.get("requestId");
+platformSLA.openapi(listAlertsRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
 
-  const sla = await loadSLA();
-  if (!sla) {
-    return c.json({ error: "not_available", message: "SLA monitoring requires enterprise features to be enabled.", requestId }, 404);
-  }
+    const sla = yield* Effect.promise(() => loadSLA());
+    if (!sla) {
+      return c.json({ error: "not_available", message: "SLA monitoring requires enterprise features to be enabled.", requestId }, 404);
+    }
 
-  const statusParam = c.req.query("status");
-  const validStatuses = new Set(SLA_ALERT_STATUSES);
-  const status = statusParam && validStatuses.has(statusParam as "firing") ? (statusParam as "firing" | "resolved" | "acknowledged") : undefined;
-  const { limit } = parsePagination(c, { limit: 100, maxLimit: 500 });
+    const statusParam = c.req.query("status");
+    const validStatuses = new Set(SLA_ALERT_STATUSES);
+    const status = statusParam && validStatuses.has(statusParam as "firing") ? (statusParam as "firing" | "resolved" | "acknowledged") : undefined;
+    const { limit } = parsePagination(c, { limit: 100, maxLimit: 500 });
 
-  const alerts = await sla.getAlerts(status, limit);
-  return c.json({ alerts }, 200);
-}));
+    const alerts = yield* Effect.promise(() => sla.getAlerts(status, limit));
+    return c.json({ alerts }, 200);
+  }), { label: "fetch SLA alerts" });
+});
 
 // ── Get thresholds ───────────────────────────────────────────────────
 
-platformSLA.openapi(getThresholdsRoute, async (c) => runHandler(c, "read SLA thresholds", async () => {
-  const requestId = c.get("requestId");
+platformSLA.openapi(getThresholdsRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
 
-  const sla = await loadSLA();
-  if (!sla) {
-    return c.json({ error: "not_available", message: "SLA monitoring requires enterprise features to be enabled.", requestId }, 404);
-  }
+    const sla = yield* Effect.promise(() => loadSLA());
+    if (!sla) {
+      return c.json({ error: "not_available", message: "SLA monitoring requires enterprise features to be enabled.", requestId }, 404);
+    }
 
-  const thresholds = await sla.getThresholds();
-  return c.json(thresholds, 200);
-}));
+    const thresholds = yield* Effect.promise(() => sla.getThresholds());
+    return c.json(thresholds, 200);
+  }), { label: "read SLA thresholds" });
+});
 
 // ── Update thresholds ────────────────────────────────────────────────
 
-platformSLA.openapi(updateThresholdsRoute, async (c) => runHandler(c, "update SLA thresholds", async () => {
-  const requestId = c.get("requestId");
+platformSLA.openapi(updateThresholdsRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
 
-  const sla = await loadSLA();
-  if (!sla) {
-    return c.json({ error: "not_available", message: "SLA monitoring requires enterprise features to be enabled.", requestId }, 404);
-  }
+    const sla = yield* Effect.promise(() => loadSLA());
+    if (!sla) {
+      return c.json({ error: "not_available", message: "SLA monitoring requires enterprise features to be enabled.", requestId }, 404);
+    }
 
-  const body = c.req.valid("json");
+    const body = c.req.valid("json");
 
-  await sla.updateThresholds(body);
-  log.info({ thresholds: body, requestId }, "SLA thresholds updated by platform admin");
-  return c.json({ message: "Thresholds updated.", thresholds: body }, 200);
-}));
+    yield* Effect.promise(() => sla.updateThresholds(body));
+    log.info({ thresholds: body, requestId }, "SLA thresholds updated by platform admin");
+    return c.json({ message: "Thresholds updated.", thresholds: body }, 200);
+  }), { label: "update SLA thresholds" });
+});
 
 // ── Acknowledge alert ────────────────────────────────────────────────
 
-platformSLA.openapi(acknowledgeAlertRoute, async (c) => runHandler(c, "acknowledge SLA alert", async () => {
-  const requestId = c.get("requestId");
+platformSLA.openapi(acknowledgeAlertRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const { user } = yield* AuthContext;
 
-  const sla = await loadSLA();
-  if (!sla) {
-    return c.json({ error: "not_available", message: "SLA monitoring requires enterprise features to be enabled.", requestId }, 404);
-  }
+    const sla = yield* Effect.promise(() => loadSLA());
+    if (!sla) {
+      return c.json({ error: "not_available", message: "SLA monitoring requires enterprise features to be enabled.", requestId }, 404);
+    }
 
-  const alertId = c.req.param("alertId");
-  const authResult = c.get("authResult");
-  if (!authResult.user?.id) {
-    log.error({ requestId, alertId }, "SLA alert acknowledge attempted without authenticated user identity");
-    return c.json({ error: "auth_error", message: "User identity could not be determined.", requestId }, 401);
-  }
-  const actorId = authResult.user.id;
+    const alertId = c.req.param("alertId");
+    if (!user?.id) {
+      log.error({ requestId, alertId }, "SLA alert acknowledge attempted without authenticated user identity");
+      return c.json({ error: "auth_error", message: "User identity could not be determined.", requestId }, 401);
+    }
+    const actorId = user.id;
 
-  const acknowledged = await sla.acknowledgeAlert(alertId, actorId);
-  if (!acknowledged) {
-    return c.json({ error: "not_firing", message: "Alert is not in firing state.", requestId }, 400);
-  }
-  log.info({ alertId, actorId, requestId }, "SLA alert acknowledged");
-  return c.json({ message: "Alert acknowledged.", alertId }, 200);
-}));
+    const acknowledged = yield* Effect.promise(() => sla.acknowledgeAlert(alertId, actorId));
+    if (!acknowledged) {
+      return c.json({ error: "not_firing", message: "Alert is not in firing state.", requestId }, 400);
+    }
+    log.info({ alertId, actorId, requestId }, "SLA alert acknowledged");
+    return c.json({ message: "Alert acknowledged.", alertId }, 200);
+  }), { label: "acknowledge SLA alert" });
+});
 
 // ── Evaluate alerts ──────────────────────────────────────────────────
 
-platformSLA.openapi(evaluateAlertsRoute, async (c) => runHandler(c, "evaluate SLA alerts", async () => {
-  const requestId = c.get("requestId");
+platformSLA.openapi(evaluateAlertsRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
 
-  const sla = await loadSLA();
-  if (!sla) {
-    return c.json({ error: "not_available", message: "SLA monitoring requires enterprise features to be enabled.", requestId }, 404);
-  }
+    const sla = yield* Effect.promise(() => loadSLA());
+    if (!sla) {
+      return c.json({ error: "not_available", message: "SLA monitoring requires enterprise features to be enabled.", requestId }, 404);
+    }
 
-  const newAlerts = await sla.evaluateAlerts();
-  return c.json({ newAlerts }, 200);
-}));
+    const newAlerts = yield* Effect.promise(() => sla.evaluateAlerts());
+    return c.json({ newAlerts }, 200);
+  }), { label: "evaluate SLA alerts" });
+});
 
 export { platformSLA };

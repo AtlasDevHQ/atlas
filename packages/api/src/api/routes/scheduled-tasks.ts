@@ -8,7 +8,9 @@
  */
 
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
-import { runHandler } from "@atlas/api/lib/effect/hono";
+import { Effect } from "effect";
+import { runEffect } from "@atlas/api/lib/effect/hono";
+import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
 import { validationHook } from "./validation-hook";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
@@ -390,25 +392,26 @@ scheduledTasks.onError((err, c) => {
 // ---------------------------------------------------------------------------
 
 authed.openapi(listTasksRoute, async (c) => {
-  const requestId = c.get("requestId");
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const { user } = yield* AuthContext;
 
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "Scheduled tasks require an internal database.", requestId }, 404);
-  }
+    if (!hasInternalDB()) {
+      return c.json({ error: "not_available", message: "Scheduled tasks require an internal database.", requestId }, 404);
+    }
 
-  const authResult = c.get("authResult");
+    const { limit, offset } = parsePagination(c, { limit: 20, maxLimit: 100 });
+    const enabledParam = c.req.query("enabled");
+    const enabled = enabledParam === "true" ? true : enabledParam === "false" ? false : undefined;
 
-  const { limit, offset } = parsePagination(c, { limit: 20, maxLimit: 100 });
-  const enabledParam = c.req.query("enabled");
-  const enabled = enabledParam === "true" ? true : enabledParam === "false" ? false : undefined;
-
-  const result = await listScheduledTasks({
-    ownerId: authResult.user?.id,
-    enabled,
-    limit,
-    offset,
-  });
-  return c.json(result, 200);
+    const items = yield* Effect.promise(() => listScheduledTasks({
+      ownerId: user?.id,
+      enabled,
+      limit,
+      offset,
+    }));
+    return c.json(items, 200);
+  }), { label: "list scheduled tasks" });
 });
 
 // ---------------------------------------------------------------------------
@@ -418,38 +421,40 @@ authed.openapi(listTasksRoute, async (c) => {
 authed.openapi(
   createTaskRoute,
   async (c) => {
-    const requestId = c.get("requestId");
+    return runEffect(c, Effect.gen(function* () {
+      const { requestId } = yield* RequestContext;
+      const { user } = yield* AuthContext;
 
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "Scheduled tasks require an internal database.", requestId }, 404);
-    }
+      if (!hasInternalDB()) {
+        return c.json({ error: "not_available", message: "Scheduled tasks require an internal database.", requestId }, 404);
+      }
 
-    const authResult = c.get("authResult");
-    const parsed = c.req.valid("json");
+      const parsed = c.req.valid("json");
 
-    // Validate cron expression
-    const cronCheck = validateCronExpression(parsed.cronExpression);
-    if (!cronCheck.valid) {
-      return c.json({ error: "invalid_request", message: `Invalid cron expression: ${cronCheck.error}` }, 400);
-    }
+      // Validate cron expression
+      const cronCheck = validateCronExpression(parsed.cronExpression);
+      if (!cronCheck.valid) {
+        return c.json({ error: "invalid_request", message: `Invalid cron expression: ${cronCheck.error}` }, 400);
+      }
 
-    const result = await createScheduledTask({
-      ownerId: authResult.user?.id ?? "anonymous",
-      name: parsed.name,
-      question: parsed.question,
-      cronExpression: parsed.cronExpression,
-      deliveryChannel: parsed.deliveryChannel,
-      recipients: parsed.recipients,
-      connectionId: parsed.connectionId ?? null,
-      approvalMode: parsed.approvalMode,
-    });
+      const createResult = yield* Effect.promise(() => createScheduledTask({
+        ownerId: user?.id ?? "anonymous",
+        name: parsed.name,
+        question: parsed.question,
+        cronExpression: parsed.cronExpression,
+        deliveryChannel: parsed.deliveryChannel,
+        recipients: parsed.recipients,
+        connectionId: parsed.connectionId ?? null,
+        approvalMode: parsed.approvalMode,
+      }));
 
-    if (!result.ok) {
-      const fail = crudFailResponse(result.reason, requestId);
-      return c.json(fail.body, fail.status);
-    }
+      if (!createResult.ok) {
+        const fail = crudFailResponse(createResult.reason, requestId);
+        return c.json(fail.body, fail.status);
+      }
 
-    return c.json(result.data, 201);
+      return c.json(createResult.data, 201);
+    }), { label: "create scheduled task" });
   },
   (result, c) => {
     if (!result.success) {
@@ -466,48 +471,57 @@ authed.openapi(
 // ---------------------------------------------------------------------------
 
 scheduledTasks.openapi(tickRoute, async (c) => {
-  const req = c.req.raw;
-  const requestId = crypto.randomUUID();
+  return runEffect(c, Effect.gen(function* () {
+    const req = c.req.raw;
+    const requestId = crypto.randomUUID();
 
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "Scheduled tasks require an internal database.", requestId }, 404);
-  }
-
-  // Auth: check CRON_SECRET (Vercel-native) or ATLAS_SCHEDULER_SECRET (generic)
-  const secret = process.env.CRON_SECRET ?? process.env.ATLAS_SCHEDULER_SECRET;
-  const { getConfig } = await import("@atlas/api/lib/config");
-  const config = getConfig();
-
-  if (secret) {
-    const authHeader = req.headers.get("authorization");
-    if (authHeader !== `Bearer ${secret}`) {
-      return c.json({ error: "unauthorized", message: "Invalid or missing cron secret.", requestId }, 401);
+    if (!hasInternalDB()) {
+      return c.json({ error: "not_available", message: "Scheduled tasks require an internal database.", requestId }, 404);
     }
-  } else if (config?.scheduler?.backend === "vercel") {
-    return c.json(
-      { error: "misconfigured", message: "Vercel backend requires CRON_SECRET or ATLAS_SCHEDULER_SECRET to be set.", requestId },
-      500,
-    );
-  } else if (process.env.NODE_ENV === "production") {
-    return c.json(
-      { error: "misconfigured", message: "CRON_SECRET or ATLAS_SCHEDULER_SECRET must be set in production.", requestId },
-      500,
-    );
-  } else {
-    log.warn("POST /tick called without secret — allowing because NODE_ENV is not 'production'");
-  }
 
-  try {
-    const { runTick } = await import("@atlas/api/lib/scheduler/engine");
-    const result = await runTick();
-    if (result.error) {
-      return c.json({ error: "tick_failed", message: result.error, requestId }, 500);
+    // Auth: check CRON_SECRET (Vercel-native) or ATLAS_SCHEDULER_SECRET (generic)
+    const secret = process.env.CRON_SECRET ?? process.env.ATLAS_SCHEDULER_SECRET;
+    const { getConfig } = yield* Effect.promise(() => import("@atlas/api/lib/config"));
+    const config = getConfig();
+
+    if (secret) {
+      const authHeader = req.headers.get("authorization");
+      if (authHeader !== `Bearer ${secret}`) {
+        return c.json({ error: "unauthorized", message: "Invalid or missing cron secret.", requestId }, 401);
+      }
+    } else if (config?.scheduler?.backend === "vercel") {
+      return c.json(
+        { error: "misconfigured", message: "Vercel backend requires CRON_SECRET or ATLAS_SCHEDULER_SECRET to be set.", requestId },
+        500,
+      );
+    } else if (process.env.NODE_ENV === "production") {
+      return c.json(
+        { error: "misconfigured", message: "CRON_SECRET or ATLAS_SCHEDULER_SECRET must be set in production.", requestId },
+        500,
+      );
+    } else {
+      log.warn("POST /tick called without secret — allowing because NODE_ENV is not 'production'");
     }
-    return c.json(result, 200);
-  } catch (err) {
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Tick execution failed");
-    return c.json({ error: "internal_error", message: "Tick execution failed.", requestId }, 500);
-  }
+
+    const tickOutcome = yield* Effect.tryPromise({
+      try: async () => {
+        const { runTick } = await import("@atlas/api/lib/scheduler/engine");
+        return runTick();
+      },
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    }).pipe(Effect.catchAll((err) => {
+      log.error({ err, requestId }, "Tick execution failed");
+      return Effect.succeed({ error: "internal_error" as const, requestId });
+    }));
+
+    if ("error" in tickOutcome && tickOutcome.error === "internal_error") {
+      return c.json({ error: "internal_error", message: "Tick execution failed.", requestId }, 500);
+    }
+    if (tickOutcome.error) {
+      return c.json({ error: "tick_failed", message: tickOutcome.error, requestId }, 500);
+    }
+    return c.json(tickOutcome, 200);
+  }), { label: "scheduler tick" });
 });
 
 // ---------------------------------------------------------------------------
@@ -515,28 +529,30 @@ scheduledTasks.openapi(tickRoute, async (c) => {
 // ---------------------------------------------------------------------------
 
 authed.openapi(listAllRunsRoute, async (c) => {
-  const requestId = c.get("requestId");
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
 
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "Scheduled tasks require an internal database.", requestId }, 404);
-  }
+    if (!hasInternalDB()) {
+      return c.json({ error: "not_available", message: "Scheduled tasks require an internal database.", requestId }, 404);
+    }
 
-  const { limit, offset } = parsePagination(c, { limit: 20, maxLimit: 100 });
+    const { limit, offset } = parsePagination(c, { limit: 20, maxLimit: 100 });
 
-  const taskIdParam = c.req.query("task_id") || undefined;
-  const taskId = taskIdParam && UUID_RE.test(taskIdParam) ? taskIdParam : undefined;
-  const statusParam = c.req.query("status");
-  const status = statusParam && (RUN_STATUSES as readonly string[]).includes(statusParam)
-    ? (statusParam as RunStatus)
-    : undefined;
-  const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-  const dateFromParam = c.req.query("date_from") || undefined;
-  const dateToParam = c.req.query("date_to") || undefined;
-  const dateFrom = dateFromParam && ISO_DATE_RE.test(dateFromParam) ? dateFromParam : undefined;
-  const dateTo = dateToParam && ISO_DATE_RE.test(dateToParam) ? dateToParam : undefined;
+    const taskIdParam = c.req.query("task_id") || undefined;
+    const taskId = taskIdParam && UUID_RE.test(taskIdParam) ? taskIdParam : undefined;
+    const statusParam = c.req.query("status");
+    const status = statusParam && (RUN_STATUSES as readonly string[]).includes(statusParam)
+      ? (statusParam as RunStatus)
+      : undefined;
+    const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+    const dateFromParam = c.req.query("date_from") || undefined;
+    const dateToParam = c.req.query("date_to") || undefined;
+    const dateFrom = dateFromParam && ISO_DATE_RE.test(dateFromParam) ? dateFromParam : undefined;
+    const dateTo = dateToParam && ISO_DATE_RE.test(dateToParam) ? dateToParam : undefined;
 
-  const result = await listAllRuns({ taskId, status, dateFrom, dateTo, limit, offset });
-  return c.json(result, 200);
+    const runs = yield* Effect.promise(() => listAllRuns({ taskId, status, dateFrom, dateTo, limit, offset }));
+    return c.json(runs, 200);
+  }), { label: "list all runs" });
 });
 
 // ---------------------------------------------------------------------------
@@ -544,27 +560,28 @@ authed.openapi(listAllRunsRoute, async (c) => {
 // ---------------------------------------------------------------------------
 
 authed.openapi(getTaskRoute, async (c) => {
-  const requestId = c.get("requestId");
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const { user } = yield* AuthContext;
 
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "Scheduled tasks require an internal database.", requestId }, 404);
-  }
+    if (!hasInternalDB()) {
+      return c.json({ error: "not_available", message: "Scheduled tasks require an internal database.", requestId }, 404);
+    }
 
-  const authResult = c.get("authResult");
+    const { id } = c.req.valid("param");
+    if (!UUID_RE.test(id)) {
+      return c.json({ error: "invalid_request", message: "Invalid task ID format." }, 400);
+    }
 
-  const { id } = c.req.valid("param");
-  if (!UUID_RE.test(id)) {
-    return c.json({ error: "invalid_request", message: "Invalid task ID format." }, 400);
-  }
+    const taskResult = yield* Effect.promise(() => getScheduledTask(id, user?.id));
+    if (!taskResult.ok) {
+      const fail = crudFailResponse(taskResult.reason, requestId);
+      return c.json(fail.body, fail.status);
+    }
 
-  const result = await getScheduledTask(id, authResult.user?.id);
-  if (!result.ok) {
-    const fail = crudFailResponse(result.reason, requestId);
-    return c.json(fail.body, fail.status);
-  }
-
-  const runs = await listTaskRuns(id, { limit: 10 });
-  return c.json({ ...result.data, recentRuns: runs }, 200);
+    const runs = yield* Effect.promise(() => listTaskRuns(id, { limit: 10 }));
+    return c.json({ ...taskResult.data, recentRuns: runs }, 200);
+  }), { label: "get scheduled task" });
 });
 
 // ---------------------------------------------------------------------------
@@ -574,41 +591,42 @@ authed.openapi(getTaskRoute, async (c) => {
 authed.openapi(
   updateTaskRoute,
   async (c) => {
-    const requestId = c.get("requestId");
+    return runEffect(c, Effect.gen(function* () {
+      const { requestId } = yield* RequestContext;
+      const { user } = yield* AuthContext;
 
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "Scheduled tasks require an internal database.", requestId }, 404);
-    }
-
-    const authResult = c.get("authResult");
-
-    const { id } = c.req.valid("param");
-    if (!UUID_RE.test(id)) {
-      return c.json({ error: "invalid_request", message: "Invalid task ID format." }, 400);
-    }
-
-    const parsed = c.req.valid("json");
-
-    // Validate cron if provided
-    if (parsed.cronExpression) {
-      const cronCheck = validateCronExpression(parsed.cronExpression);
-      if (!cronCheck.valid) {
-        return c.json({ error: "invalid_request", message: `Invalid cron expression: ${cronCheck.error}` }, 400);
+      if (!hasInternalDB()) {
+        return c.json({ error: "not_available", message: "Scheduled tasks require an internal database.", requestId }, 404);
       }
-    }
 
-    const result = await updateScheduledTask(id, authResult.user?.id ?? "anonymous", parsed);
-    if (!result.ok) {
-      const fail = crudFailResponse(result.reason, requestId);
-      return c.json(fail.body, fail.status);
-    }
+      const { id } = c.req.valid("param");
+      if (!UUID_RE.test(id)) {
+        return c.json({ error: "invalid_request", message: "Invalid task ID format." }, 400);
+      }
 
-    // Fetch updated task to return
-    const updated = await getScheduledTask(id, authResult.user?.id);
-    if (!updated.ok) {
-      return c.json({ ok: true }, 200);
-    }
-    return c.json(updated.data, 200);
+      const parsed = c.req.valid("json");
+
+      // Validate cron if provided
+      if (parsed.cronExpression) {
+        const cronCheck = validateCronExpression(parsed.cronExpression);
+        if (!cronCheck.valid) {
+          return c.json({ error: "invalid_request", message: `Invalid cron expression: ${cronCheck.error}` }, 400);
+        }
+      }
+
+      const updateResult = yield* Effect.promise(() => updateScheduledTask(id, user?.id ?? "anonymous", parsed));
+      if (!updateResult.ok) {
+        const fail = crudFailResponse(updateResult.reason, requestId);
+        return c.json(fail.body, fail.status);
+      }
+
+      // Fetch updated task to return
+      const updated = yield* Effect.promise(() => getScheduledTask(id, user?.id));
+      if (!updated.ok) {
+        return c.json({ ok: true }, 200);
+      }
+      return c.json(updated.data, 200);
+    }), { label: "update scheduled task" });
   },
   (result, c) => {
     if (!result.success) {
@@ -625,113 +643,117 @@ authed.openapi(
 // ---------------------------------------------------------------------------
 
 authed.openapi(deleteTaskRoute, async (c) => {
-  const requestId = c.get("requestId");
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const { user } = yield* AuthContext;
 
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "Scheduled tasks require an internal database.", requestId }, 404);
-  }
+    if (!hasInternalDB()) {
+      return c.json({ error: "not_available", message: "Scheduled tasks require an internal database.", requestId }, 404);
+    }
 
-  const authResult = c.get("authResult");
+    const { id } = c.req.valid("param");
+    if (!UUID_RE.test(id)) {
+      return c.json({ error: "invalid_request", message: "Invalid task ID format." }, 400);
+    }
 
-  const { id } = c.req.valid("param");
-  if (!UUID_RE.test(id)) {
-    return c.json({ error: "invalid_request", message: "Invalid task ID format." }, 400);
-  }
-
-  const result = await deleteScheduledTask(id, authResult.user?.id);
-  if (!result.ok) {
-    const fail = crudFailResponse(result.reason, requestId);
-    return c.json(fail.body, fail.status);
-  }
-  return c.body(null, 204);
+    const delResult = yield* Effect.promise(() => deleteScheduledTask(id, user?.id));
+    if (!delResult.ok) {
+      const fail = crudFailResponse(delResult.reason, requestId);
+      return c.json(fail.body, fail.status);
+    }
+    return c.body(null, 204);
+  }), { label: "delete scheduled task" });
 });
 
 // ---------------------------------------------------------------------------
 // POST /:id/run — trigger immediate execution
 // ---------------------------------------------------------------------------
 
-authed.openapi(triggerTaskRoute, async (c) => runHandler(c, "trigger task execution", async () => {
-  const requestId = c.get("requestId");
+authed.openapi(triggerTaskRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const { user } = yield* AuthContext;
 
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "Scheduled tasks require an internal database.", requestId }, 404);
-  }
+    if (!hasInternalDB()) {
+      return c.json({ error: "not_available", message: "Scheduled tasks require an internal database.", requestId }, 404);
+    }
 
-  const authResult = c.get("authResult");
+    const { id } = c.req.valid("param");
+    if (!UUID_RE.test(id)) {
+      return c.json({ error: "invalid_request", message: "Invalid task ID format." }, 400);
+    }
 
-  const { id } = c.req.valid("param");
-  if (!UUID_RE.test(id)) {
-    return c.json({ error: "invalid_request", message: "Invalid task ID format." }, 400);
-  }
+    const task = yield* Effect.promise(() => getScheduledTask(id, user?.id));
+    if (!task.ok) {
+      const fail = crudFailResponse(task.reason, requestId);
+      return c.json(fail.body, fail.status);
+    }
 
-  const task = await getScheduledTask(id, authResult.user?.id);
-  if (!task.ok) {
-    const fail = crudFailResponse(task.reason, requestId);
-    return c.json(fail.body, fail.status);
-  }
-
-  const { triggerTask } = await import("@atlas/api/lib/scheduler/engine");
-  await triggerTask(id);
-  return c.json({ message: "Task triggered successfully.", taskId: id }, 200);
-}));
+    const { triggerTask } = yield* Effect.promise(() => import("@atlas/api/lib/scheduler/engine"));
+    yield* Effect.promise(() => triggerTask(id));
+    return c.json({ message: "Task triggered successfully.", taskId: id }, 200);
+  }), { label: "trigger task execution" });
+});
 
 // ---------------------------------------------------------------------------
 // POST /:id/preview — dry-run delivery format with mock data
 // ---------------------------------------------------------------------------
 
-authed.openapi(previewTaskRoute, async (c) => runHandler(c, "generate delivery preview", async () => {
-  const requestId = c.get("requestId");
+authed.openapi(previewTaskRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const { user } = yield* AuthContext;
 
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "Scheduled tasks require an internal database.", requestId }, 404);
-  }
+    if (!hasInternalDB()) {
+      return c.json({ error: "not_available", message: "Scheduled tasks require an internal database.", requestId }, 404);
+    }
 
-  const authResult = c.get("authResult");
+    const { id } = c.req.valid("param");
+    if (!UUID_RE.test(id)) {
+      return c.json({ error: "invalid_request", message: "Invalid task ID format." }, 400);
+    }
 
-  const { id } = c.req.valid("param");
-  if (!UUID_RE.test(id)) {
-    return c.json({ error: "invalid_request", message: "Invalid task ID format." }, 400);
-  }
+    const task = yield* Effect.promise(() => getScheduledTask(id, user?.id));
+    if (!task.ok) {
+      const fail = crudFailResponse(task.reason, requestId);
+      return c.json(fail.body, fail.status);
+    }
 
-  const task = await getScheduledTask(id, authResult.user?.id);
-  if (!task.ok) {
-    const fail = crudFailResponse(task.reason, requestId);
-    return c.json(fail.body, fail.status);
-  }
-
-  const { generateDeliveryPreview } = await import("@atlas/api/lib/scheduler/preview");
-  const preview = generateDeliveryPreview(task.data);
-  return c.json(preview, 200);
-}));
+    const { generateDeliveryPreview } = yield* Effect.promise(() => import("@atlas/api/lib/scheduler/preview"));
+    const preview = generateDeliveryPreview(task.data);
+    return c.json(preview, 200);
+  }), { label: "generate delivery preview" });
+});
 
 // ---------------------------------------------------------------------------
 // GET /:id/runs — list past runs
 // ---------------------------------------------------------------------------
 
 authed.openapi(listTaskRunsRoute, async (c) => {
-  const requestId = c.get("requestId");
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const { user } = yield* AuthContext;
 
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "Scheduled tasks require an internal database.", requestId }, 404);
-  }
+    if (!hasInternalDB()) {
+      return c.json({ error: "not_available", message: "Scheduled tasks require an internal database.", requestId }, 404);
+    }
 
-  const authResult = c.get("authResult");
+    const { id } = c.req.valid("param");
+    if (!UUID_RE.test(id)) {
+      return c.json({ error: "invalid_request", message: "Invalid task ID format." }, 400);
+    }
 
-  const { id } = c.req.valid("param");
-  if (!UUID_RE.test(id)) {
-    return c.json({ error: "invalid_request", message: "Invalid task ID format." }, 400);
-  }
+    // Verify task ownership
+    const task = yield* Effect.promise(() => getScheduledTask(id, user?.id));
+    if (!task.ok) {
+      const fail = crudFailResponse(task.reason, requestId);
+      return c.json(fail.body, fail.status);
+    }
 
-  // Verify task ownership
-  const task = await getScheduledTask(id, authResult.user?.id);
-  if (!task.ok) {
-    const fail = crudFailResponse(task.reason, requestId);
-    return c.json(fail.body, fail.status);
-  }
-
-  const { limit } = parsePagination(c, { limit: 20, maxLimit: 100 });
-  const runs = await listTaskRuns(id, { limit });
-  return c.json({ runs }, 200);
+    const { limit } = parsePagination(c, { limit: 20, maxLimit: 100 });
+    const runs = yield* Effect.promise(() => listTaskRuns(id, { limit }));
+    return c.json({ runs }, 200);
+  }), { label: "list task runs" });
 });
 
 // Mount authenticated routes on the outer app

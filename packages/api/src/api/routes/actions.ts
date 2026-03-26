@@ -6,7 +6,9 @@
  */
 
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
-import { runHandler } from "@atlas/api/lib/effect/hono";
+import { Effect } from "effect";
+import { runEffect } from "@atlas/api/lib/effect/hono";
+import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
 import { validationHook } from "./validation-hook";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
@@ -318,106 +320,38 @@ actions.onError((err, c) => {
 // GET / — list actions (default: pending)
 // ---------------------------------------------------------------------------
 
-actions.openapi(listActionsRoute, async (c) => runHandler(c, "list actions", async () => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
+actions.openapi(listActionsRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const { user } = yield* AuthContext;
 
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "Action tracking is not available (no internal database configured).", requestId }, 404);
-  }
+    if (!hasInternalDB()) {
+      return c.json({ error: "not_available", message: "Action tracking is not available (no internal database configured).", requestId }, 404);
+    }
 
-  const rawStatus = c.req.query("status") ?? "pending";
-  const status: ActionStatus | undefined = (ACTION_STATUSES as readonly string[]).includes(rawStatus)
-    ? (rawStatus as ActionStatus)
-    : undefined;
-  const { limit } = parsePagination(c, { limit: 50, maxLimit: 100 });
+    const rawStatus = c.req.query("status") ?? "pending";
+    const status: ActionStatus | undefined = (ACTION_STATUSES as readonly string[]).includes(rawStatus)
+      ? (rawStatus as ActionStatus)
+      : undefined;
+    const { limit } = parsePagination(c, { limit: 50, maxLimit: 100 });
 
-  const result = await listPendingActions({
-    status,
-    userId: authResult.user?.id,
-    limit,
-  });
-  return c.json({ actions: result }, 200);
-}));
+    const items = yield* Effect.promise(() => listPendingActions({
+      status,
+      userId: user?.id,
+      limit,
+    }));
+    return c.json({ actions: items }, 200);
+  }), { label: "list actions" });
+});
 
 // ---------------------------------------------------------------------------
 // GET /:id — get single action
 // ---------------------------------------------------------------------------
 
-actions.openapi(getActionRoute, async (c) => runHandler(c, "retrieve action", async () => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
-
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "Action tracking is not available (no internal database configured).", requestId }, 404);
-  }
-
-  const { id } = c.req.valid("param");
-  if (!UUID_RE.test(id)) {
-    return c.json({ error: "invalid_request", message: "Invalid action ID format." }, 400);
-  }
-
-  const action = await getAction(id);
-  if (!action || action.requested_by !== authResult.user?.id) {
-    return c.json({ error: "not_found", message: "Action not found." }, 404);
-  }
-  return c.json(action, 200);
-}));
-
-// ---------------------------------------------------------------------------
-// POST /:id/approve — approve a pending action
-// ---------------------------------------------------------------------------
-
-actions.openapi(approveActionRoute, async (c) => runHandler(c, "approve action", async () => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
-
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "Action tracking is not available (no internal database configured).", requestId }, 404);
-  }
-
-  const { id } = c.req.valid("param");
-  if (!UUID_RE.test(id)) {
-    return c.json({ error: "invalid_request", message: "Invalid action ID format." }, 400);
-  }
-
-  const approverId = authResult.user?.id ?? "anonymous";
-
-  // Look up action and executor
-  const action = await getAction(id);
-  if (!action) {
-    return c.json({ error: "not_found", message: "Action not found." }, 404);
-  }
-
-  const cfg = getActionConfig(action.action_type);
-
-  if (!canApprove(authResult.user, cfg.approval, cfg.requiredRole)) {
-    return c.json({ error: "forbidden", message: "Insufficient role to approve this action.", requestId }, 403);
-  }
-
-  // Enforce admin-only separation of duties: requester cannot approve their own admin-only action
-  if (cfg.approval === "admin-only" && authResult.user?.id === action.requested_by) {
-    return c.json({ error: "forbidden", message: "admin-only actions cannot be approved by the requester", requestId }, 403);
-  }
-
-  const executor = getActionExecutor(id);
-
-  const result = await approveAction(id, approverId, executor);
-  if (!result) {
-    return c.json({ error: "conflict", message: "Action has already been resolved." }, 409);
-  }
-  return c.json(result, 200);
-}));
-
-// ---------------------------------------------------------------------------
-// POST /:id/deny — deny a pending action
-// ---------------------------------------------------------------------------
-
-actions.openapi(
-  denyActionRoute,
-  async (c) => runHandler(c, "deny action", async () => {
-    const requestId = c.get("requestId");
-    const authResult = c.get("authResult");
+actions.openapi(getActionRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const { user } = yield* AuthContext;
 
     if (!hasInternalDB()) {
       return c.json({ error: "not_available", message: "Action tracking is not available (no internal database configured).", requestId }, 404);
@@ -428,47 +362,127 @@ actions.openapi(
       return c.json({ error: "invalid_request", message: "Invalid action ID format." }, 400);
     }
 
-    const denierId = authResult.user?.id ?? "anonymous";
+    const action = yield* Effect.promise(() => getAction(id));
+    if (!action || action.requested_by !== user?.id) {
+      return c.json({ error: "not_found", message: "Action not found." }, 404);
+    }
+    return c.json(action, 200);
+  }), { label: "retrieve action" });
+});
 
-    // Look up action for permission enforcement
-    const action = await getAction(id);
+// ---------------------------------------------------------------------------
+// POST /:id/approve — approve a pending action
+// ---------------------------------------------------------------------------
+
+actions.openapi(approveActionRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const { user } = yield* AuthContext;
+
+    if (!hasInternalDB()) {
+      return c.json({ error: "not_available", message: "Action tracking is not available (no internal database configured).", requestId }, 404);
+    }
+
+    const { id } = c.req.valid("param");
+    if (!UUID_RE.test(id)) {
+      return c.json({ error: "invalid_request", message: "Invalid action ID format." }, 400);
+    }
+
+    const approverId = user?.id ?? "anonymous";
+
+    // Look up action and executor
+    const action = yield* Effect.promise(() => getAction(id));
     if (!action) {
       return c.json({ error: "not_found", message: "Action not found." }, 404);
     }
 
     const cfg = getActionConfig(action.action_type);
 
-    // Deny requires the same minimum role as approve — consistent permission model for all action operations.
-    if (!canApprove(authResult.user, cfg.approval, cfg.requiredRole)) {
-      return c.json({ error: "forbidden", message: "Insufficient role to deny this action.", requestId }, 403);
+    if (!canApprove(user, cfg.approval, cfg.requiredRole)) {
+      return c.json({ error: "forbidden", message: "Insufficient role to approve this action.", requestId }, 403);
     }
 
-    // Enforce admin-only separation of duties: requester cannot deny their own admin-only action
-    if (cfg.approval === "admin-only" && authResult.user?.id === action.requested_by) {
-      return c.json({ error: "forbidden", message: "admin-only actions cannot be denied by the requester", requestId }, 403);
+    // Enforce admin-only separation of duties: requester cannot approve their own admin-only action
+    if (cfg.approval === "admin-only" && user?.id === action.requested_by) {
+      return c.json({ error: "forbidden", message: "admin-only actions cannot be approved by the requester", requestId }, 403);
     }
 
-    // Body is optional — extract reason if provided
-    let reason: string | undefined;
-    const contentType = c.req.header("content-type") ?? "";
-    if (contentType.includes("application/json")) {
-      try {
-        const body = await c.req.json();
+    const executor = getActionExecutor(id);
+
+    const approveResult = yield* Effect.promise(() => approveAction(id, approverId, executor));
+    if (!approveResult) {
+      return c.json({ error: "conflict", message: "Action has already been resolved." }, 409);
+    }
+    return c.json(approveResult, 200);
+  }), { label: "approve action" });
+});
+
+// ---------------------------------------------------------------------------
+// POST /:id/deny — deny a pending action
+// ---------------------------------------------------------------------------
+
+actions.openapi(
+  denyActionRoute,
+  async (c) => {
+    return runEffect(c, Effect.gen(function* () {
+      const { requestId } = yield* RequestContext;
+      const { user } = yield* AuthContext;
+
+      if (!hasInternalDB()) {
+        return c.json({ error: "not_available", message: "Action tracking is not available (no internal database configured).", requestId }, 404);
+      }
+
+      const { id } = c.req.valid("param");
+      if (!UUID_RE.test(id)) {
+        return c.json({ error: "invalid_request", message: "Invalid action ID format." }, 400);
+      }
+
+      const denierId = user?.id ?? "anonymous";
+
+      // Look up action for permission enforcement
+      const action = yield* Effect.promise(() => getAction(id));
+      if (!action) {
+        return c.json({ error: "not_found", message: "Action not found." }, 404);
+      }
+
+      const cfg = getActionConfig(action.action_type);
+
+      // Deny requires the same minimum role as approve — consistent permission model for all action operations.
+      if (!canApprove(user, cfg.approval, cfg.requiredRole)) {
+        return c.json({ error: "forbidden", message: "Insufficient role to deny this action.", requestId }, 403);
+      }
+
+      // Enforce admin-only separation of duties: requester cannot deny their own admin-only action
+      if (cfg.approval === "admin-only" && user?.id === action.requested_by) {
+        return c.json({ error: "forbidden", message: "admin-only actions cannot be denied by the requester", requestId }, 403);
+      }
+
+      // Body is optional — extract reason if provided
+      let reason: string | undefined;
+      const contentType = c.req.header("content-type") ?? "";
+      if (contentType.includes("application/json")) {
+        const bodyResult = yield* Effect.tryPromise({
+          try: () => c.req.json(),
+          catch: (err) => err instanceof Error ? err : new Error(String(err)),
+        }).pipe(Effect.either);
+        if (bodyResult._tag === "Left") {
+          const err = bodyResult.left;
+          log.warn({ err: err.message, requestId }, "Failed to parse deny action request body");
+          return c.json({ error: "invalid_request", message: "Invalid JSON body." }, 400);
+        }
+        const body = bodyResult.right;
         if (body && typeof body.reason === "string") {
           reason = body.reason;
         }
-      } catch (err) {
-        log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse deny action request body");
-        return c.json({ error: "invalid_request", message: "Invalid JSON body." }, 400);
       }
-    }
 
-    const result = await denyAction(id, denierId, reason);
-    if (!result) {
-      return c.json({ error: "conflict", message: "Action has already been resolved." }, 409);
-    }
-    return c.json(result, 200);
-  }),
+      const denyResult = yield* Effect.promise(() => denyAction(id, denierId, reason));
+      if (!denyResult) {
+        return c.json({ error: "conflict", message: "Action has already been resolved." }, 409);
+      }
+      return c.json(denyResult, 200);
+    }), { label: "deny action" });
+  },
   (result, c) => {
     if (!result.success) {
       return c.json(
@@ -483,43 +497,45 @@ actions.openapi(
 // POST /:id/rollback — rollback an executed action
 // ---------------------------------------------------------------------------
 
-actions.openapi(rollbackActionRoute, async (c) => runHandler(c, "rollback action", async () => {
-  const requestId = c.get("requestId");
-  const authResult = c.get("authResult");
+actions.openapi(rollbackActionRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const { user } = yield* AuthContext;
 
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "Action tracking is not available (no internal database configured).", requestId }, 404);
-  }
+    if (!hasInternalDB()) {
+      return c.json({ error: "not_available", message: "Action tracking is not available (no internal database configured).", requestId }, 404);
+    }
 
-  const { id } = c.req.valid("param");
-  if (!UUID_RE.test(id)) {
-    return c.json({ error: "invalid_request", message: "Invalid action ID format." }, 400);
-  }
+    const { id } = c.req.valid("param");
+    if (!UUID_RE.test(id)) {
+      return c.json({ error: "invalid_request", message: "Invalid action ID format." }, 400);
+    }
 
-  const action = await getAction(id);
-  if (!action) {
-    return c.json({ error: "not_found", message: "Action not found." }, 404);
-  }
+    const action = yield* Effect.promise(() => getAction(id));
+    if (!action) {
+      return c.json({ error: "not_found", message: "Action not found." }, 404);
+    }
 
-  const cfg = getActionConfig(action.action_type);
+    const cfg = getActionConfig(action.action_type);
 
-  if (!canApprove(authResult.user, cfg.approval, cfg.requiredRole)) {
-    return c.json({ error: "forbidden", message: "Insufficient role to rollback this action.", requestId }, 403);
-  }
+    if (!canApprove(user, cfg.approval, cfg.requiredRole)) {
+      return c.json({ error: "forbidden", message: "Insufficient role to rollback this action.", requestId }, 403);
+    }
 
-  if (!action.rollback_info) {
-    return c.json({ error: "conflict", message: "Action does not have rollback information." }, 409);
-  }
+    if (!action.rollback_info) {
+      return c.json({ error: "conflict", message: "Action does not have rollback information." }, 409);
+    }
 
-  const rollbackerId = authResult.user?.id ?? "anonymous";
-  const result = await rollbackAction(id, rollbackerId);
-  if (!result) {
-    return c.json({ error: "conflict", message: "Action cannot be rolled back. It may have been rolled back already or changed state." }, 409);
-  }
-  if (result.error) {
-    return c.json({ ...result, warning: "Rollback status updated but the rollback handler reported an error. The side-effect may not have been reversed." }, 200);
-  }
-  return c.json(result, 200);
-}));
+    const rollbackerId = user?.id ?? "anonymous";
+    const rollbackResult = yield* Effect.promise(() => rollbackAction(id, rollbackerId));
+    if (!rollbackResult) {
+      return c.json({ error: "conflict", message: "Action cannot be rolled back. It may have been rolled back already or changed state." }, 409);
+    }
+    if (rollbackResult.error) {
+      return c.json({ ...rollbackResult, warning: "Rollback status updated but the rollback handler reported an error. The side-effect may not have been reversed." }, 200);
+    }
+    return c.json(rollbackResult, 200);
+  }), { label: "rollback action" });
+});
 
 export { actions };

@@ -6,9 +6,11 @@
  * limits + history + per-user breakdown), historical summaries, and per-user breakdown.
  */
 
+import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
-import { runHandler } from "@atlas/api/lib/effect/hono";
+import { runEffect } from "@atlas/api/lib/effect/hono";
+import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
 import { getWorkspaceDetails } from "@atlas/api/lib/db/internal";
 import {
   getCurrentPeriodUsage,
@@ -108,34 +110,13 @@ const getCurrentUsageRoute = createRoute({
   description:
     "Returns the current billing period usage summary (query count, token count, active users) for the admin's active workspace.",
   responses: {
-    200: {
-      description: "Current period usage summary",
-      content: { "application/json": { schema: CurrentPeriodUsageResponseSchema } },
-    },
-    400: {
-      description: "No active organization",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    401: {
-      description: "Authentication required",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    403: {
-      description: "Forbidden — admin role required",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    404: {
-      description: "Internal database not configured",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    429: {
-      description: "Rate limit exceeded",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    500: {
-      description: "Internal server error",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
+    200: { description: "Current period usage summary", content: { "application/json": { schema: CurrentPeriodUsageResponseSchema } } },
+    400: { description: "No active organization", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
 
@@ -147,34 +128,13 @@ const getUsageSummaryRoute = createRoute({
   description:
     "Returns a combined dashboard payload: current period usage, plan limits, up to 31 daily history points (today + past 30 days), and per-user breakdown (top 50).",
   responses: {
-    200: {
-      description: "Combined usage dashboard payload",
-      content: { "application/json": { schema: SummaryResponseSchema } },
-    },
-    400: {
-      description: "No active organization",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    401: {
-      description: "Authentication required",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    403: {
-      description: "Forbidden — admin role required",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    404: {
-      description: "Internal database not configured",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    429: {
-      description: "Rate limit exceeded",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    500: {
-      description: "Internal server error",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
+    200: { description: "Combined usage dashboard payload", content: { "application/json": { schema: SummaryResponseSchema } } },
+    400: { description: "No active organization", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
 
@@ -186,34 +146,13 @@ const getUsageHistoryRoute = createRoute({
   description:
     "Returns historical usage summaries aggregated by period (daily or monthly). Supports date range filtering and limit.",
   responses: {
-    200: {
-      description: "Historical usage summaries",
-      content: { "application/json": { schema: HistoryResponseSchema } },
-    },
-    400: {
-      description: "Invalid parameters or no active organization",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    401: {
-      description: "Authentication required",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    403: {
-      description: "Forbidden — admin role required",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    404: {
-      description: "Internal database not configured",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    429: {
-      description: "Rate limit exceeded",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    500: {
-      description: "Internal server error",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
+    200: { description: "Historical usage summaries", content: { "application/json": { schema: HistoryResponseSchema } } },
+    400: { description: "Invalid parameters or no active organization", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
 
@@ -225,34 +164,13 @@ const getUsageBreakdownRoute = createRoute({
   description:
     "Returns per-user usage breakdown (query count, token count, login count) for the active workspace. Supports date range filtering and limit.",
   responses: {
-    200: {
-      description: "Per-user usage breakdown",
-      content: { "application/json": { schema: BreakdownResponseSchema } },
-    },
-    400: {
-      description: "Invalid parameters or no active organization",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    401: {
-      description: "Authentication required",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    403: {
-      description: "Forbidden — admin role required",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    404: {
-      description: "Internal database not configured",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    429: {
-      description: "Rate limit exceeded",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    500: {
-      description: "Internal server error",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
+    200: { description: "Per-user usage breakdown", content: { "application/json": { schema: BreakdownResponseSchema } } },
+    400: { description: "Invalid parameters or no active organization", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
 
@@ -265,117 +183,128 @@ const adminUsage = createAdminRouter();
 adminUsage.use(requireOrgContext());
 
 // GET / — current period usage summary for the active workspace
-adminUsage.openapi(getCurrentUsageRoute, async (c) => runHandler(c, "fetch current usage", async () => {
-  const { orgId } = c.get("orgContext");
+adminUsage.openapi(getCurrentUsageRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { orgId } = yield* AuthContext;
 
-  const usage = await getCurrentPeriodUsage(orgId);
-  return c.json({ workspaceId: orgId, ...usage }, 200);
-}));
+    const usage = yield* Effect.promise(() => getCurrentPeriodUsage(orgId!));
+    return c.json({ workspaceId: orgId!, ...usage }, 200);
+  }), { label: "fetch current usage" });
+});
 
 // GET /summary — combined usage dashboard payload
-adminUsage.openapi(getUsageSummaryRoute, async (c) => runHandler(c, "fetch usage summary", async () => {
-  const { requestId, orgId } = c.get("orgContext");
+adminUsage.openapi(getUsageSummaryRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const { orgId } = yield* AuthContext;
 
-  // Aggregate today's daily summary before fetching history.
-  // Non-critical — stale data is acceptable if this fails.
-  const now = new Date();
-  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  try {
-    await aggregateUsageSummary(orgId, "daily", todayStart);
-  } catch (aggErr) {
-    log.warn(
-      { err: aggErr instanceof Error ? aggErr : new Error(String(aggErr)), requestId },
-      "Non-critical: failed to aggregate today's usage summary; proceeding with stale data",
-    );
-  }
+    // Aggregate today's daily summary before fetching history.
+    // Non-critical — stale data is acceptable if this fails.
+    const now = new Date();
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const aggResult = yield* Effect.tryPromise({
+      try: () => aggregateUsageSummary(orgId!, "daily", todayStart),
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    }).pipe(Effect.either);
+    if (aggResult._tag === "Left") {
+      log.warn(
+        { err: aggResult.left, requestId },
+        "Non-critical: failed to aggregate today's usage summary; proceeding with stale data",
+      );
+    }
 
-  // 30 days ago
-  const thirtyDaysAgo = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 30);
+    // 30 days ago
+    const thirtyDaysAgo = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 30);
 
-  const [usage, workspace, history, users] = await Promise.all([
-    getCurrentPeriodUsage(orgId),
-    getWorkspaceDetails(orgId),
-    getUsageHistory(orgId, "daily", thirtyDaysAgo.toISOString(), undefined, 31), // today + past 30 days
-    getUsageBreakdown(orgId, undefined, undefined, 50), // top 50 users (dashboard summary, not full breakdown)
-  ]);
+    const [usage, workspace, history, users] = yield* Effect.promise(() => Promise.all([
+      getCurrentPeriodUsage(orgId!),
+      getWorkspaceDetails(orgId!),
+      getUsageHistory(orgId!, "daily", thirtyDaysAgo.toISOString(), undefined, 31),
+      getUsageBreakdown(orgId!, undefined, undefined, 50),
+    ]));
 
-  if (!workspace) {
-    log.warn({ orgId, requestId }, "Workspace row not found for org; defaulting to free tier");
-  }
-  const planTier = workspace?.plan_tier ?? "free";
-  const plan = getPlanDefinition(planTier);
-  const limits = getPlanLimits(planTier);
+    if (!workspace) {
+      log.warn({ orgId, requestId }, "Workspace row not found for org; defaulting to free tier");
+    }
+    const planTier = workspace?.plan_tier ?? "free";
+    const plan = getPlanDefinition(planTier);
+    const limits = getPlanLimits(planTier);
 
-  return c.json({
-    workspaceId: orgId,
-    current: {
-      queryCount: usage.queryCount,
-      tokenCount: usage.tokenCount,
-      activeUsers: usage.activeUsers,
-      periodStart: usage.periodStart,
-      periodEnd: usage.periodEnd,
-    },
-    plan: {
-      tier: planTier,
-      displayName: plan.displayName,
-      trialEndsAt: workspace?.trial_ends_at ?? null,
-    },
-    limits: {
-      queriesPerMonth: isUnlimited(limits.queriesPerMonth) ? null : limits.queriesPerMonth,
-      tokensPerMonth: isUnlimited(limits.tokensPerMonth) ? null : limits.tokensPerMonth,
-      maxMembers: isUnlimited(limits.maxMembers) ? null : limits.maxMembers,
-      maxConnections: isUnlimited(limits.maxConnections) ? null : limits.maxConnections,
-    },
-    history: history.toReversed(), // DB returns newest-first; reverse to chronological for chart
-    users,
-    hasStripe: !!workspace?.stripe_customer_id,
-  }, 200);
-}));
+    return c.json({
+      workspaceId: orgId!,
+      current: {
+        queryCount: usage.queryCount,
+        tokenCount: usage.tokenCount,
+        activeUsers: usage.activeUsers,
+        periodStart: usage.periodStart,
+        periodEnd: usage.periodEnd,
+      },
+      plan: {
+        tier: planTier,
+        displayName: plan.displayName,
+        trialEndsAt: workspace?.trial_ends_at ?? null,
+      },
+      limits: {
+        queriesPerMonth: isUnlimited(limits.queriesPerMonth) ? null : limits.queriesPerMonth,
+        tokensPerMonth: isUnlimited(limits.tokensPerMonth) ? null : limits.tokensPerMonth,
+        maxMembers: isUnlimited(limits.maxMembers) ? null : limits.maxMembers,
+        maxConnections: isUnlimited(limits.maxConnections) ? null : limits.maxConnections,
+      },
+      history: history.toReversed(),
+      users,
+      hasStripe: !!workspace?.stripe_customer_id,
+    }, 200);
+  }), { label: "fetch usage summary" });
+});
 
 // GET /history — historical usage summaries
-adminUsage.openapi(getUsageHistoryRoute, async (c) => runHandler(c, "fetch usage history", async () => {
-  const { orgId } = c.get("orgContext");
+adminUsage.openapi(getUsageHistoryRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { orgId } = yield* AuthContext;
 
-  const period = c.req.query("period") === "daily" ? "daily" as const : "monthly" as const;
-  const startDate = c.req.query("startDate");
-  const endDate = c.req.query("endDate");
-  const { limit } = parsePagination(c, { limit: 90, maxLimit: 365 });
+    const period = c.req.query("period") === "daily" ? "daily" as const : "monthly" as const;
+    const startDate = c.req.query("startDate");
+    const endDate = c.req.query("endDate");
+    const { limit } = parsePagination(c, { limit: 90, maxLimit: 365 });
 
-  if (startDate && !isValidDateParam(startDate)) {
-    return c.json({ error: "invalid_param", message: "startDate must be a valid ISO date string." }, 400);
-  }
-  if (endDate && !isValidDateParam(endDate)) {
-    return c.json({ error: "invalid_param", message: "endDate must be a valid ISO date string." }, 400);
-  }
+    if (startDate && !isValidDateParam(startDate)) {
+      return c.json({ error: "invalid_param", message: "startDate must be a valid ISO date string." }, 400);
+    }
+    if (endDate && !isValidDateParam(endDate)) {
+      return c.json({ error: "invalid_param", message: "endDate must be a valid ISO date string." }, 400);
+    }
 
-  // Trigger aggregation for the current period before returning history
-  const now = new Date();
-  const periodStart = period === "daily"
-    ? new Date(now.getFullYear(), now.getMonth(), now.getDate())
-    : new Date(now.getFullYear(), now.getMonth(), 1);
-  await aggregateUsageSummary(orgId, period, periodStart);
+    // Trigger aggregation for the current period before returning history
+    const now = new Date();
+    const periodStart = period === "daily"
+      ? new Date(now.getFullYear(), now.getMonth(), now.getDate())
+      : new Date(now.getFullYear(), now.getMonth(), 1);
+    yield* Effect.promise(() => aggregateUsageSummary(orgId!, period, periodStart));
 
-  const summaries = await getUsageHistory(orgId, period, startDate ?? undefined, endDate ?? undefined, limit);
-  return c.json({ workspaceId: orgId, period, summaries }, 200);
-}));
+    const summaries = yield* Effect.promise(() => getUsageHistory(orgId!, period, startDate ?? undefined, endDate ?? undefined, limit));
+    return c.json({ workspaceId: orgId!, period, summaries }, 200);
+  }), { label: "fetch usage history" });
+});
 
 // GET /breakdown — per-user usage breakdown
-adminUsage.openapi(getUsageBreakdownRoute, async (c) => runHandler(c, "fetch usage breakdown", async () => {
-  const { orgId } = c.get("orgContext");
+adminUsage.openapi(getUsageBreakdownRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { orgId } = yield* AuthContext;
 
-  const startDate = c.req.query("startDate");
-  const endDate = c.req.query("endDate");
-  const { limit } = parsePagination(c, { limit: 100, maxLimit: 500 });
+    const startDate = c.req.query("startDate");
+    const endDate = c.req.query("endDate");
+    const { limit } = parsePagination(c, { limit: 100, maxLimit: 500 });
 
-  if (startDate && !isValidDateParam(startDate)) {
-    return c.json({ error: "invalid_param", message: "startDate must be a valid ISO date string." }, 400);
-  }
-  if (endDate && !isValidDateParam(endDate)) {
-    return c.json({ error: "invalid_param", message: "endDate must be a valid ISO date string." }, 400);
-  }
+    if (startDate && !isValidDateParam(startDate)) {
+      return c.json({ error: "invalid_param", message: "startDate must be a valid ISO date string." }, 400);
+    }
+    if (endDate && !isValidDateParam(endDate)) {
+      return c.json({ error: "invalid_param", message: "endDate must be a valid ISO date string." }, 400);
+    }
 
-  const users = await getUsageBreakdown(orgId, startDate ?? undefined, endDate ?? undefined, limit);
-  return c.json({ workspaceId: orgId, users }, 200);
-}));
+    const users = yield* Effect.promise(() => getUsageBreakdown(orgId!, startDate ?? undefined, endDate ?? undefined, limit));
+    return c.json({ workspaceId: orgId!, users }, 200);
+  }), { label: "fetch usage breakdown" });
+});
 
 export { adminUsage };

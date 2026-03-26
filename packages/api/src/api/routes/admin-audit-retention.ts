@@ -12,9 +12,11 @@
  * - POST /hard-delete     — manually trigger hard-delete cleanup
  */
 
+import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
 import { RetentionError } from "@atlas/ee/audit/retention";
-import { runHandler } from "@atlas/api/lib/effect/hono";
+import { runEffect } from "@atlas/api/lib/effect/hono";
+import { AuthContext } from "@atlas/api/lib/effect/services";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 
@@ -304,52 +306,70 @@ const adminAuditRetention = createAdminRouter();
 adminAuditRetention.use(requireOrgContext());
 
 // GET / — get current retention policy
-adminAuditRetention.openapi(getRetentionRoute, async (c) => runHandler(c, "get retention policy", async () => {
-  const { orgId } = c.get("orgContext");
+adminAuditRetention.openapi(getRetentionRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { orgId } = yield* AuthContext;
 
-  const { getRetentionPolicy } = await import("@atlas/ee/audit/retention");
-  const policy = await getRetentionPolicy(orgId);
-  return c.json({ policy }, 200);
-}, { domainErrors: [[RetentionError, RETENTION_ERROR_STATUS]] }));
+    const { getRetentionPolicy } = yield* Effect.promise(() => import("@atlas/ee/audit/retention"));
+    const policy = yield* Effect.promise(() => getRetentionPolicy(orgId!));
+    return c.json({ policy }, 200);
+  }), { label: "get retention policy", domainErrors: [[RetentionError, RETENTION_ERROR_STATUS]] });
+});
 
 // PUT / — update retention policy
-adminAuditRetention.openapi(updateRetentionRoute, async (c) => runHandler(c, "update retention policy", async () => {
-  const { orgId } = c.get("orgContext");
-  const authResult = c.get("authResult");
+adminAuditRetention.openapi(updateRetentionRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { orgId, user } = yield* AuthContext;
 
-  const body = c.req.valid("json");
+    const body = c.req.valid("json");
 
-  const { setRetentionPolicy } = await import("@atlas/ee/audit/retention");
-  const policy = await setRetentionPolicy(
-    orgId,
-    {
-      retentionDays: body.retentionDays,
-      hardDeleteDelayDays: body.hardDeleteDelayDays,
-    },
-    authResult.user?.id ?? null,
-  );
-  return c.json({ policy }, 200);
-}, { domainErrors: [[RetentionError, RETENTION_ERROR_STATUS]] }));
+    const { setRetentionPolicy } = yield* Effect.promise(() => import("@atlas/ee/audit/retention"));
+    const policy = yield* Effect.promise(() => setRetentionPolicy(
+      orgId!,
+      {
+        retentionDays: body.retentionDays,
+        hardDeleteDelayDays: body.hardDeleteDelayDays,
+      },
+      user?.id ?? null,
+    ));
+    return c.json({ policy }, 200);
+  }), { label: "update retention policy", domainErrors: [[RetentionError, RETENTION_ERROR_STATUS]] });
+});
 
 // POST /export — compliance export
-adminAuditRetention.openapi(exportRoute, async (c) => runHandler(c, "export audit log", async () => {
-  const { orgId } = c.get("orgContext");
+adminAuditRetention.openapi(exportRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { orgId } = yield* AuthContext;
 
-  const body = c.req.valid("json");
+    const body = c.req.valid("json");
 
-  const { exportAuditLog } = await import("@atlas/ee/audit/retention");
-  const result = await exportAuditLog({
-    orgId,
-    format: body.format,
-    startDate: body.startDate,
-    endDate: body.endDate,
-  });
+    const { exportAuditLog } = yield* Effect.promise(() => import("@atlas/ee/audit/retention"));
+    const result = yield* Effect.promise(() => exportAuditLog({
+      orgId: orgId!,
+      format: body.format,
+      startDate: body.startDate,
+      endDate: body.endDate,
+    }));
 
-  if (result.format === "csv") {
-    const filename = `audit-log-${orgId}-${new Date().toISOString().slice(0, 10)}.csv`;
+    if (result.format === "csv") {
+      const filename = `audit-log-${orgId}-${new Date().toISOString().slice(0, 10)}.csv`;
+      return new Response(result.content, {
+        headers: {
+          "Content-Type": "text/csv; charset=utf-8",
+          "Content-Disposition": `attachment; filename="${filename}"`,
+          ...(result.truncated && {
+            "X-Export-Truncated": "true",
+            "X-Export-Total": String(result.totalAvailable),
+          }),
+        },
+      });
+    }
+
+    // JSON format
+    const filename = `audit-log-${orgId}-${new Date().toISOString().slice(0, 10)}.json`;
     return new Response(result.content, {
       headers: {
-        "Content-Type": "text/csv; charset=utf-8",
+        "Content-Type": "application/json; charset=utf-8",
         "Content-Disposition": `attachment; filename="${filename}"`,
         ...(result.truncated && {
           "X-Export-Truncated": "true",
@@ -357,38 +377,29 @@ adminAuditRetention.openapi(exportRoute, async (c) => runHandler(c, "export audi
         }),
       },
     });
-  }
-
-  // JSON format
-  const filename = `audit-log-${orgId}-${new Date().toISOString().slice(0, 10)}.json`;
-  return new Response(result.content, {
-    headers: {
-      "Content-Type": "application/json; charset=utf-8",
-      "Content-Disposition": `attachment; filename="${filename}"`,
-      ...(result.truncated && {
-        "X-Export-Truncated": "true",
-        "X-Export-Total": String(result.totalAvailable),
-      }),
-    },
-  });
-}, { domainErrors: [[RetentionError, RETENTION_ERROR_STATUS]] }));
+  }), { label: "export audit log", domainErrors: [[RetentionError, RETENTION_ERROR_STATUS]] });
+});
 
 // POST /purge — manual soft-delete purge
-adminAuditRetention.openapi(purgeRoute, async (c) => runHandler(c, "purge audit log entries", async () => {
-  const { orgId } = c.get("orgContext");
+adminAuditRetention.openapi(purgeRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { orgId } = yield* AuthContext;
 
-  const { purgeExpiredEntries } = await import("@atlas/ee/audit/retention");
-  const results = await purgeExpiredEntries(orgId);
-  return c.json({ results }, 200);
-}, { domainErrors: [[RetentionError, RETENTION_ERROR_STATUS]] }));
+    const { purgeExpiredEntries } = yield* Effect.promise(() => import("@atlas/ee/audit/retention"));
+    const results = yield* Effect.promise(() => purgeExpiredEntries(orgId!));
+    return c.json({ results }, 200);
+  }), { label: "purge audit log entries", domainErrors: [[RetentionError, RETENTION_ERROR_STATUS]] });
+});
 
 // POST /hard-delete — manual hard-delete cleanup
-adminAuditRetention.openapi(hardDeleteRoute, async (c) => runHandler(c, "hard-delete audit log entries", async () => {
-  const { orgId } = c.get("orgContext");
+adminAuditRetention.openapi(hardDeleteRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { orgId } = yield* AuthContext;
 
-  const { hardDeleteExpired } = await import("@atlas/ee/audit/retention");
-  const result = await hardDeleteExpired(orgId);
-  return c.json(result, 200);
-}, { domainErrors: [[RetentionError, RETENTION_ERROR_STATUS]] }));
+    const { hardDeleteExpired } = yield* Effect.promise(() => import("@atlas/ee/audit/retention"));
+    const result = yield* Effect.promise(() => hardDeleteExpired(orgId!));
+    return c.json(result, 200);
+  }), { label: "hard-delete audit log entries", domainErrors: [[RetentionError, RETENTION_ERROR_STATUS]] });
+});
 
 export { adminAuditRetention };

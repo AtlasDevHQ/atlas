@@ -53,10 +53,10 @@ export function proxy(request: NextRequest) {
       return NextResponse.redirect(new URL("/", request.url));
     }
 
-    // Unauthenticated user on any non-public, non-auth route → redirect to signup.
+    // Unauthenticated user on any non-public, non-auth route → redirect to login.
     // Default-deny: new pages are protected without needing to update a list.
     if (!sessionToken && !isAuthRoute(pathname)) {
-      return NextResponse.redirect(new URL("/signup", request.url));
+      return NextResponse.redirect(new URL("/login", request.url));
     }
   } catch (err) {
     // Fail open: the API layer is the real auth boundary. A crash here

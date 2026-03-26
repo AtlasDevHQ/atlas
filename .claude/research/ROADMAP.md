@@ -558,6 +558,30 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 
 ---
 
+## 0.9.5 — Post-Effect Validation
+
+**Comprehensive end-to-end validation** after the 0.9.4 Effect.ts migration (23 issues, ~15 PRs, every route handler and backend service rewritten). Dev, CI, production, agent loop, enterprise features, browser tests, and external integrations.
+
+### Dev & CI
+- [ ] Dev workflow smoke test — install, dev, build end-to-end (#945)
+- [ ] CI test audit — coverage gaps, skipped tests, Effect migration regressions (#946)
+
+### Production
+- [ ] Production deploy validation — Railway services healthy end-to-end (#947)
+
+### Effect Architecture
+- [ ] Effect service lifecycle — startup, shutdown, error mapping, context propagation (#948)
+
+### Agent & Features
+- [ ] Agent loop e2e — SQL, Python, explore, multi-step conversations (#949)
+- [ ] Enterprise feature smoke — SSO, SCIM, approval, PII through Effect Layers (#950)
+
+### Integration
+- [ ] Browser e2e — full Playwright suite against dev and production (#951)
+- [ ] SDK, MCP, and widget integration — external integration points (#952)
+
+---
+
 ## 1.0.0 — SaaS Launch
 
 **app.useatlas.dev goes live.** The hosted product where teams sign up, connect their database, and have a production-ready AI data analyst without deploying anything.
@@ -566,9 +590,11 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [ ] SLA commitments — uptime guarantee, query latency targets, support response times (#872)
 - [ ] Terms of service, privacy policy, DPA for enterprise (#873)
 - [x] Launch content — blog post, Show HN, comparison pages updated (#874, PR #924)
+- [ ] Launch content follow-up — social media assets and demo video (#954)
 - [ ] Migration tooling — self-hosted to hosted (export/import conversations, semantic layers, settings) (#875)
 - [ ] Documentation for hosted users — separate onboarding flow from self-hosted docs (#876)
-- [x] Status page — public incident communication (#877, PR #921)
+- [x] Status page — public health dashboard (#877, PR #921)
+- [ ] Status page follow-up — incident management, subscriptions, maintenance (#953)
 
 ---
 

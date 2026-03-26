@@ -545,7 +545,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [ ] P10c: Rewrite agent loop with AiLanguageModel.streamText (#935)
 
 ### Database (P11) — Native Effect SQL
-- [ ] P11a: Install @effect/sql, define SqlClient Layer bridge (#936)
+- [x] P11a: Install @effect/sql, define SqlClient Layer bridge (#936)
 - [ ] P11b: Replace raw pg/mysql2 with @effect/sql native clients (#937)
 
 ### Follow-ups

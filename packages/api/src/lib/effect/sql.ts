@@ -115,6 +115,8 @@ export function makeOrgSqlClientLive(
       const registry = yield* ConnectionRegistry;
       const id = connectionId ?? "default";
       const conn = registry.getForOrg(orgId, connectionId);
+      // Use the base connection ID for dbType lookup — org pools inherit
+      // the database type from their parent connection, not from the org ID.
       const dbType = registry.getDBType(id);
 
       const service: AtlasSqlClientShape = {

@@ -98,6 +98,10 @@ export function makeAtlasToolkitLive(options?: {
   );
 }
 
+/** Default Live layer using default buildRegistry options. */
+export const AtlasToolkitLive: ReturnType<typeof makeAtlasToolkitLive> =
+  makeAtlasToolkitLive();
+
 // ── Test helper ──────────────────────────────────────────────────────
 
 /**

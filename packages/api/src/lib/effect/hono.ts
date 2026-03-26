@@ -435,7 +435,7 @@ export function runHandler<T>(
 ): Promise<T> {
   const program = Effect.tryPromise({
     try: handler,
-    catch: (err) => err,
+    catch: (err) => (err instanceof Error ? err : new Error(String(err))),
   });
 
   // Provide Hono context as Effect Context layers

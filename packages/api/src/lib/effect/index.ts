@@ -97,3 +97,13 @@ export {
   type SettingsShape,
   type SchedulerShape,
 } from "./layers";
+
+// ── AI Model Service (P10a) ─────────────────────────────────────────
+
+export {
+  AtlasAiModel,
+  AtlasAiModelLive,
+  makeWorkspaceAiModelLayer,
+  createAiModelTestLayer,
+  type AtlasAiModelShape,
+} from "./ai";

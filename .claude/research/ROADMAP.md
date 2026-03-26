@@ -539,12 +539,18 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] P7: Route handlers → Effect boundaries with typed error mapping (#910, PR #925)
 - [x] P8: Auth and request context → Effect Context replacing AsyncLocalStorage (#911)
 
-### AI & Database (P10–P11)
-- [ ] P10: Agent loop → @effect/ai with AiToolkit and provider Layers (#913)
-- [ ] P11: Database client → @effect/sql-pg and @effect/sql-mysql2 (#914)
+### AI (P10) — Agent Loop → @effect/ai
+- [ ] P10a: Install @effect/ai, define provider Layers — bridge to existing providers.ts (#933)
+- [ ] P10b: Define Atlas tools (explore, executeSQL) as AiToolkit (#934)
+- [ ] P10c: Rewrite agent loop with AiLanguageModel.streamText (#935)
+
+### Database (P11) — Native Effect SQL
+- [ ] P11a: Install @effect/sql, define SqlClient Layer bridge (#936)
+- [ ] P11b: Replace raw pg/mysql2 with @effect/sql native clients (#937)
 
 ### Follow-ups
 - [x] Migrate platform-residency and platform-domains inner error handling to domainErrors (#927)
+- [ ] Migrate route handlers from c.get() to Effect Context — incremental (#931)
 
 ### Test Infrastructure
 - [x] P9: Test infrastructure → Effect Layer-based test setup (#912)

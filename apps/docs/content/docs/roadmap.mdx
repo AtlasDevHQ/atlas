@@ -108,24 +108,15 @@ Systematic audit of all 354 docs pages for persona clarity. Phase 1 classified e
 
 Systematic module-deepening refactors from codebase exploration. Route handler error wrapper eliminated 155 try-catch blocks across 33 files (-852 lines). AdminContentWrapper adopted across all 30 admin pages (-302 lines). OpenAPI schema factories consolidated duplicated Zod schemas across 10 admin route files. Conversation fetch client extracted 10 duplicated fetch patterns into a typed client. ResultCardBase unified SQL and Python card rendering. Shared utilities shipped for admin error handling, pagination, and EE test mocks. Plugin SDK refactors deferred to 0.9.4 Effect.ts migration.
 
----
+### 0.9.4 — Effect.ts Migration
 
-## 0.9.4 — Effect.ts Migration
-
-The current milestone. Incremental adoption of [Effect.ts](https://effect.website) across the API server. Typed errors replace untyped catch blocks, dependency injection via Effect Layers replaces global singletons, scoped resources guarantee cleanup for database pools and plugin lifecycles, and structured concurrency replaces manual timer management in the scheduler.
-
-- **Foundation** — Tagged error types, Effect-to-Hono bridge for route handlers
-- **Infrastructure** — SQL pipeline, rate limiting, scheduler, and connection pools rewritten with Effect primitives
-- **Services** — Plugin lifecycle, server startup, auth, and request context as composable Effect Layers
-- **AI** — Provider-agnostic agent loop via `@effect/ai` with typed tool registration, testable LLM interactions
-- **Database** — Native Effect SQL clients (`@effect/sql-pg`, `@effect/sql-mysql2`) with scoped pools and automatic tracing
-- **Testing** — Layer-based test setup replaces `mock.module()` across 36+ test files
+Incremental adoption of [Effect.ts](https://effect.website) across the API server. Tagged error types and an Effect-to-Hono bridge for route handlers. SQL pipeline, rate limiting, scheduler, and connection pools rewritten with Effect primitives. Plugin lifecycle, server startup, auth, and request context as composable Effect Layers. Provider-agnostic agent loop via `@effect/ai` with typed tool registration and testable LLM interactions. Native Effect SQL clients (`@effect/sql-pg`, `@effect/sql-mysql2`) with scoped pools and automatic tracing. Layer-based test setup replaces `mock.module()` across 36+ test files. All route handlers migrated from Hono context to Effect Context.
 
 ---
 
 ## 1.0.0 — SaaS Launch
 
-Public launch of hosted Atlas at app.useatlas.dev.
+The current milestone. Public launch of hosted Atlas at app.useatlas.dev.
 
 - **General availability** — Production SLAs, SOC 2 readiness, status page
 - **Self-serve** — Public pricing page, upgrade paths, migration tooling from self-hosted

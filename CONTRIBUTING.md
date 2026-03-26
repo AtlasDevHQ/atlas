@@ -20,7 +20,7 @@ bun run atlas -- init  # Profile the database and generate semantic layer
 bun run dev            # Start API (:3001) + web (:3000)
 ```
 
-Default dev credentials: **admin@atlas.dev / atlas-dev**
+Default dev credentials: **admin@useatlas.dev / atlas-dev**
 
 ## Project Structure
 

@@ -1,7 +1,7 @@
 import { test as setup, expect } from "@playwright/test";
 import path from "path";
 
-const ADMIN_EMAIL = process.env.ATLAS_ADMIN_EMAIL ?? "admin@atlas.dev";
+const ADMIN_EMAIL = process.env.ATLAS_ADMIN_EMAIL ?? "admin@useatlas.dev";
 const DEFAULT_PASSWORD = "atlas-dev";
 const E2E_PASSWORD = "atlas-e2e-test!";
 const STORAGE_STATE = path.join(__dirname, "storage-state.json");

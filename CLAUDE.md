@@ -99,7 +99,7 @@ bun run atlas -- init    # Profile DB, generate semantic layer
 bun run atlas -- diff    # Compare DB schema vs semantic layer
 ```
 
-**Quick start:** `bun install` → `cp .env.example .env` → `bun run db:up` → `bun run atlas -- init` → `bun run dev`. Dev admin: **admin@atlas.dev / atlas-dev**.
+**Quick start:** `bun install` → `cp .env.example .env` → `bun run db:up` → `bun run atlas -- init` → `bun run dev`. Dev admin: **admin@useatlas.dev / atlas-dev**.
 
 ## Architecture
 

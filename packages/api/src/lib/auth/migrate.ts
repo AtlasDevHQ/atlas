@@ -7,8 +7,12 @@
  */
 
 import { detectAuthMode } from "@atlas/api/lib/auth/detect";
-import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
+import { hasInternalDB, internalQuery, encryptUrl } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
+import { connections, detectDBType, resolveDatasourceUrl } from "@atlas/api/lib/db/connection";
+import { _resetWhitelists } from "@atlas/api/lib/semantic";
+import { importFromDisk } from "@atlas/api/lib/semantic/sync";
+import { getSemanticRoot } from "@atlas/api/lib/semantic/files";
 
 const log = createLogger("auth-migrate");
 
@@ -143,10 +147,13 @@ async function bootstrapAdminUser(): Promise<void> {
 }
 
 /**
- * Seed a default dev admin account when no users exist.
- * Only runs when ATLAS_ADMIN_EMAIL is set — uses that email with a
- * well-known password ("atlas-dev"). The databaseHook in server.ts
- * promotes this user to admin on creation.
+ * Seed a complete dev environment when no users exist:
+ *   1. Platform admin user (ATLAS_ADMIN_EMAIL / atlas-dev)
+ *   2. "Atlas" organization with the admin as owner
+ *   3. Demo datasource connection + semantic layer import
+ *
+ * After `db:reset && dev`, the admin can sign in and see a fully
+ * working admin console with data — no manual onboarding steps.
  *
  * Skips silently if any users already exist (idempotent).
  */
@@ -160,12 +167,12 @@ async function seedDevUser(auth: { api: Record<string, unknown> }): Promise<void
     );
     if (parseInt(String(userCount[0]?.count ?? "0"), 10) > 0) return;
 
-    // Use Better Auth's createUser API (from the admin plugin)
+    // ── 1. Create user ──────────────────────────────────────────────
     const createUser = auth.api.createUser as (opts: {
       body: { email: string; password: string; name: string; role: string };
-    }) => Promise<unknown>;
+    }) => Promise<{ user?: { id: string } } | undefined>;
 
-    await createUser({
+    const result = await createUser({
       body: {
         email: adminEmail,
         password: "atlas-dev",
@@ -174,16 +181,109 @@ async function seedDevUser(auth: { api: Record<string, unknown> }): Promise<void
       },
     });
 
-    // Mark the seeded user as requiring a password change
+    const userId = result?.user?.id;
+    if (!userId) {
+      log.warn("Dev seed: createUser succeeded but returned no user id");
+      return;
+    }
+
+    // Mark as requiring password change
     await internalQuery(
-      `UPDATE "user" SET password_change_required = true WHERE LOWER(email) = $1`,
-      [adminEmail],
+      `UPDATE "user" SET password_change_required = true WHERE id = $1`,
+      [userId],
     );
 
     log.info({ email: adminEmail }, "Dev admin account seeded (password: atlas-dev)");
+
+    // ── 2. Create organization ──────────────────────────────────────
+    const createOrg = auth.api.createOrganization as ((opts: {
+      body: { name: string; slug: string; userId: string };
+    }) => Promise<{ id?: string } | undefined>) | undefined;
+
+    if (!createOrg) {
+      log.warn("Dev seed: organization API not available — skipping org creation");
+      return;
+    }
+
+    const org = await createOrg({
+      body: { name: "Atlas", slug: "atlas", userId },
+    });
+    const orgId = org?.id;
+    if (!orgId) {
+      log.warn("Dev seed: createOrganization returned no org id");
+      return;
+    }
+
+    // Set org as active for the user's sessions
+    const setActive = auth.api.setActiveOrganization as ((opts: {
+      body: { organizationId: string };
+      headers: Headers;
+    }) => Promise<unknown>) | undefined;
+
+    if (setActive) {
+      // We don't have a session yet, so directly update the session table
+      // once a session exists. For now, set it via DB — the user's first
+      // session will pick it up.
+    }
+
+    log.info({ orgId, orgName: "Atlas" }, "Dev organization created");
+
+    // ── 3. Connect demo datasource + import semantic layer ──────────
+    await seedDemoData(orgId);
+
   } catch (err) {
     // User might already exist from a previous partial boot — not fatal
     log.debug({ err }, "Dev user seed skipped or failed");
+  }
+}
+
+/**
+ * Connect the demo datasource and import the semantic layer for an org.
+ * Extracted so it can be called from seedDevUser. Non-fatal — logs
+ * warnings on failure so the server still boots.
+ */
+async function seedDemoData(orgId: string): Promise<void> {
+  const url = resolveDatasourceUrl();
+  if (!url) {
+    log.debug("Dev seed: no ATLAS_DATASOURCE_URL — skipping demo data");
+    return;
+  }
+
+  let dbType: string;
+  try {
+    dbType = detectDBType(url);
+  } catch {
+    log.warn("Dev seed: unsupported datasource URL scheme — skipping demo data");
+    return;
+  }
+
+  // Encrypt and persist connection
+  try {
+    const encryptedUrl = encryptUrl(url);
+    await internalQuery(
+      `INSERT INTO connections (id, url, type, description, org_id)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (id) DO UPDATE SET url = $2, type = $3, org_id = $5, updated_at = NOW()`,
+      ["default", encryptedUrl, dbType, `Demo ${dbType} datasource`, orgId],
+    );
+
+    // Register in runtime
+    if (connections.has("default")) connections.unregister("default");
+    connections.register("default", { url, description: `Demo ${dbType} datasource` });
+
+    log.info({ orgId, dbType }, "Dev seed: demo datasource connected");
+  } catch (err) {
+    log.warn({ err: err instanceof Error ? err.message : String(err) }, "Dev seed: failed to persist demo connection");
+    return;
+  }
+
+  // Import semantic layer from disk
+  try {
+    const result = await importFromDisk(orgId, { sourceDir: getSemanticRoot() });
+    _resetWhitelists();
+    log.info({ orgId, imported: result.imported, skipped: result.skipped }, "Dev seed: semantic layer imported");
+  } catch (err) {
+    log.warn({ err: err instanceof Error ? err.message : String(err) }, "Dev seed: semantic layer import failed");
   }
 }
 

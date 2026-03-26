@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
 
-const ADMIN_EMAIL = process.env.ATLAS_ADMIN_EMAIL ?? "admin@atlas.dev";
+const ADMIN_EMAIL = process.env.ATLAS_ADMIN_EMAIL ?? "admin@useatlas.dev";
 // After global setup, the password may have been changed from the default
 const ADMIN_PASSWORD = process.env.ATLAS_ADMIN_PASSWORD ?? "atlas-e2e-test!";
 

@@ -79,7 +79,7 @@ test.describe("Admin Console", () => {
 
     await expect(page.locator('button:has-text("Invite user")')).toBeVisible();
 
-    await expect(page.locator("td", { hasText: "admin@atlas.dev" }).first()).toBeVisible({ timeout: 10_000 });
+    await expect(page.locator("td", { hasText: "admin@useatlas.dev" }).first()).toBeVisible({ timeout: 10_000 });
   });
 
   test("token usage page loads with summary cards", async ({ page }) => {

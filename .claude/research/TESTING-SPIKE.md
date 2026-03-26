@@ -34,7 +34,7 @@
 - [x] `bun run atlas -- init --demo` — re-generate semantic layer from simple demo ✓ (both #204 and #205 fixed in PR #210)
 - [x] `bun run dev` — both API (:3001) and web (:3000) start without errors
 - [x] `GET http://localhost:3001/api/health` — all components healthy
-- [x] Login with seeded admin: `admin@atlas.dev / atlas-dev` — prompts password change (intentional: `password_change_required` flag)
+- [x] Login with seeded admin: `admin@useatlas.dev / atlas-dev` — prompts password change (intentional: `password_change_required` flag)
 
 ### 1.2 Chat — Core Flow
 - [x] Ask a simple question ("how many companies are there?") — get answer with SQL + data ✓ (50 companies after #204 fix)

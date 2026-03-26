@@ -6,7 +6,7 @@
 
 ## Task
 
-Write a Playwright e2e test suite in `e2e/` that automates the browser-dependent items from the manual testing spike. Dev should be running on :3000/:3001 with simple demo data. Admin login: `admin@atlas.dev / atlas-dev`.
+Write a Playwright e2e test suite in `e2e/` that automates the browser-dependent items from the manual testing spike. Dev should be running on :3000/:3001 with simple demo data. Admin login: `admin@useatlas.dev / atlas-dev`.
 
 ## Setup
 

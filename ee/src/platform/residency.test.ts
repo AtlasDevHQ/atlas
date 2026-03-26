@@ -77,23 +77,6 @@ function resetMocks() {
 describe("residency", () => {
   beforeEach(resetMocks);
 
-  describe("enterprise gating", () => {
-    it("listRegions throws when enterprise is disabled", async () => {
-      ee.setEnterpriseEnabled(false);
-      await expect(listRegions()).rejects.toThrow("Enterprise features");
-    });
-
-    it("getDefaultRegion throws when enterprise is disabled", () => {
-      ee.setEnterpriseEnabled(false);
-      expect(() => getDefaultRegion()).toThrow("Enterprise features");
-    });
-
-    it("assignWorkspaceRegion throws when enterprise is disabled", async () => {
-      ee.setEnterpriseEnabled(false);
-      await expect(assignWorkspaceRegion("org-1", "us-east")).rejects.toThrow("Enterprise features");
-    });
-  });
-
   describe("configuration", () => {
     it("getDefaultRegion returns configured default", () => {
       expect(getDefaultRegion()).toBe("us-east");

@@ -6,6 +6,7 @@ import { useAtlasConfig } from "@/ui/context";
 import { useBranding } from "@/ui/hooks/use-branding";
 import type { LucideIcon } from "lucide-react";
 import {
+  ArrowLeft,
   ChevronRight,
   LayoutDashboard,
   Database,

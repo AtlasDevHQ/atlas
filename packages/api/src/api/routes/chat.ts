@@ -9,7 +9,6 @@ import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
 import { Effect } from "effect";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { RequestContext } from "@atlas/api/lib/effect/services";
-import { honoContextLayer } from "./effect-context";
 import { HTTPException } from "hono/http-exception";
 import { validationHook } from "./validation-hook";
 import { withRequestId, type AuthEnv } from "./middleware";
@@ -140,13 +139,14 @@ chat.openapi(chatRoute, async (c) => {
     const { requestId } = yield* RequestContext;
 
   // Auth check — before context so user identity is available to all downstream logs
-  let authResult: AuthResult;
-  try {
-    authResult = await authenticateRequest(req);
-  } catch (err) {
+  const authAttempt = yield* Effect.tryPromise({
+    try: () => authenticateRequest(req),
+    catch: (err) => err instanceof Error ? err : new Error(String(err)),
+  }).pipe(Effect.either);
+  if (authAttempt._tag === "Left") {
     log.error(
       {
-        err: err instanceof Error ? err : new Error(String(err)),
+        err: authAttempt.left,
         requestId,
       },
       "Auth dispatch failed",
@@ -156,6 +156,7 @@ chat.openapi(chatRoute, async (c) => {
       500,
     );
   }
+  const authResult: AuthResult = authAttempt.right;
   if (!authResult.authenticated) {
     log.warn({ requestId, status: authResult.status }, "Authentication failed");
     const errorBody: Record<string, unknown> = { error: "auth_error", message: authResult.error, retryable: false, requestId };
@@ -194,15 +195,18 @@ chat.openapi(chatRoute, async (c) => {
 
   // IP allowlist check — enterprise feature, after auth so we have org context
   let checkIPAllowlist: ((orgId: string, clientIP: string | null) => Promise<{ allowed: boolean }>) | undefined;
-  try {
-    ({ checkIPAllowlist } = await import("@atlas/ee/auth/ip-allowlist"));
-  } catch {
-    // ee module not installed — IP allowlist feature unavailable, skip
+  const eeImport = yield* Effect.tryPromise({
+    try: () => import("@atlas/ee/auth/ip-allowlist"),
+    catch: () => null,
+  }).pipe(Effect.either);
+  if (eeImport._tag === "Right" && eeImport.right) {
+    checkIPAllowlist = eeImport.right.checkIPAllowlist;
   }
+  // ee module not installed — IP allowlist feature unavailable, skip
   if (checkIPAllowlist) {
     const orgId = authResult.user?.activeOrganizationId;
     if (orgId) {
-      const ipCheck = await checkIPAllowlist(orgId, ip);
+      const ipCheck = yield* Effect.promise(() => checkIPAllowlist!(orgId, ip));
       if (!ipCheck.allowed) {
         log.warn({ requestId, orgId, ip }, "IP not in workspace allowlist");
         return c.json(
@@ -214,7 +218,7 @@ chat.openapi(chatRoute, async (c) => {
   }
 
   // Workspace status check — block suspended/deleted workspaces
-  const wsCheck = await checkWorkspaceStatus(authResult.user?.activeOrganizationId);
+  const wsCheck = yield* Effect.promise(() => checkWorkspaceStatus(authResult.user?.activeOrganizationId));
   if (!wsCheck.allowed) {
     return c.json(
       { error: wsCheck.errorCode, message: wsCheck.errorMessage, retryable: wsCheck.errorCode && isChatErrorCode(wsCheck.errorCode) ? isRetryableError(wsCheck.errorCode) : false, requestId },
@@ -250,7 +254,7 @@ chat.openapi(chatRoute, async (c) => {
   }
 
   // Plan limit check — block or warn when usage approaches/exceeds plan limits
-  const planCheck = await checkPlanLimits(authResult.user?.activeOrganizationId);
+  const planCheck = yield* Effect.promise(() => checkPlanLimits(authResult.user?.activeOrganizationId));
   if (!planCheck.allowed) {
     return c.json(
       {
@@ -697,7 +701,7 @@ chat.openapi(chatRoute, async (c) => {
       }
     },
   );
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "chat" });
+  }), { label: "chat" });
   return result;
 });
 

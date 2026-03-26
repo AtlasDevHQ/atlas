@@ -10,7 +10,6 @@ import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
 import { Effect } from "effect";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
-import { honoContextLayer } from "./effect-context";
 import { validationHook } from "./validation-hook";
 import { z } from "zod";
 import { createLogger } from "@atlas/api/lib/logger";
@@ -169,7 +168,7 @@ sessions.openapi(listSessionsRoute, async (c) => {
         userAgent: r.userAgent,
       })),
     }, 200);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "list sessions" });
+  }), { label: "list sessions" });
   return result;
 });
 
@@ -206,7 +205,7 @@ sessions.openapi(revokeSessionRoute, async (c) => {
 
     log.info({ requestId, sessionId, userId }, "User revoked own session");
     return c.json({ success: true }, 200);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "revoke session" });
+  }), { label: "revoke session" });
   return result;
 });
 

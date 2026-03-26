@@ -6,14 +6,11 @@
  */
 
 import { createRoute, z } from "@hono/zod-openapi";
-import { Effect, Layer } from "effect";
+import { Effect } from "effect";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import {
   AuthContext,
-  makeRequestContextLayer,
-  makeAuthContextLayer,
 } from "@atlas/api/lib/effect/services";
-import type { AuthMode, AtlasUser } from "@useatlas/types/auth";
 import {
   listSSOProviders,
   getSSOProvider,
@@ -36,15 +33,6 @@ import { createAdminRouter, requireOrgContext } from "./admin-router";
 
 const SSO_ERROR_STATUS = { not_found: 404, conflict: 409, validation: 400 } as const;
 const SSO_ENFORCEMENT_ERROR_STATUS = { no_provider: 400, not_enterprise: 400 } as const;
-
-/** Build Effect context layer from Hono context variables set by auth middleware. */
-function honoContextLayer(c: { get(key: "requestId"): string; get(key: "authResult"): { mode: string; user?: AtlasUser } }) {
-  const authResult = c.get("authResult");
-  return Layer.merge(
-    makeRequestContextLayer(c.get("requestId")),
-    makeAuthContextLayer(authResult.mode as AuthMode, authResult.user),
-  );
-}
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -461,7 +449,7 @@ adminSso.openapi(listProvidersRoute, async (c) => {
 
     const providers = yield* Effect.promise(() => listSSOProviders(orgId!));
     return c.json({ providers: providers.map(summarizeProvider), total: providers.length }, 200);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "list SSO providers", domainErrors: [[SSOEnforcementError, SSO_ENFORCEMENT_ERROR_STATUS], [SSOError, SSO_ERROR_STATUS]] });
+  }), { label: "list SSO providers", domainErrors: [[SSOEnforcementError, SSO_ENFORCEMENT_ERROR_STATUS], [SSOError, SSO_ERROR_STATUS]] });
 });
 
 // GET /providers/:id — get a single SSO provider
@@ -479,7 +467,7 @@ adminSso.openapi(getProviderRoute, async (c) => {
       return c.json({ error: "not_found", message: "SSO provider not found." }, 404);
     }
     return c.json({ provider: redactProvider(provider) }, 200);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "get SSO provider", domainErrors: [[SSOEnforcementError, SSO_ENFORCEMENT_ERROR_STATUS], [SSOError, SSO_ERROR_STATUS]] });
+  }), { label: "get SSO provider", domainErrors: [[SSOEnforcementError, SSO_ENFORCEMENT_ERROR_STATUS], [SSOError, SSO_ERROR_STATUS]] });
 });
 
 // POST /providers — create a new SSO provider
@@ -495,7 +483,7 @@ adminSso.openapi(createProviderRoute, async (c) => {
 
     const provider = yield* Effect.promise(() => createSSOProvider(orgId!, body as unknown as CreateSSOProviderRequest));
     return c.json({ provider: redactProvider(provider) }, 201);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "create SSO provider", domainErrors: [[SSOEnforcementError, SSO_ENFORCEMENT_ERROR_STATUS], [SSOError, SSO_ERROR_STATUS]] });
+  }), { label: "create SSO provider", domainErrors: [[SSOEnforcementError, SSO_ENFORCEMENT_ERROR_STATUS], [SSOError, SSO_ERROR_STATUS]] });
 });
 
 // PATCH /providers/:id — update an SSO provider
@@ -512,7 +500,7 @@ adminSso.openapi(updateProviderRoute, async (c) => {
 
     const provider = yield* Effect.promise(() => updateSSOProvider(orgId!, providerId, body));
     return c.json({ provider: redactProvider(provider) }, 200);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "update SSO provider", domainErrors: [[SSOEnforcementError, SSO_ENFORCEMENT_ERROR_STATUS], [SSOError, SSO_ERROR_STATUS]] });
+  }), { label: "update SSO provider", domainErrors: [[SSOEnforcementError, SSO_ENFORCEMENT_ERROR_STATUS], [SSOError, SSO_ERROR_STATUS]] });
 });
 
 // DELETE /providers/:id — delete an SSO provider
@@ -530,7 +518,7 @@ adminSso.openapi(deleteProviderRoute, async (c) => {
       return c.json({ error: "not_found", message: "SSO provider not found." }, 404);
     }
     return c.json({ message: "SSO provider deleted." }, 200);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "delete SSO provider", domainErrors: [[SSOEnforcementError, SSO_ENFORCEMENT_ERROR_STATUS], [SSOError, SSO_ERROR_STATUS]] });
+  }), { label: "delete SSO provider", domainErrors: [[SSOEnforcementError, SSO_ENFORCEMENT_ERROR_STATUS], [SSOError, SSO_ERROR_STATUS]] });
 });
 
 // GET /enforcement — get SSO enforcement status
@@ -540,7 +528,7 @@ adminSso.openapi(getEnforcementRoute, async (c) => {
 
     const result = yield* Effect.promise(() => isSSOEnforced(orgId!));
     return c.json({ enforced: result?.enforced ?? false, orgId: orgId! }, 200);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "get SSO enforcement status", domainErrors: [[SSOEnforcementError, SSO_ENFORCEMENT_ERROR_STATUS], [SSOError, SSO_ERROR_STATUS]] });
+  }), { label: "get SSO enforcement status", domainErrors: [[SSOEnforcementError, SSO_ENFORCEMENT_ERROR_STATUS], [SSOError, SSO_ERROR_STATUS]] });
 });
 
 // PUT /enforcement — set SSO enforcement
@@ -551,7 +539,7 @@ adminSso.openapi(setEnforcementRoute, async (c) => {
 
     const result = yield* Effect.promise(() => setSSOEnforcement(orgId!, enforced));
     return c.json(result, 200);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "set SSO enforcement", domainErrors: [[SSOEnforcementError, SSO_ENFORCEMENT_ERROR_STATUS], [SSOError, SSO_ERROR_STATUS]] });
+  }), { label: "set SSO enforcement", domainErrors: [[SSOEnforcementError, SSO_ENFORCEMENT_ERROR_STATUS], [SSOError, SSO_ERROR_STATUS]] });
 });
 
 export { adminSso };

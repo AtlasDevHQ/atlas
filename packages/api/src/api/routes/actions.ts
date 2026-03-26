@@ -9,7 +9,6 @@ import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
 import { Effect } from "effect";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
-import { honoContextLayer } from "./effect-context";
 import { validationHook } from "./validation-hook";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
@@ -342,7 +341,7 @@ actions.openapi(listActionsRoute, async (c) => {
       limit,
     }));
     return c.json({ actions: items }, 200);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "list actions" });
+  }), { label: "list actions" });
   return result;
 });
 
@@ -369,7 +368,7 @@ actions.openapi(getActionRoute, async (c) => {
       return c.json({ error: "not_found", message: "Action not found." }, 404);
     }
     return c.json(action, 200);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "retrieve action" });
+  }), { label: "retrieve action" });
   return result;
 });
 
@@ -417,7 +416,7 @@ actions.openapi(approveActionRoute, async (c) => {
       return c.json({ error: "conflict", message: "Action has already been resolved." }, 409);
     }
     return c.json(approveResult, 200);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "approve action" });
+  }), { label: "approve action" });
   return result;
 });
 
@@ -465,14 +464,18 @@ actions.openapi(
       let reason: string | undefined;
       const contentType = c.req.header("content-type") ?? "";
       if (contentType.includes("application/json")) {
-        try {
-          const body = await c.req.json();
-          if (body && typeof body.reason === "string") {
-            reason = body.reason;
-          }
-        } catch (err) {
-          log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse deny action request body");
+        const bodyResult = yield* Effect.tryPromise({
+          try: () => c.req.json(),
+          catch: (err) => err instanceof Error ? err : new Error(String(err)),
+        }).pipe(Effect.either);
+        if (bodyResult._tag === "Left") {
+          const err = bodyResult.left;
+          log.warn({ err: err.message, requestId }, "Failed to parse deny action request body");
           return c.json({ error: "invalid_request", message: "Invalid JSON body." }, 400);
+        }
+        const body = bodyResult.right;
+        if (body && typeof body.reason === "string") {
+          reason = body.reason;
         }
       }
 
@@ -481,7 +484,7 @@ actions.openapi(
         return c.json({ error: "conflict", message: "Action has already been resolved." }, 409);
       }
       return c.json(denyResult, 200);
-    }).pipe(Effect.provide(honoContextLayer(c))), { label: "deny action" });
+    }), { label: "deny action" });
     return result;
   },
   (result, c) => {
@@ -536,7 +539,7 @@ actions.openapi(rollbackActionRoute, async (c) => {
       return c.json({ ...rollbackResult, warning: "Rollback status updated but the rollback handler reported an error. The side-effect may not have been reversed." }, 200);
     }
     return c.json(rollbackResult, 200);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "rollback action" });
+  }), { label: "rollback action" });
   return result;
 });
 

@@ -11,7 +11,6 @@ import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
 import { Effect } from "effect";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
-import { honoContextLayer } from "./effect-context";
 import { validationHook } from "./validation-hook";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
@@ -412,7 +411,7 @@ authed.openapi(listTasksRoute, async (c) => {
       offset,
     }));
     return c.json(items, 200);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "list scheduled tasks" });
+  }), { label: "list scheduled tasks" });
   return result;
 });
 
@@ -456,7 +455,7 @@ authed.openapi(
       }
 
       return c.json(createResult.data, 201);
-    }).pipe(Effect.provide(honoContextLayer(c))), { label: "create scheduled task" });
+    }), { label: "create scheduled task" });
     return result;
   },
   (result, c) => {
@@ -507,8 +506,8 @@ scheduledTasks.openapi(tickRoute, async (c) => {
     }
 
     try {
-      const { runTick } = await import("@atlas/api/lib/scheduler/engine");
-      const tickResult = await runTick();
+      const { runTick } = yield* Effect.promise(() => import("@atlas/api/lib/scheduler/engine"));
+      const tickResult = yield* Effect.promise(() => runTick());
       if (tickResult.error) {
         return c.json({ error: "tick_failed", message: tickResult.error, requestId }, 500);
       }
@@ -517,7 +516,7 @@ scheduledTasks.openapi(tickRoute, async (c) => {
       log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Tick execution failed");
       return c.json({ error: "internal_error", message: "Tick execution failed.", requestId }, 500);
     }
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "scheduler tick" });
+  }), { label: "scheduler tick" });
   return result;
 });
 
@@ -549,7 +548,7 @@ authed.openapi(listAllRunsRoute, async (c) => {
 
     const runs = yield* Effect.promise(() => listAllRuns({ taskId, status, dateFrom, dateTo, limit, offset }));
     return c.json(runs, 200);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "list all runs" });
+  }), { label: "list all runs" });
   return result;
 });
 
@@ -579,7 +578,7 @@ authed.openapi(getTaskRoute, async (c) => {
 
     const runs = yield* Effect.promise(() => listTaskRuns(id, { limit: 10 }));
     return c.json({ ...taskResult.data, recentRuns: runs }, 200);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "get scheduled task" });
+  }), { label: "get scheduled task" });
   return result;
 });
 
@@ -625,7 +624,7 @@ authed.openapi(
         return c.json({ ok: true }, 200);
       }
       return c.json(updated.data, 200);
-    }).pipe(Effect.provide(honoContextLayer(c))), { label: "update scheduled task" });
+    }), { label: "update scheduled task" });
     return result;
   },
   (result, c) => {
@@ -662,7 +661,7 @@ authed.openapi(deleteTaskRoute, async (c) => {
       return c.json(fail.body, fail.status);
     }
     return c.body(null, 204);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "delete scheduled task" });
+  }), { label: "delete scheduled task" });
   return result;
 });
 
@@ -693,7 +692,7 @@ authed.openapi(triggerTaskRoute, async (c) => {
     const { triggerTask } = yield* Effect.promise(() => import("@atlas/api/lib/scheduler/engine"));
     yield* Effect.promise(() => triggerTask(id));
     return c.json({ message: "Task triggered successfully.", taskId: id }, 200);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "trigger task execution" });
+  }), { label: "trigger task execution" });
   return result;
 });
 
@@ -724,7 +723,7 @@ authed.openapi(previewTaskRoute, async (c) => {
     const { generateDeliveryPreview } = yield* Effect.promise(() => import("@atlas/api/lib/scheduler/preview"));
     const preview = generateDeliveryPreview(task.data);
     return c.json(preview, 200);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "generate delivery preview" });
+  }), { label: "generate delivery preview" });
   return result;
 });
 
@@ -756,7 +755,7 @@ authed.openapi(listTaskRunsRoute, async (c) => {
     const { limit } = parsePagination(c, { limit: 20, maxLimit: 100 });
     const runs = yield* Effect.promise(() => listTaskRuns(id, { limit }));
     return c.json({ runs }, 200);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "list task runs" });
+  }), { label: "list task runs" });
   return result;
 });
 

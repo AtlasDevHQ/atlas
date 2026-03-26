@@ -93,8 +93,12 @@ adminPrompts.openapi(createCollectionRoute, async (c) => {
 
     if (!hasInternalDB()) { log.debug({ requestId }, "Prompt collections requested but no internal DB configured"); return c.json({ error: "not_available", message: "No internal database configured." }, 404); }
 
-    let body: Record<string, unknown>;
-    try { body = await c.req.json(); } catch (err) { log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse JSON body"); return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400); }
+    const bodyResult = yield* Effect.tryPromise({
+      try: () => c.req.json() as Promise<Record<string, unknown>>,
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    }).pipe(Effect.either);
+    if (bodyResult._tag === "Left") { log.warn({ err: bodyResult.left.message, requestId }, "Failed to parse JSON body"); return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400); }
+    const body = bodyResult.right;
 
     const name = body.name as string | undefined;
     const industry = body.industry as string | undefined;
@@ -120,8 +124,12 @@ adminPrompts.openapi(updateCollectionRoute, async (c) => {
     if (existing.length === 0) return c.json({ error: "not_found", message: "Prompt collection not found." }, 404);
     if (existing[0].is_builtin === true) return c.json({ error: "forbidden", message: "Built-in collections cannot be modified.", requestId }, 403);
 
-    let body: Record<string, unknown>;
-    try { body = await c.req.json(); } catch (err) { log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse JSON body"); return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400); }
+    const bodyResult = yield* Effect.tryPromise({
+      try: () => c.req.json() as Promise<Record<string, unknown>>,
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    }).pipe(Effect.either);
+    if (bodyResult._tag === "Left") { log.warn({ err: bodyResult.left.message, requestId }, "Failed to parse JSON body"); return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400); }
+    const body = bodyResult.right;
 
     const name = body.name as string | undefined;
     const industry = body.industry as string | undefined;
@@ -174,8 +182,12 @@ adminPrompts.openapi(createItemRoute, async (c) => {
     if (collection.length === 0) return c.json({ error: "not_found", message: "Prompt collection not found." }, 404);
     if (collection[0].is_builtin === true) return c.json({ error: "forbidden", message: "Built-in collections cannot be modified.", requestId }, 403);
 
-    let body: Record<string, unknown>;
-    try { body = await c.req.json(); } catch (err) { log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse JSON body"); return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400); }
+    const bodyResult = yield* Effect.tryPromise({
+      try: () => c.req.json() as Promise<Record<string, unknown>>,
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    }).pipe(Effect.either);
+    if (bodyResult._tag === "Left") { log.warn({ err: bodyResult.left.message, requestId }, "Failed to parse JSON body"); return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400); }
+    const body = bodyResult.right;
 
     const question = body.question as string | undefined;
     const description = (body.description as string) ?? null;
@@ -209,8 +221,12 @@ adminPrompts.openapi(updateItemRoute, async (c) => {
     const existingItem = yield* Effect.promise(() => internalQuery<Record<string, unknown>>(`SELECT * FROM prompt_items WHERE id = $1 AND collection_id = $2`, [itemId, collectionId]));
     if (existingItem.length === 0) return c.json({ error: "not_found", message: "Prompt item not found." }, 404);
 
-    let body: Record<string, unknown>;
-    try { body = await c.req.json(); } catch (err) { log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse JSON body"); return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400); }
+    const bodyResult = yield* Effect.tryPromise({
+      try: () => c.req.json() as Promise<Record<string, unknown>>,
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    }).pipe(Effect.either);
+    if (bodyResult._tag === "Left") { log.warn({ err: bodyResult.left.message, requestId }, "Failed to parse JSON body"); return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400); }
+    const body = bodyResult.right;
 
     const question = body.question as string | undefined;
     const description = body.description as string | undefined;
@@ -266,8 +282,12 @@ adminPrompts.openapi(reorderItemsRoute, async (c) => {
     if (collection.length === 0) return c.json({ error: "not_found", message: "Prompt collection not found." }, 404);
     if (collection[0].is_builtin === true) return c.json({ error: "forbidden", message: "Built-in collections cannot be modified.", requestId }, 403);
 
-    let body: Record<string, unknown>;
-    try { body = await c.req.json(); } catch (err) { log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse JSON body"); return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400); }
+    const bodyResult = yield* Effect.tryPromise({
+      try: () => c.req.json() as Promise<Record<string, unknown>>,
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    }).pipe(Effect.either);
+    if (bodyResult._tag === "Left") { log.warn({ err: bodyResult.left.message, requestId }, "Failed to parse JSON body"); return c.json({ error: "bad_request", message: "Invalid JSON body." }, 400); }
+    const body = bodyResult.right;
 
     const itemIds = body.itemIds as string[] | undefined;
     if (!Array.isArray(itemIds) || itemIds.length === 0) return c.json({ error: "bad_request", message: "itemIds must be a non-empty array of item IDs." }, 400);
@@ -280,7 +300,7 @@ adminPrompts.openapi(reorderItemsRoute, async (c) => {
     for (const id of itemIds) { if (!existingIds.has(id)) return c.json({ error: "bad_request", message: `Item ID "${id}" does not belong to this collection.` }, 400); }
 
     for (let i = 0; i < itemIds.length; i++) {
-      await internalQuery(`UPDATE prompt_items SET sort_order = $1, updated_at = now() WHERE id = $2`, [i, itemIds[i]]);
+      yield* Effect.promise(() => internalQuery(`UPDATE prompt_items SET sort_order = $1, updated_at = now() WHERE id = $2`, [i, itemIds[i]]));
     }
     return c.json({ reordered: true }, 200);
   }), { label: "reorder prompt items" });

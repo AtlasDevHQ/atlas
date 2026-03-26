@@ -254,19 +254,28 @@ adminLearnedPatterns.openapi(bulkStatusRoute, async (c) => {
     const errors: Array<{ id: string; error: string }> = [];
 
     for (const id of ids) {
-      try {
-        const checkParams: unknown[] = [id];
-        const org = orgFilter(orgId, checkParams, checkParams.length + 1);
-        const existing = await internalQuery<Record<string, unknown>>(`SELECT id FROM learned_patterns WHERE id = $1 AND ${org.clause}`, checkParams);
-        if (existing.length === 0) { notFound.push(id); continue; }
+      const itemResult = yield* Effect.tryPromise({
+        try: async () => {
+          const checkParams: unknown[] = [id];
+          const org = orgFilter(orgId, checkParams, checkParams.length + 1);
+          const existing = await internalQuery<Record<string, unknown>>(`SELECT id FROM learned_patterns WHERE id = $1 AND ${org.clause}`, checkParams);
+          if (existing.length === 0) return "not_found" as const;
 
-        const updateParams: unknown[] = [status, user?.id ?? null, id];
-        const updateOrg = orgFilter(orgId, updateParams, updateParams.length + 1);
-        await internalQuery(`UPDATE learned_patterns SET status = $1, reviewed_by = $2, reviewed_at = now(), updated_at = now() WHERE id = $3 AND ${updateOrg.clause}`, updateParams);
+          const updateParams: unknown[] = [status, user?.id ?? null, id];
+          const updateOrg = orgFilter(orgId, updateParams, updateParams.length + 1);
+          await internalQuery(`UPDATE learned_patterns SET status = $1, reviewed_by = $2, reviewed_at = now(), updated_at = now() WHERE id = $3 AND ${updateOrg.clause}`, updateParams);
+          return "updated" as const;
+        },
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      }).pipe(Effect.either);
+      if (itemResult._tag === "Left") {
+        const itemErr = itemResult.left;
+        log.warn({ err: itemErr.message, requestId, patternId: id }, "Failed to update pattern in bulk operation");
+        errors.push({ id, error: itemErr.message });
+      } else if (itemResult.right === "not_found") {
+        notFound.push(id);
+      } else {
         updated.push(id);
-      } catch (itemErr) {
-        log.warn({ err: itemErr instanceof Error ? itemErr.message : String(itemErr), requestId, patternId: id }, "Failed to update pattern in bulk operation");
-        errors.push({ id, error: itemErr instanceof Error ? itemErr.message : "Update failed" });
       }
     }
 

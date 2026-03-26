@@ -14,29 +14,17 @@
  */
 
 import { createRoute, z } from "@hono/zod-openapi";
-import { Effect, Layer } from "effect";
+import { Effect } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import {
   RequestContext,
-  makeRequestContextLayer,
-  makeAuthContextLayer,
 } from "@atlas/api/lib/effect/services";
-import type { AuthMode, AtlasUser } from "@useatlas/types/auth";
 import { BACKUP_STATUSES } from "@useatlas/types";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createPlatformRouter } from "./admin-router";
 
 const log = createLogger("platform-backups");
-
-/** Build Effect context layer from Hono context variables set by auth middleware. */
-function honoContextLayer(c: { get(key: "requestId"): string; get(key: "authResult"): { mode: string; user?: AtlasUser } }) {
-  const authResult = c.get("authResult");
-  return Layer.merge(
-    makeRequestContextLayer(c.get("requestId")),
-    makeAuthContextLayer(authResult.mode as AuthMode, authResult.user),
-  );
-}
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -274,7 +262,7 @@ platformBackups.openapi(listBackupsRoute, async (c) => {
 
     const rows = yield* Effect.promise(() => backups.listBackups(100));
     return c.json({ backups: rows.map(toBackupEntry) }, 200);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "list backups" });
+  }), { label: "list backups" });
 });
 
 // ── Create backup ────────────────────────────────────────────────────
@@ -301,7 +289,7 @@ platformBackups.openapi(createBackupRoute, async (c) => {
       errorMessage: null,
     };
     return c.json({ message: "Backup created successfully.", backup }, 200);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "create backup" });
+  }), { label: "create backup" });
 });
 
 // ── Verify backup ────────────────────────────────────────────────────
@@ -317,24 +305,23 @@ platformBackups.openapi(verifyBackupRoute, async (c) => {
 
     const backupId = c.req.param("id");
 
-    return yield* Effect.tryPromise({
-      try: async () => {
-        const result = await backupsMod.verifyBackup(backupId);
-        log.info({ backupId, verified: result.verified, requestId }, "Backup verification completed");
-        return c.json(result, 200);
-      },
+    const verifyResult = yield* Effect.tryPromise({
+      try: () => backupsMod.verifyBackup(backupId),
       catch: (err) => err instanceof Error ? err : new Error(String(err)),
-    }).pipe(Effect.catchAll((err) => {
-      const message = err.message;
+    }).pipe(Effect.either);
+    if (verifyResult._tag === "Left") {
+      const message = verifyResult.left.message;
       if (message.includes("not found")) {
-        return Effect.succeed(c.json({ error: "not_found", message: "Backup not found.", requestId }, 404));
+        return c.json({ error: "not_found", message: "Backup not found.", requestId }, 404);
       }
       if (message.includes("Cannot verify")) {
-        return Effect.succeed(c.json({ error: "invalid_state", message, requestId }, 400));
+        return c.json({ error: "invalid_state", message, requestId }, 400);
       }
-      return Effect.die(err);
-    }));
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "verify backup" });
+      throw verifyResult.left;
+    }
+    log.info({ backupId, verified: verifyResult.right.verified, requestId }, "Backup verification completed");
+    return c.json(verifyResult.right, 200);
+  }), { label: "verify backup" });
 });
 
 // ── Request restore ──────────────────────────────────────────────────
@@ -350,24 +337,23 @@ platformBackups.openapi(requestRestoreRoute, async (c) => {
 
     const backupId = c.req.param("id");
 
-    return yield* Effect.tryPromise({
-      try: async () => {
-        const result = await backupsMod.requestRestore(backupId);
-        log.warn({ backupId, requestId }, "Restore requested by platform admin");
-        return c.json(result, 200);
-      },
+    const restoreResult = yield* Effect.tryPromise({
+      try: () => backupsMod.requestRestore(backupId),
       catch: (err) => err instanceof Error ? err : new Error(String(err)),
-    }).pipe(Effect.catchAll((err) => {
-      const message = err.message;
+    }).pipe(Effect.either);
+    if (restoreResult._tag === "Left") {
+      const message = restoreResult.left.message;
       if (message.includes("not found")) {
-        return Effect.succeed(c.json({ error: "not_found", message: "Backup not found.", requestId }, 404));
+        return c.json({ error: "not_found", message: "Backup not found.", requestId }, 404);
       }
       if (message.includes("Cannot restore")) {
-        return Effect.succeed(c.json({ error: "invalid_state", message, requestId }, 400));
+        return c.json({ error: "invalid_state", message, requestId }, 400);
       }
-      return Effect.die(err);
-    }));
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "request restore" });
+      throw restoreResult.left;
+    }
+    log.warn({ backupId, requestId }, "Restore requested by platform admin");
+    return c.json(restoreResult.right, 200);
+  }), { label: "request restore" });
 });
 
 // ── Confirm restore ──────────────────────────────────────────────────
@@ -397,7 +383,7 @@ platformBackups.openapi(confirmRestoreRoute, async (c) => {
       }
       return Effect.die(err);
     }));
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "execute restore" });
+  }), { label: "execute restore" });
 });
 
 // ── Get config ───────────────────────────────────────────────────────
@@ -417,7 +403,7 @@ platformBackups.openapi(getConfigRoute, async (c) => {
       retentionDays: config.retention_days,
       storagePath: config.storage_path,
     }, 200);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "read backup config" });
+  }), { label: "read backup config" });
 });
 
 // ── Update config ────────────────────────────────────────────────────
@@ -444,7 +430,7 @@ platformBackups.openapi(updateConfigRoute, async (c) => {
         storagePath: config.storage_path,
       },
     }, 200);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "update backup config" });
+  }), { label: "update backup config" });
 });
 
 export { platformBackups };

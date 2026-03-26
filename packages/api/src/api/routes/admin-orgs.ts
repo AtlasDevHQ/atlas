@@ -237,11 +237,14 @@ adminOrgs.openapi(deleteOrgRoute, async (c) => {
 
     let poolsDrained = 0;
     if (connections.isOrgPoolingEnabled()) {
-      try {
-        const drainResult = await connections.drainOrg(orgId);
-        poolsDrained = drainResult.drained;
-      } catch (drainErr) {
-        log.warn({ orgId, err: drainErr instanceof Error ? drainErr.message : String(drainErr) }, "Failed to drain org pools during delete — continuing with cascade");
+      const drainResult = yield* Effect.tryPromise({
+        try: () => connections.drainOrg(orgId),
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      }).pipe(Effect.either);
+      if (drainResult._tag === "Right") {
+        poolsDrained = drainResult.right.drained;
+      } else {
+        log.warn({ orgId, err: drainResult.left.message }, "Failed to drain org pools during delete — continuing with cascade");
       }
     }
     flushCache();

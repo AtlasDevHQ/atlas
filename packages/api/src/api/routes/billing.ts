@@ -12,16 +12,13 @@ import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
 import { z } from "zod";
 import { HTTPException } from "hono/http-exception";
 import Stripe from "stripe";
-import { Effect, Layer } from "effect";
+import { Effect } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import {
   RequestContext,
   AuthContext,
-  makeRequestContextLayer,
-  makeAuthContextLayer,
 } from "@atlas/api/lib/effect/services";
-import type { AuthMode, AtlasUser } from "@useatlas/types/auth";
 import { validationHook } from "./validation-hook";
 import {
   hasInternalDB,
@@ -36,15 +33,6 @@ import { ErrorSchema } from "./shared-schemas";
 import { standardAuth, requestContext, type AuthEnv } from "./middleware";
 
 const log = createLogger("billing");
-
-/** Build Effect context layer from Hono context variables set by auth middleware. */
-function honoContextLayer(c: { get(key: "requestId"): string; get(key: "authResult"): { mode: string; user?: AtlasUser } }) {
-  const authResult = c.get("authResult");
-  return Layer.merge(
-    makeRequestContextLayer(c.get("requestId")),
-    makeAuthContextLayer(authResult.mode as AuthMode, authResult.user),
-  );
-}
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -315,7 +303,7 @@ billing.openapi(getBillingStatusRoute, async (c) => {
         status: subscription.status,
       } : null,
     }, 200);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "fetch billing status" });
+  }), { label: "fetch billing status" });
 });
 
 // GET /status is accessible via the root handler since billing is mounted
@@ -349,14 +337,16 @@ billing.openapi(createPortalSessionRoute, async (c) => {
       log.debug({ err: err instanceof Error ? err.message : String(err), requestId }, "Portal body parse/validation skipped — using default returnUrl");
     }
 
+    // Non-null: guarded by the !workspace?.stripe_customer_id check above
+    const customerId = workspace.stripe_customer_id!;
     const stripeClient = new Stripe(process.env.STRIPE_SECRET_KEY!);
     const session = yield* Effect.promise(() => stripeClient.billingPortal.sessions.create({
-      customer: workspace.stripe_customer_id,
+      customer: customerId,
       return_url: returnUrl || process.env.BETTER_AUTH_URL || "http://localhost:3000",
     }));
 
     return c.json({ url: session.url }, 200);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "create portal session" });
+  }), { label: "create portal session" });
 });
 
 // POST /byot — toggle BYOT (Bring Your Own Token) mode
@@ -387,7 +377,7 @@ billing.openapi(toggleByotRoute, async (c) => {
 
     log.info({ orgId, byot: enabled, userId: user?.id }, "BYOT mode toggled");
     return c.json({ workspaceId: orgId, byot: enabled }, 200);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "update BYOT setting" });
+  }), { label: "update BYOT setting" });
 });
 
 // ---------------------------------------------------------------------------

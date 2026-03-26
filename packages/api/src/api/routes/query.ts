@@ -14,7 +14,6 @@ import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
 import { Effect } from "effect";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { RequestContext } from "@atlas/api/lib/effect/services";
-import { honoContextLayer } from "./effect-context";
 import { validationHook } from "./validation-hook";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
@@ -416,7 +415,7 @@ query.openapi(
       );
     }
     }); // withRequestContext
-    }).pipe(Effect.provide(honoContextLayer(c))), { label: "query" });
+    }), { label: "query" });
     return result;
   },
   (result, c) => {

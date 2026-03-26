@@ -202,11 +202,13 @@ adminUsage.openapi(getUsageSummaryRoute, async (c) => {
     // Non-critical — stale data is acceptable if this fails.
     const now = new Date();
     const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    try {
-      await aggregateUsageSummary(orgId!, "daily", todayStart);
-    } catch (aggErr) {
+    const aggResult = yield* Effect.tryPromise({
+      try: () => aggregateUsageSummary(orgId!, "daily", todayStart),
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    }).pipe(Effect.either);
+    if (aggResult._tag === "Left") {
       log.warn(
-        { err: aggErr instanceof Error ? aggErr : new Error(String(aggErr)), requestId },
+        { err: aggResult.left, requestId },
         "Non-critical: failed to aggregate today's usage summary; proceeding with stale data",
       );
     }

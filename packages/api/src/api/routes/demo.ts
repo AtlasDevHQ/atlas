@@ -47,7 +47,6 @@ import { withRequestId, type AuthEnv } from "./middleware";
 import { Effect } from "effect";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { RequestContext } from "@atlas/api/lib/effect/services";
-import { honoContextLayer } from "./effect-context";
 
 const log = createLogger("demo");
 
@@ -308,16 +307,18 @@ demo.openapi(demoStartRoute, async (c) => {
       );
     }
 
-    let body: unknown;
-    try {
-      body = await c.req.json();
-    } catch (err) {
-      log.debug({ err: err instanceof Error ? err.message : String(err) }, "Demo /start: invalid JSON body");
+    const bodyResult = yield* Effect.tryPromise({
+      try: () => c.req.json(),
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    }).pipe(Effect.either);
+    if (bodyResult._tag === "Left") {
+      log.debug({ err: bodyResult.left.message }, "Demo /start: invalid JSON body");
       return c.json(
         { error: "invalid_request", message: "Invalid JSON body.", requestId },
         400,
       );
     }
+    const body: unknown = bodyResult.right;
 
     const parsed = DemoStartSchema.safeParse(body);
     if (!parsed.success) {
@@ -357,7 +358,7 @@ demo.openapi(demoStartRoute, async (c) => {
       returning: leadResult.returning,
       conversationCount,
     }, 200);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "demo start" });
+  }), { label: "demo start" });
   return result;
 });
 
@@ -646,7 +647,7 @@ demo.openapi(listDemoConversationsRoute, async (c) => {
     const { limit, offset } = parsePagination(c, { limit: 50, maxLimit: 100 });
     const items = yield* Effect.promise(() => listConversations({ userId, limit, offset }));
     return c.json(items, 200);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "list demo conversations" });
+  }), { label: "list demo conversations" });
   return result;
 });
 
@@ -668,7 +669,7 @@ demo.openapi(getDemoConversationRoute, async (c) => {
     }
 
     return c.json(conv.data, 200);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "get demo conversation" });
+  }), { label: "get demo conversation" });
   return result;
 });
 

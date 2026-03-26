@@ -10,7 +10,6 @@ import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
 import { Effect } from "effect";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
-import { honoContextLayer } from "./effect-context";
 import { z } from "zod";
 import { HTTPException } from "hono/http-exception";
 import { createLogger } from "@atlas/api/lib/logger";
@@ -595,7 +594,7 @@ conversations.openapi(listConversationsRoute, async (c) => {
       offset,
     }));
     return c.json(items, 200);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "list conversations" });
+  }), { label: "list conversations" });
   return result;
 });
 
@@ -623,7 +622,7 @@ conversations.openapi(getConversationRoute, async (c) => {
       return c.json(fail.body, fail.status);
     }
     return c.json(conv.data, 200);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "get conversation" });
+  }), { label: "get conversation" });
   return result;
 });
 
@@ -653,7 +652,7 @@ conversations.openapi(starConversationRoute, async (c) => {
       return c.json(fail.body, fail.status);
     }
     return c.json({ id, starred: parsed.starred }, 200);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "star conversation" });
+  }), { label: "star conversation" });
   return result;
 });
 
@@ -683,7 +682,7 @@ conversations.openapi(notebookStateRoute, async (c) => {
       return c.json(fail.body, fail.status);
     }
     return c.json({ id, notebookState: parsed }, 200);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "update notebook state" });
+  }), { label: "update notebook state" });
   return result;
 });
 
@@ -777,7 +776,7 @@ conversations.openapi(forkConversationRoute, async (c) => {
       branches: [...existingBranches, branch],
       ...(metadataWarning ? { warning: metadataWarning } : {}),
     }, 200);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "fork conversation" });
+  }), { label: "fork conversation" });
   return result;
 });
 
@@ -818,7 +817,7 @@ conversations.openapi(getShareStatusRoute, async (c) => {
       expiresAt: shareResult.data.expiresAt,
       shareMode: shareResult.data.shareMode,
     }, 200);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "get share status" });
+  }), { label: "get share status" });
   return result;
 });
 
@@ -840,14 +839,18 @@ conversations.openapi(shareConversationRoute, async (c) => {
       return c.json({ error: "invalid_request", message: "Invalid conversation ID format." }, 400);
     }
 
-    let body: unknown = undefined;
-    try {
-      const text = await c.req.raw.text();
-      if (text) body = JSON.parse(text);
-    } catch (err) {
-      log.debug({ err: err instanceof Error ? err.message : String(err) }, "Invalid JSON body in POST share");
+    const bodyResult = yield* Effect.tryPromise({
+      try: async () => {
+        const text = await c.req.raw.text();
+        return text ? JSON.parse(text) as unknown : undefined;
+      },
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    }).pipe(Effect.either);
+    if (bodyResult._tag === "Left") {
+      log.debug({ err: bodyResult.left.message }, "Invalid JSON body in POST share");
       return c.json({ error: "invalid_request", message: "Invalid JSON body." }, 400);
     }
+    const body: unknown = bodyResult.right;
 
     const parsed = ShareConversationBodySchema.safeParse(body);
     if (!parsed.success) {
@@ -870,7 +873,7 @@ conversations.openapi(shareConversationRoute, async (c) => {
       expiresAt: shareResult.data.expiresAt,
       shareMode: shareResult.data.shareMode,
     }, 200);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "share conversation" });
+  }), { label: "share conversation" });
   return result;
 });
 
@@ -898,7 +901,7 @@ conversations.openapi(unshareConversationRoute, async (c) => {
       return c.json(fail.body, fail.status);
     }
     return c.body(null, 204);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "unshare conversation" });
+  }), { label: "unshare conversation" });
   return result;
 });
 
@@ -926,7 +929,7 @@ conversations.openapi(deleteConversationRoute, async (c) => {
       return c.json(fail.body, fail.status);
     }
     return c.body(null, 204);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "delete conversation" });
+  }), { label: "delete conversation" });
   return result;
 });
 

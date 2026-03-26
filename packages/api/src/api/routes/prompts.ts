@@ -11,7 +11,6 @@ import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
 import { Effect } from "effect";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { AuthContext } from "@atlas/api/lib/effect/services";
-import { honoContextLayer } from "./effect-context";
 import { validationHook } from "./validation-hook";
 import { z } from "zod";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
@@ -175,7 +174,7 @@ prompts.openapi(listCollectionsRoute, async (c) => {
     }
 
     return c.json({ collections: rows.map(toPromptCollection) }, 200);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "list prompt collections" });
+  }), { label: "list prompt collections" });
   return result;
 });
 
@@ -219,6 +218,6 @@ prompts.openapi(getCollectionRoute, async (c) => {
       collection: toPromptCollection(collectionRows[0]),
       items: items.map(toPromptItem),
     }, 200);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "get prompt collection" });
+  }), { label: "get prompt collection" });
   return result;
 });

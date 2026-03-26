@@ -11,30 +11,18 @@
  */
 
 import { createRoute, z } from "@hono/zod-openapi";
-import { Effect, Layer } from "effect";
+import { Effect } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
 import { runEffect, type DomainErrorMapping } from "@atlas/api/lib/effect/hono";
 import {
   RequestContext,
-  makeRequestContextLayer,
-  makeAuthContextLayer,
 } from "@atlas/api/lib/effect/services";
-import type { AuthMode, AtlasUser } from "@useatlas/types/auth";
 import { DomainError, type DomainErrorCode } from "@atlas/ee/platform/domains";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createPlatformRouter } from "./admin-router";
 
 const log = createLogger("platform-domains");
-
-/** Build Effect context layer from Hono context variables set by auth middleware. */
-function honoContextLayer(c: { get(key: "requestId"): string; get(key: "authResult"): { mode: string; user?: AtlasUser } }) {
-  const authResult = c.get("authResult");
-  return Layer.merge(
-    makeRequestContextLayer(c.get("requestId")),
-    makeAuthContextLayer(authResult.mode as AuthMode, authResult.user),
-  );
-}
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -228,7 +216,7 @@ platformDomains.openapi(listDomainsRoute, async (c) => {
 
     const domains = yield* Effect.promise(() => mod.listAllDomains());
     return c.json({ domains }, 200);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "list domains", domainErrors: domainDomainErrors });
+  }), { label: "list domains", domainErrors: domainDomainErrors });
 });
 
 // ── Register domain ──────────────────────────────────────────────────
@@ -254,7 +242,7 @@ platformDomains.openapi(registerDomainRoute, async (c) => {
         return err instanceof Error ? err : new Error(String(err));
       },
     });
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "register domain", domainErrors: domainDomainErrors });
+  }), { label: "register domain", domainErrors: domainDomainErrors });
 });
 
 // ── Verify domain ────────────────────────────────────────────────────
@@ -279,7 +267,7 @@ platformDomains.openapi(verifyDomainRoute, async (c) => {
         return err instanceof Error ? err : new Error(String(err));
       },
     });
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "verify domain", domainErrors: domainDomainErrors });
+  }), { label: "verify domain", domainErrors: domainDomainErrors });
 });
 
 // ── Delete domain ────────────────────────────────────────────────────
@@ -305,7 +293,7 @@ platformDomains.openapi(deleteDomainRoute, async (c) => {
         return err instanceof Error ? err : new Error(String(err));
       },
     });
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "delete domain", domainErrors: domainDomainErrors });
+  }), { label: "delete domain", domainErrors: domainDomainErrors });
 });
 
 export { platformDomains };

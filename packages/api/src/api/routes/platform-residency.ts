@@ -11,30 +11,18 @@
  */
 
 import { createRoute, z } from "@hono/zod-openapi";
-import { Effect, Layer } from "effect";
+import { Effect } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
 import { runEffect, type DomainErrorMapping } from "@atlas/api/lib/effect/hono";
 import {
   RequestContext,
-  makeRequestContextLayer,
-  makeAuthContextLayer,
 } from "@atlas/api/lib/effect/services";
-import type { AuthMode, AtlasUser } from "@useatlas/types/auth";
 import { ResidencyError, type ResidencyErrorCode } from "@atlas/ee/platform/residency";
 import type { ContentfulStatusCode } from "hono/utils/http-status";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createPlatformRouter } from "./admin-router";
 
 const log = createLogger("platform-residency");
-
-/** Build Effect context layer from Hono context variables set by auth middleware. */
-function honoContextLayer(c: { get(key: "requestId"): string; get(key: "authResult"): { mode: string; user?: AtlasUser } }) {
-  const authResult = c.get("authResult");
-  return Layer.merge(
-    makeRequestContextLayer(c.get("requestId")),
-    makeAuthContextLayer(authResult.mode as AuthMode, authResult.user),
-  );
-}
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -208,7 +196,7 @@ platformResidency.openapi(listRegionsRoute, async (c) => {
     const regions = yield* Effect.promise(() => mod.listRegions());
     const defaultRegion = mod.getDefaultRegion();
     return c.json({ regions, defaultRegion }, 200);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "list regions", domainErrors: residencyDomainErrors });
+  }), { label: "list regions", domainErrors: residencyDomainErrors });
 });
 
 // ── Get workspace region ─────────────────────────────────────────────
@@ -228,7 +216,7 @@ platformResidency.openapi(getWorkspaceRegionRoute, async (c) => {
       return c.json({ error: "not_found", message: `Workspace "${workspaceId}" has no region assigned.`, requestId }, 404);
     }
     return c.json(assignment, 200);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "get workspace region", domainErrors: residencyDomainErrors });
+  }), { label: "get workspace region", domainErrors: residencyDomainErrors });
 });
 
 // ── Assign region to workspace ───────────────────────────────────────
@@ -247,7 +235,7 @@ platformResidency.openapi(assignRegionRoute, async (c) => {
     const assignment = yield* Effect.promise(() => mod.assignWorkspaceRegion(workspaceId, body.region));
     log.info({ workspaceId, region: body.region, requestId }, "Region assigned to workspace");
     return c.json(assignment, 200);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "assign region", domainErrors: residencyDomainErrors });
+  }), { label: "assign region", domainErrors: residencyDomainErrors });
 });
 
 // ── List all assignments ─────────────────────────────────────────────
@@ -263,7 +251,7 @@ platformResidency.openapi(listAssignmentsRoute, async (c) => {
 
     const assignments = yield* Effect.promise(() => mod.listWorkspaceRegions());
     return c.json({ assignments }, 200);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "list region assignments", domainErrors: residencyDomainErrors });
+  }), { label: "list region assignments", domainErrors: residencyDomainErrors });
 });
 
 export { platformResidency };

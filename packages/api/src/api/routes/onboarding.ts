@@ -7,15 +7,12 @@
  */
 
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
-import { Effect, Layer } from "effect";
+import { Effect } from "effect";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import {
   RequestContext,
   AuthContext,
-  makeRequestContextLayer,
-  makeAuthContextLayer,
 } from "@atlas/api/lib/effect/services";
-import type { AuthMode, AtlasUser } from "@useatlas/types/auth";
 import { validationHook } from "./validation-hook";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
@@ -29,15 +26,6 @@ import { ErrorSchema } from "./shared-schemas";
 import { standardAuth, requestContext, type AuthEnv } from "./middleware";
 
 const log = createLogger("onboarding");
-
-/** Build Effect context layer from Hono context variables set by auth middleware. */
-function honoContextLayer(c: { get(key: "requestId"): string; get(key: "authResult"): { mode: string; user?: AtlasUser } }) {
-  const authResult = c.get("authResult");
-  return Layer.merge(
-    makeRequestContextLayer(c.get("requestId")),
-    makeAuthContextLayer(authResult.mode as AuthMode, authResult.user),
-  );
-}
 
 /** Valid connection ID: lowercase alphanumeric, hyphens, underscores, 1-64 chars. Must not start with underscore (reserved for internal IDs). */
 const CONNECTION_ID_PATTERN = /^[a-z][a-z0-9_-]{0,62}[a-z0-9]$/;
@@ -302,7 +290,7 @@ onboarding.openapi(
           }
         })),
       );
-    }).pipe(Effect.provide(honoContextLayer(c))), { label: "test connection" });
+    }), { label: "test connection" });
   },
   (result, c) => {
     if (!result.success) {
@@ -459,7 +447,7 @@ onboarding.openapi(
         dbType,
         maskedUrl: maskConnectionUrl(url),
       }, 201);
-    }).pipe(Effect.provide(honoContextLayer(c))), { label: "complete onboarding" });
+    }), { label: "complete onboarding" });
   },
   (result, c) => {
     if (!result.success) {
@@ -594,7 +582,7 @@ onboarding.openapi(tourStatusRoute, async (c) => {
       tourCompleted: !!row?.tour_completed_at,
       tourCompletedAt: row?.tour_completed_at ?? null,
     }, 200);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "fetch tour status" });
+  }), { label: "fetch tour status" });
 });
 
 // ---------------------------------------------------------------------------
@@ -627,7 +615,7 @@ onboarding.openapi(tourCompleteRoute, async (c) => {
     ));
     log.info({ requestId, userId }, "Tour marked as completed");
     return c.json({ tourCompleted: true, tourCompletedAt: now }, 200);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "save tour completion" });
+  }), { label: "save tour completion" });
 });
 
 // ---------------------------------------------------------------------------
@@ -657,7 +645,7 @@ onboarding.openapi(tourResetRoute, async (c) => {
     ));
     log.info({ requestId, userId }, "Tour reset for replay");
     return c.json({ tourCompleted: false, tourCompletedAt: null }, 200);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "reset tour" });
+  }), { label: "reset tour" });
 });
 
 export { onboarding };

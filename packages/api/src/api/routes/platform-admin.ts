@@ -18,15 +18,12 @@
 
 import { createRoute, z } from "@hono/zod-openapi";
 import { createPlatformRouter } from "./admin-router";
-import { Effect, Layer } from "effect";
+import { Effect } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import {
   RequestContext,
-  makeRequestContextLayer,
-  makeAuthContextLayer,
 } from "@atlas/api/lib/effect/services";
-import type { AuthMode, AtlasUser } from "@useatlas/types/auth";
 import {
   hasInternalDB,
   internalQuery,
@@ -48,15 +45,6 @@ import { ATLAS_ROLES, type AtlasRole } from "@atlas/api/lib/auth/types";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 
 const log = createLogger("platform-admin");
-
-/** Build Effect context layer from Hono context variables set by auth middleware. */
-function honoContextLayer(c: { get(key: "requestId"): string; get(key: "authResult"): { mode: string; user?: AtlasUser } }) {
-  const authResult = c.get("authResult");
-  return Layer.merge(
-    makeRequestContextLayer(c.get("requestId")),
-    makeAuthContextLayer(authResult.mode as AuthMode, authResult.user),
-  );
-}
 
 const VALID_PLAN_TIERS = new Set<string>(PLAN_TIERS);
 
@@ -420,7 +408,7 @@ platformAdmin.openapi(listWorkspacesRoute, async (c) => {
     }));
 
     return c.json({ workspaces }, 200);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "list workspaces" });
+  }), { label: "list workspaces" });
 });
 
 // ── Get workspace detail ─────────────────────────────────────────────
@@ -488,7 +476,7 @@ platformAdmin.openapi(getWorkspaceRoute, async (c) => {
     }));
 
     return c.json({ workspace: ws, users }, 200);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "get workspace details" });
+  }), { label: "get workspace details" });
 });
 
 // ── Suspend workspace ────────────────────────────────────────────────
@@ -520,7 +508,7 @@ platformAdmin.openapi(suspendWorkspaceRoute, async (c) => {
     log.info({ workspaceId, requestId }, "Workspace suspended by platform admin");
 
     return c.json({ message: "Workspace suspended.", workspaceId }, 200);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "suspend workspace" });
+  }), { label: "suspend workspace" });
 });
 
 // ── Unsuspend workspace ──────────────────────────────────────────────
@@ -548,7 +536,7 @@ platformAdmin.openapi(unsuspendWorkspaceRoute, async (c) => {
     log.info({ workspaceId, requestId }, "Workspace unsuspended by platform admin");
 
     return c.json({ message: "Workspace reactivated.", workspaceId }, 200);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "unsuspend workspace" });
+  }), { label: "unsuspend workspace" });
 });
 
 // ── Delete workspace ─────────────────────────────────────────────────
@@ -584,7 +572,7 @@ platformAdmin.openapi(deleteWorkspaceRoute, async (c) => {
       workspaceId,
       cleanup,
     }, 200);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "delete workspace" });
+  }), { label: "delete workspace" });
 });
 
 // ── Change plan ──────────────────────────────────────────────────────
@@ -633,7 +621,7 @@ platformAdmin.openapi(changePlanRoute, async (c) => {
     log.info({ workspaceId, planTier, previousTier: workspace.plan_tier, requestId }, "Workspace plan changed by platform admin");
 
     return c.json({ message: "Plan updated.", workspaceId, planTier }, 200);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "change workspace plan" });
+  }), { label: "change workspace plan" });
 });
 
 // ── Platform stats ───────────────────────────────────────────────────
@@ -676,7 +664,7 @@ platformAdmin.openapi(platformStatsRoute, async (c) => {
       totalQueries24h: queryRows[0]?.count ?? 0,
       mrr,
     }, 200);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "compute platform stats" });
+  }), { label: "compute platform stats" });
 });
 
 // ── Noisy neighbors ──────────────────────────────────────────────────
@@ -760,7 +748,7 @@ platformAdmin.openapi(noisyNeighborsRoute, async (c) => {
     }
 
     return c.json({ neighbors, medians }, 200);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "detect noisy neighbors" });
+  }), { label: "detect noisy neighbors" });
 });
 
 export { platformAdmin };

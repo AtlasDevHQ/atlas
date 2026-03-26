@@ -11,7 +11,6 @@ import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { Effect } from "effect";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { RequestContext } from "@atlas/api/lib/effect/services";
-import { honoContextLayer } from "./effect-context";
 import { validationHook } from "./validation-hook";
 import { createLogger } from "@atlas/api/lib/logger";
 import {
@@ -177,6 +176,6 @@ semantic.openapi(getEntityRoute, async (c) => {
 
     const raw = readYamlFile(filePath);
     return c.json({ entity: raw }, 200);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "parse entity file" });
+  }), { label: "parse entity file" });
   return result;
 });

@@ -14,16 +14,13 @@
  */
 
 import { createRoute, z } from "@hono/zod-openapi";
-import { Effect, Layer } from "effect";
+import { Effect } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import {
   RequestContext,
   AuthContext,
-  makeRequestContextLayer,
-  makeAuthContextLayer,
 } from "@atlas/api/lib/effect/services";
-import type { AuthMode, AtlasUser } from "@useatlas/types/auth";
 import {
   SLA_ALERT_STATUSES,
   SLA_ALERT_TYPES,
@@ -32,15 +29,6 @@ import { ErrorSchema, AuthErrorSchema, parsePagination } from "./shared-schemas"
 import { createPlatformRouter } from "./admin-router";
 
 const log = createLogger("platform-sla");
-
-/** Build Effect context layer from Hono context variables set by auth middleware. */
-function honoContextLayer(c: { get(key: "requestId"): string; get(key: "authResult"): { mode: string; user?: AtlasUser } }) {
-  const authResult = c.get("authResult");
-  return Layer.merge(
-    makeRequestContextLayer(c.get("requestId")),
-    makeAuthContextLayer(authResult.mode as AuthMode, authResult.user),
-  );
-}
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -266,7 +254,7 @@ platformSLA.openapi(listSLARoute, async (c) => {
 
     const workspaces = yield* Effect.promise(() => sla.getAllWorkspaceSLA(hoursBack));
     return c.json({ workspaces, hoursBack }, 200);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "fetch SLA summary" });
+  }), { label: "fetch SLA summary" });
 });
 
 // ── Get workspace SLA detail ─────────────────────────────────────────
@@ -285,7 +273,7 @@ platformSLA.openapi(getWorkspaceSLARoute, async (c) => {
 
     const detail = yield* Effect.promise(() => sla.getWorkspaceSLADetail(workspaceId, hoursBack));
     return c.json(detail, 200);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "fetch workspace SLA detail" });
+  }), { label: "fetch workspace SLA detail" });
 });
 
 // ── List alerts ──────────────────────────────────────────────────────
@@ -306,7 +294,7 @@ platformSLA.openapi(listAlertsRoute, async (c) => {
 
     const alerts = yield* Effect.promise(() => sla.getAlerts(status, limit));
     return c.json({ alerts }, 200);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "fetch SLA alerts" });
+  }), { label: "fetch SLA alerts" });
 });
 
 // ── Get thresholds ───────────────────────────────────────────────────
@@ -322,7 +310,7 @@ platformSLA.openapi(getThresholdsRoute, async (c) => {
 
     const thresholds = yield* Effect.promise(() => sla.getThresholds());
     return c.json(thresholds, 200);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "read SLA thresholds" });
+  }), { label: "read SLA thresholds" });
 });
 
 // ── Update thresholds ────────────────────────────────────────────────
@@ -341,7 +329,7 @@ platformSLA.openapi(updateThresholdsRoute, async (c) => {
     yield* Effect.promise(() => sla.updateThresholds(body));
     log.info({ thresholds: body, requestId }, "SLA thresholds updated by platform admin");
     return c.json({ message: "Thresholds updated.", thresholds: body }, 200);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "update SLA thresholds" });
+  }), { label: "update SLA thresholds" });
 });
 
 // ── Acknowledge alert ────────────────────────────────────────────────
@@ -369,7 +357,7 @@ platformSLA.openapi(acknowledgeAlertRoute, async (c) => {
     }
     log.info({ alertId, actorId, requestId }, "SLA alert acknowledged");
     return c.json({ message: "Alert acknowledged.", alertId }, 200);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "acknowledge SLA alert" });
+  }), { label: "acknowledge SLA alert" });
 });
 
 // ── Evaluate alerts ──────────────────────────────────────────────────
@@ -385,7 +373,7 @@ platformSLA.openapi(evaluateAlertsRoute, async (c) => {
 
     const newAlerts = yield* Effect.promise(() => sla.evaluateAlerts());
     return c.json({ newAlerts }, 200);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "evaluate SLA alerts" });
+  }), { label: "evaluate SLA alerts" });
 });
 
 export { platformSLA };

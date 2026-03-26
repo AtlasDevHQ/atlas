@@ -15,7 +15,6 @@ import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
 import { Effect } from "effect";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
-import { honoContextLayer } from "./effect-context";
 import { validationHook } from "./validation-hook";
 import { z } from "zod";
 import { createLogger } from "@atlas/api/lib/logger";
@@ -190,7 +189,7 @@ suggestions.openapi(listSuggestionsRoute, async (c) => {
 
     const rows = yield* Effect.promise(() => getSuggestionsByTables(resolvedOrgId, tables, limit));
     return c.json({ suggestions: rows.map(toQuerySuggestion), total: rows.length }, 200);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "fetch suggestions" });
+  }), { label: "fetch suggestions" });
   return result;
 });
 
@@ -208,7 +207,7 @@ suggestions.openapi(listPopularRoute, async (c) => {
 
     const rows = yield* Effect.promise(() => getPopularSuggestions(resolvedOrgId, limit));
     return c.json({ suggestions: rows.map(toQuerySuggestion), total: rows.length }, 200);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "fetch suggestions" });
+  }), { label: "fetch suggestions" });
   return result;
 });
 
@@ -232,6 +231,6 @@ suggestions.openapi(trackClickRoute, async (c) => {
     }
 
     return c.body(null, 204);
-  }).pipe(Effect.provide(honoContextLayer(c))), { label: "track suggestion click" });
+  }), { label: "track suggestion click" });
   return result;
 });

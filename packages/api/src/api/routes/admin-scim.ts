@@ -9,8 +9,10 @@
  * These admin routes manage SCIM connections, tokens, and group→role mappings.
  */
 
+import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
-import { runHandler } from "@atlas/api/lib/effect/hono";
+import { runEffect } from "@atlas/api/lib/effect/hono";
+import { AuthContext } from "@atlas/api/lib/effect/services";
 import {
   listConnections,
   deleteConnection,
@@ -85,26 +87,11 @@ const getStatusRoute = createRoute({
         },
       },
     },
-    400: {
-      description: "No active organization",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    401: {
-      description: "Authentication required",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    403: {
-      description: "Forbidden — admin role or enterprise license required",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    404: {
-      description: "Internal database not configured",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    500: {
-      description: "Internal server error",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
+    400: { description: "No active organization", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role or enterprise license required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
 
@@ -115,38 +102,14 @@ const deleteConnectionRoute = createRoute({
   summary: "Delete SCIM connection",
   description:
     "Revokes a SCIM provider connection, invalidating its bearer token.",
-  request: {
-    params: ConnectionIdParamSchema,
-  },
+  request: { params: ConnectionIdParamSchema },
   responses: {
-    200: {
-      description: "SCIM connection deleted",
-      content: {
-        "application/json": {
-          schema: z.object({ message: z.string() }),
-        },
-      },
-    },
-    400: {
-      description: "Invalid connection ID or no active organization",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    401: {
-      description: "Authentication required",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    403: {
-      description: "Forbidden — admin role or enterprise license required",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    404: {
-      description: "Connection not found or internal database not configured",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    500: {
-      description: "Internal server error",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
+    200: { description: "SCIM connection deleted", content: { "application/json": { schema: z.object({ message: z.string() }) } } },
+    400: { description: "Invalid connection ID or no active organization", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role or enterprise license required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Connection not found or internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
 
@@ -169,26 +132,11 @@ const listGroupMappingsRoute = createRoute({
         },
       },
     },
-    400: {
-      description: "No active organization",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    401: {
-      description: "Authentication required",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    403: {
-      description: "Forbidden — admin role or enterprise license required",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    404: {
-      description: "Internal database not configured",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    500: {
-      description: "Internal server error",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
+    400: { description: "No active organization", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role or enterprise license required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
 
@@ -200,47 +148,15 @@ const createGroupMappingRoute = createRoute({
   description:
     "Maps a SCIM group display name to an Atlas custom role. When users are provisioned via SCIM " +
     "and belong to the mapped group, they are assigned the corresponding role.",
-  request: {
-    body: {
-      required: true,
-      content: {
-        "application/json": { schema: CreateGroupMappingBodySchema },
-      },
-    },
-  },
+  request: { body: { required: true, content: { "application/json": { schema: CreateGroupMappingBodySchema } } } },
   responses: {
-    201: {
-      description: "Group mapping created",
-      content: {
-        "application/json": {
-          schema: z.object({ mapping: SCIMGroupMappingSchema }),
-        },
-      },
-    },
-    400: {
-      description: "Invalid request body or no active organization",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    401: {
-      description: "Authentication required",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    403: {
-      description: "Forbidden — admin role or enterprise license required",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    404: {
-      description: "Role not found or internal database not configured",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    409: {
-      description: "Duplicate mapping for this SCIM group",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    500: {
-      description: "Internal server error",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
+    201: { description: "Group mapping created", content: { "application/json": { schema: z.object({ mapping: SCIMGroupMappingSchema }) } } },
+    400: { description: "Invalid request body or no active organization", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role or enterprise license required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Role not found or internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
+    409: { description: "Duplicate mapping for this SCIM group", content: { "application/json": { schema: ErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
 
@@ -251,38 +167,14 @@ const deleteGroupMappingRoute = createRoute({
   summary: "Delete SCIM group mapping",
   description:
     "Removes a SCIM group → role mapping. Users already assigned via this mapping keep their role.",
-  request: {
-    params: MappingIdParamSchema,
-  },
+  request: { params: MappingIdParamSchema },
   responses: {
-    200: {
-      description: "Group mapping deleted",
-      content: {
-        "application/json": {
-          schema: z.object({ message: z.string() }),
-        },
-      },
-    },
-    400: {
-      description: "Invalid mapping ID or no active organization",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    401: {
-      description: "Authentication required",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    403: {
-      description: "Forbidden — admin role or enterprise license required",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    404: {
-      description: "Mapping not found or internal database not configured",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    500: {
-      description: "Internal server error",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
+    200: { description: "Group mapping deleted", content: { "application/json": { schema: z.object({ message: z.string() }) } } },
+    400: { description: "Invalid mapping ID or no active organization", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role or enterprise license required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Mapping not found or internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
 
@@ -295,67 +187,77 @@ const adminScim = createAdminRouter();
 adminScim.use(requireOrgContext());
 
 // GET / — SCIM connections and sync status
-adminScim.openapi(getStatusRoute, async (c) => runHandler(c, "get SCIM status", async () => {
-  const { orgId } = c.get("orgContext");
+adminScim.openapi(getStatusRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { orgId } = yield* AuthContext;
 
-  const [connections, syncStatus] = await Promise.all([
-    listConnections(orgId),
-    getSyncStatus(orgId),
-  ]);
-  return c.json({ connections, syncStatus }, 200);
-}, { domainErrors: [[SCIMError, SCIM_ERROR_STATUS]] }));
+    const [scimConnections, syncStatus] = yield* Effect.promise(() => Promise.all([
+      listConnections(orgId!),
+      getSyncStatus(orgId!),
+    ]));
+    return c.json({ connections: scimConnections, syncStatus }, 200);
+  }), { label: "get SCIM status", domainErrors: [[SCIMError, SCIM_ERROR_STATUS]] });
+});
 
 // DELETE /connections/:id — revoke a SCIM connection
-adminScim.openapi(deleteConnectionRoute, async (c) => runHandler(c, "delete SCIM connection", async () => {
-  const { orgId } = c.get("orgContext");
-  const { id: connectionId } = c.req.valid("param");
+adminScim.openapi(deleteConnectionRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { orgId } = yield* AuthContext;
+    const { id: connectionId } = c.req.valid("param");
 
-  if (!isValidId(connectionId)) {
-    return c.json({ error: "bad_request", message: "Invalid connection ID." }, 400);
-  }
+    if (!isValidId(connectionId)) {
+      return c.json({ error: "bad_request", message: "Invalid connection ID." }, 400);
+    }
 
-  const deleted = await deleteConnection(orgId, connectionId);
-  if (!deleted) {
-    return c.json({ error: "not_found", message: "SCIM connection not found." }, 404);
-  }
-  return c.json({ message: "SCIM connection deleted." }, 200);
-}, { domainErrors: [[SCIMError, SCIM_ERROR_STATUS]] }));
+    const deleted = yield* Effect.promise(() => deleteConnection(orgId!, connectionId));
+    if (!deleted) {
+      return c.json({ error: "not_found", message: "SCIM connection not found." }, 404);
+    }
+    return c.json({ message: "SCIM connection deleted." }, 200);
+  }), { label: "delete SCIM connection", domainErrors: [[SCIMError, SCIM_ERROR_STATUS]] });
+});
 
 // GET /group-mappings — list group→role mappings
-adminScim.openapi(listGroupMappingsRoute, async (c) => runHandler(c, "list SCIM group mappings", async () => {
-  const { orgId } = c.get("orgContext");
+adminScim.openapi(listGroupMappingsRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { orgId } = yield* AuthContext;
 
-  const mappings = await listGroupMappings(orgId);
-  return c.json({ mappings, total: mappings.length }, 200);
-}, { domainErrors: [[SCIMError, SCIM_ERROR_STATUS]] }));
+    const mappings = yield* Effect.promise(() => listGroupMappings(orgId!));
+    return c.json({ mappings, total: mappings.length }, 200);
+  }), { label: "list SCIM group mappings", domainErrors: [[SCIMError, SCIM_ERROR_STATUS]] });
+});
 
 // POST /group-mappings — create a group→role mapping
-adminScim.openapi(createGroupMappingRoute, async (c) => runHandler(c, "create SCIM group mapping", async () => {
-  const { orgId } = c.get("orgContext");
+adminScim.openapi(createGroupMappingRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { orgId } = yield* AuthContext;
 
-  const { scimGroupName, roleName } = c.req.valid("json");
-  if (!scimGroupName || !roleName) {
-    return c.json({ error: "bad_request", message: "Missing required fields: scimGroupName, roleName." }, 400);
-  }
+    const { scimGroupName, roleName } = c.req.valid("json");
+    if (!scimGroupName || !roleName) {
+      return c.json({ error: "bad_request", message: "Missing required fields: scimGroupName, roleName." }, 400);
+    }
 
-  const mapping = await createGroupMapping(orgId, scimGroupName, roleName);
-  return c.json({ mapping }, 201);
-}, { domainErrors: [[SCIMError, SCIM_ERROR_STATUS]] }));
+    const mapping = yield* Effect.promise(() => createGroupMapping(orgId!, scimGroupName, roleName));
+    return c.json({ mapping }, 201);
+  }), { label: "create SCIM group mapping", domainErrors: [[SCIMError, SCIM_ERROR_STATUS]] });
+});
 
 // DELETE /group-mappings/:id — delete a group mapping
-adminScim.openapi(deleteGroupMappingRoute, async (c) => runHandler(c, "delete SCIM group mapping", async () => {
-  const { orgId } = c.get("orgContext");
-  const { id: mappingId } = c.req.valid("param");
+adminScim.openapi(deleteGroupMappingRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { orgId } = yield* AuthContext;
+    const { id: mappingId } = c.req.valid("param");
 
-  if (!isValidId(mappingId)) {
-    return c.json({ error: "bad_request", message: "Invalid mapping ID." }, 400);
-  }
+    if (!isValidId(mappingId)) {
+      return c.json({ error: "bad_request", message: "Invalid mapping ID." }, 400);
+    }
 
-  const deleted = await deleteGroupMapping(orgId, mappingId);
-  if (!deleted) {
-    return c.json({ error: "not_found", message: "SCIM group mapping not found." }, 404);
-  }
-  return c.json({ message: "SCIM group mapping deleted." }, 200);
-}, { domainErrors: [[SCIMError, SCIM_ERROR_STATUS]] }));
+    const deleted = yield* Effect.promise(() => deleteGroupMapping(orgId!, mappingId));
+    if (!deleted) {
+      return c.json({ error: "not_found", message: "SCIM group mapping not found." }, 404);
+    }
+    return c.json({ message: "SCIM group mapping deleted." }, 200);
+  }), { label: "delete SCIM group mapping", domainErrors: [[SCIMError, SCIM_ERROR_STATUS]] });
+});
 
 export { adminScim };

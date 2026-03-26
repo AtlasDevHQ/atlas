@@ -5,8 +5,10 @@
  * enterprise license (enforced within the IP allowlist service layer).
  */
 
+import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
-import { runHandler } from "@atlas/api/lib/effect/hono";
+import { runEffect } from "@atlas/api/lib/effect/hono";
+import { AuthContext } from "@atlas/api/lib/effect/services";
 import { getClientIP } from "@atlas/api/lib/auth/middleware";
 import {
   listIPAllowlistEntries,
@@ -206,49 +208,54 @@ const adminIPAllowlist = createAdminRouter();
 adminIPAllowlist.use(requireOrgContext());
 
 // GET / — list IP allowlist entries for the active org
-adminIPAllowlist.openapi(listEntriesRoute, async (c) => runHandler(c, "list IP allowlist entries", async () => {
-  const { orgId } = c.get("orgContext");
+adminIPAllowlist.openapi(listEntriesRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { orgId } = yield* AuthContext;
 
-  const callerIP = getClientIP(c.req.raw);
+    const callerIP = getClientIP(c.req.raw);
 
-  const entries = await listIPAllowlistEntries(orgId);
-  return c.json({ entries, total: entries.length, callerIP }, 200);
-}, { domainErrors: [[IPAllowlistError, IP_ALLOWLIST_ERROR_STATUS]] }));
+    const entries = yield* Effect.promise(() => listIPAllowlistEntries(orgId!));
+    return c.json({ entries, total: entries.length, callerIP }, 200);
+  }), { label: "list IP allowlist entries", domainErrors: [[IPAllowlistError, IP_ALLOWLIST_ERROR_STATUS]] });
+});
 
 // POST / — add a CIDR range to the allowlist
-adminIPAllowlist.openapi(addEntryRoute, async (c) => runHandler(c, "add IP allowlist entry", async () => {
-  const { orgId } = c.get("orgContext");
-  const authResult = c.get("authResult");
+adminIPAllowlist.openapi(addEntryRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { orgId, user } = yield* AuthContext;
 
-  const body = c.req.valid("json");
+    const body = c.req.valid("json");
 
-  if (!body.cidr) {
-    return c.json({ error: "bad_request", message: "Missing required field: cidr." }, 400);
-  }
+    if (!body.cidr) {
+      return c.json({ error: "bad_request", message: "Missing required field: cidr." }, 400);
+    }
 
-  const entry = await addIPAllowlistEntry(
-    orgId,
-    body.cidr,
-    body.description ?? null,
-    authResult.user?.id ?? null,
-  );
-  return c.json({ entry }, 201);
-}, { domainErrors: [[IPAllowlistError, IP_ALLOWLIST_ERROR_STATUS]] }));
+    const entry = yield* Effect.promise(() => addIPAllowlistEntry(
+      orgId!,
+      body.cidr,
+      body.description ?? null,
+      user?.id ?? null,
+    ));
+    return c.json({ entry }, 201);
+  }), { label: "add IP allowlist entry", domainErrors: [[IPAllowlistError, IP_ALLOWLIST_ERROR_STATUS]] });
+});
 
 // DELETE /:id — remove an IP allowlist entry
-adminIPAllowlist.openapi(deleteEntryRoute, async (c) => runHandler(c, "remove IP allowlist entry", async () => {
-  const { orgId } = c.get("orgContext");
-  const { id: entryId } = c.req.valid("param");
+adminIPAllowlist.openapi(deleteEntryRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { orgId } = yield* AuthContext;
+    const { id: entryId } = c.req.valid("param");
 
-  if (!isValidId(entryId)) {
-    return c.json({ error: "bad_request", message: "Invalid entry ID." }, 400);
-  }
+    if (!isValidId(entryId)) {
+      return c.json({ error: "bad_request", message: "Invalid entry ID." }, 400);
+    }
 
-  const deleted = await removeIPAllowlistEntry(orgId, entryId);
-  if (!deleted) {
-    return c.json({ error: "not_found", message: "IP allowlist entry not found." }, 404);
-  }
-  return c.json({ message: "IP allowlist entry removed." }, 200);
-}, { domainErrors: [[IPAllowlistError, IP_ALLOWLIST_ERROR_STATUS]] }));
+    const deleted = yield* Effect.promise(() => removeIPAllowlistEntry(orgId!, entryId));
+    if (!deleted) {
+      return c.json({ error: "not_found", message: "IP allowlist entry not found." }, 404);
+    }
+    return c.json({ message: "IP allowlist entry removed." }, 200);
+  }), { label: "remove IP allowlist entry", domainErrors: [[IPAllowlistError, IP_ALLOWLIST_ERROR_STATUS]] });
+});
 
 export { adminIPAllowlist };

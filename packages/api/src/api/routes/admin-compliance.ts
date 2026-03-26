@@ -12,9 +12,11 @@
  * - GET    /reports/user-activity       — user activity compliance report
  */
 
+import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
 import { HTTPException } from "hono/http-exception";
-import { runHandler } from "@atlas/api/lib/effect/hono";
+import { runEffect } from "@atlas/api/lib/effect/hono";
+import { AuthContext } from "@atlas/api/lib/effect/services";
 import {
   listPIIClassifications,
   updatePIIClassification,
@@ -135,39 +137,45 @@ export const adminCompliance = createAdminRouter();
 adminCompliance.use(requireOrgContext());
 
 // GET /classifications
-adminCompliance.openapi(listRoute, async (c) => runHandler(c, "list PII classifications", async () => {
-  const { orgId } = c.get("orgContext");
-  const { connectionId } = c.req.valid("query");
+adminCompliance.openapi(listRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { orgId } = yield* AuthContext;
+    const { connectionId } = c.req.valid("query");
 
-  const classifications = await listPIIClassifications(orgId, connectionId);
-  return c.json({ classifications }, 200);
-}, { domainErrors: [[ComplianceError, COMPLIANCE_ERROR_STATUS], [ReportError, REPORT_ERROR_STATUS]] }));
+    const classifications = yield* Effect.promise(() => listPIIClassifications(orgId!, connectionId));
+    return c.json({ classifications }, 200);
+  }), { label: "list PII classifications", domainErrors: [[ComplianceError, COMPLIANCE_ERROR_STATUS], [ReportError, REPORT_ERROR_STATUS]] });
+});
 
 // PUT /classifications/:id
-adminCompliance.openapi(updateRoute, async (c) => runHandler(c, "update PII classification", async () => {
-  const { orgId } = c.get("orgContext");
-  const id = c.req.param("id");
-  const body = c.req.valid("json");
+adminCompliance.openapi(updateRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { orgId } = yield* AuthContext;
+    const id = c.req.param("id");
+    const body = c.req.valid("json");
 
-  const updated = await updatePIIClassification(orgId, id, {
-    category: body.category as PIICategory | undefined,
-    maskingStrategy: body.maskingStrategy as MaskingStrategy | undefined,
-    dismissed: body.dismissed,
-    reviewed: body.reviewed,
-  });
-  invalidateClassificationCache(orgId);
-  return c.json({ classification: updated }, 200);
-}, { domainErrors: [[ComplianceError, COMPLIANCE_ERROR_STATUS], [ReportError, REPORT_ERROR_STATUS]] }));
+    const updated = yield* Effect.promise(() => updatePIIClassification(orgId!, id, {
+      category: body.category as PIICategory | undefined,
+      maskingStrategy: body.maskingStrategy as MaskingStrategy | undefined,
+      dismissed: body.dismissed,
+      reviewed: body.reviewed,
+    }));
+    invalidateClassificationCache(orgId!);
+    return c.json({ classification: updated }, 200);
+  }), { label: "update PII classification", domainErrors: [[ComplianceError, COMPLIANCE_ERROR_STATUS], [ReportError, REPORT_ERROR_STATUS]] });
+});
 
 // DELETE /classifications/:id
-adminCompliance.openapi(deleteRoute, async (c) => runHandler(c, "delete PII classification", async () => {
-  const { orgId } = c.get("orgContext");
-  const id = c.req.param("id");
+adminCompliance.openapi(deleteRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { orgId } = yield* AuthContext;
+    const id = c.req.param("id");
 
-  await deletePIIClassification(orgId, id);
-  invalidateClassificationCache(orgId);
-  return c.json({ deleted: true }, 200);
-}, { domainErrors: [[ComplianceError, COMPLIANCE_ERROR_STATUS], [ReportError, REPORT_ERROR_STATUS]] }));
+    yield* Effect.promise(() => deletePIIClassification(orgId!, id));
+    invalidateClassificationCache(orgId!);
+    return c.json({ deleted: true }, 200);
+  }), { label: "delete PII classification", domainErrors: [[ComplianceError, COMPLIANCE_ERROR_STATUS], [ReportError, REPORT_ERROR_STATUS]] });
+});
 
 // ── Report schemas ──────────────────────────────────────────────
 
@@ -276,65 +284,69 @@ const userActivityReportRoute = createRoute({
 // ── Report handlers ─────────────────────────────────────────────
 
 // GET /reports/data-access
-adminCompliance.openapi(dataAccessReportRoute, async (c) => runHandler(c, "generate data access report", async () => {
-  const { orgId } = c.get("orgContext");
-  const query = c.req.valid("query");
+adminCompliance.openapi(dataAccessReportRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { orgId } = yield* AuthContext;
+    const query = c.req.valid("query");
 
-  const report = await generateDataAccessReport(orgId, {
-    startDate: query.startDate,
-    endDate: query.endDate,
-    userId: query.userId,
-    role: query.role,
-    table: query.table,
-  });
+    const report = yield* Effect.promise(() => generateDataAccessReport(orgId!, {
+      startDate: query.startDate,
+      endDate: query.endDate,
+      userId: query.userId,
+      role: query.role,
+      table: query.table,
+    }));
 
-  if (query.format === "csv") {
-    const csv = dataAccessReportToCSV(report);
-    const safeOrgId = orgId.replace(/[^a-zA-Z0-9_-]/g, "");
-    const filename = `data-access-report-${safeOrgId}-${new Date().toISOString().slice(0, 10)}.csv`;
-    // CSV responses bypass OpenAPI typed returns via HTTPException + res
-    throw new HTTPException(200, {
-      res: new Response(csv, {
-        status: 200,
-        headers: {
-          "Content-Type": "text/csv; charset=utf-8",
-          "Content-Disposition": `attachment; filename="${filename}"`,
-        },
-      }),
-    });
-  }
+    if (query.format === "csv") {
+      const csv = dataAccessReportToCSV(report);
+      const safeOrgId = orgId!.replace(/[^a-zA-Z0-9_-]/g, "");
+      const filename = `data-access-report-${safeOrgId}-${new Date().toISOString().slice(0, 10)}.csv`;
+      // CSV responses bypass OpenAPI typed returns via HTTPException + res
+      throw new HTTPException(200, {
+        res: new Response(csv, {
+          status: 200,
+          headers: {
+            "Content-Type": "text/csv; charset=utf-8",
+            "Content-Disposition": `attachment; filename="${filename}"`,
+          },
+        }),
+      });
+    }
 
-  return c.json(report, 200);
-}, { domainErrors: [[ComplianceError, COMPLIANCE_ERROR_STATUS], [ReportError, REPORT_ERROR_STATUS]] }));
+    return c.json(report, 200);
+  }), { label: "generate data access report", domainErrors: [[ComplianceError, COMPLIANCE_ERROR_STATUS], [ReportError, REPORT_ERROR_STATUS]] });
+});
 
 // GET /reports/user-activity
-adminCompliance.openapi(userActivityReportRoute, async (c) => runHandler(c, "generate user activity report", async () => {
-  const { orgId } = c.get("orgContext");
-  const query = c.req.valid("query");
+adminCompliance.openapi(userActivityReportRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { orgId } = yield* AuthContext;
+    const query = c.req.valid("query");
 
-  const report = await generateUserActivityReport(orgId, {
-    startDate: query.startDate,
-    endDate: query.endDate,
-    userId: query.userId,
-    role: query.role,
-    table: query.table,
-  });
+    const report = yield* Effect.promise(() => generateUserActivityReport(orgId!, {
+      startDate: query.startDate,
+      endDate: query.endDate,
+      userId: query.userId,
+      role: query.role,
+      table: query.table,
+    }));
 
-  if (query.format === "csv") {
-    const csv = userActivityReportToCSV(report);
-    const safeOrgId = orgId.replace(/[^a-zA-Z0-9_-]/g, "");
-    const filename = `user-activity-report-${safeOrgId}-${new Date().toISOString().slice(0, 10)}.csv`;
-    // CSV responses bypass OpenAPI typed returns via HTTPException + res
-    throw new HTTPException(200, {
-      res: new Response(csv, {
-        status: 200,
-        headers: {
-          "Content-Type": "text/csv; charset=utf-8",
-          "Content-Disposition": `attachment; filename="${filename}"`,
-        },
-      }),
-    });
-  }
+    if (query.format === "csv") {
+      const csv = userActivityReportToCSV(report);
+      const safeOrgId = orgId!.replace(/[^a-zA-Z0-9_-]/g, "");
+      const filename = `user-activity-report-${safeOrgId}-${new Date().toISOString().slice(0, 10)}.csv`;
+      // CSV responses bypass OpenAPI typed returns via HTTPException + res
+      throw new HTTPException(200, {
+        res: new Response(csv, {
+          status: 200,
+          headers: {
+            "Content-Type": "text/csv; charset=utf-8",
+            "Content-Disposition": `attachment; filename="${filename}"`,
+          },
+        }),
+      });
+    }
 
-  return c.json(report, 200);
-}, { domainErrors: [[ComplianceError, COMPLIANCE_ERROR_STATUS], [ReportError, REPORT_ERROR_STATUS]] }));
+    return c.json(report, 200);
+  }), { label: "generate user activity report", domainErrors: [[ComplianceError, COMPLIANCE_ERROR_STATUS], [ReportError, REPORT_ERROR_STATUS]] });
+});

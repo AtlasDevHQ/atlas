@@ -5,8 +5,10 @@
  * Provides list and delete for query suggestions (auto-generated from query frequency).
  */
 
+import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
-import { runHandler } from "@atlas/api/lib/effect/hono";
+import { runEffect } from "@atlas/api/lib/effect/hono";
+import { AuthContext } from "@atlas/api/lib/effect/services";
 import { hasInternalDB, internalQuery, deleteSuggestion } from "@atlas/api/lib/db/internal";
 import { toQuerySuggestion } from "@atlas/api/lib/learn/suggestion-helpers";
 import type { QuerySuggestionRow } from "@atlas/api/lib/db/internal";
@@ -63,26 +65,11 @@ const listSuggestionsRoute = createRoute({
       description: "Paginated list of suggestions",
       content: { "application/json": { schema: ListSuggestionsResponseSchema } },
     },
-    401: {
-      description: "Authentication required",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    403: {
-      description: "Forbidden — admin role required",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    404: {
-      description: "Internal database not configured",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    429: {
-      description: "Rate limit exceeded",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    500: {
-      description: "Internal server error",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
 
@@ -96,29 +83,12 @@ const deleteSuggestionRoute = createRoute({
     params: createIdParamSchema(),
   },
   responses: {
-    204: {
-      description: "Suggestion deleted",
-    },
-    401: {
-      description: "Authentication required",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    403: {
-      description: "Forbidden — admin role required",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    404: {
-      description: "Suggestion not found or internal database not configured",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    429: {
-      description: "Rate limit exceeded",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    500: {
-      description: "Internal server error",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
+    204: { description: "Suggestion deleted" },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Suggestion not found or internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
 
@@ -129,80 +99,84 @@ const deleteSuggestionRoute = createRoute({
 export const adminSuggestions = createAdminRouter();
 
 // GET / — list suggestions with filters
-adminSuggestions.openapi(listSuggestionsRoute, async (c) => runHandler(c, "list suggestions", async () => {
-  const authResult = c.get("authResult");
+adminSuggestions.openapi(listSuggestionsRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { orgId } = yield* AuthContext;
 
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "Internal database not configured." }, 404);
-  }
+    if (!hasInternalDB()) {
+      return c.json({ error: "not_available", message: "Internal database not configured." }, 404);
+    }
 
-  const orgId = authResult.user?.activeOrganizationId ?? null;
+    const orgIdVal = orgId ?? null;
 
-  const table = c.req.query("table");
-  const minFreq = parseInt(c.req.query("min_frequency") ?? "0", 10) || 0;
-  const { limit, offset } = parsePagination(c);
+    const table = c.req.query("table");
+    const minFreq = parseInt(c.req.query("min_frequency") ?? "0", 10) || 0;
+    const { limit, offset } = parsePagination(c);
 
-  const conditions: string[] = [];
-  const params: unknown[] = [];
-  let idx = 1;
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+    let idx = 1;
 
-  if (orgId != null) {
-    conditions.push(`org_id = $${idx++}`);
-    params.push(orgId);
-  } else {
-    conditions.push("org_id IS NULL");
-  }
+    if (orgIdVal != null) {
+      conditions.push(`org_id = $${idx++}`);
+      params.push(orgIdVal);
+    } else {
+      conditions.push("org_id IS NULL");
+    }
 
-  if (table) {
-    conditions.push(`primary_table = $${idx++}`);
-    params.push(table);
-  }
+    if (table) {
+      conditions.push(`primary_table = $${idx++}`);
+      params.push(table);
+    }
 
-  if (minFreq > 0) {
-    conditions.push(`frequency >= $${idx++}`);
-    params.push(minFreq);
-  }
+    if (minFreq > 0) {
+      conditions.push(`frequency >= $${idx++}`);
+      params.push(minFreq);
+    }
 
-  const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
 
-  const filterParams = [...params];
-  params.push(limit, offset);
-  const limitIdx = idx;
-  const offsetIdx = idx + 1;
-  const rows = await internalQuery<QuerySuggestionRow>(
-    `SELECT * FROM query_suggestions ${where} ORDER BY score DESC LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
-    params
-  );
+    const filterParams = [...params];
+    params.push(limit, offset);
+    const limitIdx = idx;
+    const offsetIdx = idx + 1;
+    const rows = yield* Effect.promise(() => internalQuery<QuerySuggestionRow>(
+      `SELECT * FROM query_suggestions ${where} ORDER BY score DESC LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
+      params
+    ));
 
-  const countRows = await internalQuery<{ count: string }>(
-    `SELECT COUNT(*) as count FROM query_suggestions ${where}`,
-    filterParams
-  );
+    const countRows = yield* Effect.promise(() => internalQuery<{ count: string }>(
+      `SELECT COUNT(*) as count FROM query_suggestions ${where}`,
+      filterParams
+    ));
 
-  const total = parseInt(countRows[0]?.count ?? "0", 10);
+    const total = parseInt(countRows[0]?.count ?? "0", 10);
 
-  return c.json({
-    suggestions: rows.map(toQuerySuggestion),
-    total,
-    limit,
-    offset,
-  }, 200);
-}));
+    return c.json({
+      suggestions: rows.map(toQuerySuggestion),
+      total,
+      limit,
+      offset,
+    }, 200);
+  }), { label: "list suggestions" });
+});
 
 // DELETE /:id — prune a suggestion
-adminSuggestions.openapi(deleteSuggestionRoute, async (c) => runHandler(c, "delete suggestion", async () => {
-  const authResult = c.get("authResult");
+adminSuggestions.openapi(deleteSuggestionRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { orgId } = yield* AuthContext;
 
-  if (!hasInternalDB()) {
-    return c.json({ error: "not_available", message: "Internal database not configured." }, 404);
-  }
+    if (!hasInternalDB()) {
+      return c.json({ error: "not_available", message: "Internal database not configured." }, 404);
+    }
 
-  const orgId = authResult.user?.activeOrganizationId ?? null;
-  const { id } = c.req.valid("param");
+    const orgIdVal = orgId ?? null;
+    const { id } = c.req.valid("param");
 
-  const deleted = await deleteSuggestion(id, orgId);
-  if (!deleted) {
-    return c.json({ error: "not_found", message: "Suggestion not found." }, 404);
-  }
-  return new Response(null, { status: 204 });
-}));
+    const deleted = yield* Effect.promise(() => deleteSuggestion(id, orgIdVal));
+    if (!deleted) {
+      return c.json({ error: "not_found", message: "Suggestion not found." }, 404);
+    }
+    return new Response(null, { status: 204 });
+  }), { label: "delete suggestion" });
+});

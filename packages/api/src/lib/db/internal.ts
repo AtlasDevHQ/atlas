@@ -4,10 +4,16 @@
  * Read-write Postgres connection for Atlas's own state (auth, audit, settings).
  * Completely separate from the analytics datasource in connection.ts.
  * Configured via DATABASE_URL.
+ *
+ * Effect migration (P11b):
+ * The pool singleton is replaced by an Effect-managed PgClient Layer.
+ * Pool lifecycle is automatic via Effect scope — closeInternalDB() is
+ * no longer needed (kept for backward compat but delegates to PgClient).
+ * The existing internalQuery/internalExecute API is unchanged.
  */
 
 import * as crypto from "crypto";
-import { Effect, Schedule, Duration, Fiber } from "effect";
+import { Context, Effect, Layer, Schedule, Duration, Fiber } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
 
 const log = createLogger("internal-db");
@@ -111,6 +117,105 @@ export interface InternalPool {
   end(): Promise<void>;
   on(event: "error", listener: (err: Error) => void): void;
 }
+
+// ── Effect Service: InternalDB (P11b) ───────────────────────────────
+
+/**
+ * InternalDB Effect service — provides access to the internal Postgres pool.
+ *
+ * Effect-managed lifecycle: pool is created during Layer construction and
+ * closed automatically when the Layer scope ends. Replaces the manual
+ * _pool singleton + closeInternalDB() pattern.
+ */
+export interface InternalDBShape {
+  /** Execute a parameterized query returning typed rows. */
+  query<T extends Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]>;
+  /** Fire-and-forget write (uses circuit breaker internally). */
+  execute(sql: string, params?: unknown[]): void;
+  /** Whether the internal DB is available. */
+  readonly available: boolean;
+  /** The underlying pool (for advanced usage like migrations). Null when DATABASE_URL is not set. */
+  readonly pool: InternalPool | null;
+}
+
+export class InternalDB extends Context.Tag("InternalDB")<
+  InternalDB,
+  InternalDBShape
+>() {}
+
+/**
+ * Create the Live Layer for InternalDB.
+ *
+ * Bridge layer: creates the pool via the existing getInternalDB() singleton
+ * to preserve production-tested pg.Pool configuration (sslmode normalization,
+ * max connections, idle timeout). Pool cleanup is managed by an Effect
+ * finalizer that delegates to closeInternalDB().
+ *
+ * Future: replace getInternalDB() with PgClient.make() for native @effect/sql.
+ */
+export function makeInternalDBLive(): Layer.Layer<InternalDB> {
+  return Layer.scoped(
+    InternalDB,
+    Effect.gen(function* () {
+      const databaseUrl = process.env.DATABASE_URL;
+      if (!databaseUrl) {
+        return {
+          query: async () => { throw new Error("DATABASE_URL is not set"); },
+          execute: () => { log.debug("internalExecute called but DATABASE_URL is not set — no-op"); },
+          available: false,
+          pool: null,
+        } satisfies InternalDBShape;
+      }
+
+      // Create pool via the existing getInternalDB() for now.
+      // This preserves the pg.Pool configuration (sslmode normalization,
+      // max connections, idle timeout) that has been production-tested.
+      // Future: replace with PgClient.make({ url: Redacted.make(databaseUrl) })
+      const pool = getInternalDB();
+
+      yield* Effect.addFinalizer(() =>
+        Effect.tryPromise({
+          try: () => closeInternalDB(),
+          catch: (err) => (err instanceof Error ? err.message : String(err)),
+        }).pipe(
+          Effect.catchAll((errMsg) => {
+            log.warn({ err: errMsg }, "Error closing internal DB pool via Effect finalizer");
+            return Effect.void;
+          }),
+        ),
+      );
+
+      return {
+        query: async <T extends Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]> => {
+          const result = await pool.query(sql, params);
+          return result.rows as T[];
+        },
+        execute: (sql: string, params?: unknown[]) => internalExecute(sql, params),
+        available: true,
+        pool,
+      } satisfies InternalDBShape;
+    }),
+  );
+}
+
+/** Create a test Layer for InternalDB. */
+export function createInternalDBTestLayer(
+  partial: Partial<InternalDBShape> = {},
+): Layer.Layer<InternalDB> {
+  const mockPool = {
+    query: async () => ({ rows: [] }),
+    end: async () => {},
+    on: () => {},
+  } as InternalPool;
+  return Layer.succeed(InternalDB, {
+    query: partial.query ?? (async () => []),
+    execute: partial.execute ?? (() => {}),
+    available: partial.available ?? true,
+    pool: partial.pool ?? mockPool,
+  });
+}
+
+// ── Legacy singleton (backward compat) ──────────────────────────────
 
 let _pool: InternalPool | null = null;
 

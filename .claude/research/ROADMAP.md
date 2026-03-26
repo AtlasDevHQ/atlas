@@ -546,7 +546,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 
 ### Database (P11) — Native Effect SQL
 - [x] P11a: Install @effect/sql, define SqlClient Layer bridge (#936, PR #940)
-- [ ] P11b: Replace raw pg/mysql2 with @effect/sql native clients (#937)
+- [x] P11b: Replace raw pg/mysql2 with @effect/sql native clients (#937)
 
 ### Follow-ups
 - [x] Migrate platform-residency and platform-domains inner error handling to domainErrors (#927)

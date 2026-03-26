@@ -126,3 +126,12 @@ export {
   createSqlClientTestLayer,
   type AtlasSqlClientShape,
 } from "./sql";
+
+// ── Internal DB Service (P11b) ──────────────────────────────────────
+
+export {
+  InternalDB,
+  makeInternalDBLive,
+  createInternalDBTestLayer,
+  type InternalDBShape,
+} from "@atlas/api/lib/db/internal";

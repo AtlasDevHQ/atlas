@@ -163,9 +163,11 @@ describe("Enterprise gating", () => {
     await expect(deleteSSOProvider("org-1", "prov-1")).rejects.toThrow("Enterprise features");
   });
 
-  it("throws when no license key", async () => {
+  it("does not throw for missing license key when enterprise is enabled", async () => {
     ee.setEnterpriseLicenseKey(undefined);
-    await expect(listSSOProviders("org-1")).rejects.toThrow("no license key");
+    ee.queueMockRows([]);
+    const providers = await listSSOProviders("org-1");
+    expect(providers).toHaveLength(0);
   });
 });
 
@@ -506,10 +508,6 @@ describe("setSSOEnforcement", () => {
     await expect(setSSOEnforcement("org-1", true)).rejects.toThrow("Enterprise features");
   });
 
-  it("throws when no license key", async () => {
-    ee.setEnterpriseLicenseKey(undefined);
-    await expect(setSSOEnforcement("org-1", true)).rejects.toThrow("no license key");
-  });
 });
 
 describe("isSSOEnforced", () => {

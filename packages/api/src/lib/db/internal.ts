@@ -134,8 +134,8 @@ export interface InternalDBShape {
   execute(sql: string, params?: unknown[]): void;
   /** Whether the internal DB is available. */
   readonly available: boolean;
-  /** The underlying pool (for advanced usage like migrations). */
-  readonly pool: InternalPool;
+  /** The underlying pool (for advanced usage like migrations). Null when DATABASE_URL is not set. */
+  readonly pool: InternalPool | null;
 }
 
 export class InternalDB extends Context.Tag("InternalDB")<
@@ -146,9 +146,12 @@ export class InternalDB extends Context.Tag("InternalDB")<
 /**
  * Create the Live Layer for InternalDB.
  *
- * Uses PgClient.layer from @effect/sql-pg for pool management.
- * Provides both the PgClient (for native @effect/sql queries) and
- * the InternalDBShape interface (for backward-compat internalQuery/internalExecute).
+ * Bridge layer: creates the pool via the existing getInternalDB() singleton
+ * to preserve production-tested pg.Pool configuration (sslmode normalization,
+ * max connections, idle timeout). Pool cleanup is managed by an Effect
+ * finalizer that delegates to closeInternalDB().
+ *
+ * Future: replace getInternalDB() with PgClient.make() for native @effect/sql.
  */
 export function makeInternalDBLive(): Layer.Layer<InternalDB> {
   return Layer.scoped(
@@ -160,7 +163,7 @@ export function makeInternalDBLive(): Layer.Layer<InternalDB> {
           query: async () => { throw new Error("DATABASE_URL is not set"); },
           execute: () => { log.debug("internalExecute called but DATABASE_URL is not set — no-op"); },
           available: false,
-          pool: null as unknown as InternalPool,
+          pool: null,
         } satisfies InternalDBShape;
       }
 

@@ -84,11 +84,10 @@ describe("AdminLayout", () => {
     expect(container.textContent).toContain("Checking authentication");
   });
 
-  test("shows auth card when not signed in", () => {
+  test("redirects to login when not signed in", () => {
     mockSession = { data: null };
     const { container } = renderLayout();
-    // ManagedAuthCard renders sign-in form
-    expect(container.textContent).toContain("Sign in to Atlas");
+    expect(container.textContent).toContain("Redirecting to sign in");
   });
 
   test("shows access denied for non-admin users", async () => {

@@ -10,7 +10,7 @@ import { useAtlasTransport } from "../hooks/use-atlas-transport";
 import { useConversations } from "../hooks/use-conversations";
 import { ErrorBanner } from "./chat/error-banner";
 import { ApiKeyBar } from "./chat/api-key-bar";
-import { ManagedAuthCard } from "./chat/managed-auth-card";
+import { useRouter } from "next/navigation";
 import { TypingIndicator } from "./chat/typing-indicator";
 import { ToolPart } from "./chat/tool-part";
 import { Markdown } from "./chat/markdown";
@@ -470,7 +470,7 @@ export function AtlasChat() {
             )}
 
             {isManaged && !isSignedIn ? (
-              <ManagedAuthCard />
+              <RedirectToLogin />
             ) : (
               <ActionAuthProvider getHeaders={getHeaders} getCredentials={getCredentials}>
                 {authMode === "simple-key" && (
@@ -703,4 +703,11 @@ export function AtlasChat() {
       />
     </DarkModeContext.Provider>
   );
+}
+
+/** Redirect to /login — extracted to avoid hooks-in-render issues. */
+function RedirectToLogin() {
+  const router = useRouter();
+  useEffect(() => { router.replace("/login"); }, [router]);
+  return null;
 }

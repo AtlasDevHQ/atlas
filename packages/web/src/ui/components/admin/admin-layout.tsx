@@ -5,12 +5,13 @@ import type { ReactNode } from "react";
 import { SidebarProvider, SidebarInset, SidebarTrigger } from "@/components/ui/sidebar";
 import { Separator } from "@/components/ui/separator";
 import { AdminSidebar } from "./admin-sidebar";
+import { useRouter } from "next/navigation";
 import { useAtlasConfig } from "@/ui/context";
-import { ManagedAuthCard } from "@/ui/components/chat/managed-auth-card";
 import { LoadingState } from "./loading-state";
 import { ChangePasswordDialog } from "./change-password-dialog";
 
 export function AdminLayout({ children }: { children: ReactNode }) {
+  const router = useRouter();
   const { authClient, apiUrl, isCrossOrigin } = useAtlasConfig();
   const session = authClient.useSession();
   const [adminCheck, setAdminCheck] = useState<"pending" | "allowed" | "denied">("pending");
@@ -54,11 +55,12 @@ export function AdminLayout({ children }: { children: ReactNode }) {
     );
   }
 
-  // Not signed in
+  // Not signed in — redirect to login
   if (!session.data?.user) {
+    router.replace("/login");
     return (
-      <main id="main" tabIndex={-1}>
-        <ManagedAuthCard />
+      <main id="main" tabIndex={-1} className="flex h-dvh items-center justify-center">
+        <LoadingState message="Redirecting to sign in..." />
       </main>
     );
   }

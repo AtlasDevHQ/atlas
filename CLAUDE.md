@@ -45,10 +45,20 @@ Guidance for Claude Code when working in this repository.
 - [ ] **Dynamic imports for heavy components** — Use `next/dynamic` for Monaco, Recharts, syntax highlighters
 - [ ] **Flat ESLint config** — `eslint.config.mjs`, not `.eslintrc`
 
+### Effect.ts (packages/api only)
+- [ ] **Use Context.Tag for services** — All backend services use `class Foo extends Context.Tag("Foo")<Foo, FooShape>()`. Service interfaces are `FooShape` with `readonly` fields
+- [ ] **Layer.effect vs Layer.scoped** — Use `Layer.scoped` when the service has a finalizer (cleanup on shutdown). Use `Layer.effect` for stateless services
+- [ ] **Tagged errors via Data.TaggedError** — Never use plain `Error` subclasses with `_tag`. Use `Data.TaggedError("ErrorName")<{ ... }>` from Effect
+- [ ] **runHandler for route handlers** — All route handlers use `runHandler(c, "label", async () => { ... })` which bridges Hono context → Effect Context and centralizes error-to-HTTP mapping
+- [ ] **Effect test layers** — Use `createXxxTestLayer()` from `services.ts` or `__test-utils__/layers.ts` for tests. Prefer `Layer.provide` over `mock.module()` for new Effect-based tests
+- [ ] **No `catch: (err) => err`** — In `Effect.tryPromise`, always normalize: `catch: (err) => err instanceof Error ? err : new Error(String(err))`
+- [ ] **satisfies on service returns** — Always use `satisfies FooShape` on returned service objects for compile-time verification
+
 ### Testing
 - [ ] **`bun run test`, never `bun test`** — Project uses isolated test runner (each file in its own subprocess). Always `bun run test` or `bun test <single-file>`. Never bare `bun test` against a directory
 - [ ] **Mock all exports** — When using `mock.module()`, mock every named export. Partial mocks cause `SyntaxError` in other files
 - [ ] **Use shared mock factory** — Connection mocks use `createConnectionMock()` from `packages/api/src/__mocks__/connection.ts`. Don't create inline connection mocks
+- [ ] **Effect test layers preferred** — For new tests, prefer `createConnectionTestLayer()` / `TestAppLayer` / `buildTestLayer()` from `packages/api/src/__test-utils__/layers.ts` over `mock.module()`. Composable Layers are type-safe and don't leak state between tests
 
 ### Agent Tools
 - [ ] **Tools return structured data** — `executeSQL` returns `{ columns, rows }`
@@ -65,7 +75,7 @@ Guidance for Claude Code when working in this repository.
 
 ## Project Overview
 
-**Atlas** — Deploy-anywhere text-to-SQL data analyst agent. Hono + Next.js + TypeScript + Vercel AI SDK + bun.
+**Atlas** — Deploy-anywhere text-to-SQL data analyst agent. Hono + Next.js + TypeScript + Effect.ts + Vercel AI SDK + bun.
 
 ### Versioning
 
@@ -122,12 +132,15 @@ bun run atlas -- diff    # Compare DB schema vs semantic layer
 
 ```
 POST /api/v1/chat → authenticateRequest → checkRateLimit → withRequestContext → validateEnvironment
-    → runAgent(messages)
+    → runAgent(messages)  [or runAgentEffect → yield* AtlasAiModel]
     → streamText (AI SDK, ToolRegistry, stopWhen: stepCountIs(getAgentMaxSteps()))
         ├── explore → read semantic/*.yml (path-traversal protected)
         └── executeSQL → validate (4 layers) → query via ConnectionRegistry → { columns, rows }
+    → runHandler(c, ...) → RequestContext + AuthContext provided via Effect bridge
     → Data Stream Response → Chat UI
 ```
+
+`runAgentEffect` yields `AtlasAiModel` from Effect Context — testable with mock LLM via `createAiModelTestLayer()`.
 
 ### SQL Validation (4 layers)
 
@@ -139,6 +152,51 @@ Applied at execution: RLS injection (optional) → Auto LIMIT → Statement time
 
 1. **Analytics datasource** (`ATLAS_DATASOURCE_URL`) — User's data. Read-only. PostgreSQL or MySQL. Managed via `ConnectionRegistry` in `packages/api/src/lib/db/connection.ts`
 2. **Internal database** (`DATABASE_URL`) — Atlas's own Postgres for auth, audit, settings. Optional. `packages/api/src/lib/db/internal.ts`
+
+### Effect.ts Service Architecture
+
+Backend services use Effect.ts for dependency injection, typed errors, and lifecycle management. All services live in `packages/api/src/lib/effect/`.
+
+**Services (Context.Tag):**
+
+| Service | Tag | File | What it provides |
+|---------|-----|------|-----------------|
+| `ConnectionRegistry` | `"ConnectionRegistry"` | `services.ts` | Analytics DB pools, health checks, metrics |
+| `PluginRegistry` | `"PluginRegistry"` | `services.ts` | Plugin lifecycle, health checks |
+| `RequestContext` | `"RequestContext"` | `services.ts` | `{ requestId, startTime }` per request |
+| `AuthContext` | `"AuthContext"` | `services.ts` | `{ mode, user, orgId }` per request |
+| `AtlasAiModel` | `"AtlasAiModel"` | `ai.ts` | Configured LLM (Vercel AI SDK LanguageModel) |
+| `AtlasToolkit` | `"AtlasToolkit"` | `toolkit.ts` | Tool registry for agent loop |
+| `AtlasSqlClient` | `"AtlasSqlClient"` | `sql.ts` | SQL query execution via Effect |
+| `InternalDB` | `"InternalDB"` | `db/internal.ts` | Internal Postgres pool |
+| `Telemetry` | `"Telemetry"` | `layers.ts` | OTel shutdown handle |
+| `Config` | `"Config"` | `layers.ts` | Resolved atlas.config.ts |
+| `Scheduler` | `"Scheduler"` | `layers.ts` | Scheduler backend lifecycle |
+
+**Hono bridge:** `runHandler(c, "label", async () => { ... })` wraps every route handler. Automatically provides `RequestContext` + `AuthContext` from Hono context, centralizes error-to-HTTP mapping via `classifyError()`.
+
+**Server startup:** `buildAppLayer(config)` composes independent startup Layers (telemetry, migrations, semantic sync, settings, scheduler) into a single Layer DAG. `ManagedRuntime.make(appLayer)` boots eagerly.
+
+**Tagged errors:** Defined in `errors.ts` using `Data.TaggedError`. Exhaustive `mapTaggedError()` switch maps each to HTTP status. Compile-time completeness check via `ATLAS_ERROR_TAG_LIST`.
+
+**Test utilities:** `packages/api/src/__test-utils__/layers.ts` provides `TestAppLayer`, `TestAdminLayer`, `TestPlatformLayer`, `runTest()`, `buildTestLayer()`.
+
+```typescript
+// Yielding services in an Effect program
+import { ConnectionRegistry, RequestContext, AuthContext } from "@atlas/api/lib/effect";
+
+const program = Effect.gen(function* () {
+  const { requestId } = yield* RequestContext;
+  const { orgId } = yield* AuthContext;
+  const registry = yield* ConnectionRegistry;
+  const conn = registry.getForOrg(orgId!, "default");
+  return yield* Effect.promise(() => conn.query("SELECT 1"));
+});
+
+// Running with test layers
+import { runTest, TestAdminLayer } from "@atlas/api/src/__test-utils__/layers";
+const result = await runTest(program, TestAdminLayer);
+```
 
 ## Key Patterns
 

@@ -66,6 +66,8 @@ import {
 interface NavSubItem {
   href: string;
   label: string;
+  /** When true, only highlight on exact pathname match (no prefix matching). */
+  exact?: boolean;
 }
 
 interface NavGroup {
@@ -142,7 +144,7 @@ const navGroups: NavGroup[] = [
     icon: Globe,
     requiredRole: "platform_admin",
     items: [
-      { href: "/admin/platform", label: "Overview" },
+      { href: "/admin/platform", label: "Overview", exact: true },
       { href: "/admin/platform/sla", label: "SLA Monitoring" },
       { href: "/admin/platform/backups", label: "Backups" },
       { href: "/admin/platform/residency", label: "Data Residency" },
@@ -162,12 +164,13 @@ export function AdminSidebar() {
   const userRole = (session.data?.user as Record<string, unknown> | undefined)?.role as string | undefined;
   const { branding } = useBranding();
 
-  function isSubItemActive(href: string) {
-    return pathname === href || pathname.startsWith(href + "/");
+  function isSubItemActive(item: NavSubItem) {
+    if (item.exact) return pathname === item.href;
+    return pathname === item.href || pathname.startsWith(item.href + "/");
   }
 
   function isGroupActive(group: NavGroup) {
-    return group.items.some((item) => isSubItemActive(item.href));
+    return group.items.some((item) => isSubItemActive(item));
   }
 
   const visibleGroups = navGroups.filter(
@@ -253,7 +256,7 @@ export function AdminSidebar() {
                     <SidebarMenuSub>
                       {group.items.map((item) => (
                         <SidebarMenuSubItem key={item.href}>
-                          <SidebarMenuSubButton asChild isActive={isSubItemActive(item.href)}>
+                          <SidebarMenuSubButton asChild isActive={isSubItemActive(item)}>
                             <Link href={item.href}>
                               <span>{item.label}</span>
                             </Link>

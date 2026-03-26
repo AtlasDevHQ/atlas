@@ -551,7 +551,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 ### Follow-ups
 - [x] Migrate platform-residency and platform-domains inner error handling to domainErrors (#927)
 - [x] Full audit — type safety, consistency, docs (PR #943)
-- [ ] Migrate route handlers from c.get() to Effect Context — incremental (#931)
+- [x] Migrate route handlers from c.get() to Effect Context — incremental (#931, PR #944)
 
 ### Test Infrastructure
 - [x] P9: Test infrastructure → Effect Layer-based test setup (#912)

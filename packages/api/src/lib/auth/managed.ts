@@ -9,11 +9,13 @@
  */
 
 import type { AuthResult } from "@atlas/api/lib/auth/types";
+import type { AtlasRole } from "@atlas/api/lib/auth/types";
 import { createAtlasUser } from "@atlas/api/lib/auth/types";
 import { parseRole } from "@atlas/api/lib/auth/permissions";
 import { getAuthInstance } from "@atlas/api/lib/auth/server";
 import { createLogger } from "@atlas/api/lib/logger";
 import { getSetting } from "@atlas/api/lib/settings";
+import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 
 const log = createLogger("auth:managed");
 
@@ -101,6 +103,12 @@ export async function validateManaged(req: Request): Promise<AuthResult> {
   // via POST /organization/set-active.
   const activeOrganizationId = (sessionData?.activeOrganizationId as string) ?? undefined;
 
+  // Resolve effective role: the user-level role (from admin plugin) may be
+  // "member" even when the user is "owner" of their active org (org plugin
+  // stores membership roles in the `member` table, not the `user` table).
+  // Use the higher of the two so org owners/admins can access the admin console.
+  const effectiveRole = await resolveEffectiveRole(role, userId, activeOrganizationId);
+
   // Carry session user fields as claims for RLS policy evaluation
   const claims: Record<string, unknown> = { ...sessionUser, sub: userId };
   if (activeOrganizationId) {
@@ -110,6 +118,56 @@ export async function validateManaged(req: Request): Promise<AuthResult> {
   return {
     authenticated: true,
     mode: "managed",
-    user: createAtlasUser(userId, "managed", email || userId, { role, activeOrganizationId, claims }),
+    user: createAtlasUser(userId, "managed", email || userId, { role: effectiveRole, activeOrganizationId, claims }),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Org member role resolution
+// ---------------------------------------------------------------------------
+
+/** Role precedence — higher number wins. */
+const ROLE_LEVEL: Record<string, number> = {
+  member: 0,
+  admin: 1,
+  owner: 2,
+  platform_admin: 3,
+};
+
+/**
+ * Resolve the effective role by comparing the user-level role (from
+ * Better Auth's admin plugin, stored in the `user.role` column) with the
+ * org-level role (from the `member` table). Returns the higher of the two.
+ *
+ * This is necessary because Better Auth stores org membership roles
+ * separately from user-level roles, so an org owner whose user-level role
+ * is "member" would otherwise be locked out of the admin console.
+ */
+async function resolveEffectiveRole(
+  userRole: AtlasRole | undefined,
+  userId: string,
+  activeOrganizationId: string | undefined,
+): Promise<AtlasRole | undefined> {
+  if (!activeOrganizationId || !hasInternalDB()) return userRole;
+
+  try {
+    const rows = await internalQuery<{ role: string }>(
+      `SELECT role FROM member WHERE "userId" = $1 AND "organizationId" = $2 LIMIT 1`,
+      [userId, activeOrganizationId],
+    );
+    if (rows.length === 0) return userRole;
+
+    const orgRole = parseRole(rows[0].role);
+    if (!orgRole) return userRole;
+
+    const userLevel = ROLE_LEVEL[userRole ?? "member"] ?? 0;
+    const orgLevel = ROLE_LEVEL[orgRole] ?? 0;
+    return orgLevel > userLevel ? orgRole : (userRole ?? "member");
+  } catch (err) {
+    log.warn(
+      { err: err instanceof Error ? err.message : String(err), userId, orgId: activeOrganizationId },
+      "Failed to look up org member role — falling back to user-level role",
+    );
+    return userRole;
+  }
 }

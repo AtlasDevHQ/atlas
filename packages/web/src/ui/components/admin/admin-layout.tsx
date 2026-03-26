@@ -10,9 +10,13 @@ import { ManagedAuthCard } from "@/ui/components/chat/managed-auth-card";
 import { LoadingState } from "./loading-state";
 import { ChangePasswordDialog } from "./change-password-dialog";
 
+/** Admin-eligible roles at user level or org level. */
+const ADMIN_ROLES = new Set(["admin", "owner", "platform_admin"]);
+
 export function AdminLayout({ children }: { children: ReactNode }) {
   const { authClient, apiUrl, isCrossOrigin } = useAtlasConfig();
   const session = authClient.useSession();
+  const activeMember = authClient.organization.activeMember();
   const [passwordChangeRequired, setPasswordChangeRequired] = useState(false);
 
   const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
@@ -34,8 +38,8 @@ export function AdminLayout({ children }: { children: ReactNode }) {
     checkPasswordStatus();
   }, [session.data?.user, apiUrl, credentials]);
 
-  // Loading session
-  if (session.isPending) {
+  // Loading session or org membership
+  if (session.isPending || activeMember.isPending) {
     return (
       <main id="main" tabIndex={-1} className="flex h-dvh items-center justify-center">
         <LoadingState message="Checking authentication..." />
@@ -52,9 +56,13 @@ export function AdminLayout({ children }: { children: ReactNode }) {
     );
   }
 
-  // Signed in but not admin
-  const role = (session.data.user as Record<string, unknown>).role;
-  if (role !== "admin" && role !== "owner") {
+  // Check both user-level role (admin plugin) and org-level role (org plugin).
+  // Org creators get "owner" in the member table but "member" at user level.
+  const userRole = (session.data.user as Record<string, unknown>).role;
+  const orgRole = (activeMember.data as Record<string, unknown> | undefined)?.role;
+  const isAdmin = ADMIN_ROLES.has(String(userRole ?? "")) || ADMIN_ROLES.has(String(orgRole ?? ""));
+
+  if (!isAdmin) {
     return (
       <main id="main" tabIndex={-1} className="flex h-dvh items-center justify-center">
         <div className="w-full max-w-sm space-y-3 rounded-lg border border-zinc-200 bg-zinc-50 p-6 text-center dark:border-zinc-700 dark:bg-zinc-900">
@@ -63,7 +71,7 @@ export function AdminLayout({ children }: { children: ReactNode }) {
           </h2>
           <p className="text-sm text-zinc-500 dark:text-zinc-400">
             The admin console requires the <strong>admin</strong> role. You are signed in
-            as <strong>{session.data.user.email}</strong> with role <strong>{String(role ?? "member")}</strong>.
+            as <strong>{session.data.user.email}</strong> with role <strong>{String(orgRole ?? userRole ?? "member")}</strong>.
           </p>
           <button
             onClick={() => authClient.signOut()}

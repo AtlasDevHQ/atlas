@@ -11,12 +11,16 @@ const GuidedTour = dynamic(
   { ssr: false },
 );
 
+const ADMIN_ROLES = new Set(["admin", "owner", "platform_admin"]);
+
 export default function Home() {
   const session = authClient.useSession();
+  const activeMember = authClient.organization.activeMember();
   const user = session.data?.user as
     | { email?: string; role?: string }
     | undefined;
-  const isAdmin = user?.role === "admin" || user?.role === "owner";
+  const orgRole = (activeMember.data as Record<string, unknown> | undefined)?.role;
+  const isAdmin = ADMIN_ROLES.has(user?.role ?? "") || ADMIN_ROLES.has(String(orgRole ?? ""));
   const isSignedIn = !!user;
 
   // Server tracking requires managed auth (signed-in user)

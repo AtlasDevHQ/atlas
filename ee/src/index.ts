@@ -51,27 +51,21 @@ export class EnterpriseError extends Error {
 }
 
 /**
- * Guard: throws if enterprise is not enabled or no license key is configured.
- * Use at the entry point of any enterprise-only code path.
+ * Guard: throws if enterprise is not enabled.
  *
- * @throws {EnterpriseError} When enterprise is disabled or no license key is set.
+ * License key enforcement is separate — self-hosted customers validate
+ * their key at startup, but the SaaS platform and local dev don't
+ * require one. The license key check has been removed from this guard
+ * because it blocked platform admins from using features they control.
+ *
+ * @throws {EnterpriseError} When enterprise is disabled.
  */
 export function requireEnterprise(feature?: string): void {
   const label = feature ? ` (${feature})` : "";
   if (!isEnterpriseEnabled()) {
     throw new EnterpriseError(
       `Enterprise features${label} are not enabled. ` +
-      `Set ATLAS_ENTERPRISE_ENABLED=true and provide a license key, ` +
-      `or configure enterprise.enabled in atlas.config.ts. ` +
-      `Visit https://useatlas.dev/enterprise for licensing options.`,
-    );
-  }
-  const key = getEnterpriseLicenseKey();
-  if (!key) {
-    throw new EnterpriseError(
-      `Enterprise features${label} are enabled but no license key is configured. ` +
-      `Set ATLAS_ENTERPRISE_LICENSE_KEY or configure enterprise.licenseKey in atlas.config.ts. ` +
-      `Visit https://useatlas.dev/enterprise for licensing options.`,
+      `Set ATLAS_ENTERPRISE_ENABLED=true or configure enterprise.enabled in atlas.config.ts.`,
     );
   }
 }

@@ -5,6 +5,12 @@
  * executeSQL). The loop runs until the step limit is reached (configurable
  * via `ATLAS_AGENT_MAX_STEPS`, default 25) or the model stops issuing
  * tool calls.
+ *
+ * Effect migration (P10c):
+ * The agent function optionally reads its dependencies (model, tools,
+ * user context) from Effect Context when available, falling back to
+ * global singletons otherwise. This makes the agent testable via
+ * Layer.provide with mock services.
  */
 
 import {
@@ -16,6 +22,8 @@ import {
   type ToolSet,
   type UIMessage,
 } from "ai";
+import type { LanguageModel } from "ai";
+import { Effect } from "effect";
 import { getModel, getProviderType, getModelFromWorkspaceConfig, getWorkspaceProviderType, type ProviderType } from "./providers";
 import { defaultRegistry, type ToolRegistry } from "./tools/registry";
 import { getContextFragments, getDialectHints } from "./plugins/tools";
@@ -35,6 +43,7 @@ import {
   SpanStatusCode,
   context as otelContext,
 } from "@opentelemetry/api";
+import { AtlasAiModel, type AtlasAiModelShape } from "./effect/ai";
 
 const log = createLogger("agent");
 const tracer = trace.getTracer("atlas");
@@ -476,6 +485,8 @@ export async function runAgent({
   conversationId,
   warnings,
   maxSteps: maxStepsOverride,
+  /** Optional pre-resolved AI model. When provided, skips provider resolution. */
+  aiModel: injectedAiModel,
 }: {
   messages: UIMessage[];
   tools?: ToolRegistry;
@@ -483,33 +494,41 @@ export async function runAgent({
   warnings?: string[];
   /** Override the default agent step limit (e.g. for demo mode). */
   maxSteps?: number;
+  /** Pre-resolved AI model from Effect Context (P10c). */
+  aiModel?: AtlasAiModelShape;
 }) {
   // Capture context eagerly — AsyncLocalStorage may have exited by the time onFinish fires
   const reqCtx = getRequestContext();
   const userId = reqCtx?.user?.id ?? null;
   const orgId = reqCtx?.user?.activeOrganizationId;
 
-  // Resolve model: workspace config (enterprise) > platform env vars
-  let model: ReturnType<typeof getModel>;
+  // Resolve model: injected > workspace config (enterprise) > platform env vars
+  let model: LanguageModel;
   let providerType: ProviderType;
 
-  let workspaceConfig: { provider: import("@useatlas/types").ModelConfigProvider; model: string; apiKey: string; baseUrl: string | null } | null = null;
-  if (orgId && hasInternalDB()) {
-    try {
-      const { getWorkspaceModelConfigRaw } = await import("@atlas/ee/platform/model-routing");
-      workspaceConfig = await getWorkspaceModelConfigRaw(orgId);
-    } catch (err) {
-      log.debug({ orgId, err: err instanceof Error ? err.message : String(err) }, "Workspace model config not available — using platform default");
-    }
-  }
-
-  if (workspaceConfig) {
-    model = getModelFromWorkspaceConfig(workspaceConfig);
-    providerType = getWorkspaceProviderType(workspaceConfig.provider);
-    log.info({ orgId, provider: workspaceConfig.provider, model: workspaceConfig.model }, "Using workspace model config");
+  if (injectedAiModel) {
+    // Model provided via Effect Context (P10c) — skip provider resolution
+    model = injectedAiModel.model;
+    providerType = injectedAiModel.providerType;
   } else {
-    model = getModel();
-    providerType = getProviderType();
+    let workspaceConfig: { provider: import("@useatlas/types").ModelConfigProvider; model: string; apiKey: string; baseUrl: string | null } | null = null;
+    if (orgId && hasInternalDB()) {
+      try {
+        const { getWorkspaceModelConfigRaw } = await import("@atlas/ee/platform/model-routing");
+        workspaceConfig = await getWorkspaceModelConfigRaw(orgId);
+      } catch (err) {
+        log.debug({ orgId, err: err instanceof Error ? err.message : String(err) }, "Workspace model config not available — using platform default");
+      }
+    }
+
+    if (workspaceConfig) {
+      model = getModelFromWorkspaceConfig(workspaceConfig);
+      providerType = getWorkspaceProviderType(workspaceConfig.provider);
+      log.info({ orgId, provider: workspaceConfig.provider, model: workspaceConfig.model }, "Using workspace model config");
+    } else {
+      model = getModel();
+      providerType = getProviderType();
+    }
   }
 
   const resolvedModelId = typeof model === "string" ? model : model.modelId;
@@ -693,4 +712,46 @@ export async function runAgent({
   }
 
   return result;
+}
+
+// ── Effect-based agent runner (P10c) ────────────────────────────────
+
+/**
+ * Run the Atlas agent as an Effect program.
+ *
+ * Reads the AI model from `AtlasAiModel` in the Effect Context and
+ * delegates to `runAgent`. This is the preferred entry point for
+ * Effect-based callers — it makes the agent testable via Layer.provide
+ * with a mock LLM.
+ *
+ * @example
+ * ```ts
+ * import { runAgentEffect } from "@atlas/api/lib/agent";
+ * import { createAiModelTestLayer } from "@atlas/api/lib/effect/ai";
+ *
+ * // In tests — provide a mock model
+ * const result = await Effect.runPromise(
+ *   runAgentEffect({ messages }).pipe(
+ *     Effect.provide(createAiModelTestLayer({ ... })),
+ *   ),
+ * );
+ * ```
+ */
+export function runAgentEffect(params: {
+  messages: UIMessage[];
+  tools?: ToolRegistry;
+  conversationId?: string;
+  warnings?: string[];
+  maxSteps?: number;
+}): Effect.Effect<ReturnType<typeof streamText>, Error, AtlasAiModel> {
+  return Effect.gen(function* () {
+    const aiModel = yield* AtlasAiModel;
+    return yield* Effect.tryPromise({
+      try: () => runAgent({ ...params, aiModel }),
+      catch: (err) =>
+        new Error(
+          `Agent execution failed: ${err instanceof Error ? err.message : String(err)}`,
+        ),
+    });
+  });
 }

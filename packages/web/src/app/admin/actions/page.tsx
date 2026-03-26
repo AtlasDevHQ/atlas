@@ -301,15 +301,15 @@ export default function ActionsPage() {
 
   return (
     <TooltipProvider>
-      <div className="flex h-[calc(100dvh-3rem)] flex-col">
-        <div className="border-b px-6 py-4">
+      <div className="p-6">
+        <div className="mb-6">
           <h1 className="text-2xl font-bold tracking-tight">Actions</h1>
           <p className="text-sm text-muted-foreground">
             Review and manage action approvals.
           </p>
         </div>
 
-        <div className="flex items-center gap-2 border-b px-6 py-3">
+        <div className="mb-4 flex items-center gap-2">
           {FILTER_OPTIONS.map((opt) => (
             <Button
               key={opt.value}
@@ -362,7 +362,7 @@ export default function ActionsPage() {
         </div>
 
         <ErrorBoundary>
-        <div className="flex-1 overflow-auto p-6 space-y-6">
+        <div className="space-y-6">
           {mutationError && <ErrorBanner message={mutationError} onRetry={() => setMutationError(null)} />}
           {approveMutation.error && <ErrorBanner message={approveMutation.error} onRetry={approveMutation.clearError} />}
           {denyMutation.error && <ErrorBanner message={denyMutation.error} onRetry={denyMutation.clearError} />}

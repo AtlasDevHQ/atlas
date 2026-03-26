@@ -112,15 +112,15 @@ export default function TokenUsagePage() {
 
   return (
     <ErrorBoundary>
-    <div className="flex h-[calc(100dvh-3rem)] flex-col">
-      <div className="border-b px-6 py-4">
+    <div className="p-6">
+      <div className="mb-6">
         <h1 className="text-2xl font-bold tracking-tight">Token Usage</h1>
         <p className="text-sm text-muted-foreground">
           Track LLM token consumption across users and conversations.
         </p>
       </div>
 
-      <div className="flex-1 overflow-auto p-6 space-y-6">
+      <div className="space-y-6">
       <AdminContentWrapper
         loading={false}
         error={gateError}

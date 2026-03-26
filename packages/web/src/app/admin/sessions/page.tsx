@@ -151,41 +151,39 @@ export default function SessionsPage() {
   const selectedCount = table.getSelectedRowModel().rows.length;
 
   return (
-    <div className="flex h-[calc(100dvh-3rem)] flex-col">
+    <div className="p-6">
       {/* Header */}
-      <div className="border-b px-6 py-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-2xl font-bold tracking-tight">Sessions</h1>
-            <p className="text-sm text-muted-foreground">Manage active user sessions</p>
-          </div>
-          {selectedCount > 0 && (
-            <AlertDialog>
-              <AlertDialogTrigger asChild>
-                <Button variant="destructive" size="sm">
-                  <Trash2 className="mr-1.5 size-3.5" />
-                  Revoke {selectedCount} selected
-                </Button>
-              </AlertDialogTrigger>
-              <AlertDialogContent>
-                <AlertDialogHeader>
-                  <AlertDialogTitle>Revoke {selectedCount} session(s)?</AlertDialogTitle>
-                  <AlertDialogDescription>
-                    These users will be signed out immediately. This cannot be undone.
-                  </AlertDialogDescription>
-                </AlertDialogHeader>
-                <AlertDialogFooter>
-                  <AlertDialogCancel>Cancel</AlertDialogCancel>
-                  <AlertDialogAction onClick={revokeSelected}>Revoke</AlertDialogAction>
-                </AlertDialogFooter>
-              </AlertDialogContent>
-            </AlertDialog>
-          )}
+      <div className="mb-6 flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">Sessions</h1>
+          <p className="text-sm text-muted-foreground">Manage active user sessions</p>
         </div>
+        {selectedCount > 0 && (
+          <AlertDialog>
+            <AlertDialogTrigger asChild>
+              <Button variant="destructive" size="sm">
+                <Trash2 className="mr-1.5 size-3.5" />
+                Revoke {selectedCount} selected
+              </Button>
+            </AlertDialogTrigger>
+            <AlertDialogContent>
+              <AlertDialogHeader>
+                <AlertDialogTitle>Revoke {selectedCount} session(s)?</AlertDialogTitle>
+                <AlertDialogDescription>
+                  These users will be signed out immediately. This cannot be undone.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter>
+                <AlertDialogCancel>Cancel</AlertDialogCancel>
+                <AlertDialogAction onClick={revokeSelected}>Revoke</AlertDialogAction>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
+        )}
       </div>
 
       <ErrorBoundary>
-        <div className="flex-1 overflow-auto p-6 space-y-6">
+        <div className="space-y-6">
           {/* Stats */}
           {stats && !statsError && (
             <div className="grid gap-4 sm:grid-cols-3">

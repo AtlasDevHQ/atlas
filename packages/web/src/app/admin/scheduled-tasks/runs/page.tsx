@@ -204,25 +204,23 @@ export default function RunHistoryPage() {
   const hasFilters = !!taskFilter || (statusFilter && statusFilter !== "all") || !!dateFrom || !!dateTo;
 
   return (
-    <div className="flex h-[calc(100dvh-3rem)] flex-col">
-      <div className="flex items-start justify-between border-b px-6 py-4">
-        <div>
-          <div className="flex items-center gap-2">
-            <Button variant="ghost" size="icon" className="size-8" asChild>
-              <Link href="/admin/scheduled-tasks">
-                <ArrowLeft className="size-4" />
-              </Link>
-            </Button>
-            <h1 className="text-2xl font-bold tracking-tight">Run History</h1>
-          </div>
-          <p className="ml-10 text-sm text-muted-foreground">
-            Execution history across all scheduled tasks
-          </p>
+    <div className="p-6">
+      <div className="mb-6">
+        <div className="flex items-center gap-2">
+          <Button variant="ghost" size="icon" className="size-8" asChild>
+            <Link href="/admin/scheduled-tasks">
+              <ArrowLeft className="size-4" />
+            </Link>
+          </Button>
+          <h1 className="text-2xl font-bold tracking-tight">Run History</h1>
         </div>
+        <p className="ml-10 text-sm text-muted-foreground">
+          Execution history across all scheduled tasks
+        </p>
       </div>
 
       {/* Filters */}
-      <div className="flex flex-wrap items-end gap-3 border-b px-6 py-3">
+      <div className="mb-4 flex flex-wrap items-end gap-3">
         <Select
           value={taskFilter ?? "all"}
           onValueChange={(val) => setParams({ task: val === "all" ? null : val, page: 1, expandedRun: null })}
@@ -285,7 +283,7 @@ export default function RunHistoryPage() {
       </div>
 
       <ErrorBoundary>
-      <div className="flex-1 overflow-auto p-6 space-y-6">
+      <div className="space-y-6">
         <AdminContentWrapper
           loading={loading}
           error={error}

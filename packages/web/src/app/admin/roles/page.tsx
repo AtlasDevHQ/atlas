@@ -339,8 +339,8 @@ export default function RolesPage() {
   const customRoles = roles.filter((r) => !r.isBuiltin);
 
   return (
-    <div className="flex h-[calc(100dvh-3rem)] flex-col">
-      <div className="flex items-center justify-between border-b px-6 py-4">
+    <div className="p-6">
+      <div className="mb-6 flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Roles</h1>
           <p className="text-sm text-muted-foreground">
@@ -354,7 +354,7 @@ export default function RolesPage() {
       </div>
 
       <ErrorBoundary>
-        <div className="flex-1 overflow-auto p-6">
+        <div>
           <AdminContentWrapper
             loading={loading}
             error={error}

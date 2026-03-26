@@ -420,9 +420,9 @@ export default function UsersPage() {
   const pendingInvitations = invitations.filter((i) => i.status === "pending");
 
   return (
-    <div className="flex h-[calc(100dvh-3rem)] flex-col">
+    <div className="p-6">
       {/* Header */}
-      <div className="flex items-center justify-between border-b px-6 py-4">
+      <div className="mb-6 flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Users</h1>
           <p className="text-sm text-muted-foreground">Manage user accounts and roles</p>
@@ -434,7 +434,7 @@ export default function UsersPage() {
       </div>
 
       <ErrorBoundary>
-      <div className="flex-1 overflow-auto p-6 space-y-6">
+      <div className="space-y-6">
         {/* Stats row */}
         {statsError && !statsError.status ? (
           <div className="grid gap-4 sm:grid-cols-4">

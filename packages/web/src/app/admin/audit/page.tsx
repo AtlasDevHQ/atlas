@@ -239,14 +239,14 @@ export default function AuditPage() {
   }
 
   return (
-    <div className="flex h-[calc(100dvh-3rem)] flex-col">
+    <div className="p-6">
       <ErrorBoundary>
       <Tabs
         value={tab}
         onValueChange={(v) => setParams({ tab: v as "log" | "analytics" | "retention" })}
       >
         {/* Header */}
-        <div className="border-b px-6 py-4">
+        <div className="mb-6">
           <div className="flex items-center justify-between">
             <div>
               <h1 className="text-2xl font-bold tracking-tight">Audit Log</h1>
@@ -283,7 +283,7 @@ export default function AuditPage() {
           </div>
         </div>
 
-        <TabsContent value="analytics" className="flex-1 overflow-auto p-6 space-y-6">
+        <TabsContent value="analytics" className="space-y-6 pt-6">
           {/* Date range for analytics */}
           <div className="flex flex-wrap items-end gap-3">
             <div className="space-y-1">
@@ -314,7 +314,7 @@ export default function AuditPage() {
           <AnalyticsPanel from={analyticsFrom} to={analyticsTo} />
         </TabsContent>
 
-        <TabsContent value="log" className="flex-1 overflow-auto p-6 space-y-6">
+        <TabsContent value="log" className="space-y-6 pt-6">
           {/* Stats row */}
           {statsError && !statsError.status ? (
             <div className="grid gap-4 sm:grid-cols-3">
@@ -499,7 +499,7 @@ export default function AuditPage() {
           </AdminContentWrapper>
         </TabsContent>
 
-        <TabsContent value="retention" className="flex-1 overflow-auto p-6">
+        <TabsContent value="retention" className="pt-6">
           <RetentionPanel />
         </TabsContent>
       </Tabs>

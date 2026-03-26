@@ -109,8 +109,8 @@ export default function CachePage() {
   const fillPercent = data && data.maxSize > 0 ? (data.entryCount / data.maxSize) * 100 : 0;
 
   return (
-    <div className="flex h-[calc(100dvh-3rem)] flex-col">
-      <div className="border-b px-6 py-4">
+    <div className="p-6">
+      <div className="mb-6">
         <h1 className="text-2xl font-bold tracking-tight">Cache</h1>
         <p className="text-sm text-muted-foreground">
           Query result cache statistics and management
@@ -118,7 +118,7 @@ export default function CachePage() {
       </div>
 
       <ErrorBoundary>
-        <div className="flex-1 overflow-auto p-6">
+        <div>
           {flushError && (
             <ErrorBanner message={flushError} onRetry={clearFlushError} />
           )}

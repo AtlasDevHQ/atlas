@@ -169,11 +169,11 @@ function DomainsPageContent() {
       onRetry={refetch}
       loadingMessage="Loading domains..."
     >
-      <div className="space-y-6">
+      <div className="p-6 space-y-6">
         {/* Header */}
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-semibold tracking-tight">Custom Domains</h1>
+            <h1 className="text-2xl font-bold tracking-tight">Custom Domains</h1>
             <p className="text-sm text-muted-foreground">
               Register custom domains for workspaces. Domains are provisioned via Railway with automatic TLS.
             </p>

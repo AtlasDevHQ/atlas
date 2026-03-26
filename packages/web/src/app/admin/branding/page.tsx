@@ -102,9 +102,9 @@ export default function BrandingPage() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="p-6 space-y-6">
       <div>
-        <h2 className="text-lg font-semibold">Branding</h2>
+        <h1 className="text-2xl font-bold tracking-tight">Branding</h1>
         <p className="text-sm text-muted-foreground">
           Customize the look and feel of your Atlas workspace. Replace the Atlas logo, colors, and favicon with your own brand.
         </p>

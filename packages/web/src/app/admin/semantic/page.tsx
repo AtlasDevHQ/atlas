@@ -460,8 +460,8 @@ export default function SemanticPage() {
   })();
 
   return (
-    <div className="flex h-[calc(100dvh-3rem)] flex-col">
-      <div className="border-b px-6 py-4">
+    <div className="flex h-full flex-col">
+      <div className="px-6 pt-6 pb-4">
         <h1 className="text-2xl font-bold tracking-tight">Semantic Layer</h1>
         <p className="text-sm text-muted-foreground">Browse entities, glossary, metrics, and catalog</p>
       </div>

@@ -88,8 +88,8 @@ export default function SSOPage() {
   }
 
   return (
-    <div className="flex h-[calc(100dvh-3rem)] flex-col">
-      <div className="border-b px-6 py-4">
+    <div className="p-6">
+      <div className="mb-6">
         <h1 className="text-2xl font-bold tracking-tight">SSO</h1>
         <p className="text-sm text-muted-foreground">
           Manage single sign-on providers and enforcement
@@ -97,7 +97,7 @@ export default function SSOPage() {
       </div>
 
       <ErrorBoundary>
-        <div className="flex-1 overflow-auto p-6">
+        <div>
           {mutationError && (
             <ErrorBanner message={mutationError} onRetry={clearMutationError} />
           )}

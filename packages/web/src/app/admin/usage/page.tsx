@@ -127,33 +127,31 @@ export default function UsageDashboardPage() {
 
   return (
     <ErrorBoundary>
-    <div className="flex h-[calc(100dvh-3rem)] flex-col">
-      <div className="border-b px-6 py-4">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-2xl font-bold tracking-tight">Usage</h1>
-            <p className="text-sm text-muted-foreground">
-              {data
-                ? `${data.plan.displayName} plan — ${formatPeriod(data.current.periodStart, data.current.periodEnd)}`
-                : "Monitor workspace consumption relative to plan limits."}
-            </p>
-          </div>
-          {data?.hasStripe && (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={openBillingPortal}
-              disabled={portalLoading}
-            >
-              <CreditCard className="mr-1.5 size-3.5" />
-              {portalLoading ? "Opening..." : "Manage Plan"}
-              <ExternalLink className="ml-1.5 size-3" />
-            </Button>
-          )}
+    <div className="p-6">
+      <div className="mb-6 flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">Usage</h1>
+          <p className="text-sm text-muted-foreground">
+            {data
+              ? `${data.plan.displayName} plan — ${formatPeriod(data.current.periodStart, data.current.periodEnd)}`
+              : "Monitor workspace consumption relative to plan limits."}
+          </p>
         </div>
+        {data?.hasStripe && (
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={openBillingPortal}
+            disabled={portalLoading}
+          >
+            <CreditCard className="mr-1.5 size-3.5" />
+            {portalLoading ? "Opening..." : "Manage Plan"}
+            <ExternalLink className="ml-1.5 size-3" />
+          </Button>
+        )}
       </div>
 
-      <div className="flex-1 overflow-auto p-6 space-y-6">
+      <div className="space-y-6">
         {/* Portal error */}
         {(portalError ?? portalUrlError) && <ErrorBanner message={(portalError ?? portalUrlError)!} onRetry={() => { setPortalUrlError(null); openBillingPortal(); }} />}
 

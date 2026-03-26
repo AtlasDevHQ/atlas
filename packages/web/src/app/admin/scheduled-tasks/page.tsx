@@ -391,8 +391,8 @@ export default function ScheduledTasksPage() {
 
   // ── Render ──────────────────────────────────────────────────────
   return (
-    <div className="flex h-[calc(100dvh-3rem)] flex-col">
-      <div className="flex items-start justify-between border-b px-6 py-4">
+    <div className="p-6">
+      <div className="mb-6 flex items-start justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Scheduled Tasks</h1>
           <p className="text-sm text-muted-foreground">
@@ -413,7 +413,7 @@ export default function ScheduledTasksPage() {
         </div>
       </div>
 
-      <div className="flex items-center gap-2 border-b px-6 py-3">
+      <div className="mb-4 flex items-center gap-2">
         {(["all", "true", "false"] as const).map((value) => {
           const label =
             value === "all" ? "All" : value === "true" ? "Enabled" : "Disabled";
@@ -436,7 +436,7 @@ export default function ScheduledTasksPage() {
       </div>
 
       <ErrorBoundary>
-      <div className="flex-1 overflow-auto p-6 space-y-6">
+      <div className="space-y-6">
         {toggleMutation.error && <ErrorBanner message={toggleMutation.error} onRetry={toggleMutation.clearError} />}
         {triggerMutation.error && <ErrorBanner message={triggerMutation.error} onRetry={triggerMutation.clearError} />}
         {deleteMutation.error && <ErrorBanner message={deleteMutation.error} onRetry={deleteMutation.clearError} />}

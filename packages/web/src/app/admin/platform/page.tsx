@@ -250,7 +250,7 @@ function PlatformPageContent() {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="p-6 space-y-6">
       <div>
         <h1 className="text-2xl font-bold tracking-tight">Platform Admin</h1>
         <p className="text-muted-foreground">Cross-tenant management console for platform operators.</p>

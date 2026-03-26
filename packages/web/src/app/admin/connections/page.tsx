@@ -714,8 +714,8 @@ export default function ConnectionsPage() {
   }
 
   return (
-    <div className="flex h-[calc(100dvh-3rem)] flex-col">
-      <div className="flex items-center justify-between border-b px-6 py-4">
+    <div className="p-6">
+      <div className="mb-6 flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Connections</h1>
           <p className="text-sm text-muted-foreground">Manage datasource connections</p>
@@ -727,7 +727,7 @@ export default function ConnectionsPage() {
       </div>
 
       <ErrorBoundary>
-      <div className="flex-1 overflow-auto p-6 space-y-6">
+      <div className="space-y-6">
         {mutationError && <ErrorBanner message={mutationError} onRetry={() => setMutationError(null)} />}
         {testMutation.error && !mutationError && <ErrorBanner message={testMutation.error} onRetry={testMutation.clearError} />}
 

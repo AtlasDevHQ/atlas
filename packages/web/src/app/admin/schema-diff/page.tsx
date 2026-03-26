@@ -247,8 +247,8 @@ function PageShell({
   connectionSelector?: React.ReactNode;
 }) {
   return (
-    <div className="flex h-[calc(100dvh-3rem)] flex-col">
-      <div className="flex items-center justify-between border-b px-6 py-4">
+    <div className="p-6">
+      <div className="mb-6 flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Schema Diff</h1>
           <p className="text-sm text-muted-foreground">
@@ -257,7 +257,7 @@ function PageShell({
         </div>
         {connectionSelector}
       </div>
-      <div className="flex-1 overflow-auto">{children}</div>
+      <div>{children}</div>
     </div>
   );
 }

@@ -105,11 +105,11 @@ function ResidencyPageContent() {
       onRetry={refetchRegions}
       loadingMessage="Loading regions..."
     >
-    <div className="space-y-6">
+    <div className="p-6 space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Data Residency</h1>
+          <h1 className="text-2xl font-bold tracking-tight">Data Residency</h1>
           <p className="text-sm text-muted-foreground">
             Manage region assignments for workspaces. Region is immutable after assignment.
           </p>

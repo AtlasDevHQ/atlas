@@ -222,17 +222,15 @@ export default function OrganizationsPage() {
   });
 
   return (
-    <div className="flex h-[calc(100dvh-3rem)] flex-col">
+    <div className="p-6">
       {/* Header */}
-      <div className="flex items-center justify-between border-b px-6 py-4">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">Organizations</h1>
-          <p className="text-sm text-muted-foreground">Manage organizations and tenants</p>
-        </div>
+      <div className="mb-6">
+        <h1 className="text-2xl font-bold tracking-tight">Organizations</h1>
+        <p className="text-sm text-muted-foreground">Manage organizations and tenants</p>
       </div>
 
       <ErrorBoundary>
-        <div className="flex-1 overflow-auto p-6 space-y-6">
+        <div className="space-y-6">
           {/* Stats row */}
           <div className="grid gap-4 sm:grid-cols-3">
             <StatCard

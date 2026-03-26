@@ -84,10 +84,10 @@ describe("AdminLayout", () => {
     expect(container.textContent).toContain("Checking authentication");
   });
 
-  test("redirects to login when not signed in", () => {
+  test("shows loading when not signed in (proxy handles redirect)", () => {
     mockSession = { data: null };
     const { container } = renderLayout();
-    expect(container.textContent).toContain("Redirecting to sign in");
+    expect(container.textContent).toContain("Checking access");
   });
 
   test("shows access denied for non-admin users", async () => {

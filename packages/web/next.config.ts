@@ -3,6 +3,9 @@ import path from "path";
 
 const nextConfig: NextConfig = {
   reactCompiler: true,
+  experimental: {
+    authInterrupts: true,
+  },
   // standalone is for self-hosted deployments (Docker, Railway, etc.); Vercel uses its own build pipeline
   ...(process.env.VERCEL ? {} : { output: "standalone" }),
   // Native bindings and worker-thread packages that must not be bundled by Next.js.

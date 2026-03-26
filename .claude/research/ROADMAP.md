@@ -540,8 +540,8 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] P8: Auth and request context → Effect Context replacing AsyncLocalStorage (#911)
 
 ### AI (P10) — Agent Loop → @effect/ai
-- [ ] P10a: Install @effect/ai, define provider Layers — bridge to existing providers.ts (#933)
-- [ ] P10b: Define Atlas tools (explore, executeSQL) as AiToolkit (#934)
+- [x] P10a: Install @effect/ai, define provider Layers — bridge to existing providers.ts (#933, PR #938)
+- [x] P10b: Define Atlas tools (explore, executeSQL) as AiToolkit (#934)
 - [ ] P10c: Rewrite agent loop with AiLanguageModel.streamText (#935)
 
 ### Database (P11) — Native Effect SQL

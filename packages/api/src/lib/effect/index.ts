@@ -107,3 +107,12 @@ export {
   createAiModelTestLayer,
   type AtlasAiModelShape,
 } from "./ai";
+
+// ── Toolkit Service (P10b) ──────────────────────────────────────────
+
+export {
+  AtlasToolkit,
+  makeAtlasToolkitLive,
+  createToolkitTestLayer,
+  type AtlasToolkitShape,
+} from "./toolkit";

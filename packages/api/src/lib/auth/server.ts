@@ -23,6 +23,7 @@ import { getInternalDB, hasInternalDB, internalQuery, updateWorkspacePlanTier, t
 import { createLogger } from "@atlas/api/lib/logger";
 import { isEnterpriseEnabled } from "@atlas/ee/index";
 import { ac, owner as ownerRole, admin as adminRole, member as memberRole } from "@atlas/api/lib/auth/org-permissions";
+import { adminAccessControl, adminRole as adminUserRole, platformAdminRole } from "@atlas/api/lib/auth/admin-permissions";
 import { getStripePlans } from "@atlas/api/lib/billing/plans";
 import { invalidatePlanCache } from "@atlas/api/lib/billing/enforcement";
 
@@ -73,7 +74,14 @@ function buildPlugins() {
   const plugins: any[] = [
     bearer(),
     apiKey(),
-    admin({ defaultRole: "member", adminRoles: ["admin", "platform_admin"] }),
+    admin({
+      defaultRole: "member",
+      ac: adminAccessControl,
+      roles: {
+        admin: adminUserRole,
+        platform_admin: platformAdminRole,
+      },
+    }),
     organization({
       ac,
       roles: { owner: ownerRole, admin: adminRole, member: memberRole },

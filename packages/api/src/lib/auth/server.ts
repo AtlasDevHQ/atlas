@@ -348,6 +348,40 @@ export function getAuthInstance(): AuthInstance {
           },
         },
       },
+      session: {
+        create: {
+          after: async (session: { id: string; userId: string; activeOrganizationId?: string | null }) => {
+            // Auto-set the active org on login when the user has exactly one
+            // org and the session doesn't already have one. Without this, the
+            // seeded admin user (created before any session exists) would have
+            // no active org until they manually switch.
+            try {
+              if (session.activeOrganizationId) return;
+              if (!hasInternalDB()) return;
+
+              const orgs = await internalQuery<{ organizationId: string }>(
+                `SELECT "organizationId" FROM member WHERE "userId" = $1 LIMIT 2`,
+                [session.userId],
+              );
+              if (orgs.length !== 1) return;
+
+              await getInternalDB().query(
+                `UPDATE session SET "activeOrganizationId" = $1 WHERE id = $2`,
+                [orgs[0].organizationId, session.id],
+              );
+              log.info(
+                { userId: session.userId, orgId: orgs[0].organizationId },
+                "Auto-set active organization for session",
+              );
+            } catch (err) {
+              log.warn(
+                { err: err instanceof Error ? err.message : String(err), userId: session.userId },
+                "Failed to auto-set active org — user may need to switch manually",
+              );
+            }
+          },
+        },
+      },
       user: {
         create: {
           before: async (user) => {

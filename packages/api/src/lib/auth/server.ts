@@ -312,6 +312,42 @@ export function getAuthInstance(): AuthInstance {
       },
     } : undefined,
     databaseHooks: {
+      member: {
+        create: {
+          after: async (member: { role: string; userId: string; organizationId: string }) => {
+            // When a user becomes org "owner", promote their user-level role
+            // to "admin" so Better Auth's admin plugin APIs (list users,
+            // manage roles, etc.) work. Without this, org owners have
+            // user.role="member" and Better Auth blocks admin operations.
+            try {
+              if (member.role !== "owner") return;
+              if (!hasInternalDB()) return;
+
+              // Don't downgrade platform_admin → admin
+              const rows = await internalQuery<{ role: string | null }>(
+                `SELECT role FROM "user" WHERE id = $1 LIMIT 1`,
+                [member.userId],
+              );
+              const currentRole = rows[0]?.role;
+              if (currentRole === "admin" || currentRole === "platform_admin") return;
+
+              await getInternalDB().query(
+                `UPDATE "user" SET role = 'admin' WHERE id = $1`,
+                [member.userId],
+              );
+              log.info(
+                { userId: member.userId, orgId: member.organizationId },
+                "Promoted org owner to user-level admin",
+              );
+            } catch (err) {
+              log.warn(
+                { err: err instanceof Error ? err.message : String(err), userId: member.userId },
+                "Failed to promote org owner to admin — Better Auth admin APIs may return 403",
+              );
+            }
+          },
+        },
+      },
       user: {
         create: {
           before: async (user) => {

@@ -121,7 +121,7 @@ async function bootstrapAdminUser(): Promise<void> {
 
   try {
     const existing = await internalQuery<{ count: string }>(
-      `SELECT COUNT(*) as count FROM "user" WHERE role = 'admin'`,
+      `SELECT COUNT(*) as count FROM "user" WHERE role IN ('admin', 'platform_admin')`,
     );
     if (parseInt(String(existing[0]?.count ?? "0"), 10) > 0) {
       log.debug("Bootstrap: admin user already exists — skipping promotion");
@@ -129,11 +129,11 @@ async function bootstrapAdminUser(): Promise<void> {
     }
 
     const result = await internalQuery<{ id: string; email: string }>(
-      `UPDATE "user" SET role = 'admin' WHERE LOWER(email) = $1 RETURNING id, email`,
+      `UPDATE "user" SET role = 'platform_admin' WHERE LOWER(email) = $1 RETURNING id, email`,
       [adminEmail],
     );
     if (result.length > 0) {
-      log.info({ email: result[0].email, id: result[0].id }, "Bootstrap: existing user promoted to admin via ATLAS_ADMIN_EMAIL");
+      log.info({ email: result[0].email, id: result[0].id }, "Bootstrap: existing user promoted to platform_admin via ATLAS_ADMIN_EMAIL");
     } else {
       log.warn({ adminEmail }, "Bootstrap: ATLAS_ADMIN_EMAIL is set but no user with that email exists yet — role will be assigned on first signup");
     }
@@ -170,7 +170,7 @@ async function seedDevUser(auth: { api: Record<string, unknown> }): Promise<void
         email: adminEmail,
         password: "atlas-dev",
         name: "Atlas Admin",
-        role: "admin",
+        role: "platform_admin",
       },
     });
 

@@ -116,3 +116,13 @@ export {
   createToolkitTestLayer,
   type AtlasToolkitShape,
 } from "./toolkit";
+
+// ── SQL Client Service (P11a) ───────────────────────────────────────
+
+export {
+  AtlasSqlClient,
+  makeAtlasSqlClientLive,
+  makeOrgSqlClientLive,
+  createSqlClientTestLayer,
+  type AtlasSqlClientShape,
+} from "./sql";

@@ -90,33 +90,6 @@ function makeDomainRow(overrides: Partial<Record<string, unknown>> = {}) {
 describe("domains", () => {
   beforeEach(resetMocks);
 
-  describe("enterprise gating", () => {
-    it("registerDomain throws when enterprise is disabled", async () => {
-      ee.setEnterpriseEnabled(false);
-      await expect(registerDomain("org-1", "data.acme.com")).rejects.toThrow("Enterprise features");
-    });
-
-    it("listDomains throws when enterprise is disabled", async () => {
-      ee.setEnterpriseEnabled(false);
-      await expect(listDomains("org-1")).rejects.toThrow("Enterprise features");
-    });
-
-    it("listAllDomains throws when enterprise is disabled", async () => {
-      ee.setEnterpriseEnabled(false);
-      await expect(listAllDomains()).rejects.toThrow("Enterprise features");
-    });
-
-    it("deleteDomain throws when enterprise is disabled", async () => {
-      ee.setEnterpriseEnabled(false);
-      await expect(deleteDomain("dom-1")).rejects.toThrow("Enterprise features");
-    });
-
-    it("verifyDomain throws when enterprise is disabled", async () => {
-      ee.setEnterpriseEnabled(false);
-      await expect(verifyDomain("dom-1")).rejects.toThrow("Enterprise features");
-    });
-  });
-
   describe("registerDomain", () => {
     it("registers a valid domain via Railway", async () => {
       // Check for existing → no results

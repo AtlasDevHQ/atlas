@@ -57,11 +57,14 @@ describe("SCIM enterprise gate", () => {
     await expect(getSyncStatus(ORG_ID)).rejects.toThrow("Enterprise features (scim) are not enabled.");
   });
 
-  it("createGroupMapping throws when no license key", async () => {
+  it("createGroupMapping does not require license key when enterprise is enabled", async () => {
     ee.setEnterpriseLicenseKey(undefined);
-    await expect(createGroupMapping(ORG_ID, "Engineers", "analyst")).rejects.toThrow(
-      "Enterprise features (scim) are enabled but no license key is configured.",
-    );
+    // Should not throw — license key is no longer required
+    ee.queueMockRows([{ id: "role-1" }]); // role exists
+    ee.queueMockRows([]); // no duplicate
+    ee.queueMockRows([{ id: "map-1", org_id: ORG_ID, scim_group_name: "Engineers", role_name: "analyst", created_at: "2026-01-01" }]);
+    const mapping = await createGroupMapping(ORG_ID, "Engineers", "analyst");
+    expect(mapping.scimGroupName).toBe("Engineers");
   });
 });
 

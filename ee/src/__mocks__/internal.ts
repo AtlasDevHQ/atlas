@@ -85,11 +85,9 @@ export function createEEMock(overrides?: EEMockOverrides): EEMock {
     requireEnterprise: (feature?: string) => {
       const label = feature ? ` (${feature})` : "";
       if (!enterpriseEnabled) {
-        throw new EnterpriseError(`Enterprise features${label} are not enabled.`);
-      }
-      if (!enterpriseLicenseKey) {
         throw new EnterpriseError(
-          `Enterprise features${label} are enabled but no license key is configured.`,
+          `Enterprise features${label} are not enabled. ` +
+          `Set ATLAS_ENTERPRISE_ENABLED=true or configure enterprise.enabled in atlas.config.ts.`,
         );
       }
     },

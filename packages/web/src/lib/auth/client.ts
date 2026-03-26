@@ -21,6 +21,7 @@ import { stripeClient } from "@better-auth/stripe/client";
 import { adminClient, organizationClient } from "better-auth/client/plugins";
 import { API_URL } from "@/lib/api-url";
 import { ac, owner, admin, member } from "./org-permissions";
+import { adminAccessControl, adminRole, platformAdminRole } from "./admin-permissions";
 
 function getBaseURL(): string {
   if (API_URL) return API_URL + "/api/auth";
@@ -32,7 +33,13 @@ export const authClient = createAuthClient({
   baseURL: getBaseURL(),
   plugins: [
     apiKeyClient(),
-    adminClient(),
+    adminClient({
+      ac: adminAccessControl,
+      roles: {
+        admin: adminRole,
+        platform_admin: platformAdminRole,
+      },
+    }),
     organizationClient({
       ac,
       roles: { owner, admin, member },

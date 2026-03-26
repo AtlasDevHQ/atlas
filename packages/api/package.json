@@ -61,6 +61,9 @@
   },
   "devDependencies": {
     "@ai-sdk/provider": "^3.0.8",
+    "@effect/ai": "^0.35.0",
+    "@effect/ai-anthropic": "^0.25.0",
+    "@effect/ai-openai": "^0.39.0",
     "@types/js-yaml": "^4.0.9",
     "@types/pg": "^8.16.0"
   }

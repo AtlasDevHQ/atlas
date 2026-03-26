@@ -350,11 +350,11 @@ export function getAuthInstance(): AuthInstance {
       },
       session: {
         create: {
-          after: async (session: { id: string; userId: string; activeOrganizationId?: string | null }) => {
+          before: async (session) => {
             // Auto-set the active org on login when the user has exactly one
-            // org and the session doesn't already have one. Without this, the
-            // seeded admin user (created before any session exists) would have
-            // no active org until they manually switch.
+            // org and the session doesn't already have one. Uses the `before`
+            // hook so Better Auth writes the activeOrganizationId directly
+            // into the session row (no post-hoc UPDATE needed).
             try {
               if (session.activeOrganizationId) return;
               if (!hasInternalDB()) return;
@@ -365,14 +365,16 @@ export function getAuthInstance(): AuthInstance {
               );
               if (orgs.length !== 1) return;
 
-              await getInternalDB().query(
-                `UPDATE session SET "activeOrganizationId" = $1 WHERE id = $2`,
-                [orgs[0].organizationId, session.id],
-              );
               log.info(
                 { userId: session.userId, orgId: orgs[0].organizationId },
-                "Auto-set active organization for session",
+                "Auto-set active organization for new session",
               );
+              return {
+                data: {
+                  ...session,
+                  activeOrganizationId: orgs[0].organizationId,
+                },
+              };
             } catch (err) {
               log.warn(
                 { err: err instanceof Error ? err.message : String(err), userId: session.userId },

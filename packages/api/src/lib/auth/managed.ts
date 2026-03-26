@@ -22,20 +22,10 @@ const log = createLogger("auth:managed");
 export async function validateManaged(req: Request): Promise<AuthResult> {
   const auth = getAuthInstance();
 
-  // Debug: log whether cookies are present in the request
-  const cookieHeader = req.headers.get("cookie");
-  const hasSessionToken = cookieHeader?.includes("session_token") ?? false;
-  const hasAuthorization = !!req.headers.get("authorization");
-  if (!hasSessionToken && !hasAuthorization) {
-    log.info({ url: req.url }, "No session_token cookie or Authorization header in request");
-  } else {
-    log.info({ hasSessionToken, hasAuthorization, url: req.url }, "Auth headers present");
-  }
-
   const session = await auth.api.getSession({ headers: req.headers });
 
   if (!session) {
-    log.info({ hasSessionToken, hasAuthorization }, "getSession returned null");
+    log.debug("getSession returned null — no valid session");
     return { authenticated: false, mode: "managed", status: 401, error: "Not signed in" };
   }
 

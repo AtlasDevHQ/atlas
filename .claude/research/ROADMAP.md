@@ -563,7 +563,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 **Comprehensive end-to-end validation** after the 0.9.4 Effect.ts migration (23 issues, ~15 PRs, every route handler and backend service rewritten). Dev, CI, production, agent loop, enterprise features, browser tests, and external integrations.
 
 ### Dev & CI
-- [ ] Dev workflow smoke test — install, dev, build end-to-end (#945)
+- [x] Dev workflow smoke test — install, dev, build end-to-end (#945). Filed #955 (Better Auth migration bug, pre-existing)
 - [ ] CI test audit — coverage gaps, skipped tests, Effect migration regressions (#946)
 
 ### Production

@@ -138,7 +138,10 @@ gh issue create -R AtlasDevHQ/atlas \
 
 **Step 4: Commit and report**
 
-If `.claude/research/ROADMAP.md` was changed, update it (it's gitignored, so no commit needed — it's a local tracking file).
+If `.claude/research/ROADMAP.md` was changed:
+1. `git add .claude/research/ROADMAP.md`
+2. Commit with message like: `docs: update ROADMAP — check off shipped items`
+3. `git push`
 
 If `apps/docs/content/docs/roadmap.mdx` was changed:
 1. `git add apps/docs/content/docs/roadmap.mdx`

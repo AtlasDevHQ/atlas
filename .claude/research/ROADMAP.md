@@ -605,13 +605,13 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 
 ### Settings Architecture (P0)
 
-- [ ] Activate org_id scoping on settings table for workspace-level overrides (#967)
+- [x] Activate org_id scoping on settings table for workspace-level overrides (#967, PR #999)
 - [ ] Split Settings page into workspace and platform tiers (#968)
 - [x] Hide platform-only admin pages from workspace admins (#969)
 
 ### Self-Service Features
 
-- [x] API key management UI for workspace admins (#970)
+- [x] API key management UI for workspace admins (#970, PR #998)
 - [ ] Integrations hub page for workspace admins (#971)
 - [ ] Self-serve Slack disconnect/reconnect (#972)
 - [ ] Self-serve custom domain configuration (#973)
@@ -624,6 +624,9 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 
 ### Follow-ups
 - [x] Org-scope admin write operations — role change, ban, delete (#983, PR #988)
+- [x] Fix axe-core button-name violations on admin connections/audit pages (#995, PR #1000)
+- [ ] cascadeWorkspaceDelete does not clean up org-scoped settings rows (#1002)
+- [ ] Consolidate duplicated formatDate helpers across admin pages (#1001)
 
 ---
 

@@ -11,10 +11,10 @@ import { createRoute, z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
-import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
+import { internalQuery } from "@atlas/api/lib/db/internal";
 import type { PromptCollection, PromptItem } from "@useatlas/types";
 import { ErrorSchema, AuthErrorSchema, createIdParamSchema, createParamSchema, createListResponseSchema, DeletedResponseSchema } from "./shared-schemas";
-import { createAdminRouter } from "./admin-router";
+import { createAdminRouter, requireOrgContext } from "./admin-router";
 
 const log = createLogger("admin-prompts");
 
@@ -461,6 +461,8 @@ const reorderItemsRoute = createRoute({
 
 export const adminPrompts = createAdminRouter();
 
+adminPrompts.use(requireOrgContext());
+
 // Helper to look up collection with org scoping
 async function findCollection(orgId: string | undefined, collectionId: string) {
   if (orgId) {
@@ -472,13 +474,7 @@ async function findCollection(orgId: string | undefined, collectionId: string) {
 // GET / — list all collections
 adminPrompts.openapi(listCollectionsRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
-    const { requestId } = yield* RequestContext;
     const { orgId } = yield* AuthContext;
-
-    if (!hasInternalDB()) {
-      log.debug({ requestId }, "Prompt collections requested but no internal DB configured");
-      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-    }
 
     let rows: Record<string, unknown>[];
     if (orgId) {
@@ -495,11 +491,6 @@ adminPrompts.openapi(createCollectionRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
     const { orgId } = yield* AuthContext;
-
-    if (!hasInternalDB()) {
-      log.debug({ requestId }, "Prompt collections requested but no internal DB configured");
-      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-    }
 
     const bodyResult = yield* Effect.tryPromise({
       try: () => c.req.json() as Promise<Record<string, unknown>>,
@@ -524,11 +515,6 @@ adminPrompts.openapi(updateCollectionRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
     const { orgId } = yield* AuthContext;
-
-    if (!hasInternalDB()) {
-      log.debug({ requestId }, "Prompt collections requested but no internal DB configured");
-      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-    }
 
     const { id } = c.req.valid("param");
     const existing = yield* Effect.promise(() => findCollection(orgId, id));
@@ -568,11 +554,6 @@ adminPrompts.openapi(deleteCollectionRoute, async (c) => {
     const { requestId } = yield* RequestContext;
     const { orgId } = yield* AuthContext;
 
-    if (!hasInternalDB()) {
-      log.debug({ requestId }, "Prompt collections requested but no internal DB configured");
-      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-    }
-
     const { id } = c.req.valid("param");
     const existing = yield* Effect.promise(() => findCollection(orgId, id));
     if (existing.length === 0) return c.json({ error: "not_found", message: "Prompt collection not found." }, 404);
@@ -588,11 +569,6 @@ adminPrompts.openapi(createItemRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
     const { orgId } = yield* AuthContext;
-
-    if (!hasInternalDB()) {
-      log.debug({ requestId }, "Prompt items requested but no internal DB configured");
-      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-    }
 
     const { id: collectionId } = c.req.valid("param");
     const collection = yield* Effect.promise(() => findCollection(orgId, collectionId));
@@ -627,11 +603,6 @@ adminPrompts.openapi(updateItemRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
     const { orgId } = yield* AuthContext;
-
-    if (!hasInternalDB()) {
-      log.debug({ requestId }, "Prompt items requested but no internal DB configured");
-      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-    }
 
     const { collectionId, itemId } = c.req.valid("param");
     const collection = yield* Effect.promise(() => findCollection(orgId, collectionId));
@@ -674,11 +645,6 @@ adminPrompts.openapi(deleteItemRoute, async (c) => {
     const { requestId } = yield* RequestContext;
     const { orgId } = yield* AuthContext;
 
-    if (!hasInternalDB()) {
-      log.debug({ requestId }, "Prompt items requested but no internal DB configured");
-      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-    }
-
     const { collectionId, itemId } = c.req.valid("param");
     const collection = yield* Effect.promise(() => findCollection(orgId, collectionId));
     if (collection.length === 0) return c.json({ error: "not_found", message: "Prompt collection not found." }, 404);
@@ -697,11 +663,6 @@ adminPrompts.openapi(reorderItemsRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
     const { orgId } = yield* AuthContext;
-
-    if (!hasInternalDB()) {
-      log.debug({ requestId }, "Prompt items requested but no internal DB configured");
-      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-    }
 
     const { id: collectionId } = c.req.valid("param");
     const collection = yield* Effect.promise(() => findCollection(orgId, collectionId));

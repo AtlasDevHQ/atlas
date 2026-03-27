@@ -11,11 +11,11 @@ import { HTTPException } from "hono/http-exception";
 import { createLogger } from "@atlas/api/lib/logger";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
-import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
+import { internalQuery } from "@atlas/api/lib/db/internal";
 import { LEARNED_PATTERN_STATUSES, type LearnedPattern } from "@useatlas/types";
 import { invalidatePatternCache } from "@atlas/api/lib/learn/pattern-cache";
 import { ErrorSchema, AuthErrorSchema, parsePagination, createIdParamSchema, createListResponseSchema, DeletedResponseSchema } from "./shared-schemas";
-import { createAdminRouter } from "./admin-router";
+import { createAdminRouter, requireOrgContext } from "./admin-router";
 
 const log = createLogger("admin-learned-patterns");
 
@@ -335,6 +335,8 @@ const bulkStatusRoute = createRoute({
 
 const adminLearnedPatterns = createAdminRouter();
 
+adminLearnedPatterns.use(requireOrgContext());
+
 adminLearnedPatterns.onError((err, c) => {
   if (err instanceof HTTPException) {
     // Our thrown HTTPExceptions carry a JSON Response
@@ -360,13 +362,7 @@ adminLearnedPatterns.onError((err, c) => {
 
 adminLearnedPatterns.openapi(listPatternsRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
-    const { requestId } = yield* RequestContext;
     const { orgId } = yield* AuthContext;
-
-    if (!hasInternalDB()) {
-      log.debug({ requestId }, "Learned patterns requested but no internal DB configured");
-      return c.json({ error: "not_available", message: "No internal database configured." }, 404);
-    }
 
     const url = new URL(c.req.raw.url);
     const status = url.searchParams.get("status");
@@ -413,10 +409,7 @@ adminLearnedPatterns.openapi(listPatternsRoute, async (c) => {
 
 adminLearnedPatterns.openapi(getPatternRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
-    const { requestId } = yield* RequestContext;
     const { orgId } = yield* AuthContext;
-
-    if (!hasInternalDB()) { log.debug({ requestId }, "Learned patterns requested but no internal DB configured"); return c.json({ error: "not_available", message: "No internal database configured." }, 404); }
 
     const { id } = c.req.valid("param");
     const params: unknown[] = [id];
@@ -433,10 +426,7 @@ adminLearnedPatterns.openapi(getPatternRoute, async (c) => {
 
 adminLearnedPatterns.openapi(updatePatternRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
-    const { requestId } = yield* RequestContext;
     const { orgId, user } = yield* AuthContext;
-
-    if (!hasInternalDB()) { log.debug({ requestId }, "Learned patterns requested but no internal DB configured"); return c.json({ error: "not_available", message: "No internal database configured." }, 404); }
 
     const { id } = c.req.valid("param");
     const { description, status } = c.req.valid("json");
@@ -469,10 +459,7 @@ adminLearnedPatterns.openapi(updatePatternRoute, async (c) => {
 
 adminLearnedPatterns.openapi(deletePatternRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
-    const { requestId } = yield* RequestContext;
     const { orgId } = yield* AuthContext;
-
-    if (!hasInternalDB()) { log.debug({ requestId }, "Learned patterns requested but no internal DB configured"); return c.json({ error: "not_available", message: "No internal database configured." }, 404); }
 
     const { id } = c.req.valid("param");
     const checkParams: unknown[] = [id];
@@ -496,8 +483,6 @@ adminLearnedPatterns.openapi(bulkStatusRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
     const { orgId, user } = yield* AuthContext;
-
-    if (!hasInternalDB()) { log.debug({ requestId }, "Learned patterns requested but no internal DB configured"); return c.json({ error: "not_available", message: "No internal database configured." }, 404); }
 
     const { ids, status } = c.req.valid("json");
     if (ids.length === 0) return c.json({ error: "bad_request", message: "ids must be a non-empty array." }, 400);

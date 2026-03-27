@@ -656,7 +656,7 @@ describe("admin learned-patterns routes", () => {
       expect(params).toContain("org-1");
     });
 
-    it("filters by org_id IS NULL in single-tenant", async () => {
+    it("returns 400 when no active org (requireOrgContext)", async () => {
       mockAuthenticateRequest.mockImplementation(() =>
         Promise.resolve({
           authenticated: true,
@@ -664,13 +664,12 @@ describe("admin learned-patterns routes", () => {
           user: { id: "admin-1", mode: "simple-key", label: "Admin", role: "admin" },
         }),
       );
-      mockInternalQuery.mockImplementation(() => Promise.resolve([{ count: "0" }]));
-      await req("GET", "/");
-      const calls = mockInternalQuery.mock.calls;
-      expect(calls.length).toBeGreaterThanOrEqual(1);
-      const firstCall = calls[0];
-      const sql = firstCall[0] as string;
-      expect(sql).toContain("org_id IS NULL");
+      const res = await req("GET", "/");
+      expect(res.status).toBe(400);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      const body = (await res.json()) as any;
+      expect(body.error).toBe("bad_request");
+      expect(body.message).toContain("active organization");
     });
   });
 

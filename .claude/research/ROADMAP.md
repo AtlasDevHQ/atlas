@@ -597,7 +597,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 
 ### Security & Scoping Fixes (P0)
 
-- [ ] Add requireOrgContext to learned-patterns, suggestions, and prompts routes (#963)
+- [x] Add requireOrgContext to learned-patterns, suggestions, and prompts routes (#963)
 - [ ] Add adminAuth middleware to scheduled-tasks routes (#964)
 - [ ] Scope Users admin page to active org members in SaaS mode (#965)
 - [ ] Hide Organizations page from non-platform-admin (#966)

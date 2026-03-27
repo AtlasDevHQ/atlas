@@ -9,11 +9,11 @@ import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { AuthContext } from "@atlas/api/lib/effect/services";
-import { hasInternalDB, internalQuery, deleteSuggestion } from "@atlas/api/lib/db/internal";
+import { internalQuery, deleteSuggestion } from "@atlas/api/lib/db/internal";
 import { toQuerySuggestion } from "@atlas/api/lib/learn/suggestion-helpers";
 import type { QuerySuggestionRow } from "@atlas/api/lib/db/internal";
 import { ErrorSchema, AuthErrorSchema, parsePagination, createIdParamSchema, createListResponseSchema } from "./shared-schemas";
-import { createAdminRouter } from "./admin-router";
+import { createAdminRouter, requireOrgContext } from "./admin-router";
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -98,14 +98,12 @@ const deleteSuggestionRoute = createRoute({
 
 export const adminSuggestions = createAdminRouter();
 
+adminSuggestions.use(requireOrgContext());
+
 // GET / — list suggestions with filters
 adminSuggestions.openapi(listSuggestionsRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
-
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "Internal database not configured." }, 404);
-    }
 
     const orgIdVal = orgId ?? null;
 
@@ -165,10 +163,6 @@ adminSuggestions.openapi(listSuggestionsRoute, async (c) => {
 adminSuggestions.openapi(deleteSuggestionRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
-
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "Internal database not configured." }, 404);
-    }
 
     const orgIdVal = orgId ?? null;
     const { id } = c.req.valid("param");

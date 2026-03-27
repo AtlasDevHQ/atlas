@@ -58,7 +58,7 @@ export default function ConnectPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [demoAvailable, setDemoAvailable] = useState(false);
-  const [loadingDemo, setLoadingDemo] = useState(false);
+  const [loadingDemo, setLoadingDemo] = useState<DemoType | null>(null);
 
   // Check if a default datasource is available (for "Try demo data" option)
   useEffect(() => {
@@ -152,7 +152,7 @@ export default function ConnectPage() {
   }
 
   async function handleUseDemo(demoType: DemoType) {
-    setLoadingDemo(true);
+    setLoadingDemo(demoType);
     setError(null);
 
     try {
@@ -183,7 +183,7 @@ export default function ConnectPage() {
           : "Failed to set up demo data",
       );
     } finally {
-      setLoadingDemo(false);
+      setLoadingDemo(null);
     }
   }
 
@@ -285,7 +285,7 @@ export default function ConnectPage() {
                   key={ds.type}
                   type="button"
                   onClick={() => handleUseDemo(ds.type)}
-                  disabled={loadingDemo}
+                  disabled={loadingDemo !== null}
                   className="flex items-center gap-3 rounded-lg border p-3 text-left transition-colors hover:bg-accent disabled:opacity-50"
                 >
                   <div className="flex size-9 shrink-0 items-center justify-center rounded-md bg-muted">
@@ -298,7 +298,7 @@ export default function ConnectPage() {
                     </div>
                     <p className="truncate text-xs text-muted-foreground">{ds.description}</p>
                   </div>
-                  {loadingDemo && (
+                  {loadingDemo === ds.type && (
                     <Loader2 className="size-4 shrink-0 animate-spin text-muted-foreground" />
                   )}
                 </button>

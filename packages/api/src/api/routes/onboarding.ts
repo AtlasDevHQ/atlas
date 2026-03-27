@@ -35,8 +35,7 @@ const log = createLogger("onboarding");
 // Demo dataset types — each maps to a semantic layer directory on disk
 // ---------------------------------------------------------------------------
 
-const DEMO_TYPES = ["demo", "cybersec", "ecommerce"] as const;
-type DemoType = (typeof DEMO_TYPES)[number];
+type DemoType = "demo" | "cybersec" | "ecommerce";
 
 const DEMO_LABELS: Record<DemoType, string> = {
   demo: "SaaS CRM",
@@ -61,7 +60,11 @@ function getDemoSemanticDir(demoType: DemoType): string {
   // Check Docker path first (production), then dev path
   if (existsSync(path.join(dockerPath, "entities"))) return dockerPath;
   if (existsSync(path.join(devPath, "entities"))) return devPath;
-  return dockerPath;
+
+  throw new Error(
+    `Semantic layer not found for demo type "${demoType}". ` +
+    `Checked: ${dockerPath}/entities, ${devPath}/entities`,
+  );
 }
 
 /** Valid connection ID: lowercase alphanumeric, hyphens, underscores, 1-64 chars. Must not start with underscore (reserved for internal IDs). */
@@ -263,6 +266,10 @@ const useDemoRoute = createRoute({
     },
     409: {
       description: "Connection ID already in use by another organization",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    422: {
+      description: "Invalid request body",
       content: { "application/json": { schema: ErrorSchema } },
     },
     500: {
@@ -572,15 +579,7 @@ onboarding.openapi(
         return c.json({ error: "no_organization", message: "No active organization. Create a workspace first." }, 400);
       }
 
-      // Parse optional demoType from body (defaults to "demo")
-      let demoType: DemoType = "demo";
-      const body = yield* Effect.tryPromise({
-        try: () => c.req.json() as Promise<Record<string, unknown>>,
-        catch: () => ({} as Record<string, unknown>),
-      }).pipe(Effect.catchAll(() => Effect.succeed({} as Record<string, unknown>)));
-      if (body.demoType && DEMO_TYPES.includes(body.demoType as DemoType)) {
-        demoType = body.demoType as DemoType;
-      }
+      const { demoType } = c.req.valid("json");
 
       const url = resolveDatasourceUrl();
       if (!url) {
@@ -636,15 +635,35 @@ onboarding.openapi(
         log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Demo connection saved but runtime registration failed");
       }
 
-      // Import the semantic layer for the chosen demo dataset
-      const semanticDir = getDemoSemanticDir(demoType);
+      // Resolve and import the semantic layer for the chosen demo dataset
+      let semanticDir: string;
+      try {
+        semanticDir = getDemoSemanticDir(demoType);
+      } catch (err) {
+        log.error({ err: err instanceof Error ? err.message : String(err), requestId, demoType }, "Semantic layer not found for demo type");
+        return c.json({
+          error: "demo_not_available",
+          message: `Demo dataset "${demoType}" is not installed on this server. Contact the platform administrator.`,
+          requestId,
+        }, 500);
+      }
+
       const importResult = yield* Effect.tryPromise({
         try: () => importFromDisk(orgId, { sourceDir: semanticDir }),
         catch: (err) => err instanceof Error ? err : new Error(String(err)),
       }).pipe(Effect.catchAll((err) => {
-        log.warn({ err: err.message, requestId, demoType, semanticDir }, "Semantic layer import failed — workspace may need manual setup");
-        return Effect.succeed({ imported: 0, skipped: 0 });
+        log.error({ err: err.message, requestId, demoType, semanticDir }, "Semantic layer import failed");
+        return Effect.succeed(null);
       }));
+
+      if (importResult === null) {
+        return c.json({
+          error: "import_failed",
+          message: `Failed to import semantic layer for "${demoType}" dataset. The connection was saved but the workspace needs manual setup.`,
+          requestId,
+        }, 500);
+      }
+
       const entitiesImported = importResult.imported;
       if (entitiesImported > 0) {
         log.info({ orgId, demoType, imported: importResult.imported, skipped: importResult.skipped, requestId }, "Imported semantic layer for demo workspace");
@@ -661,6 +680,14 @@ onboarding.openapi(
         entitiesImported,
       }, 201);
     }), { label: "use demo data" });
+  },
+  (result, c) => {
+    if (!result.success) {
+      return c.json(
+        { error: "validation_error", message: "Invalid request body.", details: result.error.issues },
+        422,
+      );
+    }
   },
 );
 

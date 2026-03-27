@@ -14,7 +14,7 @@ test.describe("Production Smoke Tests", () => {
     expect(response).not.toBeNull();
     expect(response!.status()).toBeLessThan(400);
 
-    await expect(page.getByRole("navigation").getByText("atlas")).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByRole("navigation").getByText("atlas").first()).toBeVisible({ timeout: 10_000 });
   });
 
   test("docs site loads", async ({ page }) => {

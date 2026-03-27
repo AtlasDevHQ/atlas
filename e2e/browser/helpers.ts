@@ -31,8 +31,18 @@ export async function startNewChat(page: Page) {
   await expect(input).toHaveValue("");
 }
 
+/** Dismiss the guided tour if it appears. */
+export async function dismissTourIfVisible(page: Page) {
+  const skipButton = page.locator('button:has-text("Skip tour")');
+  if (await skipButton.isVisible({ timeout: 2_000 }).catch(() => false)) {
+    await skipButton.click();
+    await skipButton.waitFor({ state: "hidden", timeout: 5_000 }).catch(() => {});
+  }
+}
+
 /** Navigate to home and ensure chat UI is ready. */
 export async function ensureChatReady(page: Page) {
   await page.goto("/");
   await page.locator('input[placeholder="Ask a question about your data..."]').waitFor({ timeout: 15_000 });
+  await dismissTourIfVisible(page);
 }

@@ -66,5 +66,12 @@ setup("authenticate as admin", async ({ page }) => {
     await expect(changePasswordTitle).toBeHidden({ timeout: 10_000 });
   }
 
+  // Dismiss the guided tour if it appears (fresh DB / first login)
+  const skipTour = page.locator('button:has-text("Skip tour")');
+  if (await skipTour.isVisible({ timeout: 3_000 }).catch(() => false)) {
+    await skipTour.click();
+    await skipTour.waitFor({ state: "hidden", timeout: 5_000 }).catch(() => {});
+  }
+
   await page.context().storageState({ path: STORAGE_STATE });
 });

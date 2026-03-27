@@ -61,6 +61,7 @@ import type {
   PlanTier,
 } from "@/ui/lib/types";
 import { WORKSPACE_STATUSES, PLAN_TIERS } from "@/ui/lib/types";
+import { formatDate } from "@/lib/format";
 
 // Dynamic import for Recharts (heavy dependency)
 const RechartsBar = dynamic(
@@ -114,10 +115,6 @@ function planBadge(tier: PlanTier) {
     case "enterprise":
       return <Badge variant="outline" className="border-amber-500 text-amber-600">Enterprise</Badge>;
   }
-}
-
-function formatDate(iso: string): string {
-  return new Date(iso).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
 }
 
 // ── Main Page ─────────────────────────────────────────────────────

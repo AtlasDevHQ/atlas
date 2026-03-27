@@ -524,6 +524,55 @@ describe("admin settings routes", () => {
     });
   });
 
+  // ─── GET scope filtering ────────────────────────────────────────
+
+  describe("GET /api/v1/admin/settings scope filtering", () => {
+    it("workspace admin GET → getSettingsForAdmin called with (orgId, false)", async () => {
+      mockGetSettingsForAdmin.mockClear();
+      mockAuthenticateRequest.mockImplementationOnce(() =>
+        Promise.resolve({
+          authenticated: true,
+          mode: "better-auth",
+          user: { id: "ws-admin-1", mode: "better-auth", label: "WS Admin", role: "admin", activeOrganizationId: "org-1" },
+        }),
+      );
+
+      const res = await request("/api/v1/admin/settings");
+      expect(res.status).toBe(200);
+      expect(mockGetSettingsForAdmin).toHaveBeenCalledTimes(1);
+      // Workspace admin with orgId → isPlatformAdmin=false, !orgId=false → second arg is false
+      expect(mockGetSettingsForAdmin).toHaveBeenCalledWith("org-1", false);
+    });
+
+    it("platform admin GET → getSettingsForAdmin called with (orgId, true)", async () => {
+      mockGetSettingsForAdmin.mockClear();
+      mockAuthenticateRequest.mockImplementationOnce(() =>
+        Promise.resolve({
+          authenticated: true,
+          mode: "better-auth",
+          user: { id: "platform-admin-1", mode: "better-auth", label: "Platform Admin", role: "platform_admin", activeOrganizationId: "org-1" },
+        }),
+      );
+
+      const res = await request("/api/v1/admin/settings");
+      expect(res.status).toBe(200);
+      expect(mockGetSettingsForAdmin).toHaveBeenCalledTimes(1);
+      // Platform admin → isPlatformAdmin=true → second arg is true
+      expect(mockGetSettingsForAdmin).toHaveBeenCalledWith("org-1", true);
+    });
+
+    it("self-hosted admin GET → getSettingsForAdmin called with (undefined, true)", async () => {
+      mockGetSettingsForAdmin.mockClear();
+      // Default mock: no activeOrganizationId, role=admin → self-hosted
+
+      const res = await request("/api/v1/admin/settings");
+      expect(res.status).toBe(200);
+      expect(mockGetSettingsForAdmin).toHaveBeenCalledTimes(1);
+      // No orgId → !orgId=true → second arg is true
+      expect(mockGetSettingsForAdmin).toHaveBeenCalledWith(undefined, true);
+    });
+  });
+
   // ─── Org-scoped settings ────────────────────────────────────────
 
   describe("org-scoped settings enforcement", () => {

@@ -606,7 +606,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 ### Settings Architecture (P0)
 
 - [x] Activate org_id scoping on settings table for workspace-level overrides (#967, PR #999)
-- [ ] Split Settings page into workspace and platform tiers (#968)
+- [x] Split Settings page into workspace and platform tiers (#968, PR #1003)
 - [x] Hide platform-only admin pages from workspace admins (#969)
 
 ### Self-Service Features
@@ -626,7 +626,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] Org-scope admin write operations — role change, ban, delete (#983, PR #988)
 - [x] Fix axe-core button-name violations on admin connections/audit pages (#995, PR #1000)
 - [x] cascadeWorkspaceDelete does not clean up org-scoped settings rows (#1002, PR #1005)
-- [ ] Consolidate duplicated formatDate helpers across admin pages (#1001)
+- [x] Consolidate duplicated formatDate helpers across admin pages (#1001, PR #1004)
 
 ---
 

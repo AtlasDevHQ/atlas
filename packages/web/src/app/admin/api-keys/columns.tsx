@@ -5,6 +5,7 @@ import { DataTableColumnHeader } from "@/components/data-table/data-table-column
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Clock, Key, Trash2 } from "lucide-react";
+import { formatDate, formatDateTime } from "@/lib/format";
 
 // -- Types --
 
@@ -20,30 +21,6 @@ export interface ApiKeyRow {
 }
 
 // -- Helpers --
-
-function formatDate(iso: string | null): string {
-  if (!iso) return "\u2014";
-  const d = new Date(iso);
-  if (isNaN(d.getTime())) return "\u2014";
-  return d.toLocaleDateString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  });
-}
-
-function formatDateTime(iso: string | null): string {
-  if (!iso) return "Never";
-  const d = new Date(iso);
-  if (isNaN(d.getTime())) return "Never";
-  return d.toLocaleString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
 
 function maskedKey(prefix: string | null, start: string | null): string {
   const p = prefix ?? "key";
@@ -109,7 +86,7 @@ export function getApiKeyColumns(actions: ApiKeyActions): ColumnDef<ApiKeyRow>[]
       ),
       cell: ({ row }) => (
         <span className="text-muted-foreground">
-          {formatDateTime(row.getValue<string | null>("lastRequest"))}
+          {row.original.lastRequest ? formatDateTime(row.original.lastRequest) : "Never"}
         </span>
       ),
       meta: { label: "Last Used", icon: Clock },

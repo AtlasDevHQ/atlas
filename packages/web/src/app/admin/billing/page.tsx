@@ -11,7 +11,7 @@ import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
-import { formatDate } from "@/lib/format";
+import { formatDate, formatNumber } from "@/lib/format";
 import {
   CreditCard,
   ExternalLink,
@@ -57,9 +57,6 @@ interface BillingStatus {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────
-
-// Re-use the compact number formatter already in the usage page.
-import { formatNumber } from "@/app/admin/usage/format";
 
 function tierVariant(tier: string): "default" | "secondary" | "outline" {
   switch (tier) {

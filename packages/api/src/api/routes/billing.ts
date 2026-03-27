@@ -30,7 +30,7 @@ import { getCurrentPeriodUsage } from "@atlas/api/lib/metering";
 import { getPlanDefinition, getPlanLimits, isUnlimited } from "@atlas/api/lib/billing/plans";
 import { buildMetricStatus } from "@atlas/api/lib/billing/enforcement";
 import { ErrorSchema } from "./shared-schemas";
-import { standardAuth, requestContext, type AuthEnv } from "./middleware";
+import { adminAuth, requestContext, type AuthEnv } from "./middleware";
 
 const log = createLogger("billing");
 
@@ -210,7 +210,7 @@ const billing = new OpenAPIHono<AuthEnv>({
   defaultHook: validationHook,
 });
 
-billing.use(standardAuth);
+billing.use(adminAuth);
 billing.use(requestContext);
 
 // GET / — billing status for the active workspace

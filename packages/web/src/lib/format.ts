@@ -47,6 +47,13 @@ export function formatDateTime(date: DateInput): string {
   });
 }
 
+/** Format a number with K/M suffixes for compact display. */
+export function formatNumber(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return n.toLocaleString();
+}
+
 /** "Mar 27, 2:30 PM" — date + time without year, short month. */
 export function formatShortDateTime(date: DateInput): string {
   const d = toSafeDate(date);

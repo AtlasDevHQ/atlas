@@ -28,6 +28,7 @@ import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
+import { formatDate } from "@/lib/format";
 import type { CustomDomain } from "@/ui/lib/types";
 import {
   Globe,
@@ -202,7 +203,7 @@ function CustomDomainPageContent() {
                       {domain.domain}
                     </CardTitle>
                     <CardDescription>
-                      Configured on {new Date(domain.createdAt).toLocaleDateString()}
+                      Configured on {formatDate(domain.createdAt)}
                     </CardDescription>
                   </div>
                   {statusBadge(domain.status)}

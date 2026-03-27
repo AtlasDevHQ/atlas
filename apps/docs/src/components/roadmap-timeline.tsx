@@ -180,12 +180,11 @@ function ShippedSection() {
         />
       </button>
 
-      {/* Collapsible content — grid-row trick for smooth height */}
+      {/* Collapsible content — grid-template-rows 0fr/1fr for smooth height */}
       <div
-        className="grid transition-[grid-template-rows] duration-300 ease-out"
-        style={{
-          gridTemplateRows: expanded ? "1fr" : "0fr",
-        }}
+        className={`grid transition-[grid-template-rows] duration-300 ease-out ${
+          expanded ? "grid-rows-[1fr]" : "grid-rows-[0fr]"
+        }`}
       >
         <div className="overflow-hidden">
           <div className="relative pb-6 pl-8">
@@ -193,7 +192,7 @@ function ShippedSection() {
             <div className="absolute left-[11px] top-0 bottom-0 w-px bg-[var(--color-fd-border)]" />
 
             <div className="space-y-3">
-              {shipped.map((m, i) => (
+              {shipped.map((m) => (
                 <div key={`${m.version}-${m.title}`} className="relative">
                   {/* Dot */}
                   <div className="absolute -left-8 top-3">
@@ -210,7 +209,7 @@ function ShippedSection() {
   );
 }
 
-// ── Active section ─────────────────────────────────────────
+// ── Current section ────────────────────────────────────────
 
 function CurrentSection() {
   if (current.length === 0) return null;

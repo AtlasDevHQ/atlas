@@ -34,34 +34,20 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
-import { Key, Plus, Copy, Check, Trash2 } from "lucide-react";
+import { Key, Plus, Copy, Check, Trash2, Loader2 } from "lucide-react";
 
 // -- Types --
 
+// Subset of Better Auth API key response — only fields rendered in the table.
 interface ApiKey {
   id: string;
   name: string | null;
   start: string | null;
   prefix: string | null;
-  userId: string | null;
   createdAt: string;
-  updatedAt: string;
   expiresAt: string | null;
   lastRequest: string | null;
-  enabled: boolean;
-  remaining: number | null;
-  metadata: Record<string, unknown> | null;
 }
 
 interface ListApiKeysResponse {
@@ -121,21 +107,17 @@ function isExpired(expiresAt: string | null): boolean {
 // -- Component --
 
 export default function ApiKeysPage() {
-  // Fetch version counter for refetching after mutations
-  const [fetchKey, setFetchKey] = useState(0);
-  const refetch = () => setFetchKey((k) => k + 1);
-
   // List API keys
   const {
     data: listData,
     loading,
     error,
-  } = useAdminFetch<ListApiKeysResponse>("/api/auth/api-key/list", {
-    deps: [fetchKey],
-  });
+    refetch,
+  } = useAdminFetch<ListApiKeysResponse>("/api/auth/api-key/list");
   const apiKeys = listData?.apiKeys ?? [];
 
-  // Create mutation
+  // Create mutation — no invalidates here because onSuccess captures
+  // the key for display before triggering refetch manually.
   const createMutation = useAdminMutation<CreateApiKeyResponse>({
     path: "/api/auth/api-key/create",
     method: "POST",
@@ -274,7 +256,7 @@ export default function ApiKeysPage() {
                             variant="ghost"
                             size="sm"
                             className="size-8 p-0 text-muted-foreground hover:text-destructive"
-                            onClick={() => setRevokeTarget(apiKey)}
+                            onClick={() => { deleteMutation.reset(); setRevokeTarget(apiKey); }}
                             title="Revoke API key"
                           >
                             <Trash2 className="size-4" />
@@ -373,31 +355,45 @@ export default function ApiKeysPage() {
         </FormDialog>
       )}
 
-      {/* Revoke confirmation dialog */}
-      <AlertDialog
+      {/* Revoke confirmation dialog — uses Dialog (not AlertDialog) so we
+          control open/close manually and can show inline errors on failure. */}
+      <Dialog
         open={!!revokeTarget}
-        onOpenChange={(open) => { if (!open) setRevokeTarget(null); }}
+        onOpenChange={(open) => { if (!open && !deleteMutation.saving) setRevokeTarget(null); }}
       >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Revoke API key</AlertDialogTitle>
-            <AlertDialogDescription>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Revoke API key</DialogTitle>
+            <DialogDescription>
               This will permanently revoke{" "}
               <strong>{revokeTarget?.name ?? "this API key"}</strong>.
               Any applications using this key will immediately lose access. This cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-              onClick={handleRevoke}
+            </DialogDescription>
+          </DialogHeader>
+          {deleteMutation.error && (
+            <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              {deleteMutation.error}
+            </div>
+          )}
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setRevokeTarget(null)}
+              disabled={deleteMutation.saving}
             >
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={handleRevoke}
+              disabled={deleteMutation.saving}
+            >
+              {deleteMutation.saving && <Loader2 className="mr-1.5 size-3.5 animate-spin" />}
               Revoke key
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

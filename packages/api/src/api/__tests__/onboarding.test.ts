@@ -122,6 +122,20 @@ mock.module("@atlas/api/lib/settings", () => ({
   getSetting: () => undefined,
 }));
 
+// Skip EE IP allowlist check — no real DB in tests
+mock.module("@atlas/ee/auth/ip-allowlist", () => ({
+  checkIPAllowlist: mock(async () => ({ allowed: true })),
+  listIPAllowlistEntries: mock(async () => []),
+  addIPAllowlistEntry: mock(async () => ({})),
+  removeIPAllowlistEntry: mock(async () => false),
+  IPAllowlistError: class extends Error { constructor(message: string, public readonly code: string) { super(message); this.name = "IPAllowlistError"; } },
+  invalidateCache: mock(() => {}),
+  _clearCache: mock(() => {}),
+  parseCIDR: mock(() => null),
+  isIPInRange: mock(() => false),
+  isIPAllowed: mock(() => true),
+}));
+
 // --- Import the route after mocks are set up ---
 
 const { onboarding } = await import("../routes/onboarding");
@@ -300,6 +314,9 @@ describe("POST /api/v1/onboarding/complete", () => {
     mockRegister.mockClear();
     mockUnregister.mockClear();
     mockHas.mockImplementation(() => true);
+    mockHasInternalDB.mockImplementation(() => true);
+    mockInternalQuery.mockImplementation(async () => [{ id: "default" }]);
+    mockEncryptUrl.mockImplementation((url: string) => `encrypted:${url}`);
   });
 
   it("rejects when no active organization", async () => {
@@ -535,6 +552,7 @@ describe("POST /api/v1/onboarding/tour-reset", () => {
       }),
     );
     mockHasInternalDB.mockImplementation(() => true);
+    mockInternalQuery.mockImplementation(async () => []);
   });
 
   it("resets tour completion", async () => {

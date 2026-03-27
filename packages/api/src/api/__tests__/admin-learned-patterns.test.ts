@@ -203,6 +203,20 @@ mock.module("@atlas/api/lib/agent", () => ({
 
 mock.module("@atlas/api/lib/tools/actions", () => ({}));
 
+// Skip EE IP allowlist check — no real DB in tests
+mock.module("@atlas/ee/auth/ip-allowlist", () => ({
+  checkIPAllowlist: mock(async () => ({ allowed: true })),
+  listIPAllowlistEntries: mock(async () => []),
+  addIPAllowlistEntry: mock(async () => ({})),
+  removeIPAllowlistEntry: mock(async () => false),
+  IPAllowlistError: class extends Error { constructor(message: string, public readonly code: string) { super(message); this.name = "IPAllowlistError"; } },
+  invalidateCache: mock(() => {}),
+  _clearCache: mock(() => {}),
+  parseCIDR: mock(() => null),
+  isIPInRange: mock(() => false),
+  isIPAllowed: mock(() => true),
+}));
+
 mock.module("@atlas/api/lib/conversations", () => ({
   createConversation: mock(() => Promise.resolve(null)),
   addMessage: mock(() => {}),

@@ -162,6 +162,29 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     scope: "workspace",
   },
 
+  // Sandbox
+  {
+    key: "ATLAS_SANDBOX_BACKEND",
+    section: "Sandbox",
+    label: "Sandbox Backend",
+    description:
+      "Sandbox backend for explore/Python tool isolation. " +
+      "Valid values: vercel-sandbox, sidecar, e2b-sandbox, daytona-sandbox, or a registered plugin ID.",
+    type: "string",
+    envVar: "ATLAS_SANDBOX_BACKEND",
+    scope: "workspace",
+  },
+  {
+    key: "ATLAS_SANDBOX_URL",
+    section: "Sandbox",
+    label: "Sidecar URL",
+    description:
+      "Custom sidecar service URL for explore tool (only used when sandbox backend is 'sidecar')",
+    type: "string",
+    envVar: "ATLAS_SANDBOX_URL",
+    scope: "workspace",
+  },
+
   // Agent
   {
     key: "ATLAS_AGENT_MAX_STEPS",

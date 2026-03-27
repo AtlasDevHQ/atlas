@@ -614,7 +614,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] API key management UI for workspace admins (#970, PR #998)
 - [ ] Integrations hub page for workspace admins (#971)
 - [ ] Self-serve Slack disconnect/reconnect (#972)
-- [ ] Self-serve custom domain configuration (#973)
+- [x] Self-serve custom domain configuration (#973)
 - [ ] Self-serve sandbox backend selection per workspace (#974)
 - [ ] Workspace billing page — plan, usage vs limits, portal link (#975)
 - [ ] Self-serve data residency selection for workspace admins (#976)

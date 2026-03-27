@@ -2,9 +2,9 @@
  * Scheduled tasks REST routes — CRUD + trigger + run history.
  *
  * Gated behind ATLAS_SCHEDULER_ENABLED=true (conditional mount in index.ts).
- * Authenticated routes use `standardAuth` + `requestContext` middleware from
- * `./middleware.ts`. The `/tick` endpoint uses its own cron-secret auth and is
- * registered on the outer app so it bypasses user-auth middleware.
+ * CRUD routes use `adminAuth` + `requireOrgContext` middleware (admin/owner
+ * role required, org-scoped). The `/tick` endpoint uses its own cron-secret
+ * auth and is registered on the outer app so it bypasses user-auth middleware.
  */
 
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
@@ -29,8 +29,9 @@ import {
 } from "@atlas/api/lib/scheduled-tasks";
 import { DELIVERY_CHANNELS, RUN_STATUSES, type RunStatus } from "@atlas/api/lib/scheduled-task-types";
 import { ACTION_APPROVAL_MODES } from "@atlas/api/lib/action-types";
-import { standardAuth, requestContext, type AuthEnv } from "./middleware";
+import { type AuthEnv } from "./middleware";
 import { ErrorSchema, parsePagination } from "./shared-schemas";
+import { createAdminRouter, requireOrgContext } from "./admin-router";
 
 const log = createLogger("scheduled-tasks-routes");
 
@@ -93,7 +94,7 @@ const listTasksRoute = createRoute({
   tags: ["Scheduled Tasks"],
   summary: "List scheduled tasks",
   description:
-    "Returns scheduled tasks owned by the authenticated user. Requires ATLAS_SCHEDULER_ENABLED=true and an internal database.",
+    "Returns scheduled tasks for the active organization. Requires admin role, ATLAS_SCHEDULER_ENABLED=true, and an internal database.",
   request: {
     query: z.object({
       limit: z.string().optional().openapi({
@@ -116,7 +117,7 @@ const listTasksRoute = createRoute({
       content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
     },
     401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
-    403: { description: "Forbidden — insufficient permissions", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     404: { description: "Scheduled tasks not available", content: { "application/json": { schema: ErrorSchema } } },
     429: { description: "Rate limit exceeded", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
@@ -128,7 +129,7 @@ const createTaskRoute = createRoute({
   path: "/",
   tags: ["Scheduled Tasks"],
   summary: "Create a scheduled task",
-  description: "Creates a recurring query task with a cron schedule and delivery channel.",
+  description: "Creates a recurring query task with a cron schedule and delivery channel. Requires admin role.",
   request: {
     body: {
       content: { "application/json": { schema: CreateScheduledTaskSchema } },
@@ -139,7 +140,7 @@ const createTaskRoute = createRoute({
     201: { description: "Scheduled task created", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     400: { description: "Invalid request body or cron expression", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
-    403: { description: "Forbidden — insufficient permissions", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     404: { description: "Feature not available", content: { "application/json": { schema: ErrorSchema } } },
     422: { description: "Validation error", content: { "application/json": { schema: ErrorSchema.extend({ details: z.array(z.unknown()).optional() }) } } },
     429: { description: "Rate limit exceeded", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
@@ -168,7 +169,7 @@ const listAllRunsRoute = createRoute({
   path: "/runs",
   tags: ["Scheduled Tasks"],
   summary: "List all task runs",
-  description: "Returns cross-task run history with filtering by task, status, and date range.",
+  description: "Returns cross-task run history with filtering by task, status, and date range. Requires admin role.",
   request: {
     query: z.object({
       limit: z.string().optional().openapi({ param: { name: "limit", in: "query" }, description: "Maximum number of runs (1-100, default 20)." }),
@@ -182,169 +183,24 @@ const listAllRunsRoute = createRoute({
   responses: {
     200: { description: "List of task runs", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
-    403: { description: "Forbidden — insufficient permissions", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     404: { description: "Not available", content: { "application/json": { schema: ErrorSchema } } },
     429: { description: "Rate limit exceeded", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
 
-const getTaskRoute = createRoute({
-  method: "get",
-  path: "/{id}",
-  tags: ["Scheduled Tasks"],
-  summary: "Get scheduled task",
-  description: "Returns a scheduled task with its 10 most recent runs.",
-  request: {
-    params: z.object({
-      id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }),
-    }),
-  },
-  responses: {
-    200: { description: "Scheduled task with recent runs", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
-    400: { description: "Invalid task ID format", content: { "application/json": { schema: ErrorSchema } } },
-    401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
-    403: { description: "Forbidden — insufficient permissions", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
-    404: { description: "Task not found", content: { "application/json": { schema: ErrorSchema } } },
-    429: { description: "Rate limit exceeded", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
-    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
-  },
-});
+const getTaskRoute = createRoute({ method: "get", path: "/{id}", tags: ["Scheduled Tasks"], summary: "Get scheduled task", description: "Returns a scheduled task with its 10 most recent runs. Requires admin role.", request: { params: z.object({ id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }) }) }, responses: { 200: { description: "Scheduled task with recent runs", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } }, 400: { description: "Invalid task ID format", content: { "application/json": { schema: ErrorSchema } } }, 401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } }, 403: { description: "Forbidden — admin role required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } }, 404: { description: "Task not found", content: { "application/json": { schema: ErrorSchema } } }, 429: { description: "Rate limit exceeded", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } }, 500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } } } });
 
-const updateTaskRoute = createRoute({
-  method: "put",
-  path: "/{id}",
-  tags: ["Scheduled Tasks"],
-  summary: "Update a scheduled task",
-  description: "Updates a scheduled task. All fields are optional.",
-  request: {
-    params: z.object({
-      id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }),
-    }),
-    body: {
-      content: { "application/json": { schema: UpdateScheduledTaskSchema } },
-      required: true,
-    },
-  },
-  responses: {
-    200: { description: "Updated scheduled task", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
-    400: { description: "Invalid request body or cron expression", content: { "application/json": { schema: ErrorSchema } } },
-    401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
-    403: { description: "Forbidden — insufficient permissions", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
-    404: { description: "Task not found", content: { "application/json": { schema: ErrorSchema } } },
-    422: { description: "Validation error", content: { "application/json": { schema: ErrorSchema.extend({ details: z.array(z.unknown()).optional() }) } } },
-    429: { description: "Rate limit exceeded", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
-    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
-  },
-});
+const updateTaskRoute = createRoute({ method: "put", path: "/{id}", tags: ["Scheduled Tasks"], summary: "Update a scheduled task", description: "Updates a scheduled task. All fields are optional. Requires admin role.", request: { params: z.object({ id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }) }), body: { content: { "application/json": { schema: UpdateScheduledTaskSchema } }, required: true } }, responses: { 200: { description: "Updated scheduled task", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } }, 400: { description: "Invalid request body or cron expression", content: { "application/json": { schema: ErrorSchema } } }, 401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } }, 403: { description: "Forbidden — admin role required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } }, 404: { description: "Task not found", content: { "application/json": { schema: ErrorSchema } } }, 422: { description: "Validation error", content: { "application/json": { schema: ErrorSchema.extend({ details: z.array(z.unknown()).optional() }) } } }, 429: { description: "Rate limit exceeded", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } }, 500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } } } });
 
-const deleteTaskRoute = createRoute({
-  method: "delete",
-  path: "/{id}",
-  tags: ["Scheduled Tasks"],
-  summary: "Delete a scheduled task",
-  description: "Soft-deletes (disables) a scheduled task.",
-  request: {
-    params: z.object({
-      id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }),
-    }),
-  },
-  responses: {
-    204: { description: "Task deleted successfully" },
-    400: { description: "Invalid task ID format", content: { "application/json": { schema: ErrorSchema } } },
-    401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
-    403: { description: "Forbidden — insufficient permissions", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
-    404: { description: "Task not found", content: { "application/json": { schema: ErrorSchema } } },
-    429: { description: "Rate limit exceeded", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
-    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
-  },
-});
+const deleteTaskRoute = createRoute({ method: "delete", path: "/{id}", tags: ["Scheduled Tasks"], summary: "Delete a scheduled task", description: "Soft-deletes (disables) a scheduled task. Requires admin role.", request: { params: z.object({ id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }) }) }, responses: { 204: { description: "Task deleted successfully" }, 400: { description: "Invalid task ID format", content: { "application/json": { schema: ErrorSchema } } }, 401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } }, 403: { description: "Forbidden — admin role required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } }, 404: { description: "Task not found", content: { "application/json": { schema: ErrorSchema } } }, 429: { description: "Rate limit exceeded", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } }, 500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } } } });
 
-const triggerTaskRoute = createRoute({
-  method: "post",
-  path: "/{id}/run",
-  tags: ["Scheduled Tasks"],
-  summary: "Trigger immediate execution",
-  description: "Triggers an immediate execution of a scheduled task.",
-  request: {
-    params: z.object({
-      id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }),
-    }),
-  },
-  responses: {
-    200: {
-      description: "Task triggered",
-      content: {
-        "application/json": {
-          schema: z.object({ message: z.string(), taskId: z.string() }),
-        },
-      },
-    },
-    400: { description: "Invalid task ID format", content: { "application/json": { schema: ErrorSchema } } },
-    401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
-    403: { description: "Forbidden — insufficient permissions", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
-    404: { description: "Task not found", content: { "application/json": { schema: ErrorSchema } } },
-    429: { description: "Rate limit exceeded", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
-    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
-  },
-});
+const triggerTaskRoute = createRoute({ method: "post", path: "/{id}/run", tags: ["Scheduled Tasks"], summary: "Trigger immediate execution", description: "Triggers an immediate execution of a scheduled task. Requires admin role.", request: { params: z.object({ id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }) }) }, responses: { 200: { description: "Task triggered", content: { "application/json": { schema: z.object({ message: z.string(), taskId: z.string() }) } } }, 400: { description: "Invalid task ID format", content: { "application/json": { schema: ErrorSchema } } }, 401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } }, 403: { description: "Forbidden — admin role required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } }, 404: { description: "Task not found", content: { "application/json": { schema: ErrorSchema } } }, 429: { description: "Rate limit exceeded", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } }, 500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } } } });
 
-const previewTaskRoute = createRoute({
-  method: "post",
-  path: "/{id}/preview",
-  tags: ["Scheduled Tasks"],
-  summary: "Preview delivery format",
-  description: "Dry-run delivery format with mock data.",
-  request: {
-    params: z.object({
-      id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }),
-    }),
-  },
-  responses: {
-    200: { description: "Delivery preview", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
-    400: { description: "Invalid task ID format", content: { "application/json": { schema: ErrorSchema } } },
-    401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
-    403: { description: "Forbidden — insufficient permissions", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
-    404: { description: "Task not found", content: { "application/json": { schema: ErrorSchema } } },
-    429: { description: "Rate limit exceeded", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
-    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
-  },
-});
+const previewTaskRoute = createRoute({ method: "post", path: "/{id}/preview", tags: ["Scheduled Tasks"], summary: "Preview delivery format", description: "Dry-run delivery format with mock data. Requires admin role.", request: { params: z.object({ id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }) }) }, responses: { 200: { description: "Delivery preview", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } }, 400: { description: "Invalid task ID format", content: { "application/json": { schema: ErrorSchema } } }, 401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } }, 403: { description: "Forbidden — admin role required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } }, 404: { description: "Task not found", content: { "application/json": { schema: ErrorSchema } } }, 429: { description: "Rate limit exceeded", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } }, 500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } } } });
 
-const listTaskRunsRoute = createRoute({
-  method: "get",
-  path: "/{id}/runs",
-  tags: ["Scheduled Tasks"],
-  summary: "List task runs",
-  description: "Returns past execution runs for a scheduled task.",
-  request: {
-    params: z.object({
-      id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }),
-    }),
-    query: z.object({
-      limit: z.string().optional().openapi({
-        param: { name: "limit", in: "query" },
-        description: "Maximum number of runs to return (1-100, default 20).",
-      }),
-    }),
-  },
-  responses: {
-    200: {
-      description: "List of task runs",
-      content: {
-        "application/json": {
-          schema: z.object({ runs: z.array(z.record(z.string(), z.unknown())) }),
-        },
-      },
-    },
-    400: { description: "Invalid task ID format", content: { "application/json": { schema: ErrorSchema } } },
-    401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
-    403: { description: "Forbidden — insufficient permissions", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
-    404: { description: "Task not found", content: { "application/json": { schema: ErrorSchema } } },
-    429: { description: "Rate limit exceeded", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
-    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
-  },
-});
+const listTaskRunsRoute = createRoute({ method: "get", path: "/{id}/runs", tags: ["Scheduled Tasks"], summary: "List task runs", description: "Returns past execution runs for a scheduled task. Requires admin role.", request: { params: z.object({ id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }) }), query: z.object({ limit: z.string().optional().openapi({ param: { name: "limit", in: "query" }, description: "Maximum number of runs to return (1-100, default 20)." }) }) }, responses: { 200: { description: "List of task runs", content: { "application/json": { schema: z.object({ runs: z.array(z.record(z.string(), z.unknown())) }) } } }, 400: { description: "Invalid task ID format", content: { "application/json": { schema: ErrorSchema } } }, 401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } }, 403: { description: "Forbidden — admin role required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } }, 404: { description: "Task not found", content: { "application/json": { schema: ErrorSchema } } }, 429: { description: "Rate limit exceeded", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } }, 500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } } } });
 
 // ---------------------------------------------------------------------------
 // Router
@@ -353,35 +209,16 @@ const listTaskRunsRoute = createRoute({
 // Outer app: tick route (cron-secret auth, no user-auth middleware)
 const scheduledTasks = new OpenAPIHono<AuthEnv>({ defaultHook: validationHook });
 
-// Inner app: all user-authenticated routes
-const authed = new OpenAPIHono<AuthEnv>({ defaultHook: validationHook });
-authed.use(standardAuth);
-authed.use(requestContext);
+// Inner app: admin-authenticated, org-scoped routes (adminAuth + requireOrgContext)
+const authed = createAdminRouter();
+authed.use(requireOrgContext());
 
-authed.onError((err, c) => {
-  if (err instanceof HTTPException) {
-    if (err.res) return err.res;
-    if (err.status === 400) {
-      if (err.cause instanceof SyntaxError) {
-        log.warn("Malformed JSON body in request");
-        return c.json({ error: "invalid_request", message: "Invalid JSON body." }, 400);
-      }
-      return c.json({ error: "invalid_request", message: err.message || "Bad request." }, 400);
-    }
-  }
-  throw err;
-});
-
-// Tick also needs a JSON-parse error handler
+// Tick also needs a JSON-parse error handler (outer app only — authed uses eeOnError via createAdminRouter)
 scheduledTasks.onError((err, c) => {
   if (err instanceof HTTPException) {
     if (err.res) return err.res;
     if (err.status === 400) {
-      if (err.cause instanceof SyntaxError) {
-        log.warn("Malformed JSON body in request");
-        return c.json({ error: "invalid_request", message: "Invalid JSON body." }, 400);
-      }
-      return c.json({ error: "invalid_request", message: err.message || "Bad request." }, 400);
+      return c.json({ error: "invalid_request", message: "Invalid JSON body." }, 400);
     }
   }
   throw err;
@@ -393,19 +230,14 @@ scheduledTasks.onError((err, c) => {
 
 authed.openapi(listTasksRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
-    const { requestId } = yield* RequestContext;
-    const { user } = yield* AuthContext;
-
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "Scheduled tasks require an internal database.", requestId }, 404);
-    }
+    const { orgId } = yield* AuthContext;
 
     const { limit, offset } = parsePagination(c, { limit: 20, maxLimit: 100 });
     const enabledParam = c.req.query("enabled");
     const enabled = enabledParam === "true" ? true : enabledParam === "false" ? false : undefined;
 
     const items = yield* Effect.promise(() => listScheduledTasks({
-      ownerId: user?.id,
+      orgId,
       enabled,
       limit,
       offset,
@@ -423,11 +255,7 @@ authed.openapi(
   async (c) => {
     return runEffect(c, Effect.gen(function* () {
       const { requestId } = yield* RequestContext;
-      const { user } = yield* AuthContext;
-
-      if (!hasInternalDB()) {
-        return c.json({ error: "not_available", message: "Scheduled tasks require an internal database.", requestId }, 404);
-      }
+      const { orgId, user } = yield* AuthContext;
 
       const parsed = c.req.valid("json");
 
@@ -439,6 +267,7 @@ authed.openapi(
 
       const createResult = yield* Effect.promise(() => createScheduledTask({
         ownerId: user?.id ?? "anonymous",
+        orgId,
         name: parsed.name,
         question: parsed.question,
         cronExpression: parsed.cronExpression,
@@ -530,11 +359,7 @@ scheduledTasks.openapi(tickRoute, async (c) => {
 
 authed.openapi(listAllRunsRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
-    const { requestId } = yield* RequestContext;
-
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "Scheduled tasks require an internal database.", requestId }, 404);
-    }
+    const { orgId } = yield* AuthContext;
 
     const { limit, offset } = parsePagination(c, { limit: 20, maxLimit: 100 });
 
@@ -550,7 +375,7 @@ authed.openapi(listAllRunsRoute, async (c) => {
     const dateFrom = dateFromParam && ISO_DATE_RE.test(dateFromParam) ? dateFromParam : undefined;
     const dateTo = dateToParam && ISO_DATE_RE.test(dateToParam) ? dateToParam : undefined;
 
-    const runs = yield* Effect.promise(() => listAllRuns({ taskId, status, dateFrom, dateTo, limit, offset }));
+    const runs = yield* Effect.promise(() => listAllRuns({ orgId, taskId, status, dateFrom, dateTo, limit, offset }));
     return c.json(runs, 200);
   }), { label: "list all runs" });
 });
@@ -562,18 +387,14 @@ authed.openapi(listAllRunsRoute, async (c) => {
 authed.openapi(getTaskRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
-    const { user } = yield* AuthContext;
-
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "Scheduled tasks require an internal database.", requestId }, 404);
-    }
+    const { orgId } = yield* AuthContext;
 
     const { id } = c.req.valid("param");
     if (!UUID_RE.test(id)) {
       return c.json({ error: "invalid_request", message: "Invalid task ID format." }, 400);
     }
 
-    const taskResult = yield* Effect.promise(() => getScheduledTask(id, user?.id));
+    const taskResult = yield* Effect.promise(() => getScheduledTask(id, { orgId }));
     if (!taskResult.ok) {
       const fail = crudFailResponse(taskResult.reason, requestId);
       return c.json(fail.body, fail.status);
@@ -593,11 +414,7 @@ authed.openapi(
   async (c) => {
     return runEffect(c, Effect.gen(function* () {
       const { requestId } = yield* RequestContext;
-      const { user } = yield* AuthContext;
-
-      if (!hasInternalDB()) {
-        return c.json({ error: "not_available", message: "Scheduled tasks require an internal database.", requestId }, 404);
-      }
+      const { orgId } = yield* AuthContext;
 
       const { id } = c.req.valid("param");
       if (!UUID_RE.test(id)) {
@@ -614,14 +431,14 @@ authed.openapi(
         }
       }
 
-      const updateResult = yield* Effect.promise(() => updateScheduledTask(id, user?.id ?? "anonymous", parsed));
+      const updateResult = yield* Effect.promise(() => updateScheduledTask(id, { orgId }, parsed));
       if (!updateResult.ok) {
         const fail = crudFailResponse(updateResult.reason, requestId);
         return c.json(fail.body, fail.status);
       }
 
       // Fetch updated task to return
-      const updated = yield* Effect.promise(() => getScheduledTask(id, user?.id));
+      const updated = yield* Effect.promise(() => getScheduledTask(id, { orgId }));
       if (!updated.ok) {
         return c.json({ ok: true }, 200);
       }
@@ -645,18 +462,14 @@ authed.openapi(
 authed.openapi(deleteTaskRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
-    const { user } = yield* AuthContext;
-
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "Scheduled tasks require an internal database.", requestId }, 404);
-    }
+    const { orgId } = yield* AuthContext;
 
     const { id } = c.req.valid("param");
     if (!UUID_RE.test(id)) {
       return c.json({ error: "invalid_request", message: "Invalid task ID format." }, 400);
     }
 
-    const delResult = yield* Effect.promise(() => deleteScheduledTask(id, user?.id));
+    const delResult = yield* Effect.promise(() => deleteScheduledTask(id, { orgId }));
     if (!delResult.ok) {
       const fail = crudFailResponse(delResult.reason, requestId);
       return c.json(fail.body, fail.status);
@@ -672,18 +485,14 @@ authed.openapi(deleteTaskRoute, async (c) => {
 authed.openapi(triggerTaskRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
-    const { user } = yield* AuthContext;
-
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "Scheduled tasks require an internal database.", requestId }, 404);
-    }
+    const { orgId } = yield* AuthContext;
 
     const { id } = c.req.valid("param");
     if (!UUID_RE.test(id)) {
       return c.json({ error: "invalid_request", message: "Invalid task ID format." }, 400);
     }
 
-    const task = yield* Effect.promise(() => getScheduledTask(id, user?.id));
+    const task = yield* Effect.promise(() => getScheduledTask(id, { orgId }));
     if (!task.ok) {
       const fail = crudFailResponse(task.reason, requestId);
       return c.json(fail.body, fail.status);
@@ -702,18 +511,14 @@ authed.openapi(triggerTaskRoute, async (c) => {
 authed.openapi(previewTaskRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
-    const { user } = yield* AuthContext;
-
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "Scheduled tasks require an internal database.", requestId }, 404);
-    }
+    const { orgId } = yield* AuthContext;
 
     const { id } = c.req.valid("param");
     if (!UUID_RE.test(id)) {
       return c.json({ error: "invalid_request", message: "Invalid task ID format." }, 400);
     }
 
-    const task = yield* Effect.promise(() => getScheduledTask(id, user?.id));
+    const task = yield* Effect.promise(() => getScheduledTask(id, { orgId }));
     if (!task.ok) {
       const fail = crudFailResponse(task.reason, requestId);
       return c.json(fail.body, fail.status);
@@ -732,19 +537,15 @@ authed.openapi(previewTaskRoute, async (c) => {
 authed.openapi(listTaskRunsRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
-    const { user } = yield* AuthContext;
-
-    if (!hasInternalDB()) {
-      return c.json({ error: "not_available", message: "Scheduled tasks require an internal database.", requestId }, 404);
-    }
+    const { orgId } = yield* AuthContext;
 
     const { id } = c.req.valid("param");
     if (!UUID_RE.test(id)) {
       return c.json({ error: "invalid_request", message: "Invalid task ID format." }, 400);
     }
 
-    // Verify task ownership
-    const task = yield* Effect.promise(() => getScheduledTask(id, user?.id));
+    // Verify task belongs to this org
+    const task = yield* Effect.promise(() => getScheduledTask(id, { orgId }));
     if (!task.ok) {
       const fail = crudFailResponse(task.reason, requestId);
       return c.json(fail.body, fail.status);

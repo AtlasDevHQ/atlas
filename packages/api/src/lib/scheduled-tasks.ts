@@ -3,6 +3,10 @@
  *
  * Pattern follows conversations.ts: hasInternalDB() guard, CrudResult/CrudDataResult
  * discriminated unions, fire-and-forget for non-critical writes.
+ *
+ * All CRUD operations scope by org_id. The scheduler's internal helpers
+ * (getTasksDueForExecution, lockTaskForExecution) are unscoped since they
+ * run from the /tick endpoint which has its own cron-secret auth.
  */
 
 import { Cron } from "croner";
@@ -135,11 +139,31 @@ export function computeNextRun(expr: string, after?: Date): Date | null {
 }
 
 // ---------------------------------------------------------------------------
+// Org scoping helper
+// ---------------------------------------------------------------------------
+
+/** Builds an org_id filter clause. When orgId is provided, uses a parameterized match; otherwise matches NULL. */
+function orgScopeClause(
+  orgId: string | null | undefined,
+  params: unknown[],
+  paramIdx: number,
+  tableAlias?: string,
+): { clause: string; nextIdx: number } {
+  const col = tableAlias ? `${tableAlias}.org_id` : "org_id";
+  if (orgId) {
+    params.push(orgId);
+    return { clause: `${col} = $${paramIdx}`, nextIdx: paramIdx + 1 };
+  }
+  return { clause: `${col} IS NULL`, nextIdx: paramIdx };
+}
+
+// ---------------------------------------------------------------------------
 // CRUD — Tasks
 // ---------------------------------------------------------------------------
 
 export async function createScheduledTask(opts: {
   ownerId: string;
+  orgId?: string | null;
   name: string;
   question: string;
   cronExpression: string;
@@ -160,11 +184,12 @@ export async function createScheduledTask(opts: {
 
   try {
     const rows = await internalQuery<Record<string, unknown>>(
-      `INSERT INTO scheduled_tasks (owner_id, name, question, cron_expression, delivery_channel, recipients, connection_id, approval_mode, next_run_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      `INSERT INTO scheduled_tasks (owner_id, org_id, name, question, cron_expression, delivery_channel, recipients, connection_id, approval_mode, next_run_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING *`,
       [
         opts.ownerId,
+        opts.orgId ?? null,
         opts.name,
         opts.question,
         opts.cronExpression,
@@ -183,21 +208,35 @@ export async function createScheduledTask(opts: {
   }
 }
 
+/**
+ * Get a scheduled task by ID.
+ *
+ * When scope is provided, the query is filtered by org_id (org-scoped
+ * admin access). When omitted, no org filter is applied (used by the
+ * scheduler engine internal lookups).
+ */
 export async function getScheduledTask(
   id: string,
-  ownerId?: string,
+  scope?: { orgId?: string | null },
 ): Promise<CrudDataResult<ScheduledTask>> {
   if (!hasInternalDB()) return { ok: false, reason: "no_db" };
   try {
-    const rows = ownerId
-      ? await internalQuery<Record<string, unknown>>(
-          `SELECT * FROM scheduled_tasks WHERE id = $1 AND owner_id = $2`,
-          [id, ownerId],
-        )
-      : await internalQuery<Record<string, unknown>>(
-          `SELECT * FROM scheduled_tasks WHERE id = $1`,
-          [id],
-        );
+    let rows: Record<string, unknown>[];
+    if (scope !== undefined) {
+      // Org-scoped lookup (admin routes)
+      const params: unknown[] = [id];
+      const org = orgScopeClause(scope.orgId, params, 2);
+      rows = await internalQuery<Record<string, unknown>>(
+        `SELECT * FROM scheduled_tasks WHERE id = $1 AND ${org.clause}`,
+        params,
+      );
+    } else {
+      // Unscoped lookup (scheduler engine internals)
+      rows = await internalQuery<Record<string, unknown>>(
+        `SELECT * FROM scheduled_tasks WHERE id = $1`,
+        [id],
+      );
+    }
     if (rows.length === 0) return { ok: false, reason: "not_found" };
     return { ok: true, data: rowToScheduledTask(rows[0]) };
   } catch (err) {
@@ -207,7 +246,7 @@ export async function getScheduledTask(
 }
 
 export async function listScheduledTasks(opts?: {
-  ownerId?: string;
+  orgId?: string | null;
   enabled?: boolean;
   limit?: number;
   offset?: number;
@@ -223,10 +262,11 @@ export async function listScheduledTasks(opts?: {
     const params: unknown[] = [];
     let paramIdx = 1;
 
-    if (opts?.ownerId) {
-      conditions.push(`owner_id = $${paramIdx++}`);
-      params.push(opts.ownerId);
-    }
+    // Always scope by org
+    const org = orgScopeClause(opts?.orgId, params, paramIdx);
+    conditions.push(org.clause);
+    paramIdx = org.nextIdx;
+
     if (opts?.enabled !== undefined) {
       conditions.push(`enabled = $${paramIdx++}`);
       params.push(opts.enabled);
@@ -254,7 +294,7 @@ export async function listScheduledTasks(opts?: {
 
 export async function updateScheduledTask(
   id: string,
-  ownerId: string,
+  scope: { orgId?: string | null },
   updates: {
     name?: string;
     question?: string;
@@ -317,12 +357,15 @@ export async function updateScheduledTask(
 
   setClauses.push(`updated_at = now()`);
 
+  const org = orgScopeClause(scope.orgId, params, paramIdx);
+  paramIdx = org.nextIdx;
+
   try {
     const rows = await internalQuery<{ id: string }>(
       `UPDATE scheduled_tasks SET ${setClauses.join(", ")}
-       WHERE id = $${paramIdx++} AND owner_id = $${paramIdx++}
+       WHERE id = $${paramIdx} AND ${org.clause}
        RETURNING id`,
-      [...params, id, ownerId],
+      [...params, id],
     );
     return rows.length > 0 ? { ok: true } : { ok: false, reason: "not_found" };
   } catch (err) {
@@ -334,21 +377,17 @@ export async function updateScheduledTask(
 /** Soft delete: sets enabled=false to preserve audit trail. */
 export async function deleteScheduledTask(
   id: string,
-  ownerId?: string,
+  scope?: { orgId?: string | null },
 ): Promise<CrudResult> {
   if (!hasInternalDB()) return { ok: false, reason: "no_db" };
   try {
-    const rows = ownerId
-      ? await internalQuery<{ id: string }>(
-          `UPDATE scheduled_tasks SET enabled = false, updated_at = now()
-           WHERE id = $1 AND owner_id = $2 RETURNING id`,
-          [id, ownerId],
-        )
-      : await internalQuery<{ id: string }>(
-          `UPDATE scheduled_tasks SET enabled = false, updated_at = now()
-           WHERE id = $1 RETURNING id`,
-          [id],
-        );
+    const params: unknown[] = [id];
+    const org = orgScopeClause(scope?.orgId, params, 2);
+    const rows = await internalQuery<{ id: string }>(
+      `UPDATE scheduled_tasks SET enabled = false, updated_at = now()
+       WHERE id = $1 AND ${org.clause} RETURNING id`,
+      params,
+    );
     return rows.length > 0 ? { ok: true } : { ok: false, reason: "not_found" };
   } catch (err) {
     log.error({ err: err instanceof Error ? err.message : String(err) }, "deleteScheduledTask failed");
@@ -409,6 +448,7 @@ export function completeTaskRun(
 
 /** List runs across all tasks with optional filters. */
 export async function listAllRuns(opts?: {
+  orgId?: string | null;
   taskId?: string;
   status?: RunStatus;
   dateFrom?: string;
@@ -426,6 +466,11 @@ export async function listAllRuns(opts?: {
     const conditions: string[] = [];
     const params: unknown[] = [];
     let paramIdx = 1;
+
+    // Org scoping — runs are filtered via the parent task's org_id
+    const org = orgScopeClause(opts?.orgId, params, paramIdx, "t");
+    conditions.push(org.clause);
+    paramIdx = org.nextIdx;
 
     if (opts?.taskId) {
       conditions.push(`r.task_id = $${paramIdx++}`);
@@ -519,7 +564,7 @@ export async function getTasksDueForExecution(): Promise<ScheduledTask[]> {
 /**
  * Atomically lock a task for execution.
  *
- * Uses a single UPDATE with `AND next_run_at IS NOT NULL` as a lightweight
+ * Uses a single UPDATE with AND next_run_at IS NOT NULL as a lightweight
  * lock: the first process to UPDATE sets next_run_at to the future, preventing
  * concurrent UPDATEs from matching. Also updates last_run_at.
  *
@@ -530,6 +575,7 @@ export async function lockTaskForExecution(taskId: string): Promise<boolean> {
   if (!hasInternalDB()) return false;
   try {
     // First read the cron expression so we can compute the next run in a single UPDATE
+    // Note: unscoped lookup — scheduler runs across all orgs
     const taskResult = await getScheduledTask(taskId);
     if (!taskResult.ok) {
       log.warn({ taskId }, "lockTaskForExecution: task not found");

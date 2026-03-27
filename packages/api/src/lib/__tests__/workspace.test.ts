@@ -40,7 +40,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   getWorkspaceDetails: async () => null,
   updateWorkspaceStatus: async () => true,
   updateWorkspacePlanTier: async () => true,
-  cascadeWorkspaceDelete: async () => ({ conversations: 0, semanticEntities: 0, learnedPatterns: 0, suggestions: 0, scheduledTasks: 0 }),
+  cascadeWorkspaceDelete: async () => ({ conversations: 0, semanticEntities: 0, learnedPatterns: 0, suggestions: 0, scheduledTasks: 0, settings: 0 }),
   getWorkspaceHealthSummary: async () => null,
 }));
 

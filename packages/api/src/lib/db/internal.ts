@@ -112,8 +112,14 @@ export function isPlaintextUrl(value: string): boolean {
 }
 
 /** Typed interface for the internal pg.Pool — avoids importing pg at module level. */
+export interface InternalPoolClient {
+  query(sql: string, params?: unknown[]): Promise<{ rows: Record<string, unknown>[] }>;
+  release(): void;
+}
+
 export interface InternalPool {
   query(sql: string, params?: unknown[]): Promise<{ rows: Record<string, unknown>[] }>;
+  connect(): Promise<InternalPoolClient>;
   end(): Promise<void>;
   on(event: "error", listener: (err: Error) => void): void;
 }
@@ -206,11 +212,14 @@ export function makeInternalDBLive(): Layer.Layer<InternalDB> {
 export function createInternalDBTestLayer(
   partial: Partial<InternalDBShape> = {},
 ): Layer.Layer<InternalDB> {
-  const mockPool = {
+  const mockPool: InternalPool = {
     query: async () => ({ rows: [] }),
+    async connect() {
+      return { query: async () => ({ rows: [] }), release() {} };
+    },
     end: async () => {},
     on: () => {},
-  } as InternalPool;
+  };
   return Layer.succeed(InternalDB, {
     query: partial.query ?? (async () => []),
     execute: partial.execute ?? (() => {}),
@@ -1660,10 +1669,14 @@ export async function setWorkspaceRegion(
 }
 
 /**
- * Cascading soft-delete cleanup for a workspace:
+ * Cascading soft-delete cleanup for a workspace (transactional):
  * - Soft-deletes conversations (sets deleted_at)
  * - Hard-deletes org-scoped semantic entities, learned patterns, and query suggestions
+ * - Hard-deletes org-scoped settings
  * - Disables scheduled tasks
+ *
+ * All operations run inside a single transaction — either all succeed or
+ * none take effect, so retries are always safe.
  */
 export async function cascadeWorkspaceDelete(orgId: string): Promise<{
   conversations: number;
@@ -1671,39 +1684,59 @@ export async function cascadeWorkspaceDelete(orgId: string): Promise<{
   learnedPatterns: number;
   suggestions: number;
   scheduledTasks: number;
+  settings: number;
 }> {
   const pool = getInternalDB();
+  const client = await pool.connect();
 
-  const [convResult, seResult, lpResult, qsResult, stResult] = await Promise.all([
-    pool.query(
-      `UPDATE conversations SET deleted_at = now(), updated_at = now() WHERE org_id = $1 AND deleted_at IS NULL RETURNING id`,
-      [orgId],
-    ),
-    pool.query(
-      `DELETE FROM semantic_entities WHERE org_id = $1 RETURNING id`,
-      [orgId],
-    ),
-    pool.query(
-      `DELETE FROM learned_patterns WHERE org_id = $1 RETURNING id`,
-      [orgId],
-    ),
-    pool.query(
-      `DELETE FROM query_suggestions WHERE org_id = $1 RETURNING id`,
-      [orgId],
-    ),
-    pool.query(
-      `UPDATE scheduled_tasks SET enabled = false, updated_at = now() WHERE org_id = $1 RETURNING id`,
-      [orgId],
-    ),
-  ]);
+  try {
+    await client.query("BEGIN");
 
-  return {
-    conversations: convResult.rows.length,
-    semanticEntities: seResult.rows.length,
-    learnedPatterns: lpResult.rows.length,
-    suggestions: qsResult.rows.length,
-    scheduledTasks: stResult.rows.length,
-  };
+    const [convResult, seResult, lpResult, qsResult, stResult, settingsResult] = await Promise.all([
+      client.query(
+        `UPDATE conversations SET deleted_at = now(), updated_at = now() WHERE org_id = $1 AND deleted_at IS NULL RETURNING id`,
+        [orgId],
+      ),
+      client.query(
+        `DELETE FROM semantic_entities WHERE org_id = $1 RETURNING id`,
+        [orgId],
+      ),
+      client.query(
+        `DELETE FROM learned_patterns WHERE org_id = $1 RETURNING id`,
+        [orgId],
+      ),
+      client.query(
+        `DELETE FROM query_suggestions WHERE org_id = $1 RETURNING id`,
+        [orgId],
+      ),
+      client.query(
+        `UPDATE scheduled_tasks SET enabled = false, updated_at = now() WHERE org_id = $1 RETURNING id`,
+        [orgId],
+      ),
+      client.query(
+        `DELETE FROM settings WHERE org_id = $1 RETURNING key`,
+        [orgId],
+      ),
+    ]);
+
+    await client.query("COMMIT");
+
+    return {
+      conversations: convResult.rows.length,
+      semanticEntities: seResult.rows.length,
+      learnedPatterns: lpResult.rows.length,
+      suggestions: qsResult.rows.length,
+      scheduledTasks: stResult.rows.length,
+      settings: settingsResult.rows.length,
+    };
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {
+      // intentionally ignored: ROLLBACK failure after a failed transaction is non-actionable
+    });
+    throw err;
+  } finally {
+    client.release();
+  }
 }
 
 /**

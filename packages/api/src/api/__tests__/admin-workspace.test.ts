@@ -128,6 +128,7 @@ const mockCascadeWorkspaceDelete: Mock<(orgId: string) => Promise<unknown>> = mo
     learnedPatterns: 2,
     suggestions: 10,
     scheduledTasks: 1,
+    settings: 4,
   }),
 );
 
@@ -385,6 +386,7 @@ describe("Workspace Lifecycle", () => {
       expect(cascade.learnedPatterns).toBe(2);
       expect(cascade.suggestions).toBe(10);
       expect(cascade.scheduledTasks).toBe(1);
+      expect(cascade.settings).toBe(4);
     });
 
     it("drains pools and flushes cache on delete", async () => {

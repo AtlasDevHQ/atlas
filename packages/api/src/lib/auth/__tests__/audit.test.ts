@@ -20,6 +20,9 @@ const mockPool: InternalPool = {
     queryCalls.push({ sql, params });
     return { rows: [] };
   },
+  async connect() {
+    return { query: async () => ({ rows: [] }), release() {} };
+  },
   end: async () => {},
   on: () => {},
 };

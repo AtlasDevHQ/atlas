@@ -25,6 +25,9 @@ function createMockPool(opts: { shouldFail: boolean }) {
       if (opts.shouldFail) throw new Error("mock connection refused");
       return { rows: [{ "?column?": 1 }] };
     },
+    async connect() {
+      return { query: async () => ({ rows: [] }), release() {} };
+    },
     async end() {},
     on() {},
     _getQueryCount: () => queryCount,

@@ -38,6 +38,9 @@ const mockPool: InternalPool = {
     queryResultIndex++;
     return result;
   },
+  async connect() {
+    return { query: async () => ({ rows: [] }), release() {} };
+  },
   end: async () => {},
   on: () => {},
 };

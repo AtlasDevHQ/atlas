@@ -13,6 +13,7 @@ import {
   internalExecute,
   migrateInternalDB,
   loadSavedConnections,
+  cascadeWorkspaceDelete,
   _resetPool,
   _resetCircuitBreaker,
   encryptUrl,
@@ -29,18 +30,29 @@ function createMockPool() {
     queries: [] as { sql: string; params?: unknown[] }[],
     endCount: 0,
     onEvents: [] as { event: "error"; listener: (err: Error) => void }[],
+    connectCount: 0,
+    releaseCount: 0,
   };
   let queryResult: { rows: Record<string, unknown>[] } = { rows: [] };
   let queryError: Error | null = null;
 
+  const queryFn = async (sql: string, params?: unknown[]) => {
+    calls.queries.push({ sql, params });
+    if (queryError) throw queryError;
+    return queryResult;
+  };
+
   const pool = {
-    async query(sql: string, params?: unknown[]) {
-      calls.queries.push({ sql, params });
-      if (queryError) throw queryError;
-      return queryResult;
-    },
+    query: queryFn,
     async end() {
       calls.endCount++;
+    },
+    async connect() {
+      calls.connectCount++;
+      return {
+        query: queryFn,
+        release() { calls.releaseCount++; },
+      };
     },
     on(event: "error", listener: (err: Error) => void) {
       calls.onEvents.push({ event, listener });
@@ -467,6 +479,105 @@ describe("internal DB module", () => {
       await new Promise((r) => setTimeout(r, 10));
       expect(freshCalls.queries.length).toBe(1); // query went through
     });
+  });
+});
+
+describe("cascadeWorkspaceDelete()", () => {
+  const origDatabaseUrl = process.env.DATABASE_URL;
+
+  beforeEach(() => {
+    process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/atlas";
+    _resetPool();
+  });
+
+  afterEach(() => {
+    if (origDatabaseUrl !== undefined) {
+      process.env.DATABASE_URL = origDatabaseUrl;
+    } else {
+      delete process.env.DATABASE_URL;
+    }
+    _resetPool();
+  });
+
+  it("deletes org-scoped settings rows inside a transaction", async () => {
+    const { pool, calls } = createMockPool();
+    // Each query in the cascade returns one row via RETURNING
+    pool._setResult({ rows: [{ id: "row-1" }] });
+    _resetPool(pool);
+
+    const result = await cascadeWorkspaceDelete("org-123");
+
+    // Verify transaction boundaries
+    expect(calls.queries[0].sql).toBe("BEGIN");
+    expect(calls.queries[calls.queries.length - 1].sql).toBe("COMMIT");
+
+    // Verify a DELETE FROM settings WHERE org_id = $1 was issued
+    const settingsQuery = calls.queries.find((q) => q.sql.includes("DELETE FROM settings"));
+    expect(settingsQuery).toBeDefined();
+    expect(settingsQuery!.params).toEqual(["org-123"]);
+    expect(result.settings).toBe(1);
+
+    // Verify client was released
+    expect(calls.releaseCount).toBe(1);
+  });
+
+  it("returns settings: 0 when no org-scoped settings exist", async () => {
+    const { pool, calls } = createMockPool();
+    pool._setResult({ rows: [] });
+    _resetPool(pool);
+
+    const result = await cascadeWorkspaceDelete("org-empty");
+    expect(result.settings).toBe(0);
+    // BEGIN + 6 cascade queries + COMMIT = 8 total
+    expect(calls.queries.length).toBe(8);
+  });
+
+  it("does not delete settings with NULL org_id (self-hosted)", async () => {
+    const { pool, calls } = createMockPool();
+    pool._setResult({ rows: [] });
+    _resetPool(pool);
+
+    await cascadeWorkspaceDelete("org-456");
+
+    // The settings DELETE should use org_id = $1, not IS NULL
+    const settingsQuery = calls.queries.find((q) => q.sql.includes("DELETE FROM settings"));
+    expect(settingsQuery).toBeDefined();
+    expect(settingsQuery!.sql).not.toContain("IS NULL");
+    expect(settingsQuery!.params).toEqual(["org-456"]);
+  });
+
+  it("rolls back on query failure", async () => {
+    const { pool, calls } = createMockPool();
+    _resetPool(pool);
+
+    // Fail after BEGIN succeeds — simulate a table-not-found error
+    let queryNum = 0;
+    const { pool: txPool } = createMockPool();
+    const failPool = {
+      ...txPool,
+      async connect() {
+        calls.connectCount++;
+        return {
+          async query(sql: string, params?: unknown[]) {
+            calls.queries.push({ sql, params });
+            queryNum++;
+            // Let BEGIN pass (query 1), fail on first cascade query (query 2)
+            if (queryNum === 2) throw new Error("relation does not exist");
+            return { rows: [] };
+          },
+          release() { calls.releaseCount++; },
+        };
+      },
+      on: txPool.on,
+    };
+    _resetPool(failPool);
+
+    await expect(cascadeWorkspaceDelete("org-fail")).rejects.toThrow("relation does not exist");
+
+    // Verify ROLLBACK was issued and client was released
+    const rollbackQuery = calls.queries.find((q) => q.sql === "ROLLBACK");
+    expect(rollbackQuery).toBeDefined();
+    expect(calls.releaseCount).toBe(1);
   });
 });
 

@@ -582,6 +582,35 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 
 ---
 
+## 0.9.6 — SaaS Customer Experience
+
+**Pre-launch prerequisite: make the admin console work for paying SaaS workspace admins.** Scope settings/routes to workspaces, hide platform internals, add self-service for API keys, integrations, billing, sandbox, and custom domains. Keep self-hosted persona fully functional.
+
+### Security & Scoping Fixes (P0)
+
+- [ ] Add requireOrgContext to learned-patterns, suggestions, and prompts routes (#963)
+- [ ] Add adminAuth middleware to scheduled-tasks routes (#964)
+- [ ] Scope Users admin page to active org members in SaaS mode (#965)
+- [ ] Hide Organizations page from non-platform-admin (#966)
+
+### Settings Architecture (P0)
+
+- [ ] Activate org_id scoping on settings table for workspace-level overrides (#967)
+- [ ] Split Settings page into workspace and platform tiers (#968)
+- [ ] Hide platform-only admin pages from workspace admins (#969)
+
+### Self-Service Features
+
+- [ ] API key management UI for workspace admins (#970)
+- [ ] Integrations hub page for workspace admins (#971)
+- [ ] Self-serve Slack disconnect/reconnect (#972)
+- [ ] Self-serve custom domain configuration (#973)
+- [ ] Self-serve sandbox backend selection per workspace (#974)
+- [ ] Workspace billing page — plan, usage vs limits, portal link (#975)
+- [ ] Self-serve data residency selection for workspace admins (#976)
+
+---
+
 ## 1.0.0 — SaaS Launch
 
 **app.useatlas.dev goes live.** The hosted product where teams sign up, connect their database, and have a production-ready AI data analyst without deploying anything.

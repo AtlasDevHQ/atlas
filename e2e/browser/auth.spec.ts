@@ -25,6 +25,13 @@ async function waitForChatUI(page: import("@playwright/test").Page) {
     await page.locator('button:has-text("Change password")').click();
     await expect(changeDialog).toBeHidden({ timeout: 10_000 });
   }
+
+  // Dismiss the guided tour if visible (fresh DB / first login)
+  const skipTour = page.locator('button:has-text("Skip tour")');
+  if (await skipTour.isVisible({ timeout: 2_000 }).catch(() => false)) {
+    await skipTour.click();
+    await skipTour.waitFor({ state: "hidden", timeout: 5_000 }).catch(() => {});
+  }
 }
 
 test.describe("Auth Flows", () => {

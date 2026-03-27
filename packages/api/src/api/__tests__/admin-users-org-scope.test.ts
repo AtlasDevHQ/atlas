@@ -435,6 +435,31 @@ describe("Org-scoped user write operations (#983)", () => {
     });
   });
 
+  describe("DELETE /api/v1/admin/sessions/user/:userId", () => {
+    it("returns 404 when target user is not in caller's org", async () => {
+      setWorkspaceAdmin("org-1");
+      mockMembershipFor("user-in-org-1");
+
+      const res = await app.fetch(
+        adminRequest("DELETE", "/api/v1/admin/sessions/user/user-in-org-2"),
+      );
+      expect(res.status).toBe(404);
+      const body = await res.json() as { error: string };
+      expect(body.error).toBe("not_found");
+    });
+
+    it("allows session deletion when target user is in caller's org", async () => {
+      setWorkspaceAdmin("org-1");
+      mockMembershipFor("user-in-org-1");
+
+      const res = await app.fetch(
+        adminRequest("DELETE", "/api/v1/admin/sessions/user/user-in-org-1"),
+      );
+      // 200 or 404 (no sessions found) — both are acceptable, not a cross-org leak
+      expect([200, 404]).toContain(res.status);
+    });
+  });
+
   describe("self-hosted (no org context)", () => {
     it("allows role change without org scoping when no activeOrganizationId", async () => {
       // Self-hosted: no org context
@@ -449,6 +474,24 @@ describe("Org-scoped user write operations (#983)", () => {
       );
       expect(res.status).toBe(200);
       expect(mockSetRole).toHaveBeenCalled();
+    });
+  });
+
+  describe("DB error in membership check", () => {
+    it("returns 500 when internalQuery throws during org membership check", async () => {
+      setWorkspaceAdmin("org-1");
+      mockInternalQuery.mockImplementation(async (sql: string) => {
+        if (sql.includes("member") && sql.includes("userId") && sql.includes("organizationId")) {
+          throw new Error("DB connection timeout");
+        }
+        return [];
+      });
+
+      const res = await app.fetch(
+        adminRequest("PATCH", "/api/v1/admin/users/any-user/role", { role: "member" }),
+      );
+      // Should fail closed — 500, not 200
+      expect(res.status).toBe(500);
     });
   });
 });

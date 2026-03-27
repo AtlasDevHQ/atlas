@@ -116,11 +116,16 @@ async function verifyOrgMembership(
   const isPlatformAdmin = authResult.user?.role === "platform_admin";
   // Self-hosted (no orgs) or platform admins — always allowed
   if (!orgId || isPlatformAdmin || !hasInternalDB()) return true;
-  const rows = await internalQuery<{ userId: string }>(
-    `SELECT "userId" FROM member WHERE "userId" = $1 AND "organizationId" = $2 LIMIT 1`,
-    [targetUserId, orgId],
-  );
-  return rows.length > 0;
+  try {
+    const rows = await internalQuery<{ userId: string }>(
+      `SELECT "userId" FROM member WHERE "userId" = $1 AND "organizationId" = $2 LIMIT 1`,
+      [targetUserId, orgId],
+    );
+    return rows.length > 0;
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), targetUserId, orgId }, "Org membership check failed");
+    throw err;
+  }
 }
 
 admin.onError((err, c) => {
@@ -3643,6 +3648,11 @@ admin.openapi(deleteUserSessionsRoute, async (c) => runHandler(c, "revoke user s
 
   if (!hasInternalDB() || detectAuthMode() !== "managed") {
     return c.json({ error: "not_available", message: "Session management requires managed auth mode." }, 404);
+  }
+
+  // Org-scoping: workspace admins can only revoke sessions for users in their own org
+  if (!(await verifyOrgMembership(authResult, userId))) {
+    return c.json({ error: "not_found", message: "User not found.", requestId }, 404);
   }
 
   const deleted = await internalQuery<{ id: string }>(

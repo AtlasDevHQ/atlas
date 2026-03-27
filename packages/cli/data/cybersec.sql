@@ -23,7 +23,7 @@ DROP TABLE IF EXISTS notifications_backup CASCADE;
 DROP TABLE IF EXISTS feature_flags_legacy CASCADE;
 DROP TABLE IF EXISTS temp_asset_import_2024 CASCADE;
 DROP TABLE IF EXISTS old_scan_results_v2 CASCADE;
-DROP TABLE IF EXISTS audit_log CASCADE;
+DROP TABLE IF EXISTS sec_audit_log CASCADE;
 DROP TABLE IF EXISTS integration_events CASCADE;
 DROP TABLE IF EXISTS integrations CASCADE;
 DROP TABLE IF EXISTS dashboard_widgets CASCADE;
@@ -72,7 +72,7 @@ DROP TABLE IF EXISTS invoices CASCADE;
 DROP TABLE IF EXISTS subscription_events CASCADE;
 DROP TABLE IF EXISTS subscriptions CASCADE;
 DROP TABLE IF EXISTS plans CASCADE;
-DROP TABLE IF EXISTS invitations CASCADE;
+DROP TABLE IF EXISTS sec_invitations CASCADE;
 DROP TABLE IF EXISTS team_memberships CASCADE;
 DROP TABLE IF EXISTS teams CASCADE;
 DROP TABLE IF EXISTS users CASCADE;
@@ -145,7 +145,7 @@ CREATE TABLE team_memberships (
     PRIMARY KEY (user_id, team_id)
 );
 
-CREATE TABLE invitations (
+CREATE TABLE sec_invitations (
     id              SERIAL PRIMARY KEY,
     organization_id INTEGER NOT NULL REFERENCES organizations(id),
     email           TEXT NOT NULL,
@@ -709,7 +709,7 @@ CREATE TABLE integration_events (
     created_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE TABLE audit_log (
+CREATE TABLE sec_audit_log (
     id              SERIAL PRIMARY KEY,
     organization_id INTEGER,         -- no FK (standalone audit)
     user_id         INTEGER,         -- no FK
@@ -810,8 +810,8 @@ CREATE INDEX idx_subscriptions_org ON subscriptions(organization_id);
 CREATE INDEX idx_compliance_findings_assessment ON compliance_findings(assessment_id);
 CREATE INDEX idx_api_requests_created ON api_requests(created_at);
 CREATE INDEX idx_login_events_user ON login_events(user_id);
-CREATE INDEX idx_audit_log_org ON audit_log(organization_id);
-CREATE INDEX idx_audit_log_created ON audit_log(created_at);
+CREATE INDEX idx_sec_audit_log_org ON sec_audit_log(organization_id);
+CREATE INDEX idx_sec_audit_log_created ON sec_audit_log(created_at);
 CREATE INDEX idx_scan_results_denorm_org ON scan_results_denormalized(organization_id);
 CREATE INDEX idx_scan_results_denorm_found ON scan_results_denormalized(found_at);
 
@@ -1016,7 +1016,7 @@ FROM (
 ) AS src;
 
 -- ---------- Invitations (150) ----------
-INSERT INTO invitations (organization_id, email, role_name, invited_by, status, created_at, expires_at)
+INSERT INTO sec_invitations (organization_id, email, role_name, invited_by, status, created_at, expires_at)
 SELECT
     1 + floor(random() * 200)::int,
     'invite' || g || '@example.com',
@@ -1859,7 +1859,7 @@ SELECT
 FROM generate_series(1, 5000) AS g;
 
 -- ---------- Audit Log (25,000) ----------
-INSERT INTO audit_log (organization_id, user_id, action, resource_type, resource_id, details, ip_address, created_at)
+INSERT INTO sec_audit_log (organization_id, user_id, action, resource_type, resource_id, details, ip_address, created_at)
 SELECT
     1 + floor(random() * 200)::int,   -- no FK
     1 + floor(random() * 2000)::int,  -- no FK

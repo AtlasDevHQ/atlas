@@ -102,6 +102,38 @@ async function adminAuthAndContext(c: { req: { raw: Request }; get(key: string):
   return { authResult, requestId };
 }
 
+/**
+ * Verify that target user is a member of the caller's active org.
+ * Platform admins and self-hosted (no org context) bypass the check.
+ * Returns true if the action may proceed, false if the target user is not
+ * in the caller's org (caller should return 404 to avoid revealing existence).
+ */
+async function verifyOrgMembership(
+  authResult: AuthResult & { authenticated: true },
+  targetUserId: string,
+): Promise<boolean> {
+  const orgId = authResult.user?.activeOrganizationId;
+  const isPlatformAdmin = authResult.user?.role === "platform_admin";
+  // Platform admins — always allowed
+  if (!orgId || isPlatformAdmin) return true;
+  // No internal DB — can't verify membership. Log if org context is present
+  // since this may indicate a misconfigured SaaS deployment.
+  if (!hasInternalDB()) {
+    log.warn({ orgId, targetUserId }, "Org membership check skipped — no internal DB available despite org context");
+    return true;
+  }
+  try {
+    const rows = await internalQuery<{ userId: string }>(
+      `SELECT "userId" FROM member WHERE "userId" = $1 AND "organizationId" = $2 LIMIT 1`,
+      [targetUserId, orgId],
+    );
+    return rows.length > 0;
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), targetUserId, orgId }, "Org membership check failed");
+    throw err;
+  }
+}
+
 admin.onError((err, c) => {
   if (err instanceof HTTPException) {
     if (err.res) return err.res;
@@ -3624,6 +3656,11 @@ admin.openapi(deleteUserSessionsRoute, async (c) => runHandler(c, "revoke user s
     return c.json({ error: "not_available", message: "Session management requires managed auth mode." }, 404);
   }
 
+  // Org-scoping: workspace admins can only revoke sessions for users in their own org
+  if (!(await verifyOrgMembership(authResult, userId))) {
+    return c.json({ error: "not_found", message: "User not found.", requestId }, 404);
+  }
+
   const deleted = await internalQuery<{ id: string }>(
     `DELETE FROM session WHERE "userId" = $1 RETURNING id`,
     [userId],
@@ -3815,6 +3852,11 @@ admin.openapi(changeUserRoleRoute, async (c) => {
     return c.json({ error: "not_available", message: "User management requires managed auth mode." }, 404);
   }
 
+  // Org-scoping: workspace admins can only modify users in their own org
+  if (!(await verifyOrgMembership(authResult, userId))) {
+    return c.json({ error: "not_found", message: "User not found.", requestId }, 404);
+  }
+
   const body = await c.req.json().catch((err) => {
     log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse JSON body in role change request");
     return null;
@@ -3875,6 +3917,11 @@ admin.openapi(banUserRoute, async (c) => runHandler(c, "ban user", async () => {
     return c.json({ error: "not_available", message: "User management requires managed auth mode." }, 404);
   }
 
+  // Org-scoping: workspace admins can only ban users in their own org
+  if (!(await verifyOrgMembership(authResult, userId))) {
+    return c.json({ error: "not_found", message: "User not found.", requestId }, 404);
+  }
+
   if (authResult.user?.id === userId) {
     return c.json({ error: "forbidden", message: "Cannot ban yourself." , requestId}, 403);
   }
@@ -3907,6 +3954,11 @@ admin.openapi(unbanUserRoute, async (c) => runHandler(c, "unban user", async () 
     return c.json({ error: "not_available", message: "User management requires managed auth mode." }, 404);
   }
 
+  // Org-scoping: workspace admins can only unban users in their own org
+  if (!(await verifyOrgMembership(authResult, userId))) {
+    return c.json({ error: "not_found", message: "User not found.", requestId }, 404);
+  }
+
   await adminApi.unbanUser({
     body: { userId },
     headers: c.req.raw.headers,
@@ -3924,6 +3976,11 @@ admin.openapi(deleteUserRoute, async (c) => {
   const adminApi = await getAdminApi();
   if (!adminApi) {
     return c.json({ error: "not_available", message: "User management requires managed auth mode." }, 404);
+  }
+
+  // Org-scoping: workspace admins can only delete users in their own org
+  if (!(await verifyOrgMembership(authResult, userId))) {
+    return c.json({ error: "not_found", message: "User not found.", requestId }, 404);
   }
 
   if (authResult.user?.id === userId) {
@@ -3973,6 +4030,11 @@ admin.openapi(revokeUserSessionsRoute, async (c) => runHandler(c, "revoke sessio
   const adminApi = await getAdminApi();
   if (!adminApi) {
     return c.json({ error: "not_available", message: "User management requires managed auth mode." }, 404);
+  }
+
+  // Org-scoping: workspace admins can only revoke sessions for users in their own org
+  if (!(await verifyOrgMembership(authResult, userId))) {
+    return c.json({ error: "not_found", message: "User not found.", requestId }, 404);
   }
 
   await adminApi.revokeSessions({

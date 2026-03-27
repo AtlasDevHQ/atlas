@@ -27,7 +27,7 @@ import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
-import { Settings, Pencil, RotateCcw, Loader2, Info, Lock, RefreshCw, Palette } from "lucide-react";
+import { Settings, Pencil, RotateCcw, Loader2, Info, Lock, RefreshCw, Palette, Shield } from "lucide-react";
 import { DEFAULT_BRAND_COLOR, OKLCH_RE, applyBrandColor } from "@/ui/hooks/use-dark-mode";
 
 // ── Types ─────────────────────────────────────────────────────────
@@ -43,8 +43,9 @@ interface SettingWithValue {
   secret?: boolean;
   envVar: string;
   requiresRestart?: boolean;
+  scope: "platform" | "workspace";
   currentValue: string | undefined;
-  source: "env" | "override" | "default";
+  source: "env" | "override" | "workspace-override" | "default";
 }
 
 interface SettingsResponse {
@@ -54,7 +55,14 @@ interface SettingsResponse {
 
 // ── Source badge ───────────────────────────────────────────────────
 
-function SourceBadge({ source }: { source: "env" | "override" | "default" }) {
+function SourceBadge({ source }: { source: "env" | "override" | "workspace-override" | "default" }) {
+  if (source === "workspace-override") {
+    return (
+      <Badge variant="default" className="bg-violet-600 text-[10px]">
+        workspace override
+      </Badge>
+    );
+  }
   if (source === "override") {
     return (
       <Badge variant="default" className="text-[10px]">
@@ -254,7 +262,7 @@ function SettingRow({
             Edit
           </Button>
         )}
-        {setting.source === "override" && manageable && (
+        {(setting.source === "override" || setting.source === "workspace-override") && manageable && (
           <Button
             variant="ghost"
             size="sm"
@@ -414,15 +422,19 @@ export default function SettingsPage() {
   const settings = data?.settings ?? [];
   const manageable = data?.manageable ?? false;
 
-  // Pull out brand color for dedicated card; group rest by section
+  // Pull out brand color for dedicated card; group rest by scope then section
   const brandColorSetting = settings.find((s) => s.key === "ATLAS_BRAND_COLOR");
-  const sections = new Map<string, SettingWithValue[]>();
+
+  const workspaceSections = new Map<string, SettingWithValue[]>();
+  const platformSections = new Map<string, SettingWithValue[]>();
   for (const s of settings) {
     if (s.key === "ATLAS_BRAND_COLOR") continue;
-    const list = sections.get(s.section) ?? [];
+    const target = s.scope === "workspace" ? workspaceSections : platformSections;
+    const list = target.get(s.section) ?? [];
     list.push(s);
-    sections.set(s.section, list);
+    target.set(s.section, list);
   }
+  const hasPlatformSettings = platformSections.size > 0 || !!brandColorSetting;
 
   async function handleReset(key: string) {
     await resetSetting({
@@ -480,38 +492,89 @@ export default function SettingsPage() {
             </div>
           )}
 
-          <div className="space-y-6">
-            <BrandColorCard
-              setting={brandColorSetting}
-              manageable={manageable}
-              onSaved={refetch}
-            />
-            {Array.from(sections.entries()).map(([section, items]) => (
-              <Card key={section} className="shadow-none">
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-base">{section}</CardTitle>
-                  {section === "Secrets" && (
-                    <CardDescription>
-                      Sensitive values are masked and read-only. Manage these via environment variables.
-                    </CardDescription>
-                  )}
-                </CardHeader>
-                <CardContent>
-                  {items.map((setting, i) => (
-                    <div key={setting.key}>
-                      {i > 0 && <Separator />}
-                      <SettingRow
-                        setting={setting}
-                        manageable={manageable}
-                        onEdit={() => setEditSetting(setting)}
-                        onReset={() => handleReset(setting.key)}
-                        resetting={isMutating(setting.key)}
-                      />
-                    </div>
+          <div className="space-y-8">
+            {/* Workspace Settings */}
+            {workspaceSections.size > 0 && (
+              <div className="space-y-4">
+                <div>
+                  <h2 className="text-lg font-semibold tracking-tight">Workspace Settings</h2>
+                  <p className="text-sm text-muted-foreground">
+                    Settings that apply to this workspace. Workspace admins can manage these.
+                  </p>
+                </div>
+                <div className="space-y-4">
+                  {Array.from(workspaceSections.entries()).map(([section, items]) => (
+                    <Card key={section} className="shadow-none">
+                      <CardHeader className="pb-2">
+                        <CardTitle className="text-base">{section}</CardTitle>
+                      </CardHeader>
+                      <CardContent>
+                        {items.map((setting, i) => (
+                          <div key={setting.key}>
+                            {i > 0 && <Separator />}
+                            <SettingRow
+                              setting={setting}
+                              manageable={manageable}
+                              onEdit={() => setEditSetting(setting)}
+                              onReset={() => handleReset(setting.key)}
+                              resetting={isMutating(setting.key)}
+                            />
+                          </div>
+                        ))}
+                      </CardContent>
+                    </Card>
                   ))}
-                </CardContent>
-              </Card>
-            ))}
+                </div>
+              </div>
+            )}
+
+            {/* Platform Settings — only visible to platform admins */}
+            {hasPlatformSettings && (
+              <div className="space-y-4">
+                <div className="flex items-center gap-2">
+                  <Shield className="size-4 text-muted-foreground" />
+                  <div>
+                    <h2 className="text-lg font-semibold tracking-tight">Platform Settings</h2>
+                    <p className="text-sm text-muted-foreground">
+                      Global settings managed by platform administrators. Changes affect all workspaces.
+                    </p>
+                  </div>
+                </div>
+                <div className="space-y-4">
+                  <BrandColorCard
+                    setting={brandColorSetting}
+                    manageable={manageable}
+                    onSaved={refetch}
+                  />
+                  {Array.from(platformSections.entries()).map(([section, items]) => (
+                    <Card key={section} className="shadow-none">
+                      <CardHeader className="pb-2">
+                        <CardTitle className="text-base">{section}</CardTitle>
+                        {section === "Secrets" && (
+                          <CardDescription>
+                            Sensitive values are masked and read-only. Manage these via environment variables.
+                          </CardDescription>
+                        )}
+                      </CardHeader>
+                      <CardContent>
+                        {items.map((setting, i) => (
+                          <div key={setting.key}>
+                            {i > 0 && <Separator />}
+                            <SettingRow
+                              setting={setting}
+                              manageable={manageable}
+                              onEdit={() => setEditSetting(setting)}
+                              onReset={() => handleReset(setting.key)}
+                              resetting={isMutating(setting.key)}
+                            />
+                          </div>
+                        ))}
+                      </CardContent>
+                    </Card>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
         </AdminContentWrapper>
       </div>

@@ -5,6 +5,7 @@ import { useAtlasConfig } from "../../context";
 import {
   Sheet,
   SheetContent,
+  SheetDescription,
   SheetHeader,
   SheetTitle,
 } from "@/components/ui/sheet";
@@ -466,6 +467,9 @@ export function SchemaExplorer({
             <TableProperties className="size-4" />
             Schema Explorer
           </SheetTitle>
+          <SheetDescription className="sr-only">
+            Browse tables, columns, joins, and query patterns from the semantic layer
+          </SheetDescription>
         </SheetHeader>
 
         <Separator className="mt-3" />

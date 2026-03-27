@@ -618,6 +618,9 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [ ] Workspace billing page — plan, usage vs limits, portal link (#975)
 - [ ] Self-serve data residency selection for workspace admins (#976)
 
+### Follow-ups
+- [ ] Org-scope admin write operations — role change, ban, delete (#983)
+
 ---
 
 ## 1.0.0 — SaaS Launch

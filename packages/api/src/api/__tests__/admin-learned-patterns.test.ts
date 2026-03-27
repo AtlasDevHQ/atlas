@@ -209,7 +209,12 @@ mock.module("@atlas/ee/auth/ip-allowlist", () => ({
   listIPAllowlistEntries: mock(async () => []),
   addIPAllowlistEntry: mock(async () => ({})),
   removeIPAllowlistEntry: mock(async () => false),
-  IPAllowlistError: class IPAllowlistError extends Error {},
+  IPAllowlistError: class extends Error { constructor(message: string, public readonly code: string) { super(message); this.name = "IPAllowlistError"; } },
+  invalidateCache: mock(() => {}),
+  _clearCache: mock(() => {}),
+  parseCIDR: mock(() => null),
+  isIPInRange: mock(() => false),
+  isIPAllowed: mock(() => true),
 }));
 
 mock.module("@atlas/api/lib/conversations", () => ({

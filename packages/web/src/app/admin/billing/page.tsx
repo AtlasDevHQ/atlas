@@ -58,11 +58,8 @@ interface BillingStatus {
 
 // ── Helpers ───────────────────────────────────────────────────────
 
-function formatNumber(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
-  return n.toLocaleString();
-}
+// Re-use the compact number formatter already in the usage page.
+import { formatNumber } from "@/app/admin/usage/format";
 
 function tierVariant(tier: string): "default" | "secondary" | "outline" {
   switch (tier) {
@@ -93,7 +90,14 @@ export default function BillingPage() {
     "/api/v1/billing",
   );
 
-  const isSelfHosted = !loading && !data && error?.status === 404;
+  // Framework-level 404 (billing routes not mounted) means self-hosted / no Stripe.
+  // API-level 404s ("Workspace not found", "no internal database") have descriptive
+  // messages and should surface as real errors, not the self-hosted card.
+  const isSelfHosted =
+    !loading &&
+    !data &&
+    error?.status === 404 &&
+    (error.message === "Not Found" || error.message === "HTTP 404");
 
   if (isSelfHosted) {
     return (
@@ -228,9 +232,14 @@ function PortalCard({ data }: { data: BillingStatus }) {
     const result = await portalMutate({
       body: { returnUrl: window.location.href },
     });
-    if (result.ok && result.data?.url) {
+    if (!result.ok) {
+      // Error is already surfaced by useAdminMutation → portalError.
+      return;
+    }
+    if (result.data?.url) {
       window.location.href = result.data.url;
-    } else if (result.ok && !result.data?.url) {
+    } else {
+      console.warn("Billing portal: 200 response but no URL returned", result.data);
       setPortalUrlError("Billing portal URL was not returned. Please contact support.");
     }
   }
@@ -251,7 +260,7 @@ function PortalCard({ data }: { data: BillingStatus }) {
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-3">
-        {combinedError && (
+        {combinedError !== null && (
           <ErrorBanner
             message={combinedError}
             onRetry={() => {
@@ -349,22 +358,40 @@ function UsageRow({
           <span className="text-muted-foreground">{icon}</span>
           {label}
         </div>
-        {isUnlimited ? (
-          <Badge variant="outline" className="text-xs">Unlimited</Badge>
-        ) : used !== undefined ? (
-          <span className={`text-sm font-medium ${overageColor(status ?? "ok")}`}>
-            {formatNumber(used)} / {formatNumber(limit)}
-          </span>
-        ) : (
-          <span className="text-sm text-muted-foreground">
-            Limit: {formatNumber(limit)}
-          </span>
-        )}
+        <UsageValue used={used} limit={limit} isUnlimited={isUnlimited} status={status} />
       </div>
       {!isUnlimited && percent !== undefined && (
         <Progress value={Math.min(percent, 100)} className="h-2" />
       )}
     </div>
+  );
+}
+
+function UsageValue({
+  used,
+  limit,
+  isUnlimited,
+  status,
+}: {
+  used?: number;
+  limit: number | null;
+  isUnlimited: boolean;
+  status?: string;
+}) {
+  if (isUnlimited) {
+    return <Badge variant="outline" className="text-xs">Unlimited</Badge>;
+  }
+  if (used !== undefined) {
+    return (
+      <span className={`text-sm font-medium ${overageColor(status ?? "ok")}`}>
+        {formatNumber(used)} / {formatNumber(limit!)}
+      </span>
+    );
+  }
+  return (
+    <span className="text-sm text-muted-foreground">
+      Limit: {formatNumber(limit!)}
+    </span>
   );
 }
 

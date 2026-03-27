@@ -11,7 +11,7 @@
  * - Shell backend (just-bash) → canned command outputs
  */
 
-import { describe, expect, it, beforeEach, mock } from "bun:test";
+import { describe, expect, it, beforeEach, afterEach, mock } from "bun:test";
 import {
   MockLanguageModelV3,
   convertArrayToReadableStream,
@@ -200,12 +200,22 @@ function findToolResults(steps: any[], toolName: string): any[] {
 // ---------------------------------------------------------------------------
 
 describe("agent integration", () => {
+  const savedSandboxUrl = process.env.ATLAS_SANDBOX_URL;
+
   beforeEach(() => {
     callId = 0;
     invalidateExploreBackend();
     process.env.ATLAS_DATASOURCE_URL = "postgresql://test:test@localhost:5432/test";
     delete process.env.ATLAS_TABLE_WHITELIST;
+    // Force just-bash fallback so the mocked Bash class is used (not sidecar)
+    delete process.env.ATLAS_SANDBOX_URL;
     mockDBQuery = async () => ({ columns: ["id", "name"], rows: [{ id: 1, name: "Acme" }] });
+  });
+
+  afterEach(() => {
+    if (savedSandboxUrl !== undefined) {
+      process.env.ATLAS_SANDBOX_URL = savedSandboxUrl;
+    }
   });
 
   // -----------------------------------------------------------------------

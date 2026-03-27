@@ -5,6 +5,7 @@ import type { CellStatus } from "./types";
 import { ToolPart } from "@/ui/components/chat/tool-part";
 import { Markdown } from "@/ui/components/chat/markdown";
 import { TypingIndicator } from "@/ui/components/chat/typing-indicator";
+import { parseSuggestions } from "@/ui/lib/helpers";
 
 interface CellOutputProps {
   assistantMessage: UIMessage | null;
@@ -28,7 +29,7 @@ export function NotebookCellOutput({ assistantMessage, status, collapsed }: Cell
   if (collapsed) {
     const preview = assistantMessage.parts
       .filter((p): p is Extract<typeof p, { type: "text" }> => p.type === "text")
-      .map((p) => p.text)
+      .map((p) => parseSuggestions(p.text).text)
       .join(" ")
       .slice(0, 120);
 
@@ -44,7 +45,8 @@ export function NotebookCellOutput({ assistantMessage, status, collapsed }: Cell
     <div className="space-y-2 text-sm">
       {assistantMessage.parts.map((part, i) => {
         if (part.type === "text") {
-          return <Markdown key={i} content={part.text} />;
+          const displayText = parseSuggestions(part.text).text;
+          return <Markdown key={i} content={displayText} />;
         }
         if (part.type === "tool-invocation") {
           return <ToolPart key={i} part={part} />;

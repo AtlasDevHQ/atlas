@@ -8,13 +8,13 @@ import { Callout } from "fumadocs-ui/components/callout";
 Custom domains let workspaces use their own URL (e.g. `data.acme.com`) instead of the default `app.useatlas.dev`. Atlas integrates with Railway's custom domain API for provisioning and automatic TLS certificate management via Let's Encrypt.
 
 <Callout type="info" title="SaaS Feature">
-  Custom domains are available on [app.useatlas.dev](https://app.useatlas.dev) Enterprise plans. Self-hosted deployments configure domains directly in their hosting provider.
+  Custom domains are available on [app.useatlas.dev](https://app.useatlas.dev) Enterprise plans. Self-hosted deployments configure domains directly in their hosting provider. Workspace admins can self-serve via **Admin Console → Configuration → Custom Domain**. Platform admins retain cross-workspace management at **Admin Console → Platform → Custom Domains**.
 </Callout>
 
 <Callout title="Prerequisites">
-- Active Enterprise plan on [app.useatlas.dev](https://app.useatlas.dev)
+- Active Enterprise plan on [app.useatlas.dev](https://app.useatlas.dev) (or self-hosted "free" tier)
 - Internal database configured (`DATABASE_URL`)
-- Platform admin role for dashboard access
+- Admin role (workspace admin for self-serve, platform admin for cross-workspace management)
 - Railway deployment with API token configured
 </Callout>
 
@@ -50,9 +50,44 @@ RAILWAY_WEB_SERVICE_ID=your-web-service-id
 | `RAILWAY_ENVIRONMENT_ID` | Environment ID (typically `production`) |
 | `RAILWAY_WEB_SERVICE_ID` | Service ID for the web service that should receive custom domain traffic |
 
-## Admin UI
+## Workspace Admin (Self-Serve)
 
-Navigate to **Admin Console → Platform Admin → Custom Domains** to manage domains.
+Workspace admins on Enterprise plans can manage their own custom domain at **Admin Console → Configuration → Custom Domain**. One domain per workspace (MVP).
+
+### Adding a Domain
+
+1. Navigate to **Admin Console → Configuration → Custom Domain**
+2. Enter your domain (e.g. `data.acme.com`)
+3. Click **Add Domain**
+4. Atlas registers the domain and shows DNS configuration instructions
+
+### DNS Setup
+
+After adding, set up a CNAME record with your DNS provider:
+
+| Record Type | Name | Value |
+|-------------|------|-------|
+| CNAME | `data.acme.com` | `<target>.up.railway.app` (shown in the admin page) |
+
+Click the copy button next to the CNAME target to copy it.
+
+### Checking Status
+
+1. After creating the DNS record, wait a few minutes for propagation
+2. Click **Check Status** on the domain page
+3. Status updates to **Active** (green) once DNS is propagated and TLS certificate is issued
+
+### Removing a Domain
+
+Click **Remove Domain** and confirm. This removes the domain from both Railway and Atlas.
+
+### Plan Gating
+
+Non-enterprise workspaces see an upgrade prompt instead of the domain form. Self-hosted deployments (which default to the "free" tier) can use custom domains without plan restrictions.
+
+## Platform Admin (Cross-Workspace)
+
+Platform admins retain full domain management across all workspaces at **Admin Console → Platform → Custom Domains**.
 
 ### Registering a Domain
 
@@ -60,16 +95,6 @@ Navigate to **Admin Console → Platform Admin → Custom Domains** to manage do
 2. Enter the **Workspace ID** and **Domain** (e.g. `data.acme.com`)
 3. Click **Register Domain**
 4. Atlas creates the domain in Railway and shows the CNAME target
-
-### DNS Setup
-
-After registration, set up a CNAME record with your DNS provider:
-
-| Record Type | Name | Value |
-|-------------|------|-------|
-| CNAME | `data.acme.com` | `<target>.up.railway.app` (shown in admin UI) |
-
-The CNAME target is displayed in the admin table — click the copy button to copy it.
 
 ### Verification
 
@@ -83,7 +108,7 @@ The CNAME target is displayed in the admin table — click the copy button to co
 | Status | Meaning |
 |--------|---------|
 | **Pending** (yellow) | Domain registered, waiting for DNS setup or certificate provisioning |
-| **Verified** (green) | DNS verified and TLS certificate issued — domain is live |
+| **Verified** / **Active** (green) | DNS verified and TLS certificate issued — domain is live. API returns `"verified"` status; workspace UI displays "Active" |
 | **Failed** (red) | DNS verification or certificate provisioning failed |
 
 ### Deleting a Domain
@@ -100,7 +125,20 @@ When a request arrives on a custom domain, Atlas:
 
 ## API Reference
 
-All endpoints require `platform_admin` role and enterprise features.
+### Workspace Admin Endpoints
+
+Require `admin` role and active organization. Enterprise plan required for adding a domain (`POST /api/v1/admin/domain`).
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/v1/admin/domain` | Get workspace custom domain (null if none) |
+| `POST` | `/api/v1/admin/domain` | Add a custom domain (`{ domain }`) |
+| `POST` | `/api/v1/admin/domain/verify` | Check verification status |
+| `DELETE` | `/api/v1/admin/domain` | Remove workspace custom domain |
+
+### Platform Admin Endpoints
+
+Require `platform_admin` role and enterprise features.
 
 | Method | Path | Description |
 |--------|------|-------------|

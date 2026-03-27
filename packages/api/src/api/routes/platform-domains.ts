@@ -13,32 +13,22 @@
 import { createRoute, z } from "@hono/zod-openapi";
 import { Effect } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
-import { runEffect, type DomainErrorMapping } from "@atlas/api/lib/effect/hono";
-import {
-  RequestContext,
-} from "@atlas/api/lib/effect/services";
-import { DomainError, type DomainErrorCode } from "@atlas/ee/platform/domains";
-import type { ContentfulStatusCode } from "hono/utils/http-status";
+import { runEffect } from "@atlas/api/lib/effect/hono";
+import { RequestContext } from "@atlas/api/lib/effect/services";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createPlatformRouter } from "./admin-router";
+import {
+  CustomDomainSchema,
+  domainErrors,
+  loadDomains,
+  sanitizeDomainError,
+} from "./shared-domains";
 
 const log = createLogger("platform-domains");
 
 // ---------------------------------------------------------------------------
 // Schemas
 // ---------------------------------------------------------------------------
-
-const CustomDomainSchema = z.object({
-  id: z.string(),
-  workspaceId: z.string(),
-  domain: z.string(),
-  status: z.enum(["pending", "verified", "failed"]),
-  railwayDomainId: z.string().nullable(),
-  cnameTarget: z.string().nullable(),
-  certificateStatus: z.enum(["PENDING", "ISSUED", "FAILED"]).nullable(),
-  createdAt: z.string(),
-  verifiedAt: z.string().nullable(),
-});
 
 const RegisterDomainBodySchema = z.object({
   workspaceId: z.string().min(1).openapi({
@@ -144,60 +134,6 @@ const deleteDomainRoute = createRoute({
 });
 
 // ---------------------------------------------------------------------------
-// Module loader (lazy import — fail gracefully when ee is unavailable)
-// ---------------------------------------------------------------------------
-
-type DomainsModule = typeof import("@atlas/ee/platform/domains");
-
-/** Infrastructure error codes whose messages may contain internal details. */
-const SANITIZED_CODES = new Set<DomainErrorCode>(["railway_error", "railway_not_configured", "data_integrity"]);
-
-const DOMAIN_ERROR_STATUS: Record<DomainErrorCode, ContentfulStatusCode> = {
-  no_internal_db: 503,
-  invalid_domain: 400,
-  duplicate_domain: 409,
-  domain_not_found: 404,
-  railway_error: 502,
-  railway_not_configured: 503,
-  data_integrity: 500,
-};
-
-const domainDomainErrors: DomainErrorMapping[] = [
-  [DomainError, DOMAIN_ERROR_STATUS],
-];
-
-async function loadDomains(): Promise<DomainsModule | null> {
-  try {
-    return await import("@atlas/ee/platform/domains");
-  } catch (err) {
-    if (err instanceof Error && "code" in err && (err as NodeJS.ErrnoException).code === "MODULE_NOT_FOUND") {
-      return null;
-    }
-    log.error(
-      { err: err instanceof Error ? err : new Error(String(err)) },
-      "Failed to load domains module — unexpected error",
-    );
-    throw err;
-  }
-}
-
-/**
- * Sanitize DomainError messages for infrastructure errors before they
- * reach the client. Railway errors and data integrity errors may contain
- * internal infrastructure details that should not be exposed.
- *
- * User-facing errors (invalid_domain, duplicate_domain, domain_not_found)
- * pass through unmodified.
- */
-function sanitizeDomainError(err: unknown, requestId: string): void {
-  if (err instanceof DomainError && SANITIZED_CODES.has(err.code)) {
-    // Log the real error for debugging, then replace the message
-    log.error({ err, code: err.code, requestId }, "Infrastructure domain error");
-    err.message = `Domain service error (ref: ${requestId.slice(0, 8)})`;
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
 
@@ -216,7 +152,7 @@ platformDomains.openapi(listDomainsRoute, async (c) => {
 
     const domains = yield* Effect.promise(() => mod.listAllDomains());
     return c.json({ domains }, 200);
-  }), { label: "list domains", domainErrors: domainDomainErrors });
+  }), { label: "list domains", domainErrors: domainErrors });
 });
 
 // ── Register domain ──────────────────────────────────────────────────
@@ -242,7 +178,7 @@ platformDomains.openapi(registerDomainRoute, async (c) => {
         return err instanceof Error ? err : new Error(String(err));
       },
     });
-  }), { label: "register domain", domainErrors: domainDomainErrors });
+  }), { label: "register domain", domainErrors: domainErrors });
 });
 
 // ── Verify domain ────────────────────────────────────────────────────
@@ -267,7 +203,7 @@ platformDomains.openapi(verifyDomainRoute, async (c) => {
         return err instanceof Error ? err : new Error(String(err));
       },
     });
-  }), { label: "verify domain", domainErrors: domainDomainErrors });
+  }), { label: "verify domain", domainErrors: domainErrors });
 });
 
 // ── Delete domain ────────────────────────────────────────────────────
@@ -293,7 +229,7 @@ platformDomains.openapi(deleteDomainRoute, async (c) => {
         return err instanceof Error ? err : new Error(String(err));
       },
     });
-  }), { label: "delete domain", domainErrors: domainDomainErrors });
+  }), { label: "delete domain", domainErrors: domainErrors });
 });
 
 export { platformDomains };

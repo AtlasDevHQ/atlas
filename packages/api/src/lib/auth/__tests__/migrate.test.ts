@@ -21,6 +21,9 @@ function createTrackingPool(opts: { shouldThrow?: boolean } = {}) {
         queries.push(sql);
         return { rows: [] };
       },
+      async connect() {
+        return { query: async () => ({ rows: [] }), release() {} };
+      },
       async end() {},
       on() {},
     },

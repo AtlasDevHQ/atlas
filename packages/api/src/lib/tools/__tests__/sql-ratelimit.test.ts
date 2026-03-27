@@ -110,6 +110,9 @@ const mockPool: InternalPool = {
     auditInserts.push({ sql, params });
     return { rows: [] };
   },
+  async connect() {
+    return { query: async () => ({ rows: [] }), release() {} };
+  },
   end: async () => {},
   on: () => {},
 };

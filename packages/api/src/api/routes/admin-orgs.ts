@@ -648,8 +648,14 @@ adminOrgs.openapi(deleteOrgRoute, async (c) => {
     }
     flushCache();
 
-    const cascade = yield* Effect.promise(() => cascadeWorkspaceDelete(orgId));
-    yield* Effect.promise(() => updateWorkspaceStatus(orgId, "deleted"));
+    const cascade = yield* Effect.tryPromise({
+      try: () => cascadeWorkspaceDelete(orgId),
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    });
+    yield* Effect.tryPromise({
+      try: () => updateWorkspaceStatus(orgId, "deleted"),
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    });
 
     log.info({ orgId, requestId, admin: user?.id, cascade, poolsDrained }, "Workspace soft-deleted with cascading cleanup");
     return c.json({ message: "Workspace deleted. All associated data has been cleaned up.", cascade: { poolsDrained, ...cascade } }, 200);

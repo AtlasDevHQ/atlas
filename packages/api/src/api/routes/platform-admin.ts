@@ -562,8 +562,14 @@ platformAdmin.openapi(deleteWorkspaceRoute, async (c) => {
 
     // Cascade cleanup first, then mark as deleted — if cleanup fails,
     // the workspace remains in its current state and can be retried.
-    const cleanup = yield* Effect.promise(() => cascadeWorkspaceDelete(workspaceId));
-    yield* Effect.promise(() => updateWorkspaceStatus(workspaceId, "deleted"));
+    const cleanup = yield* Effect.tryPromise({
+      try: () => cascadeWorkspaceDelete(workspaceId),
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    });
+    yield* Effect.tryPromise({
+      try: () => updateWorkspaceStatus(workspaceId, "deleted"),
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    });
 
     log.info({ workspaceId, cleanup, requestId }, "Workspace deleted by platform admin");
 

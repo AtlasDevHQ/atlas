@@ -585,9 +585,10 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] Notebook empty state after agent completes — user message not in conversation data (#958, f72689c)
 - [x] Notebook text cells leak across conversations, chat broken in notebook view (#959, f72689c)
 - [x] Demo dataset picker in onboarding — choose cybersec/ecommerce during first-run (PR #961)
-- [ ] Next.js proxy can't read NEXT_PUBLIC env vars from repo root .env (#957)
-- [ ] Onboarding test mock — 5 tests failing, mock missing resolveDatasourceUrl + IP allowlist leak (#960)
-- [ ] Seed-demo.ts skips seeding on fresh demo-data DB — Atlas tables leak into datasource (#962)
+- [x] Next.js proxy can't read NEXT_PUBLIC env vars from repo root .env (#957, PR #990)
+- [x] Onboarding test mock — 5 tests failing, mock missing resolveDatasourceUrl + IP allowlist leak (#960, PR #989)
+- [x] Admin learned-patterns test — 8 tests failing, IP allowlist query interference (#977, PR #989)
+- [x] Seed-demo.ts skips seeding on fresh demo-data DB — Atlas tables leak into datasource (#962, PR #991)
 
 ---
 
@@ -618,8 +619,11 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [ ] Workspace billing page — plan, usage vs limits, portal link (#975)
 - [ ] Self-serve data residency selection for workspace admins (#976)
 
+### Infrastructure
+- [ ] Adopt versioned migration framework for internal DB (#978)
+
 ### Follow-ups
-- [ ] Org-scope admin write operations — role change, ban, delete (#983)
+- [x] Org-scope admin write operations — role change, ban, delete (#983, PR #988)
 
 ---
 

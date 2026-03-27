@@ -10,12 +10,17 @@ setup("authenticate as admin", async ({ page }) => {
   await page.goto("/");
 
   // Dismiss the guided tour if it appears before login (fresh DB — tour overlay
-  // is z-[9999] and blocks the login form below it)
+  // covers the viewport and blocks the login form below it)
   async function dismissTourIfVisible() {
     const skipTourBtn = page.locator('button:has-text("Skip tour")');
     if (await skipTourBtn.isVisible({ timeout: 2_000 }).catch(() => false)) {
-      await skipTourBtn.click();
-      await skipTourBtn.waitFor({ state: "hidden", timeout: 5_000 }).catch(() => {});
+      try {
+        await skipTourBtn.click();
+        await skipTourBtn.waitFor({ state: "hidden", timeout: 5_000 });
+      } catch (err) {
+        // Best-effort dismissal — downstream assertions will catch real problems
+        console.debug("[setup] could not dismiss tour:", err instanceof Error ? err.message : String(err));
+      }
     }
   }
 
@@ -81,11 +86,7 @@ setup("authenticate as admin", async ({ page }) => {
   }
 
   // Dismiss the guided tour if it appears (fresh DB / first login)
-  const skipTour = page.locator('button:has-text("Skip tour")');
-  if (await skipTour.isVisible({ timeout: 3_000 }).catch(() => false)) {
-    await skipTour.click();
-    await skipTour.waitFor({ state: "hidden", timeout: 5_000 }).catch(() => {});
-  }
+  await dismissTourIfVisible();
 
   await page.context().storageState({ path: STORAGE_STATE });
 });

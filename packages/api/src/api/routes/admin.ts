@@ -114,8 +114,14 @@ async function verifyOrgMembership(
 ): Promise<boolean> {
   const orgId = authResult.user?.activeOrganizationId;
   const isPlatformAdmin = authResult.user?.role === "platform_admin";
-  // Self-hosted (no orgs) or platform admins — always allowed
-  if (!orgId || isPlatformAdmin || !hasInternalDB()) return true;
+  // Platform admins — always allowed
+  if (!orgId || isPlatformAdmin) return true;
+  // No internal DB — can't verify membership. Log if org context is present
+  // since this may indicate a misconfigured SaaS deployment.
+  if (!hasInternalDB()) {
+    log.warn({ orgId, targetUserId }, "Org membership check skipped — no internal DB available despite org context");
+    return true;
+  }
   try {
     const rows = await internalQuery<{ userId: string }>(
       `SELECT "userId" FROM member WHERE "userId" = $1 AND "organizationId" = $2 LIMIT 1`,

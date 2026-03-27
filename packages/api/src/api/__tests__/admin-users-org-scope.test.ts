@@ -371,6 +371,16 @@ describe("Org-scoped user write operations (#983)", () => {
       expect(res.status).toBe(200);
       expect(mockUnbanUser).toHaveBeenCalled();
     });
+
+    it("platform admin can unban any user", async () => {
+      setPlatformAdmin();
+
+      const res = await app.fetch(
+        adminRequest("POST", "/api/v1/admin/users/user-in-any-org/unban", {}),
+      );
+      expect(res.status).toBe(200);
+      expect(mockUnbanUser).toHaveBeenCalled();
+    });
   });
 
   describe("DELETE /api/v1/admin/users/:id", () => {
@@ -429,6 +439,16 @@ describe("Org-scoped user write operations (#983)", () => {
 
       const res = await app.fetch(
         adminRequest("POST", "/api/v1/admin/users/user-in-org-1/revoke"),
+      );
+      expect(res.status).toBe(200);
+      expect(mockRevokeSessions).toHaveBeenCalled();
+    });
+
+    it("platform admin can revoke sessions for any user", async () => {
+      setPlatformAdmin();
+
+      const res = await app.fetch(
+        adminRequest("POST", "/api/v1/admin/users/user-in-any-org/revoke"),
       );
       expect(res.status).toBe(200);
       expect(mockRevokeSessions).toHaveBeenCalled();

@@ -11,6 +11,7 @@ import { Tab, Tabs } from "fumadocs-ui/components/tabs";
 import { Step, Steps } from "fumadocs-ui/components/steps";
 import { Accordion, Accordions } from "fumadocs-ui/components/accordion";
 import { APIPage } from "@/components/api-page";
+import { RoadmapTimeline } from "@/components/roadmap-timeline";
 import { LLMCopyButton } from "@/components/llm-copy-button";
 import { getGithubLastEdit } from "fumadocs-core/content/github";
 
@@ -88,6 +89,7 @@ export default async function Page(props: {
             Accordion,
             Accordions,
             APIPage,
+            RoadmapTimeline,
           }}
         />
       </DocsBody>

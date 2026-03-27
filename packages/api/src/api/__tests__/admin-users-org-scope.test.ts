@@ -492,6 +492,20 @@ describe("Org-scoped user write operations (#983)", () => {
       );
       // Should fail closed — 500, not 200
       expect(res.status).toBe(500);
+      expect(mockSetRole).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("hasInternalDB = false bypass", () => {
+    it("bypasses membership check when no internal DB is available", async () => {
+      setWorkspaceAdmin("org-1");
+      mockHasInternalDB = false;
+
+      const res = await app.fetch(
+        adminRequest("PATCH", "/api/v1/admin/users/any-user/role", { role: "member" }),
+      );
+      expect(res.status).toBe(200);
+      expect(mockSetRole).toHaveBeenCalled();
     });
   });
 });

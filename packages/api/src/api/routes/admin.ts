@@ -4393,14 +4393,14 @@ admin.openapi(getTokenTrendsRoute, async (c) => runHandler(c, "fetch token usage
 
 // -- Settings ---------------------------------------------------------------
 
-admin.openapi(getSettingsRoute, async (c) => {
+admin.openapi(getSettingsRoute, async (c) => runHandler(c, "list settings", async () => {
   const { authResult } = await adminAuthAndContext(c);
   const orgId = authResult.user?.activeOrganizationId;
   const isPlatformAdmin = authResult.user?.role === "platform_admin";
   const settings = getSettingsForAdmin(orgId, isPlatformAdmin || !orgId);
   const manageable = hasInternalDB();
   return c.json({ settings, manageable }, 200);
-});
+}));
 
 admin.openapi(updateSettingRoute, async (c) => runHandler(c, "save setting", async () => {
 

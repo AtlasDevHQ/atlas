@@ -563,7 +563,7 @@ describe("admin settings routes", () => {
       expect(data.message).toContain("platform-level setting");
     });
 
-    it("workspace admin can update workspace-scoped settings", async () => {
+    it("workspace admin can update workspace-scoped settings with orgId passthrough", async () => {
       mockAuthenticateRequest.mockImplementationOnce(() =>
         Promise.resolve({
           authenticated: true,
@@ -579,9 +579,29 @@ describe("admin settings routes", () => {
       });
       expect(res.status).toBe(200);
       expect(mockSetSetting).toHaveBeenCalledTimes(1);
+      // Verify orgId is forwarded for workspace-scoped settings
+      expect(mockSetSetting).toHaveBeenCalledWith("ATLAS_ROW_LIMIT", "500", "ws-admin-1", "org-1");
     });
 
-    it("platform admin can update platform-scoped settings even with org context", async () => {
+    it("workspace admin can delete workspace-scoped settings with orgId passthrough", async () => {
+      mockAuthenticateRequest.mockImplementationOnce(() =>
+        Promise.resolve({
+          authenticated: true,
+          mode: "better-auth",
+          user: { id: "ws-admin-1", mode: "better-auth", label: "WS Admin", role: "admin", activeOrganizationId: "org-1" },
+        }),
+      );
+
+      const res = await request("/api/v1/admin/settings/ATLAS_ROW_LIMIT", {
+        method: "DELETE",
+      });
+      expect(res.status).toBe(200);
+      expect(mockDeleteSetting).toHaveBeenCalledTimes(1);
+      // Verify orgId is forwarded for workspace-scoped settings
+      expect(mockDeleteSetting).toHaveBeenCalledWith("ATLAS_ROW_LIMIT", "ws-admin-1", "org-1");
+    });
+
+    it("platform admin can update platform-scoped settings — orgId NOT forwarded", async () => {
       mockAuthenticateRequest.mockImplementationOnce(() =>
         Promise.resolve({
           authenticated: true,
@@ -596,6 +616,9 @@ describe("admin settings routes", () => {
         body: JSON.stringify({ value: "openai" }),
       });
       expect(res.status).toBe(200);
+      expect(mockSetSetting).toHaveBeenCalledTimes(1);
+      // Platform-scoped: orgId should NOT be forwarded
+      expect(mockSetSetting).toHaveBeenCalledWith("ATLAS_PROVIDER", "openai", "platform-admin-1", undefined);
     });
 
     it("self-hosted admin (no org) can update platform-scoped settings", async () => {
@@ -606,6 +629,9 @@ describe("admin settings routes", () => {
         body: JSON.stringify({ value: "openai" }),
       });
       expect(res.status).toBe(200);
+      expect(mockSetSetting).toHaveBeenCalledTimes(1);
+      // Self-hosted: no orgId
+      expect(mockSetSetting).toHaveBeenCalledWith("ATLAS_PROVIDER", "openai", "admin-1", undefined);
     });
   });
 });

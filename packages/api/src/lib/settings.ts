@@ -419,7 +419,10 @@ export async function deleteSetting(key: string, userId?: string, orgId?: string
   }
 
   const def = SETTINGS_MAP.get(key);
-  const effectiveOrgId = def?.scope === "platform" ? undefined : orgId;
+  if (!def) {
+    throw new Error(`Unknown setting key: "${key}"`);
+  }
+  const effectiveOrgId = def.scope === "platform" ? undefined : orgId;
 
   if (effectiveOrgId) {
     await internalQuery("DELETE FROM settings WHERE key = $1 AND org_id = $2", [key, effectiveOrgId]);
@@ -468,10 +471,11 @@ function maskSecret(value: string | undefined): string | undefined {
  * 4-tier chain and include workspace-override source. Platform admins
  * (no orgId) see all settings at the platform level.
  *
- * When isPlatformAdmin is false, only workspace-scoped settings are returned.
+ * When isPlatformAdmin is true, all settings are returned (platform + workspace).
+ * Otherwise only workspace-scoped settings are returned (fail-closed default).
  */
 export function getSettingsForAdmin(orgId?: string, isPlatformAdmin?: boolean): SettingWithValue[] {
-  const showAll = isPlatformAdmin !== false;
+  const showAll = isPlatformAdmin === true;
 
   return SETTINGS_REGISTRY
     .filter((def) => showAll || def.scope === "workspace")

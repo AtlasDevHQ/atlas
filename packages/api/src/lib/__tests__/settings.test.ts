@@ -313,6 +313,13 @@ describe("settings module", () => {
       );
     });
 
+    it("throws for unknown keys", async () => {
+      enableInternalDB();
+      await expect(deleteSetting("NONEXISTENT_KEY")).rejects.toThrow(
+        "Unknown setting key",
+      );
+    });
+
     it("removes platform override, reverts to env var", async () => {
       process.env.ATLAS_ROW_LIMIT = "500";
       enableInternalDB();
@@ -405,18 +412,22 @@ describe("settings module", () => {
   // ---------------------------------------------------------------------------
 
   describe("getSettingsForAdmin", () => {
-    it("returns all registered settings with source=default (no orgId)", () => {
-      // Clear any env vars that might affect the test
+    it("returns workspace-scoped settings by default (fail-closed)", () => {
       delete process.env.ATLAS_ROW_LIMIT;
       delete process.env.ATLAS_PROVIDER;
 
       const settings = getSettingsForAdmin();
       expect(settings.length).toBeGreaterThan(0);
+      // Default (no isPlatformAdmin) only returns workspace-scoped
+      expect(settings.every((s) => s.scope === "workspace")).toBe(true);
 
       const rowLimit = settings.find((s) => s.key === "ATLAS_ROW_LIMIT");
       expect(rowLimit).toBeDefined();
       expect(rowLimit!.source).toBe("default");
       expect(rowLimit!.currentValue).toBe("1000");
+
+      // Platform-scoped settings should NOT be visible
+      expect(settings.find((s) => s.key === "ATLAS_PROVIDER")).toBeUndefined();
     });
 
     it("shows env source when env var is set", () => {
@@ -445,10 +456,10 @@ describe("settings module", () => {
       expect(rowLimit!.currentValue).toBe("200");
     });
 
-    it("masks secret values", () => {
+    it("masks secret values (platform admin view)", () => {
       process.env.ANTHROPIC_API_KEY = "sk-ant-very-long-secret-key-value-here";
 
-      const settings = getSettingsForAdmin();
+      const settings = getSettingsForAdmin(undefined, true);
       const apiKey = settings.find((s) => s.key === "ANTHROPIC_API_KEY");
       expect(apiKey!.currentValue).not.toContain("very-long");
       expect(apiKey!.currentValue).toContain("••••");
@@ -551,7 +562,8 @@ describe("settings module", () => {
     });
 
     it("getSettingsForAdmin includes requiresRestart in output", () => {
-      const settings = getSettingsForAdmin();
+      // Use platform admin view to see all settings including platform-scoped
+      const settings = getSettingsForAdmin(undefined, true);
       const rowLimit = settings.find((s) => s.key === "ATLAS_ROW_LIMIT");
       expect(rowLimit!.requiresRestart).toBeFalsy();
 

@@ -1,0 +1,131 @@
+metrics:
+  - id: avg_fulfillment_time
+    label: Average Fulfillment Time
+    description: >
+      Average days from shipment creation (order processing) to actual ship date.
+      Measures warehouse processing speed.
+    type: atomic
+    unit: days
+    sql: |-
+      SELECT AVG(EXTRACT(DAY FROM (shipped_at - created_at))) AS avg_fulfillment_days
+      FROM shipments
+      WHERE shipped_at IS NOT NULL
+    aggregation: avg
+    objective: minimize
+
+  - id: avg_transit_time
+    label: Average Transit Time
+    description: >
+      Average days from ship date to delivery. Measures carrier performance.
+    type: atomic
+    unit: days
+    sql: |-
+      SELECT AVG(EXTRACT(DAY FROM (delivered_at - shipped_at))) AS avg_transit_days
+      FROM shipments
+      WHERE delivered_at IS NOT NULL
+    aggregation: avg
+    objective: minimize
+
+  - id: avg_order_to_delivery
+    label: Average Order-to-Delivery Time
+    description: >
+      Average total days from order placement to delivery. End-to-end fulfillment
+      metric combining processing + transit time.
+    type: derived
+    unit: days
+    sql: |-
+      SELECT AVG(EXTRACT(DAY FROM (s.delivered_at - o.created_at))) AS avg_days
+      FROM orders o
+      JOIN shipments s ON s.order_id = o.id
+      WHERE s.delivered_at IS NOT NULL
+    aggregation: avg
+    objective: minimize
+
+  - id: return_rate
+    label: Return Rate
+    description: >
+      Percentage of orders that result in a return request.
+    type: derived
+    unit: percent
+    sql: |-
+      SELECT ROUND(100.0 * COUNT(DISTINCT r.order_id) / NULLIF(COUNT(DISTINCT o.id), 0), 1) AS return_rate
+      FROM orders o
+      LEFT JOIN returns r ON r.order_id = o.id
+    aggregation: ratio
+    objective: minimize
+
+  - id: returns_by_reason
+    label: Returns by Reason
+    description: >
+      Return volume by normalized reason. Uses LOWER() to handle case
+      inconsistencies in the reason field.
+    type: breakdown
+    sql: |-
+      SELECT LOWER(reason) AS return_reason,
+             COUNT(*) AS return_count,
+             ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (), 1) AS pct
+      FROM returns
+      GROUP BY LOWER(reason)
+      ORDER BY return_count DESC
+
+  - id: carrier_performance
+    label: Carrier Performance
+    description: >
+      Delivery rate and average transit time by shipping carrier.
+    type: breakdown
+    unit: days
+    sql: |-
+      SELECT carrier,
+             COUNT(*) AS shipment_count,
+             COUNT(*) FILTER (WHERE status = 'delivered') AS delivered,
+             ROUND(100.0 * COUNT(*) FILTER (WHERE status = 'delivered') / COUNT(*), 1) AS delivery_rate,
+             AVG(EXTRACT(DAY FROM (delivered_at - shipped_at))) AS avg_transit_days
+      FROM shipments
+      WHERE shipped_at IS NOT NULL
+      GROUP BY carrier
+      ORDER BY shipment_count DESC
+
+  - id: inventory_health
+    label: Inventory Health
+    description: >
+      Summary of stock levels — out of stock, low stock, adequate, and overstock
+      counts across all variant-warehouse combinations.
+    type: breakdown
+    sql: |-
+      SELECT CASE
+               WHEN quantity = 0 THEN 'Out of Stock'
+               WHEN quantity < reorder_point THEN 'Low Stock'
+               WHEN quantity < reorder_point * 3 THEN 'Adequate'
+               ELSE 'Overstock'
+             END AS stock_status,
+             COUNT(*) AS sku_count,
+             SUM(quantity) AS total_units,
+             ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (), 1) AS pct
+      FROM inventory_levels
+      GROUP BY stock_status
+      ORDER BY sku_count DESC
+
+  - id: low_stock_alert_count
+    label: Low Stock Alerts
+    description: >
+      Number of variant-warehouse combinations with stock below reorder point.
+    type: atomic
+    sql: |-
+      SELECT COUNT(*) AS low_stock_count
+      FROM inventory_levels
+      WHERE quantity < reorder_point
+    aggregation: count
+    objective: minimize
+
+  - id: avg_return_resolution_time
+    label: Average Return Resolution Time
+    description: >
+      Average days from return request to resolution for completed returns.
+    type: derived
+    unit: days
+    sql: |-
+      SELECT AVG(EXTRACT(DAY FROM (resolved_at - created_at))) AS avg_resolution_days
+      FROM returns
+      WHERE resolved_at IS NOT NULL
+    aggregation: avg
+    objective: minimize

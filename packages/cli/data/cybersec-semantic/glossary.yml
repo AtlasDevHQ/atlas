@@ -1,0 +1,207 @@
+terms:
+  CVSS:
+    status: defined
+    definition: >
+      Common Vulnerability Scoring System. A numeric score (0.0–10.0) rating
+      the severity of a vulnerability. Stored in vulnerabilities.cvss_score.
+      Note: ~30% of vulnerabilities have NULL cvss_score — use COALESCE or
+      filter NULLs when aggregating.
+    tables:
+      - vulnerabilities
+
+  CVE:
+    status: defined
+    definition: >
+      Common Vulnerabilities and Exposures. A unique identifier for a known
+      security vulnerability (e.g. CVE-2024-1234). Stored in vulnerabilities.cve_id.
+    tables:
+      - vulnerabilities
+
+  severity:
+    status: ambiguous
+    note: >
+      "severity" appears on vulnerabilities, incidents, and alerts. ASK the
+      user which entity they mean. Vulnerability severity is a text enum
+      (critical/high/medium/low/info). Incident severity is similar but
+      independent. Alert severity can be NULL.
+    possible_mappings:
+      - vulnerabilities.severity
+      - incidents.severity
+      - alerts.severity
+
+  MTTR:
+    status: defined
+    definition: >
+      Mean Time To Remediate (or Resolve). For scan results, calculated as
+      AVG(resolved_at - found_at) where resolved_at IS NOT NULL. For incidents,
+      calculated as AVG(resolved_at - created_at) where resolved_at IS NOT NULL.
+      Always specify which entity when discussing MTTR.
+    tables:
+      - scan_results
+      - incidents
+
+  MRR:
+    status: defined
+    definition: >
+      Monthly Recurring Revenue. The sum of mrr_cents across all active
+      subscriptions, divided by 100 for dollars. Use subscriptions.mrr_cents
+      and filter by status = 'active' for current MRR.
+    tables:
+      - subscriptions
+
+  ARR:
+    status: defined
+    definition: >
+      Annual Recurring Revenue. MRR * 12. Not stored directly — calculate
+      from subscriptions.mrr_cents.
+    tables:
+      - subscriptions
+
+  churn:
+    status: defined
+    definition: >
+      A subscription with status = 'canceled' or 'past_due' that has not
+      recovered. Churned subscriptions typically have mrr_cents = 0 or are
+      approaching zero. Analyze using subscription_events for transition history.
+    tables:
+      - subscriptions
+
+  SLA:
+    status: defined
+    definition: >
+      Service Level Agreement. In this context, refers to remediation SLA —
+      the expected time to complete a remediation action based on priority.
+      Track via remediation_actions.due_date vs completed_at.
+    tables:
+      - remediation_actions
+
+  IOC:
+    status: defined
+    definition: >
+      Indicator of Compromise. Observable artifacts (IP addresses, file hashes,
+      domains, URLs) that indicate a system may have been compromised. Stored
+      in indicators_of_compromise with type and value fields.
+    tables:
+      - indicators_of_compromise
+
+  risk_level:
+    status: defined
+    definition: >
+      A numeric score (1–10) assigned to scan results indicating the risk
+      a specific finding poses. Higher = more critical. Stored in
+      scan_results.risk_level. Distinct from CVSS (which rates the
+      vulnerability itself) — risk_level accounts for asset context.
+    tables:
+      - scan_results
+
+  status:
+    status: ambiguous
+    note: >
+      "status" appears on many entities with different meanings. ASK for
+      context. Common uses: subscriptions (active/canceled/past_due/trialing),
+      scans (pending/running/completed/failed), scan_results (open/resolved/
+      false_positive), incidents (open/investigating/contained/resolved/closed),
+      remediation_actions (open/in_progress/completed/deferred).
+    possible_mappings:
+      - subscriptions.status
+      - scans.status
+      - scan_results.status
+      - incidents.status
+      - remediation_actions.status
+      - alerts.status
+      - compliance_assessments.status
+
+  asset:
+    status: defined
+    definition: >
+      An IT resource monitored by Sentinel Security — servers, workstations,
+      network devices, containers, or cloud instances. Each asset belongs to
+      one organization and has a type, OS, environment, and activity timestamps.
+    tables:
+      - assets
+
+  finding:
+    status: defined
+    definition: >
+      A specific vulnerability detected on a specific asset during a scan.
+      Stored in scan_results. Each finding has a risk_level, status, and
+      timestamps for discovery (found_at) and resolution (resolved_at).
+    tables:
+      - scan_results
+
+  scan:
+    status: defined
+    definition: >
+      A vulnerability scan execution. Can be full, incremental, or compliance
+      type. Runs against an organization's assets and produces scan_results
+      (findings). Track coverage via assets_scanned and findings_count.
+    tables:
+      - scans
+
+  incident:
+    status: defined
+    definition: >
+      A security incident requiring investigation and response. Has severity
+      (critical/high/medium/low), status lifecycle (open → investigating →
+      contained → resolved → closed), and optional assignment to a user.
+    tables:
+      - incidents
+
+  remediation:
+    status: defined
+    definition: >
+      The process of fixing a vulnerability finding. Tracked via
+      remediation_actions with priority (critical/high/medium/low),
+      assignment, due date, and completion date. Links to vulnerability_instances.
+    tables:
+      - remediation_actions
+
+  compliance_framework:
+    status: defined
+    definition: >
+      A regulatory or industry standard (SOC 2, ISO 27001, HIPAA, PCI DSS,
+      NIST CSF, GDPR, CIS Benchmarks). Organizations are assessed against
+      frameworks via compliance_assessments which produce a score.
+    tables:
+      - compliance_frameworks
+      - compliance_assessments
+
+  environment:
+    status: defined
+    definition: >
+      The deployment environment of an asset. Values: production, staging,
+      development. Use assets.environment to filter or segment analysis.
+      Production assets typically receive higher priority for remediation.
+    tables:
+      - assets
+
+  name:
+    status: ambiguous
+    note: >
+      "name" appears in many entities — organizations.name, users.full_name,
+      plans.name, vulnerabilities.title, incidents.title. ASK the user
+      which entity they mean.
+    possible_mappings:
+      - organizations.name
+      - users.full_name
+      - plans.name
+      - plans.display_name
+
+  plan:
+    status: defined
+    definition: >
+      Subscription tier. Plans include starter, professional, enterprise,
+      and custom tiers with varying asset limits, user limits, and features.
+      Pricing stored in plans.price_cents.
+    tables:
+      - plans
+      - subscriptions
+
+  size_tier:
+    status: defined
+    definition: >
+      Organization size classification. Values typically: small, medium,
+      large, enterprise. Stored in organizations.size_tier. Determines
+      expected asset counts and appropriate plan recommendations.
+    tables:
+      - organizations

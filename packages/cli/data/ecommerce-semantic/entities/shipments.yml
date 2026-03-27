@@ -1,0 +1,159 @@
+name: Shipments
+type: fact_table
+table: shipments
+grain: one row per shipment
+description: |
+  Shipment tracking for orders. Each shipment originates from a warehouse, is handled
+  by a carrier, and progresses through statuses from label creation to delivery.
+
+  Data quality notes:
+  - carrier is a free-text field (not normalized). carrier_id has no foreign key
+    constraint to shipping_carriers.
+  - shipped_at and delivered_at may be NULL for shipments not yet in transit/delivered.
+  - An order can have multiple shipments (split shipments from different warehouses).
+
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key — unique shipment identifier
+    primary_key: true
+
+  - name: order_id
+    sql: order_id
+    type: number
+    description: Foreign key to orders — which order this shipment fulfills
+
+  - name: warehouse_id
+    sql: warehouse_id
+    type: number
+    description: Foreign key to warehouses — origin fulfillment center
+
+  - name: carrier
+    sql: carrier
+    type: string
+    description: Carrier name (free text — not normalized)
+    sample_values: [UPS, FedEx, USPS, DHL, OnTrac]
+
+  - name: carrier_id
+    sql: carrier_id
+    type: number
+    description: |
+      Carrier identifier. No foreign key constraint to shipping_carriers.
+
+  - name: tracking_number
+    sql: tracking_number
+    type: string
+    description: Carrier tracking number
+
+  - name: status
+    sql: status
+    type: string
+    description: Shipment status
+    sample_values: [label_created, in_transit, out_for_delivery, delivered, exception]
+
+  - name: shipped_at
+    sql: shipped_at
+    type: timestamp
+    description: When the shipment was handed to the carrier (NULL if not yet shipped)
+
+  - name: delivered_at
+    sql: delivered_at
+    type: timestamp
+    description: When the shipment was delivered (NULL if not yet delivered)
+
+  - name: created_at
+    sql: created_at
+    type: timestamp
+    description: When the shipment record was created
+
+  - name: transit_days
+    sql: EXTRACT(DAY FROM (delivered_at - shipped_at))
+    type: number
+    description: Days in transit from ship to delivery (NULL if not delivered)
+    virtual: true
+
+  - name: fulfillment_days
+    sql: EXTRACT(DAY FROM (shipped_at - created_at))
+    type: number
+    description: Days from shipment creation to actual ship (processing time)
+    virtual: true
+
+  - name: is_delivered
+    sql: CASE WHEN status = 'delivered' THEN true ELSE false END
+    type: boolean
+    description: Whether this shipment has been delivered
+    virtual: true
+
+  - name: ship_month
+    sql: TO_CHAR(shipped_at, 'YYYY-MM')
+    type: string
+    description: Year-month the shipment was sent
+    virtual: true
+
+measures:
+  - name: shipment_count
+    sql: id
+    type: count_distinct
+    description: Number of unique shipments
+
+  - name: avg_transit_days
+    sql: EXTRACT(DAY FROM (delivered_at - shipped_at))
+    type: avg
+    description: Average transit time in days (ship to delivery)
+
+  - name: avg_fulfillment_days
+    sql: EXTRACT(DAY FROM (shipped_at - created_at))
+    type: avg
+    description: Average fulfillment processing time in days
+
+joins:
+  - target_entity: Orders
+    relationship: many_to_one
+    join_columns:
+      from: order_id
+      to: id
+    description: Each shipment fulfills part or all of one order
+
+use_cases:
+  - Fulfillment speed analysis — time from order to ship to delivery
+  - Carrier performance comparison — transit time, delivery rate
+  - Warehouse throughput and efficiency
+  - Shipment exception tracking and resolution
+  - Join to orders for end-to-end order fulfillment metrics
+
+query_patterns:
+  - name: carrier_performance
+    description: Average transit time and delivery rate by carrier
+    sql: |-
+      SELECT carrier,
+             COUNT(*) AS shipment_count,
+             AVG(EXTRACT(DAY FROM (delivered_at - shipped_at))) AS avg_transit_days,
+             COUNT(*) FILTER (WHERE status = 'delivered') AS delivered_count,
+             ROUND(100.0 * COUNT(*) FILTER (WHERE status = 'delivered') / COUNT(*), 1) AS delivery_rate
+      FROM shipments
+      WHERE shipped_at IS NOT NULL
+      GROUP BY carrier
+      ORDER BY shipment_count DESC
+
+  - name: fulfillment_time_trend
+    description: Monthly average fulfillment and transit time
+    sql: |-
+      SELECT TO_CHAR(shipped_at, 'YYYY-MM') AS month,
+             COUNT(*) AS shipments,
+             AVG(EXTRACT(DAY FROM (shipped_at - created_at))) AS avg_processing_days,
+             AVG(EXTRACT(DAY FROM (delivered_at - shipped_at))) AS avg_transit_days
+      FROM shipments
+      WHERE shipped_at IS NOT NULL
+      GROUP BY TO_CHAR(shipped_at, 'YYYY-MM')
+      ORDER BY month
+
+  - name: shipments_by_status
+    description: Shipment distribution by current status
+    sql: |-
+      SELECT status,
+             COUNT(*) AS shipment_count,
+             ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (), 1) AS pct
+      FROM shipments
+      GROUP BY status
+      ORDER BY shipment_count DESC

@@ -1,0 +1,138 @@
+metrics:
+  - id: avg_compliance_score
+    label: Average Compliance Score
+    description: Average compliance assessment score across all completed assessments.
+    type: atomic
+    source:
+      entity: Compliance Assessments
+      measure: avg_score
+    sql: |-
+      SELECT AVG(score) AS avg_compliance_score
+      FROM compliance_assessments
+      WHERE status = 'completed'
+    aggregation: avg
+    objective: maximize
+
+  - id: compliance_pass_rate
+    label: Compliance Pass Rate
+    description: >
+      Percentage of completed assessments that scored 70 or above (passing threshold).
+    type: derived
+    unit: percent
+    sql: |-
+      SELECT ROUND(100.0 * COUNT(*) FILTER (WHERE score >= 70) / COUNT(*), 1) AS pass_rate
+      FROM compliance_assessments
+      WHERE status = 'completed'
+    aggregation: ratio
+    objective: maximize
+
+  - id: assessments_completed
+    label: Assessments Completed
+    description: Total number of completed compliance assessments.
+    type: atomic
+    source:
+      entity: Compliance Assessments
+      measure: completed_count
+    sql: |-
+      SELECT COUNT(*) AS assessments_completed
+      FROM compliance_assessments
+      WHERE status = 'completed'
+    aggregation: count
+
+  - id: avg_score_by_framework
+    label: Avg Score by Framework
+    description: Average compliance score broken down by regulatory framework.
+    type: breakdown
+    sql: |-
+      SELECT cf.name AS framework,
+             COUNT(ca.id) AS assessment_count,
+             AVG(ca.score) AS avg_score,
+             MIN(ca.score) AS min_score,
+             MAX(ca.score) AS max_score,
+             ROUND(100.0 * COUNT(*) FILTER (WHERE ca.score >= 70) / COUNT(*), 1) AS pass_rate
+      FROM compliance_assessments ca
+      JOIN compliance_frameworks cf ON ca.framework_id = cf.id
+      WHERE ca.status = 'completed'
+      GROUP BY cf.name
+      ORDER BY avg_score DESC
+    objective: maximize
+
+  - id: framework_coverage
+    label: Framework Coverage
+    description: >
+      Number of organizations that have been assessed against each framework,
+      and what percentage of all active organizations that represents.
+    type: breakdown
+    sql: |-
+      SELECT cf.name AS framework,
+             COUNT(DISTINCT ca.organization_id) AS orgs_assessed,
+             (SELECT COUNT(*) FROM organizations WHERE is_active = true) AS total_active_orgs,
+             ROUND(100.0 * COUNT(DISTINCT ca.organization_id) /
+                   (SELECT COUNT(*) FROM organizations WHERE is_active = true), 1) AS coverage_pct
+      FROM compliance_assessments ca
+      JOIN compliance_frameworks cf ON ca.framework_id = cf.id
+      GROUP BY cf.name
+      ORDER BY orgs_assessed DESC
+    objective: maximize
+
+  - id: compliance_by_industry
+    label: Compliance Score by Industry
+    description: Average compliance score broken down by customer industry.
+    type: breakdown
+    sql: |-
+      SELECT o.industry,
+             COUNT(ca.id) AS assessment_count,
+             AVG(ca.score) AS avg_score,
+             ROUND(100.0 * COUNT(*) FILTER (WHERE ca.score >= 70) / COUNT(*), 1) AS pass_rate
+      FROM compliance_assessments ca
+      JOIN organizations o ON ca.organization_id = o.id
+      WHERE ca.status = 'completed'
+      GROUP BY o.industry
+      ORDER BY avg_score DESC
+
+  - id: compliance_by_size_tier
+    label: Compliance Score by Org Size
+    description: Average compliance score broken down by organization size tier.
+    type: breakdown
+    sql: |-
+      SELECT o.size_tier,
+             COUNT(ca.id) AS assessment_count,
+             AVG(ca.score) AS avg_score,
+             ROUND(100.0 * COUNT(*) FILTER (WHERE ca.score >= 70) / COUNT(*), 1) AS pass_rate
+      FROM compliance_assessments ca
+      JOIN organizations o ON ca.organization_id = o.id
+      WHERE ca.status = 'completed'
+      GROUP BY o.size_tier
+      ORDER BY avg_score DESC
+
+  - id: compliance_trend
+    label: Compliance Score Trend
+    description: Monthly average compliance score trend for completed assessments.
+    type: breakdown
+    sql: |-
+      SELECT TO_CHAR(completed_at, 'YYYY-MM') AS month,
+             COUNT(*) AS assessments_completed,
+             AVG(score) AS avg_score,
+             ROUND(100.0 * COUNT(*) FILTER (WHERE score >= 70) / COUNT(*), 1) AS pass_rate
+      FROM compliance_assessments
+      WHERE status = 'completed' AND completed_at IS NOT NULL
+      GROUP BY month
+      ORDER BY month
+
+  - id: low_scoring_orgs
+    label: Low-Scoring Organizations
+    description: Organizations with average compliance score below 50 — need attention.
+    type: breakdown
+    sql: |-
+      SELECT o.name AS organization,
+             o.industry,
+             o.size_tier,
+             COUNT(ca.id) AS assessment_count,
+             AVG(ca.score) AS avg_score
+      FROM compliance_assessments ca
+      JOIN organizations o ON ca.organization_id = o.id
+      WHERE ca.status = 'completed'
+      GROUP BY o.name, o.industry, o.size_tier
+      HAVING AVG(ca.score) < 50
+      ORDER BY avg_score
+    objective: minimize

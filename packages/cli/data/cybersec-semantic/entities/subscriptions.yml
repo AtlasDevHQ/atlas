@@ -1,0 +1,184 @@
+name: Subscriptions
+type: fact_table
+table: subscriptions
+grain: one row per subscription
+description: |
+  Subscriptions linking organizations to plans. Each subscription tracks
+  billing status, MRR contribution (in cents), billing period, and lifecycle
+  dates. plan_name is denormalized from plans for convenience. This is the
+  core table for revenue analysis, churn tracking, and subscription health.
+  An organization can have one active subscription at a time.
+
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key — unique subscription identifier
+    primary_key: true
+
+  - name: organization_id
+    sql: organization_id
+    type: number
+    description: Foreign key to organizations — which customer owns this subscription
+
+  - name: plan_id
+    sql: plan_id
+    type: number
+    description: Foreign key to plans — which plan this subscription is on
+
+  - name: plan_name
+    sql: plan_name
+    type: string
+    description: Denormalized plan name (from plans table)
+    sample_values: [starter, professional, enterprise, custom]
+
+  - name: status
+    sql: status
+    type: string
+    description: |
+      Current subscription status. active = paying, trialing = in trial period,
+      past_due = payment failed, canceled = churned.
+    sample_values: [active, trialing, past_due, canceled]
+
+  - name: mrr_cents
+    sql: mrr_cents
+    type: number
+    description: |
+      Monthly Recurring Revenue from this subscription in cents. Divide by 100
+      for dollars. Canceled subscriptions may have mrr_cents = 0.
+
+  - name: started_at
+    sql: started_at
+    type: timestamp
+    description: When the subscription began
+
+  - name: current_period_end
+    sql: current_period_end
+    type: timestamp
+    description: End of the current billing period — renewal or expiration date
+
+  - name: created_at
+    sql: created_at
+    type: timestamp
+    description: When the subscription record was created
+
+  - name: updated_at
+    sql: updated_at
+    type: timestamp
+    description: Last time the subscription was modified
+
+  - name: mrr_dollars
+    sql: mrr_cents / 100.0
+    type: number
+    description: Monthly Recurring Revenue in dollars
+    virtual: true
+
+  - name: mrr_bucket
+    sql: |-
+      CASE
+        WHEN mrr_cents = 0 THEN 'Free/Canceled'
+        WHEN mrr_cents < 10000 THEN 'Under $100'
+        WHEN mrr_cents < 50000 THEN '$100-$500'
+        WHEN mrr_cents < 200000 THEN '$500-$2K'
+        ELSE '$2K+'
+      END
+    type: string
+    description: MRR tier bucket for segmentation
+    virtual: true
+    sample_values: [Free/Canceled, Under $100, $100-$500, $500-$2K, $2K+]
+
+  - name: started_year
+    sql: EXTRACT(YEAR FROM started_at)
+    type: number
+    description: Year the subscription started — useful for cohort analysis
+    virtual: true
+
+  - name: started_month
+    sql: TO_CHAR(started_at, 'YYYY-MM')
+    type: string
+    description: Year-month the subscription started
+    virtual: true
+
+  - name: is_churned
+    sql: CASE WHEN status = 'canceled' THEN true ELSE false END
+    type: boolean
+    description: Whether this subscription has been canceled (churned)
+    virtual: true
+
+  - name: days_until_renewal
+    sql: EXTRACT(DAY FROM (current_period_end - CURRENT_TIMESTAMP))
+    type: number
+    description: Days until the current billing period ends
+    virtual: true
+
+measures:
+  - name: subscription_count
+    sql: id
+    type: count_distinct
+    description: Number of unique subscriptions
+
+  - name: total_mrr_cents
+    sql: mrr_cents
+    type: sum
+    description: Total MRR in cents across subscriptions
+
+  - name: avg_mrr_cents
+    sql: mrr_cents
+    type: avg
+    description: Average MRR per subscription in cents
+
+joins:
+  - target_entity: Organizations
+    relationship: many_to_one
+    join_columns:
+      from: organization_id
+      to: id
+    description: Each subscription belongs to one organization
+
+  - target_entity: Plans
+    relationship: many_to_one
+    join_columns:
+      from: plan_id
+      to: id
+    description: Each subscription is on one plan
+
+use_cases:
+  - MRR analysis — total, by plan, by status, over time
+  - Churn analysis — canceled vs active subscriptions, churn rate by plan
+  - Revenue segmentation — which plans drive the most revenue
+  - Subscription lifecycle — cohort analysis, renewal tracking
+  - Cross-entity joins to organizations for firmographic revenue analysis
+
+query_patterns:
+  - name: mrr_by_plan
+    description: Total MRR and subscription count by plan
+    sql: |-
+      SELECT plan_name,
+             SUM(mrr_cents) / 100.0 AS total_mrr_dollars,
+             COUNT(*) AS subscription_count,
+             AVG(mrr_cents) / 100.0 AS avg_mrr_dollars
+      FROM subscriptions
+      WHERE status = 'active'
+      GROUP BY plan_name
+      ORDER BY total_mrr_dollars DESC
+
+  - name: churn_rate_by_plan
+    description: Churn rate by plan type
+    sql: |-
+      SELECT plan_name,
+             COUNT(*) FILTER (WHERE status = 'canceled') AS churned,
+             COUNT(*) AS total,
+             ROUND(100.0 * COUNT(*) FILTER (WHERE status = 'canceled') / COUNT(*), 1) AS churn_pct
+      FROM subscriptions
+      GROUP BY plan_name
+      ORDER BY churn_pct DESC
+
+  - name: subscriptions_by_status
+    description: Subscription distribution by billing status
+    sql: |-
+      SELECT status,
+             COUNT(*) AS count,
+             SUM(mrr_cents) / 100.0 AS total_mrr_dollars
+      FROM subscriptions
+      GROUP BY status
+      ORDER BY count DESC

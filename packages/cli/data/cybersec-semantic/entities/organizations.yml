@@ -1,0 +1,136 @@
+name: Organizations
+type: dimension_table
+table: organizations
+grain: one row per customer organization
+description: |
+  Customer organizations using the Sentinel Security platform. Contains
+  firmographic data including industry vertical, company size tier, country,
+  domain, and active status. Each organization can have multiple users, assets,
+  subscriptions, scans, incidents, and compliance assessments. This is the
+  central dimension table for customer-level analysis and security posture
+  comparison.
+
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key — unique organization identifier
+    primary_key: true
+
+  - name: name
+    sql: name
+    type: string
+    description: Organization name
+    sample_values: [Acme Industries, NovaTech Solutions, GlobalBank Corp, HealthFirst Inc]
+
+  - name: industry
+    sql: industry
+    type: string
+    description: Business sector / vertical
+    sample_values: [Technology, Finance, Healthcare, Manufacturing, Retail, Energy, Government, Education]
+
+  - name: size_tier
+    sql: size_tier
+    type: string
+    description: Organization size classification based on employee count
+    sample_values: [small, medium, large, enterprise]
+
+  - name: domain
+    sql: domain
+    type: string
+    description: Primary domain name of the organization
+
+  - name: country
+    sql: country
+    type: string
+    description: Country where the organization is headquartered
+    sample_values: [US, UK, DE, CA, AU, JP, SG, FR, BR, IN]
+
+  - name: created_at
+    sql: created_at
+    type: timestamp
+    description: When the organization was onboarded to the platform
+
+  - name: updated_at
+    sql: updated_at
+    type: timestamp
+    description: Last time the organization record was modified
+
+  - name: is_active
+    sql: is_active
+    type: boolean
+    description: Whether the organization is currently active on the platform
+
+  - name: created_year
+    sql: EXTRACT(YEAR FROM created_at)
+    type: number
+    description: Year the organization was onboarded — useful for cohort analysis
+    virtual: true
+
+  - name: created_month
+    sql: TO_CHAR(created_at, 'YYYY-MM')
+    type: string
+    description: Year-month the organization was onboarded
+    virtual: true
+
+  - name: size_category
+    sql: |-
+      CASE
+        WHEN size_tier IN ('small', 'medium') THEN 'SMB'
+        WHEN size_tier = 'large' THEN 'Mid-Market'
+        WHEN size_tier = 'enterprise' THEN 'Enterprise'
+        ELSE 'Unknown'
+      END
+    type: string
+    description: Simplified size grouping for segmentation (SMB / Mid-Market / Enterprise)
+    virtual: true
+    sample_values: [SMB, Mid-Market, Enterprise]
+
+measures:
+  - name: org_count
+    sql: id
+    type: count_distinct
+    description: Number of unique organizations
+
+  - name: active_org_count
+    sql: CASE WHEN is_active THEN id END
+    type: count_distinct
+    description: Number of active organizations
+
+use_cases:
+  - Customer segmentation by industry, size tier, and geography
+  - Organization-level security posture comparison
+  - Customer onboarding cohort analysis
+  - Active vs inactive customer analysis
+  - Join to subscriptions for revenue-per-organization analysis
+
+query_patterns:
+  - name: orgs_by_industry
+    description: Customer count by industry vertical
+    sql: |-
+      SELECT industry,
+             COUNT(*) AS org_count,
+             COUNT(*) FILTER (WHERE is_active) AS active_count
+      FROM organizations
+      GROUP BY industry
+      ORDER BY org_count DESC
+
+  - name: orgs_by_size_tier
+    description: Organization distribution by size tier
+    sql: |-
+      SELECT size_tier,
+             COUNT(*) AS org_count,
+             COUNT(*) FILTER (WHERE is_active) AS active_count
+      FROM organizations
+      GROUP BY size_tier
+      ORDER BY org_count DESC
+
+  - name: orgs_by_country
+    description: Customer distribution by country
+    sql: |-
+      SELECT country,
+             COUNT(*) AS org_count
+      FROM organizations
+      WHERE is_active = true
+      GROUP BY country
+      ORDER BY org_count DESC

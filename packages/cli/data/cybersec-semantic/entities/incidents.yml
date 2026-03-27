@@ -1,0 +1,219 @@
+name: Incidents
+type: fact_table
+table: incidents
+grain: one row per security incident
+description: |
+  Security incidents reported across customer organizations. Each incident
+  has a severity, status lifecycle, optional assignment, and resolution
+  timestamps. organization_name is denormalized from organizations.
+  Core table for incident response metrics, MTTR analysis, and workload
+  tracking. Incidents may be linked from alerts via alerts.incident_id.
+
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key — unique incident identifier
+    primary_key: true
+
+  - name: organization_id
+    sql: organization_id
+    type: number
+    description: Foreign key to organizations — which customer reported this incident
+
+  - name: organization_name
+    sql: organization_name
+    type: string
+    description: Denormalized organization name (from organizations table)
+
+  - name: title
+    sql: title
+    type: string
+    description: Short description / title of the incident
+
+  - name: description
+    sql: description
+    type: string
+    description: Detailed description of the incident
+
+  - name: severity
+    sql: severity
+    type: string
+    description: Incident severity level
+    sample_values: [critical, high, medium, low]
+
+  - name: status
+    sql: status
+    type: string
+    description: |
+      Incident lifecycle status. Progresses through: open → investigating →
+      contained → resolved → closed. Not all incidents pass through every stage.
+    sample_values: [open, investigating, contained, resolved, closed]
+
+  - name: assigned_to
+    sql: assigned_to
+    type: number
+    description: Foreign key to users — who is assigned to handle this incident (may be NULL)
+
+  - name: created_at
+    sql: created_at
+    type: timestamp
+    description: When the incident was created / reported
+
+  - name: updated_at
+    sql: updated_at
+    type: timestamp
+    description: Last time the incident record was modified
+
+  - name: resolved_at
+    sql: resolved_at
+    type: timestamp
+    description: When the incident was resolved (NULL if still open)
+
+  - name: severity_rank
+    sql: |-
+      CASE severity
+        WHEN 'critical' THEN 1
+        WHEN 'high' THEN 2
+        WHEN 'medium' THEN 3
+        WHEN 'low' THEN 4
+        ELSE 5
+      END
+    type: number
+    description: Numeric severity rank for sorting (1 = most severe)
+    virtual: true
+
+  - name: is_open
+    sql: CASE WHEN status NOT IN ('resolved', 'closed') THEN true ELSE false END
+    type: boolean
+    description: Whether the incident is still open (not resolved or closed)
+    virtual: true
+
+  - name: is_resolved
+    sql: CASE WHEN status IN ('resolved', 'closed') THEN true ELSE false END
+    type: boolean
+    description: Whether the incident has been resolved or closed
+    virtual: true
+
+  - name: resolution_hours
+    sql: |-
+      CASE
+        WHEN resolved_at IS NOT NULL
+        THEN EXTRACT(EPOCH FROM (resolved_at - created_at)) / 3600.0
+      END
+    type: number
+    description: Hours between creation and resolution (NULL if still open)
+    virtual: true
+
+  - name: resolution_days
+    sql: |-
+      CASE
+        WHEN resolved_at IS NOT NULL
+        THEN EXTRACT(DAY FROM (resolved_at - created_at))
+      END
+    type: number
+    description: Days between creation and resolution (NULL if still open)
+    virtual: true
+
+  - name: created_date
+    sql: created_at::DATE
+    type: date
+    description: Date the incident was created (for daily grouping)
+    virtual: true
+
+  - name: created_month
+    sql: TO_CHAR(created_at, 'YYYY-MM')
+    type: string
+    description: Year-month the incident was created
+    virtual: true
+
+  - name: age_days
+    sql: |-
+      CASE
+        WHEN resolved_at IS NULL
+        THEN EXTRACT(DAY FROM (CURRENT_TIMESTAMP - created_at))
+        ELSE EXTRACT(DAY FROM (resolved_at - created_at))
+      END
+    type: number
+    description: Age in days — time to resolve (if resolved) or time since creation (if open)
+    virtual: true
+
+  - name: is_assigned
+    sql: CASE WHEN assigned_to IS NOT NULL THEN true ELSE false END
+    type: boolean
+    description: Whether the incident has been assigned to someone
+    virtual: true
+
+measures:
+  - name: incident_count
+    sql: id
+    type: count_distinct
+    description: Number of unique incidents
+
+  - name: open_incident_count
+    sql: CASE WHEN status NOT IN ('resolved', 'closed') THEN id END
+    type: count_distinct
+    description: Number of currently open incidents
+
+  - name: avg_resolution_hours
+    sql: CASE WHEN resolved_at IS NOT NULL THEN EXTRACT(EPOCH FROM (resolved_at - created_at)) / 3600.0 END
+    type: avg
+    description: Average hours to resolve an incident (MTTR)
+
+joins:
+  - target_entity: Organizations
+    relationship: many_to_one
+    join_columns:
+      from: organization_id
+      to: id
+    description: Each incident belongs to one organization
+
+  - target_entity: Users
+    relationship: many_to_one
+    join_columns:
+      from: assigned_to
+      to: id
+    description: Each incident may be assigned to one user
+
+use_cases:
+  - Incident volume and severity trending over time
+  - Mean time to resolve (MTTR) analysis by severity
+  - Assignment workload and unassigned incident tracking
+  - Organization-level incident comparison
+  - Incident status pipeline analysis (open → investigating → resolved)
+
+query_patterns:
+  - name: incidents_by_severity
+    description: Incident count and MTTR by severity
+    sql: |-
+      SELECT severity,
+             COUNT(*) AS incident_count,
+             COUNT(*) FILTER (WHERE status NOT IN ('resolved', 'closed')) AS open_count,
+             AVG(EXTRACT(EPOCH FROM (resolved_at - created_at)) / 3600.0)
+               FILTER (WHERE resolved_at IS NOT NULL) AS avg_mttr_hours
+      FROM incidents
+      GROUP BY severity
+      ORDER BY MIN(CASE severity
+        WHEN 'critical' THEN 1 WHEN 'high' THEN 2
+        WHEN 'medium' THEN 3 WHEN 'low' THEN 4 ELSE 5 END)
+
+  - name: incidents_by_org
+    description: Incident volume per organization
+    sql: |-
+      SELECT organization_name,
+             COUNT(*) AS total_incidents,
+             COUNT(*) FILTER (WHERE severity = 'critical') AS critical_count,
+             COUNT(*) FILTER (WHERE status NOT IN ('resolved', 'closed')) AS open_count
+      FROM incidents
+      GROUP BY organization_name
+      ORDER BY total_incidents DESC
+
+  - name: incident_trend
+    description: Monthly incident trend
+    sql: |-
+      SELECT TO_CHAR(created_at, 'YYYY-MM') AS month,
+             COUNT(*) AS incident_count,
+             COUNT(*) FILTER (WHERE severity IN ('critical', 'high')) AS high_sev_count
+      FROM incidents
+      GROUP BY month
+      ORDER BY month

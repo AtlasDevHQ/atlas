@@ -1,0 +1,148 @@
+metrics:
+  - id: total_mrr
+    label: Total MRR
+    description: Total Monthly Recurring Revenue across all active subscriptions (in dollars).
+    type: atomic
+    unit: USD
+    source:
+      entity: Subscriptions
+      measure: total_mrr_cents
+    sql: |-
+      SELECT SUM(mrr_cents) / 100.0 AS total_mrr_dollars
+      FROM subscriptions
+      WHERE status = 'active'
+    aggregation: sum
+    objective: maximize
+
+  - id: total_arr
+    label: Total ARR
+    description: Annual Recurring Revenue — MRR * 12. Calculated from active subscriptions.
+    type: derived
+    unit: USD
+    sql: |-
+      SELECT SUM(mrr_cents) / 100.0 * 12 AS total_arr_dollars
+      FROM subscriptions
+      WHERE status = 'active'
+    aggregation: sum
+    objective: maximize
+
+  - id: active_customers
+    label: Active Customers
+    description: Number of active organizations on the platform.
+    type: atomic
+    source:
+      entity: Organizations
+      measure: active_org_count
+    sql: |-
+      SELECT COUNT(*) AS active_customers
+      FROM organizations
+      WHERE is_active = true
+    aggregation: count
+    objective: maximize
+
+  - id: active_subscriptions
+    label: Active Subscriptions
+    description: Number of subscriptions with status 'active'.
+    type: atomic
+    sql: |-
+      SELECT COUNT(*) AS active_subscriptions
+      FROM subscriptions
+      WHERE status = 'active'
+    aggregation: count
+
+  - id: arpa
+    label: ARPA (Avg Revenue Per Account)
+    description: Average MRR per active subscription (in dollars).
+    type: derived
+    unit: USD
+    sql: |-
+      SELECT AVG(mrr_cents) / 100.0 AS arpa_dollars
+      FROM subscriptions
+      WHERE status = 'active'
+    aggregation: avg
+
+  - id: churn_rate
+    label: Churn Rate
+    description: Percentage of all subscriptions that have been canceled.
+    type: derived
+    unit: percent
+    sql: |-
+      SELECT ROUND(100.0 * COUNT(*) FILTER (WHERE status = 'canceled') / COUNT(*), 1) AS churn_rate
+      FROM subscriptions
+    aggregation: ratio
+    objective: minimize
+
+  - id: mrr_by_plan
+    label: MRR by Plan
+    description: MRR breakdown by subscription plan tier.
+    type: breakdown
+    unit: USD
+    sql: |-
+      SELECT plan_name,
+             SUM(mrr_cents) / 100.0 AS total_mrr_dollars,
+             COUNT(*) AS subscription_count,
+             AVG(mrr_cents) / 100.0 AS avg_mrr_dollars
+      FROM subscriptions
+      WHERE status = 'active'
+      GROUP BY plan_name
+      ORDER BY total_mrr_dollars DESC
+
+  - id: churn_by_plan
+    label: Churn Rate by Plan
+    description: Churn rate broken down by plan tier.
+    type: breakdown
+    unit: percent
+    sql: |-
+      SELECT plan_name,
+             COUNT(*) FILTER (WHERE status = 'canceled') AS churned,
+             COUNT(*) AS total,
+             ROUND(100.0 * COUNT(*) FILTER (WHERE status = 'canceled') / COUNT(*), 1) AS churn_pct
+      FROM subscriptions
+      GROUP BY plan_name
+      ORDER BY churn_pct DESC
+    objective: minimize
+
+  - id: mrr_by_industry
+    label: MRR by Industry
+    description: MRR breakdown by customer industry vertical.
+    type: breakdown
+    unit: USD
+    sql: |-
+      SELECT o.industry,
+             SUM(s.mrr_cents) / 100.0 AS total_mrr_dollars,
+             COUNT(DISTINCT o.id) AS org_count
+      FROM subscriptions s
+      JOIN organizations o ON s.organization_id = o.id
+      WHERE s.status = 'active'
+      GROUP BY o.industry
+      ORDER BY total_mrr_dollars DESC
+
+  - id: mrr_by_size_tier
+    label: MRR by Organization Size
+    description: MRR breakdown by organization size tier.
+    type: breakdown
+    unit: USD
+    sql: |-
+      SELECT o.size_tier,
+             SUM(s.mrr_cents) / 100.0 AS total_mrr_dollars,
+             COUNT(DISTINCT o.id) AS org_count,
+             AVG(s.mrr_cents) / 100.0 AS avg_mrr_dollars
+      FROM subscriptions s
+      JOIN organizations o ON s.organization_id = o.id
+      WHERE s.status = 'active'
+      GROUP BY o.size_tier
+      ORDER BY total_mrr_dollars DESC
+
+  - id: subscription_cohort
+    label: Subscription Cohort Analysis
+    description: MRR and subscription count by cohort (start year-month).
+    type: breakdown
+    unit: USD
+    sql: |-
+      SELECT TO_CHAR(started_at, 'YYYY-MM') AS cohort_month,
+             COUNT(*) AS subscriptions,
+             SUM(mrr_cents) / 100.0 AS total_mrr_dollars,
+             COUNT(*) FILTER (WHERE status = 'canceled') AS churned
+      FROM subscriptions
+      GROUP BY cohort_month
+      ORDER BY cohort_month

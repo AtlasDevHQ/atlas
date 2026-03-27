@@ -1,0 +1,114 @@
+name: Plans
+type: dimension_table
+table: plans
+grain: one row per subscription plan
+description: |
+  Available subscription plans for Sentinel Security. Each plan defines
+  pricing (in cents), asset limits, user limits, and a feature set.
+  Plans are referenced by subscriptions. Use this table for plan comparison,
+  pricing analysis, and capacity planning. The features column stores a
+  text description of included features.
+
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key — unique plan identifier
+    primary_key: true
+
+  - name: name
+    sql: name
+    type: string
+    description: Internal plan name (machine-readable)
+    sample_values: [starter, professional, enterprise, custom]
+
+  - name: display_name
+    sql: display_name
+    type: string
+    description: User-facing plan name
+    sample_values: [Starter, Professional, Enterprise, Custom]
+
+  - name: price_cents
+    sql: price_cents
+    type: number
+    description: Monthly price in cents (divide by 100 for dollars)
+
+  - name: max_assets
+    sql: max_assets
+    type: number
+    description: Maximum number of assets allowed under this plan
+
+  - name: max_users
+    sql: max_users
+    type: number
+    description: Maximum number of users allowed under this plan
+
+  - name: features
+    sql: features
+    type: string
+    description: Text description of features included in this plan
+
+  - name: is_active
+    sql: is_active
+    type: boolean
+    description: Whether this plan is currently available for new subscriptions
+
+  - name: price_dollars
+    sql: price_cents / 100.0
+    type: number
+    description: Monthly price in dollars
+    virtual: true
+
+  - name: price_tier
+    sql: |-
+      CASE
+        WHEN price_cents < 10000 THEN 'Low'
+        WHEN price_cents < 50000 THEN 'Mid'
+        ELSE 'High'
+      END
+    type: string
+    description: Price tier grouping (Low < $100, Mid $100-$500, High $500+)
+    virtual: true
+    sample_values: [Low, Mid, High]
+
+measures:
+  - name: plan_count
+    sql: id
+    type: count_distinct
+    description: Number of unique plans
+
+  - name: avg_price_cents
+    sql: price_cents
+    type: avg
+    description: Average plan price in cents
+
+use_cases:
+  - Plan pricing comparison and tier analysis
+  - Capacity planning based on asset and user limits
+  - Feature comparison across tiers
+  - Active plan availability check
+  - Join to subscriptions for revenue attribution by plan
+
+query_patterns:
+  - name: plan_overview
+    description: All plans with pricing and limits
+    sql: |-
+      SELECT display_name,
+             price_cents / 100.0 AS price_dollars,
+             max_assets,
+             max_users,
+             is_active
+      FROM plans
+      ORDER BY price_cents
+
+  - name: active_plans
+    description: Currently available plans
+    sql: |-
+      SELECT display_name,
+             price_cents / 100.0 AS price_dollars,
+             max_assets,
+             max_users,
+             features
+      FROM plans
+      WHERE is_active = true
+      ORDER BY price_cents

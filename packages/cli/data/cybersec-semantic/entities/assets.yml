@@ -1,0 +1,191 @@
+name: Assets
+type: dimension_table
+table: assets
+grain: one row per IT asset
+description: |
+  IT assets monitored by the Sentinel Security platform. Includes servers,
+  workstations, network devices, containers, and cloud instances. Each asset
+  belongs to one organization and has a type, OS, environment classification,
+  and activity timestamps. display_name is NULL for ~40% of assets — use
+  hostname as the primary identifier. Assets are linked to scan_results and
+  vulnerability_instances for security analysis.
+
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key — unique asset identifier
+    primary_key: true
+
+  - name: organization_id
+    sql: organization_id
+    type: number
+    description: Foreign key to organizations — which customer owns this asset
+
+  - name: hostname
+    sql: hostname
+    type: string
+    description: Network hostname of the asset (always populated)
+    sample_values: [web-prod-01, db-staging-03, app-dev-12, fw-edge-01]
+
+  - name: display_name
+    sql: display_name
+    type: string
+    description: |
+      Human-readable display name. NULL for ~40% of assets — fall back to
+      hostname when display_name is not set.
+
+  - name: asset_type
+    sql: asset_type
+    type: string
+    description: Type of IT asset
+    sample_values: [server, workstation, network_device, container, cloud_instance]
+
+  - name: ip_address
+    sql: ip_address
+    type: string
+    description: IP address of the asset
+
+  - name: os
+    sql: os
+    type: string
+    description: Operating system
+    sample_values: [Linux, Windows, macOS, Ubuntu, CentOS, RHEL, Debian]
+
+  - name: os_version
+    sql: os_version
+    type: string
+    description: Operating system version string
+
+  - name: environment
+    sql: environment
+    type: string
+    description: Deployment environment classification
+    sample_values: [production, staging, development]
+
+  - name: is_active
+    sql: is_active
+    type: boolean
+    description: Whether the asset is currently being monitored
+
+  - name: first_seen
+    sql: first_seen
+    type: timestamp
+    description: When the asset was first discovered by the platform
+
+  - name: last_seen
+    sql: last_seen
+    type: timestamp
+    description: When the asset was last observed / checked in
+
+  - name: created_at
+    sql: created_at
+    type: timestamp
+    description: When the asset record was created
+
+  - name: effective_name
+    sql: COALESCE(display_name, hostname)
+    type: string
+    description: Display name if set, otherwise hostname — use this for user-facing labels
+    virtual: true
+
+  - name: days_since_last_seen
+    sql: EXTRACT(DAY FROM (CURRENT_TIMESTAMP - last_seen))
+    type: number
+    description: Days since the asset was last observed — high values indicate stale/offline assets
+    virtual: true
+
+  - name: staleness_bucket
+    sql: |-
+      CASE
+        WHEN last_seen >= CURRENT_TIMESTAMP - INTERVAL '1 day' THEN 'Active (today)'
+        WHEN last_seen >= CURRENT_TIMESTAMP - INTERVAL '7 days' THEN 'Recent (this week)'
+        WHEN last_seen >= CURRENT_TIMESTAMP - INTERVAL '30 days' THEN 'Stale (this month)'
+        ELSE 'Offline (30+ days)'
+      END
+    type: string
+    description: Staleness bucket based on last_seen
+    virtual: true
+    sample_values: [Active (today), Recent (this week), Stale (this month), Offline (30+ days)]
+
+  - name: os_family
+    sql: |-
+      CASE
+        WHEN os IN ('Linux', 'Ubuntu', 'CentOS', 'RHEL', 'Debian') THEN 'Linux'
+        WHEN os = 'Windows' THEN 'Windows'
+        WHEN os = 'macOS' THEN 'macOS'
+        ELSE 'Other'
+      END
+    type: string
+    description: Simplified OS family grouping
+    virtual: true
+    sample_values: [Linux, Windows, macOS, Other]
+
+measures:
+  - name: asset_count
+    sql: id
+    type: count_distinct
+    description: Number of unique assets
+
+  - name: active_asset_count
+    sql: CASE WHEN is_active THEN id END
+    type: count_distinct
+    description: Number of active (monitored) assets
+
+joins:
+  - target_entity: Organizations
+    relationship: many_to_one
+    join_columns:
+      from: organization_id
+      to: id
+    description: Each asset belongs to one organization
+
+use_cases:
+  - Asset inventory and coverage analysis by organization
+  - Environment breakdown (production vs staging vs development)
+  - OS distribution and version tracking for patch management
+  - Stale asset detection — assets not seen recently
+  - Join to scan_results for per-asset vulnerability density
+
+query_patterns:
+  - name: assets_by_type
+    description: Asset count by type
+    sql: |-
+      SELECT asset_type,
+             COUNT(*) AS asset_count,
+             COUNT(*) FILTER (WHERE is_active) AS active_count
+      FROM assets
+      GROUP BY asset_type
+      ORDER BY asset_count DESC
+
+  - name: assets_by_environment
+    description: Asset distribution by environment
+    sql: |-
+      SELECT environment,
+             COUNT(*) AS asset_count,
+             COUNT(*) FILTER (WHERE is_active) AS active_count
+      FROM assets
+      GROUP BY environment
+      ORDER BY asset_count DESC
+
+  - name: assets_per_org
+    description: Asset density per organization
+    sql: |-
+      SELECT o.name AS organization,
+             COUNT(a.id) AS asset_count,
+             COUNT(DISTINCT a.asset_type) AS asset_types,
+             COUNT(*) FILTER (WHERE a.environment = 'production') AS prod_assets
+      FROM assets a
+      JOIN organizations o ON a.organization_id = o.id
+      WHERE a.is_active = true
+      GROUP BY o.name
+      ORDER BY asset_count DESC
+
+  - name: stale_assets
+    description: Assets not seen in the last 30 days
+    sql: |-
+      SELECT hostname, asset_type, os, environment, last_seen
+      FROM assets
+      WHERE is_active = true
+        AND last_seen < CURRENT_TIMESTAMP - INTERVAL '30 days'
+      ORDER BY last_seen

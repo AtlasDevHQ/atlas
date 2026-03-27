@@ -1,0 +1,119 @@
+name: Email Campaigns
+type: fact_table
+table: email_campaigns
+grain: one row per email campaign
+description: |
+  Marketing email campaigns sent to customers. Each campaign has a type (promotional,
+  transactional, newsletter, etc.), status, and send timestamp. Per-recipient delivery
+  details are in the email_sends table (campaign_id -> email_sends.campaign_id).
+
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key — unique campaign identifier
+    primary_key: true
+
+  - name: name
+    sql: name
+    type: string
+    description: Internal campaign name
+
+  - name: subject
+    sql: subject
+    type: string
+    description: Email subject line
+
+  - name: type
+    sql: type
+    type: string
+    description: Campaign type/category
+    sample_values: [promotional, transactional, newsletter, abandoned_cart, welcome]
+
+  - name: status
+    sql: status
+    type: string
+    description: Campaign status
+    sample_values: [draft, scheduled, sending, sent, cancelled]
+
+  - name: sent_at
+    sql: sent_at
+    type: timestamp
+    description: When the campaign was sent (NULL if draft/scheduled)
+
+  - name: created_at
+    sql: created_at
+    type: timestamp
+    description: When the campaign was created
+
+  - name: sent_month
+    sql: TO_CHAR(sent_at, 'YYYY-MM')
+    type: string
+    description: Year-month the campaign was sent
+    virtual: true
+
+  - name: is_sent
+    sql: CASE WHEN status = 'sent' THEN true ELSE false END
+    type: boolean
+    description: Whether the campaign has been sent
+    virtual: true
+
+measures:
+  - name: campaign_count
+    sql: id
+    type: count_distinct
+    description: Number of unique campaigns
+
+  - name: sent_campaign_count
+    sql: CASE WHEN status = 'sent' THEN id END
+    type: count_distinct
+    description: Number of campaigns that have been sent
+
+use_cases:
+  - Campaign performance analysis — open rates, click rates (via email_sends join)
+  - Campaign type comparison — which types drive the most engagement
+  - Send cadence and volume tracking over time
+  - Campaign status pipeline — draft to sent
+  - Join to email_sends for per-recipient delivery metrics
+
+query_patterns:
+  - name: campaign_performance
+    description: Campaign open and click rates (requires email_sends join)
+    sql: |-
+      SELECT ec.name AS campaign,
+             ec.type,
+             ec.sent_at,
+             COUNT(es.id) AS total_sends,
+             COUNT(es.opened_at) AS opens,
+             COUNT(es.clicked_at) AS clicks,
+             ROUND(100.0 * COUNT(es.opened_at) / NULLIF(COUNT(es.id), 0), 1) AS open_rate,
+             ROUND(100.0 * COUNT(es.clicked_at) / NULLIF(COUNT(es.id), 0), 1) AS click_rate
+      FROM email_campaigns ec
+      JOIN email_sends es ON es.campaign_id = ec.id
+      WHERE ec.status = 'sent'
+      GROUP BY ec.name, ec.type, ec.sent_at
+      ORDER BY ec.sent_at DESC
+
+  - name: campaigns_by_type
+    description: Campaign count and avg engagement by type
+    sql: |-
+      SELECT ec.type,
+             COUNT(DISTINCT ec.id) AS campaign_count,
+             COUNT(es.id) AS total_sends,
+             ROUND(100.0 * COUNT(es.opened_at) / NULLIF(COUNT(es.id), 0), 1) AS avg_open_rate,
+             ROUND(100.0 * COUNT(es.clicked_at) / NULLIF(COUNT(es.id), 0), 1) AS avg_click_rate
+      FROM email_campaigns ec
+      JOIN email_sends es ON es.campaign_id = ec.id
+      WHERE ec.status = 'sent'
+      GROUP BY ec.type
+      ORDER BY campaign_count DESC
+
+  - name: monthly_send_volume
+    description: Monthly campaign send volume
+    sql: |-
+      SELECT TO_CHAR(sent_at, 'YYYY-MM') AS month,
+             COUNT(*) AS campaigns_sent
+      FROM email_campaigns
+      WHERE status = 'sent'
+      GROUP BY TO_CHAR(sent_at, 'YYYY-MM')
+      ORDER BY month

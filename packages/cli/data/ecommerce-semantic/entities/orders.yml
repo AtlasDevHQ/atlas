@@ -1,0 +1,199 @@
+name: Orders
+type: fact_table
+table: orders
+grain: one row per order
+description: |
+  Customer orders — the primary fact table for revenue analysis. Each order has
+  monetary totals in cents (subtotal_cents, tax_cents, total_cents) and a status
+  tracking the fulfillment lifecycle.
+
+  Data quality notes:
+  - shipping_cost uses MIXED UNITS — some values are in dollars, others in cents.
+    Values > 100 are likely cents; values < 50 are likely dollars. Do not sum directly.
+  - customer_email is denormalized from customers for convenience.
+  - promotion_id links to the promotion used (NULL if none).
+
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key — unique order identifier
+    primary_key: true
+
+  - name: customer_id
+    sql: customer_id
+    type: number
+    description: Foreign key to customers — who placed this order
+
+  - name: customer_email
+    sql: customer_email
+    type: string
+    description: Denormalized customer email (convenience field from customers table)
+
+  - name: status
+    sql: status
+    type: string
+    description: Order fulfillment status
+    sample_values: [pending, processing, shipped, delivered, cancelled]
+
+  - name: subtotal_cents
+    sql: subtotal_cents
+    type: number
+    description: Order subtotal in cents (before shipping and tax)
+
+  - name: shipping_cost
+    sql: shipping_cost
+    type: number
+    description: |
+      WARNING: Mixed units — some rows in dollars, some in cents.
+      Do not aggregate directly. See glossary for handling guidance.
+
+  - name: tax_cents
+    sql: tax_cents
+    type: number
+    description: Tax amount in cents
+
+  - name: total_cents
+    sql: total_cents
+    type: number
+    description: Order total in cents (subtotal + shipping + tax). Primary revenue field.
+
+  - name: shipping_address_id
+    sql: shipping_address_id
+    type: number
+    description: Foreign key to customer_addresses — delivery destination
+
+  - name: promotion_id
+    sql: promotion_id
+    type: number
+    description: Foreign key to promotions — discount applied (NULL if none)
+
+  - name: created_at
+    sql: created_at
+    type: timestamp
+    description: When the order was placed
+
+  - name: updated_at
+    sql: updated_at
+    type: timestamp
+    description: Last update to the order record
+
+  - name: order_month
+    sql: TO_CHAR(created_at, 'YYYY-MM')
+    type: string
+    description: Year-month the order was placed — useful for trend analysis
+    virtual: true
+
+  - name: order_year
+    sql: EXTRACT(YEAR FROM created_at)
+    type: number
+    description: Year the order was placed
+    virtual: true
+
+  - name: order_day_of_week
+    sql: TO_CHAR(created_at, 'Day')
+    type: string
+    description: Day of week the order was placed
+    virtual: true
+
+  - name: total_dollars
+    sql: total_cents / 100.0
+    type: number
+    description: Order total in dollars (derived from total_cents)
+    virtual: true
+
+  - name: order_size_bucket
+    sql: |-
+      CASE
+        WHEN total_cents < 2500 THEN 'Small (<$25)'
+        WHEN total_cents < 7500 THEN 'Medium ($25-$75)'
+        WHEN total_cents < 15000 THEN 'Large ($75-$150)'
+        ELSE 'XL ($150+)'
+      END
+    type: string
+    description: Order size bucket based on total value
+    virtual: true
+    sample_values: ["Small (<$25)", "Medium ($25-$75)", "Large ($75-$150)", "XL ($150+)"]
+
+  - name: has_promotion
+    sql: CASE WHEN promotion_id IS NOT NULL THEN true ELSE false END
+    type: boolean
+    description: Whether a promotion/discount was applied to this order
+    virtual: true
+
+measures:
+  - name: order_count
+    sql: id
+    type: count_distinct
+    description: Number of unique orders
+
+  - name: total_gmv_cents
+    sql: total_cents
+    type: sum
+    description: Total GMV in cents (sum of all order totals)
+
+  - name: avg_order_value_cents
+    sql: total_cents
+    type: avg
+    description: Average order value in cents
+
+  - name: total_tax_cents
+    sql: tax_cents
+    type: sum
+    description: Total tax collected in cents
+
+joins:
+  - target_entity: Customers
+    relationship: many_to_one
+    join_columns:
+      from: customer_id
+      to: id
+    description: Each order belongs to one customer
+
+  - target_entity: Promotions
+    relationship: many_to_one
+    join_columns:
+      from: promotion_id
+      to: id
+    description: Optional promotion applied to the order
+
+use_cases:
+  - GMV and revenue analysis — total, by month, by customer segment
+  - AOV tracking and order size distribution
+  - Order status funnel analysis (pending → delivered vs cancelled)
+  - Promotion impact — orders with vs without discounts
+  - Join to order_items for product-level revenue, to payments for payment analysis
+
+query_patterns:
+  - name: monthly_gmv
+    description: Monthly GMV trend
+    sql: |-
+      SELECT TO_CHAR(created_at, 'YYYY-MM') AS order_month,
+             COUNT(*) AS order_count,
+             SUM(total_cents) / 100.0 AS gmv_dollars,
+             AVG(total_cents) / 100.0 AS aov_dollars
+      FROM orders
+      WHERE status != 'cancelled'
+      GROUP BY TO_CHAR(created_at, 'YYYY-MM')
+      ORDER BY order_month
+
+  - name: orders_by_status
+    description: Order distribution by fulfillment status
+    sql: |-
+      SELECT status,
+             COUNT(*) AS order_count,
+             SUM(total_cents) / 100.0 AS total_dollars
+      FROM orders
+      GROUP BY status
+      ORDER BY order_count DESC
+
+  - name: orders_with_promotions
+    description: Promotion usage rate and impact on order value
+    sql: |-
+      SELECT CASE WHEN promotion_id IS NOT NULL THEN 'With Promo' ELSE 'No Promo' END AS promo_status,
+             COUNT(*) AS order_count,
+             AVG(total_cents) / 100.0 AS avg_order_value,
+             SUM(total_cents) / 100.0 AS total_revenue
+      FROM orders
+      WHERE status != 'cancelled'
+      GROUP BY CASE WHEN promotion_id IS NOT NULL THEN 'With Promo' ELSE 'No Promo' END

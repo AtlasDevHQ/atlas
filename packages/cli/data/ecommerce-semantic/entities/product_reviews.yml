@@ -1,0 +1,155 @@
+name: Product Reviews
+type: fact_table
+table: product_reviews
+grain: one row per review
+description: |
+  Customer reviews of products. Each review has a 1-5 integer rating, optional
+  decimal rating, title, body text, and verification status.
+
+  Data quality notes:
+  - rating is an integer 1-5 (always populated). Use this for analysis.
+  - rating_decimal is a float with more precision but 70% NULL. Only use when
+    the user specifically requests decimal precision.
+  - is_verified indicates the reviewer actually purchased the product.
+
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key — unique review identifier
+    primary_key: true
+
+  - name: product_id
+    sql: product_id
+    type: number
+    description: Foreign key to products — which product was reviewed
+
+  - name: customer_id
+    sql: customer_id
+    type: number
+    description: Foreign key to customers — who wrote the review
+
+  - name: rating
+    sql: rating
+    type: number
+    description: Integer rating from 1 (worst) to 5 (best). Always populated.
+
+  - name: rating_decimal
+    sql: rating_decimal
+    type: number
+    description: |
+      Decimal rating with more precision. WARNING: 70% NULL.
+      Use integer rating unless decimal precision is specifically needed.
+
+  - name: title
+    sql: title
+    type: string
+    description: Review title/headline
+
+  - name: body
+    sql: body
+    type: string
+    description: Full review text
+
+  - name: is_verified
+    sql: is_verified
+    type: boolean
+    description: Whether the reviewer is a verified purchaser of the product
+
+  - name: created_at
+    sql: created_at
+    type: timestamp
+    description: When the review was submitted
+
+  - name: review_month
+    sql: TO_CHAR(created_at, 'YYYY-MM')
+    type: string
+    description: Year-month the review was submitted
+    virtual: true
+
+  - name: rating_label
+    sql: |-
+      CASE
+        WHEN rating >= 4 THEN 'Positive'
+        WHEN rating = 3 THEN 'Neutral'
+        ELSE 'Negative'
+      END
+    type: string
+    description: Sentiment bucket based on rating
+    virtual: true
+    sample_values: [Positive, Neutral, Negative]
+
+measures:
+  - name: review_count
+    sql: id
+    type: count_distinct
+    description: Number of unique reviews
+
+  - name: avg_rating
+    sql: rating
+    type: avg
+    description: Average product rating (1-5 scale)
+
+  - name: verified_review_count
+    sql: CASE WHEN is_verified THEN id END
+    type: count_distinct
+    description: Number of verified purchase reviews
+
+joins:
+  - target_entity: Products
+    relationship: many_to_one
+    join_columns:
+      from: product_id
+      to: id
+    description: Each review is for one product
+
+  - target_entity: Customers
+    relationship: many_to_one
+    join_columns:
+      from: customer_id
+      to: id
+    description: Each review was written by one customer
+
+use_cases:
+  - Product quality analysis — average rating, rating distribution
+  - Review volume trends over time
+  - Verified vs unverified review comparison
+  - Low-rated product identification for quality improvement
+  - Join to products for category-level satisfaction analysis
+
+query_patterns:
+  - name: product_ratings
+    description: Average rating and review count per product
+    sql: |-
+      SELECT p.name AS product,
+             COUNT(r.id) AS review_count,
+             AVG(r.rating) AS avg_rating,
+             COUNT(r.id) FILTER (WHERE r.is_verified) AS verified_reviews
+      FROM product_reviews r
+      JOIN products p ON r.product_id = p.id
+      GROUP BY p.name
+      ORDER BY review_count DESC
+      LIMIT 20
+
+  - name: rating_distribution
+    description: Overall distribution of ratings
+    sql: |-
+      SELECT rating,
+             COUNT(*) AS review_count,
+             ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (), 1) AS pct
+      FROM product_reviews
+      GROUP BY rating
+      ORDER BY rating DESC
+
+  - name: lowest_rated_products
+    description: Products with lowest average ratings (min 5 reviews)
+    sql: |-
+      SELECT p.name AS product,
+             AVG(r.rating) AS avg_rating,
+             COUNT(r.id) AS review_count
+      FROM product_reviews r
+      JOIN products p ON r.product_id = p.id
+      GROUP BY p.name
+      HAVING COUNT(r.id) >= 5
+      ORDER BY avg_rating ASC
+      LIMIT 10

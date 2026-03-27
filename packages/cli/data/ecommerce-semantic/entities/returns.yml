@@ -1,0 +1,144 @@
+name: Returns
+type: fact_table
+table: returns
+grain: one row per return request
+description: |
+  Return requests initiated by customers. Each return is linked to an order and
+  a customer, with a reason and status tracking the resolution lifecycle.
+
+  Data quality notes:
+  - reason has case inconsistencies (e.g. 'Defective' vs 'defective', 'Wrong Item'
+    vs 'wrong item'). Use LOWER(reason) or INITCAP(reason) for reliable grouping.
+  - resolved_at is NULL for unresolved returns.
+  - A single order can have one return record; use return_items for item-level detail.
+
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key — unique return request identifier
+    primary_key: true
+
+  - name: order_id
+    sql: order_id
+    type: number
+    description: Foreign key to orders — which order is being returned
+
+  - name: customer_id
+    sql: customer_id
+    type: number
+    description: Foreign key to customers — who initiated the return
+
+  - name: reason
+    sql: reason
+    type: string
+    description: |
+      Return reason. WARNING: case-inconsistent values.
+      Use LOWER(reason) for reliable grouping.
+    sample_values: [defective, wrong item, not as described, changed mind, too late]
+
+  - name: status
+    sql: status
+    type: string
+    description: Return request status
+    sample_values: [requested, approved, completed, rejected]
+
+  - name: created_at
+    sql: created_at
+    type: timestamp
+    description: When the return was requested
+
+  - name: resolved_at
+    sql: resolved_at
+    type: timestamp
+    description: When the return was resolved (NULL if still pending)
+
+  - name: reason_normalized
+    sql: LOWER(reason)
+    type: string
+    description: Return reason normalized to lowercase for consistent grouping
+    virtual: true
+
+  - name: return_month
+    sql: TO_CHAR(created_at, 'YYYY-MM')
+    type: string
+    description: Year-month the return was initiated
+    virtual: true
+
+  - name: resolution_days
+    sql: EXTRACT(DAY FROM (resolved_at - created_at))
+    type: number
+    description: Days from return request to resolution (NULL if unresolved)
+    virtual: true
+
+  - name: is_resolved
+    sql: CASE WHEN resolved_at IS NOT NULL THEN true ELSE false END
+    type: boolean
+    description: Whether the return has been resolved
+    virtual: true
+
+measures:
+  - name: return_count
+    sql: id
+    type: count_distinct
+    description: Number of unique return requests
+
+  - name: avg_resolution_days
+    sql: EXTRACT(DAY FROM (resolved_at - created_at))
+    type: avg
+    description: Average days to resolve a return
+
+joins:
+  - target_entity: Orders
+    relationship: many_to_one
+    join_columns:
+      from: order_id
+      to: id
+    description: Each return is for one order
+
+  - target_entity: Customers
+    relationship: many_to_one
+    join_columns:
+      from: customer_id
+      to: id
+    description: Each return was initiated by one customer
+
+use_cases:
+  - Return rate analysis — overall and by product/category
+  - Return reason categorization and trending
+  - Resolution time tracking and SLA compliance
+  - Customer-level return frequency (serial returners)
+  - Join to orders for return rate by order value or promotion usage
+
+query_patterns:
+  - name: returns_by_reason
+    description: Return count by normalized reason
+    sql: |-
+      SELECT LOWER(reason) AS return_reason,
+             COUNT(*) AS return_count,
+             ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (), 1) AS pct
+      FROM returns
+      GROUP BY LOWER(reason)
+      ORDER BY return_count DESC
+
+  - name: monthly_return_rate
+    description: Monthly return rate as percentage of orders
+    sql: |-
+      SELECT TO_CHAR(o.created_at, 'YYYY-MM') AS month,
+             COUNT(DISTINCT o.id) AS total_orders,
+             COUNT(DISTINCT r.order_id) AS returned_orders,
+             ROUND(100.0 * COUNT(DISTINCT r.order_id) / COUNT(DISTINCT o.id), 1) AS return_rate
+      FROM orders o
+      LEFT JOIN returns r ON r.order_id = o.id
+      GROUP BY TO_CHAR(o.created_at, 'YYYY-MM')
+      ORDER BY month
+
+  - name: avg_resolution_time
+    description: Average resolution time by return status
+    sql: |-
+      SELECT status,
+             COUNT(*) AS return_count,
+             AVG(EXTRACT(DAY FROM (resolved_at - created_at))) AS avg_days_to_resolve
+      FROM returns
+      WHERE resolved_at IS NOT NULL
+      GROUP BY status

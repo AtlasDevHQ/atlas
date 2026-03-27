@@ -1,0 +1,153 @@
+name: Inventory Levels
+type: fact_table
+table: inventory_levels
+grain: one row per variant-warehouse combination
+description: |
+  Current inventory quantities for each product variant at each warehouse. Used for
+  stock monitoring, reorder alerts, and distribution analysis.
+
+  Data quality notes:
+  - variant_id has no foreign key constraint — not all values may match
+    product_variants.id.
+  - This represents a snapshot of current inventory, not historical levels.
+
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key — unique inventory level record
+    primary_key: true
+
+  - name: variant_id
+    sql: variant_id
+    type: number
+    description: |
+      Product variant. No foreign key constraint — join to
+      product_variants with caution.
+
+  - name: warehouse_id
+    sql: warehouse_id
+    type: number
+    description: Foreign key to warehouses — which location holds this stock
+
+  - name: quantity
+    sql: quantity
+    type: number
+    description: Current quantity in stock at this warehouse
+
+  - name: reorder_point
+    sql: reorder_point
+    type: number
+    description: Threshold below which stock should be reordered
+
+  - name: updated_at
+    sql: updated_at
+    type: timestamp
+    description: Last time this inventory level was updated
+
+  - name: is_below_reorder
+    sql: CASE WHEN quantity < reorder_point THEN true ELSE false END
+    type: boolean
+    description: Whether current stock is below the reorder threshold
+    virtual: true
+
+  - name: stock_status
+    sql: |-
+      CASE
+        WHEN quantity = 0 THEN 'Out of Stock'
+        WHEN quantity < reorder_point THEN 'Low Stock'
+        WHEN quantity < reorder_point * 3 THEN 'Adequate'
+        ELSE 'Overstock'
+      END
+    type: string
+    description: Stock level classification
+    virtual: true
+    sample_values: [Out of Stock, Low Stock, Adequate, Overstock]
+
+  - name: reorder_gap
+    sql: reorder_point - quantity
+    type: number
+    description: Units needed to reach reorder point (positive = below threshold)
+    virtual: true
+
+measures:
+  - name: total_quantity
+    sql: quantity
+    type: sum
+    description: Total units in stock across all records
+
+  - name: avg_quantity
+    sql: quantity
+    type: avg
+    description: Average stock level per variant-warehouse
+
+  - name: location_count
+    sql: id
+    type: count_distinct
+    description: Number of unique variant-warehouse inventory records
+
+  - name: low_stock_count
+    sql: CASE WHEN quantity < reorder_point THEN 1 ELSE 0 END
+    type: sum
+    description: Number of variant-warehouse combos below reorder point
+
+joins:
+  - target_entity: Products
+    relationship: many_to_one
+    join_columns:
+      from: variant_id
+      to: id
+    description: |
+      Inventory is per variant, not per product. Join via product_variants
+      to get product-level inventory (variant_id -> product_variants.id ->
+      product_variants.product_id -> products.id).
+
+use_cases:
+  - Stock level monitoring and low-stock alerts
+  - Inventory distribution across warehouses
+  - Out-of-stock and overstock identification
+  - Reorder point analysis and threshold optimization
+  - Warehouse capacity and utilization analysis
+
+query_patterns:
+  - name: low_stock_alerts
+    description: Variant-warehouse combos below reorder point
+    sql: |-
+      SELECT il.variant_id,
+             w.name AS warehouse,
+             il.quantity,
+             il.reorder_point,
+             il.reorder_point - il.quantity AS units_needed
+      FROM inventory_levels il
+      JOIN warehouses w ON il.warehouse_id = w.id
+      WHERE il.quantity < il.reorder_point
+      ORDER BY (il.reorder_point - il.quantity) DESC
+
+  - name: inventory_by_warehouse
+    description: Total stock by warehouse
+    sql: |-
+      SELECT w.name AS warehouse,
+             w.city,
+             w.state,
+             COUNT(il.id) AS sku_count,
+             SUM(il.quantity) AS total_units,
+             SUM(CASE WHEN il.quantity < il.reorder_point THEN 1 ELSE 0 END) AS low_stock_skus
+      FROM inventory_levels il
+      JOIN warehouses w ON il.warehouse_id = w.id
+      GROUP BY w.name, w.city, w.state
+      ORDER BY total_units DESC
+
+  - name: stock_status_summary
+    description: Overall inventory health summary
+    sql: |-
+      SELECT CASE
+               WHEN quantity = 0 THEN 'Out of Stock'
+               WHEN quantity < reorder_point THEN 'Low Stock'
+               WHEN quantity < reorder_point * 3 THEN 'Adequate'
+               ELSE 'Overstock'
+             END AS stock_status,
+             COUNT(*) AS sku_count,
+             SUM(quantity) AS total_units
+      FROM inventory_levels
+      GROUP BY stock_status
+      ORDER BY sku_count DESC

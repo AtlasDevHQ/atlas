@@ -1,0 +1,91 @@
+name: Categories
+type: dimension_table
+table: categories
+grain: one row per category
+description: |
+  Hierarchical product categories for the NovaMart catalog. Categories can have a
+  parent_id pointing to another category (self-referencing) to form a tree structure.
+  Top-level categories have parent_id = NULL. Used to organize and navigate products.
+
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key — unique category identifier
+    primary_key: true
+
+  - name: name
+    sql: name
+    type: string
+    description: Category display name
+    sample_values: [Electronics, Clothing, Home & Garden, Sports, Beauty]
+
+  - name: parent_id
+    sql: parent_id
+    type: number
+    description: |
+      Self-referencing foreign key to parent category.
+      NULL = top-level category.
+
+  - name: slug
+    sql: slug
+    type: string
+    description: URL-safe category identifier
+
+  - name: description
+    sql: description
+    type: string
+    description: Category description text
+
+  - name: created_at
+    sql: created_at
+    type: timestamp
+    description: When the category was created
+
+  - name: is_top_level
+    sql: CASE WHEN parent_id IS NULL THEN true ELSE false END
+    type: boolean
+    description: Whether this is a top-level (root) category
+    virtual: true
+
+measures:
+  - name: category_count
+    sql: id
+    type: count_distinct
+    description: Number of unique categories
+
+joins:
+  - target_entity: Categories
+    relationship: many_to_one
+    join_columns:
+      from: parent_id
+      to: id
+    description: Self-join to parent category for hierarchy traversal
+
+use_cases:
+  - Product catalog organization and navigation
+  - Revenue and sales analysis by category hierarchy
+  - Category-level inventory and stock analysis
+  - Join to products for category performance metrics
+
+query_patterns:
+  - name: top_level_categories
+    description: List all top-level categories with product counts
+    sql: |-
+      SELECT c.name AS category,
+             COUNT(p.id) AS product_count
+      FROM categories c
+      LEFT JOIN products p ON p.category_id = c.id AND p.status = 'active'
+      WHERE c.parent_id IS NULL
+      GROUP BY c.name
+      ORDER BY product_count DESC
+
+  - name: category_hierarchy
+    description: Categories with their parent category names
+    sql: |-
+      SELECT child.name AS category,
+             parent.name AS parent_category,
+             child.slug
+      FROM categories child
+      LEFT JOIN categories parent ON child.parent_id = parent.id
+      ORDER BY parent.name NULLS FIRST, child.name

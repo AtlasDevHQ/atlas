@@ -1,0 +1,116 @@
+metrics:
+  - id: total_customers
+    label: Total Customers
+    description: Total number of registered customers.
+    type: atomic
+    sql: |-
+      SELECT COUNT(DISTINCT id) AS total_customers
+      FROM customers
+    aggregation: count_distinct
+
+  - id: active_customers
+    label: Active Customers
+    description: Number of customers with is_active = true.
+    type: atomic
+    sql: |-
+      SELECT COUNT(*) AS active_customers
+      FROM customers
+      WHERE is_active = true
+    aggregation: count
+
+  - id: customer_ltv
+    label: Customer LTV
+    description: >
+      Average customer lifetime value — total revenue per customer across all
+      their orders. Only includes customers with at least one non-cancelled order.
+    type: derived
+    unit: USD
+    sql: |-
+      SELECT AVG(ltv) AS avg_ltv
+      FROM (
+        SELECT customer_id,
+               SUM(total_cents) / 100.0 AS ltv
+        FROM orders
+        WHERE status != 'cancelled'
+        GROUP BY customer_id
+      ) AS customer_ltv
+    aggregation: avg
+    objective: maximize
+
+  - id: repeat_purchase_rate
+    label: Repeat Purchase Rate
+    description: >
+      Percentage of customers who have placed more than one order.
+      Higher repeat rate indicates stronger retention.
+    type: derived
+    unit: percent
+    sql: |-
+      SELECT ROUND(100.0 * COUNT(*) FILTER (WHERE order_count > 1) / NULLIF(COUNT(*), 0), 1) AS repeat_rate
+      FROM (
+        SELECT customer_id, COUNT(*) AS order_count
+        FROM orders
+        WHERE status != 'cancelled'
+        GROUP BY customer_id
+      ) AS customer_orders
+    aggregation: ratio
+    objective: maximize
+
+  - id: customers_by_acquisition_source
+    label: Customers by Acquisition Source
+    description: >
+      Customer count by normalized acquisition channel. Uses LOWER() to handle
+      case inconsistencies in acquisition_source.
+    type: breakdown
+    sql: |-
+      SELECT LOWER(acquisition_source) AS channel,
+             COUNT(*) AS customer_count,
+             COUNT(*) FILTER (WHERE is_active) AS active_count,
+             ROUND(100.0 * COUNT(*) FILTER (WHERE is_active) / COUNT(*), 1) AS active_pct
+      FROM customers
+      GROUP BY LOWER(acquisition_source)
+      ORDER BY customer_count DESC
+
+  - id: cohort_retention
+    label: Monthly Cohort Retention
+    description: >
+      Customer retention by signup cohort. Shows what percentage of customers
+      from each signup month placed an order in subsequent months.
+    type: breakdown
+    sql: |-
+      SELECT TO_CHAR(c.created_at, 'YYYY-MM') AS signup_cohort,
+             COUNT(DISTINCT c.id) AS cohort_size,
+             COUNT(DISTINCT o.customer_id) AS ordered,
+             ROUND(100.0 * COUNT(DISTINCT o.customer_id) / NULLIF(COUNT(DISTINCT c.id), 0), 1) AS conversion_pct
+      FROM customers c
+      LEFT JOIN orders o ON o.customer_id = c.id AND o.status != 'cancelled'
+      GROUP BY TO_CHAR(c.created_at, 'YYYY-MM')
+      ORDER BY signup_cohort
+
+  - id: top_customers_by_spend
+    label: Top Customers by Spend
+    description: Highest-spending customers by total order value.
+    type: breakdown
+    unit: USD
+    sql: |-
+      SELECT c.full_name,
+             c.email,
+             LOWER(c.acquisition_source) AS channel,
+             COUNT(o.id) AS order_count,
+             SUM(o.total_cents) / 100.0 AS total_spend
+      FROM customers c
+      JOIN orders o ON o.customer_id = c.id
+      WHERE o.status != 'cancelled'
+      GROUP BY c.full_name, c.email, LOWER(c.acquisition_source)
+      ORDER BY total_spend DESC
+      LIMIT 20
+
+  - id: new_customers_by_month
+    label: New Customers by Month
+    description: Monthly new customer signups for growth tracking.
+    type: breakdown
+    sql: |-
+      SELECT TO_CHAR(created_at, 'YYYY-MM') AS month,
+             COUNT(*) AS new_customers
+      FROM customers
+      GROUP BY TO_CHAR(created_at, 'YYYY-MM')
+      ORDER BY month

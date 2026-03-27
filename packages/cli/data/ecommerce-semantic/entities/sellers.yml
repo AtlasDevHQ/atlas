@@ -1,0 +1,124 @@
+name: Sellers
+type: dimension_table
+table: sellers
+grain: one row per marketplace seller
+description: |
+  Third-party marketplace sellers on NovaMart. Each seller has a commission rate
+  (NovaMart's take) and a status. Sellers list products and receive payouts after
+  commission. Products link to sellers via products.seller_id.
+
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key — unique seller identifier
+    primary_key: true
+
+  - name: company_name
+    sql: company_name
+    type: string
+    description: Seller's business name
+
+  - name: contact_email
+    sql: contact_email
+    type: string
+    description: Primary contact email for the seller
+
+  - name: commission_rate
+    sql: commission_rate
+    type: number
+    description: |
+      NovaMart's commission as a decimal (e.g. 0.15 = 15%).
+      Seller receives (1 - commission_rate) of each sale.
+
+  - name: status
+    sql: status
+    type: string
+    description: Seller account status
+    sample_values: [active, suspended, pending, inactive]
+
+  - name: joined_at
+    sql: joined_at
+    type: timestamp
+    description: When the seller joined the marketplace
+
+  - name: updated_at
+    sql: updated_at
+    type: timestamp
+    description: Last update to the seller record
+
+  - name: commission_pct
+    sql: ROUND(commission_rate * 100, 1)
+    type: number
+    description: Commission rate as a percentage (e.g. 15.0)
+    virtual: true
+
+  - name: join_year
+    sql: EXTRACT(YEAR FROM joined_at)
+    type: number
+    description: Year the seller joined the marketplace
+    virtual: true
+
+  - name: commission_tier
+    sql: |-
+      CASE
+        WHEN commission_rate < 0.10 THEN 'Low (<10%)'
+        WHEN commission_rate < 0.20 THEN 'Standard (10-20%)'
+        ELSE 'Premium (20%+)'
+      END
+    type: string
+    description: Commission rate tier for segmentation
+    virtual: true
+    sample_values: ["Low (<10%)", "Standard (10-20%)", "Premium (20%+)"]
+
+measures:
+  - name: seller_count
+    sql: id
+    type: count_distinct
+    description: Number of unique sellers
+
+  - name: avg_commission_rate
+    sql: commission_rate
+    type: avg
+    description: Average commission rate across sellers
+
+use_cases:
+  - Marketplace seller health and retention analysis
+  - Commission rate distribution and revenue impact
+  - Seller onboarding trends over time
+  - Join to products for seller catalog size and pricing analysis
+  - Seller status management — active vs suspended vs pending
+
+query_patterns:
+  - name: sellers_by_status
+    description: Seller count by account status
+    sql: |-
+      SELECT status,
+             COUNT(*) AS seller_count,
+             AVG(commission_rate) AS avg_commission
+      FROM sellers
+      GROUP BY status
+      ORDER BY seller_count DESC
+
+  - name: top_sellers_by_product_count
+    description: Sellers with the most active products
+    sql: |-
+      SELECT s.company_name,
+             s.commission_rate,
+             COUNT(p.id) AS product_count,
+             AVG(p.price) AS avg_product_price
+      FROM sellers s
+      JOIN products p ON p.seller_id = s.id AND p.status = 'active'
+      WHERE s.status = 'active'
+      GROUP BY s.company_name, s.commission_rate
+      ORDER BY product_count DESC
+      LIMIT 20
+
+  - name: seller_onboarding_trend
+    description: Monthly new seller signups
+    sql: |-
+      SELECT TO_CHAR(joined_at, 'YYYY-MM') AS month,
+             COUNT(*) AS new_sellers
+      FROM sellers
+      GROUP BY TO_CHAR(joined_at, 'YYYY-MM')
+      ORDER BY month

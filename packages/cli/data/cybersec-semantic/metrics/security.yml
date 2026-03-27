@@ -1,0 +1,181 @@
+metrics:
+  - id: open_findings
+    label: Open Findings
+    description: Total number of vulnerability findings with status 'open' across all organizations.
+    type: atomic
+    source:
+      entity: Scan Results
+      measure: open_finding_count
+    sql: |-
+      SELECT COUNT(*) AS open_findings
+      FROM scan_results
+      WHERE status = 'open'
+    aggregation: count
+    objective: minimize
+
+  - id: total_findings
+    label: Total Findings
+    description: Total number of vulnerability findings across all statuses.
+    type: atomic
+    source:
+      entity: Scan Results
+      measure: finding_count
+    sql: |-
+      SELECT COUNT(*) AS total_findings
+      FROM scan_results
+    aggregation: count
+
+  - id: finding_resolution_rate
+    label: Finding Resolution Rate
+    description: Percentage of all findings that have been resolved.
+    type: derived
+    unit: percent
+    sql: |-
+      SELECT ROUND(100.0 * COUNT(*) FILTER (WHERE status = 'resolved') / COUNT(*), 1) AS resolution_rate
+      FROM scan_results
+    aggregation: ratio
+    objective: maximize
+
+  - id: mttr_findings
+    label: MTTR (Findings)
+    description: >
+      Mean Time To Remediate for scan result findings. Average days between
+      found_at and resolved_at for resolved findings.
+    type: derived
+    unit: days
+    sql: |-
+      SELECT AVG(EXTRACT(DAY FROM (resolved_at - found_at))) AS mttr_days
+      FROM scan_results
+      WHERE resolved_at IS NOT NULL
+    aggregation: avg
+    objective: minimize
+
+  - id: mttr_findings_by_risk
+    label: MTTR by Risk Tier
+    description: Mean time to remediate broken down by risk level tier.
+    type: breakdown
+    unit: days
+    sql: |-
+      SELECT CASE
+               WHEN risk_level >= 9 THEN 'Critical (9-10)'
+               WHEN risk_level >= 7 THEN 'High (7-8)'
+               WHEN risk_level >= 4 THEN 'Medium (4-6)'
+               ELSE 'Low (1-3)'
+             END AS risk_tier,
+             COUNT(*) AS finding_count,
+             AVG(EXTRACT(DAY FROM (resolved_at - found_at))) AS mttr_days
+      FROM scan_results
+      WHERE resolved_at IS NOT NULL
+      GROUP BY risk_tier
+      ORDER BY MIN(risk_level) DESC
+    objective: minimize
+
+  - id: open_incidents
+    label: Open Incidents
+    description: Number of incidents that are not yet resolved or closed.
+    type: atomic
+    source:
+      entity: Incidents
+      measure: open_incident_count
+    sql: |-
+      SELECT COUNT(*) AS open_incidents
+      FROM incidents
+      WHERE status NOT IN ('resolved', 'closed')
+    aggregation: count
+    objective: minimize
+
+  - id: mttr_incidents
+    label: MTTR (Incidents)
+    description: >
+      Mean Time To Resolve for security incidents. Average hours between
+      created_at and resolved_at for resolved incidents.
+    type: derived
+    unit: hours
+    sql: |-
+      SELECT AVG(EXTRACT(EPOCH FROM (resolved_at - created_at)) / 3600.0) AS mttr_hours
+      FROM incidents
+      WHERE resolved_at IS NOT NULL
+    aggregation: avg
+    objective: minimize
+
+  - id: mttr_incidents_by_severity
+    label: Incident MTTR by Severity
+    description: Mean time to resolve incidents broken down by severity.
+    type: breakdown
+    unit: hours
+    sql: |-
+      SELECT severity,
+             COUNT(*) AS incident_count,
+             AVG(EXTRACT(EPOCH FROM (resolved_at - created_at)) / 3600.0) AS mttr_hours
+      FROM incidents
+      WHERE resolved_at IS NOT NULL
+      GROUP BY severity
+      ORDER BY MIN(CASE severity
+        WHEN 'critical' THEN 1 WHEN 'high' THEN 2
+        WHEN 'medium' THEN 3 WHEN 'low' THEN 4 ELSE 5 END)
+    objective: minimize
+
+  - id: alert_escalation_rate
+    label: Alert Escalation Rate
+    description: Percentage of alerts that are linked to an incident (escalated).
+    type: derived
+    unit: percent
+    sql: |-
+      SELECT ROUND(100.0 * COUNT(*) FILTER (WHERE incident_id IS NOT NULL) / COUNT(*), 1) AS escalation_rate
+      FROM alerts
+    aggregation: ratio
+
+  - id: avg_alert_ack_time
+    label: Avg Alert Acknowledgment Time
+    description: Average minutes between alert creation and first acknowledgment.
+    type: derived
+    unit: minutes
+    sql: |-
+      SELECT AVG(EXTRACT(EPOCH FROM (acknowledged_at - created_at)) / 60.0) AS avg_ack_minutes
+      FROM alerts
+      WHERE acknowledged_at IS NOT NULL
+    aggregation: avg
+    objective: minimize
+
+  - id: overdue_remediations
+    label: Overdue Remediations
+    description: Number of remediation actions past their due date that are not completed.
+    type: atomic
+    source:
+      entity: Remediation Actions
+      measure: overdue_count
+    sql: |-
+      SELECT COUNT(*) AS overdue_count
+      FROM remediation_actions
+      WHERE status NOT IN ('completed', 'deferred')
+        AND due_date < CURRENT_DATE
+    aggregation: count
+    objective: minimize
+
+  - id: remediation_completion_rate
+    label: Remediation Completion Rate
+    description: Percentage of all remediation actions that have been completed.
+    type: derived
+    unit: percent
+    sql: |-
+      SELECT ROUND(100.0 * COUNT(*) FILTER (WHERE status = 'completed') / COUNT(*), 1) AS completion_rate
+      FROM remediation_actions
+    aggregation: ratio
+    objective: maximize
+
+  - id: vulnerability_density_by_org
+    label: Vulnerability Density by Organization
+    description: Average open findings per active asset, by organization.
+    type: breakdown
+    sql: |-
+      SELECT o.name AS organization,
+             COUNT(DISTINCT a.id) AS active_assets,
+             COUNT(sr.id) FILTER (WHERE sr.status = 'open') AS open_findings,
+             ROUND(COUNT(sr.id) FILTER (WHERE sr.status = 'open')::NUMERIC /
+                   NULLIF(COUNT(DISTINCT a.id), 0), 2) AS findings_per_asset
+      FROM organizations o
+      JOIN assets a ON a.organization_id = o.id AND a.is_active = true
+      LEFT JOIN scan_results sr ON sr.asset_id = a.id
+      GROUP BY o.name
+      ORDER BY findings_per_asset DESC
+    objective: minimize

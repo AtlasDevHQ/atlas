@@ -1,0 +1,159 @@
+name: Order Items
+type: fact_table
+table: order_items
+grain: one row per line item in an order
+description: |
+  Individual line items within orders. Each row represents a specific product purchased
+  at a quantity and price. product_name is denormalized for convenience.
+
+  Data quality notes:
+  - product_variant_id has no foreign key constraint — not all values may match
+    product_variants.id.
+  - All monetary values (unit_price_cents, total_cents) are in cents.
+  - total_cents = unit_price_cents * quantity (but verify — may have rounding).
+
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key — unique line item identifier
+    primary_key: true
+
+  - name: order_id
+    sql: order_id
+    type: number
+    description: Foreign key to orders — which order this item belongs to
+
+  - name: product_variant_id
+    sql: product_variant_id
+    type: number
+    description: |
+      Product variant purchased. No foreign key constraint —
+      join to product_variants with caution.
+
+  - name: product_name
+    sql: product_name
+    type: string
+    description: Denormalized product name (copied at time of purchase)
+
+  - name: quantity
+    sql: quantity
+    type: number
+    description: Number of units purchased for this line item
+
+  - name: unit_price_cents
+    sql: unit_price_cents
+    type: number
+    description: Price per unit in cents at time of purchase
+
+  - name: total_cents
+    sql: total_cents
+    type: number
+    description: Line item total in cents (unit_price_cents * quantity)
+
+  - name: created_at
+    sql: created_at
+    type: timestamp
+    description: When the line item was created (order placement time)
+
+  - name: unit_price_dollars
+    sql: unit_price_cents / 100.0
+    type: number
+    description: Price per unit in dollars
+    virtual: true
+
+  - name: total_dollars
+    sql: total_cents / 100.0
+    type: number
+    description: Line item total in dollars
+    virtual: true
+
+  - name: quantity_bucket
+    sql: |-
+      CASE
+        WHEN quantity = 1 THEN 'Single'
+        WHEN quantity <= 3 THEN 'Small (2-3)'
+        WHEN quantity <= 10 THEN 'Medium (4-10)'
+        ELSE 'Bulk (10+)'
+      END
+    type: string
+    description: Quantity bucket for basket analysis
+    virtual: true
+    sample_values: [Single, "Small (2-3)", "Medium (4-10)", "Bulk (10+)"]
+
+measures:
+  - name: line_item_count
+    sql: id
+    type: count_distinct
+    description: Number of unique line items
+
+  - name: total_units_sold
+    sql: quantity
+    type: sum
+    description: Total units sold across all line items
+
+  - name: total_revenue_cents
+    sql: total_cents
+    type: sum
+    description: Total line item revenue in cents
+
+  - name: avg_unit_price_cents
+    sql: unit_price_cents
+    type: avg
+    description: Average unit price in cents
+
+  - name: avg_quantity
+    sql: quantity
+    type: avg
+    description: Average quantity per line item
+
+joins:
+  - target_entity: Orders
+    relationship: many_to_one
+    join_columns:
+      from: order_id
+      to: id
+    description: Each line item belongs to one order
+
+use_cases:
+  - Product-level revenue attribution — which products drive the most revenue
+  - Basket analysis — average items per order, common combinations
+  - Pricing analysis — unit prices across products and time periods
+  - Quantity patterns — single-item vs bulk purchases
+  - Join to orders for customer and time dimensions on product metrics
+
+query_patterns:
+  - name: top_products_by_revenue
+    description: Highest-revenue products
+    sql: |-
+      SELECT product_name,
+             SUM(total_cents) / 100.0 AS total_revenue,
+             SUM(quantity) AS total_units,
+             COUNT(DISTINCT order_id) AS order_count
+      FROM order_items
+      GROUP BY product_name
+      ORDER BY total_revenue DESC
+      LIMIT 20
+
+  - name: avg_items_per_order
+    description: Average line items and units per order
+    sql: |-
+      SELECT AVG(item_count) AS avg_line_items,
+             AVG(total_units) AS avg_units
+      FROM (
+        SELECT order_id,
+               COUNT(*) AS item_count,
+               SUM(quantity) AS total_units
+        FROM order_items
+        GROUP BY order_id
+      ) AS per_order
+
+  - name: revenue_by_product_and_month
+    description: Monthly revenue trend by top products
+    sql: |-
+      SELECT product_name,
+             TO_CHAR(oi.created_at, 'YYYY-MM') AS month,
+             SUM(oi.total_cents) / 100.0 AS revenue
+      FROM order_items oi
+      GROUP BY product_name, TO_CHAR(oi.created_at, 'YYYY-MM')
+      ORDER BY month, revenue DESC

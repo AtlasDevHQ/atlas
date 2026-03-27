@@ -1,0 +1,170 @@
+name: Compliance Assessments
+type: fact_table
+table: compliance_assessments
+grain: one row per compliance assessment
+description: |
+  Compliance assessments conducted against regulatory frameworks for customer
+  organizations. Each assessment evaluates an organization against a specific
+  framework (SOC 2, ISO 27001, HIPAA, etc.) and produces a score. Tracks
+  assessment lifecycle from initiation to completion. Use for compliance
+  readiness analysis, score trending, and framework coverage tracking.
+
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key — unique assessment identifier
+    primary_key: true
+
+  - name: organization_id
+    sql: organization_id
+    type: number
+    description: Foreign key to organizations — which customer was assessed
+
+  - name: framework_id
+    sql: framework_id
+    type: number
+    description: Foreign key to compliance_frameworks — which framework was assessed against
+
+  - name: status
+    sql: status
+    type: string
+    description: Current assessment status
+    sample_values: [pending, in_progress, completed, failed]
+
+  - name: started_at
+    sql: started_at
+    type: timestamp
+    description: When the assessment began
+
+  - name: completed_at
+    sql: completed_at
+    type: timestamp
+    description: When the assessment was completed (NULL if still in progress)
+
+  - name: score
+    sql: score
+    type: number
+    description: |
+      Compliance score (0–100) representing the organization's compliance
+      level against the framework. Higher = more compliant. NULL if the
+      assessment has not been completed.
+
+  - name: created_at
+    sql: created_at
+    type: timestamp
+    description: When the assessment record was created
+
+  - name: score_tier
+    sql: |-
+      CASE
+        WHEN score IS NULL THEN 'Not Scored'
+        WHEN score >= 90 THEN 'Excellent (90-100)'
+        WHEN score >= 70 THEN 'Good (70-89)'
+        WHEN score >= 50 THEN 'Fair (50-69)'
+        ELSE 'Poor (0-49)'
+      END
+    type: string
+    description: Compliance score tier bucket
+    virtual: true
+    sample_values: [Not Scored, Excellent (90-100), Good (70-89), Fair (50-69), Poor (0-49)]
+
+  - name: is_completed
+    sql: CASE WHEN status = 'completed' THEN true ELSE false END
+    type: boolean
+    description: Whether the assessment has been completed
+    virtual: true
+
+  - name: is_passing
+    sql: CASE WHEN score >= 70 THEN true ELSE false END
+    type: boolean
+    description: Whether the assessment score meets the passing threshold (70+)
+    virtual: true
+
+  - name: duration_days
+    sql: |-
+      CASE
+        WHEN completed_at IS NOT NULL AND started_at IS NOT NULL
+        THEN EXTRACT(DAY FROM (completed_at - started_at))
+      END
+    type: number
+    description: Assessment duration in days (NULL if not completed)
+    virtual: true
+
+  - name: completed_month
+    sql: |-
+      CASE
+        WHEN completed_at IS NOT NULL
+        THEN TO_CHAR(completed_at, 'YYYY-MM')
+      END
+    type: string
+    description: Year-month the assessment was completed
+    virtual: true
+
+measures:
+  - name: assessment_count
+    sql: id
+    type: count_distinct
+    description: Number of unique assessments
+
+  - name: completed_count
+    sql: CASE WHEN status = 'completed' THEN id END
+    type: count_distinct
+    description: Number of completed assessments
+
+  - name: avg_score
+    sql: score
+    type: avg
+    description: Average compliance score (excludes NULLs)
+
+joins:
+  - target_entity: Organizations
+    relationship: many_to_one
+    join_columns:
+      from: organization_id
+      to: id
+    description: Each assessment belongs to one organization
+
+use_cases:
+  - Compliance score tracking by framework across organizations
+  - Assessment completion rate and pipeline analysis
+  - Organization compliance readiness comparison
+  - Score trending over time (improvement tracking)
+  - Framework coverage analysis (which frameworks have assessments)
+
+query_patterns:
+  - name: avg_score_by_framework
+    description: Average compliance score by framework
+    sql: |-
+      SELECT cf.name AS framework,
+             COUNT(ca.id) AS assessment_count,
+             AVG(ca.score) AS avg_score,
+             MIN(ca.score) AS min_score,
+             MAX(ca.score) AS max_score
+      FROM compliance_assessments ca
+      JOIN compliance_frameworks cf ON ca.framework_id = cf.id
+      WHERE ca.status = 'completed'
+      GROUP BY cf.name
+      ORDER BY avg_score DESC
+
+  - name: org_compliance_overview
+    description: Compliance score overview by organization
+    sql: |-
+      SELECT o.name AS organization,
+             COUNT(ca.id) AS total_assessments,
+             COUNT(*) FILTER (WHERE ca.status = 'completed') AS completed,
+             AVG(ca.score) FILTER (WHERE ca.status = 'completed') AS avg_score
+      FROM compliance_assessments ca
+      JOIN organizations o ON ca.organization_id = o.id
+      GROUP BY o.name
+      ORDER BY avg_score
+
+  - name: assessment_status_breakdown
+    description: Assessment count by status
+    sql: |-
+      SELECT status,
+             COUNT(*) AS count,
+             AVG(score) AS avg_score
+      FROM compliance_assessments
+      GROUP BY status
+      ORDER BY count DESC

@@ -1,0 +1,140 @@
+name: Payments
+type: fact_table
+table: payments
+grain: one row per payment transaction
+description: |
+  Payment transactions associated with orders. An order can have multiple payment
+  records (split payments, retries after failure, partial refunds).
+
+  Data quality notes:
+  - order_id has no foreign key constraint — not all values may match orders.id.
+  - amount_cents is in cents. Divide by 100 for dollar amounts.
+  - provider_ref is the external payment processor reference (Stripe, PayPal, etc.).
+
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key — unique payment transaction identifier
+    primary_key: true
+
+  - name: order_id
+    sql: order_id
+    type: number
+    description: |
+      Associated order. No foreign key constraint — join to orders with caution.
+
+  - name: method
+    sql: method
+    type: string
+    description: Payment method used
+    sample_values: [credit_card, debit_card, paypal, apple_pay, gift_card]
+
+  - name: status
+    sql: status
+    type: string
+    description: Payment transaction status
+    sample_values: [pending, captured, failed, refunded]
+
+  - name: amount_cents
+    sql: amount_cents
+    type: number
+    description: Payment amount in cents
+
+  - name: provider_ref
+    sql: provider_ref
+    type: string
+    description: External payment provider reference ID (e.g. Stripe charge ID)
+
+  - name: created_at
+    sql: created_at
+    type: timestamp
+    description: When the payment was initiated
+
+  - name: updated_at
+    sql: updated_at
+    type: timestamp
+    description: Last update to the payment record
+
+  - name: amount_dollars
+    sql: amount_cents / 100.0
+    type: number
+    description: Payment amount in dollars
+    virtual: true
+
+  - name: payment_month
+    sql: TO_CHAR(created_at, 'YYYY-MM')
+    type: string
+    description: Year-month of the payment
+    virtual: true
+
+  - name: is_successful
+    sql: CASE WHEN status = 'captured' THEN true ELSE false END
+    type: boolean
+    description: Whether the payment was successfully captured
+    virtual: true
+
+measures:
+  - name: payment_count
+    sql: id
+    type: count_distinct
+    description: Number of unique payment transactions
+
+  - name: total_captured_cents
+    sql: CASE WHEN status = 'captured' THEN amount_cents ELSE 0 END
+    type: sum
+    description: Total successfully captured payment amount in cents
+
+  - name: avg_payment_cents
+    sql: amount_cents
+    type: avg
+    description: Average payment amount in cents
+
+joins:
+  - target_entity: Orders
+    relationship: many_to_one
+    join_columns:
+      from: order_id
+      to: id
+    description: Each payment is associated with one order (no FK constraint)
+
+use_cases:
+  - Payment success/failure rate analysis
+  - Payment method popularity and trends
+  - Revenue reconciliation — compare payment totals to order totals
+  - Failed payment analysis for recovery opportunities
+  - Monthly collected revenue tracking
+
+query_patterns:
+  - name: payment_success_rate
+    description: Payment success rate by method
+    sql: |-
+      SELECT method,
+             COUNT(*) AS total_payments,
+             COUNT(*) FILTER (WHERE status = 'captured') AS captured,
+             COUNT(*) FILTER (WHERE status = 'failed') AS failed,
+             ROUND(100.0 * COUNT(*) FILTER (WHERE status = 'captured') / COUNT(*), 1) AS success_rate
+      FROM payments
+      GROUP BY method
+      ORDER BY total_payments DESC
+
+  - name: monthly_captured_revenue
+    description: Monthly captured payment revenue
+    sql: |-
+      SELECT TO_CHAR(created_at, 'YYYY-MM') AS month,
+             SUM(amount_cents) / 100.0 AS captured_dollars,
+             COUNT(*) AS payment_count
+      FROM payments
+      WHERE status = 'captured'
+      GROUP BY TO_CHAR(created_at, 'YYYY-MM')
+      ORDER BY month
+
+  - name: payments_by_status
+    description: Payment distribution by status
+    sql: |-
+      SELECT status,
+             COUNT(*) AS payment_count,
+             SUM(amount_cents) / 100.0 AS total_dollars
+      FROM payments
+      GROUP BY status
+      ORDER BY payment_count DESC

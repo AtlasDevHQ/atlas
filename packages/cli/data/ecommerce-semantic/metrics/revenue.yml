@@ -1,0 +1,120 @@
+metrics:
+  - id: total_gmv
+    label: Total GMV
+    description: >
+      Gross Merchandise Value — total value of all non-cancelled orders.
+      Calculated from orders.total_cents / 100.
+    type: atomic
+    unit: USD
+    source:
+      entity: Orders
+      measure: total_gmv_cents
+    sql: |-
+      SELECT SUM(total_cents) / 100.0 AS total_gmv
+      FROM orders
+      WHERE status != 'cancelled'
+    aggregation: sum
+    objective: maximize
+
+  - id: aov
+    label: Average Order Value (AOV)
+    description: >
+      Average order value across non-cancelled orders.
+      GMV divided by order count.
+    type: derived
+    unit: USD
+    sql: |-
+      SELECT AVG(total_cents) / 100.0 AS aov
+      FROM orders
+      WHERE status != 'cancelled'
+    aggregation: avg
+    objective: maximize
+
+  - id: monthly_gmv_trend
+    label: Monthly GMV Trend
+    description: GMV and order count by month for trend analysis.
+    type: breakdown
+    unit: USD
+    sql: |-
+      SELECT TO_CHAR(created_at, 'YYYY-MM') AS month,
+             COUNT(*) AS order_count,
+             SUM(total_cents) / 100.0 AS gmv,
+             AVG(total_cents) / 100.0 AS aov
+      FROM orders
+      WHERE status != 'cancelled'
+      GROUP BY TO_CHAR(created_at, 'YYYY-MM')
+      ORDER BY month
+
+  - id: revenue_by_category
+    label: Revenue by Category
+    description: >
+      Product revenue broken down by category. Joins order_items to products
+      and categories for category-level attribution.
+    type: breakdown
+    unit: USD
+    sql: |-
+      SELECT c.name AS category,
+             SUM(oi.total_cents) / 100.0 AS revenue,
+             COUNT(DISTINCT oi.order_id) AS order_count,
+             SUM(oi.quantity) AS units_sold
+      FROM order_items oi
+      JOIN products p ON oi.product_name = p.name
+      JOIN categories c ON p.category_id = c.id
+      GROUP BY c.name
+      ORDER BY revenue DESC
+
+  - id: revenue_dtc_vs_marketplace
+    label: Revenue — DTC vs Marketplace
+    description: >
+      Revenue split between NovaMart's own DTC products (seller_id IS NULL)
+      and third-party marketplace products.
+    type: breakdown
+    unit: USD
+    sql: |-
+      SELECT CASE WHEN p.seller_id IS NULL THEN 'DTC' ELSE 'Marketplace' END AS channel,
+             SUM(oi.total_cents) / 100.0 AS revenue,
+             COUNT(DISTINCT oi.order_id) AS order_count,
+             AVG(oi.unit_price_cents) / 100.0 AS avg_unit_price
+      FROM order_items oi
+      JOIN products p ON oi.product_name = p.name
+      GROUP BY CASE WHEN p.seller_id IS NULL THEN 'DTC' ELSE 'Marketplace' END
+
+  - id: refund_rate
+    label: Refund Rate
+    description: >
+      Percentage of payments that have been refunded. Based on payment status.
+    type: derived
+    unit: percent
+    sql: |-
+      SELECT ROUND(100.0 * COUNT(*) FILTER (WHERE status = 'refunded') / NULLIF(COUNT(*), 0), 1) AS refund_rate
+      FROM payments
+    aggregation: ratio
+    objective: minimize
+
+  - id: net_revenue
+    label: Net Revenue
+    description: >
+      GMV minus refunded payment amounts. Represents actual collected revenue.
+    type: derived
+    unit: USD
+    sql: |-
+      SELECT (SUM(CASE WHEN status = 'captured' THEN amount_cents ELSE 0 END)
+              - SUM(CASE WHEN status = 'refunded' THEN amount_cents ELSE 0 END)) / 100.0 AS net_revenue
+      FROM payments
+    aggregation: sum
+    objective: maximize
+
+  - id: promotion_discount_impact
+    label: Promotion Discount Impact
+    description: >
+      Comparison of AOV and order count between promoted and non-promoted orders.
+    type: breakdown
+    unit: USD
+    sql: |-
+      SELECT CASE WHEN promotion_id IS NOT NULL THEN 'Promoted' ELSE 'Full Price' END AS order_type,
+             COUNT(*) AS order_count,
+             AVG(total_cents) / 100.0 AS avg_order_value,
+             SUM(total_cents) / 100.0 AS total_revenue
+      FROM orders
+      WHERE status != 'cancelled'
+      GROUP BY CASE WHEN promotion_id IS NOT NULL THEN 'Promoted' ELSE 'Full Price' END

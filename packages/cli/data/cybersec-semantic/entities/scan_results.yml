@@ -1,0 +1,215 @@
+name: Scan Results
+type: fact_table
+table: scan_results
+grain: one row per vulnerability finding in a scan
+description: |
+  Individual findings from vulnerability scans. Each row represents a specific
+  vulnerability found on a specific asset during a specific scan. Contains
+  risk_level (1–10), status, details, and timestamps for discovery and
+  resolution. Note: scan_id, asset_id, and vulnerability_id columns do NOT
+  have formal foreign key constraints — joins must handle potential orphans.
+  This is the primary table for vulnerability exposure analysis, MTTR
+  calculations, and risk trending.
+
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key — unique scan result (finding) identifier
+    primary_key: true
+
+  - name: scan_id
+    sql: scan_id
+    type: number
+    description: |
+      Reference to the scan that produced this finding. No formal FK constraint —
+      some scan_ids may not match scans.id.
+
+  - name: asset_id
+    sql: asset_id
+    type: number
+    description: |
+      Reference to the asset where the vulnerability was found. No formal FK
+      constraint — some asset_ids may not match assets.id.
+
+  - name: vulnerability_id
+    sql: vulnerability_id
+    type: number
+    description: |
+      Reference to the vulnerability (CVE) that was detected. No formal FK
+      constraint — some vulnerability_ids may not match vulnerabilities.id.
+
+  - name: risk_level
+    sql: risk_level
+    type: number
+    description: |
+      Contextual risk score (1–10) for this specific finding. Accounts for
+      asset context, environment, and vulnerability severity. Higher = more critical.
+      Distinct from CVSS (which rates the vulnerability generically).
+
+  - name: status
+    sql: status
+    type: string
+    description: Current finding status
+    sample_values: [open, resolved, false_positive, accepted_risk]
+
+  - name: details
+    sql: details
+    type: string
+    description: Additional details about the finding (free text)
+
+  - name: found_at
+    sql: found_at
+    type: timestamp
+    description: When the vulnerability was first discovered on this asset
+
+  - name: resolved_at
+    sql: resolved_at
+    type: timestamp
+    description: When the finding was resolved (NULL if still open)
+
+  - name: risk_tier
+    sql: |-
+      CASE
+        WHEN risk_level >= 9 THEN 'Critical (9-10)'
+        WHEN risk_level >= 7 THEN 'High (7-8)'
+        WHEN risk_level >= 4 THEN 'Medium (4-6)'
+        ELSE 'Low (1-3)'
+      END
+    type: string
+    description: Risk level tier bucket
+    virtual: true
+    sample_values: [Critical (9-10), High (7-8), Medium (4-6), Low (1-3)]
+
+  - name: is_open
+    sql: CASE WHEN status = 'open' THEN true ELSE false END
+    type: boolean
+    description: Whether this finding is currently open (unresolved)
+    virtual: true
+
+  - name: is_resolved
+    sql: CASE WHEN status = 'resolved' THEN true ELSE false END
+    type: boolean
+    description: Whether this finding has been resolved
+    virtual: true
+
+  - name: resolution_days
+    sql: |-
+      CASE
+        WHEN resolved_at IS NOT NULL
+        THEN EXTRACT(DAY FROM (resolved_at - found_at))
+      END
+    type: number
+    description: Days between discovery and resolution (NULL if still open)
+    virtual: true
+
+  - name: found_date
+    sql: found_at::DATE
+    type: date
+    description: Date the finding was discovered (for daily grouping)
+    virtual: true
+
+  - name: found_month
+    sql: TO_CHAR(found_at, 'YYYY-MM')
+    type: string
+    description: Year-month the finding was discovered
+    virtual: true
+
+  - name: age_days
+    sql: EXTRACT(DAY FROM (CURRENT_TIMESTAMP - found_at))
+    type: number
+    description: Days since the finding was discovered (age of the finding)
+    virtual: true
+
+measures:
+  - name: finding_count
+    sql: id
+    type: count_distinct
+    description: Number of unique findings
+
+  - name: open_finding_count
+    sql: CASE WHEN status = 'open' THEN id END
+    type: count_distinct
+    description: Number of currently open findings
+
+  - name: resolved_finding_count
+    sql: CASE WHEN status = 'resolved' THEN id END
+    type: count_distinct
+    description: Number of resolved findings
+
+  - name: avg_risk_level
+    sql: risk_level
+    type: avg
+    description: Average risk level across findings
+
+  - name: avg_resolution_days
+    sql: CASE WHEN resolved_at IS NOT NULL THEN EXTRACT(DAY FROM (resolved_at - found_at)) END
+    type: avg
+    description: Average days to resolve a finding (MTTR for findings)
+
+joins:
+  - target_entity: Scans
+    relationship: many_to_one
+    join_columns:
+      from: scan_id
+      to: id
+    description: Each finding comes from one scan (no formal FK — may have orphans)
+
+  - target_entity: Assets
+    relationship: many_to_one
+    join_columns:
+      from: asset_id
+      to: id
+    description: Each finding is on one asset (no formal FK — may have orphans)
+
+  - target_entity: Vulnerabilities
+    relationship: many_to_one
+    join_columns:
+      from: vulnerability_id
+      to: id
+    description: Each finding is of one vulnerability (no formal FK — may have orphans)
+
+use_cases:
+  - Open vulnerability exposure analysis across the fleet
+  - Mean time to remediation (MTTR) calculation and trending
+  - Risk level distribution and prioritization
+  - Per-asset and per-organization vulnerability density
+  - Remediation progress tracking (open vs resolved over time)
+
+query_patterns:
+  - name: findings_by_status
+    description: Finding count by status
+    sql: |-
+      SELECT status,
+             COUNT(*) AS finding_count,
+             AVG(risk_level) AS avg_risk
+      FROM scan_results
+      GROUP BY status
+      ORDER BY finding_count DESC
+
+  - name: mttr_by_risk_tier
+    description: Mean time to resolve by risk tier
+    sql: |-
+      SELECT CASE
+               WHEN risk_level >= 9 THEN 'Critical (9-10)'
+               WHEN risk_level >= 7 THEN 'High (7-8)'
+               WHEN risk_level >= 4 THEN 'Medium (4-6)'
+               ELSE 'Low (1-3)'
+             END AS risk_tier,
+             COUNT(*) AS finding_count,
+             AVG(EXTRACT(DAY FROM (resolved_at - found_at))) AS avg_resolution_days
+      FROM scan_results
+      WHERE resolved_at IS NOT NULL
+      GROUP BY risk_tier
+      ORDER BY MIN(risk_level) DESC
+
+  - name: open_findings_by_month
+    description: Open findings trend by discovery month
+    sql: |-
+      SELECT TO_CHAR(found_at, 'YYYY-MM') AS found_month,
+             COUNT(*) AS total_found,
+             COUNT(*) FILTER (WHERE status = 'open') AS still_open,
+             COUNT(*) FILTER (WHERE status = 'resolved') AS resolved
+      FROM scan_results
+      GROUP BY found_month
+      ORDER BY found_month

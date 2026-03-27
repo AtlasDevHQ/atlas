@@ -1,0 +1,140 @@
+name: Users
+type: dimension_table
+table: users
+grain: one row per user account
+description: |
+  Users within customer organizations on the Sentinel Security platform.
+  Each user belongs to one organization and has a role, email, login history,
+  and active status. The role column is a legacy field (may not reflect current
+  RBAC). last_login is mostly NULL for users who have not yet logged in.
+  organization_name is denormalized from organizations for convenience.
+
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key — unique user identifier
+    primary_key: true
+
+  - name: organization_id
+    sql: organization_id
+    type: number
+    description: Foreign key to organizations — which customer this user belongs to
+
+  - name: organization_name
+    sql: organization_name
+    type: string
+    description: Denormalized organization name (from organizations table)
+
+  - name: email
+    sql: email
+    type: string
+    description: User's email address
+
+  - name: full_name
+    sql: full_name
+    type: string
+    description: User's full name
+
+  - name: role
+    sql: role
+    type: string
+    description: |
+      Legacy role assignment. Values: admin, analyst, viewer, owner.
+      May not reflect current RBAC permissions — use for approximate analysis.
+    sample_values: [admin, analyst, viewer, owner]
+
+  - name: last_login
+    sql: last_login
+    type: timestamp
+    description: |
+      Last login timestamp. Mostly NULL (~80%) for users who have never logged in
+      or whose login was not recorded. Use with caution for engagement analysis.
+
+  - name: created_at
+    sql: created_at
+    type: timestamp
+    description: When the user account was created
+
+  - name: is_active
+    sql: is_active
+    type: boolean
+    description: Whether the user account is currently active
+
+  - name: has_logged_in
+    sql: CASE WHEN last_login IS NOT NULL THEN true ELSE false END
+    type: boolean
+    description: Whether the user has ever logged in to the platform
+    virtual: true
+
+  - name: created_month
+    sql: TO_CHAR(created_at, 'YYYY-MM')
+    type: string
+    description: Year-month the user was created
+    virtual: true
+
+  - name: days_since_login
+    sql: |-
+      CASE
+        WHEN last_login IS NOT NULL
+        THEN EXTRACT(DAY FROM (CURRENT_TIMESTAMP - last_login))
+      END
+    type: number
+    description: Days since last login (NULL if never logged in)
+    virtual: true
+
+measures:
+  - name: user_count
+    sql: id
+    type: count_distinct
+    description: Number of unique users
+
+  - name: active_user_count
+    sql: CASE WHEN is_active THEN id END
+    type: count_distinct
+    description: Number of active users
+
+joins:
+  - target_entity: Organizations
+    relationship: many_to_one
+    join_columns:
+      from: organization_id
+      to: id
+    description: Each user belongs to one organization
+
+use_cases:
+  - User adoption and engagement analysis per organization
+  - Role distribution across the platform
+  - Stale account detection (never logged in, inactive)
+  - User growth trending over time
+  - Join to organizations for user density per customer
+
+query_patterns:
+  - name: users_by_role
+    description: User count by role
+    sql: |-
+      SELECT role,
+             COUNT(*) AS user_count,
+             COUNT(*) FILTER (WHERE is_active) AS active_count
+      FROM users
+      GROUP BY role
+      ORDER BY user_count DESC
+
+  - name: users_per_org
+    description: User density per organization
+    sql: |-
+      SELECT organization_name,
+             COUNT(*) AS user_count,
+             COUNT(*) FILTER (WHERE is_active) AS active_users,
+             COUNT(*) FILTER (WHERE last_login IS NOT NULL) AS logged_in_users
+      FROM users
+      GROUP BY organization_name
+      ORDER BY user_count DESC
+
+  - name: never_logged_in
+    description: Users who have never logged in
+    sql: |-
+      SELECT full_name, email, organization_name, role, created_at
+      FROM users
+      WHERE last_login IS NULL AND is_active = true
+      ORDER BY created_at

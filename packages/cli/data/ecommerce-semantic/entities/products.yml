@@ -1,0 +1,178 @@
+name: Products
+type: dimension_table
+table: products
+grain: one row per product
+description: |
+  NovaMart product catalog. Each product belongs to a category and optionally to a
+  marketplace seller (seller_id). Products with seller_id = NULL are NovaMart's own
+  DTC (direct-to-consumer) products.
+
+  Data quality notes:
+  - price is in dollars. price_cents is in cents but 40% NULL — prefer price for analysis.
+  - seller_id has no foreign key constraint; join carefully.
+  - status controls visibility: active, draft, archived.
+
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key — unique product identifier
+    primary_key: true
+
+  - name: name
+    sql: name
+    type: string
+    description: Product display name
+
+  - name: slug
+    sql: slug
+    type: string
+    description: URL-safe product identifier
+
+  - name: category_id
+    sql: category_id
+    type: number
+    description: Foreign key to categories — product classification
+
+  - name: seller_id
+    sql: seller_id
+    type: number
+    description: |
+      Marketplace seller ID. NULL = NovaMart DTC product.
+      No foreign key constraint — join to sellers with caution.
+
+  - name: price
+    sql: price
+    type: number
+    description: Product price in dollars (always populated)
+
+  - name: price_cents
+    sql: price_cents
+    type: number
+    description: |
+      Product price in cents. WARNING: 40% NULL. Use price (dollars) for
+      reliable analysis. When present, should equal price * 100.
+
+  - name: description
+    sql: description
+    type: string
+    description: Product description text
+
+  - name: status
+    sql: status
+    type: string
+    description: Product lifecycle status
+    sample_values: [active, draft, archived]
+
+  - name: created_at
+    sql: created_at
+    type: timestamp
+    description: When the product was first created
+
+  - name: updated_at
+    sql: updated_at
+    type: timestamp
+    description: Last update to the product record
+
+  - name: is_marketplace
+    sql: CASE WHEN seller_id IS NOT NULL THEN true ELSE false END
+    type: boolean
+    description: Whether this is a marketplace product (has a seller) vs DTC
+    virtual: true
+
+  - name: price_tier
+    sql: |-
+      CASE
+        WHEN price < 25 THEN 'Budget'
+        WHEN price < 75 THEN 'Mid-Range'
+        WHEN price < 200 THEN 'Premium'
+        ELSE 'Luxury'
+      END
+    type: string
+    description: Price tier bucket for segmentation
+    virtual: true
+    sample_values: [Budget, Mid-Range, Premium, Luxury]
+
+measures:
+  - name: product_count
+    sql: id
+    type: count_distinct
+    description: Number of unique products
+
+  - name: avg_price
+    sql: price
+    type: avg
+    description: Average product price in dollars
+
+  - name: min_price
+    sql: price
+    type: min
+    description: Lowest product price in dollars
+
+  - name: max_price
+    sql: price
+    type: max
+    description: Highest product price in dollars
+
+joins:
+  - target_entity: Categories
+    relationship: many_to_one
+    join_columns:
+      from: category_id
+      to: id
+    description: Each product belongs to one category
+
+  - target_entity: Sellers
+    relationship: many_to_one
+    join_columns:
+      from: seller_id
+      to: id
+    description: Marketplace products belong to a seller (NULL for DTC)
+
+use_cases:
+  - Product catalog analysis by category, price tier, and status
+  - DTC vs marketplace product mix and pricing comparison
+  - Product lifecycle tracking — draft to active to archived
+  - Join to order_items for revenue attribution by product
+  - Join to product_reviews for quality/sentiment by product
+
+query_patterns:
+  - name: products_by_category
+    description: Product count and average price by category
+    sql: |-
+      SELECT c.name AS category,
+             COUNT(p.id) AS product_count,
+             AVG(p.price) AS avg_price
+      FROM products p
+      JOIN categories c ON p.category_id = c.id
+      WHERE p.status = 'active'
+      GROUP BY c.name
+      ORDER BY product_count DESC
+
+  - name: dtc_vs_marketplace
+    description: Compare DTC and marketplace product counts and pricing
+    sql: |-
+      SELECT CASE WHEN seller_id IS NULL THEN 'DTC' ELSE 'Marketplace' END AS channel,
+             COUNT(*) AS product_count,
+             AVG(price) AS avg_price,
+             MIN(price) AS min_price,
+             MAX(price) AS max_price
+      FROM products
+      WHERE status = 'active'
+      GROUP BY CASE WHEN seller_id IS NULL THEN 'DTC' ELSE 'Marketplace' END
+
+  - name: products_by_price_tier
+    description: Product distribution across price tiers
+    sql: |-
+      SELECT CASE
+               WHEN price < 25 THEN 'Budget'
+               WHEN price < 75 THEN 'Mid-Range'
+               WHEN price < 200 THEN 'Premium'
+               ELSE 'Luxury'
+             END AS price_tier,
+             COUNT(*) AS product_count,
+             AVG(price) AS avg_price
+      FROM products
+      WHERE status = 'active'
+      GROUP BY price_tier
+      ORDER BY avg_price

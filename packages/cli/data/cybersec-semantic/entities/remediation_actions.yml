@@ -1,0 +1,212 @@
+name: Remediation Actions
+type: fact_table
+table: remediation_actions
+grain: one row per remediation action
+description: |
+  Remediation tasks assigned to address vulnerability instances. Each action
+  has a priority, assignment, due date, and completion tracking. Linked to
+  vulnerability_instances via vulnerability_instance_id. Use for remediation
+  backlog analysis, SLA compliance tracking, workload distribution, and
+  burndown metrics.
+
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key — unique remediation action identifier
+    primary_key: true
+
+  - name: vulnerability_instance_id
+    sql: vulnerability_instance_id
+    type: number
+    description: Foreign key to vulnerability_instances — which specific finding this remediates
+
+  - name: assigned_to
+    sql: assigned_to
+    type: number
+    description: Foreign key to users — who is responsible for this remediation (may be NULL)
+
+  - name: status
+    sql: status
+    type: string
+    description: Current remediation action status
+    sample_values: [open, in_progress, completed, deferred]
+
+  - name: priority
+    sql: priority
+    type: string
+    description: Remediation priority level
+    sample_values: [critical, high, medium, low]
+
+  - name: due_date
+    sql: due_date
+    type: date
+    description: Target completion date for this remediation
+
+  - name: completed_at
+    sql: completed_at
+    type: timestamp
+    description: When the remediation was completed (NULL if not yet done)
+
+  - name: created_at
+    sql: created_at
+    type: timestamp
+    description: When the remediation action was created
+
+  - name: updated_at
+    sql: updated_at
+    type: timestamp
+    description: Last time the remediation action was modified
+
+  - name: priority_rank
+    sql: |-
+      CASE priority
+        WHEN 'critical' THEN 1
+        WHEN 'high' THEN 2
+        WHEN 'medium' THEN 3
+        WHEN 'low' THEN 4
+        ELSE 5
+      END
+    type: number
+    description: Numeric priority rank for sorting (1 = most urgent)
+    virtual: true
+
+  - name: is_overdue
+    sql: |-
+      CASE
+        WHEN status NOT IN ('completed', 'deferred') AND due_date < CURRENT_DATE
+        THEN true
+        ELSE false
+      END
+    type: boolean
+    description: Whether the remediation is past its due date and not completed
+    virtual: true
+
+  - name: is_completed
+    sql: CASE WHEN status = 'completed' THEN true ELSE false END
+    type: boolean
+    description: Whether the remediation has been completed
+    virtual: true
+
+  - name: is_assigned
+    sql: CASE WHEN assigned_to IS NOT NULL THEN true ELSE false END
+    type: boolean
+    description: Whether the remediation has been assigned to someone
+    virtual: true
+
+  - name: completion_days
+    sql: |-
+      CASE
+        WHEN completed_at IS NOT NULL
+        THEN EXTRACT(DAY FROM (completed_at - created_at))
+      END
+    type: number
+    description: Days between creation and completion (NULL if not completed)
+    virtual: true
+
+  - name: days_until_due
+    sql: |-
+      CASE
+        WHEN due_date IS NOT NULL AND status NOT IN ('completed', 'deferred')
+        THEN due_date - CURRENT_DATE
+      END
+    type: number
+    description: Days until due date (negative = overdue). NULL if completed or no due date
+    virtual: true
+
+  - name: created_month
+    sql: TO_CHAR(created_at, 'YYYY-MM')
+    type: string
+    description: Year-month the remediation was created
+    virtual: true
+
+  - name: sla_status
+    sql: |-
+      CASE
+        WHEN status IN ('completed', 'deferred') THEN 'Done'
+        WHEN due_date IS NULL THEN 'No SLA'
+        WHEN due_date >= CURRENT_DATE THEN 'On Track'
+        ELSE 'Overdue'
+      END
+    type: string
+    description: SLA compliance status
+    virtual: true
+    sample_values: [Done, No SLA, On Track, Overdue]
+
+measures:
+  - name: action_count
+    sql: id
+    type: count_distinct
+    description: Number of unique remediation actions
+
+  - name: open_action_count
+    sql: CASE WHEN status IN ('open', 'in_progress') THEN id END
+    type: count_distinct
+    description: Number of open or in-progress remediation actions
+
+  - name: overdue_count
+    sql: CASE WHEN status NOT IN ('completed', 'deferred') AND due_date < CURRENT_DATE THEN id END
+    type: count_distinct
+    description: Number of overdue remediation actions
+
+  - name: avg_completion_days
+    sql: CASE WHEN completed_at IS NOT NULL THEN EXTRACT(DAY FROM (completed_at - created_at)) END
+    type: avg
+    description: Average days to complete a remediation action
+
+joins:
+  - target_entity: Users
+    relationship: many_to_one
+    join_columns:
+      from: assigned_to
+      to: id
+    description: Each remediation may be assigned to one user
+
+use_cases:
+  - Remediation backlog size and burndown analysis
+  - SLA compliance — overdue actions by priority
+  - Assignment workload distribution across team members
+  - Completion rate by priority level
+  - Average remediation time trending
+
+query_patterns:
+  - name: remediation_by_priority
+    description: Remediation count and completion rate by priority
+    sql: |-
+      SELECT priority,
+             COUNT(*) AS total,
+             COUNT(*) FILTER (WHERE status = 'completed') AS completed,
+             COUNT(*) FILTER (WHERE status NOT IN ('completed', 'deferred')
+                              AND due_date < CURRENT_DATE) AS overdue,
+             AVG(EXTRACT(DAY FROM (completed_at - created_at)))
+               FILTER (WHERE completed_at IS NOT NULL) AS avg_completion_days
+      FROM remediation_actions
+      GROUP BY priority
+      ORDER BY MIN(CASE priority
+        WHEN 'critical' THEN 1 WHEN 'high' THEN 2
+        WHEN 'medium' THEN 3 WHEN 'low' THEN 4 ELSE 5 END)
+
+  - name: remediation_by_assignee
+    description: Workload per assigned user
+    sql: |-
+      SELECT u.full_name AS assignee,
+             COUNT(r.id) AS total_actions,
+             COUNT(*) FILTER (WHERE r.status IN ('open', 'in_progress')) AS open_actions,
+             COUNT(*) FILTER (WHERE r.status NOT IN ('completed', 'deferred')
+                              AND r.due_date < CURRENT_DATE) AS overdue
+      FROM remediation_actions r
+      JOIN users u ON r.assigned_to = u.id
+      GROUP BY u.full_name
+      ORDER BY open_actions DESC
+
+  - name: overdue_remediations
+    description: All overdue remediation actions
+    sql: |-
+      SELECT r.id, r.priority, r.status, r.due_date,
+             r.due_date - CURRENT_DATE AS days_overdue,
+             u.full_name AS assignee
+      FROM remediation_actions r
+      LEFT JOIN users u ON r.assigned_to = u.id
+      WHERE r.status NOT IN ('completed', 'deferred')
+        AND r.due_date < CURRENT_DATE
+      ORDER BY r.due_date

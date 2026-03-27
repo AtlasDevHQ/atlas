@@ -1,0 +1,222 @@
+version: "1.0"
+name: Sentinel Security — Cybersecurity SaaS
+description: |
+  Cybersecurity SaaS platform dataset for Sentinel Security. Tracks customer
+  organizations, their IT assets, vulnerability scanning, incident response,
+  compliance assessments, and subscription billing. Use this dataset to explore
+  security posture analysis, vulnerability trends, incident response metrics,
+  compliance readiness, and SaaS revenue health.
+
+entities:
+  - name: Organizations
+    file: entities/organizations.yml
+    grain: one row per customer organization
+    description: >
+      Customer organizations using the Sentinel Security platform. Contains
+      firmographic data — industry, company size tier, country, and domain.
+    use_for:
+      - Customer segmentation by industry, size, and geography
+      - Organization-level security posture comparison
+      - Active vs inactive customer analysis
+    common_questions:
+      - How many active organizations do we have?
+      - What industries make up our customer base?
+      - Which countries have the most customers?
+      - How are organizations distributed by size tier?
+
+  - name: Users
+    file: entities/users.yml
+    grain: one row per user account
+    description: >
+      Users within customer organizations. Contains role, email, login
+      activity, and active status. Linked to organizations via organization_id.
+    use_for:
+      - User adoption and engagement analysis
+      - Role distribution across organizations
+      - Login activity and stale account detection
+    common_questions:
+      - How many active users per organization?
+      - What is the role breakdown across all users?
+      - Which users have never logged in?
+      - How many users were created this month?
+
+  - name: Plans
+    file: entities/plans.yml
+    grain: one row per subscription plan
+    description: >
+      Available subscription plans with pricing, asset limits, user limits,
+      and feature sets. Reference table for subscription analysis.
+    use_for:
+      - Plan feature comparison
+      - Pricing tier analysis
+      - Capacity planning (asset and user limits)
+    common_questions:
+      - What plans are available and their pricing?
+      - What are the asset limits per plan?
+      - Which plans include which features?
+
+  - name: Subscriptions
+    file: entities/subscriptions.yml
+    grain: one row per subscription
+    description: >
+      Active and historical subscriptions linking organizations to plans.
+      Contains MRR, billing status, and period dates. Core table for
+      revenue and churn analysis.
+    use_for:
+      - MRR and revenue analysis by plan
+      - Churn and retention tracking
+      - Subscription lifecycle analysis
+      - Cross-entity revenue + security posture correlation
+    common_questions:
+      - What is total MRR by plan?
+      - How many subscriptions are active vs churned?
+      - What is our churn rate by plan?
+      - Which organizations have the highest MRR?
+
+  - name: Assets
+    file: entities/assets.yml
+    grain: one row per IT asset
+    description: >
+      IT assets (servers, workstations, network devices, containers, cloud
+      instances) monitored by the platform. Linked to organizations.
+    use_for:
+      - Asset inventory and coverage analysis
+      - Environment breakdown (production vs staging vs dev)
+      - OS distribution and version tracking
+      - Asset activity and staleness detection
+    common_questions:
+      - How many assets per organization?
+      - What is the asset type distribution?
+      - Which assets haven't been seen recently?
+      - What OS versions are deployed across environments?
+
+  - name: Vulnerabilities
+    file: entities/vulnerabilities.yml
+    grain: one row per known vulnerability (CVE)
+    description: >
+      Known vulnerabilities from CVE databases. Contains severity rating,
+      CVSS score, category, and publication date. Reference table for
+      vulnerability analysis.
+    use_for:
+      - Vulnerability severity distribution
+      - CVE category analysis
+      - Threat landscape trending over time
+      - CVSS score analysis and prioritization
+    common_questions:
+      - How many critical vulnerabilities exist?
+      - What is the severity breakdown of known CVEs?
+      - What vulnerability categories are most common?
+      - How many new CVEs were published this month?
+
+  - name: Scans
+    file: entities/scans.yml
+    grain: one row per scan execution
+    description: >
+      Vulnerability scan executions. Tracks scan type, status, timing,
+      and results summary. Linked to organizations.
+    use_for:
+      - Scan coverage and frequency analysis
+      - Scan performance (duration, assets scanned)
+      - Findings trend analysis over scan history
+      - Scan failure rate monitoring
+    common_questions:
+      - How many scans ran this week?
+      - What is the average scan duration?
+      - Which organizations scan most frequently?
+      - What is the scan failure rate?
+
+  - name: Scan Results
+    file: entities/scan_results.yml
+    grain: one row per vulnerability finding in a scan
+    description: >
+      Individual findings from scans — a specific vulnerability found on a
+      specific asset during a specific scan. Contains risk level, status,
+      and resolution dates.
+    use_for:
+      - Finding status tracking (open vs resolved)
+      - Risk level distribution analysis
+      - Mean time to remediation (MTTR) calculation
+      - Asset-level vulnerability density
+    common_questions:
+      - How many open findings exist?
+      - What is the average time to resolve a finding?
+      - Which assets have the most findings?
+      - What is the risk level distribution?
+
+  - name: Incidents
+    file: entities/incidents.yml
+    grain: one row per security incident
+    description: >
+      Security incidents reported across organizations. Tracks severity,
+      status, assignment, and resolution timing. Core table for incident
+      response metrics.
+    use_for:
+      - Incident volume and severity trending
+      - Mean time to resolve (MTTR) analysis
+      - Assignment and workload analysis
+      - Organization-level incident comparison
+    common_questions:
+      - How many open incidents exist by severity?
+      - What is the average incident resolution time?
+      - Which organizations have the most incidents?
+      - What is the incident trend over time?
+
+  - name: Alerts
+    file: entities/alerts.yml
+    grain: one row per alert
+    description: >
+      Security alerts generated by rules and detection systems. Can be
+      linked to incidents. Tracks severity, source, acknowledgment status.
+    use_for:
+      - Alert volume and noise analysis
+      - Alert-to-incident conversion rate
+      - Alert acknowledgment time tracking
+      - Source and rule effectiveness analysis
+    common_questions:
+      - How many unacknowledged alerts exist?
+      - What is the alert-to-incident ratio?
+      - What alert sources generate the most volume?
+      - What is the average time to acknowledge an alert?
+
+  - name: Compliance Assessments
+    file: entities/compliance_assessments.yml
+    grain: one row per compliance assessment
+    description: >
+      Compliance assessments against regulatory frameworks. Tracks
+      assessment status, scoring, and timing per organization.
+    use_for:
+      - Compliance score tracking by framework
+      - Assessment completion rate analysis
+      - Organization compliance readiness comparison
+      - Score trending over time
+    common_questions:
+      - What is the average compliance score by framework?
+      - How many assessments are in progress?
+      - Which organizations have the lowest scores?
+      - How has compliance improved over time?
+
+  - name: Remediation Actions
+    file: entities/remediation_actions.yml
+    grain: one row per remediation action
+    description: >
+      Remediation tasks assigned to address vulnerability instances.
+      Tracks priority, assignment, due dates, and completion status.
+    use_for:
+      - Remediation backlog and burndown analysis
+      - SLA compliance (overdue actions)
+      - Assignment workload distribution
+      - Priority-based completion rate tracking
+    common_questions:
+      - How many remediation actions are overdue?
+      - What is the average time to complete a remediation?
+      - Who has the most open remediations assigned?
+      - What is the completion rate by priority?
+
+glossary: glossary.yml
+metrics:
+  - file: metrics/security.yml
+    description: Security metrics — vulnerability counts, MTTR, open/closed rates, incident trends
+  - file: metrics/business.yml
+    description: Business metrics — MRR, churn, customer count, subscription health
+  - file: metrics/compliance.yml
+    description: Compliance metrics — assessment scores, framework coverage, finding rates

@@ -1,0 +1,171 @@
+name: Promotions
+type: dimension_table
+table: promotions
+grain: one row per promotion
+description: |
+  Discount codes and promotional offers. Each promotion has a type (percentage or
+  fixed_amount), a value, optional minimum order requirement, and usage tracking.
+  Orders reference promotions via orders.promotion_id.
+
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key — unique promotion identifier
+    primary_key: true
+
+  - name: code
+    sql: code
+    type: string
+    description: Promotion code (entered by customer at checkout)
+    sample_values: [SUMMER20, WELCOME10, FLASH50, FREESHIP]
+
+  - name: name
+    sql: name
+    type: string
+    description: Internal promotion name/label
+
+  - name: type
+    sql: type
+    type: string
+    description: Discount type
+    sample_values: [percentage, fixed_amount]
+
+  - name: value
+    sql: value
+    type: number
+    description: |
+      Discount value. For percentage type: 20 = 20% off.
+      For fixed_amount type: value in dollars off.
+
+  - name: min_order_cents
+    sql: min_order_cents
+    type: number
+    description: Minimum order total in cents to qualify for this promotion (NULL = no minimum)
+
+  - name: max_uses
+    sql: max_uses
+    type: number
+    description: Maximum number of times this promotion can be used (NULL = unlimited)
+
+  - name: times_used
+    sql: times_used
+    type: number
+    description: How many times this promotion has been redeemed
+
+  - name: starts_at
+    sql: starts_at
+    type: timestamp
+    description: When the promotion becomes valid
+
+  - name: ends_at
+    sql: ends_at
+    type: timestamp
+    description: When the promotion expires
+
+  - name: is_active
+    sql: is_active
+    type: boolean
+    description: Whether the promotion is currently enabled
+
+  - name: created_at
+    sql: created_at
+    type: timestamp
+    description: When the promotion was created
+
+  - name: usage_rate
+    sql: |-
+      CASE
+        WHEN max_uses IS NOT NULL AND max_uses > 0
+        THEN ROUND(100.0 * times_used / max_uses, 1)
+        ELSE NULL
+      END
+    type: number
+    description: Percentage of max_uses consumed (NULL if unlimited)
+    virtual: true
+
+  - name: min_order_dollars
+    sql: min_order_cents / 100.0
+    type: number
+    description: Minimum order total in dollars
+    virtual: true
+
+  - name: is_expired
+    sql: CASE WHEN ends_at < CURRENT_TIMESTAMP THEN true ELSE false END
+    type: boolean
+    description: Whether the promotion has passed its end date
+    virtual: true
+
+measures:
+  - name: promotion_count
+    sql: id
+    type: count_distinct
+    description: Number of unique promotions
+
+  - name: total_redemptions
+    sql: times_used
+    type: sum
+    description: Total times all promotions have been redeemed
+
+  - name: avg_discount_value
+    sql: value
+    type: avg
+    description: Average discount value across promotions
+
+joins:
+  - target_entity: Orders
+    relationship: one_to_many
+    join_columns:
+      from: id
+      to: promotion_id
+    description: A promotion can be used on many orders
+
+use_cases:
+  - Promotion effectiveness — which codes drive the most orders
+  - Usage capacity tracking — how close to max_uses
+  - Discount type comparison — percentage vs fixed amount impact on AOV
+  - Active promotion inventory management
+  - Join to orders for revenue impact of promotions
+
+query_patterns:
+  - name: most_used_promotions
+    description: Promotions ranked by usage
+    sql: |-
+      SELECT code,
+             name,
+             type,
+             value,
+             times_used,
+             max_uses,
+             CASE
+               WHEN max_uses IS NOT NULL AND max_uses > 0
+               THEN ROUND(100.0 * times_used / max_uses, 1)
+               ELSE NULL
+             END AS usage_pct
+      FROM promotions
+      ORDER BY times_used DESC
+      LIMIT 20
+
+  - name: promotion_impact_on_aov
+    description: Compare AOV for orders with vs without promotions
+    sql: |-
+      SELECT p.code,
+             p.type,
+             p.value,
+             COUNT(o.id) AS order_count,
+             AVG(o.total_cents) / 100.0 AS avg_order_value
+      FROM promotions p
+      JOIN orders o ON o.promotion_id = p.id
+      WHERE o.status != 'cancelled'
+      GROUP BY p.code, p.type, p.value
+      ORDER BY order_count DESC
+
+  - name: active_promotions
+    description: Currently active and valid promotions
+    sql: |-
+      SELECT code, name, type, value, times_used, max_uses,
+             starts_at, ends_at
+      FROM promotions
+      WHERE is_active = true
+        AND (ends_at IS NULL OR ends_at > CURRENT_TIMESTAMP)
+      ORDER BY times_used DESC

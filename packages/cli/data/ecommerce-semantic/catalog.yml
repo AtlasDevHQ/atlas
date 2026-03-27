@@ -1,0 +1,221 @@
+version: "1.0"
+name: NovaMart — E-Commerce DTC Brand
+description: |
+  Direct-to-consumer e-commerce marketplace dataset for NovaMart. Covers the full
+  lifecycle: product catalog with multi-seller marketplace, customer acquisition and
+  loyalty, orders and payments, shipping and fulfillment, returns, marketing campaigns,
+  product reviews, and inventory management. Use this dataset to explore revenue
+  analysis, conversion funnels, customer lifetime value, fulfillment performance,
+  marketplace seller health, and marketing attribution.
+
+  Note: The database contains 52 tables total, but 4 are legacy/abandoned
+  (old_orders_v1, temp_product_import_2023, legacy_analytics_events,
+  payment_methods_backup) and several are low-value junction or cache tables.
+  This semantic layer covers the 13 most important entities.
+
+entities:
+  - name: Customers
+    file: entities/customers.yml
+    grain: one row per customer
+    description: >
+      Registered customers with contact info, acquisition source, and activity status.
+      Central dimension for all customer-level analysis.
+    use_for:
+      - Customer segmentation by acquisition source
+      - Active vs inactive customer analysis
+      - Cohort analysis by signup date
+    common_questions:
+      - How many active customers do we have?
+      - What are our top acquisition channels?
+      - How has customer growth trended month over month?
+      - What percentage of customers are inactive?
+
+  - name: Products
+    file: entities/products.yml
+    grain: one row per product
+    description: >
+      Product catalog with pricing, category, seller, and status. Some products
+      have seller_id for marketplace items. price is in dollars; price_cents is
+      sometimes NULL.
+    use_for:
+      - Product catalog analysis by category and seller
+      - Pricing distribution and tier analysis
+      - Product status and lifecycle tracking
+    common_questions:
+      - How many active products do we have?
+      - What is the average product price by category?
+      - Which sellers have the most products listed?
+      - How many products have missing price_cents values?
+
+  - name: Categories
+    file: entities/categories.yml
+    grain: one row per category
+    description: >
+      Hierarchical product categories with self-referencing parent_id.
+      Used to organize the product catalog.
+    use_for:
+      - Category hierarchy navigation
+      - Product distribution across categories
+    common_questions:
+      - How many top-level categories exist?
+      - Which categories have the most products?
+
+  - name: Orders
+    file: entities/orders.yml
+    grain: one row per order
+    description: >
+      Customer orders with monetary totals (in cents), status, shipping address,
+      and optional promotion. shipping_cost uses mixed units (dollars and cents).
+    use_for:
+      - Revenue and GMV analysis
+      - Order status and fulfillment tracking
+      - Promotion impact analysis
+    common_questions:
+      - What is our total GMV this quarter?
+      - What is the average order value?
+      - What percentage of orders used a promotion?
+      - How does order volume trend by month?
+
+  - name: Order Items
+    file: entities/order_items.yml
+    grain: one row per line item in an order
+    description: >
+      Individual line items within orders. Contains product name (denormalized),
+      quantity, and pricing in cents. product_variant_id has no foreign key constraint.
+    use_for:
+      - Product-level revenue attribution
+      - Basket analysis and cross-sell patterns
+      - Average items per order
+    common_questions:
+      - What are the top-selling products by revenue?
+      - What is the average number of items per order?
+      - Which products are most frequently purchased together?
+
+  - name: Payments
+    file: entities/payments.yml
+    grain: one row per payment transaction
+    description: >
+      Payment transactions for orders. Multiple payments can exist per order
+      (split payments, retries). order_id has no foreign key constraint.
+    use_for:
+      - Payment method analysis
+      - Payment success/failure rate tracking
+      - Revenue reconciliation
+    common_questions:
+      - What is our payment success rate?
+      - Which payment methods are most popular?
+      - How much revenue is pending vs captured?
+
+  - name: Returns
+    file: entities/returns.yml
+    grain: one row per return request
+    description: >
+      Return requests with reason (case-inconsistent values), status, and
+      resolution timing. Linked to orders and customers.
+    use_for:
+      - Return rate analysis
+      - Return reason categorization
+      - Resolution time tracking
+    common_questions:
+      - What is our overall return rate?
+      - What are the most common return reasons?
+      - What is the average time to resolve a return?
+
+  - name: Shipments
+    file: entities/shipments.yml
+    grain: one row per shipment
+    description: >
+      Shipment tracking with carrier, warehouse origin, and delivery timestamps.
+      carrier is a text field; carrier_id has no foreign key constraint.
+    use_for:
+      - Fulfillment speed analysis
+      - Carrier performance comparison
+      - Warehouse throughput tracking
+    common_questions:
+      - What is our average delivery time?
+      - Which carrier has the best on-time rate?
+      - How does fulfillment time vary by warehouse?
+
+  - name: Sellers
+    file: entities/sellers.yml
+    grain: one row per marketplace seller
+    description: >
+      Third-party marketplace sellers with commission rates and status.
+      Products link to sellers via seller_id.
+    use_for:
+      - Marketplace seller health and performance
+      - Commission rate analysis
+      - Seller onboarding and retention tracking
+    common_questions:
+      - How many active sellers are on the marketplace?
+      - What is the average commission rate?
+      - Which sellers generate the most GMV?
+
+  - name: Promotions
+    file: entities/promotions.yml
+    grain: one row per promotion
+    description: >
+      Discount codes and promotions with type, value, usage tracking,
+      and validity period.
+    use_for:
+      - Promotion effectiveness analysis
+      - Discount impact on revenue
+      - Usage rate and capacity tracking
+    common_questions:
+      - Which promotions have the highest usage?
+      - What is the average discount value applied?
+      - How many promotions are currently active?
+
+  - name: Product Reviews
+    file: entities/product_reviews.yml
+    grain: one row per review
+    description: >
+      Customer product reviews with 1-5 rating, optional decimal rating
+      (70% NULL), title, body, and verification status.
+    use_for:
+      - Product quality and sentiment analysis
+      - Review volume and rating trends
+      - Verified vs unverified review comparison
+    common_questions:
+      - What is the average product rating?
+      - Which products have the lowest ratings?
+      - What percentage of reviews are verified purchases?
+
+  - name: Email Campaigns
+    file: entities/email_campaigns.yml
+    grain: one row per email campaign
+    description: >
+      Marketing email campaigns with type, status, and send date.
+      Linked to email_sends for per-recipient delivery tracking.
+    use_for:
+      - Campaign performance analysis (open rate, click rate)
+      - Campaign type comparison
+      - Send volume and cadence tracking
+    common_questions:
+      - What are our average open and click rates?
+      - Which campaign types perform best?
+      - How many campaigns did we send this month?
+
+  - name: Inventory Levels
+    file: entities/inventory_levels.yml
+    grain: one row per variant-warehouse combination
+    description: >
+      Current inventory quantities per product variant per warehouse.
+      variant_id has no foreign key constraint. Includes reorder point thresholds.
+    use_for:
+      - Stock level monitoring and low-stock alerts
+      - Inventory distribution across warehouses
+      - Reorder point analysis
+    common_questions:
+      - Which variants are below reorder point?
+      - What is total inventory by warehouse?
+      - How is stock distributed across locations?
+
+glossary: glossary.yml
+metrics:
+  - file: metrics/revenue.yml
+    description: Revenue metrics (GMV, AOV, revenue by category/channel, refund rate)
+  - file: metrics/customers.yml
+    description: Customer metrics (LTV, repeat rate, cohort retention, acquisition)
+  - file: metrics/operations.yml
+    description: Operations metrics (fulfillment time, return rate, inventory turnover)

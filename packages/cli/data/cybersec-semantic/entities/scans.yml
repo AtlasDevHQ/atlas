@@ -1,0 +1,180 @@
+name: Scans
+type: fact_table
+table: scans
+grain: one row per scan execution
+description: |
+  Vulnerability scan executions on customer organizations. Each scan has a
+  type (full, incremental, compliance), status, timing information, and
+  summary counts (assets_scanned, findings_count). Linked to organizations
+  and optionally to scan_configurations. Scan results (individual findings)
+  are stored in the scan_results table.
+
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key — unique scan identifier
+    primary_key: true
+
+  - name: organization_id
+    sql: organization_id
+    type: number
+    description: Foreign key to organizations — which customer this scan belongs to
+
+  - name: scan_configuration_id
+    sql: scan_configuration_id
+    type: number
+    description: Foreign key to scan_configurations — which config drove this scan
+
+  - name: scan_type
+    sql: scan_type
+    type: string
+    description: Type of scan performed
+    sample_values: [full, incremental, compliance]
+
+  - name: status
+    sql: status
+    type: string
+    description: Current scan execution status
+    sample_values: [pending, running, completed, failed, canceled]
+
+  - name: started_at
+    sql: started_at
+    type: timestamp
+    description: When the scan began executing
+
+  - name: completed_at
+    sql: completed_at
+    type: timestamp
+    description: When the scan finished (NULL if still running or failed)
+
+  - name: assets_scanned
+    sql: assets_scanned
+    type: number
+    description: Number of assets scanned in this execution
+
+  - name: findings_count
+    sql: findings_count
+    type: number
+    description: Number of vulnerability findings produced by this scan
+
+  - name: created_at
+    sql: created_at
+    type: timestamp
+    description: When the scan record was created
+
+  - name: duration_minutes
+    sql: |-
+      CASE
+        WHEN completed_at IS NOT NULL AND started_at IS NOT NULL
+        THEN EXTRACT(EPOCH FROM (completed_at - started_at)) / 60.0
+      END
+    type: number
+    description: Scan duration in minutes (NULL if not completed)
+    virtual: true
+
+  - name: findings_per_asset
+    sql: |-
+      CASE
+        WHEN assets_scanned > 0
+        THEN findings_count::FLOAT / assets_scanned
+      END
+    type: number
+    description: Average findings per asset scanned (vulnerability density)
+    virtual: true
+
+  - name: started_date
+    sql: started_at::DATE
+    type: date
+    description: Date the scan started (for daily grouping)
+    virtual: true
+
+  - name: started_month
+    sql: TO_CHAR(started_at, 'YYYY-MM')
+    type: string
+    description: Year-month the scan started
+    virtual: true
+
+  - name: is_completed
+    sql: CASE WHEN status = 'completed' THEN true ELSE false END
+    type: boolean
+    description: Whether the scan completed successfully
+    virtual: true
+
+measures:
+  - name: scan_count
+    sql: id
+    type: count_distinct
+    description: Number of unique scans
+
+  - name: total_assets_scanned
+    sql: assets_scanned
+    type: sum
+    description: Total assets scanned across all scans
+
+  - name: total_findings
+    sql: findings_count
+    type: sum
+    description: Total findings across all scans
+
+  - name: avg_findings_count
+    sql: findings_count
+    type: avg
+    description: Average findings per scan
+
+  - name: avg_assets_scanned
+    sql: assets_scanned
+    type: avg
+    description: Average assets scanned per scan
+
+joins:
+  - target_entity: Organizations
+    relationship: many_to_one
+    join_columns:
+      from: organization_id
+      to: id
+    description: Each scan belongs to one organization
+
+use_cases:
+  - Scan coverage and frequency analysis by organization
+  - Scan performance tracking (duration, success rate)
+  - Findings trend analysis over scan history
+  - Scan failure rate monitoring and debugging
+  - Vulnerability density trending (findings per asset over time)
+
+query_patterns:
+  - name: scans_by_type
+    description: Scan count and results by type
+    sql: |-
+      SELECT scan_type,
+             COUNT(*) AS scan_count,
+             AVG(assets_scanned) AS avg_assets,
+             AVG(findings_count) AS avg_findings,
+             COUNT(*) FILTER (WHERE status = 'completed') AS completed,
+             COUNT(*) FILTER (WHERE status = 'failed') AS failed
+      FROM scans
+      GROUP BY scan_type
+      ORDER BY scan_count DESC
+
+  - name: scan_frequency_by_org
+    description: Scan frequency per organization (last 30 days)
+    sql: |-
+      SELECT o.name AS organization,
+             COUNT(s.id) AS scan_count,
+             SUM(s.assets_scanned) AS total_assets_scanned,
+             SUM(s.findings_count) AS total_findings
+      FROM scans s
+      JOIN organizations o ON s.organization_id = o.id
+      WHERE s.started_at >= CURRENT_TIMESTAMP - INTERVAL '30 days'
+      GROUP BY o.name
+      ORDER BY scan_count DESC
+
+  - name: scan_success_rate
+    description: Scan completion vs failure rate
+    sql: |-
+      SELECT status,
+             COUNT(*) AS count,
+             ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (), 1) AS pct
+      FROM scans
+      GROUP BY status
+      ORDER BY count DESC

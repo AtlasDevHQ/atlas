@@ -1,0 +1,133 @@
+name: Customers
+type: dimension_table
+table: customers
+grain: one row per customer
+description: |
+  Registered NovaMart customers. Contains contact information, acquisition channel,
+  and activity status. Each customer can have multiple orders, returns, reviews, and
+  loyalty transactions. This is the central dimension for all customer-level analysis.
+
+  Data quality note: acquisition_source has case inconsistencies (e.g. 'Organic' vs
+  'organic'). Use LOWER(acquisition_source) for reliable grouping.
+
+dimensions:
+  - name: id
+    sql: id
+    type: number
+    description: Primary key — unique customer identifier
+    primary_key: true
+
+  - name: email
+    sql: email
+    type: string
+    description: Customer email address — unique per customer
+
+  - name: full_name
+    sql: full_name
+    type: string
+    description: Customer full name
+
+  - name: phone
+    sql: phone
+    type: string
+    description: Primary phone number (landline or unspecified)
+
+  - name: mobile_phone
+    sql: mobile_phone
+    type: string
+    description: Mobile phone number — may differ from phone
+
+  - name: acquisition_source
+    sql: acquisition_source
+    type: string
+    description: |
+      How this customer was acquired. WARNING: case-inconsistent values.
+      Use LOWER(acquisition_source) for reliable grouping.
+    sample_values: [organic, paid_search, social, referral, email, direct]
+
+  - name: created_at
+    sql: created_at
+    type: timestamp
+    description: When the customer account was created (signup date)
+
+  - name: updated_at
+    sql: updated_at
+    type: timestamp
+    description: Last update to the customer record
+
+  - name: is_active
+    sql: is_active
+    type: boolean
+    description: Whether the customer is currently active
+
+  - name: acquisition_source_normalized
+    sql: LOWER(acquisition_source)
+    type: string
+    description: Acquisition source normalized to lowercase for consistent grouping
+    virtual: true
+    sample_values: [organic, paid_search, social, referral, email, direct]
+
+  - name: signup_month
+    sql: TO_CHAR(created_at, 'YYYY-MM')
+    type: string
+    description: Year-month the customer signed up — useful for cohort analysis
+    virtual: true
+
+  - name: signup_year
+    sql: EXTRACT(YEAR FROM created_at)
+    type: number
+    description: Year the customer signed up
+    virtual: true
+
+  - name: has_phone
+    sql: CASE WHEN phone IS NOT NULL OR mobile_phone IS NOT NULL THEN true ELSE false END
+    type: boolean
+    description: Whether the customer has any phone number on file
+    virtual: true
+
+measures:
+  - name: customer_count
+    sql: id
+    type: count_distinct
+    description: Number of unique customers
+
+  - name: active_customer_count
+    sql: CASE WHEN is_active THEN id END
+    type: count_distinct
+    description: Number of active customers
+
+use_cases:
+  - Customer segmentation by acquisition source and signup cohort
+  - Active vs inactive customer analysis and re-engagement targeting
+  - Growth tracking — new signups over time
+  - Join to orders for purchase behavior and LTV analysis
+  - Join to product_reviews for review engagement by customer segment
+
+query_patterns:
+  - name: customers_by_acquisition_source
+    description: Customer count by normalized acquisition channel
+    sql: |-
+      SELECT LOWER(acquisition_source) AS channel,
+             COUNT(*) AS customer_count,
+             COUNT(*) FILTER (WHERE is_active) AS active_count
+      FROM customers
+      GROUP BY LOWER(acquisition_source)
+      ORDER BY customer_count DESC
+
+  - name: customer_signups_by_month
+    description: Monthly signup trend
+    sql: |-
+      SELECT TO_CHAR(created_at, 'YYYY-MM') AS signup_month,
+             COUNT(*) AS new_customers
+      FROM customers
+      GROUP BY TO_CHAR(created_at, 'YYYY-MM')
+      ORDER BY signup_month
+
+  - name: active_vs_inactive_customers
+    description: Breakdown of active vs inactive customers
+    sql: |-
+      SELECT is_active,
+             COUNT(*) AS customer_count,
+             ROUND(100.0 * COUNT(*) / SUM(COUNT(*)) OVER (), 1) AS pct
+      FROM customers
+      GROUP BY is_active

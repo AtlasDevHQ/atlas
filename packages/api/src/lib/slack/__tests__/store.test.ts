@@ -72,6 +72,8 @@ describe("store", () => {
       expect(result).toEqual({
         team_id: "T123",
         bot_token: "xoxb-abc",
+        org_id: null,
+        workspace_name: null,
         installed_at: "2025-01-01T00:00:00Z",
       });
       expect(mockInternalQuery).toHaveBeenCalledTimes(1);
@@ -133,7 +135,7 @@ describe("store", () => {
       // Verify the SQL contains INSERT and the params
       const [sql, params] = mockPoolQuery.mock.calls[0];
       expect(sql).toContain("INSERT INTO slack_installations");
-      expect(params).toEqual(["T123", "xoxb-new"]);
+      expect(params).toEqual(["T123", "xoxb-new", null, null]);
     });
 
     it("throws when no internal DB", async () => {

@@ -216,7 +216,8 @@ describe("internal DB module", () => {
       // are skipped because mock pool returns empty rows for the check)
       // Includes: SSO enforcement, ip_allowlist, custom_roles, user_onboarding, audit_retention_config, workspace_model_config, approval_rules, approval_queue, workspace_branding, onboarding_emails, email_preferences, abuse_events, custom_domains tables + indexes
       // +3 from settings org-scope migration (DROP CONSTRAINT + 2 CREATE UNIQUE INDEX)
-      expect(calls.queries.length).toBe(140);
+      // +3 from slack_installations org_id migration (2 ALTER TABLE + 1 CREATE INDEX)
+      expect(calls.queries.length).toBe(143);
       expect(calls.queries[0].sql).toContain("CREATE TABLE IF NOT EXISTS audit_log");
       expect(calls.queries[1].sql).toContain("idx_audit_log_timestamp");
       expect(calls.queries[2].sql).toContain("idx_audit_log_user_id");
@@ -225,41 +226,45 @@ describe("internal DB module", () => {
       expect(calls.queries[5].sql).toContain("CREATE TABLE IF NOT EXISTS messages");
       expect(calls.queries[6].sql).toContain("idx_messages_conversation");
       expect(calls.queries[7].sql).toContain("CREATE TABLE IF NOT EXISTS slack_installations");
-      expect(calls.queries[8].sql).toContain("CREATE TABLE IF NOT EXISTS slack_threads");
-      expect(calls.queries[9].sql).toContain("idx_slack_threads_conversation");
-      expect(calls.queries[10].sql).toContain("CREATE TABLE IF NOT EXISTS action_log");
-      expect(calls.queries[11].sql).toContain("idx_action_log_requested_by");
-      expect(calls.queries[12].sql).toContain("idx_action_log_status");
-      expect(calls.queries[13].sql).toContain("idx_action_log_action_type");
-      expect(calls.queries[14].sql).toContain("idx_action_log_conversation");
-      expect(calls.queries[15].sql).toContain("ADD COLUMN IF NOT EXISTS source_id");
-      expect(calls.queries[16].sql).toContain("idx_audit_log_source_id");
-      expect(calls.queries[17].sql).toContain("tables_accessed JSONB");
-      expect(calls.queries[18].sql).toContain("idx_audit_log_tables_accessed");
-      expect(calls.queries[19].sql).toContain("idx_audit_log_columns_accessed");
-      expect(calls.queries[20].sql).toContain("starred BOOLEAN");
-      expect(calls.queries[21].sql).toContain("idx_conversations_starred");
-      expect(calls.queries[22].sql).toContain("share_token");
-      expect(calls.queries[23].sql).toContain("idx_conversations_share_token");
-      expect(calls.queries[24].sql).toContain("share_mode");
-      expect(calls.queries[25].sql).toContain("chk_share_mode");
-      expect(calls.queries[26].sql).toContain("CREATE TABLE IF NOT EXISTS scheduled_tasks");
-      expect(calls.queries[27].sql).toContain("idx_scheduled_tasks_owner");
-      expect(calls.queries[28].sql).toContain("idx_scheduled_tasks_enabled");
-      expect(calls.queries[29].sql).toContain("idx_scheduled_tasks_next_run");
-      expect(calls.queries[30].sql).toContain("CREATE TABLE IF NOT EXISTS scheduled_task_runs");
-      expect(calls.queries[31].sql).toContain("idx_scheduled_task_runs_task");
-      expect(calls.queries[32].sql).toContain("idx_scheduled_task_runs_status");
-      expect(calls.queries[33].sql).toContain("delivery_status");
-      expect(calls.queries[34].sql).toContain("CREATE TABLE IF NOT EXISTS connections");
-      expect(calls.queries[35].sql).toContain("CREATE TABLE IF NOT EXISTS token_usage");
-      expect(calls.queries[36].sql).toContain("idx_token_usage_user_id");
-      expect(calls.queries[37].sql).toContain("idx_token_usage_created_at");
-      expect(calls.queries[38].sql).toContain("CREATE TABLE IF NOT EXISTS invitations");
-      expect(calls.queries[39].sql).toContain("idx_invitations_email");
-      expect(calls.queries[40].sql).toContain("idx_invitations_token");
-      expect(calls.queries[41].sql).toContain("idx_invitations_status");
-      expect(calls.queries[42].sql).toContain("idx_invitations_pending_email");
+      // +3 migration queries: ALTER TABLE org_id, ALTER TABLE workspace_name, CREATE INDEX org
+      expect(calls.queries[8].sql).toContain("ALTER TABLE slack_installations ADD COLUMN IF NOT EXISTS org_id");
+      expect(calls.queries[9].sql).toContain("ALTER TABLE slack_installations ADD COLUMN IF NOT EXISTS workspace_name");
+      expect(calls.queries[10].sql).toContain("idx_slack_installations_org");
+      expect(calls.queries[11].sql).toContain("CREATE TABLE IF NOT EXISTS slack_threads");
+      expect(calls.queries[12].sql).toContain("idx_slack_threads_conversation");
+      expect(calls.queries[13].sql).toContain("CREATE TABLE IF NOT EXISTS action_log");
+      expect(calls.queries[14].sql).toContain("idx_action_log_requested_by");
+      expect(calls.queries[15].sql).toContain("idx_action_log_status");
+      expect(calls.queries[16].sql).toContain("idx_action_log_action_type");
+      expect(calls.queries[17].sql).toContain("idx_action_log_conversation");
+      expect(calls.queries[18].sql).toContain("ADD COLUMN IF NOT EXISTS source_id");
+      expect(calls.queries[19].sql).toContain("idx_audit_log_source_id");
+      expect(calls.queries[20].sql).toContain("tables_accessed JSONB");
+      expect(calls.queries[21].sql).toContain("idx_audit_log_tables_accessed");
+      expect(calls.queries[22].sql).toContain("idx_audit_log_columns_accessed");
+      expect(calls.queries[23].sql).toContain("starred BOOLEAN");
+      expect(calls.queries[24].sql).toContain("idx_conversations_starred");
+      expect(calls.queries[25].sql).toContain("share_token");
+      expect(calls.queries[26].sql).toContain("idx_conversations_share_token");
+      expect(calls.queries[27].sql).toContain("share_mode");
+      expect(calls.queries[28].sql).toContain("chk_share_mode");
+      expect(calls.queries[29].sql).toContain("CREATE TABLE IF NOT EXISTS scheduled_tasks");
+      expect(calls.queries[30].sql).toContain("idx_scheduled_tasks_owner");
+      expect(calls.queries[31].sql).toContain("idx_scheduled_tasks_enabled");
+      expect(calls.queries[32].sql).toContain("idx_scheduled_tasks_next_run");
+      expect(calls.queries[33].sql).toContain("CREATE TABLE IF NOT EXISTS scheduled_task_runs");
+      expect(calls.queries[34].sql).toContain("idx_scheduled_task_runs_task");
+      expect(calls.queries[35].sql).toContain("idx_scheduled_task_runs_status");
+      expect(calls.queries[36].sql).toContain("delivery_status");
+      expect(calls.queries[37].sql).toContain("CREATE TABLE IF NOT EXISTS connections");
+      expect(calls.queries[38].sql).toContain("CREATE TABLE IF NOT EXISTS token_usage");
+      expect(calls.queries[39].sql).toContain("idx_token_usage_user_id");
+      expect(calls.queries[40].sql).toContain("idx_token_usage_created_at");
+      expect(calls.queries[41].sql).toContain("CREATE TABLE IF NOT EXISTS invitations");
+      expect(calls.queries[42].sql).toContain("idx_invitations_email");
+      expect(calls.queries[43].sql).toContain("idx_invitations_token");
+      expect(calls.queries[44].sql).toContain("idx_invitations_status");
+      expect(calls.queries[45].sql).toContain("idx_invitations_pending_email");
     });
 
     it("propagates migration errors", async () => {

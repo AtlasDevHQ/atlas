@@ -26,6 +26,7 @@ import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
 import { withSpan } from "@atlas/api/lib/tracing";
 import { getConfig, type SandboxBackendName } from "@atlas/api/lib/config";
 import { getSemanticRoot } from "@atlas/api/lib/semantic/sync";
+import { getSetting } from "@atlas/api/lib/settings";
 import { useVercelSandbox, useSidecar } from "./backends/detect";
 
 const log = createLogger("explore");
@@ -179,7 +180,7 @@ export function getExploreBackendType(): ExploreBackendType {
  * Try to create a specific backend by name. Returns null if the backend
  * is not available (env vars not set, binary not found, etc.).
  */
-async function tryCreateBackend(name: SandboxBackendName, semanticRoot: string): Promise<ExploreBackend | null> {
+async function tryCreateBackend(name: SandboxBackendName, semanticRoot: string, orgId?: string): Promise<ExploreBackend | null> {
   switch (name) {
     case "vercel-sandbox": {
       if (!useVercelSandbox()) return null;
@@ -218,10 +219,14 @@ async function tryCreateBackend(name: SandboxBackendName, semanticRoot: string):
     }
 
     case "sidecar": {
-      if (!useSidecar() || _sidecarFailed) return null;
+      // Workspace-level URL override takes priority over env var
+      const wsSidecarUrl = orgId ? getSetting("ATLAS_SANDBOX_URL", orgId) : undefined;
+      const sidecarUrl = wsSidecarUrl ?? process.env.ATLAS_SANDBOX_URL;
+      if ((!sidecarUrl && !useSidecar()) || _sidecarFailed) return null;
+      if (!sidecarUrl) return null;
       try {
         const { createSidecarBackend } = await import("./explore-sidecar");
-        return createSidecarBackend(process.env.ATLAS_SANDBOX_URL!, { semanticRoot });
+        return createSidecarBackend(sidecarUrl, { semanticRoot });
       } catch (err) {
         _sidecarFailed = true;
         const detail = err instanceof Error ? err.message : String(err);
@@ -277,10 +282,53 @@ export function markSidecarFailed(): void {
   _sidecarFailed = true;
 }
 
-function getExploreBackend(semanticRoot: string): Promise<ExploreBackend> {
-  let promise = backendCache.get(semanticRoot);
+function getExploreBackend(semanticRoot: string, orgId?: string): Promise<ExploreBackend> {
+  // Workspace override changes the effective backend, so include it in the cache key
+  const wsOverride = orgId ? getSetting("ATLAS_SANDBOX_BACKEND", orgId) : undefined;
+  const cacheKeyVal = wsOverride ? `${semanticRoot}\0${wsOverride}` : semanticRoot;
+
+  let promise = backendCache.get(cacheKeyVal);
   if (!promise) {
     promise = (async (): Promise<ExploreBackend> => {
+      // Priority -1: Workspace-level backend override (SaaS self-serve)
+      if (wsOverride) {
+        log.info(
+          { backend: wsOverride, orgId, source: "workspace-setting" },
+          "Workspace sandbox override: %s",
+          wsOverride,
+        );
+        // Check if override is a built-in backend name
+        const builtInNames: readonly string[] = ["vercel-sandbox", "nsjail", "sidecar", "just-bash"];
+        if (builtInNames.includes(wsOverride)) {
+          const backend = await tryCreateBackend(wsOverride as SandboxBackendName, semanticRoot, orgId);
+          if (backend) return backend;
+          log.warn(
+            { backend: wsOverride, orgId },
+            "Workspace sandbox override %s unavailable — falling through to default",
+            wsOverride,
+          );
+        } else {
+          // Try as a plugin ID
+          try {
+            const { plugins } = await import("@atlas/api/lib/plugins/registry");
+            const { wireSandboxPlugins } = await import("@atlas/api/lib/plugins/wiring");
+            const result = await wireSandboxPlugins(plugins, semanticRoot);
+            if (result.backend && result.pluginId === wsOverride) {
+              _activeSandboxPluginId = result.pluginId;
+              return result.backend as ExploreBackend;
+            }
+          } catch (err) {
+            const detail = err instanceof Error ? err.message : String(err);
+            log.warn(
+              { backend: wsOverride, orgId, err: detail },
+              "Workspace sandbox plugin override %s failed — falling through to default",
+              wsOverride,
+            );
+          }
+        }
+        // Override not available — fall through to normal chain
+      }
+
       // Priority 0: Sandbox plugins (sorted by priority, highest first)
       // Skipped when ATLAS_SANDBOX=nsjail — operator explicitly wants nsjail only
       if (process.env.ATLAS_SANDBOX !== "nsjail") {
@@ -319,7 +367,7 @@ function getExploreBackend(semanticRoot: string): Promise<ExploreBackend> {
           configPriority.join(" > "),
         );
         for (const name of configPriority) {
-          const backend = await tryCreateBackend(name, semanticRoot);
+          const backend = await tryCreateBackend(name, semanticRoot, orgId);
           if (backend) {
             log.info(
               { backend: name, source: "config" },
@@ -413,10 +461,10 @@ function getExploreBackend(semanticRoot: string): Promise<ExploreBackend> {
       }
       return createBashBackend(semanticRoot);
     })().catch((err) => {
-      backendCache.delete(semanticRoot); // allow retry on next call
+      backendCache.delete(cacheKeyVal); // allow retry on next call
       throw err;
     });
-    backendCache.set(semanticRoot, promise);
+    backendCache.set(cacheKeyVal, promise);
   }
   return promise;
 }
@@ -456,7 +504,7 @@ Always start by listing the root directory to see what sources are available.`,
 
     let backend: ExploreBackend;
     try {
-      backend = await getExploreBackend(semanticRoot);
+      backend = await getExploreBackend(semanticRoot, orgId);
     } catch (err) {
       const detail = err instanceof Error ? err.message : String(err);
       log.error({ err: detail, orgId }, "Explore backend initialization failed");

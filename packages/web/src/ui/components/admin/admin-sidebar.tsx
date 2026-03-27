@@ -122,6 +122,7 @@ const navGroups: NavGroup[] = [
       { href: "/admin/billing", label: "Billing" },
       { href: "/admin/branding", label: "Branding" },
       { href: "/admin/custom-domain", label: "Custom Domain" },
+      { href: "/admin/sandbox", label: "Sandbox" },
       { href: "/admin/settings", label: "Settings" },
     ],
   },

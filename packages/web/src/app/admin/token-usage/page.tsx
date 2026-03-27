@@ -5,6 +5,7 @@ import { useQueryStates } from "nuqs";
 import { tokenUsageSearchParams } from "./search-params";
 import { useAdminFetch, type FetchError } from "@/ui/hooks/use-admin-fetch";
 import { useDarkMode } from "@/ui/hooks/use-dark-mode";
+import { formatNumber } from "@/lib/format";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -45,12 +46,6 @@ interface TrendsResponse {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────
-
-function formatNumber(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
-  return n.toLocaleString();
-}
 
 function buildQS(from: string, to: string): string {
   const parts: string[] = [];

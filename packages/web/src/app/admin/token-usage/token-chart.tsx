@@ -10,6 +10,7 @@ import {
   Tooltip,
   Legend,
 } from "recharts";
+import { formatNumber } from "@/lib/format";
 
 const TOKENS = {
   light: { grid: "#e4e4e7", axis: "#71717a", bg: "#ffffff", border: "#e4e4e7", text: "#27272a" },
@@ -27,12 +28,6 @@ export interface TrendPoint {
 function formatDay(value: string) {
   const d = new Date(value);
   return d.toLocaleDateString(undefined, { month: "short", day: "numeric" });
-}
-
-function formatNumber(value: number) {
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M`;
-  if (value >= 1_000) return `${(value / 1_000).toFixed(1)}K`;
-  return String(value);
 }
 
 export default function TokenChart({ data, dark }: { data: TrendPoint[]; dark: boolean }) {

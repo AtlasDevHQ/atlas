@@ -117,6 +117,6 @@ RUN chmod +x scripts/start.sh
 USER atlas
 EXPOSE 3001
 ENV HOSTNAME=0.0.0.0
-HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+HEALTHCHECK --interval=30s --timeout=5s --start-period=120s --retries=5 \
   CMD bun -e "try { const r = await fetch('http://localhost:' + (process.env.PORT || 3001) + '/api/health'); if(!r.ok){console.error(r.status); process.exit(1)} } catch(e) { console.error(e.message); process.exit(1) }"
 CMD ["sh", "scripts/start.sh"]

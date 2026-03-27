@@ -1,2 +1,2 @@
-// Re-export from shared format module — consolidated in PR #1004.
+// Re-export from shared format module.
 export { formatNumber } from "@/lib/format";

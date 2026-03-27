@@ -13,7 +13,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Database, CheckCircle2, XCircle, Loader2, Play } from "lucide-react";
+import { Database, CheckCircle2, XCircle, Loader2, Shield, ShoppingCart, Users } from "lucide-react";
 
 function getApiBase(): string {
   if (API_URL) return API_URL;
@@ -26,6 +26,7 @@ function getCredentials(): RequestCredentials {
 }
 
 type ConnectionStatus = "idle" | "testing" | "success" | "error";
+type DemoType = "demo" | "cybersec" | "ecommerce";
 
 interface TestResult {
   status?: string;
@@ -35,6 +36,12 @@ interface TestResult {
   error?: string;
   message?: string;
 }
+
+const DEMO_DATASETS: { type: DemoType; label: string; description: string; icon: typeof Database; tables: number }[] = [
+  { type: "demo",      label: "SaaS CRM",       description: "Companies, contacts, and subscription accounts",      icon: Users,        tables: 3 },
+  { type: "cybersec",  label: "Cybersecurity",   description: "Vulnerabilities, incidents, compliance, and billing", icon: Shield,       tables: 62 },
+  { type: "ecommerce", label: "E-commerce",      description: "Orders, products, customers, shipping, and reviews",  icon: ShoppingCart, tables: 52 },
+];
 
 /** Auto-detect database type from URL scheme for display. */
 function detectDbLabel(url: string): string {
@@ -51,7 +58,7 @@ export default function ConnectPage() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [demoAvailable, setDemoAvailable] = useState(false);
-  const [loadingDemo, setLoadingDemo] = useState(false);
+  const [loadingDemo, setLoadingDemo] = useState<DemoType | null>(null);
 
   // Check if a default datasource is available (for "Try demo data" option)
   useEffect(() => {
@@ -144,8 +151,8 @@ export default function ConnectPage() {
     }
   }
 
-  async function handleUseDemo() {
-    setLoadingDemo(true);
+  async function handleUseDemo(demoType: DemoType) {
+    setLoadingDemo(demoType);
     setError(null);
 
     try {
@@ -153,6 +160,7 @@ export default function ConnectPage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: getCredentials(),
+        body: JSON.stringify({ demoType }),
       });
 
       let data: Record<string, unknown>;
@@ -175,7 +183,7 @@ export default function ConnectPage() {
           : "Failed to set up demo data",
       );
     } finally {
-      setLoadingDemo(false);
+      setLoadingDemo(null);
     }
   }
 
@@ -265,32 +273,39 @@ export default function ConnectPage() {
         </div>
 
         {demoAvailable ? (
-          <div className="space-y-2">
+          <div className="space-y-3">
             <div className="relative flex items-center">
               <div className="flex-1 border-t" />
-              <span className="px-3 text-xs text-muted-foreground">or</span>
+              <span className="px-3 text-xs text-muted-foreground">or try a demo dataset</span>
               <div className="flex-1 border-t" />
             </div>
-            <Button
-              variant="outline"
-              onClick={handleUseDemo}
-              disabled={loadingDemo}
-              className="w-full"
-            >
-              {loadingDemo ? (
-                <>
-                  <Loader2 className="mr-2 size-4 animate-spin" />
-                  Setting up demo data...
-                </>
-              ) : (
-                <>
-                  <Play className="mr-2 size-4" />
-                  Try demo data
-                </>
-              )}
-            </Button>
+            <div className="grid gap-2">
+              {DEMO_DATASETS.map((ds) => (
+                <button
+                  key={ds.type}
+                  type="button"
+                  onClick={() => handleUseDemo(ds.type)}
+                  disabled={loadingDemo !== null}
+                  className="flex items-center gap-3 rounded-lg border p-3 text-left transition-colors hover:bg-accent disabled:opacity-50"
+                >
+                  <div className="flex size-9 shrink-0 items-center justify-center rounded-md bg-muted">
+                    <ds.icon className="size-4 text-muted-foreground" />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-medium">{ds.label}</span>
+                      <span className="text-[10px] text-muted-foreground">{ds.tables} tables</span>
+                    </div>
+                    <p className="truncate text-xs text-muted-foreground">{ds.description}</p>
+                  </div>
+                  {loadingDemo === ds.type && (
+                    <Loader2 className="size-4 shrink-0 animate-spin text-muted-foreground" />
+                  )}
+                </button>
+              ))}
+            </div>
             <p className="text-center text-xs text-muted-foreground">
-              Explore Atlas with a sample database. You can connect your own data later.
+              All demo data is pre-loaded. You can connect your own database later.
             </p>
           </div>
         ) : (

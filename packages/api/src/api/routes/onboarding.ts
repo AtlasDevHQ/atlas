@@ -26,8 +26,46 @@ import { importFromDisk } from "@atlas/api/lib/semantic/sync";
 import { getSemanticRoot } from "@atlas/api/lib/semantic/files";
 import { ErrorSchema } from "./shared-schemas";
 import { standardAuth, requestContext, type AuthEnv } from "./middleware";
+import path from "path";
+import { existsSync } from "fs";
 
 const log = createLogger("onboarding");
+
+// ---------------------------------------------------------------------------
+// Demo dataset types — each maps to a semantic layer directory on disk
+// ---------------------------------------------------------------------------
+
+type DemoType = "demo" | "cybersec" | "ecommerce";
+
+const DEMO_LABELS: Record<DemoType, string> = {
+  demo: "SaaS CRM",
+  cybersec: "Sentinel Security (Cybersecurity SaaS)",
+  ecommerce: "NovaMart (E-commerce)",
+};
+
+/**
+ * Resolve the semantic layer source directory for a demo type.
+ *
+ * In Docker: demo → /app/semantic, cybersec → /app/data/cybersec-semantic, ecommerce → /app/data/ecommerce-semantic
+ * In dev:    demo → {cwd}/semantic, cybersec → {cwd}/packages/cli/data/cybersec-semantic, etc.
+ */
+function getDemoSemanticDir(demoType: DemoType): string {
+  if (demoType === "demo") return getSemanticRoot();
+
+  // Docker image has these at /app/data/{type}-semantic
+  const dockerPath = path.resolve(process.cwd(), "data", `${demoType}-semantic`);
+  // Dev fallback: packages/cli/data/{type}-semantic
+  const devPath = path.resolve(process.cwd(), "packages", "cli", "data", `${demoType}-semantic`);
+
+  // Check Docker path first (production), then dev path
+  if (existsSync(path.join(dockerPath, "entities"))) return dockerPath;
+  if (existsSync(path.join(devPath, "entities"))) return devPath;
+
+  throw new Error(
+    `Semantic layer not found for demo type "${demoType}". ` +
+    `Checked: ${dockerPath}/entities, ${devPath}/entities`,
+  );
+}
 
 /** Valid connection ID: lowercase alphanumeric, hyphens, underscores, 1-64 chars. Must not start with underscore (reserved for internal IDs). */
 const CONNECTION_ID_PATTERN = /^[a-z][a-z0-9_-]{0,62}[a-z0-9]$/;
@@ -193,6 +231,10 @@ const UseDemoResponseSchema = z.object({
   entitiesImported: z.number(),
 });
 
+const UseDemoBodySchema = z.object({
+  demoType: z.enum(["demo", "cybersec", "ecommerce"]).optional().default("demo"),
+});
+
 const useDemoRoute = createRoute({
   method: "post",
   path: "/use-demo",
@@ -200,8 +242,15 @@ const useDemoRoute = createRoute({
   summary: "Set up workspace with demo data",
   description:
     "Connects the workspace to the platform's default datasource (ATLAS_DATASOURCE_URL) and imports " +
-    "the disk semantic layer. Used when a user clicks 'Try demo data' during onboarding instead of " +
-    "providing their own database URL.",
+    "the semantic layer for the chosen demo dataset. Three datasets are available: " +
+    "'demo' (SaaS CRM, 3 tables), 'cybersec' (Sentinel Security, 62 tables), " +
+    "'ecommerce' (NovaMart, 52 tables). Defaults to 'demo' if not specified.",
+  request: {
+    body: {
+      required: false,
+      content: { "application/json": { schema: UseDemoBodySchema } },
+    },
+  },
   responses: {
     201: {
       description: "Demo connection saved, semantic layer imported",
@@ -217,6 +266,10 @@ const useDemoRoute = createRoute({
     },
     409: {
       description: "Connection ID already in use by another organization",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    422: {
+      description: "Invalid request body",
       content: { "application/json": { schema: ErrorSchema } },
     },
     500: {
@@ -526,6 +579,8 @@ onboarding.openapi(
         return c.json({ error: "no_organization", message: "No active organization. Create a workspace first." }, 400);
       }
 
+      const { demoType } = c.req.valid("json");
+
       const url = resolveDatasourceUrl();
       if (!url) {
         return c.json({ error: "no_demo_datasource", message: "No demo datasource configured. Set ATLAS_DATASOURCE_URL." }, 400);
@@ -549,14 +604,15 @@ onboarding.openapi(
         return c.json({ error: "encryption_failed", message: "Failed to encrypt connection URL.", requestId }, 500);
       }
 
+      const demoLabel = DEMO_LABELS[demoType];
       const upsertResult = yield* Effect.tryPromise({
         try: () => internalQuery<{ id: string }>(
           `INSERT INTO connections (id, url, type, description, org_id)
            VALUES ($1, $2, $3, $4, $5)
-           ON CONFLICT (id) DO UPDATE SET url = $2, type = $3, org_id = $5, updated_at = NOW()
+           ON CONFLICT (id) DO UPDATE SET url = $2, type = $3, description = $4, org_id = $5, updated_at = NOW()
            WHERE connections.org_id = $5 OR connections.org_id IS NULL
            RETURNING id`,
-          [id, encryptedUrl, dbType, `Demo ${dbType} datasource`, orgId],
+          [id, encryptedUrl, dbType, `${demoLabel} — demo ${dbType} datasource`, orgId],
         ),
         catch: (err) => err instanceof Error ? err : new Error(String(err)),
       }).pipe(Effect.catchAll((err) => {
@@ -574,27 +630,48 @@ onboarding.openapi(
       // Register in runtime
       try {
         if (connections.has(id)) connections.unregister(id);
-        connections.register(id, { url, description: `Demo ${dbType} datasource` });
+        connections.register(id, { url, description: `${demoLabel} — demo ${dbType} datasource` });
       } catch (err) {
         log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Demo connection saved but runtime registration failed");
       }
 
-      // Import disk semantic layer into this org
+      // Resolve and import the semantic layer for the chosen demo dataset
+      let semanticDir: string;
+      try {
+        semanticDir = getDemoSemanticDir(demoType);
+      } catch (err) {
+        log.error({ err: err instanceof Error ? err.message : String(err), requestId, demoType }, "Semantic layer not found for demo type");
+        return c.json({
+          error: "demo_not_available",
+          message: `Demo dataset "${demoType}" is not installed on this server. Contact the platform administrator.`,
+          requestId,
+        }, 500);
+      }
+
       const importResult = yield* Effect.tryPromise({
-        try: () => importFromDisk(orgId, { sourceDir: getSemanticRoot() }),
+        try: () => importFromDisk(orgId, { sourceDir: semanticDir }),
         catch: (err) => err instanceof Error ? err : new Error(String(err)),
       }).pipe(Effect.catchAll((err) => {
-        log.warn({ err: err.message, requestId }, "Semantic layer import failed — workspace may need manual setup");
-        return Effect.succeed({ imported: 0, skipped: 0 });
+        log.error({ err: err.message, requestId, demoType, semanticDir }, "Semantic layer import failed");
+        return Effect.succeed(null);
       }));
+
+      if (importResult === null) {
+        return c.json({
+          error: "import_failed",
+          message: `Failed to import semantic layer for "${demoType}" dataset. The connection was saved but the workspace needs manual setup.`,
+          requestId,
+        }, 500);
+      }
+
       const entitiesImported = importResult.imported;
       if (entitiesImported > 0) {
-        log.info({ orgId, imported: importResult.imported, skipped: importResult.skipped, requestId }, "Imported disk semantic layer for demo workspace");
+        log.info({ orgId, demoType, imported: importResult.imported, skipped: importResult.skipped, requestId }, "Imported semantic layer for demo workspace");
       }
 
       _resetWhitelists();
 
-      log.info({ requestId, orgId, dbType, userId: user?.id, entitiesImported }, "Demo onboarding complete");
+      log.info({ requestId, orgId, demoType, dbType, userId: user?.id, entitiesImported }, "Demo onboarding complete");
 
       return c.json({
         connectionId: id,
@@ -603,6 +680,14 @@ onboarding.openapi(
         entitiesImported,
       }, 201);
     }), { label: "use demo data" });
+  },
+  (result, c) => {
+    if (!result.success) {
+      return c.json(
+        { error: "validation_error", message: "Invalid request body.", details: result.error.issues },
+        422,
+      );
+    }
   },
 );
 

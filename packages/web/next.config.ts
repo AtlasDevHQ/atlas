@@ -1,13 +1,25 @@
 import type { NextConfig } from "next";
-import { loadEnvConfig } from "@next/env";
+import fs from "fs";
 import path from "path";
 
 // Next.js only loads .env files from its own package root (packages/web/),
 // but in the monorepo the .env file lives at the repo root. This makes
 // NEXT_PUBLIC_* vars (e.g. NEXT_PUBLIC_ATLAS_AUTH_MODE used by the proxy)
 // available in server-side code like proxy.ts. See #957.
-const monorepoRoot = path.resolve(import.meta.dirname, "../..");
-loadEnvConfig(monorepoRoot, process.env.NODE_ENV !== "production");
+const monorepoEnv = path.resolve(import.meta.dirname, "../../.env");
+if (fs.existsSync(monorepoEnv)) {
+  for (const line of fs.readFileSync(monorepoEnv, "utf-8").split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const eq = trimmed.indexOf("=");
+    if (eq < 0) continue;
+    const key = trimmed.slice(0, eq);
+    // Don't override already-set vars (Docker ENV, CI, etc.)
+    if (!(key in process.env)) {
+      process.env[key] = trimmed.slice(eq + 1).replace(/^["']|["']$/g, "");
+    }
+  }
+}
 
 const nextConfig: NextConfig = {
   reactCompiler: true,

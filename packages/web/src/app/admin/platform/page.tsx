@@ -33,6 +33,7 @@ import {
 } from "@/components/ui/dialog";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { LoadingState } from "@/ui/components/admin/loading-state";
+import { usePlatformAdminGuard } from "@/ui/hooks/use-platform-admin-guard";
 import { StatCard } from "@/ui/components/admin/stat-card";
 import { useAdminFetch, friendlyError, useInProgressSet } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
@@ -122,6 +123,8 @@ function formatDate(iso: string): string {
 // ── Main Page ─────────────────────────────────────────────────────
 
 export default function PlatformAdminPage() {
+  const { blocked } = usePlatformAdminGuard();
+  if (blocked) return <LoadingState message="Checking access..." />;
   return (
     <ErrorBoundary>
       <PlatformPageContent />

@@ -27,6 +27,7 @@ import {
 import { Label } from "@/components/ui/label";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { LoadingState } from "@/ui/components/admin/loading-state";
+import { usePlatformAdminGuard } from "@/ui/hooks/use-platform-admin-guard";
 import { StatCard } from "@/ui/components/admin/stat-card";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { useAdminFetch, friendlyError } from "@/ui/hooks/use-admin-fetch";
@@ -118,6 +119,8 @@ function formatHour(iso: string): string {
 // ── Main Page ─────────────────────────────────────────────────────
 
 export default function SLAMonitoringPage() {
+  const { blocked } = usePlatformAdminGuard();
+  if (blocked) return <LoadingState message="Checking access..." />;
   return (
     <ErrorBoundary>
       <SLAPageContent />

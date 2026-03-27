@@ -38,6 +38,8 @@ import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
+import { LoadingState } from "@/ui/components/admin/loading-state";
+import { usePlatformAdminGuard } from "@/ui/hooks/use-platform-admin-guard";
 import type { BackupEntry, BackupConfig, BackupStatus } from "@/ui/lib/types";
 import {
   Archive,
@@ -91,6 +93,8 @@ function timeAgo(iso: string): string {
 // ── Main Page ─────────────────────────────────────────────────────
 
 export default function BackupsPage() {
+  const { blocked } = usePlatformAdminGuard();
+  if (blocked) return <LoadingState message="Checking access..." />;
   return (
     <ErrorBoundary>
       <BackupsPageContent />

@@ -229,7 +229,7 @@ describe("scheduled-tasks module", () => {
         question: "Q?",
         cronExpression: "0 9 * * 1",
       });
-      expect(queryCalls[0].params![4]).toBe("webhook");
+      expect(queryCalls[0].params![5]).toBe("webhook");
     });
   });
 
@@ -242,7 +242,7 @@ describe("scheduled-tasks module", () => {
       enableInternalDB();
       setResults({ rows: [makeTaskRow()] });
 
-      const result = await getScheduledTask("task-123", "u1");
+      const result = await getScheduledTask("task-123", { orgId: "u1" });
       expect(result.ok).toBe(true);
       if (result.ok) {
         expect(result.data.id).toBe("task-123");
@@ -256,19 +256,19 @@ describe("scheduled-tasks module", () => {
       expect(await getScheduledTask("missing")).toEqual({ ok: false, reason: "not_found" });
     });
 
-    it("scopes by ownerId when provided", async () => {
+    it("scopes by orgId when scope is provided", async () => {
       enableInternalDB();
       setResults({ rows: [] });
-      await getScheduledTask("task-123", "u1");
-      expect(queryCalls[0].sql).toContain("owner_id");
-      expect(queryCalls[0].params).toEqual(["task-123", "u1"]);
+      await getScheduledTask("task-123", { orgId: "org-1" });
+      expect(queryCalls[0].sql).toContain("org_id");
+      expect(queryCalls[0].params).toEqual(["task-123", "org-1"]);
     });
 
-    it("does not scope by ownerId when not provided", async () => {
+    it("does not scope when no scope provided (scheduler internal)", async () => {
       enableInternalDB();
       setResults({ rows: [] });
       await getScheduledTask("task-123");
-      expect(queryCalls[0].sql).not.toContain("owner_id");
+      expect(queryCalls[0].sql).not.toContain("org_id");
       expect(queryCalls[0].params).toEqual(["task-123"]);
     });
 
@@ -295,7 +295,7 @@ describe("scheduled-tasks module", () => {
         { rows: [makeTaskRow()] },
       );
 
-      const result = await listScheduledTasks({ ownerId: "u1" });
+      const result = await listScheduledTasks({ orgId: "org-1" });
       expect(result.total).toBe(1);
       expect(result.tasks).toHaveLength(1);
     });
@@ -308,6 +308,7 @@ describe("scheduled-tasks module", () => {
       enableInternalDB();
       setResults({ rows: [{ total: 50 }] }, { rows: [] });
       await listScheduledTasks({ limit: 5, offset: 10 });
+      // org_id IS NULL (no params) + limit + offset
       expect(queryCalls[1].params).toEqual([5, 10]);
     });
 
@@ -316,6 +317,7 @@ describe("scheduled-tasks module", () => {
       setResults({ rows: [{ total: 3 }] }, { rows: [] });
       await listScheduledTasks({ enabled: true });
       expect(queryCalls[0].sql).toContain("enabled");
+      // org_id IS NULL (no param) + enabled
       expect(queryCalls[0].params).toEqual([true]);
     });
 
@@ -335,7 +337,7 @@ describe("scheduled-tasks module", () => {
       enableInternalDB();
       setResults({ rows: [{ id: "task-123" }] });
 
-      const result = await updateScheduledTask("task-123", "u1", { name: "Updated" });
+      const result = await updateScheduledTask("task-123", { orgId: "org-1" }, { name: "Updated" });
       expect(result).toEqual({ ok: true });
       expect(queryCalls[0].sql).toContain("UPDATE scheduled_tasks");
       expect(queryCalls[0].sql).toContain("name =");
@@ -343,7 +345,7 @@ describe("scheduled-tasks module", () => {
 
     it("returns { ok: true } when no updates", async () => {
       enableInternalDB();
-      const result = await updateScheduledTask("task-123", "u1", {});
+      const result = await updateScheduledTask("task-123", { orgId: "org-1" }, {});
       expect(result).toEqual({ ok: true });
       expect(queryCalls.length).toBe(0);
     });
@@ -351,32 +353,32 @@ describe("scheduled-tasks module", () => {
     it("returns { ok: false, reason: 'not_found' } when not found", async () => {
       enableInternalDB();
       setResults({ rows: [] });
-      expect(await updateScheduledTask("missing", "u1", { name: "X" })).toEqual({ ok: false, reason: "not_found" });
+      expect(await updateScheduledTask("missing", { orgId: "org-1" }, { name: "X" })).toEqual({ ok: false, reason: "not_found" });
     });
 
     it("returns { ok: false, reason: 'no_db' } when no DB", async () => {
-      expect(await updateScheduledTask("t", "u1", { name: "X" })).toEqual({ ok: false, reason: "no_db" });
+      expect(await updateScheduledTask("t", { orgId: "org-1" }, { name: "X" })).toEqual({ ok: false, reason: "no_db" });
     });
 
     it("recomputes next_run_at when cron changes", async () => {
       enableInternalDB();
       setResults({ rows: [{ id: "task-123" }] });
 
-      await updateScheduledTask("task-123", "u1", { cronExpression: "0 10 * * *" });
+      await updateScheduledTask("task-123", { orgId: "org-1" }, { cronExpression: "0 10 * * *" });
       expect(queryCalls[0].sql).toContain("cron_expression");
       expect(queryCalls[0].sql).toContain("next_run_at");
     });
 
     it("returns error for invalid cron", async () => {
       enableInternalDB();
-      const result = await updateScheduledTask("t", "u1", { cronExpression: "bad" });
+      const result = await updateScheduledTask("t", { orgId: "org-1" }, { cronExpression: "bad" });
       expect(result).toEqual({ ok: false, reason: "error" });
     });
 
     it("returns { ok: false, reason: 'error' } on DB error", async () => {
       enableInternalDB();
       queryThrow = new Error("fail");
-      expect(await updateScheduledTask("t", "u1", { name: "X" })).toEqual({ ok: false, reason: "error" });
+      expect(await updateScheduledTask("t", { orgId: "org-1" }, { name: "X" })).toEqual({ ok: false, reason: "error" });
     });
   });
 
@@ -389,27 +391,27 @@ describe("scheduled-tasks module", () => {
       enableInternalDB();
       setResults({ rows: [{ id: "task-123" }] });
 
-      const result = await deleteScheduledTask("task-123", "u1");
+      const result = await deleteScheduledTask("task-123", { orgId: "org-1" });
       expect(result).toEqual({ ok: true });
       expect(queryCalls[0].sql).toContain("SET enabled = false");
-      expect(queryCalls[0].sql).toContain("owner_id");
+      expect(queryCalls[0].sql).toContain("org_id");
     });
 
     it("returns { ok: false, reason: 'not_found' } when not found", async () => {
       enableInternalDB();
       setResults({ rows: [] });
-      expect(await deleteScheduledTask("missing", "u1")).toEqual({ ok: false, reason: "not_found" });
+      expect(await deleteScheduledTask("missing", { orgId: "org-1" })).toEqual({ ok: false, reason: "not_found" });
     });
 
     it("returns { ok: false, reason: 'no_db' } when no DB", async () => {
       expect(await deleteScheduledTask("t")).toEqual({ ok: false, reason: "no_db" });
     });
 
-    it("does not scope by ownerId when not provided", async () => {
+    it("scopes by org_id IS NULL when no scope provided", async () => {
       enableInternalDB();
       setResults({ rows: [{ id: "task-123" }] });
       await deleteScheduledTask("task-123");
-      expect(queryCalls[0].sql).not.toContain("owner_id");
+      expect(queryCalls[0].sql).toContain("org_id IS NULL");
     });
   });
 
@@ -505,6 +507,7 @@ describe("scheduled-tasks module", () => {
       setResults({ rows: [{ total: 0 }] }, { rows: [] });
 
       await listAllRuns({
+        orgId: "org-1",
         taskId: "task-123",
         status: "failed",
         dateFrom: "2024-01-01",
@@ -513,11 +516,11 @@ describe("scheduled-tasks module", () => {
         offset: 5,
       });
 
-      // Count query gets 4 filter params
-      expect(queryCalls[0].params).toEqual(["task-123", "failed", "2024-01-01", "2024-01-31"]);
-      // Data query gets 4 filter params + limit + offset
-      expect(queryCalls[1].params).toEqual(["task-123", "failed", "2024-01-01", "2024-01-31", 10, 5]);
-      expect(queryCalls[1].sql).toContain("LIMIT $5 OFFSET $6");
+      // Count query gets org + 4 filter params
+      expect(queryCalls[0].params).toEqual(["org-1", "task-123", "failed", "2024-01-01", "2024-01-31"]);
+      // Data query gets org + 4 filter params + limit + offset
+      expect(queryCalls[1].params).toEqual(["org-1", "task-123", "failed", "2024-01-01", "2024-01-31", 10, 5]);
+      expect(queryCalls[1].sql).toContain("LIMIT $6 OFFSET $7");
     });
 
     it("defaults taskName to Unknown when null", async () => {

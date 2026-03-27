@@ -1663,6 +1663,7 @@ export async function setWorkspaceRegion(
  * Cascading soft-delete cleanup for a workspace:
  * - Soft-deletes conversations (sets deleted_at)
  * - Hard-deletes org-scoped semantic entities, learned patterns, and query suggestions
+ * - Hard-deletes org-scoped settings
  * - Disables scheduled tasks
  */
 export async function cascadeWorkspaceDelete(orgId: string): Promise<{

@@ -386,6 +386,7 @@ describe("Workspace Lifecycle", () => {
       expect(cascade.learnedPatterns).toBe(2);
       expect(cascade.suggestions).toBe(10);
       expect(cascade.scheduledTasks).toBe(1);
+      expect(cascade.settings).toBe(4);
     });
 
     it("drains pools and flushes cache on delete", async () => {

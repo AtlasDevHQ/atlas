@@ -1671,10 +1671,11 @@ export async function cascadeWorkspaceDelete(orgId: string): Promise<{
   learnedPatterns: number;
   suggestions: number;
   scheduledTasks: number;
+  settings: number;
 }> {
   const pool = getInternalDB();
 
-  const [convResult, seResult, lpResult, qsResult, stResult] = await Promise.all([
+  const [convResult, seResult, lpResult, qsResult, stResult, settingsResult] = await Promise.all([
     pool.query(
       `UPDATE conversations SET deleted_at = now(), updated_at = now() WHERE org_id = $1 AND deleted_at IS NULL RETURNING id`,
       [orgId],
@@ -1695,6 +1696,10 @@ export async function cascadeWorkspaceDelete(orgId: string): Promise<{
       `UPDATE scheduled_tasks SET enabled = false, updated_at = now() WHERE org_id = $1 RETURNING id`,
       [orgId],
     ),
+    pool.query(
+      `DELETE FROM settings WHERE org_id = $1 RETURNING key`,
+      [orgId],
+    ),
   ]);
 
   return {
@@ -1703,6 +1708,7 @@ export async function cascadeWorkspaceDelete(orgId: string): Promise<{
     learnedPatterns: lpResult.rows.length,
     suggestions: qsResult.rows.length,
     scheduledTasks: stResult.rows.length,
+    settings: settingsResult.rows.length,
   };
 }
 

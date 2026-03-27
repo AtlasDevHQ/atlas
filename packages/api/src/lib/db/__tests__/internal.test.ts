@@ -13,6 +13,7 @@ import {
   internalExecute,
   migrateInternalDB,
   loadSavedConnections,
+  cascadeWorkspaceDelete,
   _resetPool,
   _resetCircuitBreaker,
   encryptUrl,
@@ -467,6 +468,73 @@ describe("internal DB module", () => {
       await new Promise((r) => setTimeout(r, 10));
       expect(freshCalls.queries.length).toBe(1); // query went through
     });
+  });
+});
+
+describe("cascadeWorkspaceDelete()", () => {
+  const origDatabaseUrl = process.env.DATABASE_URL;
+
+  beforeEach(() => {
+    process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/atlas";
+    _resetPool();
+  });
+
+  afterEach(() => {
+    if (origDatabaseUrl !== undefined) {
+      process.env.DATABASE_URL = origDatabaseUrl;
+    } else {
+      delete process.env.DATABASE_URL;
+    }
+    _resetPool();
+  });
+
+  it("deletes org-scoped settings rows", async () => {
+    const { pool, calls } = createMockPool();
+    // Each query in the cascade returns one row via RETURNING
+    pool._setResult({ rows: [{ id: "row-1" }] });
+    _resetPool(pool);
+
+    const result = await cascadeWorkspaceDelete("org-123");
+
+    // Verify a DELETE FROM settings WHERE org_id = $1 was issued
+    const settingsQuery = calls.queries.find((q) => q.sql.includes("DELETE FROM settings"));
+    expect(settingsQuery).toBeDefined();
+    expect(settingsQuery!.params).toEqual(["org-123"]);
+    expect(result.settings).toBe(1);
+  });
+
+  it("returns settings: 0 when no org-scoped settings exist", async () => {
+    const queryCount = { n: 0 };
+    const { pool: baseMock } = createMockPool();
+    // Return empty rows for all queries
+    const pool = {
+      ...baseMock,
+      async query(sql: string, params?: unknown[]) {
+        queryCount.n++;
+        return { rows: [] };
+      },
+      on: baseMock.on,
+    };
+    _resetPool(pool);
+
+    const result = await cascadeWorkspaceDelete("org-empty");
+    expect(result.settings).toBe(0);
+    // All 6 cascade queries should have been issued
+    expect(queryCount.n).toBe(6);
+  });
+
+  it("does not delete settings with NULL org_id (self-hosted)", async () => {
+    const { pool, calls } = createMockPool();
+    pool._setResult({ rows: [] });
+    _resetPool(pool);
+
+    await cascadeWorkspaceDelete("org-456");
+
+    // The settings DELETE should use org_id = $1, not IS NULL
+    const settingsQuery = calls.queries.find((q) => q.sql.includes("DELETE FROM settings"));
+    expect(settingsQuery).toBeDefined();
+    expect(settingsQuery!.sql).not.toContain("IS NULL");
+    expect(settingsQuery!.params).toEqual(["org-456"]);
   });
 });
 

@@ -128,6 +128,7 @@ const mockCascadeWorkspaceDelete: Mock<(orgId: string) => Promise<unknown>> = mo
     learnedPatterns: 2,
     suggestions: 10,
     scheduledTasks: 1,
+    settings: 4,
   }),
 );
 

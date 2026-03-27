@@ -23,6 +23,17 @@ export function formatDate(date: DateInput): string {
   });
 }
 
+/** "March 27, 2026" — date only, long month. Used by date-filter UI. */
+export function formatLongDate(date: DateInput): string {
+  const d = toSafeDate(date);
+  if (!d) return "\u2014";
+  return d.toLocaleDateString("en-US", {
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  });
+}
+
 /** "Mar 27, 2026, 2:30 PM" — date + time, short month. */
 export function formatDateTime(date: DateInput): string {
   const d = toSafeDate(date);

@@ -367,7 +367,7 @@ export default function AuditPage() {
                 value={connection || "__all__"}
                 onValueChange={(v) => setParams({ connection: v === "__all__" ? "" : v })}
               >
-                <SelectTrigger className="h-9 w-44">
+                <SelectTrigger className="h-9 w-44" aria-label="Filter by connection">
                   <SelectValue placeholder="All connections" />
                 </SelectTrigger>
                 <SelectContent>
@@ -381,7 +381,7 @@ export default function AuditPage() {
               </Select>
             ) : connectionsError && !connectionsError.status ? (
               <Select disabled>
-                <SelectTrigger className="h-9 w-44 opacity-50">
+                <SelectTrigger className="h-9 w-44 opacity-50" aria-label="Filter by connection">
                   <SelectValue placeholder="Connections unavailable" />
                 </SelectTrigger>
                 <SelectContent />
@@ -393,7 +393,7 @@ export default function AuditPage() {
                 value={tableFilter || "__all__"}
                 onValueChange={(v) => setParams({ table: v === "__all__" ? "" : v })}
               >
-                <SelectTrigger className="h-9 w-40">
+                <SelectTrigger className="h-9 w-40" aria-label="Filter by table">
                   <SelectValue placeholder="All tables" />
                 </SelectTrigger>
                 <SelectContent>
@@ -417,7 +417,7 @@ export default function AuditPage() {
                 value={columnFilter || "__all__"}
                 onValueChange={(v) => setParams({ column: v === "__all__" ? "" : v })}
               >
-                <SelectTrigger className="h-9 w-40">
+                <SelectTrigger className="h-9 w-40" aria-label="Filter by column">
                   <SelectValue placeholder="All columns" />
                 </SelectTrigger>
                 <SelectContent>
@@ -440,7 +440,7 @@ export default function AuditPage() {
               value={status || "__all__"}
               onValueChange={(v) => setParams({ status: v === "__all__" ? "" : v as "success" | "error" | "" })}
             >
-              <SelectTrigger className="h-9 w-32">
+              <SelectTrigger className="h-9 w-32" aria-label="Filter by status">
                 <SelectValue placeholder="All statuses" />
               </SelectTrigger>
               <SelectContent>

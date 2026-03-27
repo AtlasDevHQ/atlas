@@ -46,6 +46,10 @@ test.describe("Accessibility", () => {
   test("admin audit log has zero critical/serious axe violations", async ({ page }) => {
     await page.goto("/admin/audit");
     await expect(page.locator("h1", { hasText: "Audit Log" })).toBeVisible({ timeout: 15_000 });
+    // Wait for page content to settle — table, empty state, or error banner
+    await expect(
+      page.locator("table").or(page.locator("text=No query activity recorded yet")).or(page.locator("[role='alert']:not(#__next-route-announcer__)")),
+    ).toBeVisible({ timeout: 10_000 });
     await assertNoAxeViolations(page);
   });
 });

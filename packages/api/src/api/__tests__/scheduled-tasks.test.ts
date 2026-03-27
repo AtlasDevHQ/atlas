@@ -23,7 +23,7 @@ const mockAuthenticateRequest: Mock<
   Promise.resolve({
     authenticated: true as const,
     mode: "simple-key" as const,
-    user: { id: "u1", label: "test@test.com", mode: "simple-key" as const },
+    user: { id: "u1", label: "test@test.com", mode: "simple-key" as const, role: "admin" as const, activeOrganizationId: "org-1" },
   }),
 );
 
@@ -39,6 +39,11 @@ mock.module("@atlas/api/lib/auth/middleware", () => ({
   authenticateRequest: mockAuthenticateRequest,
   checkRateLimit: mockCheckRateLimit,
   getClientIP: mockGetClientIP,
+}));
+
+// Skip EE IP allowlist check — no real DB in tests
+mock.module("@atlas/ee/auth/ip-allowlist", () => ({
+  checkIPAllowlist: mock(async () => ({ allowed: true })),
 }));
 
 // --- CRUD mocks ---
@@ -169,7 +174,7 @@ describe("scheduled-tasks routes", () => {
     mockAuthenticateRequest.mockResolvedValue({
       authenticated: true as const,
       mode: "simple-key" as const,
-      user: { id: "u1", label: "test@test.com", mode: "simple-key" as const },
+      user: { id: "u1", label: "test@test.com", mode: "simple-key" as const, role: "admin" as const, activeOrganizationId: "org-1" },
     });
     mockCheckRateLimit.mockReset();
     mockCheckRateLimit.mockReturnValue({ allowed: true });
@@ -661,6 +666,7 @@ describe("scheduled-tasks routes", () => {
       );
       expect(response.status).toBe(200);
       expect(mockListAllRuns).toHaveBeenCalledWith({
+        orgId: "org-1",
         taskId: VALID_ID,
         status: "failed",
         dateFrom: "2026-01-01",

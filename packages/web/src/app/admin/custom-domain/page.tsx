@@ -101,7 +101,9 @@ function CustomDomainPageContent() {
   const [copied, setCopied] = useState(false);
 
   const domain = data?.domain ?? null;
-  const isPlanGated = error?.includes("plan_required") || error?.includes("Enterprise plan");
+  const isPlanGated =
+    addError?.includes("plan_required") ||
+    addError?.includes("Enterprise plan");
 
   async function handleAdd() {
     if (!newDomain) return;
@@ -183,7 +185,6 @@ function CustomDomainPageContent() {
       loadingMessage="Loading domain configuration..."
     >
       <div className="p-6 space-y-6">
-        {/* Header */}
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Custom Domain</h1>
           <p className="text-sm text-muted-foreground">
@@ -192,8 +193,6 @@ function CustomDomainPageContent() {
         </div>
 
         {domain ? (
-          <>
-            {/* Active domain card */}
             <Card>
               <CardHeader>
                 <div className="flex items-center justify-between">
@@ -260,7 +259,7 @@ function CustomDomainPageContent() {
                   </Card>
                 )}
 
-                {/* Certificate status for verified domains */}
+                {/* Verified domain confirmation */}
                 {domain.status === "verified" && (
                   <div className="flex items-center gap-2 text-sm text-muted-foreground">
                     <CheckCircle2 className="h-4 w-4 text-green-500" />
@@ -317,13 +316,11 @@ function CustomDomainPageContent() {
                   </AlertDialog>
                 </div>
 
-                {verifyError && <ErrorBanner message={verifyError} />}
+                {verifyError && <ErrorBanner message={verifyError} onRetry={handleVerify} />}
                 {removeError && <ErrorBanner message={removeError} />}
               </CardContent>
             </Card>
-          </>
         ) : (
-          /* No domain — add form */
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2">

@@ -108,7 +108,7 @@ Platform admins retain full domain management across all workspaces at **Admin C
 | Status | Meaning |
 |--------|---------|
 | **Pending** (yellow) | Domain registered, waiting for DNS setup or certificate provisioning |
-| **Verified** / **Active** (green) | DNS verified and TLS certificate issued — domain is live |
+| **Verified** / **Active** (green) | DNS verified and TLS certificate issued — domain is live. API returns `"verified"` status; workspace UI displays "Active" |
 | **Failed** (red) | DNS verification or certificate provisioning failed |
 
 ### Deleting a Domain
@@ -127,7 +127,7 @@ When a request arrives on a custom domain, Atlas:
 
 ### Workspace Admin Endpoints
 
-Require `admin` role and active organization. Enterprise plan required for POST.
+Require `admin` role and active organization. Enterprise plan required for adding a domain (`POST /api/v1/admin/domain`).
 
 | Method | Path | Description |
 |--------|------|-------------|

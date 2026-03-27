@@ -6,37 +6,31 @@
  * One custom domain per workspace (MVP).
  *
  * Wraps the existing EE domain module used by platform-domains.ts, scoping
- * operations to the caller's active organization.
+ * operations to the caller's active organization. When the EE module is
+ * unavailable (e.g. open-source builds), all routes return 404 with a
+ * "not_available" error code.
  */
 
 import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
-import { runEffect, type DomainErrorMapping } from "@atlas/api/lib/effect/hono";
+import { runEffect } from "@atlas/api/lib/effect/hono";
 import { AuthContext, RequestContext } from "@atlas/api/lib/effect/services";
-import { getWorkspaceDetails } from "@atlas/api/lib/db/internal";
-import { DomainError, type DomainErrorCode } from "@atlas/ee/platform/domains";
-import type { ContentfulStatusCode } from "hono/utils/http-status";
+import { hasInternalDB, getWorkspaceDetails } from "@atlas/api/lib/db/internal";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
+import {
+  CustomDomainSchema,
+  domainErrors,
+  loadDomains,
+  sanitizeDomainError,
+} from "./shared-domains";
 
 const log = createLogger("admin-domains");
 
 // ---------------------------------------------------------------------------
 // Schemas
 // ---------------------------------------------------------------------------
-
-const CustomDomainSchema = z.object({
-  id: z.string(),
-  workspaceId: z.string(),
-  domain: z.string(),
-  status: z.enum(["pending", "verified", "failed"]),
-  railwayDomainId: z.string().nullable(),
-  cnameTarget: z.string().nullable(),
-  certificateStatus: z.enum(["PENDING", "ISSUED", "FAILED"]).nullable(),
-  createdAt: z.string(),
-  verifiedAt: z.string().nullable(),
-});
 
 const AddDomainBodySchema = z.object({
   domain: z.string().min(1).openapi({
@@ -67,8 +61,9 @@ const getDomainRoute = createRoute({
     400: { description: "No active organization", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     403: { description: "Admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
-    404: { description: "Internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
+    404: { description: "Enterprise features not available", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+    503: { description: "Internal database or Railway not configured", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
 
@@ -92,10 +87,10 @@ const addDomainRoute = createRoute({
     400: { description: "Invalid domain or no active organization", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     403: { description: "Enterprise plan required", content: { "application/json": { schema: ErrorSchema } } },
-    404: { description: "Internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
+    404: { description: "Enterprise features not available", content: { "application/json": { schema: ErrorSchema } } },
     409: { description: "Domain already registered", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
-    503: { description: "Railway not configured", content: { "application/json": { schema: ErrorSchema } } },
+    503: { description: "Internal database or Railway not configured", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
 
@@ -113,9 +108,9 @@ const removeDomainRoute = createRoute({
     400: { description: "No active organization", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     403: { description: "Admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
-    404: { description: "No custom domain configured or internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
+    404: { description: "No custom domain configured or enterprise features not available", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
-    503: { description: "Railway not configured", content: { "application/json": { schema: ErrorSchema } } },
+    503: { description: "Internal database or Railway not configured", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
 
@@ -124,7 +119,7 @@ const verifyDomainRoute = createRoute({
   path: "/verify",
   tags: ["Admin — Custom Domain"],
   summary: "Check domain verification status",
-  description: "Checks DNS propagation and TLS certificate status for the workspace's custom domain.",
+  description: "Checks DNS propagation and TLS certificate status for the workspace's custom domain. Does not require enterprise plan — only adding a domain is plan-gated.",
   responses: {
     200: {
       description: "Verification result",
@@ -133,56 +128,11 @@ const verifyDomainRoute = createRoute({
     400: { description: "No active organization", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     403: { description: "Admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
-    404: { description: "No custom domain configured", content: { "application/json": { schema: ErrorSchema } } },
+    404: { description: "No custom domain configured or enterprise features not available", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
-    503: { description: "Railway not configured", content: { "application/json": { schema: ErrorSchema } } },
+    503: { description: "Internal database or Railway not configured", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
-
-// ---------------------------------------------------------------------------
-// Module loader (lazy import — fail gracefully when ee is unavailable)
-// ---------------------------------------------------------------------------
-
-type DomainsModule = typeof import("@atlas/ee/platform/domains");
-
-/** Infrastructure error codes whose messages may contain internal details. */
-const SANITIZED_CODES = new Set<DomainErrorCode>(["railway_error", "railway_not_configured", "data_integrity"]);
-
-const DOMAIN_ERROR_STATUS: Record<DomainErrorCode, ContentfulStatusCode> = {
-  no_internal_db: 503,
-  invalid_domain: 400,
-  duplicate_domain: 409,
-  domain_not_found: 404,
-  railway_error: 502,
-  railway_not_configured: 503,
-  data_integrity: 500,
-};
-
-const domainDomainErrors: DomainErrorMapping[] = [
-  [DomainError, DOMAIN_ERROR_STATUS],
-];
-
-async function loadDomains(): Promise<DomainsModule | null> {
-  try {
-    return await import("@atlas/ee/platform/domains");
-  } catch (err) {
-    if (err instanceof Error && "code" in err && (err as NodeJS.ErrnoException).code === "MODULE_NOT_FOUND") {
-      return null;
-    }
-    log.error(
-      { err: err instanceof Error ? err : new Error(String(err)) },
-      "Failed to load domains module — unexpected error",
-    );
-    throw err;
-  }
-}
-
-function sanitizeDomainError(err: unknown, requestId: string): void {
-  if (err instanceof DomainError && SANITIZED_CODES.has(err.code)) {
-    log.error({ err, code: err.code, requestId }, "Infrastructure domain error");
-    err.message = `Domain service error (ref: ${requestId.slice(0, 8)})`;
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Plan gating helper
@@ -191,31 +141,71 @@ function sanitizeDomainError(err: unknown, requestId: string): void {
 /**
  * Check whether the workspace is allowed to use custom domains.
  * Allowed tiers: "enterprise" (SaaS) and "free" (self-hosted, which has no plan limits).
+ * Also allows access when no internal DB is configured (self-hosted without managed billing).
+ *
+ * Fails closed: if the DB query fails, returns a 500 error rather than allowing access.
+ * Returns null when allowed, or an error body when the plan gate fails.
  */
-async function requireEnterprisePlan(
+async function checkPlanGate(
   orgId: string,
   requestId: string,
-): Promise<{ allowed: true } | { allowed: false; status: 403; body: { error: string; message: string; requestId: string } }> {
-  const workspace = await getWorkspaceDetails(orgId);
+): Promise<{ error: string; message: string; requestId: string; status: 403 | 500 } | null> {
+  // Self-hosted without managed billing — no plan enforcement
+  if (!hasInternalDB()) {
+    return null;
+  }
+
+  let workspace: Awaited<ReturnType<typeof getWorkspaceDetails>>;
+  try {
+    workspace = await getWorkspaceDetails(orgId);
+  } catch (err) {
+    log.error(
+      { err: err instanceof Error ? err.message : String(err), orgId, requestId },
+      "Plan gate check failed — database error",
+    );
+    return {
+      error: "plan_check_failed",
+      message: "Unable to verify workspace plan. Please try again.",
+      requestId,
+      status: 500,
+    };
+  }
+
   if (!workspace) {
-    // No workspace row — self-hosted without managed billing, allow
-    return { allowed: true };
+    // Internal DB exists but org row not found — allow (may be pre-migration data)
+    log.warn({ orgId, requestId }, "Plan gate: org row not found — allowing (pre-migration)");
+    return null;
   }
 
   const tier = workspace.plan_tier;
   if (tier === "enterprise" || tier === "free") {
-    return { allowed: true };
+    return null;
   }
 
   return {
-    allowed: false,
+    error: "plan_required",
+    message: "Custom domains require an Enterprise plan. Upgrade your workspace to enable this feature.",
+    requestId,
     status: 403,
-    body: {
-      error: "plan_required",
-      message: "Custom domains require an Enterprise plan. Upgrade your workspace to enable this feature.",
-      requestId,
-    },
   };
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Wraps EE domain calls in Effect.tryPromise with error sanitization. */
+function tryDomainCall<T>(
+  fn: () => Promise<T>,
+  requestId: string,
+) {
+  return Effect.tryPromise({
+    try: fn,
+    catch: (err) => {
+      sanitizeDomainError(err, requestId);
+      return err instanceof Error ? err : new Error(String(err));
+    },
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -232,14 +222,18 @@ adminDomains.openapi(getDomainRoute, async (c) => {
     const { orgId } = yield* AuthContext;
     const { requestId } = yield* RequestContext;
 
+    if (!orgId) {
+      return c.json({ error: "bad_request", message: "No active organization.", requestId }, 400);
+    }
+
     const mod = yield* Effect.promise(() => loadDomains());
     if (!mod) {
       return c.json({ error: "not_available", message: "Custom domains require enterprise features to be enabled.", requestId }, 404);
     }
 
-    const domains = yield* Effect.promise(() => mod.listDomains(orgId!));
+    const domains = yield* tryDomainCall(() => mod.listDomains(orgId), requestId);
     return c.json({ domain: domains[0] ?? null }, 200);
-  }), { label: "get workspace domain", domainErrors: domainDomainErrors });
+  }), { label: "get workspace domain", domainErrors });
 });
 
 // POST / — add custom domain (enterprise plan required)
@@ -248,19 +242,26 @@ adminDomains.openapi(addDomainRoute, async (c) => {
     const { orgId } = yield* AuthContext;
     const { requestId } = yield* RequestContext;
 
+    if (!orgId) {
+      return c.json({ error: "bad_request", message: "No active organization.", requestId }, 400);
+    }
+
     const mod = yield* Effect.promise(() => loadDomains());
     if (!mod) {
       return c.json({ error: "not_available", message: "Custom domains require enterprise features to be enabled.", requestId }, 404);
     }
 
     // Enterprise plan gate
-    const planCheck = yield* Effect.promise(() => requireEnterprisePlan(orgId!, requestId));
-    if (!planCheck.allowed) {
-      return c.json(planCheck.body, planCheck.status);
+    const planError = yield* Effect.promise(() => checkPlanGate(orgId, requestId));
+    if (planError) {
+      return c.json({ error: planError.error, message: planError.message, requestId }, planError.status);
     }
 
-    // One domain per workspace — check if one already exists
-    const existing = yield* Effect.promise(() => mod.listDomains(orgId!));
+    // MVP: one domain per workspace. TOCTOU note: concurrent requests could both pass
+    // this check. A UNIQUE constraint on custom_domains(workspace_id) would be the
+    // proper fix; the downstream registerDomain will fail with duplicate_domain if the
+    // domain name itself collides.
+    const existing = yield* tryDomainCall(() => mod.listDomains(orgId), requestId);
     if (existing.length > 0) {
       return c.json({
         error: "duplicate_domain",
@@ -271,18 +272,10 @@ adminDomains.openapi(addDomainRoute, async (c) => {
 
     const body = c.req.valid("json");
 
-    return yield* Effect.tryPromise({
-      try: async () => {
-        const domain = await mod.registerDomain(orgId!, body.domain);
-        log.info({ orgId, domain: body.domain, requestId }, "Workspace custom domain registered");
-        return c.json(domain, 201);
-      },
-      catch: (err) => {
-        sanitizeDomainError(err, requestId);
-        return err instanceof Error ? err : new Error(String(err));
-      },
-    });
-  }), { label: "add workspace domain", domainErrors: domainDomainErrors });
+    const domain = yield* tryDomainCall(() => mod.registerDomain(orgId, body.domain), requestId);
+    log.info({ orgId, domain: body.domain, requestId }, "Workspace custom domain registered");
+    return c.json(domain, 201);
+  }), { label: "add workspace domain", domainErrors });
 });
 
 // POST /verify — check domain verification status
@@ -291,28 +284,24 @@ adminDomains.openapi(verifyDomainRoute, async (c) => {
     const { orgId } = yield* AuthContext;
     const { requestId } = yield* RequestContext;
 
+    if (!orgId) {
+      return c.json({ error: "bad_request", message: "No active organization.", requestId }, 400);
+    }
+
     const mod = yield* Effect.promise(() => loadDomains());
     if (!mod) {
       return c.json({ error: "not_available", message: "Custom domains require enterprise features to be enabled.", requestId }, 404);
     }
 
-    // Find the workspace's domain
-    const domains = yield* Effect.promise(() => mod.listDomains(orgId!));
+    // MVP: one domain per workspace, so we always operate on the first result
+    const domains = yield* tryDomainCall(() => mod.listDomains(orgId), requestId);
     if (domains.length === 0) {
       return c.json({ error: "not_found", message: "No custom domain configured for this workspace.", requestId }, 404);
     }
 
-    return yield* Effect.tryPromise({
-      try: async () => {
-        const domain = await mod.verifyDomain(domains[0].id);
-        return c.json(domain, 200);
-      },
-      catch: (err) => {
-        sanitizeDomainError(err, requestId);
-        return err instanceof Error ? err : new Error(String(err));
-      },
-    });
-  }), { label: "verify workspace domain", domainErrors: domainDomainErrors });
+    const domain = yield* tryDomainCall(() => mod.verifyDomain(domains[0].id), requestId);
+    return c.json(domain, 200);
+  }), { label: "verify workspace domain", domainErrors });
 });
 
 // DELETE / — remove workspace custom domain
@@ -321,29 +310,25 @@ adminDomains.openapi(removeDomainRoute, async (c) => {
     const { orgId } = yield* AuthContext;
     const { requestId } = yield* RequestContext;
 
+    if (!orgId) {
+      return c.json({ error: "bad_request", message: "No active organization.", requestId }, 400);
+    }
+
     const mod = yield* Effect.promise(() => loadDomains());
     if (!mod) {
       return c.json({ error: "not_available", message: "Custom domains require enterprise features to be enabled.", requestId }, 404);
     }
 
-    // Find the workspace's domain
-    const domains = yield* Effect.promise(() => mod.listDomains(orgId!));
+    // MVP: one domain per workspace, so we always operate on the first result
+    const domains = yield* tryDomainCall(() => mod.listDomains(orgId), requestId);
     if (domains.length === 0) {
       return c.json({ error: "not_found", message: "No custom domain configured for this workspace.", requestId }, 404);
     }
 
-    return yield* Effect.tryPromise({
-      try: async () => {
-        await mod.deleteDomain(domains[0].id);
-        log.info({ orgId, domainId: domains[0].id, requestId }, "Workspace custom domain removed");
-        return c.json({ deleted: true }, 200);
-      },
-      catch: (err) => {
-        sanitizeDomainError(err, requestId);
-        return err instanceof Error ? err : new Error(String(err));
-      },
-    });
-  }), { label: "remove workspace domain", domainErrors: domainDomainErrors });
+    yield* tryDomainCall(() => mod.deleteDomain(domains[0].id), requestId);
+    log.info({ orgId, domainId: domains[0].id, requestId }, "Workspace custom domain removed");
+    return c.json({ deleted: true }, 200);
+  }), { label: "remove workspace domain", domainErrors });
 });
 
 export { adminDomains };

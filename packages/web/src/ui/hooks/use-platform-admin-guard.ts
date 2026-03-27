@@ -7,6 +7,12 @@ import { useAtlasConfig } from "@/ui/context";
 /**
  * Returns the user's role from the Better Auth session.
  * Used by the sidebar for item-level visibility and by page guards.
+ *
+ * Better Auth's public session type doesn't include `role` on the user object
+ * (it's added by the admin/organization plugins at runtime), so we cast through
+ * `Record<string, unknown>` to access it. This is the single source of truth
+ * for role extraction — all call sites should use this hook rather than
+ * duplicating the cast.
  */
 export function useUserRole(): string | undefined {
   const { authClient } = useAtlasConfig();
@@ -25,13 +31,10 @@ export function useUserRole(): string | undefined {
  * loading spinner) until it returns `false`.
  */
 export function usePlatformAdminGuard(): { blocked: boolean } {
+  const role = useUserRole();
   const { authClient } = useAtlasConfig();
-  const session = authClient.useSession();
+  const isPending = authClient.useSession().isPending;
   const router = useRouter();
-
-  const role = (session.data?.user as Record<string, unknown> | undefined)
-    ?.role as string | undefined;
-  const isPending = session.isPending;
 
   useEffect(() => {
     if (isPending) return;

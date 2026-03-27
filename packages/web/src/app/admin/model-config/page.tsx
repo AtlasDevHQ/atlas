@@ -28,7 +28,9 @@ import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { usePlatformAdminGuard } from "@/ui/hooks/use-platform-admin-guard";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
+import { LoadingState } from "@/ui/components/admin/loading-state";
 import { Cpu, Loader2, CheckCircle2, XCircle, RotateCcw, Eye, EyeOff } from "lucide-react";
 import type { ModelConfigProvider, WorkspaceModelConfig, TestModelConfigResponse } from "@/ui/lib/types";
 
@@ -59,6 +61,7 @@ const modelConfigSchema = z.object({
 // ── Main Page ─────────────────────────────────────────────────────
 
 export default function ModelConfigPage() {
+  const { blocked } = usePlatformAdminGuard();
   const form = useForm<z.infer<typeof modelConfigSchema>>({
     resolver: zodResolver(modelConfigSchema),
     defaultValues: { provider: "anthropic", model: "", apiKey: "", baseUrl: "" },
@@ -116,6 +119,10 @@ export default function ModelConfigPage() {
     clearDeleteError();
     clearTestError();
   }, [data, loading]); // reset when server data changes or loading completes
+
+  if (blocked) {
+    return <LoadingState message="Checking access..." />;
+  }
 
   async function handleSave(values: z.infer<typeof modelConfigSchema>) {
     if (!values.apiKey && !existingConfig) {

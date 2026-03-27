@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useAtlasConfig } from "@/ui/context";
+import { useUserRole } from "@/ui/hooks/use-platform-admin-guard";
 import { useBranding } from "@/ui/hooks/use-branding";
 import type { LucideIcon } from "lucide-react";
 import {
@@ -48,6 +48,8 @@ interface NavSubItem {
   label: string;
   /** When true, only highlight on exact pathname match (no prefix matching). */
   exact?: boolean;
+  /** When set, only users with this role see this item. */
+  requiredRole?: "platform_admin";
 }
 
 interface NavGroup {
@@ -72,7 +74,7 @@ const navGroups: NavGroup[] = [
     title: "Intelligence",
     icon: Brain,
     items: [
-      { href: "/admin/model-config", label: "AI Provider" },
+      { href: "/admin/model-config", label: "AI Provider", requiredRole: "platform_admin" },
       { href: "/admin/learned-patterns", label: "Learned Patterns" },
       { href: "/admin/prompts", label: "Prompt Library" },
       { href: "/admin/actions", label: "Actions" },
@@ -95,7 +97,7 @@ const navGroups: NavGroup[] = [
       { href: "/admin/sso", label: "SSO" },
       { href: "/admin/scim", label: "SCIM" },
       { href: "/admin/ip-allowlist", label: "IP Allowlist" },
-      { href: "/admin/abuse", label: "Abuse Prevention" },
+      { href: "/admin/abuse", label: "Abuse Prevention", requiredRole: "platform_admin" },
       { href: "/admin/approval", label: "Approval Workflows" },
       { href: "/admin/compliance", label: "PII Compliance" },
     ],
@@ -139,9 +141,7 @@ const navGroups: NavGroup[] = [
 
 export function AdminSidebar() {
   const pathname = usePathname();
-  const { authClient } = useAtlasConfig();
-  const session = authClient.useSession();
-  const userRole = (session.data?.user as Record<string, unknown> | undefined)?.role as string | undefined;
+  const userRole = useUserRole();
   const { branding } = useBranding();
 
   function isSubItemActive(item: NavSubItem) {
@@ -153,9 +153,15 @@ export function AdminSidebar() {
     return group.items.some((item) => isSubItemActive(item));
   }
 
-  const visibleGroups = navGroups.filter(
-    (group) => !group.requiredRole || group.requiredRole === userRole,
-  );
+  const visibleGroups = navGroups
+    .filter((group) => !group.requiredRole || group.requiredRole === userRole)
+    .map((group) => ({
+      ...group,
+      items: group.items.filter(
+        (item) => !item.requiredRole || item.requiredRole === userRole,
+      ),
+    }))
+    .filter((group) => group.items.length > 0);
 
   const showCustomLogo = branding?.logoUrl;
   const headerTitle = branding?.hideAtlasBranding

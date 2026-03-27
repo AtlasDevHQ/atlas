@@ -88,6 +88,7 @@ const navGroups: NavGroup[] = [
       { href: "/admin/organizations", label: "Organizations", requiredRole: "platform_admin" },
       { href: "/admin/roles", label: "Roles" },
       { href: "/admin/sessions", label: "Sessions" },
+      { href: "/admin/api-keys", label: "API Keys" },
     ],
   },
   {

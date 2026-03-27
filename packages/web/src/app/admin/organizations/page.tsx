@@ -6,6 +6,7 @@ import { orgsSearchParams } from "./search-params";
 import type { ColumnDef } from "@tanstack/react-table";
 import { useAtlasConfig } from "@/ui/context";
 import { LoadingState } from "@/ui/components/admin/loading-state";
+import { usePlatformAdminGuard } from "@/ui/hooks/use-platform-admin-guard";
 import { Badge } from "@/components/ui/badge";
 import { DataTable } from "@/components/data-table/data-table";
 import { DataTableToolbar } from "@/components/data-table/data-table-toolbar";
@@ -84,6 +85,7 @@ const ROLE_ICONS: Record<string, typeof Crown> = {
 };
 
 export default function OrganizationsPage() {
+  const { blocked } = usePlatformAdminGuard();
   const { apiUrl, isCrossOrigin } = useAtlasConfig();
   const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
 
@@ -220,6 +222,8 @@ export default function OrganizationsPage() {
     },
     getRowId: (row) => row.id,
   });
+
+  if (blocked) return <LoadingState message="Checking access..." />;
 
   return (
     <div className="p-6">

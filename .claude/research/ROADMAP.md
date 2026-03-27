@@ -600,7 +600,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] Add requireOrgContext to learned-patterns, suggestions, and prompts routes (#963)
 - [x] Add adminAuth middleware to scheduled-tasks routes (#964)
 - [x] Scope Users admin page to active org members in SaaS mode (#965)
-- [ ] Hide Organizations page from non-platform-admin (#966)
+- [x] Hide Organizations page from non-platform-admin (#966)
 
 ### Settings Architecture (P0)
 

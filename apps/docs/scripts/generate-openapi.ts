@@ -47,6 +47,14 @@ const openapi = createOpenAPI({
   input: ["./openapi.json"],
 });
 
+// Normalize tag names: replace em dashes and special chars with hyphens
+// "Admin — Connections" → "admin-connections" (not "admin-—-connections")
+const slugify = (s: string) =>
+  s
+    .toLowerCase()
+    .replace(/\s*[—–]\s*/g, "-") // em/en dash → hyphen
+    .replace(/\s+/g, "-");
+
 try {
   await generateFiles({
     input: openapi,
@@ -54,6 +62,7 @@ try {
     per: "operation",
     groupBy: "tag",
     includeDescription: true,
+    slugify,
   });
 } catch (err) {
   console.error(
@@ -85,9 +94,8 @@ try {
     .filter((d) => d.isDirectory())
     .map((d) => d.name);
 
-  // Must match fumadocs-openapi's default slugify (s.replace(/\s+/g, "-").toLowerCase())
-  const toSlug = (name: string) =>
-    name.toLowerCase().replace(/\s+/g, "-");
+  // Must match the custom slugify passed to generateFiles above
+  const toSlug = slugify;
 
   // Ordered page list: use spec tag order, then append any extras
   const orderedSlugs = tags.map((t) => toSlug(t.name));

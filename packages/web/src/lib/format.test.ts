@@ -4,6 +4,7 @@ import {
   formatLongDate,
   formatDateTime,
   formatShortDateTime,
+  formatNumber,
 } from "./format";
 
 const EM_DASH = "\u2014";
@@ -89,5 +90,28 @@ describe("formatShortDateTime", () => {
     const result = formatShortDateTime(ISO);
     expect(result).toMatch(/\d{1,2}:\d{2}/);
     expect(result).not.toContain("2026");
+  });
+});
+
+describe("formatNumber", () => {
+  test("formats millions with M suffix", () => {
+    expect(formatNumber(1_500_000)).toBe("1.5M");
+  });
+
+  test("formats thousands with K suffix", () => {
+    expect(formatNumber(2_500)).toBe("2.5K");
+  });
+
+  test("formats small numbers with locale separators", () => {
+    const result = formatNumber(999);
+    expect(result).toContain("999");
+  });
+
+  test("formats exact million boundary", () => {
+    expect(formatNumber(1_000_000)).toBe("1.0M");
+  });
+
+  test("formats exact thousand boundary", () => {
+    expect(formatNumber(1_000)).toBe("1.0K");
   });
 });

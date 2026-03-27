@@ -408,8 +408,50 @@ export function _resetCircuitBreaker(): void {
   }
 }
 
+/**
+ * Log a warning when DATABASE_URL and ATLAS_DATASOURCE_URL resolve to the
+ * same Postgres database. Internal tables (auth, audit, settings) will
+ * share the public schema with analytics data.
+ *
+ * This is intentional in single-DB deployments (e.g. Railway with one
+ * Postgres addon) but can confuse the seed script or the agent — call
+ * this once at migration time to surface the situation.
+ */
+function warnIfSharedDatabase(): void {
+  const databaseUrl = process.env.DATABASE_URL;
+  const datasourceUrl = process.env.ATLAS_DATASOURCE_URL;
+  if (!databaseUrl || !datasourceUrl) return;
+
+  try {
+    const internalParsed = new URL(databaseUrl);
+    const datasourceParsed = new URL(datasourceUrl);
+
+    // Compare host + port + pathname (database name) to detect shared DB
+    const sameHost = internalParsed.hostname === datasourceParsed.hostname;
+    const samePort = (internalParsed.port || "5432") === (datasourceParsed.port || "5432");
+    const sameDB = internalParsed.pathname === datasourceParsed.pathname;
+
+    if (sameHost && samePort && sameDB) {
+      log.warn(
+        "DATABASE_URL and ATLAS_DATASOURCE_URL point to the same database — " +
+        "Atlas internal tables will share the schema with analytics data. " +
+        "Consider using a separate database for ATLAS_DATASOURCE_URL to isolate analytics data.",
+      );
+    }
+  } catch {
+    // URL parsing failed — not critical, skip the warning
+    log.debug("Could not parse DATABASE_URL or ATLAS_DATASOURCE_URL for shared-DB detection");
+  }
+}
+
 /** Idempotent migration: creates all Atlas internal tables and indexes. */
 export async function migrateInternalDB(): Promise<void> {
+  // Warn when DATABASE_URL and ATLAS_DATASOURCE_URL resolve to the same
+  // database — internal tables will share the schema with analytics data.
+  // This is intentional in single-DB deployments but can surprise operators
+  // who expect isolation. (#962)
+  warnIfSharedDatabase();
+
   const pool = getInternalDB();
   await pool.query(`
     CREATE TABLE IF NOT EXISTS audit_log (

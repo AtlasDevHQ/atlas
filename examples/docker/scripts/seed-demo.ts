@@ -7,7 +7,12 @@
  *   3. ecommerce.sql — NovaMart DTC e-commerce ~480K rows
  *
  * Each dataset uses unique table names so they coexist without conflicts.
- * Idempotent: checks a sentinel table per dataset before seeding.
+ * Idempotent: checks a sentinel table + column per dataset before seeding.
+ *
+ * When DATABASE_URL and ATLAS_DATASOURCE_URL point to the same database,
+ * Atlas internal tables (auth, audit, settings) share the schema with
+ * analytics data. The sentinel check uses a dataset-specific column to
+ * distinguish analytics tables from Atlas internals. (#962)
  *
  * Exits 0 on success or "already seeded", exits 1 on failure.
  */
@@ -24,13 +29,21 @@ if (!url) {
 interface Dataset {
   name: string;
   file: string;
+  /** Table to check for idempotency. */
   sentinelTable: string;
+  /**
+   * A column unique to this dataset's sentinel table. Prevents false
+   * positives when an Atlas internal table (e.g. Better Auth's
+   * "organization") shares the same database. The seed is only skipped
+   * when BOTH the table and this column exist and the table has rows.
+   */
+  sentinelColumn: string;
 }
 
 const datasets: Dataset[] = [
-  { name: "SaaS CRM (demo)",          file: "/app/data/demo.sql",      sentinelTable: "companies" },
-  { name: "Sentinel Security (cybersec)", file: "/app/data/cybersec.sql",  sentinelTable: "organizations" },
-  { name: "NovaMart (ecommerce)",      file: "/app/data/ecommerce.sql", sentinelTable: "customers" },
+  { name: "SaaS CRM (demo)",               file: "/app/data/demo.sql",      sentinelTable: "companies",     sentinelColumn: "industry" },
+  { name: "Sentinel Security (cybersec)",   file: "/app/data/cybersec.sql",  sentinelTable: "organizations", sentinelColumn: "industry" },
+  { name: "NovaMart (ecommerce)",           file: "/app/data/ecommerce.sql", sentinelTable: "customers",     sentinelColumn: "acquisition_source" },
 ];
 
 const client = new pg.Client({
@@ -50,15 +63,20 @@ try {
       continue;
     }
 
-    // Check if dataset already seeded (sentinel table has rows)
+    // Check if dataset already seeded.
+    // We verify the sentinel table AND a dataset-specific column to avoid
+    // false positives from Atlas internal tables that happen to share the
+    // same database (e.g. Better Auth's "organization" table). (#962)
     const tableCheck = await client.query(`
       SELECT EXISTS (
-        SELECT 1 FROM information_schema.tables
-        WHERE table_schema = 'public' AND table_name = $1
-      ) AS table_exists
-    `, [ds.sentinelTable]);
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = $1
+          AND column_name = $2
+      ) AS dataset_exists
+    `, [ds.sentinelTable, ds.sentinelColumn]);
 
-    if (tableCheck.rows[0]?.table_exists) {
+    if (tableCheck.rows[0]?.dataset_exists) {
       const count = await client.query(
         `SELECT count(*) AS n FROM ${ds.sentinelTable}`
       );

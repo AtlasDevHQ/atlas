@@ -3640,7 +3640,7 @@ admin.openapi(deleteUserSessionsRoute, async (c) => runHandler(c, "revoke user s
 // -- Users ------------------------------------------------------------------
 
 admin.openapi(listUsersRoute, async (c) => runHandler(c, "list users", async () => {
-  await adminAuthAndContext(c);
+  const { authResult } = await adminAuthAndContext(c);
   const adminApi = await getAdminApi();
   if (!adminApi) {
     return c.json({ error: "not_available", message: "User management requires managed auth mode." }, 404);
@@ -3650,6 +3650,74 @@ admin.openapi(listUsersRoute, async (c) => runHandler(c, "list users", async () 
   const search = c.req.query("search");
   const role = c.req.query("role");
 
+  // Org-scoping: non-platform_admin users with an activeOrganizationId see
+  // only members of their org. Platform admins and self-hosted (no org) see all.
+  const orgId = authResult.user?.activeOrganizationId;
+  const isPlatformAdmin = authResult.user?.role === "platform_admin";
+
+  if (orgId && !isPlatformAdmin && hasInternalDB()) {
+    // Query users via member table JOIN, scoped to the caller's active org
+    const conditions: string[] = [`m."organizationId" = $1`];
+    const params: unknown[] = [orgId];
+    let paramIndex = 2;
+
+    if (search) {
+      conditions.push(`u.email ILIKE $${paramIndex}`);
+      params.push(`%${search}%`);
+      paramIndex++;
+    }
+    if (role && isValidRole(role)) {
+      // Use org-level role from the member table
+      conditions.push(`m.role = $${paramIndex}`);
+      params.push(role);
+      paramIndex++;
+    }
+
+    const whereClause = conditions.join(" AND ");
+
+    const [userRows, countRows] = await Promise.all([
+      internalQuery<{
+        id: string; email: string; name: string | null; role: string;
+        banned: boolean; banReason: string | null; banExpires: string | null;
+        createdAt: string;
+      }>(
+        `SELECT u.id, u.email, u.name, COALESCE(m.role, 'member') as role,
+                COALESCE(u.banned, false) as banned, u."banReason", u."banExpires",
+                u."createdAt"
+         FROM "user" u
+         JOIN member m ON m."userId" = u.id
+         WHERE ${whereClause}
+         ORDER BY u."createdAt" DESC
+         LIMIT $${paramIndex} OFFSET $${paramIndex + 1}`,
+        [...params, limit, offset],
+      ),
+      internalQuery<{ count: string }>(
+        `SELECT COUNT(*) as count
+         FROM "user" u
+         JOIN member m ON m."userId" = u.id
+         WHERE ${whereClause}`,
+        params,
+      ),
+    ]);
+
+    return c.json({
+      users: userRows.map((u) => ({
+        id: u.id,
+        email: u.email,
+        name: u.name,
+        role: u.role,
+        banned: u.banned,
+        banReason: u.banReason,
+        banExpires: u.banExpires,
+        createdAt: u.createdAt,
+      })),
+      total: parseInt(String(countRows[0]?.count ?? "0"), 10),
+      limit,
+      offset,
+    }, 200);
+  }
+
+  // Platform admin or self-hosted: global view via Better Auth admin API
   const result = await adminApi.listUsers({
     query: {
       limit,
@@ -3680,20 +3748,51 @@ admin.openapi(listUsersRoute, async (c) => runHandler(c, "list users", async () 
 }));
 
 admin.openapi(getUserStatsRoute, async (c) => runHandler(c, "query user stats", async () => {
-  await adminAuthAndContext(c);
+  const { authResult } = await adminAuthAndContext(c);
   if (!hasInternalDB() || detectAuthMode() !== "managed") {
     return c.json({ error: "not_available", message: "User management requires managed auth mode." }, 404);
   }
 
-  const totalResult = await internalQuery<{ count: string }>(
-    `SELECT COUNT(*) as count FROM "user"`,
-  );
-  const roleResult = await internalQuery<{ role: string; count: string }>(
-    `SELECT COALESCE(role, 'member') as role, COUNT(*) as count FROM "user" GROUP BY COALESCE(role, 'member')`,
-  );
-  const bannedResult = await internalQuery<{ count: string }>(
-    `SELECT COUNT(*) as count FROM "user" WHERE banned = true`,
-  );
+  // Org-scoping: non-platform_admin users with an activeOrganizationId get
+  // stats scoped to their org. Platform admins and self-hosted see global stats.
+  const orgId = authResult.user?.activeOrganizationId;
+  const isPlatformAdmin = authResult.user?.role === "platform_admin";
+
+  let totalResult: { count: string }[];
+  let roleResult: { role: string; count: string }[];
+  let bannedResult: { count: string }[];
+
+  if (orgId && !isPlatformAdmin) {
+    [totalResult, roleResult, bannedResult] = await Promise.all([
+      internalQuery<{ count: string }>(
+        `SELECT COUNT(*) as count FROM "user" u JOIN member m ON m."userId" = u.id WHERE m."organizationId" = $1`,
+        [orgId],
+      ),
+      internalQuery<{ role: string; count: string }>(
+        `SELECT COALESCE(m.role, 'member') as role, COUNT(*) as count
+         FROM "user" u JOIN member m ON m."userId" = u.id
+         WHERE m."organizationId" = $1
+         GROUP BY COALESCE(m.role, 'member')`,
+        [orgId],
+      ),
+      internalQuery<{ count: string }>(
+        `SELECT COUNT(*) as count FROM "user" u JOIN member m ON m."userId" = u.id WHERE m."organizationId" = $1 AND u.banned = true`,
+        [orgId],
+      ),
+    ]);
+  } else {
+    [totalResult, roleResult, bannedResult] = await Promise.all([
+      internalQuery<{ count: string }>(
+        `SELECT COUNT(*) as count FROM "user"`,
+      ),
+      internalQuery<{ role: string; count: string }>(
+        `SELECT COALESCE(role, 'member') as role, COUNT(*) as count FROM "user" GROUP BY COALESCE(role, 'member')`,
+      ),
+      internalQuery<{ count: string }>(
+        `SELECT COUNT(*) as count FROM "user" WHERE banned = true`,
+      ),
+    ]);
+  }
 
   const total = parseInt(String(totalResult[0]?.count ?? "0"), 10);
   const banned = parseInt(String(bannedResult[0]?.count ?? "0"), 10);

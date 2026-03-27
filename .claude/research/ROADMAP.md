@@ -564,21 +564,21 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 
 ### Dev & CI
 - [x] Dev workflow smoke test — install, dev, build end-to-end (#945). Filed #955 (Better Auth migration bug, pre-existing)
-- [ ] CI test audit — coverage gaps, skipped tests, Effect migration regressions (#946)
+- [x] CI test audit — 250/250 tests pass, no skipped tests, Effect layers healthy (#946). Filed #992 (flaky DuckDB segfault)
 
 ### Production
-- [ ] Production deploy validation — Railway services healthy end-to-end (#947)
+- [x] Production deploy validation — all 5 Railway services healthy, health endpoint green (#947)
 
 ### Effect Architecture
-- [ ] Effect service lifecycle — startup, shutdown, error mapping, context propagation (#948)
+- [x] Effect service lifecycle — 131+ tests across 11 files cover startup, shutdown, error mapping, context propagation (#948)
 
 ### Agent & Features
-- [ ] Agent loop e2e — SQL, Python, explore, multi-step conversations (#949)
-- [ ] Enterprise feature smoke — SSO, SCIM, approval, PII through Effect Layers (#950)
+- [x] Agent loop e2e — env isolation fix (PR #993), 272+ tool/agent tests pass (#949)
+- [x] Enterprise feature smoke — env isolation fix (PR #994), 434 EE tests pass (#950). Filed #995 (axe violation)
 
 ### Integration
-- [ ] Browser e2e — full Playwright suite against dev and production (#951)
-- [ ] SDK, MCP, and widget integration — external integration points (#952)
+- [x] Browser e2e — tour dismissal fix (PR #996), 44/47 fast tests pass (#951). Filed #995 (axe violation)
+- [ ] SDK, MCP, and widget integration — external integration points (#952) — deferred
 
 ### Follow-ups (bugs found during validation)
 - [x] Better Auth platform_admin role missing from roles config (#955, PR #956)

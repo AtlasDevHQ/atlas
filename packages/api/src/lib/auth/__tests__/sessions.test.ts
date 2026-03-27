@@ -151,6 +151,7 @@ mock.module("@atlas/api/lib/settings", () => ({
   },
   getSettingsForAdmin: () => [],
   getSettingsRegistry: () => [],
+  getSettingDefinition: () => undefined,
   setSetting: mock(() => Promise.resolve()),
   deleteSetting: mock(() => Promise.resolve()),
   initializeSettings: mock(() => Promise.resolve()),

@@ -169,6 +169,7 @@ mock.module("@atlas/api/lib/security", () => ({
 mock.module("@atlas/api/lib/settings", () => ({
   getSettingsForAdmin: mock(() => []),
   getSettingsRegistry: mock(() => []),
+  getSettingDefinition: mock(() => undefined),
   setSetting: mock(async () => {}),
   deleteSetting: mock(async () => {}),
   getSetting: mock(() => undefined),

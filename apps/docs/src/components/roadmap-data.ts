@@ -221,31 +221,20 @@ export const milestones: Milestone[] = [
     githubMilestone: 26,
   },
 
-  // ── Current ──────────────────────────────────────────────
   {
     version: "0.9.5",
     title: "Post-Effect Validation",
-    status: "current",
+    status: "shipped",
     summary:
-      "Comprehensive end-to-end validation after the Effect.ts migration \u2014 dev workflow, CI, production deploys, agent loop, enterprise features, browser tests, and external integration points.",
-    highlights: [
-      "Dev workflow & hot-reload validation",
-      "CI pipeline audit",
-      "Production deploy smoke tests",
-      "Effect lifecycle & service teardown",
-      "Agent loop end-to-end",
-      "Enterprise feature smoke tests",
-      "Browser E2E suite",
-      "SDK, MCP, and widget integration",
-    ],
+      "Comprehensive end-to-end validation after the Effect.ts migration \u2014 250 unit tests, 434 enterprise tests, 44 browser tests, and all 5 production services confirmed healthy. No regressions found.",
     githubMilestone: 27,
   },
 
-  // ── Planned ──────────────────────────────────────────────
+  // ── Current ──────────────────────────────────────────────
   {
     version: "0.9.6",
     title: "SaaS Customer Experience",
-    status: "planned",
+    status: "current",
     summary:
       "Make the admin console work for paying SaaS workspace admins. Scope settings and routes to workspaces, hide platform internals, and add self-service for key features.",
     highlights: [

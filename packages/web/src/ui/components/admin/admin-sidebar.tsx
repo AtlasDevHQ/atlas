@@ -118,6 +118,7 @@ const navGroups: NavGroup[] = [
     icon: Settings,
     items: [
       { href: "/admin/plugins", label: "Plugins" },
+      { href: "/admin/billing", label: "Billing" },
       { href: "/admin/branding", label: "Branding" },
       { href: "/admin/settings", label: "Settings" },
     ],

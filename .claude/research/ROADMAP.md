@@ -616,7 +616,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [ ] Self-serve Slack disconnect/reconnect (#972)
 - [ ] Self-serve custom domain configuration (#973)
 - [ ] Self-serve sandbox backend selection per workspace (#974)
-- [ ] Workspace billing page — plan, usage vs limits, portal link (#975)
+- [x] Workspace billing page — plan, usage vs limits, portal link (#975)
 - [ ] Self-serve data residency selection for workspace admins (#976)
 
 ### Infrastructure

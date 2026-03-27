@@ -85,7 +85,7 @@ const navGroups: NavGroup[] = [
     icon: Users,
     items: [
       { href: "/admin/users", label: "Users" },
-      { href: "/admin/organizations", label: "Organizations" },
+      { href: "/admin/organizations", label: "Organizations", requiredRole: "platform_admin" },
       { href: "/admin/roles", label: "Roles" },
       { href: "/admin/sessions", label: "Sessions" },
     ],

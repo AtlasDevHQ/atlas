@@ -143,8 +143,8 @@ mock.module("@atlas/api/lib/learn/pattern-cache", () => ({
   _resetPatternCache: () => {},
 }));
 
-// Settings mock — we need to intercept the actual settings functions
-const mockGetSettingsForAdmin = mock(() => [
+// Settings registry data used by mocks
+const settingsRegistryData = [
   {
     key: "ATLAS_ROW_LIMIT",
     section: "Query Limits",
@@ -153,39 +153,7 @@ const mockGetSettingsForAdmin = mock(() => [
     type: "number",
     default: "1000",
     envVar: "ATLAS_ROW_LIMIT",
-    currentValue: "1000",
-    source: "default",
-  },
-  {
-    key: "ANTHROPIC_API_KEY",
-    section: "Secrets",
-    label: "Anthropic API Key",
-    description: "API key",
-    type: "string",
-    secret: true,
-    envVar: "ANTHROPIC_API_KEY",
-    currentValue: "sk-a••••here",
-    source: "env",
-  },
-]);
-
-const mockSetSetting: Mock<(key: string, value: string, userId?: string) => Promise<void>> = mock(
-  () => Promise.resolve(),
-);
-
-const mockDeleteSetting: Mock<(key: string) => Promise<void>> = mock(
-  () => Promise.resolve(),
-);
-
-const mockGetSettingsRegistry = mock(() => [
-  {
-    key: "ATLAS_ROW_LIMIT",
-    section: "Query Limits",
-    label: "Row Limit",
-    description: "Max rows",
-    type: "number",
-    default: "1000",
-    envVar: "ATLAS_ROW_LIMIT",
+    scope: "workspace",
   },
   {
     key: "ATLAS_PROVIDER",
@@ -196,6 +164,7 @@ const mockGetSettingsRegistry = mock(() => [
     options: ["anthropic", "openai", "bedrock", "ollama", "openai-compatible", "gateway"],
     default: "anthropic",
     envVar: "ATLAS_PROVIDER",
+    scope: "platform",
   },
   {
     key: "ATLAS_RLS_ENABLED",
@@ -204,6 +173,7 @@ const mockGetSettingsRegistry = mock(() => [
     description: "Enable RLS",
     type: "boolean",
     envVar: "ATLAS_RLS_ENABLED",
+    scope: "platform",
   },
   {
     key: "ANTHROPIC_API_KEY",
@@ -213,12 +183,41 @@ const mockGetSettingsRegistry = mock(() => [
     type: "string",
     secret: true,
     envVar: "ANTHROPIC_API_KEY",
+    scope: "platform",
+  },
+];
+
+// Settings mock — we need to intercept the actual settings functions
+const mockGetSettingsForAdmin = mock(() => [
+  {
+    ...settingsRegistryData[0],
+    currentValue: "1000",
+    source: "default",
+  },
+  {
+    ...settingsRegistryData[3],
+    currentValue: "sk-a••••here",
+    source: "env",
   },
 ]);
+
+const mockSetSetting: Mock<(key: string, value: string, userId?: string, orgId?: string) => Promise<void>> = mock(
+  () => Promise.resolve(),
+);
+
+const mockDeleteSetting: Mock<(key: string, userId?: string, orgId?: string) => Promise<void>> = mock(
+  () => Promise.resolve(),
+);
+
+const mockGetSettingsRegistry = mock(() => settingsRegistryData);
+
+const settingsMap = new Map(settingsRegistryData.map((s) => [s.key, s]));
+const mockGetSettingDefinition = mock((key: string) => settingsMap.get(key));
 
 mock.module("@atlas/api/lib/settings", () => ({
   getSettingsForAdmin: mockGetSettingsForAdmin,
   getSettingsRegistry: mockGetSettingsRegistry,
+  getSettingDefinition: mockGetSettingDefinition,
   setSetting: mockSetSetting,
   deleteSetting: mockDeleteSetting,
   loadSettings: mock(async () => 0),
@@ -522,6 +521,117 @@ describe("admin settings routes", () => {
         method: "DELETE",
       });
       expect(res.status).toBe(404);
+    });
+  });
+
+  // ─── Org-scoped settings ────────────────────────────────────────
+
+  describe("org-scoped settings enforcement", () => {
+    it("workspace admin cannot update platform-scoped settings", async () => {
+      mockAuthenticateRequest.mockImplementationOnce(() =>
+        Promise.resolve({
+          authenticated: true,
+          mode: "better-auth",
+          user: { id: "ws-admin-1", mode: "better-auth", label: "WS Admin", role: "admin", activeOrganizationId: "org-1" },
+        }),
+      );
+
+      const res = await request("/api/v1/admin/settings/ATLAS_PROVIDER", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: "openai" }),
+      });
+      expect(res.status).toBe(403);
+      const data = (await res.json()) as { error: string; message: string };
+      expect(data.message).toContain("platform-level setting");
+    });
+
+    it("workspace admin cannot delete platform-scoped settings", async () => {
+      mockAuthenticateRequest.mockImplementationOnce(() =>
+        Promise.resolve({
+          authenticated: true,
+          mode: "better-auth",
+          user: { id: "ws-admin-1", mode: "better-auth", label: "WS Admin", role: "admin", activeOrganizationId: "org-1" },
+        }),
+      );
+
+      const res = await request("/api/v1/admin/settings/ATLAS_RLS_ENABLED", {
+        method: "DELETE",
+      });
+      expect(res.status).toBe(403);
+      const data = (await res.json()) as { error: string; message: string };
+      expect(data.message).toContain("platform-level setting");
+    });
+
+    it("workspace admin can update workspace-scoped settings with orgId passthrough", async () => {
+      mockAuthenticateRequest.mockImplementationOnce(() =>
+        Promise.resolve({
+          authenticated: true,
+          mode: "better-auth",
+          user: { id: "ws-admin-1", mode: "better-auth", label: "WS Admin", role: "admin", activeOrganizationId: "org-1" },
+        }),
+      );
+
+      const res = await request("/api/v1/admin/settings/ATLAS_ROW_LIMIT", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: "500" }),
+      });
+      expect(res.status).toBe(200);
+      expect(mockSetSetting).toHaveBeenCalledTimes(1);
+      // Verify orgId is forwarded for workspace-scoped settings
+      expect(mockSetSetting).toHaveBeenCalledWith("ATLAS_ROW_LIMIT", "500", "ws-admin-1", "org-1");
+    });
+
+    it("workspace admin can delete workspace-scoped settings with orgId passthrough", async () => {
+      mockAuthenticateRequest.mockImplementationOnce(() =>
+        Promise.resolve({
+          authenticated: true,
+          mode: "better-auth",
+          user: { id: "ws-admin-1", mode: "better-auth", label: "WS Admin", role: "admin", activeOrganizationId: "org-1" },
+        }),
+      );
+
+      const res = await request("/api/v1/admin/settings/ATLAS_ROW_LIMIT", {
+        method: "DELETE",
+      });
+      expect(res.status).toBe(200);
+      expect(mockDeleteSetting).toHaveBeenCalledTimes(1);
+      // Verify orgId is forwarded for workspace-scoped settings
+      expect(mockDeleteSetting).toHaveBeenCalledWith("ATLAS_ROW_LIMIT", "ws-admin-1", "org-1");
+    });
+
+    it("platform admin can update platform-scoped settings — orgId NOT forwarded", async () => {
+      mockAuthenticateRequest.mockImplementationOnce(() =>
+        Promise.resolve({
+          authenticated: true,
+          mode: "better-auth",
+          user: { id: "platform-admin-1", mode: "better-auth", label: "Platform Admin", role: "platform_admin", activeOrganizationId: "org-1" },
+        }),
+      );
+
+      const res = await request("/api/v1/admin/settings/ATLAS_PROVIDER", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: "openai" }),
+      });
+      expect(res.status).toBe(200);
+      expect(mockSetSetting).toHaveBeenCalledTimes(1);
+      // Platform-scoped: orgId should NOT be forwarded
+      expect(mockSetSetting).toHaveBeenCalledWith("ATLAS_PROVIDER", "openai", "platform-admin-1", undefined);
+    });
+
+    it("self-hosted admin (no org) can update platform-scoped settings", async () => {
+      // Default mock has no activeOrganizationId — simulates self-hosted
+      const res = await request("/api/v1/admin/settings/ATLAS_PROVIDER", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ value: "openai" }),
+      });
+      expect(res.status).toBe(200);
+      expect(mockSetSetting).toHaveBeenCalledTimes(1);
+      // Self-hosted: no orgId
+      expect(mockSetSetting).toHaveBeenCalledWith("ATLAS_PROVIDER", "openai", "admin-1", undefined);
     });
   });
 });

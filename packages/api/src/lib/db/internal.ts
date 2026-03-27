@@ -681,6 +681,13 @@ export async function migrateInternalDB(): Promise<void> {
   await pool.query(`ALTER TABLE scheduled_tasks ADD COLUMN IF NOT EXISTS org_id TEXT;`);
   await pool.query(`CREATE INDEX IF NOT EXISTS idx_scheduled_tasks_org ON scheduled_tasks(org_id);`);
   await pool.query(`ALTER TABLE settings ADD COLUMN IF NOT EXISTS org_id TEXT;`);
+  // Settings org-scoped unique indexes: replace the simple PK with two partial
+  // unique indexes to support both global (org_id IS NULL) and per-org overrides.
+  // The original PK (key) is dropped safely — IF EXISTS handles fresh installs
+  // where the PK may already be absent from a prior migration run.
+  await pool.query(`ALTER TABLE settings DROP CONSTRAINT IF EXISTS settings_pkey;`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_settings_key_global ON settings(key) WHERE org_id IS NULL;`);
+  await pool.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_settings_key_org ON settings(key, org_id) WHERE org_id IS NOT NULL;`);
   await pool.query(`ALTER TABLE plugin_settings ADD COLUMN IF NOT EXISTS org_id TEXT;`);
 
   // Org-scoped semantic entities (DB-backed semantic layer)

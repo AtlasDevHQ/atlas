@@ -1,7 +1,11 @@
 /**
  * Application settings persistence — DB overrides for env var config.
  *
- * Settings follow a three-tier resolution: DB override > env var > default.
+ * Settings follow a four-tier resolution for workspace-scoped keys:
+ *   workspace DB override > platform DB override > env var > default.
+ * Platform-scoped settings use the original three-tier chain:
+ *   platform DB override > env var > default.
+ *
  * When no internal DB is available, all settings are read-only from env vars.
  *
  * The in-process cache is populated at startup and updated on writes,
@@ -17,6 +21,8 @@ const log = createLogger("settings");
 // Settings registry — defines all known settings with metadata
 // ---------------------------------------------------------------------------
 
+export type SettingScope = "platform" | "workspace";
+
 export interface SettingDefinition {
   key: string;
   section: string;
@@ -29,11 +35,13 @@ export interface SettingDefinition {
   envVar: string;
   /** When true, the server must be restarted for changes to take effect. When absent or false, changes are picked up at runtime via getSetting() on the next request. */
   requiresRestart?: boolean;
+  /** Whether this setting can be overridden per-workspace ("workspace") or is global only ("platform"). Defaults to "platform". */
+  scope: SettingScope;
 }
 
 export interface SettingWithValue extends SettingDefinition {
   currentValue: string | undefined;
-  source: "env" | "override" | "default";
+  source: "env" | "override" | "workspace-override" | "default";
 }
 
 export interface SettingRow {
@@ -41,6 +49,7 @@ export interface SettingRow {
   value: string;
   updated_at: string;
   updated_by: string | null;
+  org_id: string | null;
 }
 
 const SETTINGS_REGISTRY: SettingDefinition[] = [
@@ -53,6 +62,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     type: "number",
     default: "1000",
     envVar: "ATLAS_ROW_LIMIT",
+    scope: "workspace",
   },
   {
     key: "ATLAS_QUERY_TIMEOUT",
@@ -62,6 +72,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     type: "number",
     default: "30000",
     envVar: "ATLAS_QUERY_TIMEOUT",
+    scope: "workspace",
   },
 
   // Rate Limiting
@@ -72,6 +83,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     description: "Max requests per minute per user (0 or empty = disabled)",
     type: "number",
     envVar: "ATLAS_RATE_LIMIT_RPM",
+    scope: "workspace",
   },
 
   // Security
@@ -83,6 +95,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     type: "boolean",
     envVar: "ATLAS_RLS_ENABLED",
     requiresRestart: true,
+    scope: "platform",
   },
   {
     key: "ATLAS_RLS_COLUMN",
@@ -92,6 +105,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     type: "string",
     envVar: "ATLAS_RLS_COLUMN",
     requiresRestart: true,
+    scope: "platform",
   },
   {
     key: "ATLAS_RLS_CLAIM",
@@ -101,6 +115,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     type: "string",
     envVar: "ATLAS_RLS_CLAIM",
     requiresRestart: true,
+    scope: "platform",
   },
   {
     key: "ATLAS_TABLE_WHITELIST",
@@ -111,6 +126,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     default: "true",
     envVar: "ATLAS_TABLE_WHITELIST",
     requiresRestart: true,
+    scope: "platform",
   },
   {
     key: "ATLAS_CORS_ORIGIN",
@@ -121,6 +137,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     default: "*",
     envVar: "ATLAS_CORS_ORIGIN",
     requiresRestart: true,
+    scope: "platform",
   },
 
   // Sessions
@@ -132,6 +149,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     type: "number",
     default: "0",
     envVar: "ATLAS_SESSION_IDLE_TIMEOUT",
+    scope: "workspace",
   },
   {
     key: "ATLAS_SESSION_ABSOLUTE_TIMEOUT",
@@ -141,6 +159,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     type: "number",
     default: "0",
     envVar: "ATLAS_SESSION_ABSOLUTE_TIMEOUT",
+    scope: "workspace",
   },
 
   // Agent
@@ -152,6 +171,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     type: "number",
     default: "25",
     envVar: "ATLAS_AGENT_MAX_STEPS",
+    scope: "workspace",
   },
   {
     key: "ATLAS_PROVIDER",
@@ -163,6 +183,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     default: "anthropic",
     envVar: "ATLAS_PROVIDER",
     requiresRestart: true,
+    scope: "platform",
   },
   {
     key: "ATLAS_MODEL",
@@ -172,6 +193,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     type: "string",
     envVar: "ATLAS_MODEL",
     requiresRestart: true,
+    scope: "platform",
   },
   {
     key: "ATLAS_LOG_LEVEL",
@@ -183,6 +205,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     default: "info",
     envVar: "ATLAS_LOG_LEVEL",
     requiresRestart: true,
+    scope: "platform",
   },
 
   // Appearance
@@ -194,6 +217,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     type: "string",
     default: "oklch(0.759 0.148 167.71)",
     envVar: "ATLAS_BRAND_COLOR",
+    scope: "platform",
   },
 
   // Secrets (read-only)
@@ -205,6 +229,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     type: "string",
     secret: true,
     envVar: "ANTHROPIC_API_KEY",
+    scope: "platform",
   },
   {
     key: "OPENAI_API_KEY",
@@ -214,6 +239,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     type: "string",
     secret: true,
     envVar: "OPENAI_API_KEY",
+    scope: "platform",
   },
   {
     key: "DATABASE_URL",
@@ -223,6 +249,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     type: "string",
     secret: true,
     envVar: "DATABASE_URL",
+    scope: "platform",
   },
   {
     key: "ATLAS_DATASOURCE_URL",
@@ -232,6 +259,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     type: "string",
     secret: true,
     envVar: "ATLAS_DATASOURCE_URL",
+    scope: "platform",
   },
 ];
 
@@ -239,9 +267,19 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
 // In-process cache
 // ---------------------------------------------------------------------------
 
+/**
+ * Cache key format:
+ * - Platform (global): "KEY"
+ * - Workspace-scoped: "KEY\0orgId"
+ * The NUL separator is safe because neither key names nor org IDs contain it.
+ */
+function cacheKey(key: string, orgId?: string | null): string {
+  return orgId ? `${key}\0${orgId}` : key;
+}
+
 const _cache = new Map<string, { value: string; updated_at: string; updated_by: string | null }>();
 
-const SETTINGS_KEYS = new Set(SETTINGS_REGISTRY.map((s) => s.key));
+const SETTINGS_MAP = new Map(SETTINGS_REGISTRY.map((s) => [s.key, s]));
 
 /** @internal Reset cache — for testing only. */
 export function _resetSettingsCache(): void {
@@ -261,12 +299,12 @@ export async function loadSettings(): Promise<number> {
 
   try {
     const rows = await internalQuery<Record<string, unknown> & SettingRow>(
-      "SELECT key, value, updated_at::text, updated_by FROM settings",
+      "SELECT key, value, updated_at::text, updated_by, org_id FROM settings",
     );
 
     _cache.clear();
     for (const row of rows) {
-      _cache.set(row.key, {
+      _cache.set(cacheKey(row.key, row.org_id), {
         value: row.value,
         updated_at: row.updated_at,
         updated_by: row.updated_by,
@@ -291,73 +329,127 @@ export async function loadSettings(): Promise<number> {
 }
 
 /**
- * Get a setting value with three-tier resolution: DB override > env var > default.
+ * Get a setting value with tiered resolution.
+ *
+ * For workspace-scoped settings with an orgId:
+ *   workspace DB override → platform DB override → env var → default
+ *
+ * For platform-scoped settings (or no orgId):
+ *   platform DB override → env var → default
  */
-export function getSetting(key: string): string | undefined {
-  // DB override takes priority
-  const cached = _cache.get(key);
-  if (cached) return cached.value;
+export function getSetting(key: string, orgId?: string): string | undefined {
+  const def = SETTINGS_MAP.get(key);
 
-  // Env var
-  const envVal = process.env[key];
+  if (orgId && def?.scope === "workspace") {
+    // Tier 1: workspace-level DB override
+    const wsOverride = _cache.get(cacheKey(key, orgId));
+    if (wsOverride) return wsOverride.value;
+
+    // Tier 2: platform-level DB override
+    const platformOverride = _cache.get(cacheKey(key));
+    if (platformOverride) return platformOverride.value;
+  } else {
+    // Platform-scoped or no orgId: standard DB override
+    const cached = _cache.get(cacheKey(key));
+    if (cached) return cached.value;
+  }
+
+  // Tier 3: env var
+  const envVar = def?.envVar ?? key;
+  const envVal = process.env[envVar];
   if (envVal !== undefined) return envVal;
 
-  // Default from registry
-  const def = SETTINGS_REGISTRY.find((s) => s.key === key);
+  // Tier 4: registry default
   return def?.default;
 }
 
 /**
  * Set a settings override in the DB and update the in-process cache.
  * Throws if no internal DB is available.
+ *
+ * When orgId is provided and the setting is workspace-scoped, stores a
+ * workspace-level override. Platform-scoped settings ignore orgId.
  */
-export async function setSetting(key: string, value: string, userId?: string): Promise<void> {
+export async function setSetting(key: string, value: string, userId?: string, orgId?: string): Promise<void> {
   if (!hasInternalDB()) {
     throw new Error("Internal database required to persist settings overrides");
   }
-  if (!SETTINGS_KEYS.has(key)) {
+  const def = SETTINGS_MAP.get(key);
+  if (!def) {
     throw new Error(`Unknown setting key: "${key}"`);
   }
 
-  await internalQuery(
-    `INSERT INTO settings (key, value, updated_at, updated_by)
-     VALUES ($1, $2, now(), $3)
-     ON CONFLICT (key) DO UPDATE SET value = $2, updated_at = now(), updated_by = $3`,
-    [key, value, userId ?? null],
-  );
+  // Platform-scoped settings always store globally
+  const effectiveOrgId = def.scope === "platform" ? undefined : orgId;
 
-  _cache.set(key, {
+  if (effectiveOrgId) {
+    await internalQuery(
+      `INSERT INTO settings (key, value, updated_at, updated_by, org_id)
+       VALUES ($1, $2, now(), $3, $4)
+       ON CONFLICT (key, org_id) WHERE org_id IS NOT NULL
+       DO UPDATE SET value = $2, updated_at = now(), updated_by = $3`,
+      [key, value, userId ?? null, effectiveOrgId],
+    );
+  } else {
+    await internalQuery(
+      `INSERT INTO settings (key, value, updated_at, updated_by)
+       VALUES ($1, $2, now(), $3)
+       ON CONFLICT (key) WHERE org_id IS NULL
+       DO UPDATE SET value = $2, updated_at = now(), updated_by = $3`,
+      [key, value, userId ?? null],
+    );
+  }
+
+  _cache.set(cacheKey(key, effectiveOrgId), {
     value,
     updated_at: new Date().toISOString(),
     updated_by: userId ?? null,
   });
 
-  log.info({ key, actorId: userId }, "Setting override saved");
+  log.info({ key, orgId: effectiveOrgId, actorId: userId }, "Setting override saved");
 }
 
 /**
- * Delete a settings override, reverting to env var / default.
+ * Delete a settings override, reverting to the next tier in the fallback chain.
  * Throws if no internal DB is available.
  */
-export async function deleteSetting(key: string, userId?: string): Promise<void> {
+export async function deleteSetting(key: string, userId?: string, orgId?: string): Promise<void> {
   if (!hasInternalDB()) {
     throw new Error("Internal database required to manage settings overrides");
   }
 
-  await internalQuery("DELETE FROM settings WHERE key = $1", [key]);
-  _cache.delete(key);
+  const def = SETTINGS_MAP.get(key);
+  if (!def) {
+    throw new Error(`Unknown setting key: "${key}"`);
+  }
+  const effectiveOrgId = def.scope === "platform" ? undefined : orgId;
 
-  log.info({ key, actorId: userId }, "Setting override removed");
+  if (effectiveOrgId) {
+    await internalQuery("DELETE FROM settings WHERE key = $1 AND org_id = $2", [key, effectiveOrgId]);
+  } else {
+    await internalQuery("DELETE FROM settings WHERE key = $1 AND org_id IS NULL", [key]);
+  }
+  _cache.delete(cacheKey(key, effectiveOrgId));
+
+  log.info({ key, orgId: effectiveOrgId, actorId: userId }, "Setting override removed");
 }
 
 /**
  * Get all DB overrides (for admin listing).
+ * When orgId is provided, returns both platform-level and workspace-level overrides.
  */
-export async function getAllSettingOverrides(): Promise<SettingRow[]> {
+export async function getAllSettingOverrides(orgId?: string): Promise<SettingRow[]> {
   if (!hasInternalDB()) return [];
 
+  if (orgId) {
+    return await internalQuery<Record<string, unknown> & SettingRow>(
+      "SELECT key, value, updated_at::text, updated_by, org_id FROM settings WHERE org_id IS NULL OR org_id = $1 ORDER BY key",
+      [orgId],
+    );
+  }
+
   return await internalQuery<Record<string, unknown> & SettingRow>(
-    "SELECT key, value, updated_at::text, updated_by FROM settings ORDER BY key",
+    "SELECT key, value, updated_at::text, updated_by, org_id FROM settings ORDER BY key",
   );
 }
 
@@ -373,33 +465,70 @@ function maskSecret(value: string | undefined): string | undefined {
 }
 
 /**
- * Returns all known settings with current values and sources,
- * suitable for the admin API response.
+ * Returns settings with current values and sources for the admin API.
+ *
+ * When orgId is provided, workspace-scoped settings resolve through the
+ * 4-tier chain and include workspace-override source. Platform admins
+ * (no orgId) see all settings at the platform level.
+ *
+ * When isPlatformAdmin is true, all settings are returned (platform + workspace).
+ * Otherwise only workspace-scoped settings are returned (fail-closed default).
  */
-export function getSettingsForAdmin(): SettingWithValue[] {
-  return SETTINGS_REGISTRY.map((def) => {
-    const override = _cache.get(def.key);
-    const envVal = process.env[def.envVar];
+export function getSettingsForAdmin(orgId?: string, isPlatformAdmin?: boolean): SettingWithValue[] {
+  const showAll = isPlatformAdmin === true;
 
-    let currentValue: string | undefined;
-    let source: "env" | "override" | "default";
+  return SETTINGS_REGISTRY
+    .filter((def) => showAll || def.scope === "workspace")
+    .map((def) => {
+      let currentValue: string | undefined;
+      let source: "env" | "override" | "workspace-override" | "default";
 
-    if (override) {
-      currentValue = def.secret ? maskSecret(override.value) : override.value;
-      source = "override";
-    } else if (envVal !== undefined) {
-      currentValue = def.secret ? maskSecret(envVal) : envVal;
-      source = "env";
-    } else {
-      currentValue = def.default;
-      source = "default";
-    }
+      if (orgId && def.scope === "workspace") {
+        // 4-tier resolution for workspace-scoped settings
+        const wsOverride = _cache.get(cacheKey(def.key, orgId));
+        const platformOverride = _cache.get(cacheKey(def.key));
+        const envVal = process.env[def.envVar];
 
-    return { ...def, currentValue, source };
-  });
+        if (wsOverride) {
+          currentValue = def.secret ? maskSecret(wsOverride.value) : wsOverride.value;
+          source = "workspace-override";
+        } else if (platformOverride) {
+          currentValue = def.secret ? maskSecret(platformOverride.value) : platformOverride.value;
+          source = "override";
+        } else if (envVal !== undefined) {
+          currentValue = def.secret ? maskSecret(envVal) : envVal;
+          source = "env";
+        } else {
+          currentValue = def.default;
+          source = "default";
+        }
+      } else {
+        // Standard 3-tier for platform-scoped settings
+        const override = _cache.get(cacheKey(def.key));
+        const envVal = process.env[def.envVar];
+
+        if (override) {
+          currentValue = def.secret ? maskSecret(override.value) : override.value;
+          source = "override";
+        } else if (envVal !== undefined) {
+          currentValue = def.secret ? maskSecret(envVal) : envVal;
+          source = "env";
+        } else {
+          currentValue = def.default;
+          source = "default";
+        }
+      }
+
+      return { ...def, currentValue, source };
+    });
 }
 
 /** Returns the settings registry definitions (no values). */
 export function getSettingsRegistry(): readonly SettingDefinition[] {
   return SETTINGS_REGISTRY;
+}
+
+/** Look up a setting definition by key. */
+export function getSettingDefinition(key: string): SettingDefinition | undefined {
+  return SETTINGS_MAP.get(key);
 }

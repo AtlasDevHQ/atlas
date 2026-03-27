@@ -28,7 +28,7 @@ import type { ConfigSchemaField } from "@atlas/api/lib/plugins/registry";
 import { savePluginEnabled, savePluginConfig, getPluginConfig } from "@atlas/api/lib/plugins/settings";
 import {
   getSettingsForAdmin,
-  getSettingsRegistry,
+  getSettingDefinition,
   setSetting,
   deleteSetting,
 } from "@atlas/api/lib/settings";
@@ -4393,12 +4393,14 @@ admin.openapi(getTokenTrendsRoute, async (c) => runHandler(c, "fetch token usage
 
 // -- Settings ---------------------------------------------------------------
 
-admin.openapi(getSettingsRoute, async (c) => {
-  await adminAuthAndContext(c);
-  const settings = getSettingsForAdmin();
+admin.openapi(getSettingsRoute, async (c) => runHandler(c, "list settings", async () => {
+  const { authResult } = await adminAuthAndContext(c);
+  const orgId = authResult.user?.activeOrganizationId;
+  const isPlatformAdmin = authResult.user?.role === "platform_admin";
+  const settings = getSettingsForAdmin(orgId, isPlatformAdmin || !orgId);
   const manageable = hasInternalDB();
   return c.json({ settings, manageable }, 200);
-});
+}));
 
 admin.openapi(updateSettingRoute, async (c) => runHandler(c, "save setting", async () => {
 
@@ -4414,8 +4416,7 @@ admin.openapi(updateSettingRoute, async (c) => runHandler(c, "save setting", asy
   }
 
   // Validate that the key is in the registry
-  const registry = getSettingsRegistry();
-  const def = registry.find((s) => s.key === key);
+  const def = getSettingDefinition(key);
   if (!def) {
     return c.json({ error: "invalid_request", message: `Unknown setting: "${key}".` }, 400);
   }
@@ -4423,6 +4424,13 @@ admin.openapi(updateSettingRoute, async (c) => runHandler(c, "save setting", asy
   // Secret settings are read-only
   if (def.secret) {
     return c.json({ error: "forbidden", message: "Secret settings cannot be modified from the UI." , requestId}, 403);
+  }
+
+  // Platform-scoped settings require platform_admin (or no org context = self-hosted)
+  const orgId = authResult.user?.activeOrganizationId;
+  const isPlatformAdmin = authResult.user?.role === "platform_admin";
+  if (def.scope === "platform" && orgId && !isPlatformAdmin) {
+    return c.json({ error: "forbidden", message: `"${key}" is a platform-level setting and cannot be modified by workspace admins.`, requestId }, 403);
   }
 
   let body: { value?: unknown };
@@ -4460,8 +4468,10 @@ admin.openapi(updateSettingRoute, async (c) => runHandler(c, "save setting", asy
     }
   }
 
-  await setSetting(key, value, authResult.user?.id);
-  log.info({ requestId, key, actorId: authResult.user?.id }, "Setting override saved via admin API");
+  // Pass orgId for workspace-scoped settings
+  const effectiveOrgId = def.scope === "workspace" ? orgId : undefined;
+  await setSetting(key, value, authResult.user?.id, effectiveOrgId);
+  log.info({ requestId, key, orgId: effectiveOrgId, actorId: authResult.user?.id }, "Setting override saved via admin API");
   return c.json({ success: true, key, value }, 200);
 }));
 
@@ -4479,8 +4489,7 @@ admin.openapi(deleteSettingRoute, async (c) => runHandler(c, "delete setting", a
   }
 
   // Validate that the key is in the registry
-  const registry = getSettingsRegistry();
-  const def = registry.find((s) => s.key === key);
+  const def = getSettingDefinition(key);
   if (!def) {
     return c.json({ error: "invalid_request", message: `Unknown setting: "${key}".` }, 400);
   }
@@ -4489,8 +4498,16 @@ admin.openapi(deleteSettingRoute, async (c) => runHandler(c, "delete setting", a
     return c.json({ error: "forbidden", message: "Secret settings cannot be modified from the UI." , requestId}, 403);
   }
 
-  await deleteSetting(key, authResult.user?.id);
-  log.info({ requestId, key, actorId: authResult.user?.id }, "Setting override removed via admin API");
+  // Platform-scoped settings require platform_admin (or no org context = self-hosted)
+  const orgId = authResult.user?.activeOrganizationId;
+  const isPlatformAdmin = authResult.user?.role === "platform_admin";
+  if (def.scope === "platform" && orgId && !isPlatformAdmin) {
+    return c.json({ error: "forbidden", message: `"${key}" is a platform-level setting and cannot be modified by workspace admins.`, requestId }, 403);
+  }
+
+  const effectiveOrgId = def.scope === "workspace" ? orgId : undefined;
+  await deleteSetting(key, authResult.user?.id, effectiveOrgId);
+  log.info({ requestId, key, orgId: effectiveOrgId, actorId: authResult.user?.id }, "Setting override removed via admin API");
   return c.json({ success: true, key }, 200);
 }));
 

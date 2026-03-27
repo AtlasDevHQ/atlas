@@ -354,7 +354,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postChat"
       }
     },
     "/api/health": {
@@ -1244,7 +1245,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getHealth"
       }
     },
     "/api/v1/query": {
@@ -1591,7 +1593,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postQuery"
       }
     },
     "/api/v1/conversations": {
@@ -1711,6 +1714,20 @@
                                       "type": "boolean"
                                     }
                                   }
+                                }
+                              },
+                              "textCells": {
+                                "type": "object",
+                                "additionalProperties": {
+                                  "type": "object",
+                                  "properties": {
+                                    "content": {
+                                      "type": "string"
+                                    }
+                                  },
+                                  "required": [
+                                    "content"
+                                  ]
                                 }
                               },
                               "branches": {
@@ -1859,7 +1876,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getConversations"
       }
     },
     "/api/v1/conversations/{id}": {
@@ -1956,6 +1974,20 @@
                                 "type": "boolean"
                               }
                             }
+                          }
+                        },
+                        "textCells": {
+                          "type": "object",
+                          "additionalProperties": {
+                            "type": "object",
+                            "properties": {
+                              "content": {
+                                "type": "string"
+                              }
+                            },
+                            "required": [
+                              "content"
+                            ]
                           }
                         },
                         "branches": {
@@ -2155,7 +2187,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getConversationsById"
       },
       "delete": {
         "tags": [
@@ -2286,7 +2319,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "deleteConversationsById"
       }
     },
     "/api/v1/conversations/{id}/star": {
@@ -2456,7 +2490,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "patchConversationsByIdStar"
       }
     },
     "/api/v1/conversations/{id}/notebook-state": {
@@ -2504,6 +2539,20 @@
                           "type": "boolean"
                         }
                       }
+                    }
+                  },
+                  "textCells": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "object",
+                      "properties": {
+                        "content": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "content"
+                      ]
                     }
                   },
                   "branches": {
@@ -2678,7 +2727,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "patchConversationsByIdNotebookState"
       }
     },
     "/api/v1/conversations/{id}/fork": {
@@ -2840,7 +2890,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postConversationsByIdFork"
       }
     },
     "/api/v1/conversations/{id}/share": {
@@ -2981,7 +3032,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getConversationsByIdShare"
       },
       "post": {
         "tags": [
@@ -3120,7 +3172,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postConversationsByIdShare"
       },
       "delete": {
         "tags": [
@@ -3251,7 +3304,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "deleteConversationsByIdShare"
       }
     },
     "/api/public/conversations/{token}": {
@@ -3409,7 +3463,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getPublicConversationsByToken"
       }
     },
     "/api/v1/semantic/entities": {
@@ -3529,7 +3584,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getSemanticEntities"
       }
     },
     "/api/v1/semantic/entities/{name}": {
@@ -3686,7 +3742,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getSemanticEntitiesByName"
       }
     },
     "/api/v1/tables": {
@@ -3783,7 +3840,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getTables"
       }
     },
     "/api/v1/validate-sql": {
@@ -3929,7 +3987,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postValidateSql"
       }
     },
     "/api/v1/prompts": {
@@ -4020,7 +4079,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getPrompts"
       }
     },
     "/api/v1/prompts/{id}": {
@@ -4152,7 +4212,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getPromptsById"
       }
     },
     "/api/v1/branding": {
@@ -4245,7 +4306,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getBranding"
       }
     },
     "/api/v1/onboarding-emails/unsubscribe": {
@@ -4303,7 +4365,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getOnboardingEmailsUnsubscribe"
       }
     },
     "/api/v1/onboarding-emails/resubscribe": {
@@ -4400,7 +4463,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postOnboardingEmailsResubscribe"
       }
     },
     "/api/v1/onboarding/social-providers": {
@@ -4432,7 +4496,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getOnboardingSocialProviders"
       }
     },
     "/api/v1/onboarding/test-connection": {
@@ -4618,7 +4683,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postOnboardingTestConnection"
       }
     },
     "/api/v1/onboarding/complete": {
@@ -4828,7 +4894,196 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postOnboardingComplete"
+      }
+    },
+    "/api/v1/onboarding/use-demo": {
+      "post": {
+        "tags": [
+          "Onboarding"
+        ],
+        "summary": "Set up workspace with demo data",
+        "description": "Connects the workspace to the platform's default datasource (ATLAS_DATASOURCE_URL) and imports the semantic layer for the chosen demo dataset. Three datasets are available: 'demo' (SaaS CRM, 3 tables), 'cybersec' (Sentinel Security, 62 tables), 'ecommerce' (NovaMart, 52 tables). Defaults to 'demo' if not specified.",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "demoType": {
+                    "type": "string",
+                    "enum": [
+                      "demo",
+                      "cybersec",
+                      "ecommerce"
+                    ],
+                    "default": "demo"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Demo connection saved, semantic layer imported",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "connectionId": {
+                      "type": "string"
+                    },
+                    "dbType": {
+                      "type": "string"
+                    },
+                    "maskedUrl": {
+                      "type": "string"
+                    },
+                    "entitiesImported": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "connectionId",
+                    "dbType",
+                    "maskedUrl",
+                    "entitiesImported"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No active organization or demo datasource not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Onboarding requires managed auth mode and DATABASE_URL",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Connection ID already in use by another organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid request body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Failed to set up demo connection",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postOnboardingUseDemo"
       }
     },
     "/api/v1/onboarding/tour-status": {
@@ -4925,7 +5180,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getOnboardingTourStatus"
       }
     },
     "/api/v1/onboarding/tour-complete": {
@@ -5022,7 +5278,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postOnboardingTourComplete"
       }
     },
     "/api/v1/onboarding/tour-reset": {
@@ -5119,7 +5376,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postOnboardingTourReset"
       }
     },
     "/api/v1/wizard/profile": {
@@ -5290,7 +5548,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postWizardProfile"
       }
     },
     "/api/v1/wizard/generate": {
@@ -5667,7 +5926,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postWizardGenerate"
       }
     },
     "/api/v1/wizard/preview": {
@@ -5810,7 +6070,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postWizardPreview"
       }
     },
     "/api/v1/wizard/save": {
@@ -6217,7 +6478,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postWizardSave"
       }
     },
     "/api/v1/suggestions": {
@@ -6343,7 +6605,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getSuggestions"
       }
     },
     "/api/v1/suggestions/popular": {
@@ -6451,7 +6714,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getSuggestionsPopular"
       }
     },
     "/api/v1/suggestions/{id}/click": {
@@ -6509,7 +6773,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postSuggestionsByIdClick"
       }
     },
     "/api/v1/demo/start": {
@@ -6613,7 +6878,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postDemoStart"
       }
     },
     "/api/v1/demo/chat": {
@@ -6803,7 +7069,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postDemoChat"
       }
     },
     "/api/v1/demo/conversations": {
@@ -6869,7 +7136,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getDemoConversations"
       }
     },
     "/api/v1/demo/conversations/{id}": {
@@ -6937,7 +7205,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getDemoConversationsById"
       }
     },
     "/api/v1/actions": {
@@ -7077,7 +7346,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getActions"
       }
     },
     "/api/v1/actions/{id}": {
@@ -7218,7 +7488,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getActionsById"
       }
     },
     "/api/v1/actions/{id}/approve": {
@@ -7398,7 +7669,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postActionsByIdApprove"
       }
     },
     "/api/v1/actions/{id}/deny": {
@@ -7593,7 +7865,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postActionsByIdDeny"
       }
     },
     "/api/v1/actions/{id}/rollback": {
@@ -7773,7 +8046,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postActionsByIdRollback"
       }
     },
     "/api/v1/scheduled-tasks/tick": {
@@ -7870,7 +8144,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postScheduledTasksTick"
       }
     },
     "/api/v1/scheduled-tasks": {
@@ -8007,7 +8282,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getScheduledTasks"
       },
       "post": {
         "tags": [
@@ -8293,7 +8569,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postScheduledTasks"
       }
     },
     "/api/v1/scheduled-tasks/runs": {
@@ -8460,7 +8737,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getScheduledTasksRuns"
       }
     },
     "/api/v1/scheduled-tasks/{id}": {
@@ -8601,7 +8879,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getScheduledTasksById"
       },
       "put": {
         "tags": [
@@ -8893,7 +9172,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "putScheduledTasksById"
       },
       "delete": {
         "tags": [
@@ -9024,7 +9304,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "deleteScheduledTasksById"
       }
     },
     "/api/v1/scheduled-tasks/{id}/run": {
@@ -9176,7 +9457,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postScheduledTasksByIdRun"
       }
     },
     "/api/v1/scheduled-tasks/{id}/preview": {
@@ -9317,7 +9599,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postScheduledTasksByIdPreview"
       }
     },
     "/api/v1/scheduled-tasks/{id}/runs": {
@@ -9479,7 +9762,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getScheduledTasksByIdRuns"
       }
     },
     "/api/v1/sessions": {
@@ -9628,7 +9912,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getSessions"
       }
     },
     "/api/v1/sessions/{id}": {
@@ -9765,7 +10050,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "deleteSessionsById"
       }
     },
     "/api/v1/admin/organizations": {
@@ -9945,7 +10231,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminOrganizations"
       }
     },
     "/api/v1/admin/organizations/{id}": {
@@ -10249,7 +10536,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminOrganizationsById"
       },
       "delete": {
         "tags": [
@@ -10424,7 +10712,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "deleteAdminOrganizationsById"
       }
     },
     "/api/v1/admin/organizations/{id}/stats": {
@@ -10582,7 +10871,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminOrganizationsByIdStats"
       }
     },
     "/api/v1/admin/organizations/{id}/suspend": {
@@ -10755,7 +11045,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "patchAdminOrganizationsByIdSuspend"
       }
     },
     "/api/v1/admin/organizations/{id}/activate": {
@@ -10928,7 +11219,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "patchAdminOrganizationsByIdActivate"
       }
     },
     "/api/v1/admin/organizations/{id}/status": {
@@ -11126,7 +11418,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminOrganizationsByIdStatus"
       }
     },
     "/api/v1/admin/organizations/{id}/plan": {
@@ -11317,7 +11610,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "patchAdminOrganizationsByIdPlan"
       }
     },
     "/api/v1/admin/learned-patterns": {
@@ -11498,7 +11792,8 @@
                       }
                     },
                     "total": {
-                      "type": "number"
+                      "type": "number",
+                      "description": "Total count"
                     },
                     "limit": {
                       "type": "number"
@@ -11625,7 +11920,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminLearnedPatterns"
       }
     },
     "/api/v1/admin/learned-patterns/{id}": {
@@ -11639,6 +11935,8 @@
           {
             "schema": {
               "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
               "example": "abc123"
             },
             "required": true,
@@ -11834,7 +12132,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminLearnedPatternsById"
       },
       "patch": {
         "tags": [
@@ -11846,6 +12145,8 @@
           {
             "schema": {
               "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
               "example": "abc123"
             },
             "required": true,
@@ -12090,7 +12391,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "patchAdminLearnedPatternsById"
       },
       "delete": {
         "tags": [
@@ -12102,6 +12404,8 @@
           {
             "schema": {
               "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
               "example": "abc123"
             },
             "required": true,
@@ -12211,7 +12515,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "deleteAdminLearnedPatternsById"
       }
     },
     "/api/v1/admin/learned-patterns/bulk": {
@@ -12406,7 +12711,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postAdminLearnedPatternsBulk"
       }
     },
     "/api/v1/admin/prompts": {
@@ -12474,7 +12780,8 @@
                       }
                     },
                     "total": {
-                      "type": "number"
+                      "type": "number",
+                      "description": "Total count"
                     }
                   },
                   "required": [
@@ -12568,7 +12875,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminPrompts"
       },
       "post": {
         "tags": [
@@ -12762,7 +13070,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postAdminPrompts"
       }
     },
     "/api/v1/admin/prompts/{id}": {
@@ -12776,6 +13085,8 @@
           {
             "schema": {
               "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
               "example": "abc123"
             },
             "required": true,
@@ -12790,16 +13101,13 @@
                 "type": "object",
                 "properties": {
                   "name": {
-                    "type": "string",
-                    "description": "New collection name"
+                    "type": "string"
                   },
                   "industry": {
-                    "type": "string",
-                    "description": "New industry category"
+                    "type": "string"
                   },
                   "description": {
-                    "type": "string",
-                    "description": "New description"
+                    "type": "string"
                   }
                 }
               }
@@ -12968,7 +13276,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "patchAdminPromptsById"
       },
       "delete": {
         "tags": [
@@ -12980,6 +13289,8 @@
           {
             "schema": {
               "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
               "example": "abc123"
             },
             "required": true,
@@ -13089,7 +13400,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "deleteAdminPromptsById"
       }
     },
     "/api/v1/admin/prompts/{id}/items": {
@@ -13103,11 +13415,11 @@
           {
             "schema": {
               "type": "string",
-              "description": "Collection ID",
+              "minLength": 1,
+              "maxLength": 128,
               "example": "abc123"
             },
             "required": true,
-            "description": "Collection ID",
             "name": "id",
             "in": "path"
           }
@@ -13303,7 +13615,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postAdminPromptsByIdItems"
       }
     },
     "/api/v1/admin/prompts/{collectionId}/items/{itemId}": {
@@ -13317,6 +13630,8 @@
           {
             "schema": {
               "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
               "example": "abc123"
             },
             "required": true,
@@ -13326,6 +13641,8 @@
           {
             "schema": {
               "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
               "example": "def456"
             },
             "required": true,
@@ -13340,16 +13657,13 @@
                 "type": "object",
                 "properties": {
                   "question": {
-                    "type": "string",
-                    "description": "New question text"
+                    "type": "string"
                   },
                   "description": {
-                    "type": "string",
-                    "description": "New description"
+                    "type": "string"
                   },
                   "category": {
-                    "type": "string",
-                    "description": "New category"
+                    "type": "string"
                   }
                 }
               }
@@ -13517,7 +13831,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "patchAdminPromptsByCollectionIdItemsByItemId"
       },
       "delete": {
         "tags": [
@@ -13529,6 +13844,8 @@
           {
             "schema": {
               "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
               "example": "abc123"
             },
             "required": true,
@@ -13538,6 +13855,8 @@
           {
             "schema": {
               "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
               "example": "def456"
             },
             "required": true,
@@ -13647,7 +13966,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "deleteAdminPromptsByCollectionIdItemsByItemId"
       }
     },
     "/api/v1/admin/prompts/{id}/reorder": {
@@ -13661,11 +13981,11 @@
           {
             "schema": {
               "type": "string",
-              "description": "Collection ID",
+              "minLength": 1,
+              "maxLength": 128,
               "example": "abc123"
             },
             "required": true,
-            "description": "Collection ID",
             "name": "id",
             "in": "path"
           }
@@ -13818,7 +14138,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "putAdminPromptsByIdReorder"
       }
     },
     "/api/v1/admin/suggestions": {
@@ -13950,7 +14271,8 @@
                       }
                     },
                     "total": {
-                      "type": "number"
+                      "type": "number",
+                      "description": "Total count"
                     },
                     "limit": {
                       "type": "number"
@@ -14052,7 +14374,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminSuggestions"
       }
     },
     "/api/v1/admin/suggestions/{id}": {
@@ -14066,6 +14389,8 @@
           {
             "schema": {
               "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
               "example": "abc123"
             },
             "required": true,
@@ -14160,7 +14485,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "deleteAdminSuggestionsById"
       }
     },
     "/api/v1/admin/usage": {
@@ -14317,7 +14643,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminUsage"
       }
     },
     "/api/v1/admin/usage/summary": {
@@ -14620,7 +14947,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminUsageSummary"
       }
     },
     "/api/v1/admin/usage/history": {
@@ -14813,7 +15141,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminUsageHistory"
       }
     },
     "/api/v1/admin/usage/breakdown": {
@@ -14977,7 +15306,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminUsageBreakdown"
       }
     },
     "/api/v1/admin/sso/providers": {
@@ -15166,7 +15496,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminSsoProviders"
       },
       "post": {
         "tags": [
@@ -15414,7 +15745,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postAdminSsoProviders"
       }
     },
     "/api/v1/admin/sso/providers/{id}": {
@@ -15614,7 +15946,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminSsoProvidersById"
       },
       "patch": {
         "tags": [
@@ -15862,7 +16195,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "patchAdminSsoProvidersById"
       },
       "delete": {
         "tags": [
@@ -16010,7 +16344,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "deleteAdminSsoProvidersById"
       }
     },
     "/api/v1/admin/sso/enforcement": {
@@ -16151,7 +16486,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminSsoEnforcement"
       },
       "put": {
         "tags": [
@@ -16308,7 +16644,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "putAdminSsoEnforcement"
       }
     },
     "/api/v1/admin/scim": {
@@ -16342,16 +16679,12 @@
                               "string",
                               "null"
                             ]
-                          },
-                          "createdAt": {
-                            "type": "string"
                           }
                         },
                         "required": [
                           "id",
                           "providerId",
-                          "organizationId",
-                          "createdAt"
+                          "organizationId"
                         ]
                       }
                     },
@@ -16485,7 +16818,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminScim"
       }
     },
     "/api/v1/admin/scim/connections/{id}": {
@@ -16624,7 +16958,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "deleteAdminScimConnectionsById"
       }
     },
     "/api/v1/admin/scim/group-mappings": {
@@ -16781,7 +17116,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminScimGroupMappings"
       },
       "post": {
         "tags": [
@@ -16981,7 +17317,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postAdminScimGroupMappings"
       }
     },
     "/api/v1/admin/scim/group-mappings/{id}": {
@@ -17120,7 +17457,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "deleteAdminScimGroupMappingsById"
       }
     },
     "/api/v1/admin/ip-allowlist": {
@@ -17305,7 +17643,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminIpAllowlist"
       },
       "post": {
         "tags": [
@@ -17525,7 +17864,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postAdminIpAllowlist"
       }
     },
     "/api/v1/admin/ip-allowlist/{id}": {
@@ -17675,7 +18015,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "deleteAdminIpAllowlistById"
       }
     },
     "/api/v1/admin/roles": {
@@ -17865,7 +18206,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminRoles"
       },
       "post": {
         "tags": [
@@ -18094,7 +18436,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postAdminRoles"
       }
     },
     "/api/v1/admin/roles/{id}": {
@@ -18318,7 +18661,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "putAdminRolesById"
       },
       "delete": {
         "tags": [
@@ -18480,7 +18824,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "deleteAdminRolesById"
       }
     },
     "/api/v1/admin/roles/{id}/members": {
@@ -18653,7 +18998,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminRolesByIdMembers"
       }
     },
     "/api/v1/admin/roles/users/{userId}/role": {
@@ -18827,7 +19173,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "putAdminRolesUsersByUserIdRole"
       }
     },
     "/api/v1/admin/audit/retention": {
@@ -19011,7 +19358,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminAuditRetention"
       },
       "put": {
         "tags": [
@@ -19218,7 +19566,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "putAdminAuditRetention"
       }
     },
     "/api/v1/admin/audit/retention/export": {
@@ -19387,7 +19736,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postAdminAuditRetentionExport"
       }
     },
     "/api/v1/admin/audit/retention/purge": {
@@ -19539,7 +19889,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postAdminAuditRetentionPurge"
       }
     },
     "/api/v1/admin/audit/retention/hard-delete": {
@@ -19651,7 +20002,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postAdminAuditRetentionHardDelete"
       }
     },
     "/api/v1/admin/model-config": {
@@ -19836,7 +20188,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminModelConfig"
       },
       "put": {
         "tags": [
@@ -20060,7 +20413,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "putAdminModelConfig"
       },
       "delete": {
         "tags": [
@@ -20195,7 +20549,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "deleteAdminModelConfig"
       }
     },
     "/api/v1/admin/model-config/test": {
@@ -20351,7 +20706,187 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postAdminModelConfigTest"
+      }
+    },
+    "/api/v1/admin/approval/expire": {
+      "post": {
+        "tags": [
+          "Admin — Approval Workflows"
+        ],
+        "summary": "Expire stale requests",
+        "description": "Manually expire all pending approval requests past their expiry time.",
+        "responses": {
+          "200": {
+            "description": "Expiry result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "expired": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "expired"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postAdminApprovalExpire"
+      }
+    },
+    "/api/v1/admin/approval/pending-count": {
+      "get": {
+        "tags": [
+          "Admin — Approval Workflows"
+        ],
+        "summary": "Get pending approval count",
+        "description": "Returns the count of pending (non-expired) approval requests for the organization.",
+        "responses": {
+          "200": {
+            "description": "Pending count",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "count": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "count"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getAdminApprovalPendingCount"
       }
     },
     "/api/v1/admin/approval/rules": {
@@ -20528,7 +21063,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminApprovalRules"
       },
       "post": {
         "tags": [
@@ -20751,7 +21287,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postAdminApprovalRules"
       }
     },
     "/api/v1/admin/approval/rules/:id": {
@@ -20953,7 +21490,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "putAdminApprovalRulesById"
       },
       "delete": {
         "tags": [
@@ -21077,7 +21615,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "deleteAdminApprovalRulesById"
       }
     },
     "/api/v1/admin/approval/queue": {
@@ -21312,7 +21851,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminApprovalQueue"
       }
     },
     "/api/v1/admin/approval/queue/:id": {
@@ -21544,7 +22084,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminApprovalQueueById"
       },
       "post": {
         "tags": [
@@ -21853,184 +22394,8 @@
               }
             }
           }
-        }
-      }
-    },
-    "/api/v1/admin/approval/expire": {
-      "post": {
-        "tags": [
-          "Admin — Approval Workflows"
-        ],
-        "summary": "Expire stale requests",
-        "description": "Manually expire all pending approval requests past their expiry time.",
-        "responses": {
-          "200": {
-            "description": "Expiry result",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "expired": {
-                      "type": "number"
-                    }
-                  },
-                  "required": [
-                    "expired"
-                  ]
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Authentication required",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "additionalProperties": {}
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Forbidden",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "additionalProperties": {}
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "requestId": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error",
-                    "message"
-                  ]
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/v1/admin/approval/pending-count": {
-      "get": {
-        "tags": [
-          "Admin — Approval Workflows"
-        ],
-        "summary": "Get pending approval count",
-        "description": "Returns the count of pending (non-expired) approval requests for the organization.",
-        "responses": {
-          "200": {
-            "description": "Pending count",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "count": {
-                      "type": "number"
-                    }
-                  },
-                  "required": [
-                    "count"
-                  ]
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "No active organization",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "requestId": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error",
-                    "message"
-                  ]
-                }
-              }
-            }
-          },
-          "401": {
-            "description": "Authentication required",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "additionalProperties": {}
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Forbidden",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "additionalProperties": {}
-                }
-              }
-            }
-          },
-          "500": {
-            "description": "Internal server error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "requestId": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error",
-                    "message"
-                  ]
-                }
-              }
-            }
-          }
-        }
+        },
+        "operationId": "postAdminApprovalQueueById"
       }
     },
     "/api/v1/admin/compliance/classifications": {
@@ -22222,7 +22587,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminComplianceClassifications"
       }
     },
     "/api/v1/admin/compliance/classifications/:id": {
@@ -22450,7 +22816,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "putAdminComplianceClassificationsById"
       },
       "delete": {
         "tags": [
@@ -22573,7 +22940,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "deleteAdminComplianceClassificationsById"
       }
     },
     "/api/v1/admin/compliance/reports/data-access": {
@@ -22874,7 +23242,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminComplianceReportsDataAccess"
       }
     },
     "/api/v1/admin/compliance/reports/user-activity": {
@@ -23169,7 +23538,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminComplianceReportsUserActivity"
       }
     },
     "/api/v1/admin/branding": {
@@ -23361,7 +23731,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminBranding"
       },
       "put": {
         "tags": [
@@ -23597,7 +23968,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "putAdminBranding"
       },
       "delete": {
         "tags": [
@@ -23732,7 +24104,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "deleteAdminBranding"
       }
     },
     "/api/v1/admin/onboarding-emails": {
@@ -23907,7 +24280,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminOnboardingEmails"
       }
     },
     "/api/v1/admin/onboarding-emails/sequence": {
@@ -24017,7 +24391,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminOnboardingEmailsSequence"
       }
     },
     "/api/v1/admin/abuse": {
@@ -24148,7 +24523,8 @@
                       }
                     },
                     "total": {
-                      "type": "number"
+                      "type": "number",
+                      "description": "Total count"
                     }
                   },
                   "required": [
@@ -24217,7 +24593,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminAbuse"
       }
     },
     "/api/v1/admin/abuse/:workspaceId/reinstate": {
@@ -24347,7 +24724,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postAdminAbuseByWorkspaceIdReinstate"
       }
     },
     "/api/v1/admin/abuse/config": {
@@ -24450,7 +24828,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminAbuseConfig"
       }
     },
     "/api/v1/admin/overview": {
@@ -24530,7 +24909,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminOverview"
       }
     },
     "/api/v1/admin/semantic/entities": {
@@ -24610,7 +24990,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminSemanticEntities"
       }
     },
     "/api/v1/admin/semantic/entities/{name}": {
@@ -24768,7 +25149,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminSemanticEntitiesByName"
       }
     },
     "/api/v1/admin/semantic/metrics": {
@@ -24856,7 +25238,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminSemanticMetrics"
       }
     },
     "/api/v1/admin/semantic/glossary": {
@@ -24944,7 +25327,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminSemanticGlossary"
       }
     },
     "/api/v1/admin/semantic/catalog": {
@@ -25026,7 +25410,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminSemanticCatalog"
       }
     },
     "/api/v1/admin/semantic/raw/{dir}/{file}": {
@@ -25191,7 +25576,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminSemanticRawByDirByFile"
       }
     },
     "/api/v1/admin/semantic/raw/{file}": {
@@ -25346,7 +25732,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminSemanticRawByFile"
       }
     },
     "/api/v1/admin/semantic/stats": {
@@ -25426,7 +25813,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminSemanticStats"
       }
     },
     "/api/v1/admin/semantic/diff": {
@@ -25531,7 +25919,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminSemanticDiff"
       }
     },
     "/api/v1/admin/semantic/org/entities": {
@@ -25661,7 +26050,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminSemanticOrgEntities"
       }
     },
     "/api/v1/admin/semantic/org/entities/{name}": {
@@ -25828,7 +26218,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminSemanticOrgEntitiesByName"
       },
       "put": {
         "tags": [
@@ -26006,7 +26397,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "putAdminSemanticOrgEntitiesByName"
       },
       "delete": {
         "tags": [
@@ -26186,7 +26578,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "deleteAdminSemanticOrgEntitiesByName"
       }
     },
     "/api/v1/admin/semantic/org/import": {
@@ -26316,7 +26709,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postAdminSemanticOrgImport"
       }
     },
     "/api/v1/admin/connections": {
@@ -26404,7 +26798,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminConnections"
       },
       "post": {
         "tags": [
@@ -26557,7 +26952,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postAdminConnections"
       }
     },
     "/api/v1/admin/connections/pool": {
@@ -26639,7 +27035,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminConnectionsPool"
       }
     },
     "/api/v1/admin/connections/pool/orgs": {
@@ -26719,7 +27116,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminConnectionsPoolOrgs"
       }
     },
     "/api/v1/admin/connections/pool/orgs/{orgId}/drain": {
@@ -26811,7 +27209,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postAdminConnectionsPoolOrgsByOrgIdDrain"
       }
     },
     "/api/v1/admin/connections/{id}/drain": {
@@ -26961,7 +27360,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postAdminConnectionsByIdDrain"
       }
     },
     "/api/v1/admin/cache/stats": {
@@ -27041,7 +27441,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminCacheStats"
       }
     },
     "/api/v1/admin/cache/flush": {
@@ -27136,7 +27537,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postAdminCacheFlush"
       }
     },
     "/api/v1/admin/connections/test": {
@@ -27241,7 +27643,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postAdminConnectionsTest"
       }
     },
     "/api/v1/admin/connections/{id}/test": {
@@ -27358,7 +27761,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postAdminConnectionsByIdTest"
       }
     },
     "/api/v1/admin/connections/{id}": {
@@ -27514,7 +27918,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "putAdminConnectionsById"
       },
       "delete": {
         "tags": [
@@ -27675,7 +28080,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "deleteAdminConnectionsById"
       },
       "get": {
         "tags": [
@@ -27790,7 +28196,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminConnectionsById"
       }
     },
     "/api/v1/admin/audit": {
@@ -27920,7 +28327,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminAudit"
       }
     },
     "/api/v1/admin/audit/export": {
@@ -28049,7 +28457,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminAuditExport"
       }
     },
     "/api/v1/admin/audit/stats": {
@@ -28154,7 +28563,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminAuditStats"
       }
     },
     "/api/v1/admin/audit/facets": {
@@ -28276,7 +28686,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminAuditFacets"
       }
     },
     "/api/v1/admin/audit/analytics/volume": {
@@ -28406,7 +28817,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminAuditAnalyticsVolume"
       }
     },
     "/api/v1/admin/audit/analytics/slow": {
@@ -28536,7 +28948,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminAuditAnalyticsSlow"
       }
     },
     "/api/v1/admin/audit/analytics/frequent": {
@@ -28666,7 +29079,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminAuditAnalyticsFrequent"
       }
     },
     "/api/v1/admin/audit/analytics/errors": {
@@ -28796,7 +29210,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminAuditAnalyticsErrors"
       }
     },
     "/api/v1/admin/audit/analytics/users": {
@@ -28926,7 +29341,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminAuditAnalyticsUsers"
       }
     },
     "/api/v1/admin/plugins": {
@@ -29006,7 +29422,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminPlugins"
       }
     },
     "/api/v1/admin/plugins/{id}/health": {
@@ -29151,7 +29568,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postAdminPluginsByIdHealth"
       }
     },
     "/api/v1/admin/plugins/{id}/enable": {
@@ -29293,7 +29711,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postAdminPluginsByIdEnable"
       }
     },
     "/api/v1/admin/plugins/{id}/disable": {
@@ -29435,7 +29854,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postAdminPluginsByIdDisable"
       }
     },
     "/api/v1/admin/plugins/{id}/schema": {
@@ -29552,7 +29972,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminPluginsByIdSchema"
       }
     },
     "/api/v1/admin/plugins/{id}/config": {
@@ -29705,7 +30126,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "putAdminPluginsByIdConfig"
       }
     },
     "/api/v1/admin/me/password-status": {
@@ -29792,7 +30214,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminMePasswordStatus"
       }
     },
     "/api/v1/admin/me/password": {
@@ -29929,7 +30352,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postAdminMePassword"
       }
     },
     "/api/v1/admin/sessions": {
@@ -30034,7 +30458,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminSessions"
       }
     },
     "/api/v1/admin/sessions/stats": {
@@ -30154,7 +30579,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminSessionsStats"
       }
     },
     "/api/v1/admin/sessions/{id}": {
@@ -30278,7 +30704,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "deleteAdminSessionsById"
       }
     },
     "/api/v1/admin/sessions/user/{userId}": {
@@ -30406,7 +30833,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "deleteAdminSessionsUserByUserId"
       }
     },
     "/api/v1/admin/users": {
@@ -30511,7 +30939,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminUsers"
       }
     },
     "/api/v1/admin/users/stats": {
@@ -30616,7 +31045,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminUsersStats"
       }
     },
     "/api/v1/admin/users/{id}/role": {
@@ -30779,7 +31209,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "patchAdminUsersByIdRole"
       }
     },
     "/api/v1/admin/users/{id}/ban": {
@@ -30917,7 +31348,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postAdminUsersByIdBan"
       }
     },
     "/api/v1/admin/users/{id}/unban": {
@@ -31041,7 +31473,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postAdminUsersByIdUnban"
       }
     },
     "/api/v1/admin/users/{id}": {
@@ -31179,7 +31612,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "deleteAdminUsersById"
       }
     },
     "/api/v1/admin/users/{id}/revoke": {
@@ -31303,7 +31737,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postAdminUsersByIdRevoke"
       }
     },
     "/api/v1/admin/users/invite": {
@@ -31458,7 +31893,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postAdminUsersInvite"
       }
     },
     "/api/v1/admin/users/invitations": {
@@ -31571,7 +32007,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminUsersInvitations"
       }
     },
     "/api/v1/admin/users/invitations/{id}": {
@@ -31695,7 +32132,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "deleteAdminUsersInvitationsById"
       }
     },
     "/api/v1/admin/tokens/summary": {
@@ -31825,7 +32263,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminTokensSummary"
       }
     },
     "/api/v1/admin/tokens/by-user": {
@@ -31955,7 +32394,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminTokensByUser"
       }
     },
     "/api/v1/admin/tokens/trends": {
@@ -32085,7 +32525,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminTokensTrends"
       }
     },
     "/api/v1/admin/settings": {
@@ -32165,7 +32606,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getAdminSettings"
       }
     },
     "/api/v1/admin/settings/{key}": {
@@ -32336,7 +32778,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "putAdminSettingsByKey"
       },
       "delete": {
         "tags": [
@@ -32501,7 +32944,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "deleteAdminSettingsByKey"
       }
     },
     "/api/v1/platform/workspaces": {
@@ -32710,7 +33154,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getPlatformWorkspaces"
       }
     },
     "/api/v1/platform/workspaces/:id": {
@@ -32953,7 +33398,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getPlatformWorkspacesById"
       },
       "delete": {
         "tags": [
@@ -33109,7 +33555,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "deletePlatformWorkspacesById"
       }
     },
     "/api/v1/platform/workspaces/:id/suspend": {
@@ -33239,7 +33686,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postPlatformWorkspacesByIdSuspend"
       }
     },
     "/api/v1/platform/workspaces/:id/unsuspend": {
@@ -33369,7 +33817,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postPlatformWorkspacesByIdUnsuspend"
       }
     },
     "/api/v1/platform/workspaces/:id/plan": {
@@ -33529,7 +33978,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "patchPlatformWorkspacesByIdPlan"
       }
     },
     "/api/v1/platform/stats": {
@@ -33650,7 +34100,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getPlatformStats"
       }
     },
     "/api/v1/platform/noisy-neighbors": {
@@ -33817,7 +34268,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getPlatformNoisyNeighbors"
       }
     },
     "/api/v1/platform/sla": {
@@ -33981,7 +34433,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getPlatformSla"
       }
     },
     "/api/v1/platform/sla/:workspaceId": {
@@ -34176,7 +34629,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getPlatformSlaByWorkspaceId"
       }
     },
     "/api/v1/platform/sla/alerts": {
@@ -34350,7 +34804,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getPlatformSlaAlerts"
       }
     },
     "/api/v1/platform/sla/thresholds": {
@@ -34462,7 +34917,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getPlatformSlaThresholds"
       },
       "put": {
         "tags": [
@@ -34613,7 +35069,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "putPlatformSlaThresholds"
       }
     },
     "/api/v1/platform/sla/alerts/:alertId/acknowledge": {
@@ -34743,7 +35200,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postPlatformSlaAlertsByAlertIdAcknowledge"
       }
     },
     "/api/v1/platform/sla/evaluate": {
@@ -34917,7 +35375,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postPlatformSlaEvaluate"
       }
     },
     "/api/v1/platform/backups": {
@@ -35065,7 +35524,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getPlatformBackups"
       },
       "post": {
         "tags": [
@@ -35212,7 +35672,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postPlatformBackups"
       }
     },
     "/api/v1/platform/backups/:id/verify": {
@@ -35342,7 +35803,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postPlatformBackupsByIdVerify"
       }
     },
     "/api/v1/platform/backups/:id/restore": {
@@ -35472,7 +35934,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postPlatformBackupsByIdRestore"
       }
     },
     "/api/v1/platform/backups/:id/restore/confirm": {
@@ -35625,7 +36088,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postPlatformBackupsByIdRestoreConfirm"
       }
     },
     "/api/v1/platform/backups/config": {
@@ -35742,7 +36206,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getPlatformBackupsConfig"
       },
       "put": {
         "tags": [
@@ -35899,7 +36364,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "putPlatformBackupsConfig"
       }
     },
     "/api/v1/platform/residency/regions": {
@@ -36052,7 +36518,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getPlatformResidencyRegions"
       }
     },
     "/api/v1/platform/residency/workspaces/:id/region": {
@@ -36186,7 +36653,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getPlatformResidencyWorkspacesByIdRegion"
       },
       "post": {
         "tags": [
@@ -36389,7 +36857,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postPlatformResidencyWorkspacesByIdRegion"
       }
     },
     "/api/v1/platform/residency/assignments": {
@@ -36534,7 +37003,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getPlatformResidencyAssignments"
       }
     },
     "/api/v1/platform/domains": {
@@ -36726,7 +37196,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getPlatformDomains"
       },
       "post": {
         "tags": [
@@ -36983,7 +37454,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postPlatformDomains"
       }
     },
     "/api/v1/platform/domains/:id/verify": {
@@ -37164,7 +37636,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postPlatformDomainsByIdVerify"
       }
     },
     "/api/v1/platform/domains/:id": {
@@ -37290,7 +37763,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "deletePlatformDomainsById"
       }
     },
     "/api/v1/billing": {
@@ -37420,7 +37894,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getBilling"
       }
     },
     "/api/v1/billing/portal": {
@@ -37572,7 +38047,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postBillingPortal"
       }
     },
     "/api/v1/billing/byot": {
@@ -37745,7 +38221,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postBillingByot"
       }
     },
     "/api/v1/slack/commands": {
@@ -37803,7 +38280,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postSlackCommands"
       }
     },
     "/api/v1/slack/events": {
@@ -37875,7 +38353,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postSlackEvents"
       }
     },
     "/api/v1/slack/interactions": {
@@ -37954,7 +38433,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "postSlackInteractions"
       }
     },
     "/api/v1/slack/install": {
@@ -37993,7 +38473,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getSlackInstall"
       }
     },
     "/api/v1/slack/callback": {
@@ -38096,7 +38577,8 @@
               }
             }
           }
-        }
+        },
+        "operationId": "getSlackCallback"
       }
     },
     "/api/auth/sign-up/email": {
@@ -38641,6 +39123,162 @@
     {
       "name": "Widget",
       "description": "Embeddable chat widget (host page, loader script, assets)"
+    },
+    {
+      "name": "Actions"
+    },
+    {
+      "name": "Admin — Abuse Prevention"
+    },
+    {
+      "name": "Admin — Approval Workflows"
+    },
+    {
+      "name": "Admin — Audit"
+    },
+    {
+      "name": "Admin — Audit Analytics"
+    },
+    {
+      "name": "Admin — Audit Retention"
+    },
+    {
+      "name": "Admin — Branding"
+    },
+    {
+      "name": "Admin — Compliance"
+    },
+    {
+      "name": "Admin — Connections"
+    },
+    {
+      "name": "Admin — IP Allowlist"
+    },
+    {
+      "name": "Admin — Invitations"
+    },
+    {
+      "name": "Admin — Learned Patterns"
+    },
+    {
+      "name": "Admin — Model Config"
+    },
+    {
+      "name": "Admin — Onboarding Emails"
+    },
+    {
+      "name": "Admin — Organizations"
+    },
+    {
+      "name": "Admin — Overview"
+    },
+    {
+      "name": "Admin — Password"
+    },
+    {
+      "name": "Admin — Plugins"
+    },
+    {
+      "name": "Admin — Prompts"
+    },
+    {
+      "name": "Admin — Roles"
+    },
+    {
+      "name": "Admin — SCIM"
+    },
+    {
+      "name": "Admin — SSO"
+    },
+    {
+      "name": "Admin — Semantic"
+    },
+    {
+      "name": "Admin — Sessions"
+    },
+    {
+      "name": "Admin — Settings"
+    },
+    {
+      "name": "Admin — Suggestions"
+    },
+    {
+      "name": "Admin — Tokens"
+    },
+    {
+      "name": "Admin — Usage"
+    },
+    {
+      "name": "Admin — Users"
+    },
+    {
+      "name": "Billing"
+    },
+    {
+      "name": "Branding"
+    },
+    {
+      "name": "Chat"
+    },
+    {
+      "name": "Conversations"
+    },
+    {
+      "name": "Demo"
+    },
+    {
+      "name": "Health"
+    },
+    {
+      "name": "Onboarding"
+    },
+    {
+      "name": "Onboarding Emails"
+    },
+    {
+      "name": "Platform Admin"
+    },
+    {
+      "name": "Platform Admin — Backups"
+    },
+    {
+      "name": "Platform Admin — Custom Domains"
+    },
+    {
+      "name": "Platform Admin — Residency"
+    },
+    {
+      "name": "Platform Admin — SLA"
+    },
+    {
+      "name": "Prompts"
+    },
+    {
+      "name": "Query"
+    },
+    {
+      "name": "Scheduled Tasks"
+    },
+    {
+      "name": "Semantic"
+    },
+    {
+      "name": "Sessions"
+    },
+    {
+      "name": "Slack"
+    },
+    {
+      "name": "Suggestions"
+    },
+    {
+      "name": "Tables"
+    },
+    {
+      "name": "Validate SQL"
+    },
+    {
+      "name": "Wizard"
     }
   ]
 }

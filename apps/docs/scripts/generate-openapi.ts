@@ -27,8 +27,11 @@ if (!fs.existsSync(specPath)) {
 let spec: unknown;
 try {
   spec = JSON.parse(fs.readFileSync(specPath, "utf-8"));
-} catch {
-  console.error("openapi.json is not valid JSON. Re-run extraction.");
+} catch (err) {
+  console.error(
+    "Failed to read or parse openapi.json. Re-run extraction.",
+    err instanceof Error ? err.message : String(err),
+  );
   process.exit(1);
 }
 
@@ -47,6 +50,14 @@ const openapi = createOpenAPI({
   input: ["./openapi.json"],
 });
 
+// Normalize tag names: replace em dashes and special chars with hyphens
+// "Admin — Connections" → "admin-connections" (not "admin-—-connections")
+const slugify = (s: string) =>
+  s
+    .toLowerCase()
+    .replace(/\s*[—–]\s*/g, "-") // em/en dash → hyphen
+    .replace(/\s+/g, "-");
+
 try {
   await generateFiles({
     input: openapi,
@@ -54,11 +65,12 @@ try {
     per: "operation",
     groupBy: "tag",
     includeDescription: true,
+    slugify,
   });
 } catch (err) {
   console.error(
     "Failed to generate API reference docs:",
-    err instanceof Error ? err.message : err,
+    err instanceof Error ? err.message : String(err),
   );
   process.exit(1);
 }
@@ -85,9 +97,8 @@ try {
     .filter((d) => d.isDirectory())
     .map((d) => d.name);
 
-  // Must match fumadocs-openapi's default slugify (s.replace(/\s+/g, "-").toLowerCase())
-  const toSlug = (name: string) =>
-    name.toLowerCase().replace(/\s+/g, "-");
+  // Must match the custom slugify passed to generateFiles above
+  const toSlug = slugify;
 
   // Ordered page list: use spec tag order, then append any extras
   const orderedSlugs = tags.map((t) => toSlug(t.name));
@@ -152,7 +163,7 @@ try {
 } catch (err) {
   console.error(
     "Failed to generate sidebar meta.json files:",
-    err instanceof Error ? err.message : err,
+    err instanceof Error ? err.message : String(err),
   );
   process.exit(1);
 }

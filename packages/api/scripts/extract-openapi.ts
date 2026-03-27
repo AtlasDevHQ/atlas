@@ -62,6 +62,82 @@ if (deduped > 0) {
   console.log(`Removed ${deduped} duplicate trailing-slash path(s)`);
 }
 
+// Auto-generate operationId for operations that lack one.
+// Without operationId, fumadocs-openapi falls back to using the full URL path
+// as the filename (e.g. api/v1/admin/settings/key/put.mdx), creating deeply
+// nested directories that break the sidebar and cause routing errors.
+const HTTP_METHODS = ["get", "post", "put", "patch", "delete"] as const;
+const usedOperationIds = new Set<string>();
+let generated = 0;
+
+function toOperationId(method: string, urlPath: string): string {
+  // Strip /api/v1/ prefix, replace {param} and :param with "by-param"
+  const stripped = urlPath
+    .replace(/^\/api\/v1\//, "")
+    .replace(/^\/api\//, "")
+    .replace(/\{([^}]+)\}/g, "by-$1")
+    .replace(/:([^/]+)/g, "by-$1");
+  const segments = stripped.split("/").filter(Boolean);
+  // camelCase: method + PascalCase segments
+  const pascal = segments
+    .map((s) =>
+      s
+        .split("-")
+        .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+        .join(""),
+    )
+    .join("");
+  return method + pascal;
+}
+
+for (const [urlPath, methods] of Object.entries(paths)) {
+  const pathItem = methods as Record<string, Record<string, unknown>>;
+  for (const method of HTTP_METHODS) {
+    const op = pathItem[method];
+    if (!op) continue;
+    if (op.operationId) {
+      usedOperationIds.add(op.operationId as string);
+      continue;
+    }
+    let id = toOperationId(method, urlPath);
+    // Deduplicate if collision
+    let suffix = 2;
+    const base = id;
+    while (usedOperationIds.has(id)) {
+      id = `${base}${suffix++}`;
+    }
+    op.operationId = id;
+    usedOperationIds.add(id);
+    generated++;
+  }
+}
+if (generated > 0) {
+  console.log(`Auto-generated ${generated} operationId(s)`);
+}
+
+// Ensure all tags used by operations are listed in spec.tags.
+// The static Auth/Widget tags are already there, but Hono-generated routes
+// add tags that aren't in the top-level tags array.
+const existingTags = new Set(
+  ((spec.tags as Array<{ name: string }>) ?? []).map((t) => t.name),
+);
+const usedTags = new Set<string>();
+for (const methods of Object.values(paths)) {
+  const pathItem = methods as Record<string, Record<string, unknown>>;
+  for (const method of HTTP_METHODS) {
+    const op = pathItem[method];
+    if (!op) continue;
+    for (const tag of (op.tags as string[]) ?? []) usedTags.add(tag);
+  }
+}
+const missingTags = [...usedTags].filter((t) => !existingTags.has(t)).sort();
+if (missingTags.length > 0) {
+  const tags = (spec.tags ?? []) as Array<{ name: string }>;
+  for (const name of missingTags) tags.push({ name });
+  spec.tags = tags;
+  console.log(`Added ${missingTags.length} missing tag(s) to spec.tags`);
+}
+
 const outPath = path.resolve(import.meta.dirname, "..", "..", "..", "apps", "docs", "openapi.json");
 try {
   fs.writeFileSync(outPath, JSON.stringify(spec, null, 2) + "\n");

@@ -6,6 +6,7 @@ import { z } from "zod";
 import { usersSearchParams } from "./search-params";
 import type { ColumnDef } from "@tanstack/react-table";
 import { useAtlasConfig } from "@/ui/context";
+import { useUserRole } from "@/ui/hooks/use-platform-admin-guard";
 import { Badge } from "@/components/ui/badge";
 import { DataTable } from "@/components/data-table/data-table";
 import { DataTableToolbar } from "@/components/data-table/data-table-toolbar";
@@ -112,6 +113,8 @@ const inviteSchema = z.object({
 export default function UsersPage() {
   const { apiUrl, isCrossOrigin } = useAtlasConfig();
   const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
+  const userRole = useUserRole();
+  const isPlatformAdmin = userRole === "platform_admin";
 
   const [users, setUsers] = useState<User[]>([]);
   const [total, setTotal] = useState(0);
@@ -425,7 +428,9 @@ export default function UsersPage() {
       <div className="mb-6 flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Users</h1>
-          <p className="text-sm text-muted-foreground">Manage user accounts and roles</p>
+          <p className="text-sm text-muted-foreground">
+            {isPlatformAdmin ? "Manage all user accounts and roles" : "Manage workspace members and roles"}
+          </p>
         </div>
         <Button onClick={() => { resetInviteDialog(); setInviteOpen(true); }}>
           <UserPlus className="mr-1.5 size-4" />

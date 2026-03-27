@@ -92,7 +92,7 @@ interface AvailableBackend {
   description?: string;
 }
 
-function getAvailableBackends(): AvailableBackend[] {
+async function getAvailableBackends(): Promise<AvailableBackend[]> {
   const backends: AvailableBackend[] = [];
 
   // Built-in backends
@@ -114,9 +114,7 @@ function getAvailableBackends(): AvailableBackend[] {
 
   // Plugin backends — discover from registry
   try {
-    // Dynamic import to avoid circular dependency — registry may not be available
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { plugins } = require("@atlas/api/lib/plugins/registry");
+    const { plugins } = await import("@atlas/api/lib/plugins/registry");
     const sandboxPlugins = plugins.getByType("sandbox");
     for (const plugin of sandboxPlugins) {
       backends.push({
@@ -124,11 +122,7 @@ function getAvailableBackends(): AvailableBackend[] {
         name: plugin.name ?? plugin.id,
         type: "plugin",
         available: true,
-        description:
-          "sandbox" in plugin && typeof plugin.sandbox === "object" && plugin.sandbox !== null
-            && "security" in plugin && typeof plugin.security === "object" && plugin.security !== null
-            ? (plugin.security as { description?: string }).description
-            : undefined,
+        description: plugin.name ? `${plugin.name} sandbox plugin` : undefined,
       });
     }
   } catch (err) {
@@ -161,26 +155,23 @@ adminSandbox.openapi(getStatusRoute, async (c) => {
       // Platform default (the backend that would be used without any workspace override)
       const platformDefault = getExploreBackendType();
       const activePluginId = getActiveSandboxPluginId();
+      const allBackends = await getAvailableBackends();
 
       // Resolve the effective active backend
       let activeBackend: string;
       if (workspaceOverride) {
         // Verify the override backend is actually available
-        const available = getAvailableBackends();
-        const found = available.find((b) => b.id === workspaceOverride && b.available);
+        const found = allBackends.find((b) => b.id === workspaceOverride && b.available);
         activeBackend = found ? workspaceOverride : platformDefault;
       } else {
         activeBackend = activePluginId ?? platformDefault;
       }
 
-      // Only include available backends in SaaS mode — exclude dev-only backends
-      const allBackends = getAvailableBackends();
-
       return c.json(
         {
           activeBackend,
           platformDefault: activePluginId ?? platformDefault,
-          workspaceOverride: workspaceOverride !== platformDefault ? workspaceOverride : null,
+          workspaceOverride,
           workspaceSidecarUrl,
           availableBackends: allBackends,
         },

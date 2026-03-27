@@ -104,12 +104,14 @@ export default function SandboxPage() {
                 await saveUrlMutation.mutate({ body: { value: url } });
               }}
               onReset={async () => {
-                await resetMutation.mutate({
-                  path: "/api/v1/admin/settings/ATLAS_SANDBOX_BACKEND",
-                });
-                await resetMutation.mutate({
-                  path: "/api/v1/admin/settings/ATLAS_SANDBOX_URL",
-                });
+                await Promise.all([
+                  resetMutation.mutate({
+                    path: "/api/v1/admin/settings/ATLAS_SANDBOX_BACKEND",
+                  }),
+                  resetMutation.mutate({
+                    path: "/api/v1/admin/settings/ATLAS_SANDBOX_URL",
+                  }),
+                ]);
               }}
               saving={
                 saveMutation.saving ||

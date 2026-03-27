@@ -366,7 +366,7 @@ function BrandColorCard({
           </p>
         )}
 
-        {setting?.source === "override" && (
+        {(setting?.source === "override" || setting?.source === "workspace-override") && (
           <p className="text-xs text-muted-foreground">
             Default: <code className="rounded bg-muted px-1">{DEFAULT_BRAND_COLOR}</code>
           </p>
@@ -388,7 +388,7 @@ function BrandColorCard({
               {saving && <Loader2 className="mr-1 size-3 animate-spin" />}
               Save
             </Button>
-            {setting?.source === "override" && (
+            {(setting?.source === "override" || setting?.source === "workspace-override") && (
               <Button variant="outline" size="sm" onClick={handleReset} disabled={saving}>
                 <RotateCcw className="mr-1 size-3" />
                 Reset to default

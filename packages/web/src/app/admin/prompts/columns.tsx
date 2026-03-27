@@ -11,18 +11,7 @@ import {
   Calendar,
   BookOpen,
 } from "lucide-react";
-
-// -- Helpers ------------------------------------------------------------------
-
-function formatDate(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "\u2014";
-  return d.toLocaleDateString(undefined, {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  });
-}
+import { formatDate } from "@/lib/format";
 
 // -- Badge styles -------------------------------------------------------------
 

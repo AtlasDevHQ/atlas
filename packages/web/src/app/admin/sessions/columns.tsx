@@ -5,6 +5,7 @@ import { DataTableColumnHeader } from "@/components/data-table/data-table-column
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Clock, User, Globe, Monitor, Trash2 } from "lucide-react";
+import { formatShortDateTime } from "@/lib/format";
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -20,17 +21,6 @@ export interface SessionRow {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────
-
-function formatDate(iso: string): string {
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return "—";
-  return d.toLocaleString(undefined, {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
 
 /** Extract a short browser/OS label from a full user-agent string. */
 function shortUA(ua: string | null): string {
@@ -94,7 +84,7 @@ export function getSessionColumns(actions?: SessionActions): ColumnDef<SessionRo
       ),
       cell: ({ row }) => (
         <span className="text-xs text-muted-foreground whitespace-nowrap">
-          {formatDate(row.getValue<string>("createdAt"))}
+          {formatShortDateTime(row.getValue<string>("createdAt"))}
         </span>
       ),
       meta: { label: "Created", icon: Clock },
@@ -108,7 +98,7 @@ export function getSessionColumns(actions?: SessionActions): ColumnDef<SessionRo
       ),
       cell: ({ row }) => (
         <span className="text-xs text-muted-foreground whitespace-nowrap">
-          {formatDate(row.getValue<string>("updatedAt"))}
+          {formatShortDateTime(row.getValue<string>("updatedAt"))}
         </span>
       ),
       meta: { label: "Last Active", icon: Clock },

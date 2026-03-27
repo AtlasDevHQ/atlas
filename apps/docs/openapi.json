@@ -21491,7 +21491,7 @@
             }
           }
         },
-        "operationId": "putAdminApprovalRules:id"
+        "operationId": "putAdminApprovalRulesById"
       },
       "delete": {
         "tags": [
@@ -21616,7 +21616,7 @@
             }
           }
         },
-        "operationId": "deleteAdminApprovalRules:id"
+        "operationId": "deleteAdminApprovalRulesById"
       }
     },
     "/api/v1/admin/approval/queue": {
@@ -22085,7 +22085,7 @@
             }
           }
         },
-        "operationId": "getAdminApprovalQueue:id"
+        "operationId": "getAdminApprovalQueueById"
       },
       "post": {
         "tags": [
@@ -22395,7 +22395,7 @@
             }
           }
         },
-        "operationId": "postAdminApprovalQueue:id"
+        "operationId": "postAdminApprovalQueueById"
       }
     },
     "/api/v1/admin/compliance/classifications": {
@@ -22817,7 +22817,7 @@
             }
           }
         },
-        "operationId": "putAdminComplianceClassifications:id"
+        "operationId": "putAdminComplianceClassificationsById"
       },
       "delete": {
         "tags": [
@@ -22941,7 +22941,7 @@
             }
           }
         },
-        "operationId": "deleteAdminComplianceClassifications:id"
+        "operationId": "deleteAdminComplianceClassificationsById"
       }
     },
     "/api/v1/admin/compliance/reports/data-access": {
@@ -24725,7 +24725,7 @@
             }
           }
         },
-        "operationId": "postAdminAbuse:workspaceIdReinstate"
+        "operationId": "postAdminAbuseByWorkspaceIdReinstate"
       }
     },
     "/api/v1/admin/abuse/config": {
@@ -33399,7 +33399,7 @@
             }
           }
         },
-        "operationId": "getPlatformWorkspaces:id"
+        "operationId": "getPlatformWorkspacesById"
       },
       "delete": {
         "tags": [
@@ -33556,7 +33556,7 @@
             }
           }
         },
-        "operationId": "deletePlatformWorkspaces:id"
+        "operationId": "deletePlatformWorkspacesById"
       }
     },
     "/api/v1/platform/workspaces/:id/suspend": {
@@ -33687,7 +33687,7 @@
             }
           }
         },
-        "operationId": "postPlatformWorkspaces:idSuspend"
+        "operationId": "postPlatformWorkspacesByIdSuspend"
       }
     },
     "/api/v1/platform/workspaces/:id/unsuspend": {
@@ -33818,7 +33818,7 @@
             }
           }
         },
-        "operationId": "postPlatformWorkspaces:idUnsuspend"
+        "operationId": "postPlatformWorkspacesByIdUnsuspend"
       }
     },
     "/api/v1/platform/workspaces/:id/plan": {
@@ -33979,7 +33979,7 @@
             }
           }
         },
-        "operationId": "patchPlatformWorkspaces:idPlan"
+        "operationId": "patchPlatformWorkspacesByIdPlan"
       }
     },
     "/api/v1/platform/stats": {
@@ -34630,7 +34630,7 @@
             }
           }
         },
-        "operationId": "getPlatformSla:workspaceId"
+        "operationId": "getPlatformSlaByWorkspaceId"
       }
     },
     "/api/v1/platform/sla/alerts": {
@@ -35201,7 +35201,7 @@
             }
           }
         },
-        "operationId": "postPlatformSlaAlerts:alertIdAcknowledge"
+        "operationId": "postPlatformSlaAlertsByAlertIdAcknowledge"
       }
     },
     "/api/v1/platform/sla/evaluate": {
@@ -35804,7 +35804,7 @@
             }
           }
         },
-        "operationId": "postPlatformBackups:idVerify"
+        "operationId": "postPlatformBackupsByIdVerify"
       }
     },
     "/api/v1/platform/backups/:id/restore": {
@@ -35935,7 +35935,7 @@
             }
           }
         },
-        "operationId": "postPlatformBackups:idRestore"
+        "operationId": "postPlatformBackupsByIdRestore"
       }
     },
     "/api/v1/platform/backups/:id/restore/confirm": {
@@ -36089,7 +36089,7 @@
             }
           }
         },
-        "operationId": "postPlatformBackups:idRestoreConfirm"
+        "operationId": "postPlatformBackupsByIdRestoreConfirm"
       }
     },
     "/api/v1/platform/backups/config": {
@@ -36654,7 +36654,7 @@
             }
           }
         },
-        "operationId": "getPlatformResidencyWorkspaces:idRegion"
+        "operationId": "getPlatformResidencyWorkspacesByIdRegion"
       },
       "post": {
         "tags": [
@@ -36858,7 +36858,7 @@
             }
           }
         },
-        "operationId": "postPlatformResidencyWorkspaces:idRegion"
+        "operationId": "postPlatformResidencyWorkspacesByIdRegion"
       }
     },
     "/api/v1/platform/residency/assignments": {
@@ -37637,7 +37637,7 @@
             }
           }
         },
-        "operationId": "postPlatformDomains:idVerify"
+        "operationId": "postPlatformDomainsByIdVerify"
       }
     },
     "/api/v1/platform/domains/:id": {
@@ -37764,7 +37764,7 @@
             }
           }
         },
-        "operationId": "deletePlatformDomains:id"
+        "operationId": "deletePlatformDomainsById"
       }
     },
     "/api/v1/billing": {

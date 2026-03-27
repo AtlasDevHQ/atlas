@@ -71,11 +71,12 @@ const usedOperationIds = new Set<string>();
 let generated = 0;
 
 function toOperationId(method: string, urlPath: string): string {
-  // Strip /api/v1/ prefix, replace {param} with "by-param"
+  // Strip /api/v1/ prefix, replace {param} and :param with "by-param"
   const stripped = urlPath
     .replace(/^\/api\/v1\//, "")
     .replace(/^\/api\//, "")
-    .replace(/\{([^}]+)\}/g, "by-$1");
+    .replace(/\{([^}]+)\}/g, "by-$1")
+    .replace(/:([^/]+)/g, "by-$1");
   const segments = stripped.split("/").filter(Boolean);
   // camelCase: method + PascalCase segments
   const pascal = segments

@@ -27,8 +27,11 @@ if (!fs.existsSync(specPath)) {
 let spec: unknown;
 try {
   spec = JSON.parse(fs.readFileSync(specPath, "utf-8"));
-} catch {
-  console.error("openapi.json is not valid JSON. Re-run extraction.");
+} catch (err) {
+  console.error(
+    "Failed to read or parse openapi.json. Re-run extraction.",
+    err instanceof Error ? err.message : String(err),
+  );
   process.exit(1);
 }
 
@@ -67,7 +70,7 @@ try {
 } catch (err) {
   console.error(
     "Failed to generate API reference docs:",
-    err instanceof Error ? err.message : err,
+    err instanceof Error ? err.message : String(err),
   );
   process.exit(1);
 }
@@ -160,7 +163,7 @@ try {
 } catch (err) {
   console.error(
     "Failed to generate sidebar meta.json files:",
-    err instanceof Error ? err.message : err,
+    err instanceof Error ? err.message : String(err),
   );
   process.exit(1);
 }

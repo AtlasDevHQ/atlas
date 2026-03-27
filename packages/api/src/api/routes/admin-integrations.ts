@@ -21,11 +21,13 @@ const log = createLogger("admin-integrations");
 // Schemas
 // ---------------------------------------------------------------------------
 
+const DeliveryChannelEnum = z.enum(["email", "slack", "webhook"]);
+
 const SlackStatusSchema = z.object({
   connected: z.boolean(),
   teamId: z.string().nullable(),
   workspaceName: z.string().nullable(),
-  installedAt: z.string().nullable(),
+  installedAt: z.string().datetime().nullable(),
   /** Whether Slack OAuth env vars are configured (SLACK_CLIENT_ID etc.) */
   oauthConfigured: z.boolean(),
   /** Whether env-based token is set (single-workspace mode) */
@@ -33,14 +35,14 @@ const SlackStatusSchema = z.object({
 });
 
 const WebhookStatusSchema = z.object({
-  activeCount: z.number(),
+  activeCount: z.number().int().nonnegative(),
 });
 
 const IntegrationStatusSchema = z.object({
   slack: SlackStatusSchema,
   webhooks: WebhookStatusSchema,
   /** Delivery channels available for scheduled tasks */
-  deliveryChannels: z.array(z.string()),
+  deliveryChannels: z.array(DeliveryChannelEnum),
 });
 
 // ---------------------------------------------------------------------------
@@ -153,25 +155,17 @@ adminIntegrations.openapi(getStatusRoute, async (c) => {
       // Webhook count (scheduled tasks with webhook recipients)
       const webhookActiveCount = yield* Effect.promise(async () => {
         if (!hasInternalDB()) return 0;
-        try {
-          const rows = await internalQuery<{ count: number }>(
-            `SELECT COUNT(*)::int AS count FROM scheduled_tasks
-             WHERE org_id = $1 AND enabled = true
-             AND recipients::text LIKE '%"type":"webhook"%'`,
-            [orgId!],
-          );
-          return rows[0]?.count ?? 0;
-        } catch (err) {
-          log.warn(
-            { err: err instanceof Error ? err.message : String(err) },
-            "Failed to count webhook tasks",
-          );
-          return 0;
-        }
+        const rows = await internalQuery<{ count: number }>(
+          `SELECT COUNT(*)::int AS count FROM scheduled_tasks
+           WHERE org_id = $1 AND enabled = true
+           AND recipients::text LIKE '%"type":"webhook"%'`,
+          [orgId!],
+        );
+        return rows[0]?.count ?? 0;
       });
 
       // Available delivery channels
-      const deliveryChannels: string[] = ["email"];
+      const deliveryChannels: Array<"email" | "slack" | "webhook"> = ["email"];
       if (slack.connected || slack.envConfigured) {
         deliveryChannels.push("slack");
       }

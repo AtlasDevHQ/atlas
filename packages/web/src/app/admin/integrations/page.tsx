@@ -34,7 +34,9 @@ import {
   ExternalLink,
 } from "lucide-react";
 
-// -- Types --
+// -- Types (mirrors IntegrationStatusSchema in packages/api/src/api/routes/admin-integrations.ts) --
+
+type DeliveryChannel = "email" | "slack" | "webhook";
 
 interface SlackStatus {
   connected: boolean;
@@ -48,7 +50,7 @@ interface SlackStatus {
 interface IntegrationStatus {
   slack: SlackStatus;
   webhooks: { activeCount: number };
-  deliveryChannels: string[];
+  deliveryChannels: DeliveryChannel[];
 }
 
 // -- Component --

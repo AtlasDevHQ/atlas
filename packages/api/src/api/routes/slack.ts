@@ -743,8 +743,9 @@ slack.openapi(callbackRoute, async (c) => {
       try {
         const authResult = c.get("authResult" as never) as { user?: { activeOrganizationId?: string } } | undefined;
         orgId = authResult?.user?.activeOrganizationId ?? undefined;
-      } catch {
-        // intentionally ignored: authResult not available on unauthenticated Slack routes
+      } catch (err) {
+        // Expected: authResult not available on unauthenticated Slack routes
+        log.debug({ err: err instanceof Error ? err.message : String(err) }, "authResult not available on Slack callback route");
       }
 
       await saveInstallation(teamId, accessToken, { orgId, workspaceName: teamName ?? undefined });

@@ -18,6 +18,41 @@ export interface SlackInstallation {
   installed_at: string;
 }
 
+/** Sentinel team_id for env-var-based installations (no real Slack team). */
+export const ENV_TEAM_ID = "env" as const;
+
+// ---------------------------------------------------------------------------
+// Shared row parser
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse a DB row into a SlackInstallation, validating required fields.
+ * Returns null and logs a warning if the row is malformed.
+ */
+function parseInstallationRow(
+  row: Record<string, unknown>,
+  context: Record<string, unknown>,
+): SlackInstallation | null {
+  const teamIdVal = row.team_id;
+  const botToken = row.bot_token;
+  const installedAt = row.installed_at;
+  if (typeof teamIdVal !== "string" || typeof botToken !== "string" || !botToken) {
+    log.warn(context, "Invalid installation record in database");
+    return null;
+  }
+  return {
+    team_id: teamIdVal,
+    bot_token: botToken,
+    org_id: typeof row.org_id === "string" ? row.org_id : null,
+    workspace_name: typeof row.workspace_name === "string" ? row.workspace_name : null,
+    installed_at: typeof installedAt === "string" ? installedAt : new Date().toISOString(),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Read operations
+// ---------------------------------------------------------------------------
+
 /**
  * Get the bot token for a team. Checks internal DB first, then falls
  * back to SLACK_BOT_TOKEN env var.
@@ -32,20 +67,7 @@ export async function getInstallation(
         [teamId],
       );
       if (rows.length > 0) {
-        const teamIdVal = rows[0].team_id;
-        const botToken = rows[0].bot_token;
-        const installedAt = rows[0].installed_at;
-        if (typeof teamIdVal !== "string" || typeof botToken !== "string" || !botToken) {
-          log.warn({ teamId }, "Invalid installation record in database");
-          return null;
-        }
-        return {
-          team_id: teamIdVal,
-          bot_token: botToken,
-          org_id: typeof rows[0].org_id === "string" ? rows[0].org_id : null,
-          workspace_name: typeof rows[0].workspace_name === "string" ? rows[0].workspace_name : null,
-          installed_at: typeof installedAt === "string" ? installedAt : new Date().toISOString(),
-        };
+        return parseInstallationRow(rows[0], { teamId });
       }
       return null;
     } catch (err) {
@@ -73,23 +95,15 @@ export async function getInstallation(
 }
 
 /**
- * Get the Slack installation for an org. Returns null if not found.
+ * Get the Slack installation for an org. Returns null if not found or
+ * if no internal database is configured (org-scoped lookups require a DB).
  */
 export async function getInstallationByOrg(
   orgId: string,
 ): Promise<SlackInstallation | null> {
   if (!hasInternalDB()) {
-    // Single-workspace mode: return env-based installation if configured
-    const envToken = process.env.SLACK_BOT_TOKEN;
-    if (envToken) {
-      return {
-        team_id: "env",
-        bot_token: envToken,
-        org_id: null,
-        workspace_name: null,
-        installed_at: new Date().toISOString(),
-      };
-    }
+    // Org-scoped installations require an internal database.
+    // Env-based status is reported separately via envConfigured flag.
     return null;
   }
 
@@ -99,20 +113,7 @@ export async function getInstallationByOrg(
       [orgId],
     );
     if (rows.length > 0) {
-      const teamIdVal = rows[0].team_id;
-      const botToken = rows[0].bot_token;
-      const installedAt = rows[0].installed_at;
-      if (typeof teamIdVal !== "string" || typeof botToken !== "string" || !botToken) {
-        log.warn({ orgId }, "Invalid installation record in database");
-        return null;
-      }
-      return {
-        team_id: teamIdVal,
-        bot_token: botToken,
-        org_id: typeof rows[0].org_id === "string" ? rows[0].org_id : null,
-        workspace_name: typeof rows[0].workspace_name === "string" ? rows[0].workspace_name : null,
-        installed_at: typeof installedAt === "string" ? installedAt : new Date().toISOString(),
-      };
+      return parseInstallationRow(rows[0], { orgId });
     }
     return null;
   } catch (err) {
@@ -123,6 +124,10 @@ export async function getInstallationByOrg(
     throw err;
   }
 }
+
+// ---------------------------------------------------------------------------
+// Write operations
+// ---------------------------------------------------------------------------
 
 /**
  * Save or update a Slack installation (OAuth flow).
@@ -162,20 +167,28 @@ export async function deleteInstallation(teamId: string): Promise<void> {
 
 /**
  * Remove the Slack installation for an org.
- * Returns true if a row was deleted, false otherwise.
+ * Returns true if a row was deleted, false if no matching row found.
+ * Throws if no internal DB or if the query fails.
  */
 export async function deleteInstallationByOrg(orgId: string): Promise<boolean> {
   if (!hasInternalDB()) {
-    log.warn({ orgId }, "Cannot delete Slack installation — no internal database configured");
-    return false;
+    throw new Error("Cannot delete Slack installation — no internal database configured");
   }
 
-  const pool = getInternalDB();
-  const result = await pool.query(
-    "DELETE FROM slack_installations WHERE org_id = $1 RETURNING team_id",
-    [orgId],
-  );
-  return result.rows.length > 0;
+  try {
+    const pool = getInternalDB();
+    const result = await pool.query(
+      "DELETE FROM slack_installations WHERE org_id = $1 RETURNING team_id",
+      [orgId],
+    );
+    return result.rows.length > 0;
+  } catch (err) {
+    log.error(
+      { err: err instanceof Error ? err.message : String(err), orgId },
+      "Failed to delete slack_installations by org",
+    );
+    throw err;
+  }
 }
 
 /**

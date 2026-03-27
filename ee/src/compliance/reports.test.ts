@@ -1,4 +1,11 @@
-import { describe, it, expect, beforeEach, mock } from "bun:test";
+import { describe, it, expect, beforeAll, afterAll, beforeEach, mock } from "bun:test";
+
+// ── Isolate from .env — enterprise flag must be controlled by mock ──
+const savedEnterpriseEnabled = process.env.ATLAS_ENTERPRISE_ENABLED;
+beforeAll(() => { delete process.env.ATLAS_ENTERPRISE_ENABLED; });
+afterAll(() => {
+  if (savedEnterpriseEnabled !== undefined) process.env.ATLAS_ENTERPRISE_ENABLED = savedEnterpriseEnabled;
+});
 
 // ── Mock external dependencies ──────────────────────────────────
 

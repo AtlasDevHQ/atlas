@@ -7,6 +7,11 @@ import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
+import { DataTable } from "@/components/data-table/data-table";
+import { DataTableToolbar } from "@/components/data-table/data-table-toolbar";
+import { DataTableSortList } from "@/components/data-table/data-table-sort-list";
+import { useDataTable } from "@/hooks/use-data-table";
+import { getApiKeyColumns, type ApiKeyRow } from "./columns";
 import {
   FormDialog,
   FormField,
@@ -19,14 +24,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -34,24 +31,12 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Badge } from "@/components/ui/badge";
-import { Key, Plus, Copy, Check, Trash2, Loader2 } from "lucide-react";
+import { Key, Plus, Copy, Check, Loader2 } from "lucide-react";
 
 // -- Types --
 
-// Subset of Better Auth API key response — only fields rendered in the table.
-interface ApiKey {
-  id: string;
-  name: string | null;
-  start: string | null;
-  prefix: string | null;
-  createdAt: string;
-  expiresAt: string | null;
-  lastRequest: string | null;
-}
-
 interface ListApiKeysResponse {
-  apiKeys: ApiKey[];
+  apiKeys: ApiKeyRow[];
   total: number;
 }
 
@@ -66,43 +51,6 @@ interface CreateApiKeyResponse {
 const createKeySchema = z.object({
   name: z.string().min(1, "Name is required").max(100, "Name must be 100 characters or fewer"),
 });
-
-// -- Helpers --
-
-function formatDate(iso: string | null): string {
-  if (!iso) return "\u2014";
-  const d = new Date(iso);
-  if (isNaN(d.getTime())) return "\u2014";
-  return d.toLocaleDateString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  });
-}
-
-function formatDateTime(iso: string | null): string {
-  if (!iso) return "Never";
-  const d = new Date(iso);
-  if (isNaN(d.getTime())) return "Never";
-  return d.toLocaleString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
-
-function maskedKey(prefix: string | null, start: string | null): string {
-  const p = prefix ?? "key";
-  const s = start ? `${start}...` : "...";
-  return `${p}_${s}`;
-}
-
-function isExpired(expiresAt: string | null): boolean {
-  if (!expiresAt) return false;
-  return new Date(expiresAt).getTime() < Date.now();
-}
 
 // -- Component --
 
@@ -134,7 +82,23 @@ export default function ApiKeysPage() {
   const [createOpen, setCreateOpen] = useState(false);
   const [createdKey, setCreatedKey] = useState<{ key: string; name: string } | null>(null);
   const [copied, setCopied] = useState(false);
-  const [revokeTarget, setRevokeTarget] = useState<ApiKey | null>(null);
+  const [revokeTarget, setRevokeTarget] = useState<ApiKeyRow | null>(null);
+
+  // -- Data table --
+  const columns = getApiKeyColumns({
+    onRevoke: (apiKey) => { deleteMutation.reset(); setRevokeTarget(apiKey); },
+  });
+
+  const { table } = useDataTable({
+    data: apiKeys,
+    columns,
+    pageCount: 1,
+    initialState: {
+      sorting: [{ id: "createdAt", desc: true }],
+      pagination: { pageIndex: 0, pageSize: 100 },
+    },
+    getRowId: (row) => row.id,
+  });
 
   // -- Handlers --
 
@@ -209,65 +173,11 @@ export default function ApiKeysPage() {
             emptyAction={{ label: "Create API Key", onClick: openCreateDialog }}
             isEmpty={apiKeys.length === 0}
           >
-            <div className="rounded-md border">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Name</TableHead>
-                    <TableHead>Key</TableHead>
-                    <TableHead>Created</TableHead>
-                    <TableHead>Last Used</TableHead>
-                    <TableHead>Expires</TableHead>
-                    <TableHead className="w-[80px]" />
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {apiKeys.map((apiKey) => {
-                    const expired = isExpired(apiKey.expiresAt);
-                    return (
-                      <TableRow key={apiKey.id}>
-                        <TableCell className="font-medium">
-                          {apiKey.name ?? "Unnamed key"}
-                        </TableCell>
-                        <TableCell>
-                          <code className="rounded bg-muted px-1.5 py-0.5 text-xs">
-                            {maskedKey(apiKey.prefix, apiKey.start)}
-                          </code>
-                        </TableCell>
-                        <TableCell className="text-muted-foreground">
-                          {formatDate(apiKey.createdAt)}
-                        </TableCell>
-                        <TableCell className="text-muted-foreground">
-                          {formatDateTime(apiKey.lastRequest)}
-                        </TableCell>
-                        <TableCell>
-                          {expired ? (
-                            <Badge variant="destructive">Expired</Badge>
-                          ) : apiKey.expiresAt ? (
-                            <span className="text-muted-foreground">
-                              {formatDate(apiKey.expiresAt)}
-                            </span>
-                          ) : (
-                            <span className="text-muted-foreground">Never</span>
-                          )}
-                        </TableCell>
-                        <TableCell>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            className="size-8 p-0 text-muted-foreground hover:text-destructive"
-                            onClick={() => { deleteMutation.reset(); setRevokeTarget(apiKey); }}
-                            title="Revoke API key"
-                          >
-                            <Trash2 className="size-4" />
-                          </Button>
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })}
-                </TableBody>
-              </Table>
-            </div>
+            <DataTable table={table}>
+              <DataTableToolbar table={table}>
+                <DataTableSortList table={table} />
+              </DataTableToolbar>
+            </DataTable>
           </AdminContentWrapper>
         </div>
       </ErrorBoundary>

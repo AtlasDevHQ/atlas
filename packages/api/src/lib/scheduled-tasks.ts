@@ -435,7 +435,7 @@ export function completeTaskRun(
 ): void {
   if (!hasInternalDB()) return;
   internalExecute(
-    `UPDATE scheduled_tasks SET
+    `UPDATE scheduled_task_runs SET
        status = $1,
        completed_at = now(),
        error = $2,

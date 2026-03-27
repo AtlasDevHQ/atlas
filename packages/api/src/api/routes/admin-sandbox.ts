@@ -9,6 +9,7 @@ import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { AuthContext } from "@atlas/api/lib/effect/services";
+import { createLogger } from "@atlas/api/lib/logger";
 import { getSetting } from "@atlas/api/lib/settings";
 import {
   getExploreBackendType,
@@ -17,6 +18,8 @@ import {
 import { useVercelSandbox, useSidecar } from "@atlas/api/lib/tools/backends/detect";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
+
+const log = createLogger("admin-sandbox");
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -128,8 +131,9 @@ function getAvailableBackends(): AvailableBackend[] {
             : undefined,
       });
     }
-  } catch {
-    // Plugin registry not available — only built-in backends shown
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    log.debug({ err: detail }, "Plugin registry not available — only built-in backends shown");
   }
 
   return backends;

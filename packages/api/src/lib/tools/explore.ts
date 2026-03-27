@@ -367,7 +367,7 @@ function getExploreBackend(semanticRoot: string, orgId?: string): Promise<Explor
           configPriority.join(" > "),
         );
         for (const name of configPriority) {
-          const backend = await tryCreateBackend(name, semanticRoot);
+          const backend = await tryCreateBackend(name, semanticRoot, orgId);
           if (backend) {
             log.info(
               { backend: name, source: "config" },

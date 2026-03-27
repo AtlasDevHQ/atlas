@@ -108,7 +108,8 @@ describe("migrateAuthTables", () => {
     // + loadSavedConnections SELECT + loadPluginSettings SELECT + restoreAbuseState SELECT
     // (includes SSO enforcement, ip_allowlist, custom_roles, user_onboarding, audit_retention_config, workspace_model_config, approval_rules, approval_queue, workspace_branding, onboarding_emails, email_preferences, abuse_events, custom_domains)
     // +3 from settings org-scope migration (DROP CONSTRAINT + 2 CREATE UNIQUE INDEX)
-    expect(queries.length).toBe(143);
+    // +3 from slack_installations org_id migration (2 ALTER TABLE + 1 CREATE INDEX)
+    expect(queries.length).toBe(146);
     expect(queries[0]).toContain("CREATE TABLE IF NOT EXISTS audit_log");
   });
 
@@ -153,7 +154,8 @@ describe("migrateAuthTables", () => {
     // + loadSavedConnections + loadPluginSettings + restoreAbuseState + ALTER TABLE password_change_required
     // (includes SSO enforcement, ip_allowlist, custom_roles, user_onboarding, audit_retention_config, workspace_model_config, approval_rules, approval_queue, workspace_branding, onboarding_emails, email_preferences, abuse_events, custom_domains)
     // +3 from settings org-scope migration (DROP CONSTRAINT + 2 CREATE UNIQUE INDEX)
-    expect(queries.length).toBe(144);
+    // +3 from slack_installations org_id migration (2 ALTER TABLE + 1 CREATE INDEX)
+    expect(queries.length).toBe(147);
     // Better Auth migration runs once
     expect(getMigrationCount()).toBe(1);
   });

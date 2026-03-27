@@ -13,8 +13,8 @@ const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<Recor
   Promise.resolve([]),
 );
 
-const mockPoolQuery: Mock<(sql: string, params?: unknown[]) => Promise<void>> = mock(() =>
-  Promise.resolve(),
+const mockPoolQuery: Mock<(sql: string, params?: unknown[]) => Promise<{ rows: Record<string, unknown>[] }>> = mock(() =>
+  Promise.resolve({ rows: [] }),
 );
 const mockGetInternalDB: Mock<() => { query: typeof mockPoolQuery }> = mock(() => ({
   query: mockPoolQuery,
@@ -43,7 +43,14 @@ mock.module("@atlas/api/lib/logger", () => ({
 }));
 
 // Import after mocks are registered
-const { getInstallation, saveInstallation, deleteInstallation, getBotToken } = await import("../store");
+const {
+  getInstallation,
+  getInstallationByOrg,
+  saveInstallation,
+  deleteInstallation,
+  deleteInstallationByOrg,
+  getBotToken,
+} = await import("../store");
 
 describe("store", () => {
   const savedBotToken = process.env.SLACK_BOT_TOKEN;
@@ -72,6 +79,8 @@ describe("store", () => {
       expect(result).toEqual({
         team_id: "T123",
         bot_token: "xoxb-abc",
+        org_id: null,
+        workspace_name: null,
         installed_at: "2025-01-01T00:00:00Z",
       });
       expect(mockInternalQuery).toHaveBeenCalledTimes(1);
@@ -123,17 +132,90 @@ describe("store", () => {
     });
   });
 
+  describe("getInstallationByOrg", () => {
+    it("returns installation from DB when row exists for org", async () => {
+      mockHasInternalDB.mockReturnValue(true);
+      mockInternalQuery.mockResolvedValue([
+        { team_id: "T123", bot_token: "xoxb-abc", org_id: "org-1", workspace_name: "My Team", installed_at: "2025-01-01T00:00:00Z" },
+      ]);
+
+      const result = await getInstallationByOrg("org-1");
+      expect(result).toEqual({
+        team_id: "T123",
+        bot_token: "xoxb-abc",
+        org_id: "org-1",
+        workspace_name: "My Team",
+        installed_at: "2025-01-01T00:00:00Z",
+      });
+      expect(mockInternalQuery).toHaveBeenCalledTimes(1);
+      const [sql, params] = mockInternalQuery.mock.calls[0];
+      expect(sql).toContain("WHERE org_id = $1");
+      expect(params).toEqual(["org-1"]);
+    });
+
+    it("returns null when DB has no matching row", async () => {
+      mockHasInternalDB.mockReturnValue(true);
+      mockInternalQuery.mockResolvedValue([]);
+
+      const result = await getInstallationByOrg("org-999");
+      expect(result).toBeNull();
+    });
+
+    it("returns null when no internal DB (org-scoped requires DB)", async () => {
+      mockHasInternalDB.mockReturnValue(false);
+      process.env.SLACK_BOT_TOKEN = "xoxb-env-token";
+
+      const result = await getInstallationByOrg("org-1");
+      expect(result).toBeNull();
+      expect(mockInternalQuery).not.toHaveBeenCalled();
+    });
+
+    it("returns null when no internal DB and no env var", async () => {
+      mockHasInternalDB.mockReturnValue(false);
+      delete process.env.SLACK_BOT_TOKEN;
+
+      const result = await getInstallationByOrg("org-1");
+      expect(result).toBeNull();
+    });
+
+    it("throws when DB query fails", async () => {
+      mockHasInternalDB.mockReturnValue(true);
+      mockInternalQuery.mockRejectedValue(new Error("timeout"));
+
+      await expect(getInstallationByOrg("org-1")).rejects.toThrow("timeout");
+    });
+
+    it("returns null for invalid DB record (non-string bot_token)", async () => {
+      mockHasInternalDB.mockReturnValue(true);
+      mockInternalQuery.mockResolvedValue([
+        { team_id: "T123", bot_token: null, org_id: "org-1", installed_at: "2025-01-01T00:00:00Z" },
+      ]);
+
+      const result = await getInstallationByOrg("org-1");
+      expect(result).toBeNull();
+    });
+  });
+
   describe("saveInstallation", () => {
     it("resolves when DB write succeeds", async () => {
       mockHasInternalDB.mockReturnValue(true);
-      mockPoolQuery.mockResolvedValue(undefined as never);
+      mockPoolQuery.mockResolvedValue({ rows: [] });
 
       await expect(saveInstallation("T123", "xoxb-new")).resolves.toBeUndefined();
       expect(mockPoolQuery).toHaveBeenCalledTimes(1);
       // Verify the SQL contains INSERT and the params
       const [sql, params] = mockPoolQuery.mock.calls[0];
       expect(sql).toContain("INSERT INTO slack_installations");
-      expect(params).toEqual(["T123", "xoxb-new"]);
+      expect(params).toEqual(["T123", "xoxb-new", null, null]);
+    });
+
+    it("passes orgId and workspaceName when provided", async () => {
+      mockHasInternalDB.mockReturnValue(true);
+      mockPoolQuery.mockResolvedValue({ rows: [] });
+
+      await saveInstallation("T123", "xoxb-new", { orgId: "org-1", workspaceName: "My Team" });
+      const [, params] = mockPoolQuery.mock.calls[0];
+      expect(params).toEqual(["T123", "xoxb-new", "org-1", "My Team"]);
     });
 
     it("throws when no internal DB", async () => {
@@ -155,7 +237,7 @@ describe("store", () => {
   describe("deleteInstallation", () => {
     it("resolves when DB delete succeeds", async () => {
       mockHasInternalDB.mockReturnValue(true);
-      mockPoolQuery.mockResolvedValue(undefined as never);
+      mockPoolQuery.mockResolvedValue({ rows: [] });
 
       await expect(deleteInstallation("T123")).resolves.toBeUndefined();
       expect(mockPoolQuery).toHaveBeenCalledTimes(1);
@@ -170,6 +252,44 @@ describe("store", () => {
       // Should not throw — just logs a warning and returns
       await expect(deleteInstallation("T123")).resolves.toBeUndefined();
       expect(mockPoolQuery).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("deleteInstallationByOrg", () => {
+    it("returns true when a row was deleted", async () => {
+      mockHasInternalDB.mockReturnValue(true);
+      mockPoolQuery.mockResolvedValue({ rows: [{ team_id: "T123" }] });
+
+      const result = await deleteInstallationByOrg("org-1");
+      expect(result).toBe(true);
+      expect(mockPoolQuery).toHaveBeenCalledTimes(1);
+      const [sql, params] = mockPoolQuery.mock.calls[0];
+      expect(sql).toContain("DELETE FROM slack_installations");
+      expect(sql).toContain("WHERE org_id = $1");
+      expect(params).toEqual(["org-1"]);
+    });
+
+    it("returns false when no matching row", async () => {
+      mockHasInternalDB.mockReturnValue(true);
+      mockPoolQuery.mockResolvedValue({ rows: [] });
+
+      const result = await deleteInstallationByOrg("org-999");
+      expect(result).toBe(false);
+    });
+
+    it("throws when no internal DB", async () => {
+      mockHasInternalDB.mockReturnValue(false);
+
+      await expect(deleteInstallationByOrg("org-1")).rejects.toThrow(
+        "no internal database configured",
+      );
+    });
+
+    it("throws when DB query fails", async () => {
+      mockHasInternalDB.mockReturnValue(true);
+      mockPoolQuery.mockRejectedValue(new Error("connection lost"));
+
+      await expect(deleteInstallationByOrg("org-1")).rejects.toThrow("connection lost");
     });
   });
 

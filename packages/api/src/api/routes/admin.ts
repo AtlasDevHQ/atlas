@@ -61,6 +61,7 @@ import { adminBranding } from "./admin-branding";
 import { adminDomains } from "./admin-domains";
 import { adminOnboardingEmails } from "./admin-onboarding-emails";
 import { adminAbuse } from "./admin-abuse";
+import { adminIntegrations } from "./admin-integrations";
 import { ErrorSchema, AuthErrorSchema, parsePagination } from "./shared-schemas";
 import { runHandler } from "@atlas/api/lib/effect/hono";
 
@@ -179,6 +180,8 @@ admin.route("/onboarding-emails", adminOnboardingEmails);
 admin.route("/onboarding-emails/", adminOnboardingEmails);
 admin.route("/abuse", adminAbuse);
 admin.route("/abuse/", adminAbuse);
+admin.route("/integrations", adminIntegrations);
+admin.route("/integrations/", adminIntegrations);
 
 // Path traversal guard, YAML helpers, entity discovery, and file finding
 // are all imported from @atlas/api/lib/semantic/files above.

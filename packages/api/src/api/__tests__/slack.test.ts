@@ -769,7 +769,7 @@ describe("/api/v1/slack", () => {
       expect(resp.status).toBe(200);
       const html = await resp.text();
       expect(html).toContain("Atlas installed!");
-      expect(mockSaveInstallation).toHaveBeenCalledWith("T999", "xoxb-new-token");
+      expect(mockSaveInstallation).toHaveBeenCalledWith("T999", "xoxb-new-token", { orgId: undefined, workspaceName: undefined });
     });
 
     it("returns error HTML when OAuth response is missing team data", async () => {

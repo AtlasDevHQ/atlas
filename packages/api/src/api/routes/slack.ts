@@ -731,14 +731,25 @@ slack.openapi(callbackRoute, async (c) => {
   }
 
   const data = result as unknown as Record<string, unknown>;
-  const team = data.team as { id?: string } | undefined;
+  const team = data.team as { id?: string; name?: string } | undefined;
   const accessToken = (data.access_token as string) ?? "";
   const teamId = team?.id ?? "";
+  const teamName = team?.name ?? null;
 
   if (teamId && accessToken) {
     try {
-      await saveInstallation(teamId, accessToken);
-      log.info({ teamId }, "Slack installation saved");
+      // Extract org context if available (install may have been initiated by an authenticated admin)
+      let orgId: string | undefined;
+      try {
+        const authResult = c.get("authResult" as never) as { user?: { activeOrganizationId?: string } } | undefined;
+        orgId = authResult?.user?.activeOrganizationId ?? undefined;
+      } catch (err) {
+        // Expected: authResult not available on unauthenticated Slack routes
+        log.debug({ err: err instanceof Error ? err.message : String(err) }, "authResult not available on Slack callback route");
+      }
+
+      await saveInstallation(teamId, accessToken, { orgId, workspaceName: teamName ?? undefined });
+      log.info({ teamId, orgId, teamName }, "Slack installation saved");
     } catch (saveErr) {
       log.error({ err: saveErr instanceof Error ? saveErr.message : String(saveErr), teamId }, "Failed to save Slack installation");
       return c.html("<html><body><h1>Installation Failed</h1><p>Could not save the installation. Please try again.</p></body></html>", 500);

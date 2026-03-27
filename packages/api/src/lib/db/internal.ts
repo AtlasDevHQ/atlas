@@ -506,9 +506,15 @@ export async function migrateInternalDB(): Promise<void> {
     CREATE TABLE IF NOT EXISTS slack_installations (
       team_id TEXT PRIMARY KEY,
       bot_token TEXT NOT NULL,
+      org_id TEXT,
+      workspace_name TEXT,
       installed_at TIMESTAMPTZ DEFAULT now()
     );
   `);
+  // Migration: add org_id and workspace_name columns for existing deployments
+  await pool.query(`ALTER TABLE slack_installations ADD COLUMN IF NOT EXISTS org_id TEXT`);
+  await pool.query(`ALTER TABLE slack_installations ADD COLUMN IF NOT EXISTS workspace_name TEXT`);
+  await pool.query(`CREATE INDEX IF NOT EXISTS idx_slack_installations_org ON slack_installations(org_id)`);
   await pool.query(`
     CREATE TABLE IF NOT EXISTS slack_threads (
       thread_ts TEXT NOT NULL,

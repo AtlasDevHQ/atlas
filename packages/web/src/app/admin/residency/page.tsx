@@ -88,20 +88,20 @@ export default function ResidencyPage() {
         )}
 
         <AdminContentWrapper
-          data={data}
           loading={loading}
           error={error}
+          isEmpty={!data}
           emptyIcon={Globe}
           emptyTitle="Residency unavailable"
           emptyDescription="Data residency is not available in this deployment."
         >
-          {(status) =>
-            status.configured ? (
-              status.region ? (
-                <AssignedRegionCard status={status} />
+          {data && (
+            data.configured ? (
+              data.region ? (
+                <AssignedRegionCard status={data} />
               ) : (
                 <RegionPickerCard
-                  status={status}
+                  status={data}
                   onAssign={async (region) => {
                     await assignMutation.mutate({ body: { region } });
                   }}
@@ -111,7 +111,7 @@ export default function ResidencyPage() {
             ) : (
               <NotConfiguredCard />
             )
-          }
+          )}
         </AdminContentWrapper>
       </div>
     </ErrorBoundary>

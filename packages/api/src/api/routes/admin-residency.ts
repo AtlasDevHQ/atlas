@@ -147,6 +147,10 @@ const assignRegionRoute = createRoute({
       description: "Region already assigned (immutable)",
       content: { "application/json": { schema: ErrorSchema } },
     },
+    503: {
+      description: "Service unavailable (no internal database)",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
     500: {
       description: "Internal server error",
       content: { "application/json": { schema: ErrorSchema } },
@@ -244,7 +248,7 @@ adminResidency.openapi(assignRegionRoute, async (c) => {
 
       const mod = yield* Effect.promise(() => loadResidency());
       if (!mod) {
-        return c.json({ error: "Data residency is not available in this deployment." }, 404);
+        return c.json({ error: "not_available", message: "Data residency is not available in this deployment." }, 404);
       }
 
       try {
@@ -255,15 +259,15 @@ adminResidency.openapi(assignRegionRoute, async (c) => {
         if (err instanceof mod.ResidencyError) {
           switch (err.code) {
             case "invalid_region":
-              return c.json({ error: err.message }, 400);
+              return c.json({ error: "invalid_region", message: err.message }, 400);
             case "already_assigned":
-              return c.json({ error: err.message }, 409);
+              return c.json({ error: "already_assigned", message: err.message }, 409);
             case "workspace_not_found":
-              return c.json({ error: err.message }, 404);
+              return c.json({ error: "workspace_not_found", message: err.message }, 404);
             case "no_internal_db":
-              return c.json({ error: err.message }, 503);
+              return c.json({ error: "no_internal_db", message: err.message }, 503);
             case "not_configured":
-              return c.json({ error: err.message }, 404);
+              return c.json({ error: "not_configured", message: err.message }, 404);
           }
         }
         throw err;

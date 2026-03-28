@@ -4416,9 +4416,12 @@ admin.openapi(getSettingsRoute, async (c) => runHandler(c, "list settings", asyn
 
   // In SaaS mode, workspace admins only see settings they can control.
   // Platform admins and self-hosted mode see everything.
-  const settings = (deployMode === "saas" && !isPlatformAdmin)
+  const filtered = (deployMode === "saas" && !isPlatformAdmin)
     ? allSettings.filter((s) => s.saasVisible !== false)
     : allSettings;
+
+  // Strip internal-only saasVisible field from response
+  const settings = filtered.map(({ saasVisible: _, ...rest }) => rest);
 
   return c.json({ settings, manageable, deployMode }, 200);
 }));

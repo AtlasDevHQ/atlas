@@ -60,9 +60,6 @@ export class EnterpriseError extends Error {
  *
  * @throws {EnterpriseError} When enterprise is disabled.
  */
-// Re-export deploy mode resolution
-export { resolveDeployMode } from "./deploy-mode";
-
 export function requireEnterprise(feature?: string): void {
   const label = feature ? ` (${feature})` : "";
   if (!isEnterpriseEnabled()) {
@@ -72,3 +69,6 @@ export function requireEnterprise(feature?: string): void {
     );
   }
 }
+
+// Re-export deploy mode resolution
+export { resolveDeployMode } from "./deploy-mode";

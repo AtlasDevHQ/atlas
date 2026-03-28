@@ -1031,7 +1031,7 @@ export function validateAndResolve(raw: unknown): ResolvedConfig {
 async function applyDeployMode(resolved: ResolvedConfig): Promise<void> {
   const rawSetting = process.env.ATLAS_DEPLOY_MODE as "saas" | "self-hosted" | "auto" | undefined;
   try {
-    const { resolveDeployMode } = await import("../../../../ee/src/deploy-mode");
+    const { resolveDeployMode } = await import("@atlas/ee/deploy-mode");
     resolved.deployMode = resolveDeployMode(rawSetting);
   } catch (err) {
     // ee/ module not available — default to self-hosted

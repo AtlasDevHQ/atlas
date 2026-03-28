@@ -637,6 +637,31 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 
 ---
 
+## 0.9.7 — SaaS-First Admin Experience
+
+**Make app.useatlas.dev feel like a real SaaS product, not a self-hosted deployment.** Remove operator-facing UX (env var names, "Requires restart", "configure DATABASE_URL") from the workspace admin experience. Make plugins, integrations, sandbox, and settings self-serve for paying SaaS customers. Keep self-hosted persona fully functional.
+
+### Foundation (P0)
+
+- [ ] Add explicit deploy mode flag — `ATLAS_DEPLOY_MODE=saas|self-hosted|auto` (#1020)
+- [ ] Hide "Requires restart" and env var names from SaaS workspace admins (#1021)
+- [ ] Filter settings page to workspace-relevant settings in SaaS mode (#1022)
+
+### Self-Service Features (P1)
+
+- [ ] Make restart-required settings hot-reloadable in SaaS mode (#1023)
+- [ ] OAuth-first integration connect flows for SaaS workspaces (#1024)
+- [ ] Plugin marketplace — browse, install, configure per workspace (#1025)
+- [ ] Product-focused sandbox selection UX for SaaS users (#1026)
+- [ ] Product-focused data residency UX for SaaS users (#1027)
+
+### Finishing Touches (P2)
+
+- [ ] Email integration connect flow in Integrations hub (#1028)
+- [ ] Self-hosted deploy validation via GH Actions for template repos (#1029)
+
+---
+
 ## 1.0.0 — SaaS Launch
 
 **app.useatlas.dev goes live.** The hosted product where teams sign up, connect their database, and have a production-ready AI data analyst without deploying anything.

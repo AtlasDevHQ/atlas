@@ -230,13 +230,12 @@ export const milestones: Milestone[] = [
     githubMilestone: 27,
   },
 
-  // ── Current ──────────────────────────────────────────────
   {
     version: "0.9.6",
     title: "SaaS Customer Experience",
-    status: "current",
+    status: "shipped",
     summary:
-      "Make the admin console work for paying SaaS workspace admins. Scope settings and routes to workspaces, hide platform internals, and add self-service for key features.",
+      "Made the admin console work for paying SaaS workspace admins. Scoped settings and routes to workspaces, hid platform internals, and added self-service for API keys, integrations, billing, sandbox, custom domains, and data residency.",
     highlights: [
       "Org-context enforcement on all routes",
       "Workspace-level settings overrides",
@@ -246,8 +245,28 @@ export const milestones: Milestone[] = [
       "Custom domain configuration",
       "Billing page with usage vs limits",
       "Sandbox backend selection per workspace",
+      "Drizzle Kit versioned migration framework",
     ],
     githubMilestone: 28,
+  },
+
+  // ── Current ──────────────────────────────────────────────
+  {
+    version: "0.9.7",
+    title: "SaaS-First Admin Experience",
+    status: "current",
+    summary:
+      "Make app.useatlas.dev feel like a real SaaS product, not a self-hosted deployment. Remove operator-facing UX from workspace admins, add plugin marketplace, OAuth-first integrations, and product-focused configuration pages.",
+    highlights: [
+      "Enterprise-gated deploy mode flag (saas vs self-hosted)",
+      "Hide env var names and restart badges from SaaS admins",
+      "Filter settings to workspace-relevant items",
+      "Hot-reloadable settings without restart",
+      "OAuth-first integration connect flows",
+      "Plugin marketplace — browse, install, configure per workspace",
+      "Product-focused sandbox and data residency UX",
+    ],
+    githubMilestone: 29,
   },
   {
     version: "1.0.0",

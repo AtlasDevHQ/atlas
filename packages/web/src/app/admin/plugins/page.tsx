@@ -31,6 +31,7 @@ import { cn } from "@/lib/utils";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
+import { useDeployMode } from "@/ui/hooks/use-deploy-mode";
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -79,10 +80,12 @@ function ConfigDialog({
   plugin,
   open,
   onOpenChange,
+  deployMode,
 }: {
   plugin: PluginDescription;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  deployMode: "saas" | "self-hosted";
 }) {
   const { apiUrl, isCrossOrigin } = useAtlasConfig();
   const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
@@ -157,7 +160,9 @@ function ConfigDialog({
           <DialogTitle>Configure {plugin.name}</DialogTitle>
           <DialogDescription>
             {manageable
-              ? "Update plugin configuration. Changes take effect on restart."
+              ? deployMode === "saas"
+                ? "Update plugin configuration. Changes take effect shortly."
+                : "Update plugin configuration. Changes take effect on restart."
               : "Configuration is read-only without an internal database."}
           </DialogDescription>
         </DialogHeader>
@@ -274,6 +279,7 @@ export default function PluginsPage() {
   const toggleMutation = useAdminMutation({ method: "POST" });
   const [mutationError, setMutationError] = useState<string | null>(null);
   const [configPlugin, setConfigPlugin] = useState<PluginDescription | null>(null);
+  const { deployMode } = useDeployMode();
 
   const { data, loading, error, refetch } = useAdminFetch<{
     plugins: PluginDescription[];
@@ -397,7 +403,9 @@ export default function PluginsPage() {
                         disabled={toggleMutation.isMutating(plugin.id) || !manageable}
                         title={
                           !manageable
-                            ? "Requires internal database"
+                            ? deployMode === "saas"
+                              ? "Configuration unavailable"
+                              : "Requires internal database"
                             : plugin.enabled
                               ? "Disable plugin"
                               : "Enable plugin"
@@ -418,6 +426,7 @@ export default function PluginsPage() {
           plugin={configPlugin}
           open={!!configPlugin}
           onOpenChange={(open) => !open && setConfigPlugin(null)}
+          deployMode={deployMode}
         />
       )}
     </div>

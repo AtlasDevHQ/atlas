@@ -27,6 +27,7 @@ import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
+import { useDeployMode } from "@/ui/hooks/use-deploy-mode";
 import { Settings, Pencil, RotateCcw, Loader2, Info, Lock, RefreshCw, Palette, Shield } from "lucide-react";
 import { DEFAULT_BRAND_COLOR, OKLCH_RE, applyBrandColor } from "@/ui/hooks/use-dark-mode";
 
@@ -217,13 +218,16 @@ function SettingRow({
   onEdit,
   onReset,
   resetting,
+  deployMode,
 }: {
   setting: SettingWithValue;
   manageable: boolean;
   onEdit: () => void;
   onReset: () => void;
   resetting: boolean;
+  deployMode: "saas" | "self-hosted";
 }) {
+  const isSaas = deployMode === "saas";
   const displayValue = setting.currentValue ?? (
     <span className="text-muted-foreground italic">not set</span>
   );
@@ -235,7 +239,7 @@ function SettingRow({
           <span className="text-sm font-medium">{setting.label}</span>
           <SourceBadge source={setting.source} />
           {setting.secret && <Lock className="size-3 text-muted-foreground" />}
-          {setting.requiresRestart ? (
+          {!isSaas && setting.requiresRestart ? (
             <Badge variant="outline" className="gap-1 text-[10px] text-amber-600 border-amber-500/30 dark:text-amber-400">
               <RefreshCw className="size-2.5" />
               Requires restart
@@ -248,8 +252,12 @@ function SettingRow({
         </div>
         <p className="text-xs text-muted-foreground">{setting.description}</p>
         <div className="flex items-center gap-1.5">
-          <code className="rounded bg-muted px-1.5 py-0.5 text-xs">{setting.envVar}</code>
-          <span className="text-xs text-muted-foreground">=</span>
+          {!isSaas && (
+            <>
+              <code className="rounded bg-muted px-1.5 py-0.5 text-xs">{setting.envVar}</code>
+              <span className="text-xs text-muted-foreground">=</span>
+            </>
+          )}
           <span className="truncate text-xs font-mono">
             {typeof displayValue === "string" ? displayValue : displayValue}
           </span>
@@ -405,6 +413,8 @@ function BrandColorCard({
 
 export default function SettingsPage() {
   const [editSetting, setEditSetting] = useState<SettingWithValue | null>(null);
+  const { deployMode } = useDeployMode();
+  const isSaas = deployMode === "saas";
 
   const { data, loading, error, refetch } = useAdminFetch<SettingsResponse>(
     "/api/v1/admin/settings",
@@ -468,7 +478,7 @@ export default function SettingsPage() {
           emptyTitle="No settings available"
           isEmpty={settings.length === 0}
         >
-          {!manageable && (
+          {!manageable && !isSaas && (
             <div className="mb-6 flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-4 py-3">
               <Info className="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-400" />
               <p className="text-sm text-amber-700 dark:text-amber-300">
@@ -483,11 +493,16 @@ export default function SettingsPage() {
             <div className="mb-6 flex items-start gap-2 rounded-md border border-blue-500/30 bg-blue-500/5 px-4 py-3">
               <Info className="mt-0.5 size-4 shrink-0 text-blue-600 dark:text-blue-400" />
               <p className="text-sm text-blue-700 dark:text-blue-300">
-                Setting overrides are saved to the database. Settings marked{" "}
-                <span className="font-medium">Live</span> take effect immediately.
-                Settings marked{" "}
-                <span className="font-medium">Requires restart</span> need a server
-                restart.
+                {isSaas
+                  ? "Setting overrides are saved and take effect immediately."
+                  : <>
+                      Setting overrides are saved to the database. Settings marked{" "}
+                      <span className="font-medium">Live</span> take effect immediately.
+                      Settings marked{" "}
+                      <span className="font-medium">Requires restart</span> need a server
+                      restart.
+                    </>
+                }
               </p>
             </div>
           )}
@@ -518,6 +533,7 @@ export default function SettingsPage() {
                               onEdit={() => setEditSetting(setting)}
                               onReset={() => handleReset(setting.key)}
                               resetting={isMutating(setting.key)}
+                              deployMode={deployMode}
                             />
                           </div>
                         ))}
@@ -566,6 +582,7 @@ export default function SettingsPage() {
                               onEdit={() => setEditSetting(setting)}
                               onReset={() => handleReset(setting.key)}
                               resetting={isMutating(setting.key)}
+                              deployMode={deployMode}
                             />
                           </div>
                         ))}

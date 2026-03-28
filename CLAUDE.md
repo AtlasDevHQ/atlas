@@ -71,6 +71,14 @@ Guidance for Claude Code when working in this repository.
 - [ ] **Metrics are authoritative** — SQL in `metrics/*.yml` must be used exactly as written
 - [ ] **Glossary terms** — Terms marked `ambiguous` in `glossary.yml` should trigger clarifying questions
 
+### Enterprise & SaaS Gating (`/ee`)
+- [ ] **SaaS-specific features go in `/ee`** — Any feature that exists specifically to make Atlas work as a hosted SaaS product (app.useatlas.dev) must live in `ee/src/` under the commercial license. This includes: deploy mode detection, SaaS admin UX branching, plugin marketplace, multi-tenant billing, platform admin tools, data residency routing, SLA monitoring, automated backups, PII masking, SSO/SCIM, approval workflows, abuse prevention, white-labeling
+- [ ] **Self-hosted is always free** — Core AGPL functionality must never depend on `/ee`. Self-hosted users get the full product (agent, tools, admin, plugins via config). The `/ee` gate adds governance, compliance, scale, and the polished SaaS experience
+- [ ] **Use `isEnterpriseEnabled()` for conditionals** — `import { isEnterpriseEnabled, requireEnterprise } from "@atlas/ee"`. Use `isEnterpriseEnabled()` for conditional logic (e.g., UI branching). Use `requireEnterprise("feature-name")` as a guard that throws `EnterpriseError`
+- [ ] **Enterprise errors use `EnterpriseError`** — Always throw/catch `EnterpriseError` from `@atlas/ee`. Use `instanceof EnterpriseError`, never string matching. Route handlers map `EnterpriseError` to 403
+- [ ] **Deploy mode is enterprise-gated** — `ATLAS_DEPLOY_MODE=saas` requires `/ee`. Without enterprise enabled, deploy mode always resolves to `self-hosted`. The frontend reads `deployMode` from the API to branch admin UX
+- [ ] **No competing SaaS** — The commercial license (`ee/LICENSE`) prohibits using `/ee` in a competing product. This is the business model: self-hosted is free (AGPL), the hosted SaaS and enterprise features are the commercial offering
+
 ---
 
 ## Project Overview
@@ -121,6 +129,7 @@ bun run atlas -- diff    # Compare DB schema vs semantic layer
 | `examples/docker` | — | Self-hosted Docker deploy + optional nsjail |
 | `examples/nextjs-standalone` | — | Pure Next.js + embedded Hono API (Vercel) |
 | `create-atlas` | — | Scaffolding CLI (`bun create atlas-agent`) |
+| `ee/` | `@atlas/ee` | Enterprise features — source-available, commercial license |
 | `plugins/` | — | Atlas plugins directory |
 
 **Import conventions:**

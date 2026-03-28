@@ -83,20 +83,20 @@ export default function SandboxPage() {
         </div>
 
         {mutationError && (
-          <ErrorBanner error={mutationError} />
+          <ErrorBanner message={mutationError} />
         )}
 
         <AdminContentWrapper
-          data={data}
           loading={loading}
           error={error}
+          isEmpty={!data}
           emptyIcon={Box}
           emptyTitle="Sandbox unavailable"
           emptyDescription="No sandbox status available."
         >
-          {(status) => (
+          {data && (
             <SandboxConfigCard
-              status={status}
+              status={data}
               onSelectBackend={async (backendId) => {
                 await saveMutation.mutate({ body: { value: backendId } });
               }}

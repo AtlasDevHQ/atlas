@@ -22,7 +22,7 @@ let mockEffectUser: Record<string, unknown> = {
 };
 
 const fakeAuthContext = {
-  [Symbol.iterator]: function* () {
+  [Symbol.iterator]: function* (): Generator<unknown, Record<string, unknown>> {
     return yield mockEffectUser;
   },
 };
@@ -35,7 +35,7 @@ mock.module("effect", () => {
     promise: (fn: () => Promise<unknown>) => {
       // Wrap the promise so it can be yielded in the generator
       return {
-        [Symbol.iterator]: function* () {
+        [Symbol.iterator]: function* (): Generator<unknown, unknown> {
           // Return a sentinel that runEffect resolves asynchronously
           return yield { _tag: "EffectPromise", fn };
         },
@@ -47,7 +47,7 @@ mock.module("effect", () => {
 
 mock.module("@atlas/api/lib/effect/services", () => ({
   AuthContext: fakeAuthContext,
-  RequestContext: { [Symbol.iterator]: function* () { return yield { requestId: "test-req-1", startTime: Date.now() }; } },
+  RequestContext: { [Symbol.iterator]: function* (): Generator<unknown, unknown> { return yield { requestId: "test-req-1", startTime: Date.now() }; } },
   makeRequestContextLayer: () => ({}),
   makeAuthContextLayer: () => ({}),
 }));
@@ -61,7 +61,7 @@ mock.module("@atlas/api/lib/effect/hono", () => ({
       // Resolve Effect.promise sentinels
       if (value && typeof value === "object" && "_tag" in value && value._tag === "EffectPromise") {
         try {
-          value = await (value as { fn: () => Promise<unknown> }).fn();
+          value = await (value as unknown as { fn: () => Promise<unknown> }).fn();
           result = gen.next(value);
         } catch (err) {
           result = gen.throw(err);
@@ -350,8 +350,8 @@ describe("PUT /api/v1/admin/residency", () => {
     );
     const res = await request("PUT", "/", { region: "eu-west" });
     expect(res.status).toBe(409);
-    const json = (await res.json()) as { error: string };
-    expect(json.error).toContain("already assigned");
+    const json = (await res.json()) as { error: string; message: string };
+    expect(json.message).toContain("already assigned");
   });
 
   it("returns 400 for invalid region", async () => {
@@ -361,8 +361,8 @@ describe("PUT /api/v1/admin/residency", () => {
     );
     const res = await request("PUT", "/", { region: "mars-1" });
     expect(res.status).toBe(400);
-    const json = (await res.json()) as { error: string };
-    expect(json.error).toContain("Invalid region");
+    const json = (await res.json()) as { error: string; message: string };
+    expect(json.message).toContain("Invalid region");
   });
 
   it("returns 404 when workspace not found", async () => {

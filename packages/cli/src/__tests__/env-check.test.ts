@@ -182,7 +182,7 @@ describe("env-check", () => {
       expect(mockCancel).toHaveBeenCalledWith("Operation cancelled.");
     });
 
-    test("warns gracefully when copy fails", async () => {
+    test.skipIf(process.getuid?.() === 0)("warns gracefully when copy fails", async () => {
       fs.writeFileSync(path.join(tmpDir, ".env.example"), "EXAMPLE=1");
       Object.defineProperty(process.stdin, "isTTY", { value: true, writable: true });
       mockConfirm.mockResolvedValue(true);

@@ -69,3 +69,6 @@ export function requireEnterprise(feature?: string): void {
     );
   }
 }
+
+// Re-export deploy mode resolution
+export { resolveDeployMode } from "./deploy-mode";

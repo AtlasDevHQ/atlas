@@ -185,6 +185,20 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     scope: "workspace",
   },
 
+  // Platform
+  {
+    key: "ATLAS_DEPLOY_MODE",
+    section: "Platform",
+    label: "Deploy Mode",
+    description: "Deployment mode: saas (hosted product), self-hosted, or auto (detect)",
+    type: "select",
+    options: ["auto", "saas", "self-hosted"],
+    default: "auto",
+    envVar: "ATLAS_DEPLOY_MODE",
+    requiresRestart: true,
+    scope: "platform",
+  },
+
   // Agent
   {
     key: "ATLAS_AGENT_MAX_STEPS",

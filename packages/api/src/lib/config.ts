@@ -395,6 +395,13 @@ const AtlasConfigSchema = z.object({
   }).optional(),
 
   /**
+   * Deploy mode. "saas" enables hosted product features (enterprise-gated),
+   * "self-hosted" disables them, "auto" (default) detects from environment.
+   * The resolved binary value is exposed as `deployMode` on ResolvedConfig.
+   */
+  deployMode: z.enum(["auto", "saas", "self-hosted"]).optional().default("auto"),
+
+  /**
    * Data residency configuration. When configured, workspaces are assigned
    * to geographic regions and connections route to region-specific databases.
    * Requires enterprise features to be enabled.
@@ -453,6 +460,8 @@ export interface ResolvedConfig {
   enterprise?: { enabled: boolean; licenseKey?: string };
   /** Data residency configuration for region-based routing. */
   residency?: ResidencyConfig;
+  /** Resolved deploy mode — binary "saas" or "self-hosted" (auto is resolved at boot). */
+  deployMode?: "saas" | "self-hosted";
   /** Whether the config was loaded from a file or synthesized from env vars. */
   source: "file" | "env";
 }
@@ -1012,6 +1021,29 @@ export function validateAndResolve(raw: unknown): ResolvedConfig {
  * @throws {Error} When the config file exists but is invalid (Zod errors
  *   are formatted into a human-readable message).
  */
+/**
+ * Resolve the deploy mode for a ResolvedConfig.
+ *
+ * Tries to load `resolveDeployMode` from the enterprise (`ee/`) package.
+ * When the enterprise module is not available, falls back to `"self-hosted"`.
+ * Mutates `resolved.deployMode` in place and logs the result.
+ */
+async function applyDeployMode(resolved: ResolvedConfig): Promise<void> {
+  const rawSetting = process.env.ATLAS_DEPLOY_MODE as "saas" | "self-hosted" | "auto" | undefined;
+  try {
+    const { resolveDeployMode } = await import("@atlas/ee/deploy-mode");
+    resolved.deployMode = resolveDeployMode(rawSetting);
+  } catch (err) {
+    // ee/ module not available — default to self-hosted
+    log.debug(
+      { err: err instanceof Error ? err.message : String(err) },
+      "Deploy mode resolution unavailable — defaulting to self-hosted",
+    );
+    resolved.deployMode = "self-hosted";
+  }
+  log.info({ deployMode: resolved.deployMode }, "Deploy mode resolved");
+}
+
 export async function loadConfig(
   projectRoot: string = process.cwd(),
 ): Promise<ResolvedConfig> {
@@ -1020,11 +1052,13 @@ export async function loadConfig(
   if (raw === null) {
     log.info("No atlas.config.ts found — using environment variables");
     const resolved = configFromEnv();
+    await applyDeployMode(resolved);
     _resolved = resolved;
     return resolved;
   }
 
   const resolved = validateAndResolve(raw);
+  await applyDeployMode(resolved);
 
   log.info(
     {

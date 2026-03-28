@@ -4410,9 +4410,16 @@ admin.openapi(getSettingsRoute, async (c) => runHandler(c, "list settings", asyn
   const { authResult } = await adminAuthAndContext(c);
   const orgId = authResult.user?.activeOrganizationId;
   const isPlatformAdmin = authResult.user?.role === "platform_admin";
-  const settings = getSettingsForAdmin(orgId, isPlatformAdmin || !orgId);
+  const allSettings = getSettingsForAdmin(orgId, isPlatformAdmin || !orgId);
   const manageable = hasInternalDB();
   const deployMode = getConfig()?.deployMode ?? "self-hosted";
+
+  // In SaaS mode, workspace admins only see settings they can control.
+  // Platform admins and self-hosted mode see everything.
+  const settings = (deployMode === "saas" && !isPlatformAdmin)
+    ? allSettings.filter((s) => s.saasVisible !== false)
+    : allSettings;
+
   return c.json({ settings, manageable, deployMode }, 200);
 }));
 

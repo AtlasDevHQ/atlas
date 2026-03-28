@@ -37,6 +37,8 @@ export interface SettingDefinition {
   requiresRestart?: boolean;
   /** Whether this setting can be overridden per-workspace ("workspace") or is global only ("platform"). Defaults to "platform". */
   scope: SettingScope;
+  /** Whether this setting is visible to workspace admins in SaaS mode. Defaults to true. Platform admins always see all settings. */
+  saasVisible?: boolean;
 }
 
 export interface SettingWithValue extends SettingDefinition {
@@ -96,6 +98,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     envVar: "ATLAS_RLS_ENABLED",
     requiresRestart: true,
     scope: "platform",
+    saasVisible: false,
   },
   {
     key: "ATLAS_RLS_COLUMN",
@@ -106,6 +109,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     envVar: "ATLAS_RLS_COLUMN",
     requiresRestart: true,
     scope: "platform",
+    saasVisible: false,
   },
   {
     key: "ATLAS_RLS_CLAIM",
@@ -116,6 +120,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     envVar: "ATLAS_RLS_CLAIM",
     requiresRestart: true,
     scope: "platform",
+    saasVisible: false,
   },
   {
     key: "ATLAS_TABLE_WHITELIST",
@@ -127,6 +132,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     envVar: "ATLAS_TABLE_WHITELIST",
     requiresRestart: true,
     scope: "platform",
+    saasVisible: false,
   },
   {
     key: "ATLAS_CORS_ORIGIN",
@@ -138,6 +144,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     envVar: "ATLAS_CORS_ORIGIN",
     requiresRestart: true,
     scope: "platform",
+    saasVisible: false,
   },
 
   // Sessions
@@ -197,6 +204,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     envVar: "ATLAS_DEPLOY_MODE",
     requiresRestart: true,
     scope: "platform",
+    saasVisible: false,
   },
 
   // Agent
@@ -221,6 +229,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     envVar: "ATLAS_PROVIDER",
     requiresRestart: true,
     scope: "platform",
+    saasVisible: false,
   },
   {
     key: "ATLAS_MODEL",
@@ -231,6 +240,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     envVar: "ATLAS_MODEL",
     requiresRestart: true,
     scope: "platform",
+    saasVisible: false,
   },
   {
     key: "ATLAS_LOG_LEVEL",
@@ -243,6 +253,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     envVar: "ATLAS_LOG_LEVEL",
     requiresRestart: true,
     scope: "platform",
+    saasVisible: false,
   },
 
   // Appearance
@@ -267,6 +278,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: true,
     envVar: "ANTHROPIC_API_KEY",
     scope: "platform",
+    saasVisible: false,
   },
   {
     key: "OPENAI_API_KEY",
@@ -277,6 +289,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: true,
     envVar: "OPENAI_API_KEY",
     scope: "platform",
+    saasVisible: false,
   },
   {
     key: "DATABASE_URL",
@@ -287,6 +300,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: true,
     envVar: "DATABASE_URL",
     scope: "platform",
+    saasVisible: false,
   },
   {
     key: "ATLAS_DATASOURCE_URL",
@@ -297,6 +311,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: true,
     envVar: "ATLAS_DATASOURCE_URL",
     scope: "platform",
+    saasVisible: false,
   },
 ];
 

@@ -7,6 +7,12 @@
 
 import type { AtlasRole } from "./auth";
 
+/** Resolved deploy mode — binary value after auto-detection. */
+export type DeployMode = "saas" | "self-hosted";
+
+/** Raw deploy mode setting — includes "auto" for auto-detection. */
+export type DeployModeSetting = "saas" | "self-hosted" | "auto";
+
 export const WORKSPACE_STATUSES = ["active", "suspended", "deleted"] as const;
 export type WorkspaceStatus = (typeof WORKSPACE_STATUSES)[number];
 

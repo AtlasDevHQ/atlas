@@ -33,6 +33,7 @@ import {
   deleteSetting,
 } from "@atlas/api/lib/settings";
 import { detectAuthMode } from "@atlas/api/lib/auth/detect";
+import { getConfig } from "@atlas/api/lib/config";
 import type { AtlasRole } from "@atlas/api/lib/auth/types";
 import { ATLAS_ROLES } from "@atlas/api/lib/auth/types";
 import {
@@ -4411,7 +4412,8 @@ admin.openapi(getSettingsRoute, async (c) => runHandler(c, "list settings", asyn
   const isPlatformAdmin = authResult.user?.role === "platform_admin";
   const settings = getSettingsForAdmin(orgId, isPlatformAdmin || !orgId);
   const manageable = hasInternalDB();
-  return c.json({ settings, manageable }, 200);
+  const deployMode = getConfig()?.deployMode ?? "self-hosted";
+  return c.json({ settings, manageable, deployMode }, 200);
 }));
 
 admin.openapi(updateSettingRoute, async (c) => runHandler(c, "save setting", async () => {

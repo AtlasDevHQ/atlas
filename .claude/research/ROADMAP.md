@@ -620,7 +620,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] Self-serve data residency selection for workspace admins (#976, PR #1016, fix PR #1017)
 
 ### Infrastructure
-- [ ] Adopt versioned migration framework for internal DB (#978)
+- [x] Adopt versioned migration framework for internal DB (#978, PR #1019)
 
 ### Follow-ups
 - [x] Org-scope admin write operations — role change, ban, delete (#983, PR #988)
@@ -632,6 +632,8 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] Custom-domain page used inline toLocaleDateString instead of shared formatDate (#1009, PR #1013)
 - [x] Regenerate API reference docs with flat filenames and operationIds (PR #987)
 - [x] Consolidate formatNumber in token-usage pages to shared @/lib/format (#1014, PR #1015)
+- [x] Fix type errors and runtime crash from #976 residency PR (PR #1017)
+- [x] Isolate corrupted-DuckDB test in subprocess to fix flaky segfault (#992, PR #1018)
 
 ---
 

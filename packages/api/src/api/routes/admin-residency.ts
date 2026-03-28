@@ -102,10 +102,6 @@ const getStatusRoute = createRoute({
       description: "Authentication required",
       content: { "application/json": { schema: AuthErrorSchema } },
     },
-    404: {
-      description: "Enterprise features not available",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
     500: {
       description: "Internal server error",
       content: { "application/json": { schema: ErrorSchema } },
@@ -173,9 +169,19 @@ adminResidency.openapi(getStatusRoute, async (c) => {
     Effect.gen(function* () {
       const { orgId } = yield* AuthContext;
 
-      const mod = await loadResidency();
+      const mod = yield* Effect.promise(() => loadResidency());
       if (!mod) {
-        return c.json({ error: "Data residency is not available in this deployment." }, 404);
+        return c.json(
+          {
+            configured: false,
+            region: null,
+            regionLabel: null,
+            assignedAt: null,
+            defaultRegion: "none",
+            availableRegions: [],
+          },
+          200,
+        );
       }
 
       let configured = true;
@@ -203,7 +209,7 @@ adminResidency.openapi(getStatusRoute, async (c) => {
       let assignedAt: string | null = null;
 
       if (configured) {
-        const assignment = await mod.getWorkspaceRegionAssignment(orgId!);
+        const assignment = yield* Effect.promise(() => mod.getWorkspaceRegionAssignment(orgId!));
         if (assignment) {
           region = assignment.region;
           regionLabel =
@@ -236,13 +242,13 @@ adminResidency.openapi(assignRegionRoute, async (c) => {
       const { orgId } = yield* AuthContext;
       const { region } = c.req.valid("json");
 
-      const mod = await loadResidency();
+      const mod = yield* Effect.promise(() => loadResidency());
       if (!mod) {
         return c.json({ error: "Data residency is not available in this deployment." }, 404);
       }
 
       try {
-        const result = await mod.assignWorkspaceRegion(orgId!, region);
+        const result = yield* Effect.promise(() => mod.assignWorkspaceRegion(orgId!, region as string));
         log.info({ orgId, region }, "Workspace region assigned via self-serve");
         return c.json(result, 200);
       } catch (err) {

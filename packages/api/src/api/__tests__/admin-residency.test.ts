@@ -7,6 +7,74 @@
 
 import { describe, it, expect, beforeEach, mock, type Mock } from "bun:test";
 
+// --- Effect mock ---
+// Mock the Effect bridge so the route file can load and execute without
+// the full Effect runtime. Effect.gen + runEffect are shimmed to execute
+// the generator directly, resolving yield* calls to mocked services.
+
+let mockEffectUser: Record<string, unknown> = {
+  id: "admin-1",
+  mode: "simple-key",
+  label: "Admin",
+  role: "admin",
+  activeOrganizationId: "org-1",
+  orgId: "org-1",
+};
+
+const fakeAuthContext = {
+  [Symbol.iterator]: function* () {
+    return yield mockEffectUser;
+  },
+};
+
+mock.module("effect", () => {
+  const Effect = {
+    gen: (genFn: () => Generator) => {
+      return { _tag: "EffectGen", genFn };
+    },
+    promise: (fn: () => Promise<unknown>) => {
+      // Wrap the promise so it can be yielded in the generator
+      return {
+        [Symbol.iterator]: function* () {
+          // Return a sentinel that runEffect resolves asynchronously
+          return yield { _tag: "EffectPromise", fn };
+        },
+      };
+    },
+  };
+  return { Effect };
+});
+
+mock.module("@atlas/api/lib/effect/services", () => ({
+  AuthContext: fakeAuthContext,
+  RequestContext: { [Symbol.iterator]: function* () { return yield { requestId: "test-req-1", startTime: Date.now() }; } },
+  makeRequestContextLayer: () => ({}),
+  makeAuthContextLayer: () => ({}),
+}));
+
+mock.module("@atlas/api/lib/effect/hono", () => ({
+  runEffect: async (_c: unknown, effect: { _tag: string; genFn: () => Generator }, _opts?: unknown) => {
+    const gen = effect.genFn();
+    let result = gen.next();
+    while (!result.done) {
+      let value = result.value;
+      // Resolve Effect.promise sentinels
+      if (value && typeof value === "object" && "_tag" in value && value._tag === "EffectPromise") {
+        try {
+          value = await (value as { fn: () => Promise<unknown> }).fn();
+          result = gen.next(value);
+        } catch (err) {
+          result = gen.throw(err);
+        }
+      } else {
+        result = gen.next(value);
+      }
+    }
+    return result.value;
+  },
+  DomainErrorMapping: Array,
+}));
+
 // --- Auth mock ---
 
 const mockAuthenticateRequest: Mock<(req: Request) => Promise<unknown>> = mock(
@@ -103,6 +171,14 @@ mock.module("@atlas/ee/platform/residency", () => ({
   isConfiguredRegion: () => true,
 }));
 
+mock.module("@atlas/ee/auth/ip-allowlist", () => ({
+  checkIPAllowlist: mock(async () => ({ allowed: true })),
+  listIPAllowlistEntries: mock(async () => []),
+  addIPAllowlistEntry: mock(async () => ({})),
+  removeIPAllowlistEntry: mock(async () => false),
+  IPAllowlistError: class extends Error { constructor(message: string, public readonly code: string) { super(message); this.name = "IPAllowlistError"; } },
+}));
+
 mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
@@ -130,6 +206,14 @@ function resetMocks() {
     "us-east": { label: "US East", databaseUrl: "postgresql://us" },
     "eu-west": { label: "EU West", databaseUrl: "postgresql://eu" },
     "ap-southeast": { label: "Asia Pacific", databaseUrl: "postgresql://ap" },
+  };
+  mockEffectUser = {
+    id: "admin-1",
+    mode: "simple-key",
+    label: "Admin",
+    role: "admin",
+    activeOrganizationId: "org-1",
+    orgId: "org-1",
   };
   mockAuthenticateRequest.mockImplementation(() =>
     Promise.resolve({

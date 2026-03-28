@@ -77,7 +77,15 @@ export default function ResidencyPage() {
           </p>
         </div>
 
-        {assignMutation.error && <ErrorBanner error={assignMutation.error} />}
+        {assignMutation.error && (
+          <ErrorBanner
+            message={assignMutation.error}
+            onRetry={() => {
+              assignMutation.clearError();
+              refetch();
+            }}
+          />
+        )}
 
         <AdminContentWrapper
           data={data}

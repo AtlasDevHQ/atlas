@@ -97,20 +97,39 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("migrateAuthTables", () => {
-  it("runs internal DB migration when DATABASE_URL is set", async () => {
+  it("runs versioned migrations when DATABASE_URL is set", async () => {
     process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/atlas";
     const { pool, queries } = createTrackingPool();
     _resetPool(pool);
 
     await migrateAuthTables();
 
-    // migrateInternalDB: org table check skips workspace ALTERs in mock
-    // + loadSavedConnections SELECT + loadPluginSettings SELECT + restoreAbuseState SELECT
-    // (includes SSO enforcement, ip_allowlist, custom_roles, user_onboarding, audit_retention_config, workspace_model_config, approval_rules, approval_queue, workspace_branding, onboarding_emails, email_preferences, abuse_events, custom_domains)
-    // +3 from settings org-scope migration (DROP CONSTRAINT + 2 CREATE UNIQUE INDEX)
-    // +3 from slack_installations org_id migration (2 ALTER TABLE + 1 CREATE INDEX)
-    expect(queries.length).toBe(146);
-    expect(queries[0]).toContain("CREATE TABLE IF NOT EXISTS audit_log");
+    // Versioned migration runner:
+    //   1. CREATE __atlas_migrations table
+    //   2. SELECT applied migrations
+    //   3. BEGIN transaction
+    //   4. Execute baseline SQL
+    //   5. INSERT migration record
+    //   6. COMMIT
+    // Then seeds (prompt library, SLA thresholds, backup config) + loadSavedConnections + loadPluginSettings + restoreAbuseState
+    expect(queries.length).toBeGreaterThan(5);
+
+    // Verify advisory lock acquired and tracking table created
+    expect(queries[0]).toContain("pg_advisory_lock");
+    const trackingTable = queries.find((q) => q.includes("__atlas_migrations") && q.includes("CREATE TABLE"));
+    expect(trackingTable).toBeDefined();
+
+    // Verify the baseline migration SQL was executed
+    const baselineSql = queries.find((q) => q.includes("CREATE TABLE IF NOT EXISTS audit_log"));
+    expect(baselineSql).toBeDefined();
+
+    // Verify a transaction was used
+    expect(queries).toContain("BEGIN");
+    expect(queries).toContain("COMMIT");
+
+    // Verify migration was recorded
+    const insertMigration = queries.find((q) => q.includes("INSERT INTO __atlas_migrations"));
+    expect(insertMigration).toBeDefined();
   });
 
   it("skips internal DB migration when DATABASE_URL is not set", async () => {
@@ -147,15 +166,12 @@ describe("migrateAuthTables", () => {
     _setAuthInstance(instance as any);
 
     await migrateAuthTables();
+    const firstRunCount = queries.length;
     await migrateAuthTables();
     await migrateAuthTables();
 
-    // Internal DB migration runs once (org table check skips workspace ALTERs)
-    // + loadSavedConnections + loadPluginSettings + restoreAbuseState + ALTER TABLE password_change_required
-    // (includes SSO enforcement, ip_allowlist, custom_roles, user_onboarding, audit_retention_config, workspace_model_config, approval_rules, approval_queue, workspace_branding, onboarding_emails, email_preferences, abuse_events, custom_domains)
-    // +3 from settings org-scope migration (DROP CONSTRAINT + 2 CREATE UNIQUE INDEX)
-    // +3 from slack_installations org_id migration (2 ALTER TABLE + 1 CREATE INDEX)
-    expect(queries.length).toBe(147);
+    // No additional queries after first run — idempotent guard prevents re-execution
+    expect(queries.length).toBe(firstRunCount);
     // Better Auth migration runs once
     expect(getMigrationCount()).toBe(1);
   });
@@ -210,5 +226,31 @@ describe("migrateAuthTables", () => {
     await migrateAuthTables();
 
     expect(getMigrationError()).toBeNull();
+  });
+
+  it("skips already-applied migrations", async () => {
+    process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/atlas";
+    const queries: string[] = [];
+    const pool = {
+      async query(sql: string) {
+        queries.push(sql);
+        // Return "already applied" for the SELECT query
+        if (sql.includes("SELECT name FROM __atlas_migrations")) {
+          return { rows: [{ name: "0000_baseline.sql" }] };
+        }
+        return { rows: [] };
+      },
+      async connect() {
+        return { query: async () => ({ rows: [] }), release() {} };
+      },
+      async end() {},
+      on() {},
+    };
+    _resetPool(pool);
+
+    await migrateAuthTables();
+
+    // Should NOT have a BEGIN/COMMIT since baseline was already applied
+    expect(queries).not.toContain("BEGIN");
   });
 });

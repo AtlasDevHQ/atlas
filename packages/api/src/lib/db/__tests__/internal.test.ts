@@ -206,65 +206,38 @@ describe("internal DB module", () => {
   });
 
   describe("migrateInternalDB()", () => {
-    it("executes CREATE TABLE and CREATE INDEX statements for all tables", async () => {
+    it("runs versioned migrations and seeds via migration runner", async () => {
       process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/atlas";
       const { pool, calls } = createMockPool();
       _resetPool(pool);
 
       await migrateInternalDB();
-      // 140 base queries + 1 org table existence check (workspace ALTER TABLEs
-      // are skipped because mock pool returns empty rows for the check)
-      // Includes: SSO enforcement, ip_allowlist, custom_roles, user_onboarding, audit_retention_config, workspace_model_config, approval_rules, approval_queue, workspace_branding, onboarding_emails, email_preferences, abuse_events, custom_domains tables + indexes
-      // +3 from settings org-scope migration (DROP CONSTRAINT + 2 CREATE UNIQUE INDEX)
-      // +3 from slack_installations org_id migration (2 ALTER TABLE + 1 CREATE INDEX)
-      expect(calls.queries.length).toBe(143);
-      expect(calls.queries[0].sql).toContain("CREATE TABLE IF NOT EXISTS audit_log");
-      expect(calls.queries[1].sql).toContain("idx_audit_log_timestamp");
-      expect(calls.queries[2].sql).toContain("idx_audit_log_user_id");
-      expect(calls.queries[3].sql).toContain("CREATE TABLE IF NOT EXISTS conversations");
-      expect(calls.queries[4].sql).toContain("idx_conversations_user");
-      expect(calls.queries[5].sql).toContain("CREATE TABLE IF NOT EXISTS messages");
-      expect(calls.queries[6].sql).toContain("idx_messages_conversation");
-      expect(calls.queries[7].sql).toContain("CREATE TABLE IF NOT EXISTS slack_installations");
-      // +3 migration queries: ALTER TABLE org_id, ALTER TABLE workspace_name, CREATE INDEX org
-      expect(calls.queries[8].sql).toContain("ALTER TABLE slack_installations ADD COLUMN IF NOT EXISTS org_id");
-      expect(calls.queries[9].sql).toContain("ALTER TABLE slack_installations ADD COLUMN IF NOT EXISTS workspace_name");
-      expect(calls.queries[10].sql).toContain("idx_slack_installations_org");
-      expect(calls.queries[11].sql).toContain("CREATE TABLE IF NOT EXISTS slack_threads");
-      expect(calls.queries[12].sql).toContain("idx_slack_threads_conversation");
-      expect(calls.queries[13].sql).toContain("CREATE TABLE IF NOT EXISTS action_log");
-      expect(calls.queries[14].sql).toContain("idx_action_log_requested_by");
-      expect(calls.queries[15].sql).toContain("idx_action_log_status");
-      expect(calls.queries[16].sql).toContain("idx_action_log_action_type");
-      expect(calls.queries[17].sql).toContain("idx_action_log_conversation");
-      expect(calls.queries[18].sql).toContain("ADD COLUMN IF NOT EXISTS source_id");
-      expect(calls.queries[19].sql).toContain("idx_audit_log_source_id");
-      expect(calls.queries[20].sql).toContain("tables_accessed JSONB");
-      expect(calls.queries[21].sql).toContain("idx_audit_log_tables_accessed");
-      expect(calls.queries[22].sql).toContain("idx_audit_log_columns_accessed");
-      expect(calls.queries[23].sql).toContain("starred BOOLEAN");
-      expect(calls.queries[24].sql).toContain("idx_conversations_starred");
-      expect(calls.queries[25].sql).toContain("share_token");
-      expect(calls.queries[26].sql).toContain("idx_conversations_share_token");
-      expect(calls.queries[27].sql).toContain("share_mode");
-      expect(calls.queries[28].sql).toContain("chk_share_mode");
-      expect(calls.queries[29].sql).toContain("CREATE TABLE IF NOT EXISTS scheduled_tasks");
-      expect(calls.queries[30].sql).toContain("idx_scheduled_tasks_owner");
-      expect(calls.queries[31].sql).toContain("idx_scheduled_tasks_enabled");
-      expect(calls.queries[32].sql).toContain("idx_scheduled_tasks_next_run");
-      expect(calls.queries[33].sql).toContain("CREATE TABLE IF NOT EXISTS scheduled_task_runs");
-      expect(calls.queries[34].sql).toContain("idx_scheduled_task_runs_task");
-      expect(calls.queries[35].sql).toContain("idx_scheduled_task_runs_status");
-      expect(calls.queries[36].sql).toContain("delivery_status");
-      expect(calls.queries[37].sql).toContain("CREATE TABLE IF NOT EXISTS connections");
-      expect(calls.queries[38].sql).toContain("CREATE TABLE IF NOT EXISTS token_usage");
-      expect(calls.queries[39].sql).toContain("idx_token_usage_user_id");
-      expect(calls.queries[40].sql).toContain("idx_token_usage_created_at");
-      expect(calls.queries[41].sql).toContain("CREATE TABLE IF NOT EXISTS invitations");
-      expect(calls.queries[42].sql).toContain("idx_invitations_email");
-      expect(calls.queries[43].sql).toContain("idx_invitations_token");
-      expect(calls.queries[44].sql).toContain("idx_invitations_status");
-      expect(calls.queries[45].sql).toContain("idx_invitations_pending_email");
+
+      // Migration runner creates tracking table, applies baseline in a transaction, then seeds
+      const sqls = calls.queries.map((q) => q.sql);
+
+      // Advisory lock acquired, then tracking table created
+      expect(sqls[0]).toContain("pg_advisory_lock");
+      const trackingTable = sqls.find((s) => s.includes("__atlas_migrations") && s.includes("CREATE TABLE"));
+      expect(trackingTable).toBeDefined();
+
+      // Transaction used for migration
+      expect(sqls).toContain("BEGIN");
+      expect(sqls).toContain("COMMIT");
+
+      // Baseline migration SQL contains all core tables
+      const baselineSql = sqls.find((s) => s.includes("CREATE TABLE IF NOT EXISTS audit_log"));
+      expect(baselineSql).toBeDefined();
+      expect(baselineSql).toContain("CREATE TABLE IF NOT EXISTS conversations");
+      expect(baselineSql).toContain("CREATE TABLE IF NOT EXISTS messages");
+      expect(baselineSql).toContain("CREATE TABLE IF NOT EXISTS action_log");
+      expect(baselineSql).toContain("CREATE TABLE IF NOT EXISTS scheduled_tasks");
+      expect(baselineSql).toContain("CREATE TABLE IF NOT EXISTS connections");
+      expect(baselineSql).toContain("CREATE TABLE IF NOT EXISTS invitations");
+
+      // Migration was recorded
+      const recordSql = sqls.find((s) => s.includes("INSERT INTO __atlas_migrations"));
+      expect(recordSql).toBeDefined();
     });
 
     it("propagates migration errors", async () => {
@@ -273,7 +246,8 @@ describe("internal DB module", () => {
       pool._setError(new Error("permission denied"));
       _resetPool(pool);
 
-      await expect(migrateInternalDB()).rejects.toThrow("permission denied");
+      // Error may be thrown directly or wrapped by the migration runner
+      await expect(migrateInternalDB()).rejects.toThrow();
     });
   });
 

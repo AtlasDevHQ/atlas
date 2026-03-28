@@ -233,7 +233,7 @@ export default function ConnectPage() {
           </div>
         )}
 
-        {connectionStatus === "error" && (
+        {(connectionStatus === "error" || error) && (
           <div className="flex items-start gap-2 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-200">
             <XCircle className="mt-0.5 size-4 shrink-0" />
             <span>{error ?? "Connection failed"}</span>

@@ -947,6 +947,8 @@ export default defineConfig({
 | `semanticIndex` | `object` | — | Semantic index configuration ([details](#semantic-index)) |
 | `learn` | `object` | — | Dynamic learning configuration ([details](#dynamic-learning)) |
 | `enterprise` | `object` | `{ enabled: false }` | Enterprise feature gating ([details](#enterprise)) |
+| `deployMode` | `"auto" \| "saas" \| "self-hosted"` | `"auto"` | Deployment mode. `saas` enables hosted product features (enterprise-gated). `auto` detects from environment |
+| `residency` | `object` | — | Data residency region routing (enterprise-gated) |
 
 ---
 

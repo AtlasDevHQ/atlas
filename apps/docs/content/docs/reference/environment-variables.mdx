@@ -589,6 +589,7 @@ stripe listen --forward-to localhost:3001/api/auth/stripe/webhook
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `ATLAS_DEPLOY_MODE` | `auto` | Deployment mode: `saas` (hosted product features, enterprise-gated), `self-hosted`, or `auto` (detect from environment). When `auto`, resolves to `saas` if enterprise is enabled and an internal database is configured |
 | `ATLAS_ENTERPRISE_ENABLED` | `false` | Set `true` to enable enterprise features (SSO, SCIM, PII detection, custom roles). Requires a valid license key for production use |
 | `ATLAS_ENTERPRISE_LICENSE_KEY` | — | License key for enterprise features. Obtain from [useatlas.dev/enterprise](https://useatlas.dev/enterprise) |
 | `ATLAS_APPROVAL_EXPIRY_HOURS` | `24` | Hours before pending approval requests auto-expire. See [Approval Workflows](/guides/approval-workflows) |

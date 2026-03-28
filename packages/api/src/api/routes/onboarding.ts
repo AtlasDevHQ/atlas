@@ -649,7 +649,7 @@ onboarding.openapi(
       }
 
       const importResult = yield* Effect.tryPromise({
-        try: () => importFromDisk(orgId, { sourceDir: semanticDir }),
+        try: () => importFromDisk(orgId, { sourceDir: semanticDir, connectionId: "default" }),
         catch: (err) => err instanceof Error ? err : new Error(String(err)),
       }).pipe(Effect.catchAll((err) => {
         log.error({ err: err.message, requestId, demoType, semanticDir }, "Semantic layer import failed");

@@ -155,7 +155,7 @@ adminSandbox.openapi(getStatusRoute, async (c) => {
       // Platform default (the backend that would be used without any workspace override)
       const platformDefault = getExploreBackendType();
       const activePluginId = getActiveSandboxPluginId();
-      const allBackends = await getAvailableBackends();
+      const allBackends = yield* Effect.promise(() => getAvailableBackends());
 
       // Resolve the effective active backend
       let activeBackend: string;

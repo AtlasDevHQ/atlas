@@ -68,6 +68,8 @@
     "@effect/sql-mysql2": "^0.52.0",
     "@effect/sql-pg": "^0.52.1",
     "@types/js-yaml": "^4.0.9",
-    "@types/pg": "^8.16.0"
+    "@types/pg": "^8.16.0",
+    "drizzle-kit": "^0.31.10",
+    "drizzle-orm": "^0.45.2"
   }
 }

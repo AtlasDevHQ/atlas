@@ -617,10 +617,10 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] Self-serve custom domain configuration (#973, PR #1007)
 - [x] Self-serve sandbox backend selection per workspace (#974, PR #1015)
 - [x] Workspace billing page — plan, usage vs limits, portal link (#975, PR #1006)
-- [ ] Self-serve data residency selection for workspace admins (#976)
+- [x] Self-serve data residency selection for workspace admins (#976, PR #1016, fix PR #1017)
 
 ### Infrastructure
-- [ ] Adopt versioned migration framework for internal DB (#978)
+- [x] Adopt versioned migration framework for internal DB (#978, PR #1019)
 
 ### Follow-ups
 - [x] Org-scope admin write operations — role change, ban, delete (#983, PR #988)
@@ -632,6 +632,33 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] Custom-domain page used inline toLocaleDateString instead of shared formatDate (#1009, PR #1013)
 - [x] Regenerate API reference docs with flat filenames and operationIds (PR #987)
 - [x] Consolidate formatNumber in token-usage pages to shared @/lib/format (#1014, PR #1015)
+- [x] Fix type errors and runtime crash from #976 residency PR (PR #1017)
+- [x] Isolate corrupted-DuckDB test in subprocess to fix flaky segfault (#992, PR #1018)
+
+---
+
+## 0.9.7 — SaaS-First Admin Experience
+
+**Make app.useatlas.dev feel like a real SaaS product, not a self-hosted deployment.** Remove operator-facing UX (env var names, "Requires restart", "configure DATABASE_URL") from the workspace admin experience. Make plugins, integrations, sandbox, and settings self-serve for paying SaaS customers. Keep self-hosted persona fully functional.
+
+### Foundation (P0)
+
+- [ ] Add explicit deploy mode flag — `ATLAS_DEPLOY_MODE=saas|self-hosted|auto` (#1020)
+- [ ] Hide "Requires restart" and env var names from SaaS workspace admins (#1021)
+- [ ] Filter settings page to workspace-relevant settings in SaaS mode (#1022)
+
+### Self-Service Features (P1)
+
+- [ ] Make restart-required settings hot-reloadable in SaaS mode (#1023)
+- [ ] OAuth-first integration connect flows for SaaS workspaces (#1024)
+- [ ] Plugin marketplace — browse, install, configure per workspace (#1025)
+- [ ] Product-focused sandbox selection UX for SaaS users (#1026)
+- [ ] Product-focused data residency UX for SaaS users (#1027)
+
+### Finishing Touches (P2)
+
+- [ ] Email integration connect flow in Integrations hub (#1028)
+- [ ] Self-hosted deploy validation via GH Actions for template repos (#1029)
 
 ---
 

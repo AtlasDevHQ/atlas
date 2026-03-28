@@ -114,8 +114,10 @@ describe("migrateAuthTables", () => {
     // Then seeds (prompt library, SLA thresholds, backup config) + loadSavedConnections + loadPluginSettings + restoreAbuseState
     expect(queries.length).toBeGreaterThan(5);
 
-    // Verify migration tracking table was created
-    expect(queries[0]).toContain("__atlas_migrations");
+    // Verify advisory lock acquired and tracking table created
+    expect(queries[0]).toContain("pg_advisory_lock");
+    const trackingTable = queries.find((q) => q.includes("__atlas_migrations") && q.includes("CREATE TABLE"));
+    expect(trackingTable).toBeDefined();
 
     // Verify the baseline migration SQL was executed
     const baselineSql = queries.find((q) => q.includes("CREATE TABLE IF NOT EXISTS audit_log"));

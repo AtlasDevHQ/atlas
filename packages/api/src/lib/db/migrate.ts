@@ -38,6 +38,20 @@ const MIGRATIONS_DIR = path.join(import.meta.dir, "migrations");
  * Returns the number of migrations applied (0 if already up-to-date).
  */
 export async function runMigrations(pool: MigrationPool): Promise<number> {
+  // Acquire an advisory lock so concurrent server instances don't race.
+  // hashtext('atlas_migrations') produces a stable int4 key.
+  await pool.query("SELECT pg_advisory_lock(hashtext('atlas_migrations'))");
+
+  try {
+    return await _runMigrationsLocked(pool);
+  } finally {
+    await pool.query("SELECT pg_advisory_unlock(hashtext('atlas_migrations'))").catch(() => {
+      // intentionally ignored: unlock may fail if connection was broken
+    });
+  }
+}
+
+async function _runMigrationsLocked(pool: MigrationPool): Promise<number> {
   // Ensure tracking table exists
   await pool.query(`
     CREATE TABLE IF NOT EXISTS __atlas_migrations (
@@ -223,8 +237,13 @@ async function seedSlaThresholdDefaults(pool: MigrationPool): Promise<void> {
        ON CONFLICT (workspace_id) DO NOTHING`,
       [defaultLatency, defaultErrorRate],
     );
-  } catch {
-    // intentionally ignored: table may not exist in non-EE deployments
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes("does not exist")) {
+      log.debug("sla_thresholds table not present — skipping SLA seed (expected in non-EE)");
+    } else {
+      log.warn({ err: msg }, "Failed to seed SLA threshold defaults");
+    }
   }
 }
 
@@ -243,7 +262,12 @@ async function seedBackupConfigDefaults(pool: MigrationPool): Promise<void> {
        ON CONFLICT (id) DO NOTHING`,
       [envSchedule, envRetention, envStorage],
     );
-  } catch {
-    // intentionally ignored: table may not exist in non-EE deployments
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes("does not exist")) {
+      log.debug("backup_config table not present — skipping backup seed (expected in non-EE)");
+    } else {
+      log.warn({ err: msg }, "Failed to seed backup config defaults");
+    }
   }
 }

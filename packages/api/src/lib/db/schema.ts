@@ -454,7 +454,7 @@ export const querySuggestions = pgTable(
     // UNIQUE NULLS NOT DISTINCT — requires PostgreSQL 15+
     // Handled via raw SQL in migration since Drizzle doesn't support NULLS NOT DISTINCT
     index("idx_query_suggestions_org_table").on(t.orgId, t.primaryTable),
-    index("idx_query_suggestions_org_score").on(t.orgId, t.score),
+    index("idx_query_suggestions_org_score").on(t.orgId, sql`score DESC`),
     index("idx_query_suggestions_tables").using("gin", t.tablesInvolved),
   ],
 );
@@ -810,7 +810,7 @@ export const backups = pgTable(
     errorMessage: text("error_message"),
   },
   (t) => [
-    index("idx_backups_status").on(t.status, t.createdAt),
+    index("idx_backups_status").on(t.status, sql`created_at DESC`),
   ],
 );
 
@@ -879,7 +879,7 @@ export const slaMetrics = pgTable(
     recordedAt: timestamp("recorded_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
-    index("idx_sla_metrics_ws_time").on(t.workspaceId, t.recordedAt),
+    index("idx_sla_metrics_ws_time").on(t.workspaceId, sql`recorded_at DESC`),
   ],
 );
 

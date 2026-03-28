@@ -216,8 +216,10 @@ describe("internal DB module", () => {
       // Migration runner creates tracking table, applies baseline in a transaction, then seeds
       const sqls = calls.queries.map((q) => q.sql);
 
-      // Tracking table created
-      expect(sqls[0]).toContain("__atlas_migrations");
+      // Advisory lock acquired, then tracking table created
+      expect(sqls[0]).toContain("pg_advisory_lock");
+      const trackingTable = sqls.find((s) => s.includes("__atlas_migrations") && s.includes("CREATE TABLE"));
+      expect(trackingTable).toBeDefined();
 
       // Transaction used for migration
       expect(sqls).toContain("BEGIN");

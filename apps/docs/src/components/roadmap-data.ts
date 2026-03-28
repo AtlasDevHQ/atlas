@@ -245,6 +245,7 @@ export const milestones: Milestone[] = [
       "Integrations hub with Slack self-service",
       "Custom domain configuration",
       "Billing page with usage vs limits",
+      "Sandbox backend selection per workspace",
     ],
     githubMilestone: 28,
   },

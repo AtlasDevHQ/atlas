@@ -615,7 +615,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] Integrations hub page for workspace admins (#971, PR #1008)
 - [x] Self-serve Slack disconnect/reconnect (#972, PR #1008)
 - [x] Self-serve custom domain configuration (#973, PR #1007)
-- [ ] Self-serve sandbox backend selection per workspace (#974)
+- [x] Self-serve sandbox backend selection per workspace (#974, PR #1015)
 - [x] Workspace billing page — plan, usage vs limits, portal link (#975, PR #1006)
 - [ ] Self-serve data residency selection for workspace admins (#976)
 
@@ -631,7 +631,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] formatNumber cross-page coupling — moved to shared @/lib/format (#1012, PR #1013)
 - [x] Custom-domain page used inline toLocaleDateString instead of shared formatDate (#1009, PR #1013)
 - [x] Regenerate API reference docs with flat filenames and operationIds (PR #987)
-- [ ] Consolidate formatNumber in token-usage pages to shared @/lib/format (#1014)
+- [x] Consolidate formatNumber in token-usage pages to shared @/lib/format (#1014, PR #1015)
 
 ---
 

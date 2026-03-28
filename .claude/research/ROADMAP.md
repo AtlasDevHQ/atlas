@@ -644,7 +644,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 ### Foundation (P0)
 
 - [x] Add explicit deploy mode flag — `ATLAS_DEPLOY_MODE=saas|self-hosted|auto` (#1020, PR #1031)
-- [ ] Hide "Requires restart" and env var names from SaaS workspace admins (#1021)
+- [x] Hide "Requires restart" and env var names from SaaS workspace admins (#1021)
 - [ ] Filter settings page to workspace-relevant settings in SaaS mode (#1022)
 
 ### Self-Service Features (P1)

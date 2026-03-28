@@ -617,7 +617,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] Self-serve custom domain configuration (#973, PR #1007)
 - [x] Self-serve sandbox backend selection per workspace (#974, PR #1015)
 - [x] Workspace billing page — plan, usage vs limits, portal link (#975, PR #1006)
-- [ ] Self-serve data residency selection for workspace admins (#976)
+- [x] Self-serve data residency selection for workspace admins (#976, PR #1016, fix PR #1017)
 
 ### Infrastructure
 - [ ] Adopt versioned migration framework for internal DB (#978)

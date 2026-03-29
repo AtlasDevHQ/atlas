@@ -20,7 +20,8 @@ describe("Better Auth instance shape", () => {
         type: "sqlite",
       } as unknown as Parameters<typeof betterAuth>[0]["database"],
       secret: "test-secret-at-least-32-characters-long",
-      plugins: [bearer(), apiKey()],
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Better Auth plugin types are complex union types that vary by plugin combination
+      plugins: [bearer(), apiKey()] as any[],
     });
 
     expect(typeof instance.handler).toBe("function");

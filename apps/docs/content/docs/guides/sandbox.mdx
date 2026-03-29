@@ -5,7 +5,7 @@ description: Configure the sandbox backend that the explore and Python tools use
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-The sandbox is the isolated execution environment that Atlas uses to run the **explore** tool (file browsing, grep, find on the semantic layer) and **Python** tool (data analysis scripts). The Sandbox admin page lets you select which backend to use and configure per-workspace overrides.
+The sandbox is the isolated execution environment that Atlas uses to run the **explore** tool (file browsing, grep, find on the semantic layer) and **Python** tool (data analysis scripts). The admin page lets you select which backend to use and — in SaaS mode — connect your own cloud sandbox providers.
 
 <Callout title="Prerequisites">
 - [Managed auth](/deployment/authentication#managed-auth) enabled
@@ -18,11 +18,98 @@ The sandbox is the isolated execution environment that Atlas uses to run the **e
 
 **Route:** `/admin/sandbox`
 
-The page shows the current sandbox configuration:
+The page adapts based on deploy mode:
 
-- **Platform default** — The backend selected at the platform level (applies to all workspaces unless overridden)
-- **Active backend** — The backend currently in use for this workspace
-- **Workspace override** — A per-workspace backend selection, if set
+- **Self-hosted** — A dropdown selector for backend IDs with sidecar URL configuration
+- **SaaS** — An integration card grid where workspace admins connect their own sandbox providers
+
+---
+
+## SaaS Mode — Execution Environment
+
+In SaaS mode the page is titled **Execution Environment** and presents a card grid with four sandbox providers:
+
+### Atlas Cloud Sandbox
+
+Always available as a managed fallback. No credentials needed. This is the default for all workspaces and is marked **(Recommended)**.
+
+- **Active state** — highlighted border with green "Active" badge
+- **Inactive state** — click **Select** to make it active
+
+### Vercel Sandbox
+
+Firecracker microVM with network isolation. Bring your own Vercel account.
+
+**Credentials:**
+- **Access Token** — Vercel API access token
+- **Team ID** — Vercel team identifier (e.g. `team_...`)
+
+Credentials are validated against the Vercel API before saving. The team name is displayed after connection.
+
+### E2B
+
+Ephemeral cloud sandboxes with sub-second startup.
+
+**Credentials:**
+- **API Key** — E2B API key
+
+Validated against the E2B sandboxes API before saving.
+
+### Daytona
+
+Cloud-hosted development sandboxes.
+
+**Credentials:**
+- **API Key** — Daytona API key
+- **API URL** (optional) — Custom API endpoint (defaults to `https://api.daytona.io`)
+
+Validated against the Daytona health endpoint before saving.
+
+### Connect / Disconnect Flow
+
+1. Click **Connect** on a provider card
+2. Enter credentials in the dialog
+3. Click **Validate & Connect** — credentials are verified against the provider API
+4. On success, the card shows as **Connected** with the account name and connection date
+5. Click **Select** to make a connected provider the active sandbox
+6. Click **Disconnect** to remove credentials (falls back to Atlas Cloud Sandbox if this was the active provider)
+
+<Callout type="info">
+Credentials are stored per-workspace in the `sandbox_credentials` table. Each workspace can connect different providers independently.
+</Callout>
+
+---
+
+## Self-Hosted Mode — Backend Selector
+
+In self-hosted mode, the page shows the original dropdown UI:
+
+- **Platform default** — The backend selected at the platform level
+- **Active backend** — The backend currently in use
+- **Workspace override** — A per-workspace selection, if set
+
+### Selecting a Backend
+
+1. Open `/admin/sandbox`
+2. Choose a backend from the **Backend** dropdown
+3. Click **Save**
+
+To return to the platform default, select **Use platform default** from the dropdown, or click **Reset to default**.
+
+### Sidecar Configuration
+
+When the **Sidecar** backend is selected, an additional **Sidecar URL** field appears. This is the URL of the `@atlas/sandbox-sidecar` service.
+
+- Set the URL to your sidecar deployment (e.g. `http://sandbox:3002`)
+- Leave empty to use the platform default
+
+<Callout type="info">
+The sidecar is a separate service that runs explore and Python commands in an isolated container. See the [Docker deployment example](/deployment/docker) for a production sidecar setup.
+</Callout>
+
+<Callout type="info">
+The admin UI dropdown only shows API-enumerable backends (Vercel Sandbox, Sidecar, and plugin backends). nsjail and just-bash are resolved by the priority chain but are not selectable from the dropdown.
+</Callout>
 
 ---
 
@@ -55,55 +142,19 @@ When no explicit override is set, Atlas auto-detects the best available backend 
 
 You can override this chain with the `ATLAS_SANDBOX_PRIORITY` environment variable or via `sandbox.priority` in `atlas.config.ts`.
 
-<Callout type="info">
-The admin UI dropdown only shows API-enumerable backends (Vercel Sandbox, Sidecar, and plugin backends). nsjail and just-bash are resolved by the priority chain but are not selectable from the dropdown.
-</Callout>
-
----
-
-## Selecting a Backend
-
-1. Open `/admin/sandbox`
-2. Choose a backend from the **Backend** dropdown
-3. Click **Save**
-
-To return to the platform default, select **Use platform default** from the dropdown, or click **Reset to default**.
-
----
-
-## Sidecar Configuration
-
-When the **Sidecar** backend is selected, an additional **Sidecar URL** field appears. This is the URL of the `@atlas/sandbox-sidecar` service.
-
-- **Self-hosted:** Set the URL to your sidecar deployment (e.g. `http://sandbox:3002`)
-- **SaaS:** Platform operators configure the default sidecar URL. Workspace admins can override it if permitted
-
-<Callout type="info">
-The sidecar is a separate service that runs explore and Python commands in an isolated container. See the [Docker deployment example](/deployment/docker) for a production sidecar setup.
-</Callout>
-
----
-
-## Workspace Overrides
-
-In multi-tenant (SaaS) deployments, each workspace can select its own sandbox backend independently. This is useful when:
-
-- Different workspaces have different security requirements
-- Some workspaces need plugin-provided sandbox backends
-- You want to test a new backend on a single workspace before rolling out
-
-The override is stored as a workspace-level setting (`ATLAS_SANDBOX_BACKEND`) and takes precedence over the platform default.
-
 ---
 
 ## SaaS vs Self-Hosted
 
 | Behavior | Self-Hosted | SaaS |
 |----------|-------------|------|
-| Backend selection | Single deployment-wide setting | Per-workspace override available |
-| Sidecar URL | Set via env var or admin UI | Workspace-level override supported |
-| Plugin backends | Configured via `atlas.config.ts` | Managed by platform |
-| Default resolution | Auto-detect priority chain | Platform default + workspace override |
+| Page title | Sandbox | Execution Environment |
+| UI | Backend dropdown + sidecar URL | Provider card grid with connect/disconnect |
+| Providers | Not applicable | Atlas Cloud, Vercel, E2B, Daytona |
+| Credential storage | Not applicable | Per-workspace in `sandbox_credentials` table |
+| Active selection | Settings override (`ATLAS_SANDBOX_BACKEND`) | Click **Select** on a connected provider |
+| Default fallback | Auto-detect priority chain | Atlas Cloud Sandbox (sidecar) |
+| Sidecar URL | Configurable via admin UI | Managed by platform |
 
 ---
 
@@ -124,7 +175,9 @@ All endpoints require admin authentication.
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/api/v1/admin/sandbox/status` | Get sandbox configuration and available backends |
+| `GET` | `/api/v1/admin/sandbox/status` | Get sandbox configuration, available backends, and connected providers |
+| `POST` | `/api/v1/admin/sandbox/connect/{provider}` | Validate and save provider credentials (vercel, e2b, daytona) |
+| `DELETE` | `/api/v1/admin/sandbox/disconnect/{provider}` | Remove provider credentials |
 | `PUT` | `/api/v1/admin/settings/ATLAS_SANDBOX_BACKEND` | Set workspace sandbox backend |
 | `PUT` | `/api/v1/admin/settings/ATLAS_SANDBOX_URL` | Set workspace sidecar URL |
 | `DELETE` | `/api/v1/admin/settings/ATLAS_SANDBOX_BACKEND` | Reset to platform default |
@@ -134,5 +187,6 @@ All endpoints require admin authentication.
 ## See Also
 
 - [Admin Console](/guides/admin-console) — Overview of all admin pages
+- [Integrations Hub](/guides/integrations) — Connect Slack, Teams, and other platforms
 - [Environment Variables](/reference/environment-variables) — Full variable reference
 - [Docker Deployment](/deployment/docker) — Sidecar setup in Docker

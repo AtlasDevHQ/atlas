@@ -540,11 +540,11 @@ See [Integrations Hub](/guides/integrations) for the full guide.
 
 ---
 
-## Sandbox
+## Sandbox / Execution Environment
 
 **Route:** `/admin/sandbox`
 
-Configure which sandbox backend the explore and Python tools use. Supports per-workspace overrides in multi-tenant deployments.
+In **self-hosted** mode, configure which sandbox backend the explore and Python tools use via a dropdown selector. In **SaaS** mode, the page shows an integration card grid where workspace admins connect their own cloud sandbox providers (Vercel, E2B, Daytona) alongside the managed Atlas Cloud Sandbox.
 
 See [Sandbox Configuration](/guides/sandbox) for the full guide.
 
@@ -645,7 +645,12 @@ All admin endpoints are at `/api/v1/admin/` and require the `admin` role. See th
 | `GET` | `/integrations/status` | Get all integration statuses |
 | `DELETE` | `/integrations/slack` | Disconnect Slack |
 | `DELETE` | `/integrations/teams` | Disconnect Teams |
-| `GET` | `/sandbox/status` | Get sandbox configuration and available backends |
+| `DELETE` | `/integrations/discord` | Disconnect Discord |
+| `POST` | `/integrations/telegram` | Connect Telegram (validates bot token) |
+| `DELETE` | `/integrations/telegram` | Disconnect Telegram |
+| `GET` | `/sandbox/status` | Get sandbox configuration, backends, and connected providers |
+| `POST` | `/sandbox/connect/{provider}` | Validate and save BYOC sandbox credentials |
+| `DELETE` | `/sandbox/disconnect/{provider}` | Remove BYOC sandbox credentials |
 
 ---
 

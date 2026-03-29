@@ -633,6 +633,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] Regenerate API reference docs with flat filenames and operationIds (PR #987)
 - [x] Consolidate formatNumber in token-usage pages to shared @/lib/format (#1014, PR #1015)
 - [x] Fix type errors and runtime crash from #976 residency PR (PR #1017)
+- [x] Slack events handler responds to url_verification before signature check (#1011, PR #1008)
 - [x] Isolate corrupted-DuckDB test in subprocess to fix flaky segfault (#992, PR #1018)
 
 ---

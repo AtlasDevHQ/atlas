@@ -116,8 +116,11 @@ teams.openapi(installRoute, (c) => {
       | { user?: { activeOrganizationId?: string } }
       | undefined;
     orgId = authResult?.user?.activeOrganizationId ?? undefined;
-  } catch {
-    // Expected: auth middleware may not be active on this route
+  } catch (err) {
+    log.debug(
+      { err: err instanceof Error ? err.message : String(err) },
+      "authResult not available on Teams install route",
+    );
   }
 
   const nonce = crypto.randomUUID();

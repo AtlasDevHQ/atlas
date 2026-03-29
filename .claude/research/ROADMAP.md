@@ -661,7 +661,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
   - [ ] Linear (#1045)
   - [ ] WhatsApp (#1046)
 - [ ] Plugin marketplace — browse, install, configure per workspace (#1025)
-- [ ] Product-focused sandbox selection UX for SaaS users (#1026)
+- [x] Product-focused sandbox selection UX for SaaS users (#1026, PR #1052)
 - [ ] Product-focused data residency UX for SaaS users (#1027)
 
 ### SaaS Management

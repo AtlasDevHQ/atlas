@@ -961,3 +961,24 @@ export const telegramInstallations = pgTable(
     index("idx_telegram_installations_org").on(t.orgId),
   ],
 );
+
+// ---------------------------------------------------------------------------
+// Sandbox credentials (0004_sandbox_credentials.sql)
+// ---------------------------------------------------------------------------
+
+export const sandboxCredentials = pgTable(
+  "sandbox_credentials",
+  {
+    id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    orgId: text("org_id").notNull(),
+    provider: text("provider").notNull(),
+    credentials: jsonb("credentials").notNull(),
+    displayName: text("display_name"),
+    validatedAt: timestamp("validated_at", { withTimezone: true }),
+    connectedAt: timestamp("connected_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("sandbox_credentials_org_provider").on(t.orgId, t.provider),
+    index("idx_sandbox_credentials_org").on(t.orgId),
+  ],
+);

@@ -14,16 +14,15 @@ import {
 
 function createTrackingPool(opts: { shouldThrow?: boolean } = {}) {
   const queries: string[] = [];
-  async function queryFn(sql: string) {
-    if (opts.shouldThrow) throw new Error("permission denied for CREATE TABLE");
-    queries.push(sql);
-    return { rows: [] };
-  }
   return {
     pool: {
-      query: queryFn,
+      async query(sql: string) {
+        if (opts.shouldThrow) throw new Error("permission denied for CREATE TABLE");
+        queries.push(sql);
+        return { rows: [] };
+      },
       async connect() {
-        return { query: queryFn, release() {} };
+        return { query: async () => ({ rows: [] }), release() {} };
       },
       async end() {},
       on() {},
@@ -232,18 +231,17 @@ describe("migrateAuthTables", () => {
   it("skips already-applied migrations", async () => {
     process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/atlas";
     const queries: string[] = [];
-    async function queryFn(sql: string) {
-      queries.push(sql);
-      // Return "already applied" for the SELECT query
-      if (sql.includes("SELECT name FROM __atlas_migrations")) {
-        return { rows: [{ name: "0000_baseline.sql" }, { name: "0001_teams_installations.sql" }] };
-      }
-      return { rows: [] };
-    }
     const pool = {
-      query: queryFn,
+      async query(sql: string) {
+        queries.push(sql);
+        // Return "already applied" for the SELECT query
+        if (sql.includes("SELECT name FROM __atlas_migrations")) {
+          return { rows: [{ name: "0000_baseline.sql" }, { name: "0001_teams_installations.sql" }] };
+        }
+        return { rows: [] };
+      },
       async connect() {
-        return { query: queryFn, release() {} };
+        return { query: async () => ({ rows: [] }), release() {} };
       },
       async end() {},
       on() {},

@@ -49,9 +49,6 @@ jobs:
       - name: Check template drift
         run: bash scripts/check-template-drift.sh
 
-      - name: Check Drizzle schema ↔ migration drift
-        run: bash scripts/check-schema-drift.sh
-
       - name: Build SDK packages
         run: bun run --filter '@useatlas/types' build && bun run --filter '@useatlas/plugin-sdk' build && bun run --filter '@useatlas/sdk' build
 

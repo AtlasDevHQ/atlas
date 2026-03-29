@@ -5,12 +5,9 @@ FROM base AS builder
 WORKDIR /app
 COPY apps/docs/ ./
 COPY bun.lock* ./
-# brand.css is @imported as ../../../../brand.css from src/app/globals.css,
-# resolving to the monorepo root. In Docker the project root is /app, so the
-# import escapes the project. Copy brand.css into the project and rewrite the
-# relative import so it resolves within the build context.
+# globals.css imports ../../brand.css (resolves to project root via symlink in
+# the monorepo). In Docker the symlink target doesn't exist, so copy the real file.
 COPY brand.css ./brand.css
-RUN sed -i 's|../../../../brand.css|../../brand.css|' src/app/globals.css
 RUN bun install
 RUN bun run build
 

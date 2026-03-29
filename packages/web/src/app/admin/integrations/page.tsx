@@ -2,6 +2,7 @@
 
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { useDeployMode } from "@/ui/hooks/use-deploy-mode";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { formatDateTime } from "@/lib/format";
@@ -51,11 +52,13 @@ interface IntegrationStatus {
   slack: SlackStatus;
   webhooks: { activeCount: number };
   deliveryChannels: DeliveryChannel[];
+  deployMode: "saas" | "self-hosted";
 }
 
 // -- Component --
 
 export default function IntegrationsPage() {
+  const { deployMode } = useDeployMode();
   const { data, loading, error, refetch } =
     useAdminFetch<IntegrationStatus>("/api/v1/admin/integrations/status");
 
@@ -69,6 +72,7 @@ export default function IntegrationsPage() {
     await disconnectMutation.mutate({});
   }
 
+  const isSaas = (data?.deployMode ?? deployMode) === "saas";
   const slack = data?.slack;
   const webhooks = data?.webhooks;
   const deliveryChannels = data?.deliveryChannels ?? [];
@@ -99,36 +103,14 @@ export default function IntegrationsPage() {
             {/* Slack card */}
             <SlackCard
               slack={slack!}
+              isSaas={isSaas}
               onDisconnect={handleDisconnect}
               disconnecting={disconnectMutation.saving}
               disconnectError={disconnectMutation.error}
             />
 
             {/* Webhooks card */}
-            <Card>
-              <CardHeader className="pb-3">
-                <div className="flex items-center gap-2">
-                  <Webhook className="size-5 text-muted-foreground" />
-                  <CardTitle className="text-base">Webhooks</CardTitle>
-                </div>
-                <CardDescription>
-                  Outbound webhook delivery via scheduled tasks
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <div className="flex items-center justify-between">
-                  <div className="space-y-1">
-                    <p className="text-sm font-medium">Active webhook tasks</p>
-                    <p className="text-2xl font-bold tabular-nums">
-                      {webhooks?.activeCount ?? 0}
-                    </p>
-                  </div>
-                  <Badge variant={webhooks?.activeCount ? "default" : "secondary"}>
-                    {webhooks?.activeCount ? "Active" : "None"}
-                  </Badge>
-                </div>
-              </CardContent>
-            </Card>
+            <WebhookCard webhooks={webhooks} isSaas={isSaas} />
 
             {/* Delivery Channels card */}
             <Card className="md:col-span-2">
@@ -172,16 +154,27 @@ export default function IntegrationsPage() {
 
 function SlackCard({
   slack,
+  isSaas,
   onDisconnect,
   disconnecting,
   disconnectError,
 }: {
   slack: SlackStatus;
+  isSaas: boolean;
   onDisconnect: () => void;
   disconnecting: boolean;
   disconnectError: string | null;
 }) {
   const canConnect = slack.oauthConfigured;
+
+  // SaaS mode: determine status badge
+  const statusBadge = slack.connected ? (
+    <Badge variant="default">Connected</Badge>
+  ) : isSaas && !canConnect ? (
+    <Badge variant="outline">Not Available</Badge>
+  ) : (
+    <Badge variant="secondary">Disconnected</Badge>
+  );
 
   return (
     <Card>
@@ -191,9 +184,7 @@ function SlackCard({
             <MessageSquare className="size-5 text-muted-foreground" />
             <CardTitle className="text-base">Slack</CardTitle>
           </div>
-          <Badge variant={slack.connected ? "default" : "secondary"}>
-            {slack.connected ? "Connected" : "Disconnected"}
-          </Badge>
+          {statusBadge}
         </div>
         <CardDescription>
           Connect Slack for /atlas commands and thread follow-ups
@@ -222,7 +213,8 @@ function SlackCard({
                 <span>{formatDateTime(slack.installedAt)}</span>
               </div>
             )}
-            {slack.envConfigured && !slack.oauthConfigured && (
+            {/* Only show env var hint in self-hosted mode */}
+            {!isSaas && slack.envConfigured && !slack.oauthConfigured && (
               <p className="text-xs text-muted-foreground">
                 Using environment variable (SLACK_BOT_TOKEN). Configure OAuth
                 credentials for self-serve management.
@@ -231,12 +223,19 @@ function SlackCard({
           </div>
         )}
 
+        {/* Not connected: SaaS vs self-hosted messaging */}
         {!slack.connected && !canConnect && (
-          <p className="text-sm text-muted-foreground">
-            Set <code className="rounded bg-muted px-1 text-xs">SLACK_CLIENT_ID</code>{" "}
-            and <code className="rounded bg-muted px-1 text-xs">SLACK_CLIENT_SECRET</code>{" "}
-            to enable Slack OAuth.
-          </p>
+          isSaas ? (
+            <p className="text-sm text-muted-foreground">
+              Slack integration is not available. Contact your administrator.
+            </p>
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              Set <code className="rounded bg-muted px-1 text-xs">SLACK_CLIENT_ID</code>{" "}
+              and <code className="rounded bg-muted px-1 text-xs">SLACK_CLIENT_SECRET</code>{" "}
+              to enable Slack OAuth.
+            </p>
+          )
         )}
 
         {disconnectError && (
@@ -246,7 +245,7 @@ function SlackCard({
         )}
 
         <div className="flex gap-2">
-          {slack.connected && slack.oauthConfigured && (
+          {slack.connected && (isSaas || slack.oauthConfigured) && (
             <AlertDialog>
               <AlertDialogTrigger asChild>
                 <Button variant="outline" size="sm" disabled={disconnecting}>
@@ -282,7 +281,7 @@ function SlackCard({
             <Button size="sm" asChild>
               <a href="/api/v1/slack/install">
                 <ExternalLink className="mr-1.5 size-3.5" />
-                Connect Slack
+                Connect to Slack
               </a>
             </Button>
           )}
@@ -293,6 +292,50 @@ function SlackCard({
                 <ExternalLink className="mr-1.5 size-3.5" />
                 Reconnect
               </a>
+            </Button>
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+// -- Webhook Card --
+
+function WebhookCard({
+  webhooks,
+  isSaas,
+}: {
+  webhooks: { activeCount: number } | undefined;
+  isSaas: boolean;
+}) {
+  const count = webhooks?.activeCount ?? 0;
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Webhook className="size-5 text-muted-foreground" />
+            <CardTitle className="text-base">Webhooks</CardTitle>
+          </div>
+          <Badge variant={count ? "default" : "secondary"}>
+            {count ? "Active" : "None"}
+          </Badge>
+        </div>
+        <CardDescription>
+          Outbound webhook delivery via scheduled tasks
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div className="flex items-center justify-between">
+          <div className="space-y-1">
+            <p className="text-sm font-medium">Active webhook tasks</p>
+            <p className="text-2xl font-bold tabular-nums">{count}</p>
+          </div>
+          {isSaas && (
+            <Button size="sm" variant="outline" asChild>
+              <a href="/admin/scheduled-tasks">Create Webhook</a>
             </Button>
           )}
         </div>

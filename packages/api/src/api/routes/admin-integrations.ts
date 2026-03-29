@@ -11,6 +11,7 @@ import { runEffect } from "@atlas/api/lib/effect/hono";
 import { AuthContext } from "@atlas/api/lib/effect/services";
 import { internalQuery, hasInternalDB } from "@atlas/api/lib/db/internal";
 import { getInstallationByOrg, deleteInstallationByOrg } from "@atlas/api/lib/slack/store";
+import { getConfig } from "@atlas/api/lib/config";
 import { createLogger } from "@atlas/api/lib/logger";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
@@ -43,6 +44,8 @@ const IntegrationStatusSchema = z.object({
   webhooks: WebhookStatusSchema,
   /** Delivery channels available for scheduled tasks */
   deliveryChannels: z.array(DeliveryChannelEnum),
+  /** Resolved deploy mode — lets the frontend branch UI for SaaS vs self-hosted */
+  deployMode: z.enum(["saas", "self-hosted"]),
 });
 
 // ---------------------------------------------------------------------------
@@ -171,11 +174,14 @@ adminIntegrations.openapi(getStatusRoute, async (c) => {
       }
       deliveryChannels.push("webhook");
 
+      const deployMode = getConfig()?.deployMode ?? "self-hosted";
+
       return c.json(
         {
           slack,
           webhooks: { activeCount: webhookActiveCount },
           deliveryChannels,
+          deployMode,
         },
         200,
       );

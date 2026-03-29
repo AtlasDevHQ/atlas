@@ -19,7 +19,7 @@ API keys provide programmatic access to the Atlas API. Use them to authenticate 
 
 **Route:** `/admin/api-keys`
 
-The API Keys page lists all keys for your workspace. Each row shows the key name, creation date, and a **Revoke** action.
+The API Keys page lists all keys for your workspace. Each row shows the key name, masked key prefix, creation date, last used timestamp, expiration status, and a **Revoke** action.
 
 ---
 
@@ -52,7 +52,7 @@ Revocation is immediate and permanent. Any application using the revoked key wil
 Pass the key in the `Authorization` header:
 
 ```bash
-curl -H "Authorization: Bearer atk_..." \
+curl -H "Authorization: Bearer YOUR_API_KEY" \
   https://your-atlas.example.com/api/v1/chat
 ```
 
@@ -62,7 +62,7 @@ curl -H "Authorization: Bearer atk_..." \
 import Atlas from "@useatlas/sdk";
 
 const atlas = new Atlas({
-  apiKey: "atk_...",
+  apiKey: "YOUR_API_KEY",
   baseUrl: "https://your-atlas.example.com",
 });
 ```
@@ -76,7 +76,7 @@ Set the `ATLAS_API_KEY` environment variable when starting the MCP server, or pa
 ```html
 <script
   src="https://your-atlas.example.com/widget.js"
-  data-api-key="atk_..."
+  data-api-key="YOUR_API_KEY"
 ></script>
 ```
 

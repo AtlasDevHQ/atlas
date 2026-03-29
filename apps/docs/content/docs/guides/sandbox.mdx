@@ -44,15 +44,20 @@ The **just-bash** backend provides no isolation and should only be used in local
 
 ### Priority Resolution
 
-When no explicit override is set, Atlas auto-detects the best available backend:
+When no explicit override is set, Atlas auto-detects the best available backend using this default priority chain:
 
 1. Plugin backends (always highest priority)
 2. Vercel Sandbox (when running on Vercel)
-3. nsjail (when `ATLAS_SANDBOX_PRIORITY` includes it or binary is detected)
+3. nsjail explicit (when `ATLAS_SANDBOX=nsjail` is set)
 4. Sidecar (when `ATLAS_SANDBOX_URL` is set)
-5. just-bash (development fallback)
+5. nsjail auto-detect (when nsjail binary is found on PATH)
+6. just-bash (development fallback)
 
-You can override this priority chain with the `ATLAS_SANDBOX_PRIORITY` environment variable or via `sandbox.priority` in `atlas.config.ts`.
+You can override this chain with the `ATLAS_SANDBOX_PRIORITY` environment variable or via `sandbox.priority` in `atlas.config.ts`.
+
+<Callout type="info">
+The admin UI dropdown only shows API-enumerable backends (Vercel Sandbox, Sidecar, and plugin backends). nsjail and just-bash are resolved by the priority chain but are not selectable from the dropdown.
+</Callout>
 
 ---
 
@@ -109,7 +114,7 @@ The override is stored as a workspace-level setting (`ATLAS_SANDBOX_BACKEND`) an
 | `ATLAS_SANDBOX_URL` | Sidecar service URL (implies sidecar backend) |
 | `ATLAS_SANDBOX_PRIORITY` | Comma-separated backend priority list |
 
-These can also be set via `sandbox.priority` and `sandbox.url` in `atlas.config.ts`.
+The priority list can also be set via `sandbox.priority` in `atlas.config.ts`. The sidecar URL is configured via the `ATLAS_SANDBOX_URL` environment variable or the admin Settings page.
 
 ---
 

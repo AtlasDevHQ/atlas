@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
@@ -25,9 +26,12 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
+import { Input } from "@/components/ui/input";
 import {
   Cable,
   MessageSquare,
+  MessageCircle,
+  Send,
   Users,
   Webhook,
   Mail,
@@ -58,6 +62,22 @@ interface TeamsStatus {
   configurable: boolean;
 }
 
+interface DiscordStatus {
+  connected: boolean;
+  guildId: string | null;
+  guildName: string | null;
+  installedAt: string | null;
+  configurable: boolean;
+}
+
+interface TelegramStatus {
+  connected: boolean;
+  botId: string | null;
+  botUsername: string | null;
+  installedAt: string | null;
+  configurable: boolean;
+}
+
 interface WebhookStatus {
   activeCount: number;
   /** Whether the workspace admin can create/manage webhooks */
@@ -67,6 +87,8 @@ interface WebhookStatus {
 interface IntegrationStatus {
   slack: SlackStatus;
   teams?: TeamsStatus;
+  discord?: DiscordStatus;
+  telegram?: TelegramStatus;
   webhooks: WebhookStatus;
   deliveryChannels: DeliveryChannel[];
   deployMode: "saas" | "self-hosted";
@@ -90,6 +112,27 @@ export default function IntegrationsPage() {
     invalidates: refetch,
   });
 
+  const discordDisconnectMutation = useAdminMutation<{ message: string }>({
+    path: "/api/v1/admin/integrations/discord",
+    method: "DELETE",
+    invalidates: refetch,
+  });
+
+  const telegramConnectMutation = useAdminMutation<{
+    message: string;
+    botUsername: string | null;
+  }>({
+    path: "/api/v1/admin/integrations/telegram",
+    method: "POST",
+    invalidates: refetch,
+  });
+
+  const telegramDisconnectMutation = useAdminMutation<{ message: string }>({
+    path: "/api/v1/admin/integrations/telegram",
+    method: "DELETE",
+    invalidates: refetch,
+  });
+
   async function handleDisconnect() {
     await disconnectMutation.mutate({});
   }
@@ -98,9 +141,23 @@ export default function IntegrationsPage() {
     await teamsDisconnectMutation.mutate({});
   }
 
+  async function handleDiscordDisconnect() {
+    await discordDisconnectMutation.mutate({});
+  }
+
+  async function handleTelegramConnect(botToken: string) {
+    await telegramConnectMutation.mutate({ botToken });
+  }
+
+  async function handleTelegramDisconnect() {
+    await telegramDisconnectMutation.mutate({});
+  }
+
   const isSaas = data?.deployMode === "saas";
   const slack = data?.slack;
   const teams = data?.teams;
+  const discord = data?.discord;
+  const telegram = data?.telegram;
   const webhooks = data?.webhooks;
   const deliveryChannels = data?.deliveryChannels ?? [];
 
@@ -144,6 +201,31 @@ export default function IntegrationsPage() {
                 onDisconnect={handleTeamsDisconnect}
                 disconnecting={teamsDisconnectMutation.saving}
                 disconnectError={teamsDisconnectMutation.error}
+              />
+            )}
+
+            {/* Discord card — only render when API includes discord data */}
+            {discord && (
+              <DiscordCard
+                discord={discord}
+                isSaas={isSaas}
+                onDisconnect={handleDiscordDisconnect}
+                disconnecting={discordDisconnectMutation.saving}
+                disconnectError={discordDisconnectMutation.error}
+              />
+            )}
+
+            {/* Telegram card — only render when API includes telegram data */}
+            {telegram && (
+              <TelegramCard
+                telegram={telegram}
+                isSaas={isSaas}
+                onConnect={handleTelegramConnect}
+                connecting={telegramConnectMutation.saving}
+                connectError={telegramConnectMutation.error}
+                onDisconnect={handleTelegramDisconnect}
+                disconnecting={telegramDisconnectMutation.saving}
+                disconnectError={telegramDisconnectMutation.error}
               />
             )}
 
@@ -491,6 +573,356 @@ function TeamsCard({
   );
 }
 
+// -- Discord Card --
+
+function DiscordCard({
+  discord,
+  isSaas,
+  onDisconnect,
+  disconnecting,
+  disconnectError,
+}: {
+  discord: DiscordStatus;
+  isSaas: boolean;
+  onDisconnect: () => void;
+  disconnecting: boolean;
+  disconnectError: string | null;
+}) {
+  const canConnect = discord.configurable;
+
+  const statusBadge = discord.connected ? (
+    <Badge variant="default">Connected</Badge>
+  ) : isSaas && !canConnect ? (
+    <Badge variant="outline">Not Available</Badge>
+  ) : (
+    <Badge variant="secondary">Disconnected</Badge>
+  );
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <MessageCircle className="size-5 text-muted-foreground" />
+            <CardTitle className="text-base">Discord</CardTitle>
+          </div>
+          {statusBadge}
+        </div>
+        <CardDescription>
+          Connect Discord for bot commands and server conversations
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {discord.connected && (
+          <div className="space-y-2 text-sm">
+            {discord.guildName && (
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Server</span>
+                <span className="font-medium">{discord.guildName}</span>
+              </div>
+            )}
+            {discord.guildId && (
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Guild ID</span>
+                <code className="rounded bg-muted px-1.5 py-0.5 text-xs">
+                  {discord.guildId}
+                </code>
+              </div>
+            )}
+            {discord.installedAt && (
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Connected</span>
+                <span>{formatDateTime(discord.installedAt)}</span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {!discord.connected && !canConnect && (
+          isSaas ? (
+            <p className="text-sm text-muted-foreground">
+              Discord integration is not available. Contact your administrator.
+            </p>
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              Set{" "}
+              <code className="rounded bg-muted px-1 text-xs">DISCORD_CLIENT_ID</code>{" "}
+              and{" "}
+              <code className="rounded bg-muted px-1 text-xs">
+                DISCORD_CLIENT_SECRET
+              </code>{" "}
+              to enable Discord integration.
+            </p>
+          )
+        )}
+
+        {disconnectError && (
+          <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            {disconnectError}
+          </div>
+        )}
+
+        <div className="flex gap-2">
+          {discord.connected && canConnect && (
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button variant="outline" size="sm" disabled={disconnecting}>
+                  {disconnecting && (
+                    <Loader2 className="mr-1.5 size-3.5 animate-spin" />
+                  )}
+                  Disconnect
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Disconnect Discord?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    This will remove the Discord connection for this server. The
+                    bot commands and conversations will stop working until you
+                    reconnect.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Cancel</AlertDialogCancel>
+                  <AlertDialogAction
+                    onClick={onDisconnect}
+                    className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                  >
+                    Disconnect
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+          )}
+
+          {!discord.connected && canConnect && (
+            <Button size="sm" asChild>
+              <a href="/api/v1/discord/install">
+                <ExternalLink className="mr-1.5 size-3.5" />
+                Connect to Discord
+              </a>
+            </Button>
+          )}
+
+          {discord.connected && canConnect && (
+            <Button variant="ghost" size="sm" asChild>
+              <a href="/api/v1/discord/install">
+                <ExternalLink className="mr-1.5 size-3.5" />
+                Reconnect
+              </a>
+            </Button>
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+// -- Telegram Card --
+
+function TelegramCard({
+  telegram,
+  isSaas,
+  onConnect,
+  connecting,
+  connectError,
+  onDisconnect,
+  disconnecting,
+  disconnectError,
+}: {
+  telegram: TelegramStatus;
+  isSaas: boolean;
+  onConnect: (botToken: string) => void;
+  connecting: boolean;
+  connectError: string | null;
+  onDisconnect: () => void;
+  disconnecting: boolean;
+  disconnectError: string | null;
+}) {
+  const canConnect = telegram.configurable;
+
+  const statusBadge = telegram.connected ? (
+    <Badge variant="default">Connected</Badge>
+  ) : isSaas && !canConnect ? (
+    <Badge variant="outline">Not Available</Badge>
+  ) : (
+    <Badge variant="secondary">Disconnected</Badge>
+  );
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Send className="size-5 text-muted-foreground" />
+            <CardTitle className="text-base">Telegram</CardTitle>
+          </div>
+          {statusBadge}
+        </div>
+        <CardDescription>
+          Connect a Telegram bot for chat conversations
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {telegram.connected && (
+          <div className="space-y-2 text-sm">
+            {telegram.botUsername && (
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Bot</span>
+                <span className="font-medium">@{telegram.botUsername}</span>
+              </div>
+            )}
+            {telegram.botId && (
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Bot ID</span>
+                <code className="rounded bg-muted px-1.5 py-0.5 text-xs">
+                  {telegram.botId}
+                </code>
+              </div>
+            )}
+            {telegram.installedAt && (
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Connected</span>
+                <span>{formatDateTime(telegram.installedAt)}</span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Not connected: show form or unavailable message */}
+        {!telegram.connected && !canConnect && (
+          <p className="text-sm text-muted-foreground">
+            Telegram integration requires an internal database. Configure{" "}
+            <code className="rounded bg-muted px-1 text-xs">DATABASE_URL</code>{" "}
+            to enable it.
+          </p>
+        )}
+
+        {!telegram.connected && canConnect && (
+          <TelegramConnectForm
+            onConnect={onConnect}
+            connecting={connecting}
+            error={connectError}
+          />
+        )}
+
+        {(disconnectError || (telegram.connected && connectError)) && (
+          <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            {disconnectError ?? connectError}
+          </div>
+        )}
+
+        <div className="flex gap-2">
+          {telegram.connected && canConnect && (
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button variant="outline" size="sm" disabled={disconnecting}>
+                  {disconnecting && (
+                    <Loader2 className="mr-1.5 size-3.5 animate-spin" />
+                  )}
+                  Disconnect
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Disconnect Telegram?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    This will remove the Telegram bot connection for this
+                    workspace. Bot conversations will stop working until you
+                    reconnect.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Cancel</AlertDialogCancel>
+                  <AlertDialogAction
+                    onClick={onDisconnect}
+                    className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                  >
+                    Disconnect
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+          )}
+
+          {telegram.connected && canConnect && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => {
+                /* Re-showing the form is handled by disconnect + reconnect */
+              }}
+              disabled
+            >
+              Reconnect via form above
+            </Button>
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+// -- Telegram Connect Form --
+
+function TelegramConnectForm({
+  onConnect,
+  connecting,
+  error,
+}: {
+  onConnect: (botToken: string) => void;
+  connecting: boolean;
+  error: string | null;
+}) {
+  const [token, setToken] = useState("");
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (token.trim()) {
+      onConnect(token.trim());
+    }
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-3">
+      <div className="space-y-1.5">
+        <label htmlFor="telegram-token" className="text-sm font-medium">
+          Bot Token
+        </label>
+        <p className="text-xs text-muted-foreground">
+          Get a bot token from{" "}
+          <a
+            href="https://t.me/BotFather"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="underline underline-offset-2"
+          >
+            @BotFather
+          </a>{" "}
+          on Telegram
+        </p>
+        <Input
+          id="telegram-token"
+          type="password"
+          placeholder="123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
+          value={token}
+          onChange={(e) => setToken(e.target.value)}
+          disabled={connecting}
+        />
+      </div>
+      {error && (
+        <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {error}
+        </div>
+      )}
+      <Button type="submit" size="sm" disabled={connecting || !token.trim()}>
+        {connecting && <Loader2 className="mr-1.5 size-3.5 animate-spin" />}
+        Connect
+      </Button>
+    </form>
+  );
+}
+
 // -- Webhook Card --
 
 function WebhookCard({
@@ -543,6 +975,10 @@ function ChannelIcon({ channel }: { channel: string }) {
       return <MessageSquare className="size-3" />;
     case "teams":
       return <Users className="size-3" />;
+    case "discord":
+      return <MessageCircle className="size-3" />;
+    case "telegram":
+      return <Send className="size-3" />;
     case "webhook":
       return <Webhook className="size-3" />;
     case "email":

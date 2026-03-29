@@ -15,6 +15,15 @@ import {
   getTeamsInstallationByOrg,
   deleteTeamsInstallationByOrg,
 } from "@atlas/api/lib/teams/store";
+import {
+  getDiscordInstallationByOrg,
+  deleteDiscordInstallationByOrg,
+} from "@atlas/api/lib/discord/store";
+import {
+  getTelegramInstallationByOrg,
+  saveTelegramInstallation,
+  deleteTelegramInstallationByOrg,
+} from "@atlas/api/lib/telegram/store";
 import { getConfig } from "@atlas/api/lib/config";
 import { createLogger } from "@atlas/api/lib/logger";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
@@ -50,6 +59,24 @@ const TeamsStatusSchema = z.object({
   configurable: z.boolean(),
 });
 
+const DiscordStatusSchema = z.object({
+  connected: z.boolean(),
+  guildId: z.string().nullable(),
+  guildName: z.string().nullable(),
+  installedAt: z.string().datetime().nullable(),
+  /** Whether the workspace admin can connect/disconnect (true when DISCORD_CLIENT_ID is set) */
+  configurable: z.boolean(),
+});
+
+const TelegramStatusSchema = z.object({
+  connected: z.boolean(),
+  botId: z.string().nullable(),
+  botUsername: z.string().nullable(),
+  installedAt: z.string().datetime().nullable(),
+  /** Always configurable in SaaS mode (BYOT — bring your own token) */
+  configurable: z.boolean(),
+});
+
 const WebhookStatusSchema = z.object({
   activeCount: z.number().int().nonnegative(),
   /** Whether the workspace admin can create/manage webhooks */
@@ -59,6 +86,8 @@ const WebhookStatusSchema = z.object({
 const IntegrationStatusSchema = z.object({
   slack: SlackStatusSchema,
   teams: TeamsStatusSchema,
+  discord: DiscordStatusSchema,
+  telegram: TelegramStatusSchema,
   webhooks: WebhookStatusSchema,
   /** Delivery channels available for scheduled tasks */
   deliveryChannels: z.array(DeliveryChannelEnum),
@@ -241,6 +270,37 @@ adminIntegrations.openapi(getStatusRoute, async (c) => {
         configurable: teamsConfigurable,
       };
 
+      // Discord status
+      const discordInstall = yield* Effect.tryPromise({
+        try: () => getDiscordInstallationByOrg(orgId),
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      });
+      const discordConfigurable = !!process.env.DISCORD_CLIENT_ID;
+
+      const discord = {
+        connected: discordInstall !== null,
+        guildId: discordInstall?.guild_id ?? null,
+        guildName: discordInstall?.guild_name ?? null,
+        installedAt: discordInstall?.installed_at ?? null,
+        configurable: discordConfigurable,
+      };
+
+      // Telegram status
+      const telegramInstall = yield* Effect.tryPromise({
+        try: () => getTelegramInstallationByOrg(orgId),
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      });
+      // Telegram is always configurable — BYOT (bring your own token), no platform env vars needed
+      const telegramConfigurable = deployMode === "saas" || hasInternalDB();
+
+      const telegram = {
+        connected: telegramInstall !== null,
+        botId: telegramInstall?.bot_id ?? null,
+        botUsername: telegramInstall?.bot_username ?? null,
+        installedAt: telegramInstall?.installed_at ?? null,
+        configurable: telegramConfigurable,
+      };
+
       // Webhook count (scheduled tasks with webhook recipients)
       const webhookActiveCount = yield* Effect.tryPromise({
         try: async () => {
@@ -270,6 +330,8 @@ adminIntegrations.openapi(getStatusRoute, async (c) => {
         {
           slack,
           teams,
+          discord,
+          telegram,
           webhooks: { activeCount: webhookActiveCount, configurable: webhooksConfigurable },
           deliveryChannels,
           deployMode,
@@ -344,6 +406,252 @@ adminIntegrations.openapi(disconnectTeamsRoute, async (c) => {
       return c.json({ message: "Teams disconnected successfully." }, 200);
     }),
     { label: "disconnect teams" },
+  );
+});
+
+// DELETE /discord — disconnect Discord for current org
+const disconnectDiscordRoute = createRoute({
+  method: "delete",
+  path: "/discord",
+  tags: ["Admin — Integrations"],
+  summary: "Disconnect Discord",
+  description:
+    "Removes the Discord installation for the current workspace. " +
+    "Any Discord bot functionality will stop working until reconnected.",
+  responses: {
+    200: {
+      description: "Discord disconnected",
+      content: {
+        "application/json": {
+          schema: z.object({ message: z.string() }),
+        },
+      },
+    },
+    400: {
+      description: "No active organization",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "No Discord installation found or internal database not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+adminIntegrations.openapi(disconnectDiscordRoute, async (c) => {
+  return runEffect(
+    c,
+    Effect.gen(function* () {
+      const { orgId } = yield* AuthContext;
+
+      if (!orgId) {
+        return c.json(
+          { error: "bad_request", message: "No active organization." },
+          400,
+        );
+      }
+
+      const deleted = yield* Effect.tryPromise({
+        try: () => deleteDiscordInstallationByOrg(orgId),
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      });
+
+      if (!deleted) {
+        return c.json(
+          { error: "not_found", message: "No Discord installation found for this workspace." },
+          404,
+        );
+      }
+
+      log.info({ orgId }, "Discord installation disconnected by admin");
+      return c.json({ message: "Discord disconnected successfully." }, 200);
+    }),
+    { label: "disconnect discord" },
+  );
+});
+
+// POST /telegram — connect Telegram for current org (bot token submission)
+const connectTelegramRoute = createRoute({
+  method: "post",
+  path: "/telegram",
+  tags: ["Admin — Integrations"],
+  summary: "Connect Telegram",
+  description:
+    "Validates a Telegram bot token via the Telegram Bot API and saves the installation " +
+    "for the current workspace.",
+  request: {
+    body: {
+      content: {
+        "application/json": {
+          schema: z.object({
+            botToken: z.string().min(1).openapi({ description: "Telegram bot token from @BotFather" }),
+          }),
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "Telegram connected",
+      content: {
+        "application/json": {
+          schema: z.object({
+            message: z.string(),
+            botUsername: z.string().nullable(),
+          }),
+        },
+      },
+    },
+    400: {
+      description: "Invalid bot token or no active organization",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+adminIntegrations.openapi(connectTelegramRoute, async (c) => {
+  return runEffect(
+    c,
+    Effect.gen(function* () {
+      const { orgId } = yield* AuthContext;
+
+      if (!orgId) {
+        return c.json(
+          { error: "bad_request", message: "No active organization." },
+          400,
+        );
+      }
+
+      const { botToken } = c.req.valid("json");
+
+      // Validate token by calling Telegram's getMe API
+      const getMeResult = yield* Effect.tryPromise({
+        try: async () => {
+          const res = await fetch(`https://api.telegram.org/bot${botToken}/getMe`);
+          if (!res.ok) {
+            return { ok: false as const, error: `Telegram API returned ${res.status}` };
+          }
+          const data = (await res.json()) as {
+            ok: boolean;
+            result?: { id: number; username?: string };
+          };
+          if (!data.ok || !data.result) {
+            return { ok: false as const, error: "Invalid bot token" };
+          }
+          return { ok: true as const, botId: String(data.result.id), botUsername: data.result.username ?? null };
+        },
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      });
+
+      if (!getMeResult.ok) {
+        return c.json(
+          { error: "invalid_token", message: `Invalid Telegram bot token: ${getMeResult.error}` },
+          400,
+        );
+      }
+
+      yield* Effect.tryPromise({
+        try: () =>
+          saveTelegramInstallation(getMeResult.botId, {
+            orgId,
+            botUsername: getMeResult.botUsername ?? undefined,
+            botToken,
+          }),
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      });
+
+      log.info({ orgId, botId: getMeResult.botId, botUsername: getMeResult.botUsername }, "Telegram installation saved by admin");
+      return c.json(
+        { message: "Telegram connected successfully.", botUsername: getMeResult.botUsername },
+        200,
+      );
+    }),
+    { label: "connect telegram" },
+  );
+});
+
+// DELETE /telegram — disconnect Telegram for current org
+const disconnectTelegramRoute = createRoute({
+  method: "delete",
+  path: "/telegram",
+  tags: ["Admin — Integrations"],
+  summary: "Disconnect Telegram",
+  description:
+    "Removes the Telegram installation for the current workspace. " +
+    "Any Telegram bot functionality will stop working until reconnected.",
+  responses: {
+    200: {
+      description: "Telegram disconnected",
+      content: {
+        "application/json": {
+          schema: z.object({ message: z.string() }),
+        },
+      },
+    },
+    400: {
+      description: "No active organization",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "No Telegram installation found or internal database not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+adminIntegrations.openapi(disconnectTelegramRoute, async (c) => {
+  return runEffect(
+    c,
+    Effect.gen(function* () {
+      const { orgId } = yield* AuthContext;
+
+      if (!orgId) {
+        return c.json(
+          { error: "bad_request", message: "No active organization." },
+          400,
+        );
+      }
+
+      const deleted = yield* Effect.tryPromise({
+        try: () => deleteTelegramInstallationByOrg(orgId),
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      });
+
+      if (!deleted) {
+        return c.json(
+          { error: "not_found", message: "No Telegram installation found for this workspace." },
+          404,
+        );
+      }
+
+      log.info({ orgId }, "Telegram installation disconnected by admin");
+      return c.json({ message: "Telegram disconnected successfully." }, 200);
+    }),
+    { label: "disconnect telegram" },
   );
 });
 

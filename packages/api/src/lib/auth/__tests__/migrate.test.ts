@@ -236,7 +236,7 @@ describe("migrateAuthTables", () => {
         queries.push(sql);
         // Return "already applied" for the SELECT query
         if (sql.includes("SELECT name FROM __atlas_migrations")) {
-          return { rows: [{ name: "0000_baseline.sql" }] };
+          return { rows: [{ name: "0000_baseline.sql" }, { name: "0001_teams_installations.sql" }] };
         }
         return { rows: [] };
       },
@@ -250,7 +250,7 @@ describe("migrateAuthTables", () => {
 
     await migrateAuthTables();
 
-    // Should NOT have a BEGIN/COMMIT since baseline was already applied
+    // Should NOT have a BEGIN/COMMIT since all migrations were already applied
     expect(queries).not.toContain("BEGIN");
   });
 });

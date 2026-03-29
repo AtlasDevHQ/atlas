@@ -146,7 +146,7 @@ export default function IntegrationsPage() {
   }
 
   async function handleTelegramConnect(botToken: string) {
-    await telegramConnectMutation.mutate({ botToken });
+    await telegramConnectMutation.mutate({ body: { botToken } });
   }
 
   async function handleTelegramDisconnect() {

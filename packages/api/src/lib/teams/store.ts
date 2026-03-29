@@ -134,12 +134,35 @@ export async function saveTeamsInstallation(
     throw new Error("Cannot save Teams installation — no internal database configured");
   }
 
+  const orgId = opts?.orgId ?? null;
+  const tenantName = opts?.tenantName ?? null;
+
   try {
+    // Reject if the tenant is already bound to a different org (prevents hijacking).
+    // Only update if the existing org_id matches OR is NULL (unbound).
+    const existing = await internalQuery<Record<string, unknown>>(
+      "SELECT org_id FROM teams_installations WHERE tenant_id = $1",
+      [tenantId],
+    );
+
+    if (existing.length > 0) {
+      const existingOrgId = existing[0].org_id;
+      if (existingOrgId && orgId && existingOrgId !== orgId) {
+        throw new Error(
+          `Tenant ${tenantId} is already bound to a different organization. ` +
+          `Disconnect the existing installation first.`,
+        );
+      }
+    }
+
     await internalQuery(
       `INSERT INTO teams_installations (tenant_id, org_id, tenant_name)
        VALUES ($1, $2, $3)
-       ON CONFLICT (tenant_id) DO UPDATE SET org_id = $2, tenant_name = $3, installed_at = now()`,
-      [tenantId, opts?.orgId ?? null, opts?.tenantName ?? null],
+       ON CONFLICT (tenant_id) DO UPDATE SET
+         org_id = COALESCE($2, teams_installations.org_id),
+         tenant_name = COALESCE($3, teams_installations.tenant_name),
+         installed_at = now()`,
+      [tenantId, orgId, tenantName],
     );
   } catch (err) {
     log.error(

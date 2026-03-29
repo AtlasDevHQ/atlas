@@ -56,7 +56,7 @@ export default function TokenChart({ data, dark }: { data: TrendPoint[]; dark: b
             color: t.text,
           }}
           labelFormatter={(label) => formatDay(String(label))}
-          formatter={(value: number | undefined) => [formatNumber(value ?? 0), undefined]}
+          formatter={(value) => [formatNumber(Number(value ?? 0)), undefined]}
         />
         <Legend wrapperStyle={{ fontSize: 12, color: t.axis }} />
         <Area

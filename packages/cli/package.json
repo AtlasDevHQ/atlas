@@ -10,21 +10,21 @@
   "dependencies": {
     "@atlas/api": "workspace:*",
     "@atlas/mcp": "workspace:*",
-    "@modelcontextprotocol/sdk": "^1.27.1",
-    "@clickhouse/client": "^1.17.0",
-    "@duckdb/node-api": "^1.4.4-r.1",
-    "ai": "^6.0.97",
+    "@modelcontextprotocol/sdk": "^1.28.0",
+    "@clickhouse/client": "^1.18.2",
+    "@duckdb/node-api": "^1.5.1-r.1",
+    "ai": "^6.0.141",
     "js-yaml": "^4.1.1",
     "node-sql-parser": "^5.4.0",
     "jsforce": "^3.10.14",
-    "mysql2": "^3.18.0",
-    "pg": "^8.18.0",
-    "snowflake-sdk": "^2.3.4"
+    "mysql2": "^3.20.0",
+    "pg": "^8.20.0",
+    "snowflake-sdk": "^2.3.6"
   },
   "devDependencies": {
-    "@clack/prompts": "^0.10.0",
+    "@clack/prompts": "^1.1.0",
     "@types/js-yaml": "^4.0.9",
-    "@types/pg": "^8.16.0",
-    "picocolors": "^1.1.0"
+    "@types/pg": "^8.20.0",
+    "picocolors": "^1.1.1"
   }
 }

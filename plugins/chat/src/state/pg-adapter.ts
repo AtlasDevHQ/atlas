@@ -10,7 +10,7 @@
  */
 
 import { randomUUID } from "crypto";
-import type { StateAdapter, Lock } from "chat";
+import type { StateAdapter, Lock, QueueEntry } from "chat";
 import type { PluginDB } from "./types";
 
 const DEFAULT_PREFIX = "chat_";
@@ -284,6 +284,96 @@ export class PgStateAdapter implements StateAdapter {
       return [];
     }
     return arr as T[];
+  }
+
+  // ---------------------------------------------------------------------------
+  // Queue operations
+  // ---------------------------------------------------------------------------
+
+  async enqueue(
+    threadId: string,
+    entry: QueueEntry,
+    maxSize: number,
+  ): Promise<number> {
+    this.assertConnected();
+    const key = `__queue:${threadId}`;
+    const json = JSON.stringify(entry);
+
+    // Append entry to the queue array, then trim to maxSize (keep newest)
+    await this.db.query(
+      `INSERT INTO ${this.t("cache")} (key, value)
+       VALUES ($1, jsonb_build_array($2::jsonb))
+       ON CONFLICT (key) DO UPDATE
+         SET value = ${this.t("cache")}.value || jsonb_build_array($2::jsonb)`,
+      [key, json],
+    );
+
+    // Trim to maxSize if exceeded
+    await this.db.query(
+      `UPDATE ${this.t("cache")}
+       SET value = (
+         SELECT COALESCE(jsonb_agg(elem ORDER BY ord), '[]'::jsonb) FROM (
+           SELECT elem, ord
+           FROM jsonb_array_elements(value) WITH ORDINALITY AS t(elem, ord)
+           ORDER BY ord DESC
+           LIMIT $2::int
+         ) sub
+       )
+       WHERE key = $1 AND jsonb_array_length(value) > $2::int`,
+      [key, maxSize],
+    );
+
+    const { rows } = await this.db.query(
+      `SELECT jsonb_array_length(value) AS depth FROM ${this.t("cache")} WHERE key = $1`,
+      [key],
+    );
+    return rows.length > 0 ? Number(rows[0].depth) : 0;
+  }
+
+  async dequeue(threadId: string): Promise<QueueEntry | null> {
+    this.assertConnected();
+    const key = `__queue:${threadId}`;
+
+    // Read the first element, then remove it
+    const { rows: peekRows } = await this.db.query(
+      `SELECT value->0 AS entry FROM ${this.t("cache")}
+       WHERE key = $1 AND jsonb_array_length(value) > 0`,
+      [key],
+    );
+
+    if (peekRows.length === 0) return null;
+
+    // Remove the first element
+    await this.db.query(
+      `UPDATE ${this.t("cache")}
+       SET value = CASE
+         WHEN jsonb_array_length(value) <= 1 THEN '[]'::jsonb
+         ELSE value - 0
+       END
+       WHERE key = $1`,
+      [key],
+    );
+
+    const entry = peekRows[0].entry as QueueEntry | null;
+    if (!entry) return null;
+
+    // Skip expired entries
+    if (entry.expiresAt < Date.now()) {
+      return this.dequeue(threadId);
+    }
+
+    return entry;
+  }
+
+  async queueDepth(threadId: string): Promise<number> {
+    this.assertConnected();
+    const key = `__queue:${threadId}`;
+    const { rows } = await this.db.query(
+      `SELECT jsonb_array_length(value) AS depth FROM ${this.t("cache")}
+       WHERE key = $1`,
+      [key],
+    );
+    return rows.length > 0 ? Number(rows[0].depth) : 0;
   }
 
   // ---------------------------------------------------------------------------

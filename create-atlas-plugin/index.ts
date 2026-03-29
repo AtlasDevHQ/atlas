@@ -742,8 +742,8 @@ async function main() {
       message: "What is your plugin name?",
       placeholder: "my-atlas-plugin",
       defaultValue: "my-atlas-plugin",
-      validate(value) {
-        if (!value.trim()) return "Plugin name is required.";
+      validate(value: string | undefined) {
+        if (!value?.trim()) return "Plugin name is required.";
         if (!/^[a-z0-9._-]+$/i.test(value))
           return "Plugin name can only contain letters, numbers, dots, hyphens, and underscores.";
       },

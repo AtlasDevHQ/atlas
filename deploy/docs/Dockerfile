@@ -4,8 +4,10 @@ FROM oven/bun:1.3.11 AS base
 FROM base AS builder
 WORKDIR /app
 COPY apps/docs/ ./
-COPY brand.css /brand.css
 COPY bun.lock* ./
+# globals.css imports ../../brand.css (resolves to project root via symlink in
+# the monorepo). In Docker the symlink target doesn't exist, so copy the real file.
+COPY brand.css ./brand.css
 RUN bun install
 RUN bun run build
 

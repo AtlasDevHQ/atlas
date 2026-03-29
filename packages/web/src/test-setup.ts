@@ -1,6 +1,6 @@
-import { Window } from "happy-dom";
+import { GlobalWindow } from "happy-dom";
 
-const win = new Window({ url: "http://localhost:3000" });
+const win = new GlobalWindow({ url: "http://localhost:3000" });
 
 // Copy DOM-specific globals from happy-dom to globalThis.
 // We need to be selective — avoid overwriting JS builtins like Object, Symbol, etc.

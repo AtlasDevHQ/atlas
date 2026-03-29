@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Atlas API",
-    "version": "0.9.0",
+    "version": "0.9.7",
     "description": "Text-to-SQL data analyst agent. Ask natural-language questions about your data and receive structured answers."
   },
   "servers": [
@@ -8154,7 +8154,7 @@
           "Scheduled Tasks"
         ],
         "summary": "List scheduled tasks",
-        "description": "Returns scheduled tasks owned by the authenticated user. Requires ATLAS_SCHEDULER_ENABLED=true and an internal database.",
+        "description": "Returns scheduled tasks for the active organization. Requires admin role, ATLAS_SCHEDULER_ENABLED=true, and an internal database.",
         "parameters": [
           {
             "schema": {
@@ -8211,7 +8211,7 @@
             }
           },
           "403": {
-            "description": "Forbidden — insufficient permissions",
+            "description": "Forbidden — admin role required",
             "content": {
               "application/json": {
                 "schema": {
@@ -8290,7 +8290,7 @@
           "Scheduled Tasks"
         ],
         "summary": "Create a scheduled task",
-        "description": "Creates a recurring query task with a cron schedule and delivery channel.",
+        "description": "Creates a recurring query task with a cron schedule and delivery channel. Requires admin role.",
         "requestBody": {
           "required": true,
           "content": {
@@ -8469,7 +8469,7 @@
             }
           },
           "403": {
-            "description": "Forbidden — insufficient permissions",
+            "description": "Forbidden — admin role required",
             "content": {
               "application/json": {
                 "schema": {
@@ -8579,7 +8579,7 @@
           "Scheduled Tasks"
         ],
         "summary": "List all task runs",
-        "description": "Returns cross-task run history with filtering by task, status, and date range.",
+        "description": "Returns cross-task run history with filtering by task, status, and date range. Requires admin role.",
         "parameters": [
           {
             "schema": {
@@ -8666,7 +8666,7 @@
             }
           },
           "403": {
-            "description": "Forbidden — insufficient permissions",
+            "description": "Forbidden — admin role required",
             "content": {
               "application/json": {
                 "schema": {
@@ -8747,7 +8747,7 @@
           "Scheduled Tasks"
         ],
         "summary": "Get scheduled task",
-        "description": "Returns a scheduled task with its 10 most recent runs.",
+        "description": "Returns a scheduled task with its 10 most recent runs. Requires admin role.",
         "parameters": [
           {
             "schema": {
@@ -8808,7 +8808,7 @@
             }
           },
           "403": {
-            "description": "Forbidden — insufficient permissions",
+            "description": "Forbidden — admin role required",
             "content": {
               "application/json": {
                 "schema": {
@@ -8887,7 +8887,7 @@
           "Scheduled Tasks"
         ],
         "summary": "Update a scheduled task",
-        "description": "Updates a scheduled task. All fields are optional.",
+        "description": "Updates a scheduled task. All fields are optional. Requires admin role.",
         "parameters": [
           {
             "schema": {
@@ -9072,7 +9072,7 @@
             }
           },
           "403": {
-            "description": "Forbidden — insufficient permissions",
+            "description": "Forbidden — admin role required",
             "content": {
               "application/json": {
                 "schema": {
@@ -9180,7 +9180,7 @@
           "Scheduled Tasks"
         ],
         "summary": "Delete a scheduled task",
-        "description": "Soft-deletes (disables) a scheduled task.",
+        "description": "Soft-deletes (disables) a scheduled task. Requires admin role.",
         "parameters": [
           {
             "schema": {
@@ -9233,7 +9233,7 @@
             }
           },
           "403": {
-            "description": "Forbidden — insufficient permissions",
+            "description": "Forbidden — admin role required",
             "content": {
               "application/json": {
                 "schema": {
@@ -9314,7 +9314,7 @@
           "Scheduled Tasks"
         ],
         "summary": "Trigger immediate execution",
-        "description": "Triggers an immediate execution of a scheduled task.",
+        "description": "Triggers an immediate execution of a scheduled task. Requires admin role.",
         "parameters": [
           {
             "schema": {
@@ -9386,7 +9386,7 @@
             }
           },
           "403": {
-            "description": "Forbidden — insufficient permissions",
+            "description": "Forbidden — admin role required",
             "content": {
               "application/json": {
                 "schema": {
@@ -9467,7 +9467,7 @@
           "Scheduled Tasks"
         ],
         "summary": "Preview delivery format",
-        "description": "Dry-run delivery format with mock data.",
+        "description": "Dry-run delivery format with mock data. Requires admin role.",
         "parameters": [
           {
             "schema": {
@@ -9528,7 +9528,7 @@
             }
           },
           "403": {
-            "description": "Forbidden — insufficient permissions",
+            "description": "Forbidden — admin role required",
             "content": {
               "application/json": {
                 "schema": {
@@ -9609,7 +9609,7 @@
           "Scheduled Tasks"
         ],
         "summary": "List task runs",
-        "description": "Returns past execution runs for a scheduled task.",
+        "description": "Returns past execution runs for a scheduled task. Requires admin role.",
         "parameters": [
           {
             "schema": {
@@ -9691,7 +9691,7 @@
             }
           },
           "403": {
-            "description": "Forbidden — insufficient permissions",
+            "description": "Forbidden — admin role required",
             "content": {
               "application/json": {
                 "schema": {
@@ -24108,6 +24108,846 @@
         "operationId": "deleteAdminBranding"
       }
     },
+    "/api/v1/admin/domain": {
+      "get": {
+        "tags": [
+          "Admin — Custom Domain"
+        ],
+        "summary": "Get workspace custom domain",
+        "description": "Returns the custom domain for the current workspace, or null if none is configured.",
+        "responses": {
+          "200": {
+            "description": "Workspace domain (null if none)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "domain": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "workspaceId": {
+                          "type": "string"
+                        },
+                        "domain": {
+                          "type": "string"
+                        },
+                        "status": {
+                          "type": "string",
+                          "enum": [
+                            "pending",
+                            "verified",
+                            "failed"
+                          ]
+                        },
+                        "railwayDomainId": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "cnameTarget": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "certificateStatus": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "enum": [
+                            "PENDING",
+                            "ISSUED",
+                            "FAILED",
+                            null
+                          ]
+                        },
+                        "createdAt": {
+                          "type": "string"
+                        },
+                        "verifiedAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "workspaceId",
+                        "domain",
+                        "status",
+                        "railwayDomainId",
+                        "cnameTarget",
+                        "certificateStatus",
+                        "createdAt",
+                        "verifiedAt"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "domain"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Enterprise features not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Internal database or Railway not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getAdminDomain"
+      },
+      "post": {
+        "tags": [
+          "Admin — Custom Domain"
+        ],
+        "summary": "Add a custom domain",
+        "description": "Register a custom domain for the current workspace. Enterprise plan required (self-hosted is always allowed). One domain per workspace.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "domain": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Custom domain to register (e.g. 'data.acme.com')",
+                    "example": "data.acme.com"
+                  }
+                },
+                "required": [
+                  "domain"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Domain registered",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "workspaceId": {
+                      "type": "string"
+                    },
+                    "domain": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "pending",
+                        "verified",
+                        "failed"
+                      ]
+                    },
+                    "railwayDomainId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "cnameTarget": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "certificateStatus": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "enum": [
+                        "PENDING",
+                        "ISSUED",
+                        "FAILED",
+                        null
+                      ]
+                    },
+                    "createdAt": {
+                      "type": "string"
+                    },
+                    "verifiedAt": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "workspaceId",
+                    "domain",
+                    "status",
+                    "railwayDomainId",
+                    "cnameTarget",
+                    "certificateStatus",
+                    "createdAt",
+                    "verifiedAt"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid domain or no active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Enterprise plan required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Enterprise features not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Domain already registered",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Internal database or Railway not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postAdminDomain"
+      },
+      "delete": {
+        "tags": [
+          "Admin — Custom Domain"
+        ],
+        "summary": "Remove workspace custom domain",
+        "description": "Removes the custom domain from both Railway and Atlas for the current workspace.",
+        "responses": {
+          "200": {
+            "description": "Domain removed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "deleted": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "deleted"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No custom domain configured or enterprise features not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Internal database or Railway not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "deleteAdminDomain"
+      }
+    },
+    "/api/v1/admin/domain/verify": {
+      "post": {
+        "tags": [
+          "Admin — Custom Domain"
+        ],
+        "summary": "Check domain verification status",
+        "description": "Checks DNS propagation and TLS certificate status for the workspace's custom domain. Does not require enterprise plan — only adding a domain is plan-gated.",
+        "responses": {
+          "200": {
+            "description": "Verification result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "workspaceId": {
+                      "type": "string"
+                    },
+                    "domain": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "pending",
+                        "verified",
+                        "failed"
+                      ]
+                    },
+                    "railwayDomainId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "cnameTarget": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "certificateStatus": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "enum": [
+                        "PENDING",
+                        "ISSUED",
+                        "FAILED",
+                        null
+                      ]
+                    },
+                    "createdAt": {
+                      "type": "string"
+                    },
+                    "verifiedAt": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "workspaceId",
+                    "domain",
+                    "status",
+                    "railwayDomainId",
+                    "cnameTarget",
+                    "certificateStatus",
+                    "createdAt",
+                    "verifiedAt"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No custom domain configured or enterprise features not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Internal database or Railway not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postAdminDomainVerify"
+      }
+    },
     "/api/v1/admin/onboarding-emails": {
       "get": {
         "tags": [
@@ -24830,6 +25670,943 @@
           }
         },
         "operationId": "getAdminAbuseConfig"
+      }
+    },
+    "/api/v1/admin/integrations/status": {
+      "get": {
+        "tags": [
+          "Admin — Integrations"
+        ],
+        "summary": "Get integration status",
+        "description": "Returns the status of all configured integrations for the current workspace: Slack connection, webhook count, and available delivery channels.",
+        "responses": {
+          "200": {
+            "description": "Integration status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "slack": {
+                      "type": "object",
+                      "properties": {
+                        "connected": {
+                          "type": "boolean"
+                        },
+                        "teamId": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "workspaceName": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "installedAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "format": "date-time"
+                        },
+                        "oauthConfigured": {
+                          "type": "boolean"
+                        },
+                        "envConfigured": {
+                          "type": "boolean"
+                        },
+                        "configurable": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "connected",
+                        "teamId",
+                        "workspaceName",
+                        "installedAt",
+                        "oauthConfigured",
+                        "envConfigured",
+                        "configurable"
+                      ]
+                    },
+                    "teams": {
+                      "type": "object",
+                      "properties": {
+                        "connected": {
+                          "type": "boolean"
+                        },
+                        "tenantId": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "tenantName": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "installedAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "format": "date-time"
+                        },
+                        "configurable": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "connected",
+                        "tenantId",
+                        "tenantName",
+                        "installedAt",
+                        "configurable"
+                      ]
+                    },
+                    "webhooks": {
+                      "type": "object",
+                      "properties": {
+                        "activeCount": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "configurable": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "activeCount",
+                        "configurable"
+                      ]
+                    },
+                    "deliveryChannels": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "email",
+                          "slack",
+                          "webhook"
+                        ]
+                      }
+                    },
+                    "deployMode": {
+                      "type": "string",
+                      "enum": [
+                        "saas",
+                        "self-hosted"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "slack",
+                    "teams",
+                    "webhooks",
+                    "deliveryChannels",
+                    "deployMode"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getAdminIntegrationsStatus"
+      }
+    },
+    "/api/v1/admin/integrations/slack": {
+      "delete": {
+        "tags": [
+          "Admin — Integrations"
+        ],
+        "summary": "Disconnect Slack",
+        "description": "Removes the Slack installation for the current workspace. Any Slack bot functionality will stop working until reconnected.",
+        "responses": {
+          "200": {
+            "description": "Slack disconnected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No Slack installation found or internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "deleteAdminIntegrationsSlack"
+      }
+    },
+    "/api/v1/admin/integrations/teams": {
+      "delete": {
+        "tags": [
+          "Admin — Integrations"
+        ],
+        "summary": "Disconnect Teams",
+        "description": "Removes the Teams installation for the current workspace. Any Teams bot functionality will stop working until reconnected.",
+        "responses": {
+          "200": {
+            "description": "Teams disconnected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No Teams installation found or internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "deleteAdminIntegrationsTeams"
+      }
+    },
+    "/api/v1/admin/sandbox/status": {
+      "get": {
+        "tags": [
+          "Admin — Sandbox"
+        ],
+        "summary": "Get sandbox backend status",
+        "description": "Returns the sandbox backend configuration for the current workspace, including available backends, the active backend, and any workspace override.",
+        "responses": {
+          "200": {
+            "description": "Sandbox status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "activeBackend": {
+                      "type": "string"
+                    },
+                    "platformDefault": {
+                      "type": "string"
+                    },
+                    "workspaceOverride": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "workspaceSidecarUrl": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "availableBackends": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "type": {
+                            "type": "string",
+                            "enum": [
+                              "built-in",
+                              "plugin"
+                            ]
+                          },
+                          "available": {
+                            "type": "boolean"
+                          },
+                          "description": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "name",
+                          "type",
+                          "available"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "activeBackend",
+                    "platformDefault",
+                    "workspaceOverride",
+                    "workspaceSidecarUrl",
+                    "availableBackends"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getAdminSandboxStatus"
+      }
+    },
+    "/api/v1/admin/residency": {
+      "get": {
+        "tags": [
+          "Admin — Data Residency"
+        ],
+        "summary": "Get workspace data residency status",
+        "description": "Returns the data residency configuration for the current workspace, including the assigned region (if any) and available regions.",
+        "responses": {
+          "200": {
+            "description": "Residency status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "configured": {
+                      "type": "boolean"
+                    },
+                    "region": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "regionLabel": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "assignedAt": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "defaultRegion": {
+                      "type": "string"
+                    },
+                    "availableRegions": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "label": {
+                            "type": "string"
+                          },
+                          "isDefault": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "label",
+                          "isDefault"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "configured",
+                    "region",
+                    "regionLabel",
+                    "assignedAt",
+                    "defaultRegion",
+                    "availableRegions"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getAdminResidency"
+      },
+      "put": {
+        "tags": [
+          "Admin — Data Residency"
+        ],
+        "summary": "Assign data residency region to workspace",
+        "description": "Assigns a region to the current workspace. This action is permanent — the region cannot be changed after assignment. Enterprise plan required.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "region": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "region"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Region assigned",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "workspaceId": {
+                      "type": "string"
+                    },
+                    "region": {
+                      "type": "string"
+                    },
+                    "assignedAt": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "workspaceId",
+                    "region",
+                    "assignedAt"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid region or no active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Enterprise features not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Region already assigned (immutable)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Service unavailable (no internal database)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "putAdminResidency"
       }
     },
     "/api/v1/admin/overview": {
@@ -32543,7 +34320,101 @@
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "additionalProperties": {}
+                  "properties": {
+                    "settings": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "key": {
+                            "type": "string"
+                          },
+                          "section": {
+                            "type": "string"
+                          },
+                          "label": {
+                            "type": "string"
+                          },
+                          "description": {
+                            "type": "string"
+                          },
+                          "type": {
+                            "type": "string",
+                            "enum": [
+                              "string",
+                              "number",
+                              "boolean",
+                              "select"
+                            ]
+                          },
+                          "options": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "default": {
+                            "type": "string"
+                          },
+                          "secret": {
+                            "type": "boolean"
+                          },
+                          "envVar": {
+                            "type": "string"
+                          },
+                          "requiresRestart": {
+                            "type": "boolean"
+                          },
+                          "scope": {
+                            "type": "string",
+                            "enum": [
+                              "platform",
+                              "workspace"
+                            ]
+                          },
+                          "currentValue": {
+                            "type": "string"
+                          },
+                          "source": {
+                            "type": "string",
+                            "enum": [
+                              "env",
+                              "override",
+                              "workspace-override",
+                              "default"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "key",
+                          "section",
+                          "label",
+                          "description",
+                          "type",
+                          "envVar",
+                          "scope",
+                          "source"
+                        ]
+                      }
+                    },
+                    "manageable": {
+                      "type": "boolean",
+                      "description": "Whether settings can be persisted (internal DB is available)"
+                    },
+                    "deployMode": {
+                      "type": "string",
+                      "enum": [
+                        "self-hosted",
+                        "saas"
+                      ],
+                      "description": "Current deploy mode"
+                    }
+                  },
+                  "required": [
+                    "settings",
+                    "manageable",
+                    "deployMode"
+                  ]
                 }
               }
             }
@@ -38581,6 +40452,180 @@
         "operationId": "getSlackCallback"
       }
     },
+    "/api/v1/teams/install": {
+      "get": {
+        "tags": [
+          "Teams"
+        ],
+        "summary": "Teams OAuth install redirect",
+        "description": "Redirects to the Azure AD admin consent page. Requires TEAMS_APP_ID to be configured.",
+        "responses": {
+          "302": {
+            "description": "Redirect to Azure AD admin consent page"
+          },
+          "501": {
+            "description": "Teams not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getTeamsInstall"
+      }
+    },
+    "/api/v1/teams/callback": {
+      "get": {
+        "tags": [
+          "Teams"
+        ],
+        "summary": "Teams OAuth callback",
+        "description": "Handles the admin consent callback from Azure AD. Saves the tenant authorization and returns HTML on success or failure.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "CSRF state parameter"
+            },
+            "required": true,
+            "description": "CSRF state parameter",
+            "name": "state",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Azure AD tenant ID (absent on denial)"
+            },
+            "required": false,
+            "description": "Azure AD tenant ID (absent on denial)",
+            "name": "tenant",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Whether admin consent was granted"
+            },
+            "required": false,
+            "description": "Whether admin consent was granted",
+            "name": "admin_consent",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Error code from Azure AD on denial"
+            },
+            "required": false,
+            "description": "Error code from Azure AD on denial",
+            "name": "error",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "description": "Human-readable error from Azure AD"
+            },
+            "required": false,
+            "description": "Human-readable error from Azure AD",
+            "name": "error_description",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Installation successful (HTML response)",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid or expired state, or consent not granted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Installation failed (HTML response)",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Teams not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getTeamsCallback"
+      }
+    },
     "/api/auth/sign-up/email": {
       "post": {
         "operationId": "signUpEmail",
@@ -39152,7 +41197,16 @@
       "name": "Admin — Connections"
     },
     {
+      "name": "Admin — Custom Domain"
+    },
+    {
+      "name": "Admin — Data Residency"
+    },
+    {
       "name": "Admin — IP Allowlist"
+    },
+    {
+      "name": "Admin — Integrations"
     },
     {
       "name": "Admin — Invitations"
@@ -39189,6 +41243,9 @@
     },
     {
       "name": "Admin — SSO"
+    },
+    {
+      "name": "Admin — Sandbox"
     },
     {
       "name": "Admin — Semantic"
@@ -39273,6 +41330,9 @@
     },
     {
       "name": "Tables"
+    },
+    {
+      "name": "Teams"
     },
     {
       "name": "Validate SQL"

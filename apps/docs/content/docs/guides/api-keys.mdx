@@ -1,0 +1,114 @@
+---
+title: API Key Management
+description: Create and manage API keys for programmatic access to the Atlas API via the SDK, MCP server, or embeddable widget.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+API keys provide programmatic access to the Atlas API. Use them to authenticate requests from the [TypeScript SDK](/reference/sdk), [MCP server](/guides/mcp), or [embeddable widget](/guides/embedding-widget) without requiring interactive login.
+
+<Callout title="Prerequisites">
+- [Managed auth](/deployment/authentication#managed-auth) enabled
+- A user with the `admin` role
+- `DATABASE_URL` configured (keys are stored in the internal database)
+</Callout>
+
+---
+
+## Overview
+
+**Route:** `/admin/api-keys`
+
+The API Keys page lists all keys for your workspace. Each row shows the key name, creation date, and a **Revoke** action.
+
+---
+
+## Creating a Key
+
+1. Click **Create API Key**
+2. Enter a descriptive name (e.g. "Production API", "MCP Server")
+3. Click **Create**
+4. Copy the key from the dialog — it is only shown once
+
+<Callout type="warn">
+Store the key immediately. Once you close the dialog, the full key cannot be retrieved. If you lose it, revoke the old key and create a new one.
+</Callout>
+
+The key is scoped to your current organization (workspace). In SaaS mode, each workspace manages its own keys independently.
+
+---
+
+## Revoking a Key
+
+1. Click the **Revoke** button on the key row
+2. Confirm in the dialog
+
+Revocation is immediate and permanent. Any application using the revoked key will receive `401 Unauthorized` responses.
+
+---
+
+## Using API Keys
+
+Pass the key in the `Authorization` header:
+
+```bash
+curl -H "Authorization: Bearer atk_..." \
+  https://your-atlas.example.com/api/v1/chat
+```
+
+### SDK
+
+```typescript
+import Atlas from "@useatlas/sdk";
+
+const atlas = new Atlas({
+  apiKey: "atk_...",
+  baseUrl: "https://your-atlas.example.com",
+});
+```
+
+### MCP Server
+
+Set the `ATLAS_API_KEY` environment variable when starting the MCP server, or pass it in the MCP client configuration.
+
+### Embeddable Widget
+
+```html
+<script
+  src="https://your-atlas.example.com/widget.js"
+  data-api-key="atk_..."
+></script>
+```
+
+---
+
+## SaaS vs Self-Hosted
+
+| Behavior | Self-Hosted | SaaS |
+|----------|-------------|------|
+| Key scope | Global (single workspace) | Per-workspace |
+| Who can manage | Any admin | Workspace admins |
+| Storage | Internal database | Internal database |
+
+The UI and workflow are identical in both modes. In SaaS deployments, keys are automatically scoped to the active workspace.
+
+---
+
+## API Endpoints
+
+All endpoints require admin authentication.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/auth/api-key/list` | List all API keys |
+| `POST` | `/api/auth/api-key/create` | Create a new key (returns full key once) |
+| `POST` | `/api/auth/api-key/delete` | Revoke a key by ID |
+
+---
+
+## See Also
+
+- [SDK Reference](/reference/sdk) — Use API keys with the TypeScript SDK
+- [MCP Server](/guides/mcp) — Configure Atlas as an MCP tool provider
+- [Embedding Widget](/guides/embedding-widget) — Embed Atlas in your application
+- [Authentication](/deployment/authentication) — Auth modes and configuration

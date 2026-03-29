@@ -1,0 +1,121 @@
+---
+title: Integrations Hub
+description: Connect Slack, Microsoft Teams, and webhooks to Atlas from the admin console.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+The Integrations page provides a central hub for connecting Atlas to external platforms. Manage Slack, Microsoft Teams, and webhook delivery from a single admin page.
+
+<Callout title="Prerequisites">
+- [Managed auth](/deployment/authentication#managed-auth) enabled
+- A user with the `admin` role
+- `DATABASE_URL` configured (connection state is stored in the internal database)
+</Callout>
+
+---
+
+## Overview
+
+**Route:** `/admin/integrations`
+
+The page shows a card for each integration with its connection status:
+
+- **Connected** — Integration is active and working
+- **Disconnected** — Integration is available but not connected
+- **Not Available** — (SaaS only) Integration is not configured for this workspace
+
+A **Delivery Channels** card at the bottom summarizes all available notification channels (email, Slack, webhook, Teams) for use with [scheduled tasks](/guides/scheduled-tasks).
+
+---
+
+## Slack
+
+Connect Slack to enable the `/atlas` slash command and thread follow-ups in Slack channels.
+
+### Self-Hosted Setup
+
+There are two ways to connect Slack:
+
+1. **OAuth (recommended)** — Set `SLACK_CLIENT_ID` and `SLACK_CLIENT_SECRET`, then click **Connect to Slack** in the admin UI. This opens Slack's OAuth flow and stores the token per-workspace.
+
+2. **Environment variable** — Set `SLACK_BOT_TOKEN` and `SLACK_SIGNING_SECRET` directly. The integration shows as connected, but cannot be managed from the UI.
+
+<Callout type="info">
+When using environment variables, the Slack card shows "Using environment variable (SLACK_BOT_TOKEN)" and the Disconnect button is hidden. To enable self-serve management, configure OAuth credentials instead.
+</Callout>
+
+### SaaS Mode
+
+In SaaS deployments, workspace admins see a **Connect to Slack** button if the platform has OAuth configured. If not, the card shows **Not Available** with a message to contact the administrator.
+
+### Disconnecting
+
+Click **Disconnect** and confirm in the dialog. The `/atlas` command and thread follow-ups stop working immediately. You can reconnect at any time.
+
+For the full Slack setup guide, see [Slack Integration](/guides/slack).
+
+---
+
+## Microsoft Teams
+
+Connect Microsoft Teams to enable `@atlas` mentions and channel conversations.
+
+### Self-Hosted Setup
+
+Set `TEAMS_APP_ID` and `TEAMS_APP_PASSWORD` environment variables to enable Teams integration. The admin consent flow is initiated by clicking **Connect to Teams** in the admin UI.
+
+### SaaS Mode
+
+Workspace admins see a **Connect to Teams** button if the platform has Teams configured. The admin consent flow redirects to Microsoft's consent page and returns the tenant connection to Atlas.
+
+### Connection Details
+
+When connected, the card shows:
+
+- **Tenant** — The Microsoft 365 tenant name
+- **Tenant ID** — The Azure AD tenant identifier
+- **Connected** — Timestamp of when the connection was established
+
+### Disconnecting
+
+Click **Disconnect** and confirm. The `@atlas` mentions stop working until you reconnect.
+
+---
+
+## Webhooks
+
+The webhook card shows the count of active webhook delivery tasks. Webhooks are created via [Scheduled Tasks](/guides/scheduled-tasks) — the Integrations page provides a summary view.
+
+In SaaS mode with webhook support enabled, a **Create Webhook** link navigates to the Scheduled Tasks page.
+
+---
+
+## SaaS vs Self-Hosted
+
+| Behavior | Self-Hosted | SaaS |
+|----------|-------------|------|
+| Slack setup | OAuth credentials or env vars | OAuth via platform, self-serve connect |
+| Teams setup | Env vars + admin consent | Admin consent flow |
+| Env var hints | Shown when credentials missing | Hidden — shows "Not Available" instead |
+| Disconnect | Available when OAuth configured | Available for connected integrations |
+
+---
+
+## API Endpoints
+
+All endpoints require admin authentication.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/v1/admin/integrations/status` | Get all integration statuses |
+| `DELETE` | `/api/v1/admin/integrations/slack` | Disconnect Slack |
+| `DELETE` | `/api/v1/admin/integrations/teams` | Disconnect Teams |
+
+---
+
+## See Also
+
+- [Slack Integration](/guides/slack) — Full Slack setup guide
+- [Scheduled Tasks](/guides/scheduled-tasks) — Create webhook delivery tasks
+- [Admin Console](/guides/admin-console) — Overview of all admin pages

@@ -13,6 +13,10 @@ The admin console is a built-in web UI for managing your Atlas deployment. Acces
 - When auth mode is `none` (local development), all users have implicit admin access
 </Callout>
 
+<Callout type="info">
+In **SaaS mode**, workspace admins see a subset of admin pages scoped to their workspace. Platform admins see all pages including cross-tenant management. In **self-hosted mode**, all admins see the full admin console.
+</Callout>
+
 ---
 
 ## Dashboard
@@ -503,6 +507,36 @@ See [Usage Metering](/guides/usage-metering) for per-workspace usage tracking.
 
 ---
 
+## API Keys
+
+**Route:** `/admin/api-keys`
+
+Create and manage API keys for programmatic access via the SDK, MCP server, or embeddable widget. Keys are shown once at creation and cannot be retrieved later.
+
+See [API Key Management](/guides/api-keys) for the full guide.
+
+---
+
+## Integrations
+
+**Route:** `/admin/integrations`
+
+Connect and manage external platform integrations — Slack, Microsoft Teams, and webhooks — from a single page. Each integration shows its connection status and provides connect/disconnect actions.
+
+See [Integrations Hub](/guides/integrations) for the full guide.
+
+---
+
+## Sandbox
+
+**Route:** `/admin/sandbox`
+
+Configure which sandbox backend the explore and Python tools use. Supports per-workspace overrides in multi-tenant deployments.
+
+See [Sandbox Configuration](/guides/sandbox) for the full guide.
+
+---
+
 ## API Endpoints
 
 All admin endpoints are at `/api/v1/admin/` and require the `admin` role. See the [SDK](/reference/sdk) for typed client methods.
@@ -629,3 +663,6 @@ For more, see [Troubleshooting](/guides/troubleshooting).
 - [SDK Reference](/reference/sdk#admin) — Programmatic access to admin endpoints
 - [Scheduled Tasks](/guides/scheduled-tasks) — Configure recurring queries managed via the admin console
 - [Actions](/guides/actions) — Approval-gated write operations visible in the admin console
+- [API Key Management](/guides/api-keys) — Create and manage API keys
+- [Integrations Hub](/guides/integrations) — Connect Slack, Teams, and webhooks
+- [Sandbox Configuration](/guides/sandbox) — Configure sandbox backends

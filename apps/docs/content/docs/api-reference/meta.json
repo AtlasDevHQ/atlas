@@ -13,7 +13,10 @@
     "admin-branding",
     "admin-compliance",
     "admin-connections",
+    "admin-custom-domain",
+    "admin-data-residency",
     "admin-ip-allowlist",
+    "admin-integrations",
     "admin-invitations",
     "admin-learned-patterns",
     "admin-model-config",
@@ -26,6 +29,7 @@
     "admin-roles",
     "admin-scim",
     "admin-sso",
+    "admin-sandbox",
     "admin-semantic",
     "admin-sessions",
     "admin-settings",
@@ -54,6 +58,7 @@
     "slack",
     "suggestions",
     "tables",
+    "teams",
     "validate-sql",
     "wizard"
   ]

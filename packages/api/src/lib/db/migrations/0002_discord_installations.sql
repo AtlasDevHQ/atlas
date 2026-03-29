@@ -6,7 +6,6 @@
 
 CREATE TABLE IF NOT EXISTS discord_installations (
   guild_id TEXT PRIMARY KEY,
-  bot_token TEXT NOT NULL,
   org_id TEXT,
   guild_name TEXT,
   installed_at TIMESTAMPTZ DEFAULT now()

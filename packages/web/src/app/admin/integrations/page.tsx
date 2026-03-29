@@ -86,9 +86,9 @@ interface WebhookStatus {
 
 interface IntegrationStatus {
   slack: SlackStatus;
-  teams?: TeamsStatus;
-  discord?: DiscordStatus;
-  telegram?: TelegramStatus;
+  teams: TeamsStatus;
+  discord: DiscordStatus;
+  telegram: TelegramStatus;
   webhooks: WebhookStatus;
   deliveryChannels: DeliveryChannel[];
   deployMode: "saas" | "self-hosted";
@@ -193,41 +193,35 @@ export default function IntegrationsPage() {
               disconnectError={disconnectMutation.error}
             />
 
-            {/* Teams card — only render when API includes teams data */}
-            {teams && (
-              <TeamsCard
-                teams={teams}
-                isSaas={isSaas}
-                onDisconnect={handleTeamsDisconnect}
-                disconnecting={teamsDisconnectMutation.saving}
-                disconnectError={teamsDisconnectMutation.error}
-              />
-            )}
+            {/* Teams card */}
+            <TeamsCard
+              teams={teams!}
+              isSaas={isSaas}
+              onDisconnect={handleTeamsDisconnect}
+              disconnecting={teamsDisconnectMutation.saving}
+              disconnectError={teamsDisconnectMutation.error}
+            />
 
-            {/* Discord card — only render when API includes discord data */}
-            {discord && (
-              <DiscordCard
-                discord={discord}
-                isSaas={isSaas}
-                onDisconnect={handleDiscordDisconnect}
-                disconnecting={discordDisconnectMutation.saving}
-                disconnectError={discordDisconnectMutation.error}
-              />
-            )}
+            {/* Discord card */}
+            <DiscordCard
+              discord={discord!}
+              isSaas={isSaas}
+              onDisconnect={handleDiscordDisconnect}
+              disconnecting={discordDisconnectMutation.saving}
+              disconnectError={discordDisconnectMutation.error}
+            />
 
-            {/* Telegram card — only render when API includes telegram data */}
-            {telegram && (
-              <TelegramCard
-                telegram={telegram}
-                isSaas={isSaas}
-                onConnect={handleTelegramConnect}
-                connecting={telegramConnectMutation.saving}
-                connectError={telegramConnectMutation.error}
-                onDisconnect={handleTelegramDisconnect}
-                disconnecting={telegramDisconnectMutation.saving}
-                disconnectError={telegramDisconnectMutation.error}
-              />
-            )}
+            {/* Telegram card */}
+            <TelegramCard
+              telegram={telegram!}
+              isSaas={isSaas}
+              onConnect={handleTelegramConnect}
+              connecting={telegramConnectMutation.saving}
+              connectError={telegramConnectMutation.error}
+              onDisconnect={handleTelegramDisconnect}
+              disconnecting={telegramDisconnectMutation.saving}
+              disconnectError={telegramDisconnectMutation.error}
+            />
 
             {/* Webhooks card */}
             <WebhookCard webhooks={webhooks} isSaas={isSaas} />

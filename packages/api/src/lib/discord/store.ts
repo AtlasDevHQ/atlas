@@ -1,9 +1,11 @@
 /**
  * Discord installation storage.
  *
- * Stores per-guild bot authorization records in the internal database.
+ * Stores per-guild authorization records in the internal database.
  * App credentials (DISCORD_CLIENT_ID, DISCORD_CLIENT_SECRET) are platform-level
  * env vars — what changes per-org is which Discord guild authorized the bot.
+ * Like Teams, the bot token itself is a platform-level credential, not stored
+ * per-guild.
  */
 
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
@@ -13,7 +15,6 @@ const log = createLogger("discord-store");
 
 export interface DiscordInstallation {
   guild_id: string;
-  bot_token: string;
   org_id: string | null;
   guild_name: string | null;
   installed_at: string;
@@ -32,14 +33,12 @@ function parseInstallationRow(
   context: Record<string, unknown>,
 ): DiscordInstallation | null {
   const guildIdVal = row.guild_id;
-  const botTokenVal = row.bot_token;
-  if (typeof guildIdVal !== "string" || typeof botTokenVal !== "string") {
+  if (typeof guildIdVal !== "string") {
     log.warn(context, "Invalid Discord installation record in database");
     return null;
   }
   return {
     guild_id: guildIdVal,
-    bot_token: botTokenVal,
     org_id: typeof row.org_id === "string" ? row.org_id : null,
     guild_name: typeof row.guild_name === "string" ? row.guild_name : null,
     installed_at: typeof row.installed_at === "string" ? row.installed_at : new Date().toISOString(),
@@ -60,7 +59,7 @@ export async function getDiscordInstallation(
   if (hasInternalDB()) {
     try {
       const rows = await internalQuery<Record<string, unknown>>(
-        "SELECT guild_id, bot_token, org_id, guild_name, installed_at::text FROM discord_installations WHERE guild_id = $1",
+        "SELECT guild_id, org_id, guild_name, installed_at::text FROM discord_installations WHERE guild_id = $1",
         [guildId],
       );
       if (rows.length > 0) {
@@ -81,7 +80,6 @@ export async function getDiscordInstallation(
   if (envClientId) {
     return {
       guild_id: guildId,
-      bot_token: "",
       org_id: null,
       guild_name: null,
       installed_at: new Date().toISOString(),
@@ -104,7 +102,7 @@ export async function getDiscordInstallationByOrg(
 
   try {
     const rows = await internalQuery<Record<string, unknown>>(
-      "SELECT guild_id, bot_token, org_id, guild_name, installed_at::text FROM discord_installations WHERE org_id = $1",
+      "SELECT guild_id, org_id, guild_name, installed_at::text FROM discord_installations WHERE org_id = $1",
       [orgId],
     );
     if (rows.length > 0) {
@@ -126,18 +124,19 @@ export async function getDiscordInstallationByOrg(
 
 /**
  * Save or update a Discord installation (OAuth2 callback).
+ * Throws if the guild is already bound to a different organization (hijack protection).
  * Throws if the database write fails.
  */
 export async function saveDiscordInstallation(
   guildId: string,
-  opts: { orgId?: string; guildName?: string; botToken: string },
+  opts?: { orgId?: string; guildName?: string },
 ): Promise<void> {
   if (!hasInternalDB()) {
     throw new Error("Cannot save Discord installation — no internal database configured");
   }
 
-  const orgId = opts.orgId ?? null;
-  const guildName = opts.guildName ?? null;
+  const orgId = opts?.orgId ?? null;
+  const guildName = opts?.guildName ?? null;
 
   try {
     // Reject if the guild is already bound to a different org (prevents hijacking).
@@ -157,14 +156,13 @@ export async function saveDiscordInstallation(
     }
 
     await internalQuery(
-      `INSERT INTO discord_installations (guild_id, bot_token, org_id, guild_name)
-       VALUES ($1, $2, $3, $4)
+      `INSERT INTO discord_installations (guild_id, org_id, guild_name)
+       VALUES ($1, $2, $3)
        ON CONFLICT (guild_id) DO UPDATE SET
-         bot_token = $2,
-         org_id = COALESCE($3, discord_installations.org_id),
-         guild_name = COALESCE($4, discord_installations.guild_name),
+         org_id = COALESCE($2, discord_installations.org_id),
+         guild_name = COALESCE($3, discord_installations.guild_name),
          installed_at = now()`,
-      [guildId, opts.botToken, orgId, guildName],
+      [guildId, orgId, guildName],
     );
   } catch (err) {
     log.error(

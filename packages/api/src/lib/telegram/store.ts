@@ -33,7 +33,7 @@ function parseInstallationRow(
 ): TelegramInstallation | null {
   const botIdVal = row.bot_id;
   const botTokenVal = row.bot_token;
-  if (typeof botIdVal !== "string" || typeof botTokenVal !== "string") {
+  if (typeof botIdVal !== "string" || !botIdVal || typeof botTokenVal !== "string" || !botTokenVal) {
     log.warn(context, "Invalid Telegram installation record in database");
     return null;
   }
@@ -113,6 +113,7 @@ export async function getTelegramInstallationByOrg(
 
 /**
  * Save or update a Telegram installation (bot token submission).
+ * Throws if the bot is already bound to a different organization (hijack protection).
  * Throws if the database write fails.
  */
 export async function saveTelegramInstallation(

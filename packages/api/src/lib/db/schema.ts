@@ -935,7 +935,6 @@ export const discordInstallations = pgTable(
   "discord_installations",
   {
     guildId: text("guild_id").primaryKey(),
-    botToken: text("bot_token").notNull(),
     orgId: text("org_id"),
     guildName: text("guild_name"),
     installedAt: timestamp("installed_at", { withTimezone: true }).defaultNow(),

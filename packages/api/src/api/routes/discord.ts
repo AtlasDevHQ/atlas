@@ -6,8 +6,9 @@
  *
  * Discord uses OAuth2 to authorize a bot into a guild (server).
  * Platform operator registers a Discord Application and sets
- * DISCORD_CLIENT_ID, DISCORD_CLIENT_SECRET, DISCORD_PUBLIC_KEY as env vars.
- * What changes per-org is the guild authorization.
+ * DISCORD_CLIENT_ID and DISCORD_CLIENT_SECRET as env vars.
+ * What changes per-org is the guild authorization — like Teams,
+ * the bot token itself is a platform-level credential.
  */
 
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
@@ -22,7 +23,9 @@ const log = createLogger("discord");
 const discord = new OpenAPIHono({ defaultHook: validationHook });
 
 // ---------------------------------------------------------------------------
-// OAuth CSRF state — stores { expiry, orgId } keyed by nonce
+// OAuth CSRF state — stores { expiry, orgId } keyed by nonce.
+// In-memory map — works for single-instance deployments.
+// Multi-instance deployments will need an external store (e.g., Redis or internal DB).
 // ---------------------------------------------------------------------------
 
 interface OAuthState {
@@ -66,12 +69,13 @@ const callbackRoute = createRoute({
   tags: ["Discord"],
   summary: "Discord OAuth callback",
   description:
-    "Handles the OAuth2 callback from Discord. Exchanges the authorization code for an " +
-    "access token, extracts guild info, saves the installation, and returns HTML on success or failure.",
+    "Handles the OAuth2 callback from Discord. Verifies the guild authorization, " +
+    "saves the installation, and returns HTML on success or failure.",
   request: {
     query: z.object({
       state: z.string().optional().openapi({ description: "CSRF state parameter" }),
       code: z.string().optional().openapi({ description: "Authorization code from Discord" }),
+      guild_id: z.string().optional().openapi({ description: "Authorized guild ID" }),
       error: z.string().optional().openapi({ description: "Error code from Discord on denial" }),
       error_description: z.string().optional().openapi({ description: "Human-readable error from Discord" }),
     }),
@@ -127,6 +131,7 @@ discord.openapi(installRoute, (c) => {
 
   const origin = new URL(c.req.url).origin;
   const redirectUri = `${origin}/api/v1/discord/callback`;
+  // 2048 = Send Messages permission
   const url =
     `https://discord.com/oauth2/authorize` +
     `?client_id=${encodeURIComponent(clientId)}` +
@@ -174,7 +179,8 @@ discord.openapi(callbackRoute, async (c) => {
     return c.json({ error: "missing_code", message: "Missing authorization code" }, 400);
   }
 
-  // Exchange authorization code for access token
+  // Exchange authorization code for token response (contains guild info)
+  const requestId = crypto.randomUUID();
   const origin = new URL(c.req.url).origin;
   const redirectUri = `${origin}/api/v1/discord/callback`;
 
@@ -194,9 +200,9 @@ discord.openapi(callbackRoute, async (c) => {
 
     if (!tokenRes.ok) {
       const body = await tokenRes.text();
-      log.error({ status: tokenRes.status, body }, "Discord token exchange failed");
+      log.error({ status: tokenRes.status, body, requestId }, "Discord token exchange failed");
       return c.html(
-        "<html><body><h1>Installation Failed</h1><p>Could not exchange authorization code. Please try again.</p></body></html>",
+        `<html><body><h1>Installation Failed</h1><p>Could not exchange authorization code. Please try again. (ref: ${requestId.slice(0, 8)})</p></body></html>`,
         500,
       );
     }
@@ -204,11 +210,11 @@ discord.openapi(callbackRoute, async (c) => {
     tokenData = (await tokenRes.json()) as Record<string, unknown>;
   } catch (err) {
     log.error(
-      { err: err instanceof Error ? err.message : String(err) },
+      { err: err instanceof Error ? err.message : String(err), requestId },
       "Discord token exchange request failed",
     );
     return c.html(
-      "<html><body><h1>Installation Failed</h1><p>Could not contact Discord. Please try again.</p></body></html>",
+      `<html><body><h1>Installation Failed</h1><p>Could not contact Discord. Please try again. (ref: ${requestId.slice(0, 8)})</p></body></html>`,
       500,
     );
   }
@@ -217,20 +223,14 @@ discord.openapi(callbackRoute, async (c) => {
   const guild = tokenData.guild as { id?: string; name?: string } | undefined;
   const guildId = guild?.id;
   const guildName = guild?.name ?? null;
-  const accessToken = tokenData.access_token;
 
   if (!guildId || typeof guildId !== "string") {
-    log.error({ tokenData }, "Discord token response missing guild.id");
-    return c.html(
-      "<html><body><h1>Installation Failed</h1><p>Discord did not return guild information. Please try again.</p></body></html>",
-      500,
+    log.error(
+      { hasGuild: !!tokenData.guild, tokenType: tokenData.token_type, requestId },
+      "Discord token response missing guild.id",
     );
-  }
-
-  if (typeof accessToken !== "string") {
-    log.error("Discord token response missing access_token");
     return c.html(
-      "<html><body><h1>Installation Failed</h1><p>Discord did not return an access token. Please try again.</p></body></html>",
+      `<html><body><h1>Installation Failed</h1><p>Discord did not return guild information. Please try again. (ref: ${requestId.slice(0, 8)})</p></body></html>`,
       500,
     );
   }
@@ -240,16 +240,15 @@ discord.openapi(callbackRoute, async (c) => {
     await saveDiscordInstallation(guildId, {
       orgId,
       guildName: guildName ?? undefined,
-      botToken: accessToken,
     });
     log.info({ guildId, guildName, orgId }, "Discord installation saved");
   } catch (saveErr) {
     log.error(
-      { err: saveErr instanceof Error ? saveErr.message : String(saveErr), guildId },
+      { err: saveErr instanceof Error ? saveErr.message : String(saveErr), guildId, requestId },
       "Failed to save Discord installation",
     );
     return c.html(
-      "<html><body><h1>Installation Failed</h1><p>Could not save the installation. Please try again.</p></body></html>",
+      `<html><body><h1>Installation Failed</h1><p>Could not save the installation. Please try again. (ref: ${requestId.slice(0, 8)})</p></body></html>`,
       500,
     );
   }

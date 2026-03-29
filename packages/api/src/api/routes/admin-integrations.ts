@@ -2,7 +2,8 @@
  * Admin integrations routes.
  *
  * Mounted under /api/v1/admin/integrations. All routes require admin role
- * and org context. Provides integration status and Slack disconnect.
+ * and org context. Provides aggregated integration status, connect,
+ * and disconnect operations for Slack, Teams, Discord, and Telegram.
  */
 
 import { Effect } from "effect";
@@ -73,7 +74,7 @@ const TelegramStatusSchema = z.object({
   botId: z.string().nullable(),
   botUsername: z.string().nullable(),
   installedAt: z.string().datetime().nullable(),
-  /** Always configurable in SaaS mode (BYOT — bring your own token) */
+  /** Configurable when internal DB is available (SaaS or self-hosted with DATABASE_URL). BYOT — bring your own token */
   configurable: z.boolean(),
 });
 
@@ -106,7 +107,7 @@ const getStatusRoute = createRoute({
   summary: "Get integration status",
   description:
     "Returns the status of all configured integrations for the current workspace: " +
-    "Slack connection, webhook count, and available delivery channels.",
+    "Slack, Teams, Discord, Telegram, webhooks, available delivery channels, and deploy mode.",
   responses: {
     200: {
       description: "Integration status",
@@ -229,20 +230,50 @@ adminIntegrations.openapi(getStatusRoute, async (c) => {
         );
       }
 
+      const deployMode = getConfig()?.deployMode ?? "self-hosted";
+
+      // Run all integration lookups in parallel — they are independent
+      const [slackInstall, teamsInstall, discordInstall, telegramInstall, webhookActiveCount] =
+        yield* Effect.all(
+          [
+            Effect.tryPromise({
+              try: () => getInstallationByOrg(orgId),
+              catch: (err) => err instanceof Error ? err : new Error(String(err)),
+            }),
+            Effect.tryPromise({
+              try: () => getTeamsInstallationByOrg(orgId),
+              catch: (err) => err instanceof Error ? err : new Error(String(err)),
+            }),
+            Effect.tryPromise({
+              try: () => getDiscordInstallationByOrg(orgId),
+              catch: (err) => err instanceof Error ? err : new Error(String(err)),
+            }),
+            Effect.tryPromise({
+              try: () => getTelegramInstallationByOrg(orgId),
+              catch: (err) => err instanceof Error ? err : new Error(String(err)),
+            }),
+            Effect.tryPromise({
+              try: async () => {
+                if (!hasInternalDB()) return 0;
+                const rows = await internalQuery<{ count: number }>(
+                  `SELECT COUNT(*)::int AS count FROM scheduled_tasks
+                   WHERE org_id = $1 AND enabled = true
+                   AND recipients @> $2::jsonb`,
+                  [orgId, JSON.stringify([{ type: "webhook" }])],
+                );
+                return rows[0]?.count ?? 0;
+              },
+              catch: (err) => err instanceof Error ? err : new Error(String(err)),
+            }),
+          ],
+          { concurrency: "unbounded" },
+        );
+
       // Slack status
-      const slackInstall = yield* Effect.tryPromise({
-        try: () => getInstallationByOrg(orgId),
-        catch: (err) => err instanceof Error ? err : new Error(String(err)),
-      });
       const oauthConfigured = !!(
         process.env.SLACK_CLIENT_ID && process.env.SLACK_CLIENT_SECRET
       );
       const envConfigured = !!process.env.SLACK_BOT_TOKEN;
-
-      const deployMode = getConfig()?.deployMode ?? "self-hosted";
-
-      // Slack is configurable (connect/disconnect) when OAuth credentials
-      // are set. Env-only token setups are operator_managed.
       const slackConfigurable = oauthConfigured;
 
       const slack = {
@@ -256,12 +287,7 @@ adminIntegrations.openapi(getStatusRoute, async (c) => {
       };
 
       // Teams status
-      const teamsInstall = yield* Effect.tryPromise({
-        try: () => getTeamsInstallationByOrg(orgId),
-        catch: (err) => err instanceof Error ? err : new Error(String(err)),
-      });
       const teamsConfigurable = !!process.env.TEAMS_APP_ID;
-
       const teams = {
         connected: teamsInstall !== null,
         tenantId: teamsInstall?.tenant_id ?? null,
@@ -271,12 +297,7 @@ adminIntegrations.openapi(getStatusRoute, async (c) => {
       };
 
       // Discord status
-      const discordInstall = yield* Effect.tryPromise({
-        try: () => getDiscordInstallationByOrg(orgId),
-        catch: (err) => err instanceof Error ? err : new Error(String(err)),
-      });
       const discordConfigurable = !!process.env.DISCORD_CLIENT_ID;
-
       const discord = {
         connected: discordInstall !== null,
         guildId: discordInstall?.guild_id ?? null,
@@ -285,14 +306,8 @@ adminIntegrations.openapi(getStatusRoute, async (c) => {
         configurable: discordConfigurable,
       };
 
-      // Telegram status
-      const telegramInstall = yield* Effect.tryPromise({
-        try: () => getTelegramInstallationByOrg(orgId),
-        catch: (err) => err instanceof Error ? err : new Error(String(err)),
-      });
-      // Telegram is always configurable — BYOT (bring your own token), no platform env vars needed
+      // Telegram status — configurable in SaaS mode or when internal DB is available (BYOT)
       const telegramConfigurable = deployMode === "saas" || hasInternalDB();
-
       const telegram = {
         connected: telegramInstall !== null,
         botId: telegramInstall?.bot_id ?? null,
@@ -300,21 +315,6 @@ adminIntegrations.openapi(getStatusRoute, async (c) => {
         installedAt: telegramInstall?.installed_at ?? null,
         configurable: telegramConfigurable,
       };
-
-      // Webhook count (scheduled tasks with webhook recipients)
-      const webhookActiveCount = yield* Effect.tryPromise({
-        try: async () => {
-          if (!hasInternalDB()) return 0;
-          const rows = await internalQuery<{ count: number }>(
-            `SELECT COUNT(*)::int AS count FROM scheduled_tasks
-             WHERE org_id = $1 AND enabled = true
-             AND recipients @> $2::jsonb`,
-            [orgId, JSON.stringify([{ type: "webhook" }])],
-          );
-          return rows[0]?.count ?? 0;
-        },
-        catch: (err) => err instanceof Error ? err : new Error(String(err)),
-      });
 
       // Available delivery channels
       const deliveryChannels: Array<"email" | "slack" | "webhook"> = ["email"];
@@ -538,25 +538,42 @@ adminIntegrations.openapi(connectTelegramRoute, async (c) => {
         );
       }
 
+      // Check internal DB availability before making the external API call
+      if (!hasInternalDB()) {
+        return c.json(
+          { error: "not_configured", message: "Telegram integration requires an internal database. Contact your platform administrator." },
+          400,
+        );
+      }
+
       const { botToken } = c.req.valid("json");
 
-      // Validate token by calling Telegram's getMe API
+      // Validate token by calling Telegram's getMe API.
+      // Wrap in a sanitized try/catch to prevent the bot token from leaking
+      // into error messages (the token is embedded in the URL path).
       const getMeResult = yield* Effect.tryPromise({
         try: async () => {
-          const res = await fetch(`https://api.telegram.org/bot${botToken}/getMe`);
+          let res: Response;
+          try {
+            res = await fetch(`https://api.telegram.org/bot${botToken}/getMe`);
+          } catch {
+            return { ok: false as const, error: "Could not reach Telegram API. Please try again." };
+          }
           if (!res.ok) {
             return { ok: false as const, error: `Telegram API returned ${res.status}` };
           }
-          const data = (await res.json()) as {
-            ok: boolean;
-            result?: { id: number; username?: string };
-          };
+          let data: { ok: boolean; result?: { id: number; username?: string } };
+          try {
+            data = (await res.json()) as typeof data;
+          } catch {
+            return { ok: false as const, error: "Telegram API returned an invalid response" };
+          }
           if (!data.ok || !data.result) {
             return { ok: false as const, error: "Invalid bot token" };
           }
           return { ok: true as const, botId: String(data.result.id), botUsername: data.result.username ?? null };
         },
-        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+        catch: () => new Error("Telegram token validation failed"),
       });
 
       if (!getMeResult.ok) {

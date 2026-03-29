@@ -9,33 +9,43 @@ function createMockPool(opts: { applied?: string[]; failOn?: string } = {}) {
   const queries: string[] = [];
   const params: unknown[][] = [];
 
-  const pool = {
-    async query(sql: string, p?: unknown[]) {
-      queries.push(sql);
-      if (p) params.push(p);
+  async function queryFn(sql: string, p?: unknown[]) {
+    queries.push(sql);
+    if (p) params.push(p);
 
-      if (opts.failOn && sql.includes(opts.failOn)) {
-        throw new Error(`Mock failure on: ${opts.failOn}`);
-      }
+    if (opts.failOn && sql.includes(opts.failOn)) {
+      throw new Error(`Mock failure on: ${opts.failOn}`);
+    }
 
-      // Return applied migrations for the SELECT query
-      if (sql.includes("SELECT name FROM __atlas_migrations")) {
-        return {
-          rows: (opts.applied ?? []).map((name) => ({ name })),
-        };
-      }
+    // Return applied migrations for the SELECT query
+    if (sql.includes("SELECT name FROM __atlas_migrations")) {
+      return {
+        rows: (opts.applied ?? []).map((name) => ({ name })),
+      };
+    }
 
-      // Return empty rows for seed checks (prompt_collections lookup)
-      if (sql.includes("SELECT id FROM prompt_collections")) {
-        return { rows: [] };
-      }
-
-      // Return a mock id for INSERT ... RETURNING id
-      if (sql.includes("RETURNING id")) {
-        return { rows: [{ id: "mock-uuid" }] };
-      }
-
+    // Return empty rows for seed checks (prompt_collections lookup)
+    if (sql.includes("SELECT id FROM prompt_collections")) {
       return { rows: [] };
+    }
+
+    // Return a mock id for INSERT ... RETURNING id
+    if (sql.includes("RETURNING id")) {
+      return { rows: [{ id: "mock-uuid" }] };
+    }
+
+    return { rows: [] };
+  }
+
+  const pool = {
+    query: queryFn,
+    // connect() returns a dedicated client (same mock) to match pg.Pool behavior.
+    // This ensures advisory lock, transactions, and queries all hit the same "connection".
+    async connect() {
+      return {
+        query: queryFn,
+        release() { /* no-op for mock */ },
+      };
     },
   };
 

@@ -1028,8 +1028,22 @@ export function validateAndResolve(raw: unknown): ResolvedConfig {
  * When the enterprise module is not available, falls back to `"self-hosted"`.
  * Mutates `resolved.deployMode` in place and logs the result.
  */
-async function applyDeployMode(resolved: ResolvedConfig): Promise<void> {
-  const rawSetting = process.env.ATLAS_DEPLOY_MODE as "saas" | "self-hosted" | "auto" | undefined;
+async function applyDeployMode(
+  resolved: ResolvedConfig,
+  configFileValue?: "auto" | "saas" | "self-hosted",
+): Promise<void> {
+  // Env var takes priority over config file; config file takes priority over default
+  const rawSetting = (process.env.ATLAS_DEPLOY_MODE ?? configFileValue) as
+    | "saas" | "self-hosted" | "auto" | undefined;
+
+  // Warn on unrecognized values
+  if (rawSetting && !["auto", "saas", "self-hosted"].includes(rawSetting)) {
+    log.warn(
+      { value: rawSetting },
+      "Unrecognized ATLAS_DEPLOY_MODE value — treating as auto",
+    );
+  }
+
   try {
     const { resolveDeployMode } = await import("@atlas/ee/deploy-mode");
     resolved.deployMode = resolveDeployMode(rawSetting);
@@ -1057,8 +1071,10 @@ export async function loadConfig(
     return resolved;
   }
 
+  const configDeployMode = (raw as Record<string, unknown>).deployMode as
+    | "auto" | "saas" | "self-hosted" | undefined;
   const resolved = validateAndResolve(raw);
-  await applyDeployMode(resolved);
+  await applyDeployMode(resolved, configDeployMode);
 
   log.info(
     {

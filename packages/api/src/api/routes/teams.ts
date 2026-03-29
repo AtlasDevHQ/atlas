@@ -151,6 +151,11 @@ teams.openapi(callbackRoute, async (c) => {
   const oauthState = pendingOAuthStates.get(nonce)!;
   pendingOAuthStates.delete(nonce);
 
+  // Check expiry at validation time — don't rely solely on the periodic sweep
+  if (Date.now() > oauthState.expiry) {
+    return c.json({ error: "expired_state", message: "OAuth state has expired. Please try again." }, 400);
+  }
+
   // Azure AD returns error/error_description when consent is denied
   const errorCode = c.req.query("error");
   if (errorCode) {
@@ -165,6 +170,12 @@ teams.openapi(callbackRoute, async (c) => {
   const tenantId = c.req.query("tenant");
   if (!tenantId) {
     return c.json({ error: "missing_tenant", message: "Missing tenant parameter" }, 400);
+  }
+
+  // Azure AD tenant IDs are UUIDs — reject malformed values
+  const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (!uuidPattern.test(tenantId)) {
+    return c.json({ error: "invalid_tenant", message: "Invalid tenant ID format" }, 400);
   }
 
   const adminConsent = c.req.query("admin_consent");

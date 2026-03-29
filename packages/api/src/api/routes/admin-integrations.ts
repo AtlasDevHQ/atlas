@@ -191,10 +191,20 @@ adminIntegrations.openapi(getStatusRoute, async (c) => {
     Effect.gen(function* () {
       const { orgId } = yield* AuthContext;
 
+      // requireOrgContext() middleware guarantees orgId is set, but verify
+      // at the Effect boundary to avoid non-null assertions
+      if (!orgId) {
+        return c.json(
+          { error: "bad_request", message: "No active organization." },
+          400,
+        );
+      }
+
       // Slack status
-      const slackInstall = yield* Effect.promise(() =>
-        getInstallationByOrg(orgId!),
-      );
+      const slackInstall = yield* Effect.tryPromise({
+        try: () => getInstallationByOrg(orgId),
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      });
       const oauthConfigured = !!(
         process.env.SLACK_CLIENT_ID && process.env.SLACK_CLIENT_SECRET
       );
@@ -217,9 +227,10 @@ adminIntegrations.openapi(getStatusRoute, async (c) => {
       };
 
       // Teams status
-      const teamsInstall = yield* Effect.promise(() =>
-        getTeamsInstallationByOrg(orgId!),
-      );
+      const teamsInstall = yield* Effect.tryPromise({
+        try: () => getTeamsInstallationByOrg(orgId),
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      });
       const teamsConfigurable = !!process.env.TEAMS_APP_ID;
 
       const teams = {
@@ -231,15 +242,18 @@ adminIntegrations.openapi(getStatusRoute, async (c) => {
       };
 
       // Webhook count (scheduled tasks with webhook recipients)
-      const webhookActiveCount = yield* Effect.promise(async () => {
-        if (!hasInternalDB()) return 0;
-        const rows = await internalQuery<{ count: number }>(
-          `SELECT COUNT(*)::int AS count FROM scheduled_tasks
-           WHERE org_id = $1 AND enabled = true
-           AND recipients::text LIKE '%"type":"webhook"%'`,
-          [orgId!],
-        );
-        return rows[0]?.count ?? 0;
+      const webhookActiveCount = yield* Effect.tryPromise({
+        try: async () => {
+          if (!hasInternalDB()) return 0;
+          const rows = await internalQuery<{ count: number }>(
+            `SELECT COUNT(*)::int AS count FROM scheduled_tasks
+             WHERE org_id = $1 AND enabled = true
+             AND recipients @> $2::jsonb`,
+            [orgId, JSON.stringify([{ type: "webhook" }])],
+          );
+          return rows[0]?.count ?? 0;
+        },
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
       });
 
       // Available delivery channels
@@ -274,9 +288,17 @@ adminIntegrations.openapi(disconnectSlackRoute, async (c) => {
     Effect.gen(function* () {
       const { orgId } = yield* AuthContext;
 
-      const deleted = yield* Effect.promise(() =>
-        deleteInstallationByOrg(orgId!),
-      );
+      if (!orgId) {
+        return c.json(
+          { error: "bad_request", message: "No active organization." },
+          400,
+        );
+      }
+
+      const deleted = yield* Effect.tryPromise({
+        try: () => deleteInstallationByOrg(orgId),
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      });
 
       if (!deleted) {
         return c.json(
@@ -299,9 +321,17 @@ adminIntegrations.openapi(disconnectTeamsRoute, async (c) => {
     Effect.gen(function* () {
       const { orgId } = yield* AuthContext;
 
-      const deleted = yield* Effect.promise(() =>
-        deleteTeamsInstallationByOrg(orgId!),
-      );
+      if (!orgId) {
+        return c.json(
+          { error: "bad_request", message: "No active organization." },
+          400,
+        );
+      }
+
+      const deleted = yield* Effect.tryPromise({
+        try: () => deleteTeamsInstallationByOrg(orgId),
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      });
 
       if (!deleted) {
         return c.json(

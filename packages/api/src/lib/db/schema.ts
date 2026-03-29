@@ -909,3 +909,20 @@ export const slaThresholds = pgTable("sla_thresholds", {
   errorRatePct: doublePrecision("error_rate_pct").notNull().default(5),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+// ---------------------------------------------------------------------------
+// Teams integration (0001_teams_installations.sql)
+// ---------------------------------------------------------------------------
+
+export const teamsInstallations = pgTable(
+  "teams_installations",
+  {
+    tenantId: text("tenant_id").primaryKey(),
+    orgId: text("org_id"),
+    tenantName: text("tenant_name"),
+    installedAt: timestamp("installed_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [
+    index("idx_teams_installations_org").on(t.orgId),
+  ],
+);

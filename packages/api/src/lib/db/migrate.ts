@@ -20,9 +20,19 @@ import { createLogger } from "@atlas/api/lib/logger";
 
 const log = createLogger("db-migrate");
 
-/** Minimal pool interface — matches pg.Pool. */
-interface MigrationPool {
+/** Minimal query interface — shared by pool and client. */
+interface Queryable {
   query(sql: string, params?: unknown[]): Promise<{ rows: Record<string, unknown>[] }>;
+}
+
+/** Minimal pool interface — matches pg.Pool. */
+interface MigrationPool extends Queryable {
+  connect(): Promise<MigrationClient>;
+}
+
+/** Minimal client interface — matches pg.PoolClient. */
+interface MigrationClient extends Queryable {
+  release(): void;
 }
 
 const MIGRATIONS_DIR = path.join(import.meta.dir, "migrations");
@@ -38,22 +48,32 @@ const MIGRATIONS_DIR = path.join(import.meta.dir, "migrations");
  * Returns the number of migrations applied (0 if already up-to-date).
  */
 export async function runMigrations(pool: MigrationPool): Promise<number> {
-  // Acquire an advisory lock so concurrent server instances don't race.
-  // hashtext('atlas_migrations') produces a stable int4 key.
-  await pool.query("SELECT pg_advisory_lock(hashtext('atlas_migrations'))");
+  // Use a dedicated connection so the advisory lock, all transactions,
+  // and the unlock all happen on the same session. Without this, pg pool
+  // could dispatch queries to different connections, breaking lock and
+  // transaction semantics.
+  const client = await pool.connect();
 
   try {
-    return await _runMigrationsLocked(pool);
+    // Acquire an advisory lock so concurrent server instances don't race.
+    // hashtext('atlas_migrations') produces a stable int4 key.
+    await client.query("SELECT pg_advisory_lock(hashtext('atlas_migrations'))");
+
+    try {
+      return await _runMigrationsLocked(client);
+    } finally {
+      await client.query("SELECT pg_advisory_unlock(hashtext('atlas_migrations'))").catch(() => {
+        // intentionally ignored: unlock may fail if connection was broken
+      });
+    }
   } finally {
-    await pool.query("SELECT pg_advisory_unlock(hashtext('atlas_migrations'))").catch(() => {
-      // intentionally ignored: unlock may fail if connection was broken
-    });
+    client.release();
   }
 }
 
-async function _runMigrationsLocked(pool: MigrationPool): Promise<number> {
+async function _runMigrationsLocked(client: MigrationClient): Promise<number> {
   // Ensure tracking table exists
-  await pool.query(`
+  await client.query(`
     CREATE TABLE IF NOT EXISTS __atlas_migrations (
       id SERIAL PRIMARY KEY,
       name TEXT NOT NULL UNIQUE,
@@ -74,7 +94,7 @@ async function _runMigrationsLocked(pool: MigrationPool): Promise<number> {
   if (files.length === 0) return 0;
 
   // Get already-applied migrations
-  const { rows } = await pool.query("SELECT name FROM __atlas_migrations ORDER BY name");
+  const { rows } = await client.query("SELECT name FROM __atlas_migrations ORDER BY name");
   const applied = new Set(rows.map((r) => r.name as string));
 
   let count = 0;
@@ -86,18 +106,20 @@ async function _runMigrationsLocked(pool: MigrationPool): Promise<number> {
 
     log.info({ migration: file }, "Applying migration");
 
-    // Run inside a transaction — PostgreSQL DDL is transactional
-    await pool.query("BEGIN");
+    // Run inside a transaction — PostgreSQL DDL is transactional.
+    // All queries use the same dedicated client (not the pool) so
+    // BEGIN/COMMIT/ROLLBACK are guaranteed to hit the same connection.
+    await client.query("BEGIN");
     try {
-      await pool.query(sql);
-      await pool.query(
+      await client.query(sql);
+      await client.query(
         "INSERT INTO __atlas_migrations (name) VALUES ($1)",
         [file],
       );
-      await pool.query("COMMIT");
+      await client.query("COMMIT");
       count++;
     } catch (err) {
-      await pool.query("ROLLBACK").catch(() => {
+      await client.query("ROLLBACK").catch(() => {
         // intentionally ignored: ROLLBACK may fail if connection is broken
       });
       const detail = err instanceof Error ? err.message : String(err);
@@ -120,7 +142,7 @@ async function _runMigrationsLocked(pool: MigrationPool): Promise<number> {
  *
  * Idempotent — checks for existing data before inserting.
  */
-export async function runSeeds(pool: MigrationPool): Promise<void> {
+export async function runSeeds(pool: Queryable): Promise<void> {
   await seedPromptLibrary(pool);
   await seedSlaThresholdDefaults(pool);
   await seedBackupConfigDefaults(pool);
@@ -130,7 +152,7 @@ export async function runSeeds(pool: MigrationPool): Promise<void> {
 // Seed: prompt library
 // ---------------------------------------------------------------------------
 
-async function seedPromptLibrary(pool: MigrationPool): Promise<void> {
+async function seedPromptLibrary(pool: Queryable): Promise<void> {
   const collections = [
     {
       name: "SaaS Metrics",
@@ -225,7 +247,7 @@ async function seedPromptLibrary(pool: MigrationPool): Promise<void> {
 // Seed: SLA threshold defaults
 // ---------------------------------------------------------------------------
 
-async function seedSlaThresholdDefaults(pool: MigrationPool): Promise<void> {
+async function seedSlaThresholdDefaults(pool: Queryable): Promise<void> {
   try {
     const rawLatency = parseFloat(process.env.ATLAS_SLA_LATENCY_P99_MS ?? "");
     const rawErrorRate = parseFloat(process.env.ATLAS_SLA_ERROR_RATE_PCT ?? "");
@@ -251,7 +273,7 @@ async function seedSlaThresholdDefaults(pool: MigrationPool): Promise<void> {
 // Seed: backup config defaults
 // ---------------------------------------------------------------------------
 
-async function seedBackupConfigDefaults(pool: MigrationPool): Promise<void> {
+async function seedBackupConfigDefaults(pool: Queryable): Promise<void> {
   try {
     const envSchedule = process.env.ATLAS_BACKUP_SCHEDULE ?? "0 3 * * *";
     const envRetention = parseInt(process.env.ATLAS_BACKUP_RETENTION_DAYS ?? "30", 10) || 30;

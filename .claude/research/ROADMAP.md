@@ -578,7 +578,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 
 ### Integration
 - [x] Browser e2e — tour dismissal fix (PR #996), 44/47 fast tests pass (#951). Filed #995 (axe violation)
-- [ ] SDK, MCP, and widget integration — external integration points (#952) — deferred
+- [ ] SDK, MCP, and widget integration — external integration points (#952) — deferred to 1.0.0
 
 ### Follow-ups (bugs found during validation)
 - [x] Better Auth platform_admin role missing from roles config (#955, PR #956)
@@ -652,9 +652,25 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 
 - [ ] Make restart-required settings hot-reloadable in SaaS mode (#1023)
 - [ ] OAuth-first integration connect flows for SaaS workspaces (#1024)
+  - [x] Connect flow framework + Microsoft Teams (#1040, PR #1039)
+  - [ ] Discord (#1041)
+  - [ ] Telegram (#1042)
+  - [ ] Google Chat (#1043)
+  - [ ] GitHub (#1044)
+  - [ ] Linear (#1045)
+  - [ ] WhatsApp (#1046)
 - [ ] Plugin marketplace — browse, install, configure per workspace (#1025)
 - [ ] Product-focused sandbox selection UX for SaaS users (#1026)
 - [ ] Product-focused data residency UX for SaaS users (#1027)
+
+### SaaS Management
+
+- [ ] SaaS-native semantic layer management — web editor + version control (#1033)
+
+### Docs
+
+- [ ] Add guide pages for undocumented 0.9.6 admin pages (#1038)
+- [ ] Regenerate OpenAPI spec — stale after 0.9.6/0.9.7 changes (#1037)
 
 ### Finishing Touches (P2)
 

@@ -29,9 +29,10 @@ function getBaseURL(): string {
   return "http://localhost:3000/api/auth";
 }
 
-export const authClient = createAuthClient({
+const _authClient = createAuthClient({
   baseURL: getBaseURL(),
   plugins: [
+    // @ts-expect-error — TS6 strictness breaks apiKeyClient plugin type; runtime types are correct
     apiKeyClient(),
     adminClient({
       ac: adminAccessControl,
@@ -50,3 +51,15 @@ export const authClient = createAuthClient({
   // credentials: "include" so the browser stores and sends session cookies.
   fetchOptions: API_URL ? { credentials: "include" as RequestCredentials } : {},
 });
+
+// TS6 fails to infer organizationClient plugin types through createAuthClient.
+// Re-export with the organization namespace explicitly typed.
+type OrgResult<T> = { data: T | null; error: { message: string } | null };
+type OrgClient = typeof _authClient & {
+  organization: {
+    create: (opts: { name: string; slug: string; logo?: string }) => Promise<OrgResult<{ id: string }>>;
+    list: () => Promise<OrgResult<{ id: string; name: string; slug: string; logo?: string | null }[]>>;
+    setActive: (opts: { organizationId: string }) => Promise<OrgResult<Record<string, unknown>>>;
+  };
+};
+export const authClient: OrgClient = _authClient as OrgClient;

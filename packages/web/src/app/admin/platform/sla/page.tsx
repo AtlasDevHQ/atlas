@@ -67,7 +67,7 @@ const RechartsLine = dynamic(
               <CartesianGrid strokeDasharray="3 3" />
               <XAxis dataKey="name" fontSize={12} />
               <YAxis fontSize={12} />
-              <Tooltip formatter={(value: number | undefined) => [`${value ?? 0}${unit}`, dataKey]} />
+              <Tooltip formatter={(value) => [`${value ?? 0}${unit}`, dataKey]} />
               <Line type="monotone" dataKey="value" stroke={color} strokeWidth={2} dot={false} />
             </LineChart>
           </ResponsiveContainer>

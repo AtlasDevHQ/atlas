@@ -56,7 +56,7 @@ export default function UsageChart({ data, dark }: { data: DailyUsagePoint[]; da
             color: t.text,
           }}
           labelFormatter={(label) => formatDay(String(label))}
-          formatter={(value: number | undefined) => [formatNumber(value ?? 0), undefined]}
+          formatter={(value) => [formatNumber(Number(value ?? 0)), undefined]}
         />
         <Legend wrapperStyle={{ fontSize: 12, color: t.axis }} />
         <Bar dataKey="query_count" name="Queries" fill="#3b82f6" radius={[4, 4, 0, 0]} />

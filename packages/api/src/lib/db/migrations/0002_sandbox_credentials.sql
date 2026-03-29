@@ -8,7 +8,7 @@ CREATE TABLE IF NOT EXISTS sandbox_credentials (
   id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
   org_id TEXT NOT NULL,
   provider TEXT NOT NULL,          -- 'vercel' | 'e2b' | 'daytona'
-  credentials JSONB NOT NULL,      -- provider-specific encrypted blob
+  credentials JSONB NOT NULL,      -- provider-specific credential data (API keys, tokens)
   display_name TEXT,               -- e.g. Vercel team name, validated from API
   validated_at TIMESTAMPTZ,        -- when credentials were last verified
   connected_at TIMESTAMPTZ DEFAULT now(),

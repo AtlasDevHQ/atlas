@@ -42,7 +42,7 @@ const SandboxBackendSchema = z.object({
 });
 
 const ConnectedProviderSchema = z.object({
-  provider: z.string(),
+  provider: z.enum(SANDBOX_PROVIDERS),
   displayName: z.string().nullable(),
   connectedAt: z.string(),
   validatedAt: z.string().nullable(),
@@ -230,7 +230,7 @@ async function getAvailableBackends(): Promise<AvailableBackend[]> {
     }
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
-    log.debug({ err: detail }, "Plugin registry not available — only built-in backends shown");
+    log.warn({ err: detail }, "Plugin registry unavailable — sandbox status will not include plugin backends");
   }
 
   return backends;
@@ -254,6 +254,9 @@ adminSandbox.openapi(getStatusRoute, async (c) => {
     c,
     Effect.gen(function* () {
       const { orgId } = yield* AuthContext;
+      if (!orgId) {
+        return c.json({ error: "Bad Request", message: "No active organization." }, 400);
+      }
 
       // Workspace override
       const workspaceOverride = getSetting("ATLAS_SANDBOX_BACKEND", orgId) ?? null;
@@ -263,7 +266,7 @@ adminSandbox.openapi(getStatusRoute, async (c) => {
       const platformDefault = getExploreBackendType();
       const activePluginId = getActiveSandboxPluginId();
       const [allBackends, credentials] = yield* Effect.promise(() =>
-        Promise.all([getAvailableBackends(), getSandboxCredentials(orgId!)]),
+        Promise.all([getAvailableBackends(), getSandboxCredentials(orgId)]),
       );
 
       // Resolve the effective active backend
@@ -301,12 +304,15 @@ adminSandbox.openapi(getStatusRoute, async (c) => {
   );
 });
 
-// POST /connect/:provider — validate and save credentials
+// POST /connect/{provider} — validate and save credentials
 adminSandbox.openapi(connectRoute, async (c) => {
   return runEffect(
     c,
     Effect.gen(function* () {
       const { orgId } = yield* AuthContext;
+      if (!orgId) {
+        return c.json({ error: "Bad Request", message: "No active organization." }, 400);
+      }
       const provider = c.req.param("provider");
 
       if (!isValidProvider(provider)) {
@@ -316,9 +322,22 @@ adminSandbox.openapi(connectRoute, async (c) => {
         );
       }
 
-      const body = yield* Effect.promise(() => c.req.json<{ credentials: Record<string, unknown> }>());
-      const credentials = body.credentials;
+      // Parse body safely — c.req.json() throws on malformed JSON
+      const body = yield* Effect.tryPromise({
+        try: () => c.req.json<{ credentials?: Record<string, unknown> }>(),
+        catch: (err) => new Error(`Invalid JSON body: ${err instanceof Error ? err.message : String(err)}`),
+      }).pipe(Effect.catchAll((err) =>
+        Effect.succeed({ _parseError: err.message } as const),
+      ));
 
+      if ("_parseError" in body) {
+        return c.json(
+          { error: "Bad Request", message: body._parseError },
+          400,
+        );
+      }
+
+      const credentials = body.credentials;
       if (!credentials || typeof credentials !== "object") {
         return c.json(
           { error: "Bad Request", message: "Request body must include a credentials object" },
@@ -331,14 +350,14 @@ adminSandbox.openapi(connectRoute, async (c) => {
 
       if (!result.valid) {
         return c.json(
-          { error: "Validation Failed", message: result.error ?? "Credential validation failed" },
+          { error: "Validation Failed", message: result.error },
           422,
         );
       }
 
       // Save credentials
       yield* Effect.promise(() =>
-        saveSandboxCredential(orgId!, provider, credentials, result.displayName),
+        saveSandboxCredential(orgId, provider, credentials, result.displayName),
       );
 
       log.info({ orgId, provider }, "Sandbox provider connected");
@@ -356,12 +375,15 @@ adminSandbox.openapi(connectRoute, async (c) => {
   );
 });
 
-// DELETE /disconnect/:provider — remove credentials
+// DELETE /disconnect/{provider} — remove credentials
 adminSandbox.openapi(disconnectRoute, async (c) => {
   return runEffect(
     c,
     Effect.gen(function* () {
       const { orgId } = yield* AuthContext;
+      if (!orgId) {
+        return c.json({ error: "Bad Request", message: "No active organization." }, 400);
+      }
       const provider = c.req.param("provider");
 
       if (!isValidProvider(provider)) {
@@ -372,13 +394,13 @@ adminSandbox.openapi(disconnectRoute, async (c) => {
       }
 
       const deleted = yield* Effect.promise(() =>
-        deleteSandboxCredential(orgId!, provider),
+        deleteSandboxCredential(orgId, provider),
       );
 
       // If this was the active sandbox, reset to platform default
       const workspaceOverride = getSetting("ATLAS_SANDBOX_BACKEND", orgId);
       if (workspaceOverride === provider) {
-        yield* Effect.promise(() => deleteSetting("ATLAS_SANDBOX_BACKEND", undefined, orgId ?? undefined));
+        yield* Effect.promise(() => deleteSetting("ATLAS_SANDBOX_BACKEND", undefined, orgId));
         log.info({ orgId, provider }, "Active sandbox provider disconnected — reset to platform default");
       }
 

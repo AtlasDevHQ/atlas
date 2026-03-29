@@ -67,7 +67,7 @@ interface SandboxBackend {
 }
 
 interface ConnectedProvider {
-  provider: string;
+  provider: SandboxProviderKey;
   displayName: string | null;
   connectedAt: string;
   validatedAt: string | null;
@@ -80,7 +80,7 @@ interface SandboxStatus {
   workspaceOverride: string | null;
   workspaceSidecarUrl: string | null;
   availableBackends: SandboxBackend[];
-  connectedProviders?: ConnectedProvider[];
+  connectedProviders: ConnectedProvider[];
 }
 
 // ── Provider metadata ─────────────────────────────────────────────
@@ -91,7 +91,7 @@ interface ProviderInfo {
   label: string;
   description: string;
   icon: typeof Cloud;
-  fields: { key: string; label: string; type: string; placeholder: string; required: boolean }[];
+  fields: { key: string; label: string; type: "text" | "password"; placeholder: string; required: boolean }[];
 }
 
 const PROVIDERS: Record<SandboxProviderKey, ProviderInfo> = {
@@ -123,7 +123,7 @@ const PROVIDERS: Record<SandboxProviderKey, ProviderInfo> = {
   },
 };
 
-const PROVIDER_KEYS: SandboxProviderKey[] = ["vercel", "e2b", "daytona"];
+const PROVIDER_KEYS = Object.keys(PROVIDERS) as SandboxProviderKey[];
 
 // ── Page ──────────────────────────────────────────────────────────
 
@@ -235,7 +235,7 @@ function SandboxIntegrationGrid({
   onRefetch: () => void;
   saving: boolean;
 }) {
-  const connected = status.connectedProviders ?? [];
+  const connected = status.connectedProviders;
   const isManagedActive =
     !status.workspaceOverride ||
     !connected.some((p) => p.provider === status.workspaceOverride);
@@ -497,6 +497,7 @@ function ConnectDialog({
   function resetForm() {
     setFieldValues({});
     setValidationError(null);
+    connectMutation.clearError();
   }
 
   async function handleSubmit() {

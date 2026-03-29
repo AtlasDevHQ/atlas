@@ -15,13 +15,9 @@ const log = createLogger("sandbox-credentials");
 // Types
 // ---------------------------------------------------------------------------
 
-export type SandboxProvider = "vercel" | "e2b" | "daytona";
+export const SANDBOX_PROVIDERS = ["vercel", "e2b", "daytona"] as const;
 
-export const SANDBOX_PROVIDERS: readonly SandboxProvider[] = [
-  "vercel",
-  "e2b",
-  "daytona",
-] as const;
+export type SandboxProvider = (typeof SANDBOX_PROVIDERS)[number];
 
 export interface SandboxCredential {
   id: string;
@@ -50,15 +46,27 @@ function parseRow(
     return null;
   }
 
-  let creds: Record<string, unknown> = {};
+  let creds: Record<string, unknown>;
   if (typeof row.credentials === "string") {
     try {
       creds = JSON.parse(row.credentials) as Record<string, unknown>;
-    } catch {
-      log.warn(context, "Failed to parse sandbox credentials JSON");
+    } catch (err) {
+      log.warn(
+        { ...context, parseError: err instanceof Error ? err.message : String(err) },
+        "Failed to parse sandbox credentials JSON — treating record as invalid",
+      );
+      return null;
     }
   } else if (row.credentials && typeof row.credentials === "object") {
     creds = row.credentials as Record<string, unknown>;
+  } else {
+    log.warn(context, "Missing credentials field in sandbox_credentials record");
+    return null;
+  }
+
+  if (!SANDBOX_PROVIDERS.includes(provider as SandboxProvider)) {
+    log.warn({ ...context, provider }, "Unknown sandbox provider in database record");
+    return null;
   }
 
   return {

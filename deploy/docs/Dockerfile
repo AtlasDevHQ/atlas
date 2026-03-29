@@ -4,8 +4,13 @@ FROM oven/bun:1.3.11 AS base
 FROM base AS builder
 WORKDIR /app
 COPY apps/docs/ ./
-COPY brand.css /brand.css
 COPY bun.lock* ./
+# brand.css is @imported as ../../../../brand.css from src/app/globals.css,
+# resolving to the monorepo root. In Docker the project root is /app, so the
+# import escapes the project. Copy brand.css into the project and rewrite the
+# relative import so it resolves within the build context.
+COPY brand.css ./brand.css
+RUN sed -i 's|../../../../brand.css|../../brand.css|' src/app/globals.css
 RUN bun install
 RUN bun run build
 

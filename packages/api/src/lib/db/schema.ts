@@ -926,3 +926,38 @@ export const teamsInstallations = pgTable(
     index("idx_teams_installations_org").on(t.orgId),
   ],
 );
+
+// ---------------------------------------------------------------------------
+// Discord integration (0002_discord_installations.sql)
+// ---------------------------------------------------------------------------
+
+export const discordInstallations = pgTable(
+  "discord_installations",
+  {
+    guildId: text("guild_id").primaryKey(),
+    orgId: text("org_id"),
+    guildName: text("guild_name"),
+    installedAt: timestamp("installed_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [
+    index("idx_discord_installations_org").on(t.orgId),
+  ],
+);
+
+// ---------------------------------------------------------------------------
+// Telegram integration (0003_telegram_installations.sql)
+// ---------------------------------------------------------------------------
+
+export const telegramInstallations = pgTable(
+  "telegram_installations",
+  {
+    botId: text("bot_id").primaryKey(),
+    botToken: text("bot_token").notNull(),
+    botUsername: text("bot_username"),
+    orgId: text("org_id"),
+    installedAt: timestamp("installed_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [
+    index("idx_telegram_installations_org").on(t.orgId),
+  ],
+);

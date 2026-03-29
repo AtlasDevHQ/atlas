@@ -654,14 +654,14 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [ ] Make restart-required settings hot-reloadable in SaaS mode (#1023)
 - [ ] OAuth-first integration connect flows for SaaS workspaces (#1024)
   - [x] Connect flow framework + Microsoft Teams (#1040, PR #1039)
-  - [x] Discord (#1041)
-  - [x] Telegram (#1042)
+  - [x] Discord (#1041, PR #1053)
+  - [x] Telegram (#1042, PR #1053)
   - [ ] Google Chat (#1043)
   - [ ] GitHub (#1044)
   - [ ] Linear (#1045)
   - [ ] WhatsApp (#1046)
 - [ ] Plugin marketplace — browse, install, configure per workspace (#1025)
-- [x] Product-focused sandbox selection UX for SaaS users (#1026, PR #1052)
+- [x] Sandbox integration library — BYOC execution environments (#1026, PR #1054)
 - [ ] Product-focused data residency UX for SaaS users (#1027)
 
 ### SaaS Management
@@ -677,6 +677,12 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 
 - [ ] Email integration connect flow in Integrations hub (#1028)
 - [ ] Self-hosted deploy validation via GH Actions for template repos (#1029)
+
+### Follow-ups
+
+- [x] Telegram connect sends empty POST body — botToken not wrapped in body (#1057, PR #1058)
+- [x] Update docs guides for sandbox BYOC + Discord/Telegram (PR #1056)
+- [ ] In-memory OAuth state map not viable for multi-instance deployments (#1055)
 
 ---
 

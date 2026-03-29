@@ -152,13 +152,9 @@ adminIntegrations.openapi(getStatusRoute, async (c) => {
 
       const deployMode = getConfig()?.deployMode ?? "self-hosted";
 
-      // In SaaS mode, Slack is configurable by the workspace admin when
-      // the platform operator has pre-configured OAuth credentials.
-      // In self-hosted mode, it's configurable when OAuth env vars are set
-      // (env-only token setups are operator_managed — admin can't disconnect).
-      const slackConfigurable = deployMode === "saas"
-        ? oauthConfigured
-        : oauthConfigured;
+      // Slack is configurable (connect/disconnect) when OAuth credentials
+      // are set. Env-only token setups are operator_managed.
+      const slackConfigurable = oauthConfigured;
 
       const slack = {
         connected: slackInstall !== null,

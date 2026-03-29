@@ -2,7 +2,6 @@
 
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
-import { useDeployMode } from "@/ui/hooks/use-deploy-mode";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { formatDateTime } from "@/lib/format";
@@ -66,7 +65,6 @@ interface IntegrationStatus {
 // -- Component --
 
 export default function IntegrationsPage() {
-  const { deployMode } = useDeployMode();
   const { data, loading, error, refetch } =
     useAdminFetch<IntegrationStatus>("/api/v1/admin/integrations/status");
 
@@ -80,7 +78,7 @@ export default function IntegrationsPage() {
     await disconnectMutation.mutate({});
   }
 
-  const isSaas = (data?.deployMode ?? deployMode) === "saas";
+  const isSaas = data?.deployMode === "saas";
   const slack = data?.slack;
   const webhooks = data?.webhooks;
   const deliveryChannels = data?.deliveryChannels ?? [];
@@ -175,10 +173,10 @@ function SlackCard({
 }) {
   const canConnect = slack.configurable;
 
-  // Status badge: Connected / Not Available / Disconnected
+  // Status badge: Connected / Not Available (SaaS only) / Disconnected
   const statusBadge = slack.connected ? (
     <Badge variant="default">Connected</Badge>
-  ) : !canConnect ? (
+  ) : isSaas && !canConnect ? (
     <Badge variant="outline">Not Available</Badge>
   ) : (
     <Badge variant="secondary">Disconnected</Badge>

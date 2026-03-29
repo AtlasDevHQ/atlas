@@ -31,9 +31,9 @@ In SaaS mode the page is titled **Execution Environment** and presents a card gr
 
 ### Atlas Cloud Sandbox
 
-Always available as a managed fallback. No credentials needed. This is the default for all workspaces and is marked **(Recommended)**.
+Managed container service with HTTP isolation. No credentials needed and no setup required. This is the default for all workspaces and is marked **(Recommended)**.
 
-- **Active state** — highlighted border with green "Active" badge
+- **Active state** — highlighted border with "Active" badge
 - **Inactive state** — click **Select** to make it active
 
 ### Vercel Sandbox
@@ -72,7 +72,7 @@ Validated against the Daytona health endpoint before saving.
 3. Click **Validate & Connect** — credentials are verified against the provider API
 4. On success, the card shows as **Connected** with the account name and connection date
 5. Click **Select** to make a connected provider the active sandbox
-6. Click **Disconnect** to remove credentials (falls back to Atlas Cloud Sandbox if this was the active provider)
+6. Click **Disconnect** to remove credentials (reverts to Atlas Cloud Sandbox, the platform default, if this was the active provider)
 
 <Callout type="info">
 Credentials are stored per-workspace in the `sandbox_credentials` table. Each workspace can connect different providers independently.
@@ -152,7 +152,7 @@ You can override this chain with the `ATLAS_SANDBOX_PRIORITY` environment variab
 | UI | Backend dropdown + sidecar URL | Provider card grid with connect/disconnect |
 | Providers | Not applicable | Atlas Cloud, Vercel, E2B, Daytona |
 | Credential storage | Not applicable | Per-workspace in `sandbox_credentials` table |
-| Active selection | Settings override (`ATLAS_SANDBOX_BACKEND`) | Click **Select** on a connected provider |
+| Active selection | Dropdown + Save in admin UI (sets `ATLAS_SANDBOX_BACKEND`) | Click **Select** on a connected provider |
 | Default fallback | Auto-detect priority chain | Atlas Cloud Sandbox (sidecar) |
 | Sidecar URL | Configurable via admin UI | Managed by platform |
 

@@ -62,7 +62,7 @@ describe("runMigrations", () => {
 
     const count = await runMigrations(pool);
 
-    expect(count).toBe(2);
+    expect(count).toBe(3);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -89,7 +89,7 @@ describe("runMigrations", () => {
   });
 
   it("skips already-applied migrations", async () => {
-    const { pool, queries } = createMockPool({ applied: ["0000_baseline.sql", "0001_teams_installations.sql"] });
+    const { pool, queries } = createMockPool({ applied: ["0000_baseline.sql", "0001_teams_installations.sql", "0002_sandbox_credentials.sql"] });
 
     const count = await runMigrations(pool);
 

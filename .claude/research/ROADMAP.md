@@ -670,8 +670,8 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 
 ### Docs
 
-- [x] Add guide pages for undocumented 0.9.6 admin pages (#1038) — PR #TBD
-- [x] Regenerate OpenAPI spec — stale after 0.9.6/0.9.7 changes (#1037) — PR #TBD
+- [x] Add guide pages for undocumented 0.9.6 admin pages (#1038) — PR #1052
+- [x] Regenerate OpenAPI spec — stale after 0.9.6/0.9.7 changes (#1037) — PR #1052
 
 ### Finishing Touches (P2)
 

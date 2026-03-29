@@ -46,11 +46,19 @@ interface SlackStatus {
   installedAt: string | null;
   oauthConfigured: boolean;
   envConfigured: boolean;
+  /** Whether the workspace admin can connect/disconnect Slack */
+  configurable: boolean;
+}
+
+interface WebhookStatus {
+  activeCount: number;
+  /** Whether the workspace admin can create/manage webhooks */
+  configurable: boolean;
 }
 
 interface IntegrationStatus {
   slack: SlackStatus;
-  webhooks: { activeCount: number };
+  webhooks: WebhookStatus;
   deliveryChannels: DeliveryChannel[];
   deployMode: "saas" | "self-hosted";
 }
@@ -165,12 +173,12 @@ function SlackCard({
   disconnecting: boolean;
   disconnectError: string | null;
 }) {
-  const canConnect = slack.oauthConfigured;
+  const canConnect = slack.configurable;
 
-  // SaaS mode: determine status badge
+  // Status badge: Connected / Not Available / Disconnected
   const statusBadge = slack.connected ? (
     <Badge variant="default">Connected</Badge>
-  ) : isSaas && !canConnect ? (
+  ) : !canConnect ? (
     <Badge variant="outline">Not Available</Badge>
   ) : (
     <Badge variant="secondary">Disconnected</Badge>
@@ -245,7 +253,7 @@ function SlackCard({
         )}
 
         <div className="flex gap-2">
-          {slack.connected && (isSaas || slack.oauthConfigured) && (
+          {slack.connected && canConnect && (
             <AlertDialog>
               <AlertDialogTrigger asChild>
                 <Button variant="outline" size="sm" disabled={disconnecting}>
@@ -306,7 +314,7 @@ function WebhookCard({
   webhooks,
   isSaas,
 }: {
-  webhooks: { activeCount: number } | undefined;
+  webhooks: WebhookStatus | undefined;
   isSaas: boolean;
 }) {
   const count = webhooks?.activeCount ?? 0;
@@ -333,7 +341,7 @@ function WebhookCard({
             <p className="text-sm font-medium">Active webhook tasks</p>
             <p className="text-2xl font-bold tabular-nums">{count}</p>
           </div>
-          {isSaas && (
+          {isSaas && webhooks?.configurable && (
             <Button size="sm" variant="outline" asChild>
               <a href="/admin/scheduled-tasks">Create Webhook</a>
             </Button>

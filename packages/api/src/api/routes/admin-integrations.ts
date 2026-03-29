@@ -33,10 +33,14 @@ const SlackStatusSchema = z.object({
   oauthConfigured: z.boolean(),
   /** Whether env-based token is set (single-workspace mode) */
   envConfigured: z.boolean(),
+  /** Whether the workspace admin can connect/disconnect (true) or it's platform-level only (false) */
+  configurable: z.boolean(),
 });
 
 const WebhookStatusSchema = z.object({
   activeCount: z.number().int().nonnegative(),
+  /** Whether the workspace admin can create/manage webhooks */
+  configurable: z.boolean(),
 });
 
 const IntegrationStatusSchema = z.object({
@@ -146,6 +150,16 @@ adminIntegrations.openapi(getStatusRoute, async (c) => {
       );
       const envConfigured = !!process.env.SLACK_BOT_TOKEN;
 
+      const deployMode = getConfig()?.deployMode ?? "self-hosted";
+
+      // In SaaS mode, Slack is configurable by the workspace admin when
+      // the platform operator has pre-configured OAuth credentials.
+      // In self-hosted mode, it's configurable when OAuth env vars are set
+      // (env-only token setups are operator_managed — admin can't disconnect).
+      const slackConfigurable = deployMode === "saas"
+        ? oauthConfigured
+        : oauthConfigured;
+
       const slack = {
         connected: slackInstall !== null,
         teamId: slackInstall?.team_id ?? null,
@@ -153,6 +167,7 @@ adminIntegrations.openapi(getStatusRoute, async (c) => {
         installedAt: slackInstall?.installed_at ?? null,
         oauthConfigured,
         envConfigured,
+        configurable: slackConfigurable,
       };
 
       // Webhook count (scheduled tasks with webhook recipients)
@@ -174,12 +189,13 @@ adminIntegrations.openapi(getStatusRoute, async (c) => {
       }
       deliveryChannels.push("webhook");
 
-      const deployMode = getConfig()?.deployMode ?? "self-hosted";
+      // Webhooks are always configurable by workspace admins (they create scheduled tasks)
+      const webhooksConfigurable = hasInternalDB();
 
       return c.json(
         {
           slack,
-          webhooks: { activeCount: webhookActiveCount },
+          webhooks: { activeCount: webhookActiveCount, configurable: webhooksConfigurable },
           deliveryChannels,
           deployMode,
         },

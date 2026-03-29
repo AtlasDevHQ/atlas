@@ -301,6 +301,17 @@ if (process.env.SLACK_SIGNING_SECRET) {
   log.debug("Slack integration disabled (SLACK_SIGNING_SECRET not set)");
 }
 
+// Teams routes — lazy import, only loaded if TEAMS_APP_ID is set.
+// Dynamic import avoids pulling teams dependencies into the module graph
+// when Teams is disabled, and prevents mock.module leaks in test suites.
+if (process.env.TEAMS_APP_ID) {
+  const { teams } = await import("./routes/teams");
+  app.route("/api/v1/teams", teams);
+  log.info("Teams integration enabled");
+} else {
+  log.debug("Teams integration disabled (TEAMS_APP_ID not set)");
+}
+
 app.onError((err, c) => {
   // Framework HTTP exceptions (e.g., malformed JSON from @hono/zod-openapi) carry
   // their own status code and response — forward them instead of converting to 500.

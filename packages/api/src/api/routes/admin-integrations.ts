@@ -11,6 +11,10 @@ import { runEffect } from "@atlas/api/lib/effect/hono";
 import { AuthContext } from "@atlas/api/lib/effect/services";
 import { internalQuery, hasInternalDB } from "@atlas/api/lib/db/internal";
 import { getInstallationByOrg, deleteInstallationByOrg } from "@atlas/api/lib/slack/store";
+import {
+  getTeamsInstallationByOrg,
+  deleteTeamsInstallationByOrg,
+} from "@atlas/api/lib/teams/store";
 import { getConfig } from "@atlas/api/lib/config";
 import { createLogger } from "@atlas/api/lib/logger";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
@@ -37,6 +41,15 @@ const SlackStatusSchema = z.object({
   configurable: z.boolean(),
 });
 
+const TeamsStatusSchema = z.object({
+  connected: z.boolean(),
+  tenantId: z.string().nullable(),
+  tenantName: z.string().nullable(),
+  installedAt: z.string().datetime().nullable(),
+  /** Whether the workspace admin can connect/disconnect (true when TEAMS_APP_ID is set) */
+  configurable: z.boolean(),
+});
+
 const WebhookStatusSchema = z.object({
   activeCount: z.number().int().nonnegative(),
   /** Whether the workspace admin can create/manage webhooks */
@@ -45,6 +58,7 @@ const WebhookStatusSchema = z.object({
 
 const IntegrationStatusSchema = z.object({
   slack: SlackStatusSchema,
+  teams: TeamsStatusSchema,
   webhooks: WebhookStatusSchema,
   /** Delivery channels available for scheduled tasks */
   deliveryChannels: z.array(DeliveryChannelEnum),
@@ -126,6 +140,42 @@ const disconnectSlackRoute = createRoute({
   },
 });
 
+const disconnectTeamsRoute = createRoute({
+  method: "delete",
+  path: "/teams",
+  tags: ["Admin — Integrations"],
+  summary: "Disconnect Teams",
+  description:
+    "Removes the Teams installation for the current workspace. " +
+    "Any Teams bot functionality will stop working until reconnected.",
+  responses: {
+    200: {
+      description: "Teams disconnected",
+      content: {
+        "application/json": {
+          schema: z.object({ message: z.string() }),
+        },
+      },
+    },
+    400: {
+      description: "No active organization",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "No Teams installation found or internal database not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
 // ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
@@ -166,6 +216,20 @@ adminIntegrations.openapi(getStatusRoute, async (c) => {
         configurable: slackConfigurable,
       };
 
+      // Teams status
+      const teamsInstall = yield* Effect.promise(() =>
+        getTeamsInstallationByOrg(orgId!),
+      );
+      const teamsConfigurable = !!process.env.TEAMS_APP_ID;
+
+      const teams = {
+        connected: teamsInstall !== null,
+        tenantId: teamsInstall?.tenant_id ?? null,
+        tenantName: teamsInstall?.tenant_name ?? null,
+        installedAt: teamsInstall?.installed_at ?? null,
+        configurable: teamsConfigurable,
+      };
+
       // Webhook count (scheduled tasks with webhook recipients)
       const webhookActiveCount = yield* Effect.promise(async () => {
         if (!hasInternalDB()) return 0;
@@ -191,6 +255,7 @@ adminIntegrations.openapi(getStatusRoute, async (c) => {
       return c.json(
         {
           slack,
+          teams,
           webhooks: { activeCount: webhookActiveCount, configurable: webhooksConfigurable },
           deliveryChannels,
           deployMode,
@@ -224,6 +289,31 @@ adminIntegrations.openapi(disconnectSlackRoute, async (c) => {
       return c.json({ message: "Slack disconnected successfully." }, 200);
     }),
     { label: "disconnect slack" },
+  );
+});
+
+// DELETE /teams — disconnect Teams for current org
+adminIntegrations.openapi(disconnectTeamsRoute, async (c) => {
+  return runEffect(
+    c,
+    Effect.gen(function* () {
+      const { orgId } = yield* AuthContext;
+
+      const deleted = yield* Effect.promise(() =>
+        deleteTeamsInstallationByOrg(orgId!),
+      );
+
+      if (!deleted) {
+        return c.json(
+          { error: "not_found", message: "No Teams installation found for this workspace." },
+          404,
+        );
+      }
+
+      log.info({ orgId }, "Teams installation disconnected by admin");
+      return c.json({ message: "Teams disconnected successfully." }, 200);
+    }),
+    { label: "disconnect teams" },
   );
 });
 

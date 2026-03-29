@@ -1,4 +1,4 @@
--- 0002_sandbox_credentials.sql
+-- 0004_sandbox_credentials.sql
 --
 -- Sandbox integration library: stores per-org BYOC sandbox provider
 -- credentials (Vercel, E2B, Daytona). Platform-managed sidecar does

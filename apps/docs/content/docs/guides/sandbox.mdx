@@ -1,0 +1,138 @@
+---
+title: Sandbox Configuration
+description: Configure the sandbox backend that the explore and Python tools use to execute commands safely.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+The sandbox is the isolated execution environment that Atlas uses to run the **explore** tool (file browsing, grep, find on the semantic layer) and **Python** tool (data analysis scripts). The Sandbox admin page lets you select which backend to use and configure per-workspace overrides.
+
+<Callout title="Prerequisites">
+- [Managed auth](/deployment/authentication#managed-auth) enabled
+- A user with the `admin` role
+</Callout>
+
+---
+
+## Overview
+
+**Route:** `/admin/sandbox`
+
+The page shows the current sandbox configuration:
+
+- **Platform default** — The backend selected at the platform level (applies to all workspaces unless overridden)
+- **Active backend** — The backend currently in use for this workspace
+- **Workspace override** — A per-workspace backend selection, if set
+
+---
+
+## Available Backends
+
+Atlas supports multiple sandbox backends. The active backend is resolved using a priority chain:
+
+| Backend | Type | Description |
+|---------|------|-------------|
+| **Plugin** | plugin | Custom sandbox provided by a plugin (highest priority) |
+| **Vercel Sandbox** | built-in | Vercel's secure sandbox environment (used on Vercel deployments) |
+| **nsjail** | built-in | Linux namespace isolation via nsjail binary |
+| **Sidecar** | built-in | External sandbox sidecar service (`@atlas/sandbox-sidecar`) |
+| **just-bash** | built-in | Direct shell execution (development fallback only) |
+
+<Callout type="warn">
+The **just-bash** backend provides no isolation and should only be used in local development. Production deployments should use Vercel Sandbox, nsjail, or the sidecar.
+</Callout>
+
+### Priority Resolution
+
+When no explicit override is set, Atlas auto-detects the best available backend using this default priority chain:
+
+1. Plugin backends (always highest priority)
+2. Vercel Sandbox (when running on Vercel)
+3. nsjail explicit (when `ATLAS_SANDBOX=nsjail` is set)
+4. Sidecar (when `ATLAS_SANDBOX_URL` is set)
+5. nsjail auto-detect (when nsjail binary is found on PATH)
+6. just-bash (development fallback)
+
+You can override this chain with the `ATLAS_SANDBOX_PRIORITY` environment variable or via `sandbox.priority` in `atlas.config.ts`.
+
+<Callout type="info">
+The admin UI dropdown only shows API-enumerable backends (Vercel Sandbox, Sidecar, and plugin backends). nsjail and just-bash are resolved by the priority chain but are not selectable from the dropdown.
+</Callout>
+
+---
+
+## Selecting a Backend
+
+1. Open `/admin/sandbox`
+2. Choose a backend from the **Backend** dropdown
+3. Click **Save**
+
+To return to the platform default, select **Use platform default** from the dropdown, or click **Reset to default**.
+
+---
+
+## Sidecar Configuration
+
+When the **Sidecar** backend is selected, an additional **Sidecar URL** field appears. This is the URL of the `@atlas/sandbox-sidecar` service.
+
+- **Self-hosted:** Set the URL to your sidecar deployment (e.g. `http://sandbox:3002`)
+- **SaaS:** Platform operators configure the default sidecar URL. Workspace admins can override it if permitted
+
+<Callout type="info">
+The sidecar is a separate service that runs explore and Python commands in an isolated container. See the [Docker deployment example](/deployment/docker) for a production sidecar setup.
+</Callout>
+
+---
+
+## Workspace Overrides
+
+In multi-tenant (SaaS) deployments, each workspace can select its own sandbox backend independently. This is useful when:
+
+- Different workspaces have different security requirements
+- Some workspaces need plugin-provided sandbox backends
+- You want to test a new backend on a single workspace before rolling out
+
+The override is stored as a workspace-level setting (`ATLAS_SANDBOX_BACKEND`) and takes precedence over the platform default.
+
+---
+
+## SaaS vs Self-Hosted
+
+| Behavior | Self-Hosted | SaaS |
+|----------|-------------|------|
+| Backend selection | Single deployment-wide setting | Per-workspace override available |
+| Sidecar URL | Set via env var or admin UI | Workspace-level override supported |
+| Plugin backends | Configured via `atlas.config.ts` | Managed by platform |
+| Default resolution | Auto-detect priority chain | Platform default + workspace override |
+
+---
+
+## Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `ATLAS_SANDBOX_URL` | Sidecar service URL (implies sidecar backend) |
+| `ATLAS_SANDBOX_PRIORITY` | Comma-separated backend priority list |
+
+The priority list can also be set via `sandbox.priority` in `atlas.config.ts`. The sidecar URL is configured via the `ATLAS_SANDBOX_URL` environment variable or the admin Settings page.
+
+---
+
+## API Endpoints
+
+All endpoints require admin authentication.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/v1/admin/sandbox/status` | Get sandbox configuration and available backends |
+| `PUT` | `/api/v1/admin/settings/ATLAS_SANDBOX_BACKEND` | Set workspace sandbox backend |
+| `PUT` | `/api/v1/admin/settings/ATLAS_SANDBOX_URL` | Set workspace sidecar URL |
+| `DELETE` | `/api/v1/admin/settings/ATLAS_SANDBOX_BACKEND` | Reset to platform default |
+
+---
+
+## See Also
+
+- [Admin Console](/guides/admin-console) — Overview of all admin pages
+- [Environment Variables](/reference/environment-variables) — Full variable reference
+- [Docker Deployment](/deployment/docker) — Sidecar setup in Docker

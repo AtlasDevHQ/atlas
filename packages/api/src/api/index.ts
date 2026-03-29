@@ -312,6 +312,15 @@ if (process.env.TEAMS_APP_ID) {
   log.debug("Teams integration disabled (TEAMS_APP_ID not set)");
 }
 
+// Discord routes — lazy import, only loaded if DISCORD_CLIENT_ID is set.
+if (process.env.DISCORD_CLIENT_ID) {
+  const { discord } = await import("./routes/discord");
+  app.route("/api/v1/discord", discord);
+  log.info("Discord integration enabled");
+} else {
+  log.debug("Discord integration disabled (DISCORD_CLIENT_ID not set)");
+}
+
 app.onError((err, c) => {
   // Framework HTTP exceptions (e.g., malformed JSON from @hono/zod-openapi) carry
   // their own status code and response — forward them instead of converting to 500.
@@ -344,7 +353,7 @@ app.get("/api/v1/openapi.json", (c) => {
       openapi: "3.1.0",
       info: {
         title: "Atlas API",
-        version: "0.9.0",
+        version: "0.9.7",
         description:
           "Text-to-SQL data analyst agent. Ask natural-language questions about your data and receive structured answers.",
       },

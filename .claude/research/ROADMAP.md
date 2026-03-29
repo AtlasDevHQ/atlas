@@ -654,8 +654,8 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [ ] Make restart-required settings hot-reloadable in SaaS mode (#1023)
 - [ ] OAuth-first integration connect flows for SaaS workspaces (#1024)
   - [x] Connect flow framework + Microsoft Teams (#1040, PR #1039)
-  - [ ] Discord (#1041)
-  - [ ] Telegram (#1042)
+  - [x] Discord (#1041)
+  - [x] Telegram (#1042)
   - [ ] Google Chat (#1043)
   - [ ] GitHub (#1044)
   - [ ] Linear (#1045)
@@ -670,8 +670,8 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 
 ### Docs
 
-- [ ] Add guide pages for undocumented 0.9.6 admin pages (#1038)
-- [ ] Regenerate OpenAPI spec — stale after 0.9.6/0.9.7 changes (#1037)
+- [x] Add guide pages for undocumented 0.9.6 admin pages (#1038) — PR #1052
+- [x] Regenerate OpenAPI spec — stale after 0.9.6/0.9.7 changes (#1037) — PR #1052
 
 ### Finishing Touches (P2)
 

@@ -236,7 +236,15 @@ describe("migrateAuthTables", () => {
       queries.push(sql);
       // Return "already applied" for the SELECT query
       if (sql.includes("SELECT name FROM __atlas_migrations")) {
-        return { rows: [{ name: "0000_baseline.sql" }, { name: "0001_teams_installations.sql" }, { name: "0002_sandbox_credentials.sql" }] };
+        return {
+          rows: [
+            { name: "0000_baseline.sql" },
+            { name: "0001_teams_installations.sql" },
+            { name: "0002_discord_installations.sql" },
+            { name: "0003_telegram_installations.sql" },
+            { name: "0004_sandbox_credentials.sql" },
+          ],
+        };
       }
       return { rows: [] };
     }

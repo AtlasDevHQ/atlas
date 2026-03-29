@@ -1896,7 +1896,25 @@ const getSettingsRoute = createRoute({
   responses: {
     200: {
       description: "Settings list",
-      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+      content: { "application/json": { schema: z.object({
+        settings: z.array(z.object({
+          key: z.string(),
+          section: z.string(),
+          label: z.string(),
+          description: z.string(),
+          type: z.enum(["string", "number", "boolean", "select"]),
+          options: z.array(z.string()).optional(),
+          default: z.string().optional(),
+          secret: z.boolean().optional(),
+          envVar: z.string(),
+          requiresRestart: z.boolean().optional(),
+          scope: z.enum(["platform", "workspace"]),
+          currentValue: z.string().optional(),
+          source: z.enum(["env", "override", "workspace-override", "default"]),
+        })),
+        manageable: z.boolean().describe("Whether settings can be persisted (internal DB is available)"),
+        deployMode: z.enum(["self-hosted", "saas"]).describe("Current deploy mode"),
+      }) } },
     },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },

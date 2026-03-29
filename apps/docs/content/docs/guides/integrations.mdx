@@ -1,11 +1,11 @@
 ---
 title: Integrations Hub
-description: Connect Slack, Microsoft Teams, and webhooks to Atlas from the admin console.
+description: Connect Slack, Microsoft Teams, Discord, Telegram, and webhooks to Atlas from the admin console.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-The Integrations page provides a central hub for connecting Atlas to external platforms. Manage Slack, Microsoft Teams, and webhook delivery from a single admin page.
+The Integrations page provides a central hub for connecting Atlas to external platforms. Manage Slack, Microsoft Teams, Discord, Telegram, and webhook delivery from a single admin page.
 
 <Callout title="Prerequisites">
 - [Managed auth](/deployment/authentication#managed-auth) enabled
@@ -83,6 +83,59 @@ Click **Disconnect** and confirm. The `@atlas` mentions stop working until you r
 
 ---
 
+## Discord
+
+Connect Discord to enable bot commands and server conversations.
+
+### Self-Hosted Setup
+
+Set `DISCORD_CLIENT_ID` and `DISCORD_CLIENT_SECRET` environment variables. The admin UI **Connect to Discord** button appears once `DISCORD_CLIENT_ID` is detected, and initiates the OAuth flow to add the bot to your server.
+
+### SaaS Mode
+
+Workspace admins see a **Connect to Discord** button if the platform has Discord OAuth configured. If not, the card shows **Not Available**.
+
+### Connection Details
+
+When connected, the card shows:
+
+- **Server** — The Discord server (guild) name
+- **Guild ID** — The Discord server identifier
+- **Connected** — Timestamp of when the connection was established
+
+### Disconnecting
+
+Click **Disconnect** and confirm. The bot stops responding in that Discord server until you reconnect.
+
+---
+
+## Telegram
+
+Connect a Telegram bot for chat conversations. Unlike other integrations, Telegram uses a **Bot Token** rather than an OAuth flow.
+
+### Setup
+
+Telegram integration requires an internal database (`DATABASE_URL`). In SaaS mode it is always configurable; in self-hosted mode it requires the internal database.
+
+1. Create a bot via [BotFather](https://t.me/BotFather) on Telegram
+2. Copy the bot token
+3. On the Integrations page, enter the token in the **Bot Token** field on the Telegram card
+4. Click **Connect** — the token is validated against the Telegram API
+
+### Connection Details
+
+When connected, the card shows:
+
+- **Bot** — The bot's `@username`
+- **Bot ID** — The Telegram bot identifier
+- **Connected** — Timestamp of when the connection was established
+
+### Disconnecting
+
+Click **Disconnect** and confirm. The bot stops responding to messages until you reconnect with a new token.
+
+---
+
 ## Webhooks
 
 The webhook card shows the count of active webhook delivery tasks. Webhooks are created via [Scheduled Tasks](/guides/scheduled-tasks) — the Integrations page provides a summary view.
@@ -97,6 +150,8 @@ In SaaS mode with webhook support enabled, a **Create Webhook** link navigates t
 |----------|-------------|------|
 | Slack setup | OAuth credentials or env vars | OAuth via platform, self-serve connect |
 | Teams setup | Env vars + admin consent | Admin consent flow |
+| Discord setup | Env vars + OAuth flow | OAuth via platform, self-serve connect |
+| Telegram setup | Bot token + internal DB | Bot token (always configurable) |
 | Env var hints | Shown when credentials missing | Hidden — shows "Not Available" instead |
 | Disconnect | Available when OAuth configured | Available for connected integrations |
 
@@ -111,6 +166,9 @@ All endpoints require admin authentication.
 | `GET` | `/api/v1/admin/integrations/status` | Get all integration statuses |
 | `DELETE` | `/api/v1/admin/integrations/slack` | Disconnect Slack |
 | `DELETE` | `/api/v1/admin/integrations/teams` | Disconnect Teams |
+| `DELETE` | `/api/v1/admin/integrations/discord` | Disconnect Discord |
+| `POST` | `/api/v1/admin/integrations/telegram` | Connect Telegram (validates bot token) |
+| `DELETE` | `/api/v1/admin/integrations/telegram` | Disconnect Telegram |
 
 ---
 

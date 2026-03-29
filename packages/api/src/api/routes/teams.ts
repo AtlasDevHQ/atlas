@@ -22,14 +22,19 @@ const log = createLogger("teams");
 const teams = new OpenAPIHono({ defaultHook: validationHook });
 
 // ---------------------------------------------------------------------------
-// OAuth CSRF state
+// OAuth CSRF state — stores { expiry, orgId } keyed by nonce
 // ---------------------------------------------------------------------------
 
-const pendingOAuthStates = new Map<string, number>();
+interface OAuthState {
+  expiry: number;
+  orgId: string | undefined;
+}
+
+const pendingOAuthStates = new Map<string, OAuthState>();
 setInterval(() => {
   const now = Date.now();
-  for (const [state, expiry] of pendingOAuthStates) {
-    if (now > expiry) pendingOAuthStates.delete(state);
+  for (const [nonce, state] of pendingOAuthStates) {
+    if (now > state.expiry) pendingOAuthStates.delete(nonce);
   }
 }, 600_000).unref();
 
@@ -66,8 +71,10 @@ const callbackRoute = createRoute({
   request: {
     query: z.object({
       state: z.string().openapi({ description: "CSRF state parameter" }),
-      tenant: z.string().openapi({ description: "Azure AD tenant ID" }),
-      admin_consent: z.string().openapi({ description: "Whether admin consent was granted" }),
+      tenant: z.string().optional().openapi({ description: "Azure AD tenant ID (absent on denial)" }),
+      admin_consent: z.string().optional().openapi({ description: "Whether admin consent was granted" }),
+      error: z.string().optional().openapi({ description: "Error code from Azure AD on denial" }),
+      error_description: z.string().optional().openapi({ description: "Human-readable error from Azure AD" }),
     }),
   },
   responses: {
@@ -102,15 +109,26 @@ teams.openapi(installRoute, (c) => {
     return c.json({ error: "teams_not_configured", message: "Teams not configured" }, 501);
   }
 
-  const state = crypto.randomUUID();
-  pendingOAuthStates.set(state, Date.now() + 600_000);
+  // Extract orgId from session if available (admin clicking "Connect to Teams")
+  let orgId: string | undefined;
+  try {
+    const authResult = c.get("authResult" as never) as
+      | { user?: { activeOrganizationId?: string } }
+      | undefined;
+    orgId = authResult?.user?.activeOrganizationId ?? undefined;
+  } catch {
+    // Expected: auth middleware may not be active on this route
+  }
+
+  const nonce = crypto.randomUUID();
+  pendingOAuthStates.set(nonce, { expiry: Date.now() + 600_000, orgId });
 
   const origin = new URL(c.req.url).origin;
   const redirectUri = `${origin}/api/v1/teams/callback`;
   const url =
     `https://login.microsoftonline.com/common/adminconsent` +
     `?client_id=${encodeURIComponent(appId)}` +
-    `&state=${encodeURIComponent(state)}` +
+    `&state=${encodeURIComponent(nonce)}` +
     `&redirect_uri=${encodeURIComponent(redirectUri)}`;
   return c.redirect(url);
 });
@@ -123,11 +141,23 @@ teams.openapi(callbackRoute, async (c) => {
     return c.json({ error: "teams_not_configured", message: "Teams not configured" }, 501);
   }
 
-  const state = c.req.query("state");
-  if (!state || !pendingOAuthStates.has(state)) {
+  const nonce = c.req.query("state");
+  if (!nonce || !pendingOAuthStates.has(nonce)) {
     return c.json({ error: "invalid_state", message: "Invalid or expired state parameter" }, 400);
   }
-  pendingOAuthStates.delete(state);
+  const oauthState = pendingOAuthStates.get(nonce)!;
+  pendingOAuthStates.delete(nonce);
+
+  // Azure AD returns error/error_description when consent is denied
+  const errorCode = c.req.query("error");
+  if (errorCode) {
+    const errorDesc = c.req.query("error_description") ?? "Admin consent was not granted";
+    log.info({ errorCode, errorDesc }, "Teams admin consent denied");
+    return c.json(
+      { error: "consent_denied", message: errorDesc },
+      400,
+    );
+  }
 
   const tenantId = c.req.query("tenant");
   if (!tenantId) {
@@ -143,21 +173,7 @@ teams.openapi(callbackRoute, async (c) => {
   }
 
   try {
-    // Extract org context if available (install may have been initiated by an authenticated admin)
-    let orgId: string | undefined;
-    try {
-      const authResult = c.get("authResult" as never) as
-        | { user?: { activeOrganizationId?: string } }
-        | undefined;
-      orgId = authResult?.user?.activeOrganizationId ?? undefined;
-    } catch (err) {
-      // Expected: authResult not available on unauthenticated Teams routes
-      log.debug(
-        { err: err instanceof Error ? err.message : String(err) },
-        "authResult not available on Teams callback route",
-      );
-    }
-
+    const orgId = oauthState.orgId;
     await saveTeamsInstallation(tenantId, { orgId });
     log.info({ tenantId, orgId }, "Teams installation saved");
   } catch (saveErr) {

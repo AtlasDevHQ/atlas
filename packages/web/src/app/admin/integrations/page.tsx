@@ -401,8 +401,8 @@ function TeamsCard({
                 <span>{formatDateTime(teams.installedAt)}</span>
               </div>
             )}
-            {/* Only show env var hint in self-hosted mode */}
-            {!isSaas && (
+            {/* Only show env var hint in self-hosted mode when not using OAuth */}
+            {!isSaas && !teams.configurable && (
               <p className="text-xs text-muted-foreground">
                 Using environment variables (TEAMS_APP_ID, TEAMS_APP_PASSWORD).
               </p>
@@ -468,7 +468,7 @@ function TeamsCard({
             </AlertDialog>
           )}
 
-          {!teams.connected && canConnect && isSaas && (
+          {!teams.connected && canConnect && (
             <Button size="sm" asChild>
               <a href="/api/v1/teams/install">
                 <ExternalLink className="mr-1.5 size-3.5" />

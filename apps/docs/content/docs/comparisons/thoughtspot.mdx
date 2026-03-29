@@ -15,37 +15,53 @@ import { Callout } from "fumadocs-ui/components/callout";
 | **License** | AGPL-3.0 core, MIT client libs | Proprietary (SaaS + on-prem) |
 | **Pricing** | Self-hosted free, cloud starts at Team tier | Enterprise pricing (typically six-figure contracts) |
 | **Semantic layer** | YAML files (code-first, auto-generated) | TML (ThoughtSpot Modeling Language) + UI |
-| **AI agent** | Multi-step agent with tool use (SQL, Python, explore) | Spotter agent with conversational analytics |
+| **AI agent** | Multi-step agent with tool use (SQL, Python, explore) | Spotter 3 (data scientist w/ Python + forecasting), SpotterModel (semantic modeling), SpotterViz (automated dashboards), SpotterCode (IDE code generation) |
+| **Semantic layer** | YAML files (code-first, auto-generated) | TML + Spotter Semantics (governed Metrics Catalog, NL search tokens, dbt/Snowflake/Databricks integration) |
 | **Embeddable** | Script tag, React component, API, SDK | ThoughtSpot Embedded (SDK) |
 | **Deployment** | Docker, Railway, Vercel, embedded in Next.js | SaaS or on-premises appliance |
 | **Databases** | 7 via plugins (Postgres, MySQL, BigQuery, ClickHouse, DuckDB, Snowflake, Salesforce) | Cloud data warehouses (Snowflake, Databricks, BigQuery, Redshift, etc.) |
-| **SQL validation** | 7-layer pipeline | Query engine optimizes and governs |
-| **Plugin system** | Plugin SDK + 20 plugins | SpotApps marketplace |
+| **SQL validation** | 7-layer pipeline | Semantic layer governs query generation |
+| **MCP server** | Yes | Yes (ThoughtSpot MCP Server) |
+| **Plugin system** | Plugin SDK + 20 plugins | SpotApps marketplace + Spotter Connectors (Zendesk, Google Workspace, Slack) |
+| **Industry agents** | No | Spotter for Industries (healthcare, retail, financial services) |
 | **Open source** | Yes (full product) | No |
 
 ## Different Markets
 
-**ThoughtSpot** is built for large enterprises. It replaces or complements existing BI tools (Tableau, Looker) with search-based analytics. Spotter, their AI agent, adds conversational data exploration. Typical deployments involve data engineering teams, weeks of onboarding, and enterprise contracts.
+**ThoughtSpot** is built for large enterprises. It replaces or complements existing BI tools (Tableau, Looker) with search-based analytics. The Spotter agent family adds conversational data exploration, automated dashboarding, semantic modeling, and IDE code generation. Typical deployments involve data engineering teams, weeks of onboarding, and enterprise contracts.
 
 **Atlas** is built for developers and small-to-mid teams who want to add natural language data querying to their own applications. It's open-source, deploys in minutes, and is designed to be embedded — not to be a standalone analytics platform.
 
 **Trade-off:** ThoughtSpot gives you a complete enterprise analytics suite with governance, certified data models, and organizational-scale features. Atlas gives you a focused, embeddable agent you control end-to-end.
 
+## Spotter Agent Family
+
+ThoughtSpot has expanded Spotter from a single conversational agent into a suite of four specialized agents (as of March 2026):
+
+- **Spotter 3** — AI data scientist with Python coding, forecasting, and multi-step analysis
+- **SpotterModel** — Automated semantic modeling agent that maps relationships, dimensions, and measures from your data
+- **SpotterViz** — Dashboarding agent that plans a data story, generates answers, and builds complete Liveboards automatically
+- **SpotterCode** — IDE-integrated agent for generating embed logic, code patterns, and ThoughtSpot components
+
+Additionally, **Spotter for Industries** (March 2026) provides domain-specific agents for healthcare, retail, and financial services with industry terminology, workflows, and regulatory compliance (HIPAA, GDPR).
+
+Atlas is a single general-purpose agent focused on text-to-SQL with tool use. It doesn't attempt to automate dashboarding, semantic modeling, or IDE code generation — it does one thing (natural language data querying) and makes it embeddable.
+
 ## Semantic Layer
 
-**ThoughtSpot** uses TML (ThoughtSpot Modeling Language) to define data models, relationships, and business logic. Models are managed through the ThoughtSpot UI or exported as YAML-like files. The platform includes a governance layer for certifying trusted data sources and managing access.
+**ThoughtSpot** uses TML (ThoughtSpot Modeling Language) to define data models, relationships, and business logic. In March 2026, they launched **Spotter Semantics** — an AI-native semantic layer with a governed Metrics Catalog, natural language search tokens for deterministic SQL generation, and integration with Snowflake, Databricks, and dbt models.
 
 **Atlas** uses plain YAML files on disk. Run `atlas init` to auto-profile your database, then enrich the generated entities with descriptions, metrics, and glossary terms. The semantic layer lives in your git repository and deploys as static files.
 
-**Trade-off:** ThoughtSpot's modeling is richer and includes governance features (certified models, usage analytics, lineage). Atlas's approach is simpler, code-first, and designed for teams that manage their data model in git.
+**Trade-off:** ThoughtSpot's modeling is richer and includes governance features (certified models, usage analytics, lineage, Metrics Catalog). Atlas's approach is simpler, code-first, and designed for teams that manage their data model in git.
 
-## Embedding
+## Embedding & MCP
 
 Both products offer embedding, but the model is different.
 
-**ThoughtSpot Embedded** provides a React SDK for embedding search, visualizations, liveboards, and the Spotter AI agent. Embedding requires a ThoughtSpot license and access to the ThoughtSpot backend.
+**ThoughtSpot Embedded** provides a React SDK for embedding search, visualizations, liveboards, and the Spotter AI agent. Embedding requires a ThoughtSpot license and access to the ThoughtSpot backend. ThoughtSpot also offers an **MCP Server** that lets external AI agents and LLMs integrate Spotter's capabilities into custom agentic applications.
 
-**Atlas** embedding is fully decoupled. The frontend (`@useatlas/react`, `@useatlas/sdk`) communicates over HTTP with no dependency on the backend package. You can embed a script tag widget, use the React component, or hit the API directly from any framework. Client libraries are MIT-licensed.
+**Atlas** embedding is fully decoupled. The frontend (`@useatlas/react`, `@useatlas/sdk`) communicates over HTTP with no dependency on the backend package. You can embed a script tag widget, use the React component, or hit the API directly from any framework. Client libraries are MIT-licensed. Atlas also provides an MCP server for Claude Desktop, Cursor, and other MCP clients.
 
 ## When to Choose ThoughtSpot
 
@@ -53,7 +69,8 @@ Both products offer embedding, but the model is different.
 - Your organization has hundreds or thousands of analytics users
 - Certified data models, lineage tracking, and governance are requirements
 - You have the budget for enterprise software and a data team to manage it
-- You need search-based analytics (keyword search, not just conversational AI)
+- You need specialized agents for different analytics tasks (modeling, dashboarding, IDE integration)
+- You need industry-specific agents with regulatory compliance (healthcare, retail, financial services)
 - Integration with existing enterprise data infrastructure (Snowflake, Databricks) is critical
 
 <Callout type="info">

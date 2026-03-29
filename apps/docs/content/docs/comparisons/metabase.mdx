@@ -14,10 +14,10 @@ import { Callout } from "fumadocs-ui/components/callout";
 | **License** | AGPL-3.0 core, MIT client libs | AGPL-3.0 (Pro/Enterprise is proprietary) |
 | **Category** | Embeddable text-to-SQL agent | Full BI platform |
 | **Embeddable** | Script tag, React component, API | Embedding SDK + public links (SDK requires Pro/Enterprise) |
-| **AI querying** | Core feature (agent-based) | Add-on feature |
+| **AI querying** | Core feature (agent-based) | Metabot AI (cloud-only add-on, $100/mo for 500 requests; open-source gets single-shot SQL only) |
 | **Visual query builder** | No (natural language only) | Yes |
 | **Dashboards** | No | Yes (core feature) |
-| **Semantic layer** | YAML files | Data model UI (models, metrics) |
+| **Semantic layer** | YAML files | Data model UI + Data Studio (analyst workbench for glossary, measures, segments) |
 | **Databases** | Postgres, MySQL + plugins for BigQuery, ClickHouse, DuckDB, Salesforce, Snowflake | 20+ databases |
 | **Plugin system** | Plugin SDK + 20 official plugins | Database drivers + community |
 | **Auth model** | Managed, BYOT, API key | Managed, SSO, LDAP (Pro) |
@@ -28,7 +28,7 @@ import { Callout } from "fumadocs-ui/components/callout";
 
 ## Different Tools for Different Problems
 
-**Metabase** is a BI platform. It replaces Excel, Tableau, and Looker for teams that need dashboards, scheduled reports, and visual exploration. AI querying is one feature among many.
+**Metabase** is a BI platform. It replaces Excel, Tableau, and Looker for teams that need dashboards, scheduled reports, and visual exploration. AI querying via Metabot is a growing feature — it handles natural language queries, SQL generation, SQL debugging, and smart content reuse — but it's currently a cloud-only add-on ($100/mo for 500 requests). Self-hosted Metabot is on the roadmap.
 
 **Atlas** is an AI agent you embed in other applications. It does one thing -- lets users query data in natural language -- and does it as a composable component, not a standalone product.
 
@@ -48,7 +48,7 @@ Both tools use a semantic layer to add business context to raw database schemas,
 
 **Atlas** uses YAML files checked into your repository. Entities, metrics, and glossary terms are defined in code, version-controlled, and deployed with your application.
 
-**Metabase** uses a UI-based data model. Admins define models, add descriptions, hide columns, and configure metrics through Metabase's admin interface. This is stored in Metabase's internal database.
+**Metabase** uses a UI-based data model. Admins define models, add descriptions, hide columns, and configure metrics through Metabase's admin interface. In 2026, Metabase launched **Data Studio** — an analyst workbench for curating the semantic layer with glossary terms, measures, and segments. Metabot queries against this semantic layer rather than raw SQL. Definitions are stored in Metabase's internal database.
 
 ## Licensing
 

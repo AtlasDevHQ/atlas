@@ -15,9 +15,9 @@ Atlas is an embeddable text-to-SQL agent. The tools below solve overlapping prob
 
 | Feature | Atlas | WrenAI | Vanna | Metabase |
 |---|---|---|---|---|
-| **Deployment** | Self-hosted, cloud, embedded | Self-hosted, cloud | Self-hosted, cloud (SaaS) | Self-hosted, cloud |
+| **Deployment** | Self-hosted, cloud, embedded | Self-hosted, cloud SaaS, air-gapped enterprise | Self-hosted, cloud (SaaS) | Self-hosted, cloud |
 | **Embeddable widget** | Script tag, React component, API | API only (no widget) | Web component (`<vanna-chat>`) | Embedding SDK (paid), public links (free) |
-| **Semantic layer** | YAML files (code-first) | UI-based modeling (MDL) | Training via DDL/docs/SQL pairs | Data model UI |
+| **Semantic layer** | YAML files (code-first) | UI-based modeling (MDL) | Training via DDL/docs/SQL pairs | Data model UI + Data Studio |
 | **Plugin ecosystem** | 20+ official plugins, Plugin SDK | Limited | Python extensibility | Drivers + community plugins |
 | **Databases** | | | | |
 | PostgreSQL | Built-in | Yes | Yes | Yes |
@@ -27,11 +27,15 @@ Atlas is an embeddable text-to-SQL agent. The tools below solve overlapping prob
 | DuckDB | Plugin | Yes | Yes | Community driver |
 | Snowflake | Plugin | Yes | Yes | Yes |
 | Salesforce | Plugin | No | No | No |
+| Oracle | No | Yes | Yes | Yes |
+| SQL Server | No | Yes | Yes | Yes |
+| Redshift | No | Yes | Yes | Yes |
+| Databricks | No | Yes | No | No |
 | **Auth model** | Managed (Better Auth), BYOT, API key, SSO/SCIM | API key | BYOT (`UserResolver`) | Managed, SSO (paid) |
 | **License** | AGPL-3.0 core, MIT client libs | AGPL-3.0 | MIT | AGPL-3.0 (Pro is proprietary) |
 | **Python tool** | Sandboxed execution with charts | No | Python-native | No |
 | **Admin console** | Built-in | Basic UI | No | Full admin UI |
-| **MCP server** | Official plugin | No | No | No |
+| **MCP server** | Official plugin | Yes (Wren Engine) | No | No |
 | **Chat integrations** | Slack, Teams, Discord, Telegram, + 4 more (Chat SDK) | No | No | No |
 | **SDK** | TypeScript SDK (`@useatlas/sdk`) | No | Python package | Embedding SDK (React, paid) |
 | **Enterprise features** | SSO, SCIM, custom roles, IP allowlists, approval workflows | No | No | SSO, permissions (Pro) |

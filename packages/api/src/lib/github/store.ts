@@ -11,7 +11,9 @@ import { createLogger } from "@atlas/api/lib/logger";
 const log = createLogger("github-store");
 
 export interface GitHubInstallation {
+  /** GitHub numeric user ID (stable, unlike login names). Contains secret — do not expose in API responses. */
   user_id: string;
+  /** Personal access token. Contains secret — do not expose in API responses. */
   access_token: string;
   username: string | null;
   org_id: string | null;
@@ -45,6 +47,9 @@ function parseInstallationRow(
 // Read operations
 // ---------------------------------------------------------------------------
 
+/**
+ * Get the GitHub installation for a user ID (GitHub numeric user ID).
+ */
 export async function getGitHubInstallation(
   userId: string,
 ): Promise<GitHubInstallation | null> {
@@ -70,6 +75,10 @@ export async function getGitHubInstallation(
   }
 }
 
+/**
+ * Get the GitHub installation for an org. Returns null if not found or
+ * if no internal database is configured.
+ */
 export async function getGitHubInstallationByOrg(
   orgId: string,
 ): Promise<GitHubInstallation | null> {
@@ -99,6 +108,11 @@ export async function getGitHubInstallationByOrg(
 // Write operations
 // ---------------------------------------------------------------------------
 
+/**
+ * Save or update a GitHub installation (PAT submission).
+ * Throws if the GitHub user is already bound to a different organization (hijack protection).
+ * Throws if the database write fails.
+ */
 export async function saveGitHubInstallation(
   userId: string,
   opts: { orgId?: string; username?: string; accessToken: string },
@@ -146,6 +160,31 @@ export async function saveGitHubInstallation(
   }
 }
 
+/**
+ * Remove a GitHub installation by user ID.
+ * Throws if no internal DB or if the query fails.
+ */
+export async function deleteGitHubInstallation(userId: string): Promise<void> {
+  if (!hasInternalDB()) {
+    throw new Error("Cannot delete GitHub installation — no internal database configured");
+  }
+
+  try {
+    await internalQuery("DELETE FROM github_installations WHERE user_id = $1", [userId]);
+  } catch (err) {
+    log.error(
+      { err: err instanceof Error ? err.message : String(err), userId },
+      "Failed to delete github_installations",
+    );
+    throw err;
+  }
+}
+
+/**
+ * Remove the GitHub installation for an org.
+ * Returns true if a row was deleted, false if no matching row found.
+ * Throws if no internal DB or if the query fails.
+ */
 export async function deleteGitHubInstallationByOrg(orgId: string): Promise<boolean> {
   if (!hasInternalDB()) {
     throw new Error("Cannot delete GitHub installation — no internal database configured");

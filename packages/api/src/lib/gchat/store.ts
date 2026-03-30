@@ -14,6 +14,7 @@ const log = createLogger("gchat-store");
 export interface GChatInstallation {
   project_id: string;
   service_account_email: string;
+  /** Full service account key JSON. Contains secret (private_key) — do not expose in API responses. */
   credentials_json: string;
   org_id: string | null;
   installed_at: string;
@@ -51,6 +52,9 @@ function parseInstallationRow(
 // Read operations
 // ---------------------------------------------------------------------------
 
+/**
+ * Get the Google Chat installation for a project ID.
+ */
 export async function getGChatInstallation(
   projectId: string,
 ): Promise<GChatInstallation | null> {
@@ -76,6 +80,10 @@ export async function getGChatInstallation(
   }
 }
 
+/**
+ * Get the Google Chat installation for an org. Returns null if not found or
+ * if no internal database is configured.
+ */
 export async function getGChatInstallationByOrg(
   orgId: string,
 ): Promise<GChatInstallation | null> {
@@ -105,6 +113,11 @@ export async function getGChatInstallationByOrg(
 // Write operations
 // ---------------------------------------------------------------------------
 
+/**
+ * Save or update a Google Chat installation (service account submission).
+ * Throws if the service account is already bound to a different organization (hijack protection).
+ * Throws if the database write fails.
+ */
 export async function saveGChatInstallation(
   projectId: string,
   opts: { orgId?: string; serviceAccountEmail: string; credentialsJson: string },
@@ -151,6 +164,31 @@ export async function saveGChatInstallation(
   }
 }
 
+/**
+ * Remove a Google Chat installation by project ID.
+ * Throws if no internal DB or if the query fails.
+ */
+export async function deleteGChatInstallation(projectId: string): Promise<void> {
+  if (!hasInternalDB()) {
+    throw new Error("Cannot delete Google Chat installation — no internal database configured");
+  }
+
+  try {
+    await internalQuery("DELETE FROM gchat_installations WHERE project_id = $1", [projectId]);
+  } catch (err) {
+    log.error(
+      { err: err instanceof Error ? err.message : String(err), projectId },
+      "Failed to delete gchat_installations",
+    );
+    throw err;
+  }
+}
+
+/**
+ * Remove the Google Chat installation for an org.
+ * Returns true if a row was deleted, false if no matching row found.
+ * Throws if no internal DB or if the query fails.
+ */
 export async function deleteGChatInstallationByOrg(orgId: string): Promise<boolean> {
   if (!hasInternalDB()) {
     throw new Error("Cannot delete Google Chat installation — no internal database configured");

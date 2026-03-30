@@ -3,7 +3,7 @@
  *
  * Mounted under /api/v1/admin/integrations. All routes require admin role
  * and org context. Provides aggregated integration status, connect,
- * and disconnect operations for Slack, Teams, Discord, and Telegram.
+ * and disconnect operations for Slack, Teams, Discord, Telegram, Google Chat, and GitHub.
  */
 
 import { Effect } from "effect";
@@ -357,7 +357,8 @@ adminIntegrations.openapi(getStatusRoute, async (c) => {
         configurable: telegramConfigurable,
       };
 
-      // Google Chat status — configurable when internal DB is available (always BYOT)
+      // Google Chat status — BYOT-only, configurable when internal DB is available.
+      // SaaS always has internal DB, so hasInternalDB() alone suffices (no deployMode check needed).
       const gchatConfigurable = hasInternalDB();
       const gchat = {
         connected: gchatInstall !== null,
@@ -367,7 +368,7 @@ adminIntegrations.openapi(getStatusRoute, async (c) => {
         configurable: gchatConfigurable,
       };
 
-      // GitHub status — configurable when internal DB is available (always BYOT)
+      // GitHub status — BYOT-only, configurable when internal DB is available.
       const githubConfigurable = hasInternalDB();
       const github = {
         connected: githubInstall !== null,
@@ -1144,7 +1145,7 @@ adminIntegrations.openapi(disconnectTelegramRoute, async (c) => {
 });
 
 // ---------------------------------------------------------------------------
-// Google Chat BYOT routes
+// Google Chat routes (BYOT-only — no platform OAuth variant)
 // ---------------------------------------------------------------------------
 
 const connectGChatRoute = createRoute({
@@ -1153,8 +1154,9 @@ const connectGChatRoute = createRoute({
   tags: ["Admin — Integrations"],
   summary: "Connect Google Chat via service account",
   description:
-    "Validates a Google Chat service account JSON key and saves the installation " +
-    "for the current workspace.",
+    "Parses a Google Chat service account JSON key, validates required fields " +
+    "(client_email, private_key), and saves the installation for the current workspace. " +
+    "Structural validation only — does not call the Google API.",
   request: {
     body: {
       content: {
@@ -1190,6 +1192,10 @@ const connectGChatRoute = createRoute({
       description: "Authentication required",
       content: { "application/json": { schema: AuthErrorSchema } },
     },
+    409: {
+      description: "Service account already bound to a different organization",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
     500: {
       description: "Internal server error",
       content: { "application/json": { schema: ErrorSchema } },
@@ -1223,7 +1229,8 @@ adminIntegrations.openapi(connectGChatRoute, async (c) => {
       let parsed: { client_email?: string; private_key?: string; project_id?: string };
       try {
         parsed = JSON.parse(credentialsJson) as typeof parsed;
-      } catch {
+      } catch (err) {
+        log.warn({ err: err instanceof Error ? err.message : String(err) }, "Google Chat credentials JSON parse failed");
         return c.json(
           { error: "invalid_credentials", message: "Invalid JSON. Paste the full service account key file contents." },
           400,
@@ -1244,23 +1251,41 @@ adminIntegrations.openapi(connectGChatRoute, async (c) => {
         );
       }
 
+      if (!parsed.private_key.startsWith("-----BEGIN")) {
+        return c.json(
+          { error: "invalid_credentials", message: "Service account JSON has an invalid 'private_key'. Ensure you pasted the full key file." },
+          400,
+        );
+      }
+
+      const clientEmail = parsed.client_email;
       const projectId = typeof parsed.project_id === "string" && parsed.project_id
         ? parsed.project_id
-        : parsed.client_email.split("@")[1]?.replace(".iam.gserviceaccount.com", "") ?? `gchat-${orgId}`;
+        : clientEmail.split("@")[1]?.replace(".iam.gserviceaccount.com", "") ?? `gchat-${orgId}`;
 
-      yield* Effect.tryPromise({
+      const saveResult = yield* Effect.tryPromise({
         try: () =>
           saveGChatInstallation(projectId, {
             orgId,
-            serviceAccountEmail: parsed.client_email!,
+            serviceAccountEmail: clientEmail,
             credentialsJson,
           }),
         catch: (err) => err instanceof Error ? err : new Error(String(err)),
-      });
+      }).pipe(
+        Effect.map(() => ({ ok: true as const })),
+        Effect.catchAll((err) => Effect.succeed({ ok: false as const, message: err.message })),
+      );
 
-      log.info({ orgId, projectId, serviceAccountEmail: parsed.client_email }, "Google Chat installation saved by admin");
+      if (!saveResult.ok) {
+        return c.json(
+          { error: "conflict", message: saveResult.message },
+          409,
+        );
+      }
+
+      log.info({ orgId, projectId, serviceAccountEmail: clientEmail }, "Google Chat installation saved by admin");
       return c.json(
-        { message: "Google Chat connected successfully.", projectId, serviceAccountEmail: parsed.client_email },
+        { message: "Google Chat connected successfully.", projectId, serviceAccountEmail: clientEmail },
         200,
       );
     }),
@@ -1337,7 +1362,7 @@ adminIntegrations.openapi(disconnectGChatRoute, async (c) => {
 });
 
 // ---------------------------------------------------------------------------
-// GitHub BYOT routes
+// GitHub routes (BYOT-only — no platform OAuth variant)
 // ---------------------------------------------------------------------------
 
 const connectGitHubRoute = createRoute({
@@ -1381,6 +1406,10 @@ const connectGitHubRoute = createRoute({
     401: {
       description: "Authentication required",
       content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    409: {
+      description: "GitHub user already bound to a different organization",
+      content: { "application/json": { schema: ErrorSchema } },
     },
     500: {
       description: "Internal server error",
@@ -1459,7 +1488,7 @@ adminIntegrations.openapi(connectGitHubRoute, async (c) => {
         );
       }
 
-      yield* Effect.tryPromise({
+      const saveResult = yield* Effect.tryPromise({
         try: () =>
           saveGitHubInstallation(userResult.userId, {
             orgId,
@@ -1467,7 +1496,17 @@ adminIntegrations.openapi(connectGitHubRoute, async (c) => {
             accessToken,
           }),
         catch: (err) => err instanceof Error ? err : new Error(String(err)),
-      });
+      }).pipe(
+        Effect.map(() => ({ ok: true as const })),
+        Effect.catchAll((err) => Effect.succeed({ ok: false as const, message: err.message })),
+      );
+
+      if (!saveResult.ok) {
+        return c.json(
+          { error: "conflict", message: saveResult.message },
+          409,
+        );
+      }
 
       log.info({ orgId, userId: userResult.userId, username: userResult.username }, "GitHub installation saved by admin");
       return c.json(

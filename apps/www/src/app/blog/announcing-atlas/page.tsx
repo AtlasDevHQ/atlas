@@ -196,7 +196,7 @@ $ cd my-app && bun run dev
             LiteLLM), and AI Gateway. Bring your own keys or use Atlas
             Cloud&apos;s managed tokens
           </FeatureBullet>
-          <FeatureBullet title="20+ plugins">
+          <FeatureBullet title="21+ plugins">
             Datasource adapters, sandbox backends, interaction channels (Slack,
             Teams, MCP), action triggers (email, JIRA, webhooks). Build your
             own with the Plugin SDK

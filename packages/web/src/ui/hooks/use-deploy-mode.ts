@@ -1,6 +1,6 @@
 "use client";
 
-import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
+import { useAdminFetch, type FetchError } from "@/ui/hooks/use-admin-fetch";
 import type { DeployMode } from "@/ui/lib/types";
 
 interface SettingsResponse {
@@ -20,7 +20,7 @@ interface SettingsResponse {
 export function useDeployMode(): {
   deployMode: DeployMode;
   loading: boolean;
-  error: string | null;
+  error: FetchError | null;
 } {
   const { data, loading, error } = useAdminFetch<SettingsResponse>("/api/v1/admin/settings");
 

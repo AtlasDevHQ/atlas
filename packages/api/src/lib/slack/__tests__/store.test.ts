@@ -202,11 +202,14 @@ describe("store", () => {
       mockPoolQuery.mockResolvedValue({ rows: [] });
 
       await expect(saveInstallation("T123", "xoxb-new")).resolves.toBeUndefined();
-      expect(mockPoolQuery).toHaveBeenCalledTimes(1);
-      // Verify the SQL contains INSERT and the params
-      const [sql, params] = mockPoolQuery.mock.calls[0];
-      expect(sql).toContain("INSERT INTO slack_installations");
-      expect(params).toEqual(["T123", "xoxb-new", null, null]);
+      expect(mockPoolQuery).toHaveBeenCalledTimes(2); // SELECT check + INSERT
+      // First call: hijack check
+      const [selectSql] = mockPoolQuery.mock.calls[0];
+      expect(selectSql).toContain("SELECT org_id FROM slack_installations");
+      // Second call: upsert
+      const [insertSql, insertParams] = mockPoolQuery.mock.calls[1];
+      expect(insertSql).toContain("INSERT INTO slack_installations");
+      expect(insertParams).toEqual(["T123", "xoxb-new", null, null]);
     });
 
     it("passes orgId and workspaceName when provided", async () => {
@@ -214,8 +217,19 @@ describe("store", () => {
       mockPoolQuery.mockResolvedValue({ rows: [] });
 
       await saveInstallation("T123", "xoxb-new", { orgId: "org-1", workspaceName: "My Team" });
-      const [, params] = mockPoolQuery.mock.calls[0];
-      expect(params).toEqual(["T123", "xoxb-new", "org-1", "My Team"]);
+      // Second call is the INSERT
+      const [, insertParams] = mockPoolQuery.mock.calls[1];
+      expect(insertParams).toEqual(["T123", "xoxb-new", "org-1", "My Team"]);
+    });
+
+    it("rejects when team is bound to a different org", async () => {
+      mockHasInternalDB.mockReturnValue(true);
+      // SELECT returns existing row with different org
+      mockPoolQuery.mockResolvedValueOnce({ rows: [{ org_id: "org-other" }] });
+
+      await expect(
+        saveInstallation("T123", "xoxb-new", { orgId: "org-mine" }),
+      ).rejects.toThrow("already bound to a different organization");
     });
 
     it("throws when no internal DB", async () => {

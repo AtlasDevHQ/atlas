@@ -40,24 +40,25 @@ import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { KeyRound, Plus, Pencil, Trash2, Loader2, Lock, Users } from "lucide-react";
 
-// ── Types ─────────────────────────────────────────────────────────
+// ── Schemas ───────────────────────────────────────────────────────
 
-interface CustomRole {
-  id: string;
-  orgId: string;
-  name: string;
-  description: string;
-  permissions: string[];
-  isBuiltin: boolean;
-  createdAt: string;
-  updatedAt: string;
-}
+const CustomRoleSchema = z.object({
+  id: z.string(),
+  orgId: z.string(),
+  name: z.string(),
+  description: z.string(),
+  permissions: z.array(z.string()),
+  isBuiltin: z.boolean(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+type CustomRole = z.infer<typeof CustomRoleSchema>;
 
-interface RolesResponse {
-  roles: CustomRole[];
-  permissions: string[];
-  total: number;
-}
+const RolesResponseSchema = z.object({
+  roles: z.array(CustomRoleSchema),
+  permissions: z.array(z.string()),
+  total: z.number(),
+});
 
 // ── Permission labels ────────────────────────────────────────────
 
@@ -326,11 +327,9 @@ export default function RolesPage() {
   const [editingRole, setEditingRole] = useState<CustomRole | null>(null);
   const [deleteRole, setDeleteRole] = useState<CustomRole | null>(null);
 
-  const { data, loading, error, refetch } = useAdminFetch<RolesResponse>(
+  const { data, loading, error, refetch } = useAdminFetch(
     "/api/v1/admin/roles",
-    {
-      transform: (json) => json as RolesResponse,
-    },
+    { schema: RolesResponseSchema },
   );
 
   const roles = data?.roles ?? [];

@@ -1,6 +1,7 @@
 import { describe, expect, test, mock, beforeEach, afterEach } from "bun:test";
 import { renderHook, waitFor, cleanup, act } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
+import { z } from "zod";
 import { friendlyError, useAdminFetch, type FetchError } from "../hooks/use-admin-fetch";
 import { AtlasUIProvider } from "../context";
 
@@ -304,5 +305,102 @@ describe("useAdminFetch", () => {
     // No error should be set (AbortError is silently ignored)
     // Loading stays true because the finally block checks signal.aborted
     expect(result.current.error).toBeNull();
+  });
+
+  test("validates response with schema and returns parsed data", async () => {
+    const TestSchema = z.object({ name: z.string(), count: z.number() });
+
+    globalThis.fetch = mock(() =>
+      Promise.resolve(new Response(JSON.stringify({ name: "atlas", count: 42 }), { status: 200 })),
+    ) as unknown as typeof fetch;
+
+    const { result } = renderHook(
+      () => useAdminFetch("/api/test", { schema: TestSchema }),
+      { wrapper },
+    );
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    expect(result.current.data).toEqual({ name: "atlas", count: 42 });
+    expect(result.current.error).toBeNull();
+  });
+
+  test("sets error when schema validation fails", async () => {
+    const TestSchema = z.object({ name: z.string(), count: z.number() });
+
+    // Return data with wrong types — count is a string, not a number
+    globalThis.fetch = mock(() =>
+      Promise.resolve(new Response(JSON.stringify({ name: "atlas", count: "not-a-number" }), { status: 200 })),
+    ) as unknown as typeof fetch;
+
+    const originalWarn = console.warn;
+    const warnings: unknown[][] = [];
+    console.warn = (...args: unknown[]) => { warnings.push(args); };
+
+    const { result } = renderHook(
+      () => useAdminFetch("/api/test", { schema: TestSchema }),
+      { wrapper },
+    );
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    expect(result.current.data).toBeNull();
+    expect(result.current.error).not.toBeNull();
+    expect(result.current.error!.message).toContain("Invalid API response");
+    expect(warnings.length).toBeGreaterThan(0);
+
+    console.warn = originalWarn;
+  });
+
+  test("sets error when schema validation fails on missing field", async () => {
+    const TestSchema = z.object({ name: z.string(), count: z.number() });
+
+    // Return data missing required "count" field
+    globalThis.fetch = mock(() =>
+      Promise.resolve(new Response(JSON.stringify({ name: "atlas" }), { status: 200 })),
+    ) as unknown as typeof fetch;
+
+    const originalWarn = console.warn;
+    console.warn = () => {};
+
+    const { result } = renderHook(
+      () => useAdminFetch("/api/test", { schema: TestSchema }),
+      { wrapper },
+    );
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    expect(result.current.data).toBeNull();
+    expect(result.current.error).not.toBeNull();
+    expect(result.current.error!.message).toContain("Invalid API response");
+
+    console.warn = originalWarn;
+  });
+
+  test("schema with transform extracts nested data", async () => {
+    const WrappedSchema = z.object({
+      items: z.array(z.string()),
+    }).transform((r) => r.items);
+
+    globalThis.fetch = mock(() =>
+      Promise.resolve(new Response(JSON.stringify({ items: ["a", "b", "c"] }), { status: 200 })),
+    ) as unknown as typeof fetch;
+
+    const { result } = renderHook(
+      () => useAdminFetch("/api/test", { schema: WrappedSchema }),
+      { wrapper },
+    );
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    expect(result.current.data).toEqual(["a", "b", "c"]);
   });
 });

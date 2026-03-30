@@ -34,14 +34,16 @@ import {
   Activity,
   Settings2,
 } from "lucide-react";
-import type { AbuseStatus, AbuseThresholdConfig } from "@/ui/lib/types";
+import { z } from "zod";
+import type { AbuseStatus } from "@/ui/lib/types";
+import { AbuseStatusSchema, AbuseThresholdConfigSchema } from "@/ui/lib/admin-schemas";
 
-// ── Types ─────────────────────────────────────────────────────────
+// ── Schemas ───────────────────────────────────────────────────────
 
-interface AbuseListResponse {
-  workspaces: AbuseStatus[];
-  total: number;
-}
+const AbuseListResponseSchema = z.object({
+  workspaces: z.array(AbuseStatusSchema),
+  total: z.number(),
+});
 
 // ── Level badge colors ────────────────────────────────────────────
 
@@ -159,14 +161,14 @@ export default function AbusePage() {
   const { blocked } = usePlatformAdminGuard();
   const [reinstateTarget, setReinstateTarget] = useState<AbuseStatus | null>(null);
 
-  const { data, loading, error, refetch } = useAdminFetch<AbuseListResponse>(
+  const { data, loading, error, refetch } = useAdminFetch(
     "/api/v1/admin/abuse",
-    { transform: (json) => json as AbuseListResponse },
+    { schema: AbuseListResponseSchema },
   );
 
-  const { data: config } = useAdminFetch<AbuseThresholdConfig>(
+  const { data: config } = useAdminFetch(
     "/api/v1/admin/abuse/config",
-    { transform: (json) => json as AbuseThresholdConfig },
+    { schema: AbuseThresholdConfigSchema },
   );
 
   const workspaces = data?.workspaces ?? [];

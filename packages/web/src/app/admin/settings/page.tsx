@@ -31,28 +31,29 @@ import { useDeployMode } from "@/ui/hooks/use-deploy-mode";
 import { Settings, Pencil, RotateCcw, Loader2, Info, Lock, RefreshCw, Palette, Shield } from "lucide-react";
 import { DEFAULT_BRAND_COLOR, OKLCH_RE, applyBrandColor } from "@/ui/hooks/use-dark-mode";
 
-// ── Types ─────────────────────────────────────────────────────────
+// ── Schemas ───────────────────────────────────────────────────────
 
-interface SettingWithValue {
-  key: string;
-  section: string;
-  label: string;
-  description: string;
-  type: "string" | "number" | "boolean" | "select";
-  options?: string[];
-  default?: string;
-  secret?: boolean;
-  envVar: string;
-  requiresRestart?: boolean;
-  scope: "platform" | "workspace";
-  currentValue: string | undefined;
-  source: "env" | "override" | "workspace-override" | "default";
-}
+const SettingWithValueSchema = z.object({
+  key: z.string(),
+  section: z.string(),
+  label: z.string(),
+  description: z.string(),
+  type: z.enum(["string", "number", "boolean", "select"]),
+  options: z.array(z.string()).optional(),
+  default: z.string().optional(),
+  secret: z.boolean().optional(),
+  envVar: z.string(),
+  requiresRestart: z.boolean().optional(),
+  scope: z.enum(["platform", "workspace"]),
+  currentValue: z.string().optional(),
+  source: z.enum(["env", "override", "workspace-override", "default"]),
+});
+type SettingWithValue = z.infer<typeof SettingWithValueSchema>;
 
-interface SettingsResponse {
-  settings: SettingWithValue[];
-  manageable: boolean;
-}
+const SettingsResponseSchema = z.object({
+  settings: z.array(SettingWithValueSchema),
+  manageable: z.boolean(),
+});
 
 // ── Source badge ───────────────────────────────────────────────────
 
@@ -416,11 +417,9 @@ export default function SettingsPage() {
   const { deployMode } = useDeployMode();
   const isSaas = deployMode === "saas";
 
-  const { data, loading, error, refetch } = useAdminFetch<SettingsResponse>(
+  const { data, loading, error, refetch } = useAdminFetch(
     "/api/v1/admin/settings",
-    {
-      transform: (json) => json as SettingsResponse,
-    },
+    { schema: SettingsResponseSchema },
   );
 
   const { mutate: resetSetting, error: mutationError, clearError: clearMutationError, isMutating } =

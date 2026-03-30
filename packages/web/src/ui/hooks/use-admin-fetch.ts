@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback, useRef } from "react";
+import type { z } from "zod";
 import { useAtlasConfig } from "@/ui/context";
 import { extractFetchError, type FetchError } from "@/ui/lib/fetch-error";
 
@@ -12,12 +13,16 @@ export { type FetchError, friendlyError } from "@/ui/lib/fetch-error";
  * Shared fetch hook for admin pages.
  * Handles loading/error state, structured error body extraction (message + requestId),
  * cancellation on unmount, and credentials.
+ *
+ * Prefer `schema` (Zod) for runtime validation over `transform`.
+ * `schema` and `transform` are mutually exclusive — if both provided, `schema` wins.
  */
 export function useAdminFetch<T>(
   path: string,
   opts?: {
     deps?: unknown[];
     transform?: (json: unknown) => T;
+    schema?: z.ZodType<T>;
   },
 ) {
   const { apiUrl, isCrossOrigin } = useAtlasConfig();
@@ -41,8 +46,24 @@ export function useAdminFetch<T>(
         if (!signal?.aborted) setError(e);
         return;
       }
-      const json = await res.json();
-      const result = opts?.transform ? opts.transform(json) : (json as T);
+      const json: unknown = await res.json();
+      let result: T;
+      if (opts?.schema) {
+        const parsed = opts.schema.safeParse(json);
+        if (!parsed.success) {
+          if (!signal?.aborted) {
+            const msg = `Invalid API response for ${path}: ${parsed.error.message}`;
+            console.warn(msg);
+            setError({ message: msg });
+          }
+          return;
+        }
+        result = parsed.data as T;
+      } else if (opts?.transform) {
+        result = opts.transform(json);
+      } else {
+        result = json as T;
+      }
       if (!signal?.aborted) setData(result);
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") return;

@@ -41,7 +41,13 @@ import {
   ArrowRightLeft,
   Terminal,
 } from "lucide-react";
-import type { SemanticDiffResponse, SemanticTableDiff, ConnectionInfo } from "@/ui/lib/types";
+import { z } from "zod";
+import type { SemanticTableDiff, ConnectionInfo } from "@/ui/lib/types";
+import { ConnectionInfoSchema, SemanticDiffResponseSchema } from "@/ui/lib/admin-schemas";
+
+const ConnectionsResponseSchema = z.object({
+  connections: z.array(ConnectionInfoSchema),
+}).transform((r) => r.connections ?? []);
 
 // ---------------------------------------------------------------------------
 
@@ -49,14 +55,14 @@ export default function SchemaDiffPage() {
   const [{ connection: connectionId }, setParams] = useQueryStates(schemaDiffSearchParams);
   const setConnectionId = (id: string) => setParams({ connection: id });
 
-  const { data: connectionsData } = useAdminFetch<ConnectionInfo[]>(
+  const { data: connectionsData } = useAdminFetch(
     "/api/v1/admin/connections",
-    { transform: (json) => (json as { connections: ConnectionInfo[] }).connections ?? [] },
+    { schema: ConnectionsResponseSchema },
   );
 
-  const { data: diff, loading, error, refetch } = useAdminFetch<SemanticDiffResponse>(
+  const { data: diff, loading, error, refetch } = useAdminFetch(
     `/api/v1/admin/semantic/diff?connection=${encodeURIComponent(connectionId)}`,
-    { deps: [connectionId] },
+    { schema: SemanticDiffResponseSchema, deps: [connectionId] },
   );
 
   const multipleConnections = connectionsData && connectionsData.length > 1;

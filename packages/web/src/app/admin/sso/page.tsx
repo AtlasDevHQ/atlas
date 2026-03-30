@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { z } from "zod";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -21,29 +22,28 @@ import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { ShieldCheck, AlertTriangle, Loader2, Shield } from "lucide-react";
 
-// ── Types ─────────────────────────────────────────────────────────
+// ── Schemas ───────────────────────────────────────────────────────
 
-interface SSOProviderSummary {
-  id: string;
-  orgId: string;
-  type: "saml" | "oidc";
-  issuer: string;
-  domain: string;
-  enabled: boolean;
-  ssoEnforced: boolean;
-  createdAt: string;
-  updatedAt: string;
-}
+const SSOProviderSummarySchema = z.object({
+  id: z.string(),
+  orgId: z.string(),
+  type: z.enum(["saml", "oidc"]),
+  issuer: z.string(),
+  domain: z.string(),
+  enabled: z.boolean(),
+  ssoEnforced: z.boolean(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+const ProvidersResponseSchema = z.object({
+  providers: z.array(SSOProviderSummarySchema),
+  total: z.number(),
+});
 
-interface ProvidersResponse {
-  providers: SSOProviderSummary[];
-  total: number;
-}
-
-interface EnforcementResponse {
-  enforced: boolean;
-  orgId: string;
-}
+const EnforcementResponseSchema = z.object({
+  enforced: z.boolean(),
+  orgId: z.string(),
+});
 
 // ── Main Page ─────────────────────────────────────────────────────
 
@@ -51,13 +51,13 @@ export default function SSOPage() {
   const [confirmEnforce, setConfirmEnforce] = useState(false);
 
   const { data: providersData, loading: providersLoading, error: providersError, refetch: refetchProviders } =
-    useAdminFetch<ProvidersResponse>("/api/v1/admin/sso/providers", {
-      transform: (json) => json as ProvidersResponse,
+    useAdminFetch("/api/v1/admin/sso/providers", {
+      schema: ProvidersResponseSchema,
     });
 
   const { data: enforcementData, loading: enforcementLoading, error: enforcementError, refetch: refetchEnforcement } =
-    useAdminFetch<EnforcementResponse>("/api/v1/admin/sso/enforcement", {
-      transform: (json) => json as EnforcementResponse,
+    useAdminFetch("/api/v1/admin/sso/enforcement", {
+      schema: EnforcementResponseSchema,
     });
 
   const { mutate, saving, error: mutationError, clearError: clearMutationError } = useAdminMutation({

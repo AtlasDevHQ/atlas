@@ -32,37 +32,36 @@ import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { RefreshCw, Trash2, Plus, Cable, Users, ArrowRightLeft, Loader2 } from "lucide-react";
 
-// ── Types ─────────────────────────────────────────────────────────
+// ── Schemas ───────────────────────────────────────────────────────
 
-interface SCIMConnection {
-  id: string;
-  providerId: string;
-  organizationId: string | null;
-}
+const SCIMConnectionSchema = z.object({
+  id: z.string(),
+  providerId: z.string(),
+  organizationId: z.string().nullable(),
+});
 
-interface SCIMSyncStatus {
-  connections: number;
-  provisionedUsers: number;
-  lastSyncAt: string | null;
-}
+const SCIMSyncStatusSchema = z.object({
+  connections: z.number(),
+  provisionedUsers: z.number(),
+  lastSyncAt: z.string().nullable(),
+});
 
-interface SCIMStatusResponse {
-  connections: SCIMConnection[];
-  syncStatus: SCIMSyncStatus;
-}
+const SCIMStatusResponseSchema = z.object({
+  connections: z.array(SCIMConnectionSchema),
+  syncStatus: SCIMSyncStatusSchema,
+});
 
-interface SCIMGroupMapping {
-  id: string;
-  orgId: string;
-  scimGroupName: string;
-  roleName: string;
-  createdAt: string;
-}
-
-interface GroupMappingsResponse {
-  mappings: SCIMGroupMapping[];
-  total: number;
-}
+const SCIMGroupMappingSchema = z.object({
+  id: z.string(),
+  orgId: z.string(),
+  scimGroupName: z.string(),
+  roleName: z.string(),
+  createdAt: z.string(),
+});
+const GroupMappingsResponseSchema = z.object({
+  mappings: z.array(SCIMGroupMappingSchema),
+  total: z.number(),
+});
 
 // ── Main Page ─────────────────────────────────────────────────────
 
@@ -71,13 +70,13 @@ export default function SCIMPage() {
   const [deleteTarget, setDeleteTarget] = useState<{ type: "connection" | "mapping"; id: string; label: string } | null>(null);
 
   const { data: statusData, loading: statusLoading, error: statusError, refetch: refetchStatus } =
-    useAdminFetch<SCIMStatusResponse>("/api/v1/admin/scim", {
-      transform: (json) => json as SCIMStatusResponse,
+    useAdminFetch("/api/v1/admin/scim", {
+      schema: SCIMStatusResponseSchema,
     });
 
   const { data: mappingsData, loading: mappingsLoading, error: mappingsError, refetch: refetchMappings } =
-    useAdminFetch<GroupMappingsResponse>("/api/v1/admin/scim/group-mappings", {
-      transform: (json) => json as GroupMappingsResponse,
+    useAdminFetch("/api/v1/admin/scim/group-mappings", {
+      schema: GroupMappingsResponseSchema,
     });
 
   const { mutate: deleteMutate, saving: deleting, error: mutationError, clearError: clearMutationError } =

@@ -700,6 +700,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] Google Chat + GitHub connect flows (#1043, #1044, PR #1081)
 - [x] Linear + WhatsApp connect flows (#1045, #1046, PR #1083)
 - [x] OAuth cleanup scheduler + BYOT tests (#1077, #1075, PR #1082)
+- [x] useAdminFetch type safety — Zod schema validation replaces blind `as T` casts (#1073)
 
 ---
 

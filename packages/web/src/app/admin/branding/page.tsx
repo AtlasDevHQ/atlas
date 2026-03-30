@@ -27,7 +27,11 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import type { WorkspaceBranding } from "@/ui/lib/types";
+import { WorkspaceBrandingSchema } from "@/ui/lib/admin-schemas";
+
+const BrandingResponseSchema = z.object({
+  branding: WorkspaceBrandingSchema.nullable(),
+}).transform((r) => r.branding);
 
 const HEX_RE = /^#[0-9a-fA-F]{6}$/;
 
@@ -42,9 +46,9 @@ const brandingSchema = z.object({
 });
 
 export default function BrandingPage() {
-  const { data, loading, error, refetch } = useAdminFetch<WorkspaceBranding | null>(
+  const { data, loading, error, refetch } = useAdminFetch(
     "/api/v1/admin/branding",
-    { transform: (json) => (json as { branding: WorkspaceBranding | null }).branding },
+    { schema: BrandingResponseSchema },
   );
   const { mutate, saving, error: saveError } = useAdminMutation({
     path: "/api/v1/admin/branding",

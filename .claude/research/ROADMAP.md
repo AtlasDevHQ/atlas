@@ -682,7 +682,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 
 - [x] Telegram connect sends empty POST body — botToken not wrapped in body (#1057, PR #1058)
 - [x] Update docs guides for sandbox BYOC + Discord/Telegram (PR #1056)
-- [ ] In-memory OAuth state map not viable for multi-instance deployments (#1055)
+- [x] In-memory OAuth state map not viable for multi-instance deployments (#1055)
 
 ---
 

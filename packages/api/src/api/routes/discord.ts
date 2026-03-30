@@ -15,31 +15,13 @@ import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
 import { z } from "zod";
 import { createLogger } from "@atlas/api/lib/logger";
 import { saveDiscordInstallation } from "@atlas/api/lib/discord/store";
+import { saveOAuthState, consumeOAuthState } from "@atlas/api/lib/auth/oauth-state";
 import { ErrorSchema } from "./shared-schemas";
 import { validationHook } from "./validation-hook";
 
 const log = createLogger("discord");
 
 const discord = new OpenAPIHono({ defaultHook: validationHook });
-
-// ---------------------------------------------------------------------------
-// OAuth CSRF state — stores { expiry, orgId } keyed by nonce.
-// In-memory map — works for single-instance deployments.
-// Multi-instance deployments will need an external store (e.g., Redis or internal DB).
-// ---------------------------------------------------------------------------
-
-interface OAuthState {
-  expiry: number;
-  orgId: string | undefined;
-}
-
-const pendingOAuthStates = new Map<string, OAuthState>();
-setInterval(() => {
-  const now = Date.now();
-  for (const [nonce, state] of pendingOAuthStates) {
-    if (now > state.expiry) pendingOAuthStates.delete(nonce);
-  }
-}, 600_000).unref();
 
 // ---------------------------------------------------------------------------
 // Route definitions
@@ -106,7 +88,7 @@ const callbackRoute = createRoute({
 
 // --- GET /api/v1/discord/install ---
 
-discord.openapi(installRoute, (c) => {
+discord.openapi(installRoute, async (c) => {
   const clientId = process.env.DISCORD_CLIENT_ID;
   if (!clientId) {
     return c.json({ error: "discord_not_configured", message: "Discord not configured" }, 501);
@@ -127,7 +109,18 @@ discord.openapi(installRoute, (c) => {
   }
 
   const nonce = crypto.randomUUID();
-  pendingOAuthStates.set(nonce, { expiry: Date.now() + 600_000, orgId });
+  try {
+    await saveOAuthState(nonce, { orgId, provider: "discord" });
+  } catch (err) {
+    log.error(
+      { err: err instanceof Error ? err.message : String(err) },
+      "Failed to save OAuth state for Discord install",
+    );
+    return c.json(
+      { error: "state_save_failed", message: "Could not initiate OAuth flow. Please try again." },
+      500,
+    );
+  }
 
   const origin = new URL(c.req.url).origin;
   const redirectUri = `${origin}/api/v1/discord/callback`;
@@ -152,6 +145,38 @@ discord.openapi(callbackRoute, async (c) => {
     return c.json({ error: "discord_not_configured", message: "Discord not configured" }, 501);
   }
 
+  const requestId = crypto.randomUUID();
+
+  // Consume the CSRF nonce first — even if the user denied authorization,
+  // the nonce must be consumed to prevent replay attacks.
+  const nonce = c.req.query("state");
+  if (!nonce) {
+    return c.json({ error: "invalid_state", message: "Invalid or expired state parameter." }, 400);
+  }
+
+  let oauthState: Awaited<ReturnType<typeof consumeOAuthState>>;
+  try {
+    oauthState = await consumeOAuthState(nonce);
+  } catch (err) {
+    log.error(
+      { err: err instanceof Error ? err.message : String(err), requestId },
+      "Failed to validate OAuth state — internal database may be unavailable",
+    );
+    return c.html(
+      `<html><body><h1>Installation Failed</h1><p>Could not validate the authorization. Please try again. (ref: ${requestId.slice(0, 8)})</p></body></html>`,
+      500,
+    );
+  }
+
+  if (!oauthState) {
+    return c.json({ error: "invalid_state", message: "Invalid or expired state parameter. Please start the installation again." }, 400);
+  }
+
+  if (oauthState.provider !== "discord") {
+    log.warn({ expected: "discord", got: oauthState.provider, requestId }, "OAuth state provider mismatch");
+    return c.json({ error: "invalid_state", message: "Invalid state parameter." }, 400);
+  }
+
   // Check for error from Discord (user denied authorization)
   const errorCode = c.req.query("error");
   if (errorCode) {
@@ -163,24 +188,12 @@ discord.openapi(callbackRoute, async (c) => {
     );
   }
 
-  const nonce = c.req.query("state");
-  if (!nonce || !pendingOAuthStates.has(nonce)) {
-    return c.json({ error: "invalid_state", message: "Invalid or expired state parameter" }, 400);
-  }
-  const oauthState = pendingOAuthStates.get(nonce)!;
-  pendingOAuthStates.delete(nonce);
-
-  if (Date.now() > oauthState.expiry) {
-    return c.json({ error: "expired_state", message: "OAuth state has expired. Please try again." }, 400);
-  }
-
   const code = c.req.query("code");
   if (!code) {
     return c.json({ error: "missing_code", message: "Missing authorization code" }, 400);
   }
 
   // Exchange authorization code for token response (contains guild info)
-  const requestId = crypto.randomUUID();
   const origin = new URL(c.req.url).origin;
   const redirectUri = `${origin}/api/v1/discord/callback`;
 

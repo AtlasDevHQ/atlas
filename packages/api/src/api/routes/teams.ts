@@ -14,29 +14,13 @@ import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
 import { z } from "zod";
 import { createLogger } from "@atlas/api/lib/logger";
 import { saveTeamsInstallation } from "@atlas/api/lib/teams/store";
+import { saveOAuthState, consumeOAuthState } from "@atlas/api/lib/auth/oauth-state";
 import { ErrorSchema } from "./shared-schemas";
 import { validationHook } from "./validation-hook";
 
 const log = createLogger("teams");
 
 const teams = new OpenAPIHono({ defaultHook: validationHook });
-
-// ---------------------------------------------------------------------------
-// OAuth CSRF state — stores { expiry, orgId } keyed by nonce
-// ---------------------------------------------------------------------------
-
-interface OAuthState {
-  expiry: number;
-  orgId: string | undefined;
-}
-
-const pendingOAuthStates = new Map<string, OAuthState>();
-setInterval(() => {
-  const now = Date.now();
-  for (const [nonce, state] of pendingOAuthStates) {
-    if (now > state.expiry) pendingOAuthStates.delete(nonce);
-  }
-}, 600_000).unref();
 
 // ---------------------------------------------------------------------------
 // Route definitions
@@ -103,7 +87,7 @@ const callbackRoute = createRoute({
 
 // --- GET /api/v1/teams/install ---
 
-teams.openapi(installRoute, (c) => {
+teams.openapi(installRoute, async (c) => {
   const appId = process.env.TEAMS_APP_ID;
   if (!appId) {
     return c.json({ error: "teams_not_configured", message: "Teams not configured" }, 501);
@@ -124,7 +108,18 @@ teams.openapi(installRoute, (c) => {
   }
 
   const nonce = crypto.randomUUID();
-  pendingOAuthStates.set(nonce, { expiry: Date.now() + 600_000, orgId });
+  try {
+    await saveOAuthState(nonce, { orgId, provider: "teams" });
+  } catch (err) {
+    log.error(
+      { err: err instanceof Error ? err.message : String(err) },
+      "Failed to save OAuth state for Teams install",
+    );
+    return c.json(
+      { error: "state_save_failed", message: "Could not initiate OAuth flow. Please try again." },
+      500,
+    );
+  }
 
   const origin = new URL(c.req.url).origin;
   const redirectUri = `${origin}/api/v1/teams/callback`;
@@ -144,16 +139,34 @@ teams.openapi(callbackRoute, async (c) => {
     return c.json({ error: "teams_not_configured", message: "Teams not configured" }, 501);
   }
 
-  const nonce = c.req.query("state");
-  if (!nonce || !pendingOAuthStates.has(nonce)) {
-    return c.json({ error: "invalid_state", message: "Invalid or expired state parameter" }, 400);
-  }
-  const oauthState = pendingOAuthStates.get(nonce)!;
-  pendingOAuthStates.delete(nonce);
+  const requestId = crypto.randomUUID();
 
-  // Check expiry at validation time — don't rely solely on the periodic sweep
-  if (Date.now() > oauthState.expiry) {
-    return c.json({ error: "expired_state", message: "OAuth state has expired. Please try again." }, 400);
+  const nonce = c.req.query("state");
+  if (!nonce) {
+    return c.json({ error: "invalid_state", message: "Invalid or expired state parameter." }, 400);
+  }
+
+  let oauthState: Awaited<ReturnType<typeof consumeOAuthState>>;
+  try {
+    oauthState = await consumeOAuthState(nonce);
+  } catch (err) {
+    log.error(
+      { err: err instanceof Error ? err.message : String(err), requestId },
+      "Failed to validate OAuth state — internal database may be unavailable",
+    );
+    return c.html(
+      `<html><body><h1>Installation Failed</h1><p>Could not validate the authorization. Please try again. (ref: ${requestId.slice(0, 8)})</p></body></html>`,
+      500,
+    );
+  }
+
+  if (!oauthState) {
+    return c.json({ error: "invalid_state", message: "Invalid or expired state parameter. Please start the installation again." }, 400);
+  }
+
+  if (oauthState.provider !== "teams") {
+    log.warn({ expected: "teams", got: oauthState.provider, requestId }, "OAuth state provider mismatch");
+    return c.json({ error: "invalid_state", message: "Invalid state parameter." }, 400);
   }
 
   // Azure AD returns error/error_description when consent is denied
@@ -192,11 +205,11 @@ teams.openapi(callbackRoute, async (c) => {
     log.info({ tenantId, orgId }, "Teams installation saved");
   } catch (saveErr) {
     log.error(
-      { err: saveErr instanceof Error ? saveErr.message : String(saveErr), tenantId },
+      { err: saveErr instanceof Error ? saveErr.message : String(saveErr), tenantId, requestId },
       "Failed to save Teams installation",
     );
     return c.html(
-      "<html><body><h1>Installation Failed</h1><p>Could not save the installation. Please try again.</p></body></html>",
+      `<html><body><h1>Installation Failed</h1><p>Could not save the installation. Please try again. (ref: ${requestId.slice(0, 8)})</p></body></html>`,
       500,
     );
   }

@@ -963,6 +963,20 @@ export const telegramInstallations = pgTable(
 );
 
 // ---------------------------------------------------------------------------
+// OAuth state (0005_oauth_state.sql)
+// ---------------------------------------------------------------------------
+
+export const oauthState = pgTable("oauth_state", {
+  nonce: text("nonce").primaryKey(),
+  orgId: text("org_id"),
+  provider: text("provider").notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
+}, (t) => [
+  index("idx_oauth_state_expires").on(t.expiresAt),
+]);
+
+// ---------------------------------------------------------------------------
 // Sandbox credentials (0004_sandbox_credentials.sql)
 // ---------------------------------------------------------------------------
 

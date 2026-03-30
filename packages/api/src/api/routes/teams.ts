@@ -108,7 +108,18 @@ teams.openapi(installRoute, async (c) => {
   }
 
   const nonce = crypto.randomUUID();
-  await saveOAuthState(nonce, { orgId, provider: "teams" });
+  try {
+    await saveOAuthState(nonce, { orgId, provider: "teams" });
+  } catch (err) {
+    log.error(
+      { err: err instanceof Error ? err.message : String(err) },
+      "Failed to save OAuth state for Teams install",
+    );
+    return c.json(
+      { error: "state_save_failed", message: "Could not initiate OAuth flow. Please try again." },
+      500,
+    );
+  }
 
   const origin = new URL(c.req.url).origin;
   const redirectUri = `${origin}/api/v1/teams/callback`;
@@ -128,13 +139,34 @@ teams.openapi(callbackRoute, async (c) => {
     return c.json({ error: "teams_not_configured", message: "Teams not configured" }, 501);
   }
 
+  const requestId = crypto.randomUUID();
+
   const nonce = c.req.query("state");
   if (!nonce) {
-    return c.json({ error: "invalid_state", message: "Invalid or expired state parameter" }, 400);
+    return c.json({ error: "invalid_state", message: "Invalid or expired state parameter." }, 400);
   }
-  const oauthState = await consumeOAuthState(nonce);
+
+  let oauthState: Awaited<ReturnType<typeof consumeOAuthState>>;
+  try {
+    oauthState = await consumeOAuthState(nonce);
+  } catch (err) {
+    log.error(
+      { err: err instanceof Error ? err.message : String(err), requestId },
+      "Failed to validate OAuth state — internal database may be unavailable",
+    );
+    return c.html(
+      `<html><body><h1>Installation Failed</h1><p>Could not validate the authorization. Please try again. (ref: ${requestId.slice(0, 8)})</p></body></html>`,
+      500,
+    );
+  }
+
   if (!oauthState) {
-    return c.json({ error: "invalid_state", message: "Invalid or expired state parameter" }, 400);
+    return c.json({ error: "invalid_state", message: "Invalid or expired state parameter. Please start the installation again." }, 400);
+  }
+
+  if (oauthState.provider !== "teams") {
+    log.warn({ expected: "teams", got: oauthState.provider, requestId }, "OAuth state provider mismatch");
+    return c.json({ error: "invalid_state", message: "Invalid state parameter." }, 400);
   }
 
   // Azure AD returns error/error_description when consent is denied
@@ -173,11 +205,11 @@ teams.openapi(callbackRoute, async (c) => {
     log.info({ tenantId, orgId }, "Teams installation saved");
   } catch (saveErr) {
     log.error(
-      { err: saveErr instanceof Error ? saveErr.message : String(saveErr), tenantId },
+      { err: saveErr instanceof Error ? saveErr.message : String(saveErr), tenantId, requestId },
       "Failed to save Teams installation",
     );
     return c.html(
-      "<html><body><h1>Installation Failed</h1><p>Could not save the installation. Please try again.</p></body></html>",
+      `<html><body><h1>Installation Failed</h1><p>Could not save the installation. Please try again. (ref: ${requestId.slice(0, 8)})</p></body></html>`,
       500,
     );
   }

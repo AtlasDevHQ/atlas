@@ -27,6 +27,16 @@ import {
   saveTelegramInstallation,
   deleteTelegramInstallationByOrg,
 } from "@atlas/api/lib/telegram/store";
+import {
+  getGChatInstallationByOrg,
+  saveGChatInstallation,
+  deleteGChatInstallationByOrg,
+} from "@atlas/api/lib/gchat/store";
+import {
+  getGitHubInstallationByOrg,
+  saveGitHubInstallation,
+  deleteGitHubInstallationByOrg,
+} from "@atlas/api/lib/github/store";
 import { getConfig } from "@atlas/api/lib/config";
 import { createLogger } from "@atlas/api/lib/logger";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
@@ -80,6 +90,23 @@ const TelegramStatusSchema = z.object({
   configurable: z.boolean(),
 });
 
+const GChatStatusSchema = z.object({
+  connected: z.boolean(),
+  projectId: z.string().nullable(),
+  serviceAccountEmail: z.string().nullable(),
+  installedAt: z.string().datetime().nullable(),
+  /** Configurable when internal DB is available. BYOT — bring your own service account */
+  configurable: z.boolean(),
+});
+
+const GitHubStatusSchema = z.object({
+  connected: z.boolean(),
+  username: z.string().nullable(),
+  installedAt: z.string().datetime().nullable(),
+  /** Configurable when internal DB is available. BYOT — bring your own PAT */
+  configurable: z.boolean(),
+});
+
 const WebhookStatusSchema = z.object({
   activeCount: z.number().int().nonnegative(),
   /** Whether the workspace admin can create/manage webhooks */
@@ -91,6 +118,8 @@ const IntegrationStatusSchema = z.object({
   teams: TeamsStatusSchema,
   discord: DiscordStatusSchema,
   telegram: TelegramStatusSchema,
+  gchat: GChatStatusSchema,
+  github: GitHubStatusSchema,
   webhooks: WebhookStatusSchema,
   /** Delivery channels available for scheduled tasks */
   deliveryChannels: z.array(DeliveryChannelEnum),
@@ -237,7 +266,7 @@ adminIntegrations.openapi(getStatusRoute, async (c) => {
       const deployMode = getConfig()?.deployMode ?? "self-hosted";
 
       // Run all integration lookups in parallel — they are independent
-      const [slackInstall, teamsInstall, discordInstall, telegramInstall, webhookActiveCount] =
+      const [slackInstall, teamsInstall, discordInstall, telegramInstall, gchatInstall, githubInstall, webhookActiveCount] =
         yield* Effect.all(
           [
             Effect.tryPromise({
@@ -254,6 +283,14 @@ adminIntegrations.openapi(getStatusRoute, async (c) => {
             }),
             Effect.tryPromise({
               try: () => getTelegramInstallationByOrg(orgId),
+              catch: (err) => err instanceof Error ? err : new Error(String(err)),
+            }),
+            Effect.tryPromise({
+              try: () => getGChatInstallationByOrg(orgId),
+              catch: (err) => err instanceof Error ? err : new Error(String(err)),
+            }),
+            Effect.tryPromise({
+              try: () => getGitHubInstallationByOrg(orgId),
               catch: (err) => err instanceof Error ? err : new Error(String(err)),
             }),
             Effect.tryPromise({
@@ -320,6 +357,25 @@ adminIntegrations.openapi(getStatusRoute, async (c) => {
         configurable: telegramConfigurable,
       };
 
+      // Google Chat status — configurable when internal DB is available (always BYOT)
+      const gchatConfigurable = hasInternalDB();
+      const gchat = {
+        connected: gchatInstall !== null,
+        projectId: gchatInstall?.project_id ?? null,
+        serviceAccountEmail: gchatInstall?.service_account_email ?? null,
+        installedAt: gchatInstall?.installed_at ?? null,
+        configurable: gchatConfigurable,
+      };
+
+      // GitHub status — configurable when internal DB is available (always BYOT)
+      const githubConfigurable = hasInternalDB();
+      const github = {
+        connected: githubInstall !== null,
+        username: githubInstall?.username ?? null,
+        installedAt: githubInstall?.installed_at ?? null,
+        configurable: githubConfigurable,
+      };
+
       // Available delivery channels
       const deliveryChannels: Array<"email" | "slack" | "webhook"> = ["email"];
       if (slack.connected || slack.envConfigured) {
@@ -336,6 +392,8 @@ adminIntegrations.openapi(getStatusRoute, async (c) => {
           teams,
           discord,
           telegram,
+          gchat,
+          github,
           webhooks: { activeCount: webhookActiveCount, configurable: webhooksConfigurable },
           deliveryChannels,
           deployMode,
@@ -1082,6 +1140,410 @@ adminIntegrations.openapi(disconnectTelegramRoute, async (c) => {
       return c.json({ message: "Telegram disconnected successfully." }, 200);
     }),
     { label: "disconnect telegram" },
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Google Chat BYOT routes
+// ---------------------------------------------------------------------------
+
+const connectGChatRoute = createRoute({
+  method: "post",
+  path: "/gchat",
+  tags: ["Admin — Integrations"],
+  summary: "Connect Google Chat via service account",
+  description:
+    "Validates a Google Chat service account JSON key and saves the installation " +
+    "for the current workspace.",
+  request: {
+    body: {
+      content: {
+        "application/json": {
+          schema: z.object({
+            credentialsJson: z
+              .string()
+              .min(1)
+              .openapi({ description: "Google Cloud service account JSON key" }),
+          }),
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "Google Chat connected",
+      content: {
+        "application/json": {
+          schema: z.object({
+            message: z.string(),
+            projectId: z.string().nullable(),
+            serviceAccountEmail: z.string().nullable(),
+          }),
+        },
+      },
+    },
+    400: {
+      description: "Invalid credentials, no active organization, or internal database not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+adminIntegrations.openapi(connectGChatRoute, async (c) => {
+  return runEffect(
+    c,
+    Effect.gen(function* () {
+      const { orgId } = yield* AuthContext;
+
+      if (!orgId) {
+        return c.json(
+          { error: "bad_request", message: "No active organization." },
+          400,
+        );
+      }
+
+      if (!hasInternalDB()) {
+        return c.json(
+          { error: "not_configured", message: "Google Chat integration requires an internal database. Configure DATABASE_URL." },
+          400,
+        );
+      }
+
+      const { credentialsJson } = c.req.valid("json");
+
+      // Parse and validate the service account JSON
+      let parsed: { client_email?: string; private_key?: string; project_id?: string };
+      try {
+        parsed = JSON.parse(credentialsJson) as typeof parsed;
+      } catch {
+        return c.json(
+          { error: "invalid_credentials", message: "Invalid JSON. Paste the full service account key file contents." },
+          400,
+        );
+      }
+
+      if (!parsed.client_email || typeof parsed.client_email !== "string") {
+        return c.json(
+          { error: "invalid_credentials", message: "Service account JSON is missing the 'client_email' field." },
+          400,
+        );
+      }
+
+      if (!parsed.private_key || typeof parsed.private_key !== "string") {
+        return c.json(
+          { error: "invalid_credentials", message: "Service account JSON is missing the 'private_key' field." },
+          400,
+        );
+      }
+
+      const projectId = typeof parsed.project_id === "string" && parsed.project_id
+        ? parsed.project_id
+        : parsed.client_email.split("@")[1]?.replace(".iam.gserviceaccount.com", "") ?? `gchat-${orgId}`;
+
+      yield* Effect.tryPromise({
+        try: () =>
+          saveGChatInstallation(projectId, {
+            orgId,
+            serviceAccountEmail: parsed.client_email!,
+            credentialsJson,
+          }),
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      });
+
+      log.info({ orgId, projectId, serviceAccountEmail: parsed.client_email }, "Google Chat installation saved by admin");
+      return c.json(
+        { message: "Google Chat connected successfully.", projectId, serviceAccountEmail: parsed.client_email },
+        200,
+      );
+    }),
+    { label: "connect gchat" },
+  );
+});
+
+const disconnectGChatRoute = createRoute({
+  method: "delete",
+  path: "/gchat",
+  tags: ["Admin — Integrations"],
+  summary: "Disconnect Google Chat",
+  description:
+    "Removes the Google Chat installation for the current workspace. " +
+    "Any Google Chat bot functionality will stop working until reconnected.",
+  responses: {
+    200: {
+      description: "Google Chat disconnected",
+      content: {
+        "application/json": {
+          schema: z.object({ message: z.string() }),
+        },
+      },
+    },
+    400: {
+      description: "No active organization",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "No Google Chat installation found",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+adminIntegrations.openapi(disconnectGChatRoute, async (c) => {
+  return runEffect(
+    c,
+    Effect.gen(function* () {
+      const { orgId } = yield* AuthContext;
+
+      if (!orgId) {
+        return c.json(
+          { error: "bad_request", message: "No active organization." },
+          400,
+        );
+      }
+
+      const deleted = yield* Effect.tryPromise({
+        try: () => deleteGChatInstallationByOrg(orgId),
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      });
+
+      if (!deleted) {
+        return c.json(
+          { error: "not_found", message: "No Google Chat installation found for this workspace." },
+          404,
+        );
+      }
+
+      log.info({ orgId }, "Google Chat installation disconnected by admin");
+      return c.json({ message: "Google Chat disconnected successfully." }, 200);
+    }),
+    { label: "disconnect gchat" },
+  );
+});
+
+// ---------------------------------------------------------------------------
+// GitHub BYOT routes
+// ---------------------------------------------------------------------------
+
+const connectGitHubRoute = createRoute({
+  method: "post",
+  path: "/github",
+  tags: ["Admin — Integrations"],
+  summary: "Connect GitHub via personal access token",
+  description:
+    "Validates a GitHub personal access token via the GitHub API and saves the installation " +
+    "for the current workspace.",
+  request: {
+    body: {
+      content: {
+        "application/json": {
+          schema: z.object({
+            accessToken: z
+              .string()
+              .min(1)
+              .openapi({ description: "GitHub personal access token (ghp_ or github_pat_ prefix)" }),
+          }),
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "GitHub connected",
+      content: {
+        "application/json": {
+          schema: z.object({
+            message: z.string(),
+            username: z.string().nullable(),
+          }),
+        },
+      },
+    },
+    400: {
+      description: "Invalid token, no active organization, or internal database not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+adminIntegrations.openapi(connectGitHubRoute, async (c) => {
+  return runEffect(
+    c,
+    Effect.gen(function* () {
+      const { orgId } = yield* AuthContext;
+
+      if (!orgId) {
+        return c.json(
+          { error: "bad_request", message: "No active organization." },
+          400,
+        );
+      }
+
+      if (!hasInternalDB()) {
+        return c.json(
+          { error: "not_configured", message: "GitHub integration requires an internal database. Configure DATABASE_URL." },
+          400,
+        );
+      }
+
+      const { accessToken } = c.req.valid("json");
+
+      // Validate token by calling GitHub's /user API.
+      const userResult = yield* Effect.tryPromise({
+        try: async () => {
+          let res: Response;
+          try {
+            res = await fetch("https://api.github.com/user", {
+              headers: {
+                Authorization: `Bearer ${accessToken}`,
+                Accept: "application/vnd.github+json",
+                "User-Agent": "Atlas-Integration",
+              },
+            });
+          } catch (err) {
+            log.warn({ err: err instanceof Error ? err.message : String(err) }, "GitHub /user fetch failed");
+            return { ok: false as const, error: "Could not reach GitHub API. Please try again." };
+          }
+          if (!res.ok) {
+            let detail = `status ${res.status}`;
+            try {
+              const errBody = (await res.json()) as { message?: string };
+              if (errBody.message) detail = errBody.message;
+            } catch {
+              // intentionally ignored: response body may not be JSON
+            }
+            return { ok: false as const, error: `GitHub API error: ${detail}` };
+          }
+          let data: { id?: number; login?: string };
+          try {
+            data = (await res.json()) as typeof data;
+          } catch (err) {
+            log.warn({ err: err instanceof Error ? err.message : String(err) }, "GitHub /user response parse failed");
+            return { ok: false as const, error: "GitHub API returned an invalid response" };
+          }
+          if (!data.id) {
+            return { ok: false as const, error: "Invalid personal access token" };
+          }
+          return { ok: true as const, userId: String(data.id), username: data.login ?? null };
+        },
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      });
+
+      if (!userResult.ok) {
+        return c.json(
+          { error: "invalid_token", message: `Invalid GitHub token: ${userResult.error}` },
+          400,
+        );
+      }
+
+      yield* Effect.tryPromise({
+        try: () =>
+          saveGitHubInstallation(userResult.userId, {
+            orgId,
+            username: userResult.username ?? undefined,
+            accessToken,
+          }),
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      });
+
+      log.info({ orgId, userId: userResult.userId, username: userResult.username }, "GitHub installation saved by admin");
+      return c.json(
+        { message: "GitHub connected successfully.", username: userResult.username },
+        200,
+      );
+    }),
+    { label: "connect github" },
+  );
+});
+
+const disconnectGitHubRoute = createRoute({
+  method: "delete",
+  path: "/github",
+  tags: ["Admin — Integrations"],
+  summary: "Disconnect GitHub",
+  description:
+    "Removes the GitHub installation for the current workspace. " +
+    "Any GitHub integration functionality will stop working until reconnected.",
+  responses: {
+    200: {
+      description: "GitHub disconnected",
+      content: {
+        "application/json": {
+          schema: z.object({ message: z.string() }),
+        },
+      },
+    },
+    400: {
+      description: "No active organization",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "No GitHub installation found",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+adminIntegrations.openapi(disconnectGitHubRoute, async (c) => {
+  return runEffect(
+    c,
+    Effect.gen(function* () {
+      const { orgId } = yield* AuthContext;
+
+      if (!orgId) {
+        return c.json(
+          { error: "bad_request", message: "No active organization." },
+          400,
+        );
+      }
+
+      const deleted = yield* Effect.tryPromise({
+        try: () => deleteGitHubInstallationByOrg(orgId),
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      });
+
+      if (!deleted) {
+        return c.json(
+          { error: "not_found", message: "No GitHub installation found for this workspace." },
+          404,
+        );
+      }
+
+      log.info({ orgId }, "GitHub installation disconnected by admin");
+      return c.json({ message: "GitHub disconnected successfully." }, 200);
+    }),
+    { label: "disconnect github" },
   );
 });
 

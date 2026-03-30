@@ -1,11 +1,11 @@
 ---
 title: Integrations Hub
-description: Connect Slack, Microsoft Teams, Discord, Telegram, and webhooks to Atlas from the admin console.
+description: Connect Slack, Microsoft Teams, Discord, Telegram, Google Chat, GitHub, and webhooks to Atlas from the admin console.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-The Integrations page provides a central hub for connecting Atlas to external platforms. Manage Slack, Microsoft Teams, Discord, Telegram, and webhook delivery from a single admin page.
+The Integrations page provides a central hub for connecting Atlas to external platforms. Manage Slack, Microsoft Teams, Discord, Telegram, Google Chat, GitHub, and webhook delivery from a single admin page.
 
 <Callout title="Prerequisites">
 - [Managed auth](/deployment/authentication#managed-auth) enabled
@@ -146,6 +146,59 @@ Click **Disconnect** and confirm. The bot stops responding to messages until you
 
 ---
 
+## Google Chat
+
+Connect Google Chat for bot conversations in Google Workspace. Unlike other integrations, Google Chat uses a **service account** (not OAuth).
+
+### Setup
+
+Google Chat integration requires an internal database (`DATABASE_URL`). It is always BYOT — workspace admins provide their own service account credentials.
+
+1. Create a [service account](https://console.cloud.google.com/iam-admin/serviceaccounts) in Google Cloud Console
+2. Enable the Google Chat API for the project
+3. Download the JSON key file
+4. On the Integrations page, paste the full JSON key contents into the **Service Account JSON** textarea
+5. Click **Connect** — the JSON is validated for required fields (`client_email`, `private_key`)
+
+### Connection Details
+
+When connected, the card shows:
+
+- **Service Account** — The service account email address
+- **Project ID** — The Google Cloud project identifier
+- **Connected** — Timestamp of when the connection was established
+
+### Disconnecting
+
+Click **Disconnect** and confirm. The Google Chat bot stops responding until you reconnect with new credentials.
+
+---
+
+## GitHub
+
+Connect GitHub for issue tracking and repository integration. GitHub uses a **personal access token** (PAT).
+
+### Setup
+
+GitHub integration requires an internal database (`DATABASE_URL`). It is always BYOT — workspace admins provide their own PAT.
+
+1. Create a [personal access token](https://github.com/settings/tokens) on GitHub with the permissions you need
+2. On the Integrations page, enter the token in the **Personal Access Token** field on the GitHub card
+3. Click **Connect** — the token is validated via the GitHub API (`GET /user`)
+
+### Connection Details
+
+When connected, the card shows:
+
+- **User** — The GitHub `@username` associated with the token
+- **Connected** — Timestamp of when the connection was established
+
+### Disconnecting
+
+Click **Disconnect** and confirm. GitHub integration stops working until you reconnect with a new token.
+
+---
+
 ## Webhooks
 
 The webhook card shows the count of active webhook delivery tasks. Webhooks are created via [Scheduled Tasks](/guides/scheduled-tasks) — the Integrations page provides a summary view.
@@ -162,6 +215,8 @@ In SaaS mode with webhook support enabled, a **Create Webhook** link navigates t
 | Teams setup | Env vars + admin consent, or BYOT | Admin consent flow, or BYOT credentials |
 | Discord setup | Env vars + OAuth, or BYOT | OAuth via platform, or BYOT credentials |
 | Telegram setup | Bot token + internal DB | Bot token (always configurable) |
+| Google Chat setup | Service account JSON + internal DB | Service account JSON (always configurable) |
+| GitHub setup | PAT + internal DB | PAT (always configurable) |
 | BYOT fallback | Shown when OAuth not configured + internal DB available | Shown when platform OAuth not configured |
 | Env var hints | Shown when no OAuth and no internal DB | Hidden — shows "Not Available" instead |
 | Disconnect | Available for all connected integrations | Available for all connected integrations |
@@ -183,6 +238,10 @@ All endpoints require admin authentication.
 | `DELETE` | `/api/v1/admin/integrations/discord` | Disconnect Discord |
 | `POST` | `/api/v1/admin/integrations/telegram` | Connect Telegram (validates bot token) |
 | `DELETE` | `/api/v1/admin/integrations/telegram` | Disconnect Telegram |
+| `POST` | `/api/v1/admin/integrations/gchat` | Connect Google Chat (validates service account JSON) |
+| `DELETE` | `/api/v1/admin/integrations/gchat` | Disconnect Google Chat |
+| `POST` | `/api/v1/admin/integrations/github` | Connect GitHub (validates PAT via GitHub API) |
+| `DELETE` | `/api/v1/admin/integrations/github` | Disconnect GitHub |
 
 ---
 

@@ -27,9 +27,11 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Cable,
   MessageSquare,
+  MessageSquareText,
   MessageCircle,
   Send,
   Users,
@@ -37,6 +39,7 @@ import {
   Mail,
   Loader2,
   ExternalLink,
+  Github,
 } from "lucide-react";
 
 // -- Types (mirrors IntegrationStatusSchema in packages/api/src/api/routes/admin-integrations.ts) --
@@ -78,6 +81,21 @@ interface TelegramStatus {
   configurable: boolean;
 }
 
+interface GChatStatus {
+  connected: boolean;
+  projectId: string | null;
+  serviceAccountEmail: string | null;
+  installedAt: string | null;
+  configurable: boolean;
+}
+
+interface GitHubStatus {
+  connected: boolean;
+  username: string | null;
+  installedAt: string | null;
+  configurable: boolean;
+}
+
 interface WebhookStatus {
   activeCount: number;
   /** Whether the workspace admin can create/manage webhooks */
@@ -89,6 +107,8 @@ interface IntegrationStatus {
   teams: TeamsStatus;
   discord: DiscordStatus;
   telegram: TelegramStatus;
+  gchat: GChatStatus;
+  github: GitHubStatus;
   webhooks: WebhookStatus;
   deliveryChannels: DeliveryChannel[];
   deployMode: "saas" | "self-hosted";
@@ -162,6 +182,37 @@ export default function IntegrationsPage() {
     invalidates: refetch,
   });
 
+  const gchatConnectMutation = useAdminMutation<{
+    message: string;
+    projectId: string | null;
+    serviceAccountEmail: string | null;
+  }>({
+    path: "/api/v1/admin/integrations/gchat",
+    method: "POST",
+    invalidates: refetch,
+  });
+
+  const gchatDisconnectMutation = useAdminMutation<{ message: string }>({
+    path: "/api/v1/admin/integrations/gchat",
+    method: "DELETE",
+    invalidates: refetch,
+  });
+
+  const githubConnectMutation = useAdminMutation<{
+    message: string;
+    username: string | null;
+  }>({
+    path: "/api/v1/admin/integrations/github",
+    method: "POST",
+    invalidates: refetch,
+  });
+
+  const githubDisconnectMutation = useAdminMutation<{ message: string }>({
+    path: "/api/v1/admin/integrations/github",
+    method: "DELETE",
+    invalidates: refetch,
+  });
+
   async function handleDisconnect() {
     await disconnectMutation.mutate({});
   }
@@ -194,12 +245,30 @@ export default function IntegrationsPage() {
     await telegramDisconnectMutation.mutate({});
   }
 
+  async function handleGChatConnect(credentialsJson: string) {
+    await gchatConnectMutation.mutate({ body: { credentialsJson } });
+  }
+
+  async function handleGChatDisconnect() {
+    await gchatDisconnectMutation.mutate({});
+  }
+
+  async function handleGitHubConnect(accessToken: string) {
+    await githubConnectMutation.mutate({ body: { accessToken } });
+  }
+
+  async function handleGitHubDisconnect() {
+    await githubDisconnectMutation.mutate({});
+  }
+
   const isSaas = data?.deployMode === "saas";
   const hasDB = data?.hasInternalDB ?? false;
   const slack = data?.slack;
   const teams = data?.teams;
   const discord = data?.discord;
   const telegram = data?.telegram;
+  const gchat = data?.gchat;
+  const github = data?.github;
   const webhooks = data?.webhooks;
   const deliveryChannels = data?.deliveryChannels ?? [];
 
@@ -275,6 +344,28 @@ export default function IntegrationsPage() {
               onDisconnect={handleTelegramDisconnect}
               disconnecting={telegramDisconnectMutation.saving}
               disconnectError={telegramDisconnectMutation.error}
+            />
+
+            {/* Google Chat card */}
+            <GChatCard
+              gchat={gchat!}
+              onConnect={handleGChatConnect}
+              connecting={gchatConnectMutation.saving}
+              connectError={gchatConnectMutation.error}
+              onDisconnect={handleGChatDisconnect}
+              disconnecting={gchatDisconnectMutation.saving}
+              disconnectError={gchatDisconnectMutation.error}
+            />
+
+            {/* GitHub card */}
+            <GitHubCard
+              github={github!}
+              onConnect={handleGitHubConnect}
+              connecting={githubConnectMutation.saving}
+              connectError={githubConnectMutation.error}
+              onDisconnect={handleGitHubDisconnect}
+              disconnecting={githubDisconnectMutation.saving}
+              disconnectError={githubDisconnectMutation.error}
             />
 
             {/* Webhooks card */}
@@ -914,6 +1005,333 @@ function TelegramConnectForm({
   );
 }
 
+// -- Google Chat Card --
+
+function GChatCard({
+  gchat,
+  onConnect,
+  connecting,
+  connectError,
+  onDisconnect,
+  disconnecting,
+  disconnectError,
+}: {
+  gchat: GChatStatus;
+  onConnect: (credentialsJson: string) => void;
+  connecting: boolean;
+  connectError: string | null;
+  onDisconnect: () => void;
+  disconnecting: boolean;
+  disconnectError: string | null;
+}) {
+  const canConnect = gchat.configurable;
+
+  const statusBadge = gchat.connected ? (
+    <Badge variant="default">Connected</Badge>
+  ) : !canConnect ? (
+    <Badge variant="outline">Not Available</Badge>
+  ) : (
+    <Badge variant="secondary">Disconnected</Badge>
+  );
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <MessageSquareText className="size-5 text-muted-foreground" />
+            <CardTitle className="text-base">Google Chat</CardTitle>
+          </div>
+          {statusBadge}
+        </div>
+        <CardDescription>
+          Connect Google Chat for bot conversations in Google Workspace
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {gchat.connected && (
+          <div className="space-y-2 text-sm">
+            {gchat.serviceAccountEmail && (
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Service Account</span>
+                <span className="max-w-48 truncate font-medium" title={gchat.serviceAccountEmail}>
+                  {gchat.serviceAccountEmail}
+                </span>
+              </div>
+            )}
+            {gchat.projectId && (
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Project ID</span>
+                <code className="rounded bg-muted px-1.5 py-0.5 text-xs">
+                  {gchat.projectId}
+                </code>
+              </div>
+            )}
+            {gchat.installedAt && (
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Connected</span>
+                <span>{formatDateTime(gchat.installedAt)}</span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {!gchat.connected && !canConnect && (
+          <p className="text-sm text-muted-foreground">
+            Google Chat integration requires an internal database. Configure{" "}
+            <code className="rounded bg-muted px-1 text-xs">DATABASE_URL</code>{" "}
+            to enable it.
+          </p>
+        )}
+
+        {!gchat.connected && canConnect && (
+          <GChatConnectForm
+            onConnect={onConnect}
+            connecting={connecting}
+            error={connectError}
+          />
+        )}
+
+        {(disconnectError || (gchat.connected && connectError)) && (
+          <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            {disconnectError ?? connectError}
+          </div>
+        )}
+
+        <div className="flex gap-2">
+          {gchat.connected && canConnect && (
+            <DisconnectDialog
+              name="Google Chat"
+              description="This will remove the Google Chat connection for this workspace. Bot conversations will stop working until you reconnect."
+              onConfirm={onDisconnect}
+              disconnecting={disconnecting}
+            />
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+// -- Google Chat Connect Form --
+
+function GChatConnectForm({
+  onConnect,
+  connecting,
+  error,
+}: {
+  onConnect: (credentialsJson: string) => void;
+  connecting: boolean;
+  error: string | null;
+}) {
+  const [json, setJson] = useState("");
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (json.trim()) {
+      onConnect(json.trim());
+    }
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-3">
+      <div className="space-y-1.5">
+        <label htmlFor="gchat-credentials" className="text-sm font-medium">
+          Service Account JSON
+        </label>
+        <p className="text-xs text-muted-foreground">
+          Create a{" "}
+          <a
+            href="https://console.cloud.google.com/iam-admin/serviceaccounts"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="underline underline-offset-2"
+          >
+            service account
+          </a>{" "}
+          in Google Cloud Console and paste the JSON key
+        </p>
+        <Textarea
+          id="gchat-credentials"
+          placeholder='{"type": "service_account", "project_id": "...", ...}'
+          value={json}
+          onChange={(e) => setJson(e.target.value)}
+          disabled={connecting}
+          rows={4}
+          className="font-mono text-xs"
+        />
+      </div>
+      {error && (
+        <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {error}
+        </div>
+      )}
+      <Button type="submit" size="sm" disabled={connecting || !json.trim()}>
+        {connecting && <Loader2 className="mr-1.5 size-3.5 animate-spin" />}
+        Connect
+      </Button>
+    </form>
+  );
+}
+
+// -- GitHub Card --
+
+function GitHubCard({
+  github,
+  onConnect,
+  connecting,
+  connectError,
+  onDisconnect,
+  disconnecting,
+  disconnectError,
+}: {
+  github: GitHubStatus;
+  onConnect: (accessToken: string) => void;
+  connecting: boolean;
+  connectError: string | null;
+  onDisconnect: () => void;
+  disconnecting: boolean;
+  disconnectError: string | null;
+}) {
+  const canConnect = github.configurable;
+
+  const statusBadge = github.connected ? (
+    <Badge variant="default">Connected</Badge>
+  ) : !canConnect ? (
+    <Badge variant="outline">Not Available</Badge>
+  ) : (
+    <Badge variant="secondary">Disconnected</Badge>
+  );
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Github className="size-5 text-muted-foreground" />
+            <CardTitle className="text-base">GitHub</CardTitle>
+          </div>
+          {statusBadge}
+        </div>
+        <CardDescription>
+          Connect GitHub for issue tracking and repository integration
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {github.connected && (
+          <div className="space-y-2 text-sm">
+            {github.username && (
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">User</span>
+                <span className="font-medium">@{github.username}</span>
+              </div>
+            )}
+            {github.installedAt && (
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Connected</span>
+                <span>{formatDateTime(github.installedAt)}</span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {!github.connected && !canConnect && (
+          <p className="text-sm text-muted-foreground">
+            GitHub integration requires an internal database. Configure{" "}
+            <code className="rounded bg-muted px-1 text-xs">DATABASE_URL</code>{" "}
+            to enable it.
+          </p>
+        )}
+
+        {!github.connected && canConnect && (
+          <GitHubConnectForm
+            onConnect={onConnect}
+            connecting={connecting}
+            error={connectError}
+          />
+        )}
+
+        {(disconnectError || (github.connected && connectError)) && (
+          <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            {disconnectError ?? connectError}
+          </div>
+        )}
+
+        <div className="flex gap-2">
+          {github.connected && canConnect && (
+            <DisconnectDialog
+              name="GitHub"
+              description="This will remove the GitHub connection for this workspace. GitHub integration functionality will stop working until you reconnect."
+              onConfirm={onDisconnect}
+              disconnecting={disconnecting}
+            />
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+// -- GitHub Connect Form --
+
+function GitHubConnectForm({
+  onConnect,
+  connecting,
+  error,
+}: {
+  onConnect: (accessToken: string) => void;
+  connecting: boolean;
+  error: string | null;
+}) {
+  const [token, setToken] = useState("");
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (token.trim()) {
+      onConnect(token.trim());
+    }
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-3">
+      <div className="space-y-1.5">
+        <label htmlFor="github-token" className="text-sm font-medium">
+          Personal Access Token
+        </label>
+        <p className="text-xs text-muted-foreground">
+          Create a{" "}
+          <a
+            href="https://github.com/settings/tokens"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="underline underline-offset-2"
+          >
+            personal access token
+          </a>{" "}
+          with the permissions you need
+        </p>
+        <Input
+          id="github-token"
+          type="password"
+          placeholder="ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+          value={token}
+          onChange={(e) => setToken(e.target.value)}
+          disabled={connecting}
+        />
+      </div>
+      {error && (
+        <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {error}
+        </div>
+      )}
+      <Button type="submit" size="sm" disabled={connecting || !token.trim()}>
+        {connecting && <Loader2 className="mr-1.5 size-3.5 animate-spin" />}
+        Connect
+      </Button>
+    </form>
+  );
+}
+
 // -- Slack BYOT Form --
 
 function SlackByotForm({
@@ -1247,6 +1665,10 @@ function ChannelIcon({ channel }: { channel: string }) {
       return <MessageCircle className="size-3" />;
     case "telegram":
       return <Send className="size-3" />;
+    case "gchat":
+      return <MessageSquareText className="size-3" />;
+    case "github":
+      return <Github className="size-3" />;
     case "webhook":
       return <Webhook className="size-3" />;
     case "email":

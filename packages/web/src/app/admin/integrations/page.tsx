@@ -39,7 +39,7 @@ import {
   Mail,
   Loader2,
   ExternalLink,
-  Github,
+  GitBranch,
   BarChart3,
   Phone,
 } from "lucide-react";
@@ -1299,7 +1299,7 @@ function GitHubCard({
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <Github className="size-5 text-muted-foreground" />
+            <GitBranch className="size-5 text-muted-foreground" />
             <CardTitle className="text-base">GitHub</CardTitle>
           </div>
           {statusBadge}
@@ -2107,7 +2107,7 @@ function ChannelIcon({ channel }: { channel: string }) {
     case "gchat":
       return <MessageSquareText className="size-3" />;
     case "github":
-      return <Github className="size-3" />;
+      return <GitBranch className="size-3" />;
     case "linear":
       return <BarChart3 className="size-3" />;
     case "whatsapp":

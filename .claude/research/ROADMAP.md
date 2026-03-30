@@ -663,6 +663,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [ ] Plugin marketplace — browse, install, configure per workspace (#1025)
 - [x] Sandbox integration library — BYOC execution environments (#1026, PR #1054)
 - [x] Product-focused data residency UX for SaaS users (#1027, PR #1065)
+- [x] Missing p-6 padding on sandbox and residency admin pages (PR #1064)
 
 ### SaaS Management
 
@@ -680,15 +681,21 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 
 ### Dual-Mode Integrations (BYOT)
 
-- [x] Slack BYOT — bot token form when OAuth not configured (#1060, PR #1063)
-- [x] Teams BYOT — app credentials form when OAuth not configured (#1061, PR #1063)
-- [x] Discord BYOT — bot credentials form when OAuth not configured (#1062, PR #1063)
+- [x] Slack BYOT — bot token form when OAuth not configured (#1060, PR #1070)
+- [x] Teams BYOT — app credentials form when OAuth not configured (#1061, PR #1070)
+- [x] Discord BYOT — bot credentials form when OAuth not configured (#1062, PR #1070)
 
 ### Follow-ups
 
 - [x] Telegram connect sends empty POST body — botToken not wrapped in body (#1057, PR #1058)
 - [x] Update docs guides for sandbox BYOC + Discord/Telegram (PR #1056)
-- [x] In-memory OAuth state map not viable for multi-instance deployments (#1055)
+- [x] In-memory OAuth state map not viable for multi-instance deployments (#1055, PR #1071)
+- [x] syncpack picks up .next/standalone build artifacts (#1068)
+- [ ] Slack route still uses in-memory OAuth state map (#1076)
+- [ ] Slack store saveInstallation lacks org hijack protection (#1074)
+- [ ] Wire cleanExpiredOAuthState into scheduler (#1077)
+- [ ] useDeployMode silently defaults to self-hosted on settings fetch error (#1072)
+- [ ] Add BYOT route tests for Slack, Teams, Discord (#1075)
 
 ---
 

@@ -326,7 +326,7 @@ export default function Home() {
               <DeploymentFeature>Full source access (AGPL-3.0)</DeploymentFeature>
               <DeploymentFeature>Docker, Railway, or Vercel</DeploymentFeature>
               <DeploymentFeature>All databases and plugins</DeploymentFeature>
-              <DeploymentFeature>BYOC sandbox (E2B, Daytona, nsjail)</DeploymentFeature>
+              <DeploymentFeature>BYOC sandbox (E2B, Daytona)</DeploymentFeature>
               <DeploymentFeature>Admin console and API</DeploymentFeature>
               <DeploymentFeature>Community support</DeploymentFeature>
             </ul>

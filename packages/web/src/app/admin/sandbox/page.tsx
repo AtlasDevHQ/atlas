@@ -77,6 +77,7 @@ const ConnectedProviderSchema = z.object({
   validatedAt: z.string().nullable(),
   isActive: z.boolean(),
 });
+type ConnectedProvider = z.infer<typeof ConnectedProviderSchema>;
 
 const SandboxStatusSchema = z.object({
   activeBackend: z.string(),
@@ -86,6 +87,7 @@ const SandboxStatusSchema = z.object({
   availableBackends: z.array(SandboxBackendSchema),
   connectedProviders: z.array(ConnectedProviderSchema),
 });
+type SandboxStatus = z.infer<typeof SandboxStatusSchema>;
 
 // ── Provider metadata ─────────────────────────────────────────────
 

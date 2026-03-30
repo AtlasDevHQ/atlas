@@ -106,7 +106,7 @@ const AbuseEventSchema = z.object({
   level: z.string(),
   trigger: z.string(),
   message: z.string(),
-  metadata: z.record(z.unknown()),
+  metadata: z.record(z.string(), z.unknown()),
   createdAt: z.string(),
   actor: z.string(),
 });

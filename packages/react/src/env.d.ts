@@ -1,9 +1,11 @@
 /** Optional runtime dependency — dynamically imported for Excel export. */
-declare module "xlsx" {
-  const utils: {
-    json_to_sheet: (data: unknown[], opts?: { header?: string[] }) => unknown;
-    book_new: () => unknown;
-    book_append_sheet: (wb: unknown, ws: unknown, name: string) => void;
-  };
-  function write(wb: unknown, opts: { bookType: string; type: string }): ArrayBuffer;
+declare module "exceljs" {
+  export class Workbook {
+    addWorksheet(name: string): Worksheet;
+    xlsx: { writeBuffer(): Promise<ArrayBuffer> };
+  }
+  interface Worksheet {
+    columns: Array<{ header: string; key: string }>;
+    addRow(data: Record<string, unknown>): void;
+  }
 }

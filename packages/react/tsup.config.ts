@@ -18,13 +18,13 @@ export default defineConfig([
       "recharts",
       "react-syntax-highlighter",
       "react-syntax-highlighter/dist/esm/styles/prism",
-      "xlsx",
+      "exceljs",
     ],
     treeshake: true,
     splitting: true,
   },
   // Widget bundle — self-contained ESM with all runtime deps bundled.
-  // Only react-syntax-highlighter and xlsx are external (dynamically
+  // Only react-syntax-highlighter and exceljs are external (dynamically
   // imported; they degrade gracefully if unavailable in the widget).
   {
     entry: { widget: "src/widget-entry.ts" },
@@ -40,7 +40,7 @@ export default defineConfig([
     external: [
       "react-syntax-highlighter",
       "react-syntax-highlighter/dist/esm/styles/prism",
-      "xlsx",
+      "exceljs",
     ],
   },
 ]);

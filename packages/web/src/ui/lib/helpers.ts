@@ -105,35 +105,35 @@ export function coerceExcelCell(v: unknown): unknown {
   return String(v);
 }
 
-/** Trigger an Excel (.xlsx) download in the browser. Dynamically imports xlsx to avoid bundle bloat. */
+/** Trigger an Excel (.xlsx) download in the browser. Dynamically imports exceljs to avoid bundle bloat. */
 export async function downloadExcel(
   columns: string[],
   rows: Record<string, unknown>[],
   filename = "atlas-results.xlsx",
 ) {
-  let XLSX: typeof import("xlsx");
+  let ExcelJS: typeof import("exceljs");
   try {
-    XLSX = await import("xlsx");
+    ExcelJS = await import("exceljs");
   } catch (err) {
-    console.error("Failed to load xlsx library:", err instanceof Error ? err.message : String(err));
+    console.error("Failed to load exceljs library:", err instanceof Error ? err.message : String(err));
     window.alert("Excel export is unavailable. The spreadsheet library failed to load.");
     return;
   }
 
   let url: string | null = null;
   try {
-    const data = rows.map((row) => {
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet("Results");
+    ws.columns = columns.map((col) => ({ header: col, key: col }));
+    for (const row of rows) {
       const obj: Record<string, unknown> = {};
       for (const col of columns) {
         obj[col] = coerceExcelCell(row[col]);
       }
-      return obj;
-    });
-    const ws = XLSX.utils.json_to_sheet(data, { header: columns });
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Results");
-    const wbOut = XLSX.write(wb, { bookType: "xlsx", type: "array" });
-    const blob = new Blob([wbOut], {
+      ws.addRow(obj);
+    }
+    const buffer = await wb.xlsx.writeBuffer();
+    const blob = new Blob([buffer], {
       type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     });
     url = URL.createObjectURL(blob);

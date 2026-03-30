@@ -38,6 +38,7 @@
     "clsx": "^2.1.1",
     "cmdk": "^1.1.1",
     "date-fns": "^4.1.0",
+    "exceljs": "^4.4.0",
     "lucide-react": "^1.7.0",
     "nanoid": "^5.1.7",
     "next": "^16.2.1",
@@ -52,7 +53,6 @@
     "recharts": "^3.8.1",
     "remark-gfm": "^4.0.1",
     "tailwind-merge": "^3.5.0",
-    "xlsx": "^0.18.5",
     "zod": "^4.3.6"
   },
   "devDependencies": {

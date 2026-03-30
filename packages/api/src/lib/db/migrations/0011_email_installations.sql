@@ -13,4 +13,4 @@ CREATE TABLE IF NOT EXISTS email_installations (
   installed_at TIMESTAMPTZ DEFAULT now()
 );
 
-CREATE INDEX IF NOT EXISTS idx_email_installations_org ON email_installations(org_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_email_installations_org ON email_installations(org_id) WHERE org_id IS NOT NULL;

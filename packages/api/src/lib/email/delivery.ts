@@ -2,7 +2,9 @@
  * Email delivery abstraction.
  *
  * Supports delivery backends (checked in order):
- * 1. DB-stored email config per org (when orgId is provided)
+ * 1. DB-stored email config per org (when orgId is provided).
+ *    SendGrid and Postmark are called directly via their APIs.
+ *    SMTP and SES require ATLAS_SMTP_URL as an HTTP bridge.
  * 2. Webhook via ATLAS_SMTP_URL (POST JSON to any email API endpoint)
  * 3. Resend API via RESEND_API_KEY (existing scheduler integration)
  * 4. Logging fallback when nothing is configured (dev mode).
@@ -20,13 +22,15 @@ export interface EmailMessage {
 
 export interface DeliveryResult {
   success: boolean;
-  provider: "webhook" | "resend" | "log";
+  provider: "sendgrid" | "postmark" | "smtp" | "ses" | "webhook" | "resend" | "log";
   error?: string;
 }
 
 /**
  * Get the email transport config for an org from the internal database.
- * Returns null if no DB config exists or if the internal DB is not available.
+ * Returns null if no DB config exists, if the internal DB is not available,
+ * or on any error during lookup (errors are logged at warn level to allow
+ * env-var fallback).
  */
 export async function getEmailTransport(
   orgId: string,
@@ -42,9 +46,9 @@ export async function getEmailTransport(
       };
     }
   } catch (err) {
-    log.debug(
+    log.warn(
       { orgId, err: err instanceof Error ? err.message : String(err) },
-      "Could not load email transport from DB — falling back to env vars",
+      "Failed to load email transport from DB — falling back to env vars",
     );
   }
   return null;
@@ -99,7 +103,7 @@ async function deliverViaTransport(
   switch (transport.provider) {
     case "sendgrid": {
       const apiKey = transport.config.apiKey;
-      if (typeof apiKey !== "string") return { success: false, provider: "log", error: "Missing SendGrid API key in stored config" };
+      if (typeof apiKey !== "string") return { success: false, provider: "sendgrid", error: "Missing SendGrid API key in stored config" };
       try {
         const res = await fetch("https://api.sendgrid.com/v3/mail/send", {
           method: "POST",
@@ -115,18 +119,20 @@ async function deliverViaTransport(
         if (!res.ok) {
           const text = await res.text().catch(() => "");
           log.error({ to: message.to, status: res.status }, "SendGrid delivery failed");
-          return { success: false, provider: "webhook", error: `SendGrid error (${res.status}): ${text.slice(0, 200)}` };
+          return { success: false, provider: "sendgrid", error: `SendGrid error (${res.status}): ${text.slice(0, 200)}` };
         }
         log.info({ to: message.to, subject: message.subject }, "Email sent via SendGrid (DB config)");
-        return { success: true, provider: "webhook" };
+        return { success: true, provider: "sendgrid" };
       } catch (err) {
-        return { success: false, provider: "webhook", error: err instanceof Error ? err.message : String(err) };
+        const error = err instanceof Error ? err.message : String(err);
+        log.error({ to: message.to, err: error }, "SendGrid delivery error");
+        return { success: false, provider: "sendgrid", error };
       }
     }
 
     case "postmark": {
       const serverToken = transport.config.serverToken;
-      if (typeof serverToken !== "string") return { success: false, provider: "log", error: "Missing Postmark token in stored config" };
+      if (typeof serverToken !== "string") return { success: false, provider: "postmark", error: "Missing Postmark token in stored config" };
       try {
         const res = await fetch("https://api.postmarkapp.com/email", {
           method: "POST",
@@ -137,23 +143,19 @@ async function deliverViaTransport(
         if (!res.ok) {
           const text = await res.text().catch(() => "");
           log.error({ to: message.to, status: res.status }, "Postmark delivery failed");
-          return { success: false, provider: "webhook", error: `Postmark error (${res.status}): ${text.slice(0, 200)}` };
+          return { success: false, provider: "postmark", error: `Postmark error (${res.status}): ${text.slice(0, 200)}` };
         }
         log.info({ to: message.to, subject: message.subject }, "Email sent via Postmark (DB config)");
-        return { success: true, provider: "webhook" };
+        return { success: true, provider: "postmark" };
       } catch (err) {
-        return { success: false, provider: "webhook", error: err instanceof Error ? err.message : String(err) };
+        const error = err instanceof Error ? err.message : String(err);
+        log.error({ to: message.to, err: error }, "Postmark delivery error");
+        return { success: false, provider: "postmark", error };
       }
     }
 
-    case "resend": {
-      const apiKey = transport.config.apiKey;
-      if (typeof apiKey !== "string") return { success: false, provider: "log", error: "Missing Resend API key in stored config" };
-      return deliverResend(message, from, apiKey);
-    }
-
     default:
-      // For smtp/ses, fall through to ATLAS_SMTP_URL if available
+      // For smtp/ses, delegate to ATLAS_SMTP_URL webhook if available
       if (process.env.ATLAS_SMTP_URL) {
         return deliverWebhook(message, from);
       }

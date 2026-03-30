@@ -1054,7 +1054,7 @@ export const emailInstallations = pgTable(
     installedAt: timestamp("installed_at", { withTimezone: true }).defaultNow(),
   },
   (t) => [
-    index("idx_email_installations_org").on(t.orgId),
+    uniqueIndex("idx_email_installations_org").on(t.orgId),
   ],
 );
 

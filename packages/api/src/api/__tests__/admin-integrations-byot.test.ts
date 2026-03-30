@@ -1420,6 +1420,11 @@ describe("BYOT routes", () => {
       expect(data.provider).toBe("sendgrid");
       expect(data.senderAddress).toBe("noreply@example.com");
       expect(mockSaveEmailInstallation).toHaveBeenCalledTimes(1);
+      expect(mockSaveEmailInstallation).toHaveBeenCalledWith("org-1", {
+        provider: "sendgrid",
+        senderAddress: "noreply@example.com",
+        config: { apiKey: "SG.test-key" },
+      });
     });
 
     it("saves Postmark config on success", async () => {
@@ -1430,6 +1435,11 @@ describe("BYOT routes", () => {
       });
       expect(res.status).toBe(200);
       expect(mockSaveEmailInstallation).toHaveBeenCalledTimes(1);
+      expect(mockSaveEmailInstallation).toHaveBeenCalledWith("org-1", {
+        provider: "postmark",
+        senderAddress: "noreply@example.com",
+        config: { serverToken: "pm-test-token" },
+      });
     });
 
     it("saves SMTP config on success", async () => {
@@ -1440,6 +1450,11 @@ describe("BYOT routes", () => {
       });
       expect(res.status).toBe(200);
       expect(mockSaveEmailInstallation).toHaveBeenCalledTimes(1);
+      expect(mockSaveEmailInstallation).toHaveBeenCalledWith("org-1", {
+        provider: "smtp",
+        senderAddress: "noreply@example.com",
+        config: { host: "smtp.example.com", port: 587, username: "user", password: "pass", tls: true },
+      });
     });
 
     it("saves SES config on success", async () => {
@@ -1450,6 +1465,11 @@ describe("BYOT routes", () => {
       });
       expect(res.status).toBe(200);
       expect(mockSaveEmailInstallation).toHaveBeenCalledTimes(1);
+      expect(mockSaveEmailInstallation).toHaveBeenCalledWith("org-1", {
+        provider: "ses",
+        senderAddress: "noreply@example.com",
+        config: { region: "us-east-1", accessKeyId: "AKIA...", secretAccessKey: "secret" },
+      });
     });
 
     it("returns 404 when no internal DB", async () => {

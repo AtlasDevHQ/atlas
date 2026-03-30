@@ -2590,16 +2590,16 @@ async function sendPostmarkTestEmail(
 }
 
 async function sendSmtpTestEmail(
-  config: Record<string, unknown>,
+  _config: Record<string, unknown>,
   from: string,
   to: string,
   subject: string,
   html: string,
 ): Promise<TestEmailResult> {
-  // SMTP requires a webhook endpoint — we POST the email payload to ATLAS_SMTP_URL
-  // or use the config's own host/port to send via a simple HTTP bridge.
-  // For the test email, we use the generic webhook approach via ATLAS_SMTP_URL if set,
-  // otherwise return instructions to the user.
+  // SMTP delivery delegates to the ATLAS_SMTP_URL webhook bridge.
+  // The bridge endpoint is responsible for connecting to the SMTP server
+  // using the config stored in the database — we do not send credentials
+  // over the wire in this payload.
   const smtpUrl = process.env.ATLAS_SMTP_URL;
   if (!smtpUrl) {
     return {
@@ -2613,7 +2613,7 @@ async function sendSmtpTestEmail(
     const res = await fetch(smtpUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ from, to, subject, html, smtpConfig: config }),
+      body: JSON.stringify({ from, to, subject, html }),
       signal: AbortSignal.timeout(15_000),
     });
 
@@ -2628,27 +2628,21 @@ async function sendSmtpTestEmail(
 }
 
 async function sendSesTestEmail(
-  config: Record<string, unknown>,
+  _config: Record<string, unknown>,
   from: string,
   to: string,
   subject: string,
   html: string,
 ): Promise<TestEmailResult> {
-  const region = config.region;
-  const accessKeyId = config.accessKeyId;
-  const secretAccessKey = config.secretAccessKey;
-  if (typeof region !== "string" || typeof accessKeyId !== "string" || typeof secretAccessKey !== "string") {
-    return { success: false, error: "Missing SES configuration fields" };
-  }
-
   // AWS Signature V4 is complex — for the test email we delegate to the
-  // ATLAS_SMTP_URL webhook bridge if available, otherwise provide feedback.
+  // ATLAS_SMTP_URL webhook bridge if available. We do not send AWS credentials
+  // over the wire; the bridge reads them from its own config or the database.
   const smtpUrl = process.env.ATLAS_SMTP_URL;
   if (!smtpUrl) {
     return {
       success: false,
-      error: "SES test email requires ATLAS_SMTP_URL configured as an SES-compatible bridge, " +
-        "or the AWS SDK at runtime. Configuration has been saved.",
+      error: "SES test email requires ATLAS_SMTP_URL configured as an SES-compatible bridge. " +
+        "Configuration has been saved.",
     };
   }
 
@@ -2656,7 +2650,7 @@ async function sendSesTestEmail(
     const res = await fetch(smtpUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ from, to, subject, html, sesConfig: { region, accessKeyId, secretAccessKey } }),
+      body: JSON.stringify({ from, to, subject, html }),
       signal: AbortSignal.timeout(15_000),
     });
 

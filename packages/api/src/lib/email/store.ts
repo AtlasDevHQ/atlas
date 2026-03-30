@@ -120,7 +120,7 @@ export async function getEmailInstallationByOrg(
 
 /**
  * Save or update an email installation for an org.
- * Uses upsert on org_id — each org gets exactly one email config.
+ * Atomic upsert on org_id (UNIQUE index) — each org gets exactly one email config.
  * Throws if the database write fails.
  */
 export async function saveEmailInstallation(
@@ -136,15 +136,15 @@ export async function saveEmailInstallation(
   }
 
   try {
-    // Delete existing config for this org then insert new — simpler than
-    // conditional upsert on composite key since org_id is the logical key.
-    await internalQuery(
-      "DELETE FROM email_installations WHERE org_id = $1",
-      [orgId],
-    );
+    // Atomic upsert — the UNIQUE index on org_id ensures one config per org.
     await internalQuery(
       `INSERT INTO email_installations (provider, sender_address, config, org_id)
-       VALUES ($1, $2, $3, $4)`,
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (org_id) DO UPDATE SET
+         provider = $1,
+         sender_address = $2,
+         config = $3,
+         installed_at = now()`,
       [opts.provider, opts.senderAddress, JSON.stringify(opts.config), orgId],
     );
   } catch (err) {

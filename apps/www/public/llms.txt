@@ -1,0 +1,47 @@
+# Atlas
+
+> Deploy-anywhere text-to-SQL data analyst agent. Open-source under AGPL-3.0.
+
+Atlas connects to your database, auto-generates a YAML semantic layer from your schema, and lets an AI agent query your data in plain English. It validates every query (read-only, AST-parsed, table-whitelisted) and returns structured results with charts and narrative.
+
+## Core capabilities
+
+- **Text-to-SQL agent**: Multi-step reasoning powered by Vercel AI SDK. Explores schema, writes validated SQL, runs Python analysis, returns charts and narrative.
+- **Semantic layer**: YAML-based entity definitions with auto-profiling, glossary terms, metrics, joins, and LLM enrichment. Versioned in git, reviewed in PRs.
+- **7 databases**: PostgreSQL, MySQL, ClickHouse, Snowflake, DuckDB, BigQuery, Salesforce.
+- **6 LLM providers**: Anthropic, OpenAI, AWS Bedrock, Ollama, OpenAI-compatible (vLLM, TGI, LiteLLM), AI Gateway.
+- **21+ plugins**: Datasource adapters, sandbox backends (nsjail, E2B, Daytona, Vercel sandbox), interaction channels, action triggers. Extensible via Plugin SDK.
+- **9+ integration channels**: Slack, Microsoft Teams, Discord, Email, Google Chat, Telegram, GitHub, Linear, WhatsApp, plus webhooks.
+- **Embeddable**: Script tag widget, React component (`@useatlas/react`), TypeScript SDK (`@useatlas/sdk`), headless API.
+- **MCP server**: Works with Claude Desktop, Cursor, and any MCP-compatible client.
+- **Dynamic learning**: Learns query patterns over time. Stored as auditable YAML, not opaque embeddings.
+
+## Security
+
+Every query passes through a 7-layer validation pipeline:
+1. Empty check
+2. Regex mutation guard (blocks INSERT, UPDATE, DELETE, DROP)
+3. AST parse via node-sql-parser (single SELECT only)
+4. Table whitelist (only semantic layer entities)
+5. Row-level security injection (optional)
+6. Auto LIMIT (default 1000)
+7. Statement timeout (default 30s)
+
+All database connections are read-only. Credentials stay on your infrastructure.
+
+## Deployment
+
+- **Self-hosted** (free, AGPL-3.0): Docker, Railway, or Vercel. `bun create atlas-agent my-app`
+- **Atlas Cloud** (managed): Trial, Team ($49/seat/mo), and Enterprise plans at https://app.useatlas.dev
+
+## Tech stack
+
+TypeScript, Hono (API), Next.js (frontend), Effect.ts (backend services), Vercel AI SDK (agent loop), Bun (runtime).
+
+## Links
+
+- Website: https://useatlas.dev
+- Documentation: https://docs.useatlas.dev
+- GitHub: https://github.com/AtlasDevHQ/atlas
+- Cloud: https://app.useatlas.dev
+- npm packages: @useatlas/sdk, @useatlas/react, @useatlas/types, @useatlas/plugin-sdk

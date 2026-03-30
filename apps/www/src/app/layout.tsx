@@ -21,7 +21,7 @@ export const metadata: Metadata = {
   openGraph: {
     title: "Atlas — Quit copying SQL from ChatGPT",
     description:
-      "AI writes better SQL than you — let it. Atlas connects to your schema, validates queries, and runs them. Open-source with 7 databases, 20+ plugins, and enterprise cloud.",
+      "AI writes better SQL than you — let it. Atlas connects to your schema, validates queries, and runs them. Open-source with 7 databases, 21+ plugins, and enterprise cloud.",
     url: "https://useatlas.dev",
     siteName: "Atlas",
     type: "website",

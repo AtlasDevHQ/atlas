@@ -51,17 +51,19 @@ import {
   Loader2,
   AlertCircle,
 } from "lucide-react";
-import type { ApprovalRule, ApprovalRuleType, ApprovalRequest, ApprovalStatus } from "@/ui/lib/types";
+import type { ApprovalRule, ApprovalRuleType, ApprovalStatus } from "@/ui/lib/types";
 
-// ── Types ─────────────────────────────────────────────────────────
+// ── Schemas ───────────────────────────────────────────────────────
 
-interface RulesResponse {
-  rules: ApprovalRule[];
-}
+import { ApprovalRuleSchema, ApprovalRequestSchema } from "@/ui/lib/admin-schemas";
 
-interface QueueResponse {
-  requests: ApprovalRequest[];
-}
+const RulesResponseSchema = z.object({
+  rules: z.array(ApprovalRuleSchema),
+});
+
+const QueueResponseSchema = z.object({
+  requests: z.array(ApprovalRequestSchema),
+});
 
 const RULE_TYPES: { value: ApprovalRuleType; label: string; description: string }[] = [
   { value: "table", label: "Table", description: "Match queries accessing a specific table" },
@@ -121,8 +123,8 @@ function ApprovalPageContent() {
 
   // Fetch rules
   const { data: rulesData, loading: rulesLoading, error: rulesError, refetch: refetchRules } =
-    useAdminFetch<RulesResponse>("/api/v1/admin/approval/rules", {
-      transform: (json) => json as RulesResponse,
+    useAdminFetch("/api/v1/admin/approval/rules", {
+      schema: RulesResponseSchema,
     });
 
   // Fetch queue
@@ -130,8 +132,8 @@ function ApprovalPageContent() {
     ? "/api/v1/admin/approval/queue"
     : `/api/v1/admin/approval/queue?status=${statusFilter}`;
   const { data: queueData, loading: queueLoading, error: queueError, refetch: refetchQueue } =
-    useAdminFetch<QueueResponse>(queuePath, {
-      transform: (json) => json as QueueResponse,
+    useAdminFetch(queuePath, {
+      schema: QueueResponseSchema,
       deps: [statusFilter],
     });
 

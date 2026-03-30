@@ -32,13 +32,15 @@ import { usePlatformAdminGuard } from "@/ui/hooks/use-platform-admin-guard";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { LoadingState } from "@/ui/components/admin/loading-state";
 import { Cpu, Loader2, CheckCircle2, XCircle, RotateCcw, Eye, EyeOff } from "lucide-react";
-import type { ModelConfigProvider, WorkspaceModelConfig, TestModelConfigResponse } from "@/ui/lib/types";
+import type { ModelConfigProvider, TestModelConfigResponse } from "@/ui/lib/types";
 
-// ── Types ─────────────────────────────────────────────────────────
+// ── Schemas ───────────────────────────────────────────────────────
 
-interface ModelConfigResponse {
-  config: WorkspaceModelConfig | null;
-}
+import { WorkspaceModelConfigSchema } from "@/ui/lib/admin-schemas";
+
+const ModelConfigResponseSchema = z.object({
+  config: WorkspaceModelConfigSchema.nullable(),
+});
 
 type TestResult = TestModelConfigResponse;
 
@@ -69,11 +71,9 @@ export default function ModelConfigPage() {
   const [showApiKey, setShowApiKey] = useState(false);
   const [testResult, setTestResult] = useState<TestResult | null>(null);
 
-  const { data, loading, error, refetch } = useAdminFetch<ModelConfigResponse>(
+  const { data, loading, error, refetch } = useAdminFetch(
     "/api/v1/admin/model-config",
-    {
-      transform: (json) => json as ModelConfigResponse,
-    },
+    { schema: ModelConfigResponseSchema },
   );
 
   const { mutate: saveMutate, saving, error: saveError, clearError: clearSaveError } =

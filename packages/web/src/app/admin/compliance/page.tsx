@@ -52,7 +52,6 @@ import {
   Search,
 } from "lucide-react";
 import type {
-  PIIColumnClassification,
   PIICategory,
   MaskingStrategy,
   PIIConfidence,
@@ -63,11 +62,13 @@ import type {
 import { PII_CATEGORIES, MASKING_STRATEGIES } from "@/ui/lib/types";
 import { complianceSearchParams } from "./search-params";
 
-// ── Types ─────────────────────────────────────────────────────────
+// ── Schemas ───────────────────────────────────────────────────────
 
-interface ClassificationsResponse {
-  classifications: PIIColumnClassification[];
-}
+import { PIIColumnClassificationSchema } from "@/ui/lib/admin-schemas";
+
+const ClassificationsResponseSchema = z.object({
+  classifications: z.array(PIIColumnClassificationSchema),
+});
 
 const CATEGORY_LABELS: Record<PIICategory, string> = {
   email: "Email",
@@ -178,9 +179,9 @@ const classificationEditSchema = z.object({
 // ── Classifications Tab ───────────────────────────────────────────
 
 function ClassificationsTab() {
-  const { data, loading, error, refetch } = useAdminFetch<ClassificationsResponse>(
+  const { data, loading, error, refetch } = useAdminFetch(
     "/api/v1/admin/compliance/classifications",
-    { transform: (json) => json as ClassificationsResponse },
+    { schema: ClassificationsResponseSchema },
   );
 
   const [editingId, setEditingId] = useState<string | null>(null);

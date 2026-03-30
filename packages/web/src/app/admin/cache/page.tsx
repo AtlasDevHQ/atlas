@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { z } from "zod";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
@@ -22,18 +23,18 @@ import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { HardDrive, Trash2, Activity, Database, Clock, Target } from "lucide-react";
 
-// ── Types ─────────────────────────────────────────────────────────
+// ── Schemas ───────────────────────────────────────────────────────
 
-interface CacheStatsResponse {
-  enabled: boolean;
-  hits: number;
-  misses: number;
-  hitRate: number;
-  missRate: number;
-  entryCount: number;
-  maxSize: number;
-  ttl: number;
-}
+const CacheStatsResponseSchema = z.object({
+  enabled: z.boolean(),
+  hits: z.number(),
+  misses: z.number(),
+  hitRate: z.number(),
+  missRate: z.number(),
+  entryCount: z.number(),
+  maxSize: z.number(),
+  ttl: z.number(),
+});
 
 // ── Helpers ───────────────────────────────────────────────────────
 
@@ -83,9 +84,9 @@ function StatItem({
 export default function CachePage() {
   const [flushMessage, setFlushMessage] = useState<string | null>(null);
 
-  const { data, loading, error, refetch } = useAdminFetch<CacheStatsResponse>(
+  const { data, loading, error, refetch } = useAdminFetch(
     "/api/v1/admin/cache/stats",
-    { transform: (json) => json as CacheStatsResponse },
+    { schema: CacheStatsResponseSchema },
   );
 
   const { mutate: flush, saving: flushing, error: flushError, clearError: clearFlushError } =

@@ -1,6 +1,7 @@
 "use client";
 
 import { type ReactNode, useState } from "react";
+import { z } from "zod";
 import {
   Card,
   CardContent,
@@ -37,22 +38,24 @@ import { formatDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { Globe, MapPin, AlertTriangle, Check } from "lucide-react";
 
-// ── Types ─────────────────────────────────────────────────────────
+// ── Schemas ───────────────────────────────────────────────────────
 
-interface Region {
-  id: string;
-  label: string;
-  isDefault: boolean;
-}
+const RegionSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  isDefault: z.boolean(),
+});
+type Region = z.infer<typeof RegionSchema>;
 
-interface ResidencyStatus {
-  configured: boolean;
-  region: string | null;
-  regionLabel: string | null;
-  assignedAt: string | null;
-  defaultRegion: string;
-  availableRegions: Region[];
-}
+const ResidencyStatusSchema = z.object({
+  configured: z.boolean(),
+  region: z.string().nullable(),
+  regionLabel: z.string().nullable(),
+  assignedAt: z.string().nullable(),
+  defaultRegion: z.string(),
+  availableRegions: z.array(RegionSchema),
+});
+type ResidencyStatus = z.infer<typeof ResidencyStatusSchema>;
 
 // ── Page ──────────────────────────────────────────────────────────
 
@@ -60,9 +63,9 @@ export default function ResidencyPage() {
   const { deployMode } = useDeployMode();
   const isSaas = deployMode === "saas";
 
-  const { data, loading, error, refetch } = useAdminFetch<ResidencyStatus>(
+  const { data, loading, error, refetch } = useAdminFetch(
     "/api/v1/admin/residency",
-    { transform: (json) => json as ResidencyStatus },
+    { schema: ResidencyStatusSchema },
   );
 
   const assignMutation = useAdminMutation({

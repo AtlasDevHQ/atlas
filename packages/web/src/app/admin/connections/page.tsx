@@ -52,6 +52,7 @@ import {
   type ConnectionDetail,
   type PoolMetrics,
 } from "@/ui/lib/types";
+import { ConnectionsResponseSchema } from "@/ui/lib/admin-schemas";
 
 // ── Connection Form Dialog ───────────────────────────────────────
 
@@ -584,9 +585,9 @@ export default function ConnectionsPage() {
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
 
-  const { data: connections, loading, error, refetch } = useAdminFetch<ConnectionInfo[]>(
+  const { data: connections, loading, error, refetch } = useAdminFetch(
     "/api/v1/admin/connections",
-    { transform: (json) => (json as { connections?: ConnectionInfo[] }).connections ?? [] },
+    { schema: ConnectionsResponseSchema },
   );
 
   const [localConnections, setLocalConnections] = useState<ConnectionInfo[] | null>(null);

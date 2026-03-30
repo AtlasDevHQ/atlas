@@ -36,22 +36,23 @@ import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { Shield, Plus, Trash2, Loader2, AlertTriangle, Globe } from "lucide-react";
 
-// ── Types ─────────────────────────────────────────────────────────
+// ── Schemas ───────────────────────────────────────────────────────
 
-interface IPAllowlistEntry {
-  id: string;
-  orgId: string;
-  cidr: string;
-  description: string | null;
-  createdAt: string;
-  createdBy: string | null;
-}
+const IPAllowlistEntrySchema = z.object({
+  id: z.string(),
+  orgId: z.string(),
+  cidr: z.string(),
+  description: z.string().nullable(),
+  createdAt: z.string(),
+  createdBy: z.string().nullable(),
+});
+type IPAllowlistEntry = z.infer<typeof IPAllowlistEntrySchema>;
 
-interface IPAllowlistResponse {
-  entries: IPAllowlistEntry[];
-  total: number;
-  callerIP: string | null;
-}
+const IPAllowlistResponseSchema = z.object({
+  entries: z.array(IPAllowlistEntrySchema),
+  total: z.number(),
+  callerIP: z.string().nullable(),
+});
 
 // ── Add Entry Dialog ──────────────────────────────────────────────
 
@@ -245,11 +246,9 @@ export default function IPAllowlistPage() {
   const [addDialogOpen, setAddDialogOpen] = useState(false);
   const [deleteEntry, setDeleteEntry] = useState<IPAllowlistEntry | null>(null);
 
-  const { data, loading, error, refetch } = useAdminFetch<IPAllowlistResponse>(
+  const { data, loading, error, refetch } = useAdminFetch(
     "/api/v1/admin/ip-allowlist",
-    {
-      transform: (json) => json as IPAllowlistResponse,
-    },
+    { schema: IPAllowlistResponseSchema },
   );
 
   const entries = data?.entries ?? [];

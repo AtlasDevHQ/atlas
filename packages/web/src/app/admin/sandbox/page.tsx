@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { z } from "zod";
 import {
   Card,
   CardContent,
@@ -58,34 +59,35 @@ import {
 
 // ── Types ─────────────────────────────────────────────────────────
 
-interface SandboxBackend {
-  id: string;
-  name: string;
-  type: "built-in" | "plugin";
-  available: boolean;
-  description?: string;
-}
+const SandboxProviderKeySchema = z.enum(["vercel", "e2b", "daytona"]);
+type SandboxProviderKey = z.infer<typeof SandboxProviderKeySchema>;
 
-interface ConnectedProvider {
-  provider: SandboxProviderKey;
-  displayName: string | null;
-  connectedAt: string;
-  validatedAt: string | null;
-  isActive: boolean;
-}
+const SandboxBackendSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  type: z.enum(["built-in", "plugin"]),
+  available: z.boolean(),
+  description: z.string().optional(),
+});
 
-interface SandboxStatus {
-  activeBackend: string;
-  platformDefault: string;
-  workspaceOverride: string | null;
-  workspaceSidecarUrl: string | null;
-  availableBackends: SandboxBackend[];
-  connectedProviders: ConnectedProvider[];
-}
+const ConnectedProviderSchema = z.object({
+  provider: SandboxProviderKeySchema,
+  displayName: z.string().nullable(),
+  connectedAt: z.string(),
+  validatedAt: z.string().nullable(),
+  isActive: z.boolean(),
+});
+
+const SandboxStatusSchema = z.object({
+  activeBackend: z.string(),
+  platformDefault: z.string(),
+  workspaceOverride: z.string().nullable(),
+  workspaceSidecarUrl: z.string().nullable(),
+  availableBackends: z.array(SandboxBackendSchema),
+  connectedProviders: z.array(ConnectedProviderSchema),
+});
 
 // ── Provider metadata ─────────────────────────────────────────────
-
-type SandboxProviderKey = "vercel" | "e2b" | "daytona";
 
 interface ProviderInfo {
   label: string;
@@ -131,9 +133,9 @@ export default function SandboxPage() {
   const { deployMode } = useDeployMode();
   const isSaas = deployMode === "saas";
 
-  const { data, loading, error, refetch } = useAdminFetch<SandboxStatus>(
+  const { data, loading, error, refetch } = useAdminFetch(
     "/api/v1/admin/sandbox/status",
-    { transform: (json) => json as SandboxStatus },
+    { schema: SandboxStatusSchema },
   );
 
   const saveMutation = useAdminMutation({

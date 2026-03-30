@@ -1,0 +1,210 @@
+/**
+ * Linear installation storage.
+ *
+ * Stores per-workspace Linear API keys in the internal database.
+ * Each workspace admin enters their own API key (BYOT).
+ */
+
+import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
+import { createLogger } from "@atlas/api/lib/logger";
+
+const log = createLogger("linear-store");
+
+export interface LinearInstallation {
+  /** Linear user ID (stable identifier from /viewer query). */
+  user_id: string;
+  /** API key. Contains secret — do not expose in API responses. */
+  api_key: string;
+  user_name: string | null;
+  user_email: string | null;
+  org_id: string | null;
+  installed_at: string;
+}
+
+// ---------------------------------------------------------------------------
+// Shared row parser
+// ---------------------------------------------------------------------------
+
+function parseInstallationRow(
+  row: Record<string, unknown>,
+  context: Record<string, unknown>,
+): LinearInstallation | null {
+  const userId = row.user_id;
+  const apiKey = row.api_key;
+  if (typeof userId !== "string" || !userId || typeof apiKey !== "string" || !apiKey) {
+    log.warn(context, "Invalid Linear installation record in database");
+    return null;
+  }
+  return {
+    user_id: userId,
+    api_key: apiKey,
+    user_name: typeof row.user_name === "string" ? row.user_name : null,
+    user_email: typeof row.user_email === "string" ? row.user_email : null,
+    org_id: typeof row.org_id === "string" ? row.org_id : null,
+    installed_at: typeof row.installed_at === "string" ? row.installed_at : new Date().toISOString(),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Read operations
+// ---------------------------------------------------------------------------
+
+/**
+ * Get the Linear installation for a user ID (Linear viewer ID).
+ */
+export async function getLinearInstallation(
+  userId: string,
+): Promise<LinearInstallation | null> {
+  if (!hasInternalDB()) {
+    return null;
+  }
+
+  try {
+    const rows = await internalQuery<Record<string, unknown>>(
+      "SELECT user_id, api_key, user_name, user_email, org_id, installed_at::text FROM linear_installations WHERE user_id = $1",
+      [userId],
+    );
+    if (rows.length > 0) {
+      return parseInstallationRow(rows[0], { userId });
+    }
+    return null;
+  } catch (err) {
+    log.error(
+      { err: err instanceof Error ? err.message : String(err), userId },
+      "Failed to query linear_installations",
+    );
+    throw err;
+  }
+}
+
+/**
+ * Get the Linear installation for an org. Returns null if not found or
+ * if no internal database is configured.
+ */
+export async function getLinearInstallationByOrg(
+  orgId: string,
+): Promise<LinearInstallation | null> {
+  if (!hasInternalDB()) {
+    return null;
+  }
+
+  try {
+    const rows = await internalQuery<Record<string, unknown>>(
+      "SELECT user_id, api_key, user_name, user_email, org_id, installed_at::text FROM linear_installations WHERE org_id = $1",
+      [orgId],
+    );
+    if (rows.length > 0) {
+      return parseInstallationRow(rows[0], { orgId });
+    }
+    return null;
+  } catch (err) {
+    log.error(
+      { err: err instanceof Error ? err.message : String(err), orgId },
+      "Failed to query linear_installations by org",
+    );
+    throw err;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Write operations
+// ---------------------------------------------------------------------------
+
+/**
+ * Save or update a Linear installation (API key submission).
+ * Throws if the Linear user is already bound to a different organization (hijack protection).
+ * Throws if the database write fails.
+ */
+export async function saveLinearInstallation(
+  userId: string,
+  opts: { orgId?: string; userName?: string; userEmail?: string; apiKey: string },
+): Promise<void> {
+  if (!hasInternalDB()) {
+    throw new Error("Cannot save Linear installation — no internal database configured");
+  }
+
+  const orgId = opts.orgId ?? null;
+  const userName = opts.userName ?? null;
+  const userEmail = opts.userEmail ?? null;
+
+  try {
+    // Reject if already bound to a different org (hijack protection)
+    const existing = await internalQuery<Record<string, unknown>>(
+      "SELECT org_id FROM linear_installations WHERE user_id = $1",
+      [userId],
+    );
+
+    if (existing.length > 0) {
+      const existingOrgId = existing[0].org_id;
+      if (existingOrgId && orgId && existingOrgId !== orgId) {
+        throw new Error(
+          `Linear user ${userId} is already bound to a different organization. ` +
+          `Disconnect the existing installation first.`,
+        );
+      }
+    }
+
+    await internalQuery(
+      `INSERT INTO linear_installations (user_id, api_key, user_name, user_email, org_id)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (user_id) DO UPDATE SET
+         api_key = $2,
+         user_name = COALESCE($3, linear_installations.user_name),
+         user_email = COALESCE($4, linear_installations.user_email),
+         org_id = COALESCE($5, linear_installations.org_id),
+         installed_at = now()`,
+      [userId, opts.apiKey, userName, userEmail, orgId],
+    );
+  } catch (err) {
+    log.error(
+      { err: err instanceof Error ? err.message : String(err), userId },
+      "Failed to save linear_installations",
+    );
+    throw err;
+  }
+}
+
+/**
+ * Remove a Linear installation by user ID.
+ * Throws if no internal DB or if the query fails.
+ */
+export async function deleteLinearInstallation(userId: string): Promise<void> {
+  if (!hasInternalDB()) {
+    throw new Error("Cannot delete Linear installation — no internal database configured");
+  }
+
+  try {
+    await internalQuery("DELETE FROM linear_installations WHERE user_id = $1", [userId]);
+  } catch (err) {
+    log.error(
+      { err: err instanceof Error ? err.message : String(err), userId },
+      "Failed to delete linear_installations",
+    );
+    throw err;
+  }
+}
+
+/**
+ * Remove the Linear installation for an org.
+ * Returns true if a row was deleted, false if no matching row found.
+ * Throws if no internal DB or if the query fails.
+ */
+export async function deleteLinearInstallationByOrg(orgId: string): Promise<boolean> {
+  if (!hasInternalDB()) {
+    throw new Error("Cannot delete Linear installation — no internal database configured");
+  }
+
+  try {
+    const rows = await internalQuery<{ user_id: string }>(
+      "DELETE FROM linear_installations WHERE org_id = $1 RETURNING user_id",
+      [orgId],
+    );
+    return rows.length > 0;
+  } catch (err) {
+    log.error(
+      { err: err instanceof Error ? err.message : String(err), orgId },
+      "Failed to delete linear_installations by org",
+    );
+    throw err;
+  }
+}

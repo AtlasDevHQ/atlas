@@ -6,7 +6,8 @@
     "examples/nextjs-standalone/package.json",
     "plugins/*/package.json",
     "create-atlas/templates/*/package.json",
-    "create-atlas-plugin/package.json"
+    "create-atlas-plugin/package.json",
+    "!**/.next/**"
   ],
   "versionGroups": [
     {

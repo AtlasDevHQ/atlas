@@ -15,31 +15,13 @@ import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
 import { z } from "zod";
 import { createLogger } from "@atlas/api/lib/logger";
 import { saveDiscordInstallation } from "@atlas/api/lib/discord/store";
+import { saveOAuthState, consumeOAuthState } from "@atlas/api/lib/auth/oauth-state";
 import { ErrorSchema } from "./shared-schemas";
 import { validationHook } from "./validation-hook";
 
 const log = createLogger("discord");
 
 const discord = new OpenAPIHono({ defaultHook: validationHook });
-
-// ---------------------------------------------------------------------------
-// OAuth CSRF state — stores { expiry, orgId } keyed by nonce.
-// In-memory map — works for single-instance deployments.
-// Multi-instance deployments will need an external store (e.g., Redis or internal DB).
-// ---------------------------------------------------------------------------
-
-interface OAuthState {
-  expiry: number;
-  orgId: string | undefined;
-}
-
-const pendingOAuthStates = new Map<string, OAuthState>();
-setInterval(() => {
-  const now = Date.now();
-  for (const [nonce, state] of pendingOAuthStates) {
-    if (now > state.expiry) pendingOAuthStates.delete(nonce);
-  }
-}, 600_000).unref();
 
 // ---------------------------------------------------------------------------
 // Route definitions
@@ -106,7 +88,7 @@ const callbackRoute = createRoute({
 
 // --- GET /api/v1/discord/install ---
 
-discord.openapi(installRoute, (c) => {
+discord.openapi(installRoute, async (c) => {
   const clientId = process.env.DISCORD_CLIENT_ID;
   if (!clientId) {
     return c.json({ error: "discord_not_configured", message: "Discord not configured" }, 501);
@@ -127,7 +109,7 @@ discord.openapi(installRoute, (c) => {
   }
 
   const nonce = crypto.randomUUID();
-  pendingOAuthStates.set(nonce, { expiry: Date.now() + 600_000, orgId });
+  await saveOAuthState(nonce, { orgId, provider: "discord" });
 
   const origin = new URL(c.req.url).origin;
   const redirectUri = `${origin}/api/v1/discord/callback`;
@@ -164,14 +146,12 @@ discord.openapi(callbackRoute, async (c) => {
   }
 
   const nonce = c.req.query("state");
-  if (!nonce || !pendingOAuthStates.has(nonce)) {
+  if (!nonce) {
     return c.json({ error: "invalid_state", message: "Invalid or expired state parameter" }, 400);
   }
-  const oauthState = pendingOAuthStates.get(nonce)!;
-  pendingOAuthStates.delete(nonce);
-
-  if (Date.now() > oauthState.expiry) {
-    return c.json({ error: "expired_state", message: "OAuth state has expired. Please try again." }, 400);
+  const oauthState = await consumeOAuthState(nonce);
+  if (!oauthState) {
+    return c.json({ error: "invalid_state", message: "Invalid or expired state parameter" }, 400);
   }
 
   const code = c.req.query("code");

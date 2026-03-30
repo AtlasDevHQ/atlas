@@ -14,29 +14,13 @@ import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
 import { z } from "zod";
 import { createLogger } from "@atlas/api/lib/logger";
 import { saveTeamsInstallation } from "@atlas/api/lib/teams/store";
+import { saveOAuthState, consumeOAuthState } from "@atlas/api/lib/auth/oauth-state";
 import { ErrorSchema } from "./shared-schemas";
 import { validationHook } from "./validation-hook";
 
 const log = createLogger("teams");
 
 const teams = new OpenAPIHono({ defaultHook: validationHook });
-
-// ---------------------------------------------------------------------------
-// OAuth CSRF state — stores { expiry, orgId } keyed by nonce
-// ---------------------------------------------------------------------------
-
-interface OAuthState {
-  expiry: number;
-  orgId: string | undefined;
-}
-
-const pendingOAuthStates = new Map<string, OAuthState>();
-setInterval(() => {
-  const now = Date.now();
-  for (const [nonce, state] of pendingOAuthStates) {
-    if (now > state.expiry) pendingOAuthStates.delete(nonce);
-  }
-}, 600_000).unref();
 
 // ---------------------------------------------------------------------------
 // Route definitions
@@ -103,7 +87,7 @@ const callbackRoute = createRoute({
 
 // --- GET /api/v1/teams/install ---
 
-teams.openapi(installRoute, (c) => {
+teams.openapi(installRoute, async (c) => {
   const appId = process.env.TEAMS_APP_ID;
   if (!appId) {
     return c.json({ error: "teams_not_configured", message: "Teams not configured" }, 501);
@@ -124,7 +108,7 @@ teams.openapi(installRoute, (c) => {
   }
 
   const nonce = crypto.randomUUID();
-  pendingOAuthStates.set(nonce, { expiry: Date.now() + 600_000, orgId });
+  await saveOAuthState(nonce, { orgId, provider: "teams" });
 
   const origin = new URL(c.req.url).origin;
   const redirectUri = `${origin}/api/v1/teams/callback`;
@@ -145,15 +129,12 @@ teams.openapi(callbackRoute, async (c) => {
   }
 
   const nonce = c.req.query("state");
-  if (!nonce || !pendingOAuthStates.has(nonce)) {
+  if (!nonce) {
     return c.json({ error: "invalid_state", message: "Invalid or expired state parameter" }, 400);
   }
-  const oauthState = pendingOAuthStates.get(nonce)!;
-  pendingOAuthStates.delete(nonce);
-
-  // Check expiry at validation time — don't rely solely on the periodic sweep
-  if (Date.now() > oauthState.expiry) {
-    return c.json({ error: "expired_state", message: "OAuth state has expired. Please try again." }, 400);
+  const oauthState = await consumeOAuthState(nonce);
+  if (!oauthState) {
+    return c.json({ error: "invalid_state", message: "Invalid or expired state parameter" }, 400);
   }
 
   // Azure AD returns error/error_description when consent is denied

@@ -8,6 +8,9 @@
  * and uses Vercel AI SDK under the hood. P10c will migrate to native
  * @effect/ai AiLanguageModel.
  *
+ * In SaaS mode, the model is re-resolved per request from settings so
+ * that ATLAS_PROVIDER / ATLAS_MODEL changes take effect without restart.
+ *
  * @example
  * ```ts
  * import { AtlasAiModel } from "@atlas/api/lib/effect";
@@ -56,34 +59,114 @@ export class AtlasAiModel extends Context.Tag("AtlasAiModel")<
 // ── Live Layer ───────────────────────────────────────────────────────
 
 /**
+ * Resolve model from current settings. Used both at boot and per-request in SaaS mode.
+ */
+function resolveModelFromSettings(): { model: LanguageModel; providerType: ProviderType; modelId: string } {
+  // Read settings — in SaaS mode these may have been changed via admin UI
+  // eslint-disable-next-line @typescript-eslint/no-require-imports -- lazy import avoids circular dependency
+  const { getSettingAuto } = require("@atlas/api/lib/settings") as {
+    getSettingAuto: (key: string) => string | undefined;
+  };
+
+  const providerSetting = getSettingAuto("ATLAS_PROVIDER");
+  const modelSetting = getSettingAuto("ATLAS_MODEL");
+
+  // Temporarily inject into process.env so providers.ts resolveProvider() picks them up.
+  // providers.ts reads from process.env — this is the least-invasive bridge.
+  const origProvider = process.env.ATLAS_PROVIDER;
+  const origModel = process.env.ATLAS_MODEL;
+  try {
+    if (providerSetting) process.env.ATLAS_PROVIDER = providerSetting;
+    if (modelSetting) process.env.ATLAS_MODEL = modelSetting;
+
+    // eslint-disable-next-line @typescript-eslint/no-require-imports -- lazy import avoids circular dependency
+    const { getModel, getProviderType } = require("@atlas/api/lib/providers") as {
+      getModel: () => LanguageModel;
+      getProviderType: () => ProviderType;
+    };
+    const model = getModel();
+    const providerType = getProviderType();
+    const modelId = modelSetting ?? process.env.ATLAS_MODEL ?? (model as { modelId?: string }).modelId ?? "unknown";
+    return { model, providerType, modelId };
+  } finally {
+    // Restore original env vars
+    if (origProvider !== undefined) process.env.ATLAS_PROVIDER = origProvider;
+    else delete process.env.ATLAS_PROVIDER;
+    if (origModel !== undefined) process.env.ATLAS_MODEL = origModel;
+    else delete process.env.ATLAS_MODEL;
+  }
+}
+
+/**
  * Create the Live layer for AtlasAiModel.
  *
  * Reads ATLAS_PROVIDER and ATLAS_MODEL from env vars via providers.ts.
  * Fails the Layer if the provider is misconfigured.
+ *
+ * In SaaS mode, the service returns a dynamic proxy that re-resolves the
+ * model from settings on each property access, so admin changes take effect
+ * without a server restart.
  */
 export const AtlasAiModelLive: Layer.Layer<AtlasAiModel, Error> = Layer.effect(
   AtlasAiModel,
   Effect.gen(function* () {
-    const { model, providerType, modelId } = yield* Effect.tryPromise({
-      try: async () => {
-        const { getModel, getProviderType } = await import(
-          "@atlas/api/lib/providers"
-        );
-        const model = getModel();
-        const providerType = getProviderType();
-        // LanguageModel type doesn't expose modelId directly — access via runtime property
-        const modelId = process.env.ATLAS_MODEL ?? (model as { modelId?: string }).modelId ?? "unknown";
-        return { model, providerType, modelId };
-      },
+    // Boot-time resolution — validates config is valid at startup
+    const bootModel = yield* Effect.tryPromise({
+      try: async () => resolveModelFromSettings(),
       catch: (err) =>
         new Error(
           `AI model initialization failed: ${err instanceof Error ? err.message : String(err)}`,
         ),
     });
 
-    log.info({ provider: providerType, model: modelId }, "AI model configured");
+    log.info({ provider: bootModel.providerType, model: bootModel.modelId }, "AI model configured");
 
-    return { model, providerType, modelId } satisfies AtlasAiModelShape;
+    // Check if SaaS mode — if so, return a service that resolves dynamically
+    let saas = false;
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports -- lazy import avoids circular dependency
+      const { getConfig } = require("@atlas/api/lib/config") as {
+        getConfig: () => { deployMode?: string } | null;
+      };
+      saas = getConfig()?.deployMode === "saas";
+    } catch {
+      // not SaaS
+    }
+
+    if (saas) {
+      // In SaaS mode, cache the resolved model with a short TTL so we don't
+      // create a new SDK client on every single streamText call.
+      let cached = bootModel;
+      let cachedAt = Date.now();
+      const TTL = 5_000;
+
+      const dynamicService: AtlasAiModelShape = {
+        get model() {
+          const now = Date.now();
+          if (now - cachedAt > TTL) {
+            try {
+              cached = resolveModelFromSettings();
+              cachedAt = now;
+            } catch (err) {
+              log.warn(
+                { err: err instanceof Error ? err.message : String(err) },
+                "Failed to re-resolve AI model — using cached model",
+              );
+            }
+          }
+          return cached.model;
+        },
+        get providerType() {
+          return cached.providerType;
+        },
+        get modelId() {
+          return cached.modelId;
+        },
+      };
+      return dynamicService satisfies AtlasAiModelShape;
+    }
+
+    return bootModel satisfies AtlasAiModelShape;
   }),
 );
 

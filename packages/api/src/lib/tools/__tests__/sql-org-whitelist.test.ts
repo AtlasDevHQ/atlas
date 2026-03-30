@@ -86,6 +86,16 @@ mock.module("@atlas/api/lib/security", () => ({
 
 mock.module("@atlas/api/lib/settings", () => ({
   getSetting: () => undefined,
+  getSettingAuto: () => undefined,
+  getSettingLive: async () => undefined,
+  getSettingsForAdmin: () => [],
+  getSettingsRegistry: () => [],
+  getSettingDefinition: () => undefined,
+  setSetting: async () => {},
+  deleteSetting: async () => {},
+  loadSettings: async () => 0,
+  getAllSettingOverrides: async () => [],
+  _resetSettingsCache: () => {},
 }));
 
 const { validateSQL } = await import("../sql");

@@ -111,3 +111,17 @@ export function getLogger(): pino.Logger {
 export function createLogger(component: string): pino.Logger {
   return rootLogger.child({ component });
 }
+
+const VALID_LOG_LEVELS = new Set(["trace", "debug", "info", "warn", "error", "fatal"]);
+
+/**
+ * Update the root logger level at runtime.
+ *
+ * Used by the settings hot-reload system to apply ATLAS_LOG_LEVEL changes
+ * in SaaS mode without a server restart. Pino propagates the level change
+ * to all child loggers automatically.
+ */
+export function setLogLevel(level: string): void {
+  if (!VALID_LOG_LEVELS.has(level)) return;
+  rootLogger.level = level;
+}

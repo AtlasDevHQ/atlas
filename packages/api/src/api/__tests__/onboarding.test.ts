@@ -120,6 +120,16 @@ mock.module("@atlas/api/lib/plugins/hooks", () => ({
 
 mock.module("@atlas/api/lib/settings", () => ({
   getSetting: () => undefined,
+  getSettingAuto: () => undefined,
+  getSettingLive: async () => undefined,
+  getSettingsForAdmin: () => [],
+  getSettingsRegistry: () => [],
+  getSettingDefinition: () => undefined,
+  setSetting: async () => {},
+  deleteSetting: async () => {},
+  loadSettings: async () => 0,
+  getAllSettingOverrides: async () => [],
+  _resetSettingsCache: () => {},
 }));
 
 // Skip EE IP allowlist check — no real DB in tests

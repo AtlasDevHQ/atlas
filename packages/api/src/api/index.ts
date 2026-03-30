@@ -76,12 +76,30 @@ app.use("/api/*", async (c, next) => {
 // CORS — configurable origin for cross-origin frontend deployments.
 // Default "*" is fine for API key / BYOT auth (header-based).
 // Managed auth (cookies) needs explicit origin + credentials — see docs/hono-extraction-design.md.
-const corsOrigin = process.env.ATLAS_CORS_ORIGIN;
+//
+// In SaaS mode, the origin is read per-request from the settings cache so
+// admin changes take effect without a server restart.
+const bootCorsOrigin = process.env.ATLAS_CORS_ORIGIN;
 app.use(
   "/api/*",
   cors({
-    origin: corsOrigin ?? "*",
-    credentials: !!corsOrigin, // only send credentials header when origin is explicit
+    origin: (requestOrigin) => {
+      let corsOrigin: string | undefined;
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports -- lazy import avoids circular dependency at module load
+        const { getSettingAuto } = require("@atlas/api/lib/settings") as {
+          getSettingAuto: (key: string) => string | undefined;
+        };
+        corsOrigin = getSettingAuto("ATLAS_CORS_ORIGIN") ?? bootCorsOrigin;
+      } catch {
+        corsOrigin = bootCorsOrigin;
+      }
+      const origin = corsOrigin ?? "*";
+      // When origin is "*", return wildcard literal. Otherwise match the configured origin.
+      if (origin === "*") return "*";
+      return origin === requestOrigin ? requestOrigin : origin;
+    },
+    credentials: !!bootCorsOrigin, // only send credentials header when origin is explicit
     allowHeaders: ["Content-Type", "Authorization"],
     exposeHeaders: ["Retry-After", "x-conversation-id"],
   }),

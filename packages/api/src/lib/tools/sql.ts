@@ -27,7 +27,7 @@ import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
 import { withSourceSlot } from "@atlas/api/lib/db/source-rate-limit";
 import { getConfig } from "@atlas/api/lib/config";
 import { resolveRLSFilters, injectRLSConditions, type RLSFilterGroup } from "@atlas/api/lib/rls";
-import { getSetting } from "@atlas/api/lib/settings";
+import { getSetting, getSettingAuto } from "@atlas/api/lib/settings";
 import { getCache, buildCacheKey, cacheEnabled, getDefaultTtl } from "@atlas/api/lib/cache/index";
 import { proposePatternIfNovel } from "@atlas/api/lib/learn/pattern-proposer";
 import {
@@ -279,8 +279,9 @@ export function validateSQL(sql: string, connectionId?: string): SQLValidationRe
     };
   }
 
-  // 3. Table whitelist check
-  if (process.env.ATLAS_TABLE_WHITELIST !== "false") {
+  // 3. Table whitelist check — use getSettingAuto for SaaS hot-reload
+  const whitelistSetting = getSettingAuto("ATLAS_TABLE_WHITELIST") ?? process.env.ATLAS_TABLE_WHITELIST;
+  if (whitelistSetting !== "false") {
     try {
       const tables = parser.tableList(trimmed, { database: parserDatabase(dbType, connectionId) });
       const orgId = getRequestContext()?.user?.activeOrganizationId;
@@ -481,7 +482,30 @@ function applyRLSEffect(
 ): Effect.Effect<string, RLSError> {
   return Effect.gen(function* () {
     const config = getConfig();
-    const rlsConfig = config?.rls;
+    let rlsConfig = config?.rls;
+
+    // In SaaS mode, overlay settings-based RLS config for hot-reload.
+    // Settings override the boot-time config values for enabled/column/claim.
+    const rlsEnabledSetting = getSettingAuto("ATLAS_RLS_ENABLED");
+    if (rlsEnabledSetting !== undefined) {
+      if (rlsEnabledSetting !== "true") {
+        // Explicitly disabled via settings — skip RLS
+        if (!rlsConfig?.enabled) return sql;
+        // Setting says disabled, but boot config said enabled — honor the setting
+        return sql;
+      }
+      // Setting says enabled — build/overlay config from settings
+      const column = getSettingAuto("ATLAS_RLS_COLUMN");
+      const claim = getSettingAuto("ATLAS_RLS_CLAIM");
+      if (column && claim) {
+        rlsConfig = {
+          enabled: true,
+          policies: [{ tables: ["*"], column, claim }],
+          combineWith: rlsConfig?.combineWith ?? "and",
+        };
+      }
+    }
+
     if (!rlsConfig?.enabled) return sql;
 
     const ctx = getRequestContext();

@@ -107,6 +107,24 @@ mock.module("@atlas/api/lib/settings", () => ({
     if (key === "ATLAS_QUERY_TIMEOUT") return "30000";
     return undefined;
   },
+  getSettingAuto: (key: string) => {
+    if (key === "ATLAS_ROW_LIMIT") return "1000";
+    if (key === "ATLAS_QUERY_TIMEOUT") return "30000";
+    return undefined;
+  },
+  getSettingLive: async (key: string) => {
+    if (key === "ATLAS_ROW_LIMIT") return "1000";
+    if (key === "ATLAS_QUERY_TIMEOUT") return "30000";
+    return undefined;
+  },
+  getSettingsForAdmin: () => [],
+  getSettingsRegistry: () => [],
+  getSettingDefinition: () => undefined,
+  setSetting: async () => {},
+  deleteSetting: async () => {},
+  loadSettings: async () => 0,
+  getAllSettingOverrides: async () => [],
+  _resetSettingsCache: () => {},
 }));
 
 mock.module("@atlas/api/lib/cache/index", () => ({

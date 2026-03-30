@@ -39,7 +39,7 @@ import {
   Mail,
   Loader2,
   ExternalLink,
-  Github,
+  GitBranch,
 } from "lucide-react";
 
 // -- Types (mirrors IntegrationStatusSchema in packages/api/src/api/routes/admin-integrations.ts) --
@@ -1208,7 +1208,7 @@ function GitHubCard({
       <CardHeader className="pb-3">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <Github className="size-5 text-muted-foreground" />
+            <GitBranch className="size-5 text-muted-foreground" />
             <CardTitle className="text-base">GitHub</CardTitle>
           </div>
           {statusBadge}
@@ -1668,7 +1668,7 @@ function ChannelIcon({ channel }: { channel: string }) {
     case "gchat":
       return <MessageSquareText className="size-3" />;
     case "github":
-      return <Github className="size-3" />;
+      return <GitBranch className="size-3" />;
     case "webhook":
       return <Webhook className="size-3" />;
     case "email":

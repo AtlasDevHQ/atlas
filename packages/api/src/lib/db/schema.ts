@@ -967,6 +967,42 @@ export const telegramInstallations = pgTable(
 );
 
 // ---------------------------------------------------------------------------
+// Google Chat integration (0007_gchat_installations.sql)
+// ---------------------------------------------------------------------------
+
+export const gchatInstallations = pgTable(
+  "gchat_installations",
+  {
+    projectId: text("project_id").primaryKey(),
+    serviceAccountEmail: text("service_account_email").notNull(),
+    credentialsJson: text("credentials_json").notNull(),
+    orgId: text("org_id"),
+    installedAt: timestamp("installed_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [
+    index("idx_gchat_installations_org").on(t.orgId),
+  ],
+);
+
+// ---------------------------------------------------------------------------
+// GitHub integration (0008_github_installations.sql)
+// ---------------------------------------------------------------------------
+
+export const githubInstallations = pgTable(
+  "github_installations",
+  {
+    userId: text("user_id").primaryKey(),
+    accessToken: text("access_token").notNull(),
+    username: text("username"),
+    orgId: text("org_id"),
+    installedAt: timestamp("installed_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [
+    index("idx_github_installations_org").on(t.orgId),
+  ],
+);
+
+// ---------------------------------------------------------------------------
 // OAuth state (0005_oauth_state.sql)
 // ---------------------------------------------------------------------------
 

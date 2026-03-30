@@ -245,6 +245,8 @@ describe("migrateAuthTables", () => {
             { name: "0004_sandbox_credentials.sql" },
             { name: "0005_oauth_state.sql" },
             { name: "0006_byot_credentials.sql" },
+            { name: "0007_gchat_installations.sql" },
+            { name: "0008_github_installations.sql" },
           ],
         };
       }

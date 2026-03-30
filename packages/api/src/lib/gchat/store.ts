@@ -1,0 +1,210 @@
+/**
+ * Google Chat installation storage.
+ *
+ * Stores per-workspace service account credentials in the internal database.
+ * Google Chat uses service accounts (not OAuth). Each workspace admin
+ * pastes their service account JSON key (BYOT).
+ */
+
+import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
+import { createLogger } from "@atlas/api/lib/logger";
+
+const log = createLogger("gchat-store");
+
+export interface GChatInstallation {
+  project_id: string;
+  service_account_email: string;
+  /** Full service account key JSON. Contains secret (private_key) — do not expose in API responses. */
+  credentials_json: string;
+  org_id: string | null;
+  installed_at: string;
+}
+
+// ---------------------------------------------------------------------------
+// Shared row parser
+// ---------------------------------------------------------------------------
+
+function parseInstallationRow(
+  row: Record<string, unknown>,
+  context: Record<string, unknown>,
+): GChatInstallation | null {
+  const projectId = row.project_id;
+  const serviceAccountEmail = row.service_account_email;
+  const credentialsJson = row.credentials_json;
+  if (
+    typeof projectId !== "string" || !projectId ||
+    typeof serviceAccountEmail !== "string" || !serviceAccountEmail ||
+    typeof credentialsJson !== "string" || !credentialsJson
+  ) {
+    log.warn(context, "Invalid Google Chat installation record in database");
+    return null;
+  }
+  return {
+    project_id: projectId,
+    service_account_email: serviceAccountEmail,
+    credentials_json: credentialsJson,
+    org_id: typeof row.org_id === "string" ? row.org_id : null,
+    installed_at: typeof row.installed_at === "string" ? row.installed_at : new Date().toISOString(),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Read operations
+// ---------------------------------------------------------------------------
+
+/**
+ * Get the Google Chat installation for a project ID.
+ */
+export async function getGChatInstallation(
+  projectId: string,
+): Promise<GChatInstallation | null> {
+  if (!hasInternalDB()) {
+    return null;
+  }
+
+  try {
+    const rows = await internalQuery<Record<string, unknown>>(
+      "SELECT project_id, service_account_email, credentials_json, org_id, installed_at::text FROM gchat_installations WHERE project_id = $1",
+      [projectId],
+    );
+    if (rows.length > 0) {
+      return parseInstallationRow(rows[0], { projectId });
+    }
+    return null;
+  } catch (err) {
+    log.error(
+      { err: err instanceof Error ? err.message : String(err), projectId },
+      "Failed to query gchat_installations",
+    );
+    throw err;
+  }
+}
+
+/**
+ * Get the Google Chat installation for an org. Returns null if not found or
+ * if no internal database is configured.
+ */
+export async function getGChatInstallationByOrg(
+  orgId: string,
+): Promise<GChatInstallation | null> {
+  if (!hasInternalDB()) {
+    return null;
+  }
+
+  try {
+    const rows = await internalQuery<Record<string, unknown>>(
+      "SELECT project_id, service_account_email, credentials_json, org_id, installed_at::text FROM gchat_installations WHERE org_id = $1",
+      [orgId],
+    );
+    if (rows.length > 0) {
+      return parseInstallationRow(rows[0], { orgId });
+    }
+    return null;
+  } catch (err) {
+    log.error(
+      { err: err instanceof Error ? err.message : String(err), orgId },
+      "Failed to query gchat_installations by org",
+    );
+    throw err;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Write operations
+// ---------------------------------------------------------------------------
+
+/**
+ * Save or update a Google Chat installation (service account submission).
+ * Throws if the service account is already bound to a different organization (hijack protection).
+ * Throws if the database write fails.
+ */
+export async function saveGChatInstallation(
+  projectId: string,
+  opts: { orgId?: string; serviceAccountEmail: string; credentialsJson: string },
+): Promise<void> {
+  if (!hasInternalDB()) {
+    throw new Error("Cannot save Google Chat installation — no internal database configured");
+  }
+
+  const orgId = opts.orgId ?? null;
+
+  try {
+    // Reject if already bound to a different org (hijack protection)
+    const existing = await internalQuery<Record<string, unknown>>(
+      "SELECT org_id FROM gchat_installations WHERE project_id = $1",
+      [projectId],
+    );
+
+    if (existing.length > 0) {
+      const existingOrgId = existing[0].org_id;
+      if (existingOrgId && orgId && existingOrgId !== orgId) {
+        throw new Error(
+          `Service account ${projectId} is already bound to a different organization. ` +
+          `Disconnect the existing installation first.`,
+        );
+      }
+    }
+
+    await internalQuery(
+      `INSERT INTO gchat_installations (project_id, service_account_email, credentials_json, org_id)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (project_id) DO UPDATE SET
+         service_account_email = $2,
+         credentials_json = $3,
+         org_id = COALESCE($4, gchat_installations.org_id),
+         installed_at = now()`,
+      [projectId, opts.serviceAccountEmail, opts.credentialsJson, orgId],
+    );
+  } catch (err) {
+    log.error(
+      { err: err instanceof Error ? err.message : String(err), projectId },
+      "Failed to save gchat_installations",
+    );
+    throw err;
+  }
+}
+
+/**
+ * Remove a Google Chat installation by project ID.
+ * Throws if no internal DB or if the query fails.
+ */
+export async function deleteGChatInstallation(projectId: string): Promise<void> {
+  if (!hasInternalDB()) {
+    throw new Error("Cannot delete Google Chat installation — no internal database configured");
+  }
+
+  try {
+    await internalQuery("DELETE FROM gchat_installations WHERE project_id = $1", [projectId]);
+  } catch (err) {
+    log.error(
+      { err: err instanceof Error ? err.message : String(err), projectId },
+      "Failed to delete gchat_installations",
+    );
+    throw err;
+  }
+}
+
+/**
+ * Remove the Google Chat installation for an org.
+ * Returns true if a row was deleted, false if no matching row found.
+ * Throws if no internal DB or if the query fails.
+ */
+export async function deleteGChatInstallationByOrg(orgId: string): Promise<boolean> {
+  if (!hasInternalDB()) {
+    throw new Error("Cannot delete Google Chat installation — no internal database configured");
+  }
+
+  try {
+    const rows = await internalQuery<{ project_id: string }>(
+      "DELETE FROM gchat_installations WHERE org_id = $1 RETURNING project_id",
+      [orgId],
+    );
+    return rows.length > 0;
+  } catch (err) {
+    log.error(
+      { err: err instanceof Error ? err.message : String(err), orgId },
+      "Failed to delete gchat_installations by org",
+    );
+    throw err;
+  }
+}

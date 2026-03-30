@@ -676,7 +676,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 
 ### Finishing Touches (P2)
 
-- [ ] Email integration connect flow in Integrations hub (#1028)
+- [x] Email integration connect flow in Integrations hub (#1028)
 - [ ] Self-hosted deploy validation via GH Actions for template repos (#1029)
 
 ### Dual-Mode Integrations (BYOT)

@@ -138,7 +138,7 @@ export async function sendOnboardingEmail(
       to: email,
       subject: rendered.subject,
       html: rendered.html,
-    });
+    }, orgId);
 
     if (result.success) {
       await recordSentEmail(userId, orgId, step, triggeredBy);

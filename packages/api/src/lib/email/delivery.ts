@@ -1,11 +1,11 @@
 /**
  * Email delivery abstraction.
  *
- * Supports two delivery backends:
- * - Webhook via ATLAS_SMTP_URL (POST JSON to any email API endpoint)
- * - Resend API via RESEND_API_KEY (existing scheduler integration)
- *
- * Falls back to logging when neither is configured (dev mode).
+ * Supports delivery backends (checked in order):
+ * 1. DB-stored email config per org (when orgId is provided)
+ * 2. Webhook via ATLAS_SMTP_URL (POST JSON to any email API endpoint)
+ * 3. Resend API via RESEND_API_KEY (existing scheduler integration)
+ * 4. Logging fallback when nothing is configured (dev mode).
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
@@ -25,30 +25,141 @@ export interface DeliveryResult {
 }
 
 /**
+ * Get the email transport config for an org from the internal database.
+ * Returns null if no DB config exists or if the internal DB is not available.
+ */
+export async function getEmailTransport(
+  orgId: string,
+): Promise<{ provider: string; senderAddress: string; config: Record<string, unknown> } | null> {
+  try {
+    const { getEmailInstallationByOrg } = await import("@atlas/api/lib/email/store");
+    const install = await getEmailInstallationByOrg(orgId);
+    if (install) {
+      return {
+        provider: install.provider,
+        senderAddress: install.sender_address,
+        config: install.config as unknown as Record<string, unknown>,
+      };
+    }
+  } catch (err) {
+    log.debug(
+      { orgId, err: err instanceof Error ? err.message : String(err) },
+      "Could not load email transport from DB — falling back to env vars",
+    );
+  }
+  return null;
+}
+
+/**
  * Send an email using the configured delivery backend.
  *
- * Priority: ATLAS_SMTP_URL (webhook) → RESEND_API_KEY → console log (dev fallback).
+ * Priority: DB config (per-org) → ATLAS_SMTP_URL (webhook) → RESEND_API_KEY → console log (dev fallback).
+ *
+ * Pass `orgId` to enable DB-backed email config lookup. When omitted, falls back to env vars.
  */
-export async function sendEmail(message: EmailMessage): Promise<DeliveryResult> {
+export async function sendEmail(message: EmailMessage, orgId?: string): Promise<DeliveryResult> {
+  // 1. Try DB-stored config for the org
+  if (orgId) {
+    const transport = await getEmailTransport(orgId);
+    if (transport) {
+      return deliverViaTransport(message, transport);
+    }
+  }
+
   const fromAddress = process.env.ATLAS_EMAIL_FROM ?? "Atlas <noreply@useatlas.dev>";
 
-  // Webhook delivery (generic email API)
+  // 2. Webhook delivery (generic email API)
   if (process.env.ATLAS_SMTP_URL) {
     return deliverWebhook(message, fromAddress);
   }
 
-  // Resend API delivery (same provider as scheduler)
+  // 3. Resend API delivery (same provider as scheduler)
   if (process.env.RESEND_API_KEY) {
     return deliverResend(message, fromAddress);
   }
 
-  // Dev fallback — log instead of sending. Returns success: false so the email
+  // 4. Dev fallback — log instead of sending. Returns success: false so the email
   // is not recorded as sent, allowing retry when a provider is configured.
   log.warn(
     { to: message.to, subject: message.subject },
     "Email delivery skipped — no ATLAS_SMTP_URL or RESEND_API_KEY configured",
   );
   return { success: false, provider: "log", error: "No email delivery backend configured (set ATLAS_SMTP_URL or RESEND_API_KEY)" };
+}
+
+/**
+ * Deliver an email using a DB-stored transport config.
+ */
+async function deliverViaTransport(
+  message: EmailMessage,
+  transport: { provider: string; senderAddress: string; config: Record<string, unknown> },
+): Promise<DeliveryResult> {
+  const from = transport.senderAddress;
+
+  switch (transport.provider) {
+    case "sendgrid": {
+      const apiKey = transport.config.apiKey;
+      if (typeof apiKey !== "string") return { success: false, provider: "log", error: "Missing SendGrid API key in stored config" };
+      try {
+        const res = await fetch("https://api.sendgrid.com/v3/mail/send", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
+          body: JSON.stringify({
+            personalizations: [{ to: [{ email: message.to }] }],
+            from: { email: from },
+            subject: message.subject,
+            content: [{ type: "text/html", value: message.html }],
+          }),
+          signal: AbortSignal.timeout(15_000),
+        });
+        if (!res.ok) {
+          const text = await res.text().catch(() => "");
+          log.error({ to: message.to, status: res.status }, "SendGrid delivery failed");
+          return { success: false, provider: "webhook", error: `SendGrid error (${res.status}): ${text.slice(0, 200)}` };
+        }
+        log.info({ to: message.to, subject: message.subject }, "Email sent via SendGrid (DB config)");
+        return { success: true, provider: "webhook" };
+      } catch (err) {
+        return { success: false, provider: "webhook", error: err instanceof Error ? err.message : String(err) };
+      }
+    }
+
+    case "postmark": {
+      const serverToken = transport.config.serverToken;
+      if (typeof serverToken !== "string") return { success: false, provider: "log", error: "Missing Postmark token in stored config" };
+      try {
+        const res = await fetch("https://api.postmarkapp.com/email", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-Postmark-Server-Token": serverToken },
+          body: JSON.stringify({ From: from, To: message.to, Subject: message.subject, HtmlBody: message.html }),
+          signal: AbortSignal.timeout(15_000),
+        });
+        if (!res.ok) {
+          const text = await res.text().catch(() => "");
+          log.error({ to: message.to, status: res.status }, "Postmark delivery failed");
+          return { success: false, provider: "webhook", error: `Postmark error (${res.status}): ${text.slice(0, 200)}` };
+        }
+        log.info({ to: message.to, subject: message.subject }, "Email sent via Postmark (DB config)");
+        return { success: true, provider: "webhook" };
+      } catch (err) {
+        return { success: false, provider: "webhook", error: err instanceof Error ? err.message : String(err) };
+      }
+    }
+
+    case "resend": {
+      const apiKey = transport.config.apiKey;
+      if (typeof apiKey !== "string") return { success: false, provider: "log", error: "Missing Resend API key in stored config" };
+      return deliverResend(message, from, apiKey);
+    }
+
+    default:
+      // For smtp/ses, fall through to ATLAS_SMTP_URL if available
+      if (process.env.ATLAS_SMTP_URL) {
+        return deliverWebhook(message, from);
+      }
+      log.warn({ to: message.to, provider: transport.provider }, "DB email config found but provider requires ATLAS_SMTP_URL bridge");
+      return { success: false, provider: "log", error: `${transport.provider} provider requires ATLAS_SMTP_URL bridge` };
+  }
 }
 
 /**
@@ -85,13 +196,14 @@ async function deliverWebhook(message: EmailMessage, from: string): Promise<Deli
   }
 }
 
-async function deliverResend(message: EmailMessage, from: string): Promise<DeliveryResult> {
+async function deliverResend(message: EmailMessage, from: string, apiKey?: string): Promise<DeliveryResult> {
+  const key = apiKey ?? process.env.RESEND_API_KEY;
   try {
     const resp = await fetch("https://api.resend.com/emails", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${process.env.RESEND_API_KEY}`,
+        Authorization: `Bearer ${key}`,
       },
       body: JSON.stringify({
         from,

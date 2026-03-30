@@ -149,6 +149,12 @@ mock.module("@atlas/api/lib/slack/store", () => ({
   ENV_TEAM_ID: "env",
 }));
 
+mock.module("@atlas/api/lib/email/store", () => ({
+  getEmailInstallationByOrg: mock(async () => null),
+  saveEmailInstallation: mock(async () => {}),
+  deleteEmailInstallationByOrg: mock(async () => false),
+}));
+
 // --- Other mocks needed by the admin router ---
 
 mock.module("@atlas/api/lib/cache", () => ({

@@ -75,7 +75,7 @@ export function Nav({ currentPage, logoHref = "/" }: { currentPage?: string; log
 
       {/* Mobile dropdown */}
       {open && (
-        <div className="absolute right-6 left-6 top-full z-50 mt-1 flex flex-col gap-1 rounded-lg border border-zinc-800/60 bg-zinc-950/95 p-2 backdrop-blur-md sm:hidden">
+        <div className="absolute right-6 left-6 top-full z-50 mt-1 flex flex-col gap-1 rounded-lg border border-zinc-800/60 bg-zinc-950 p-2 shadow-xl sm:hidden">
           {NAV_LINKS.map((link) => {
             const isActive = currentPage === link.href;
             return (

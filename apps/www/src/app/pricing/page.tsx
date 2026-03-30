@@ -112,7 +112,7 @@ const COMPARISON: ComparisonRow[] = [
   { feature: "Text-to-SQL agent", selfHosted: true, trial: true, team: true, enterprise: true },
   { feature: "Semantic layer", selfHosted: true, trial: true, team: true, enterprise: true },
   { feature: "All 7 databases", selfHosted: true, trial: true, team: true, enterprise: true },
-  { feature: "20+ plugins", selfHosted: true, trial: true, team: true, enterprise: true },
+  { feature: "21+ plugins", selfHosted: true, trial: true, team: true, enterprise: true },
   { feature: "Embeddable widget", selfHosted: true, trial: true, team: true, enterprise: true },
   { feature: "Admin console", selfHosted: true, trial: true, team: true, enterprise: true },
   { feature: "MCP server", selfHosted: true, trial: true, team: true, enterprise: true },

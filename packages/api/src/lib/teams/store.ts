@@ -2,9 +2,9 @@
  * Teams installation storage.
  *
  * Stores per-tenant authorization records in the internal database.
- * Unlike Slack, Teams app credentials (appId, appPassword) are platform-level
- * env vars — what changes per-org is the Azure AD tenant authorization
- * (proof that a workspace admin consented to the bot).
+ * In the platform OAuth flow, app credentials (TEAMS_APP_ID, TEAMS_APP_PASSWORD)
+ * come from env vars. In BYOT mode, the app password is stored per-tenant so
+ * workspace admins can connect without platform-level env vars.
  */
 
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
@@ -126,7 +126,7 @@ export async function getTeamsInstallationByOrg(
 // ---------------------------------------------------------------------------
 
 /**
- * Save or update a Teams installation (admin consent flow).
+ * Save or update a Teams installation (admin consent flow or BYOT credential submission).
  * Throws if the database write fails.
  */
 export async function saveTeamsInstallation(

@@ -111,7 +111,7 @@ const getStatusRoute = createRoute({
   summary: "Get integration status",
   description:
     "Returns the status of all configured integrations for the current workspace: " +
-    "Slack, Teams, Discord, Telegram, webhooks, available delivery channels, and deploy mode.",
+    "Slack, Teams, Discord, Telegram, webhooks, available delivery channels, deploy mode, and internal database availability.",
   responses: {
     200: {
       description: "Integration status",
@@ -525,7 +525,7 @@ const connectSlackByotRoute = createRoute({
       },
     },
     400: {
-      description: "Invalid bot token or no active organization",
+      description: "Invalid bot token, no active organization, or internal database not configured",
       content: { "application/json": { schema: ErrorSchema } },
     },
     401: {
@@ -562,6 +562,7 @@ adminIntegrations.openapi(connectSlackByotRoute, async (c) => {
       const { botToken } = c.req.valid("json");
 
       // Validate token by calling Slack's auth.test API.
+      // Inner catches log the original error for debugging but return sanitized user-facing messages.
       const authResult = yield* Effect.tryPromise({
         try: async () => {
           let res: Response;
@@ -570,13 +571,15 @@ adminIntegrations.openapi(connectSlackByotRoute, async (c) => {
               method: "POST",
               headers: { Authorization: `Bearer ${botToken}`, "Content-Type": "application/x-www-form-urlencoded" },
             });
-          } catch {
+          } catch (err) {
+            log.warn({ err: err instanceof Error ? err.message : String(err) }, "Slack auth.test fetch failed");
             return { ok: false as const, error: "Could not reach Slack API. Please try again." };
           }
           let data: { ok: boolean; team_id?: string; team?: string; error?: string };
           try {
             data = (await res.json()) as typeof data;
-          } catch {
+          } catch (err) {
+            log.warn({ err: err instanceof Error ? err.message : String(err) }, "Slack auth.test response parse failed");
             return { ok: false as const, error: "Slack API returned an invalid response" };
           }
           if (!data.ok) {
@@ -584,7 +587,7 @@ adminIntegrations.openapi(connectSlackByotRoute, async (c) => {
           }
           return { ok: true as const, teamId: data.team_id ?? null, workspaceName: data.team ?? null };
         },
-        catch: () => new Error("Slack token validation failed"),
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
       });
 
       if (!authResult.ok) {
@@ -647,7 +650,7 @@ const connectTeamsByotRoute = createRoute({
       },
     },
     400: {
-      description: "Invalid credentials or no active organization",
+      description: "Invalid credentials, no active organization, or internal database not configured",
       content: { "application/json": { schema: ErrorSchema } },
     },
     401: {
@@ -684,6 +687,7 @@ adminIntegrations.openapi(connectTeamsByotRoute, async (c) => {
       const { appId, appPassword } = c.req.valid("json");
 
       // Validate credentials by requesting a client credentials token from Azure AD.
+      // Inner catches log the original error for debugging but return sanitized user-facing messages.
       const tokenResult = yield* Effect.tryPromise({
         try: async () => {
           let res: Response;
@@ -701,13 +705,15 @@ adminIntegrations.openapi(connectTeamsByotRoute, async (c) => {
                 }),
               },
             );
-          } catch {
+          } catch (err) {
+            log.warn({ err: err instanceof Error ? err.message : String(err) }, "Azure AD token fetch failed");
             return { ok: false as const, error: "Could not reach Azure AD. Please try again." };
           }
           let data: { access_token?: string; error?: string; error_description?: string };
           try {
             data = (await res.json()) as typeof data;
-          } catch {
+          } catch (err) {
+            log.warn({ err: err instanceof Error ? err.message : String(err) }, "Azure AD token response parse failed");
             return { ok: false as const, error: "Azure AD returned an invalid response" };
           }
           if (!data.access_token) {
@@ -715,7 +721,7 @@ adminIntegrations.openapi(connectTeamsByotRoute, async (c) => {
           }
           return { ok: true as const };
         },
-        catch: () => new Error("Azure AD token validation failed"),
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
       });
 
       if (!tokenResult.ok) {
@@ -725,11 +731,11 @@ adminIntegrations.openapi(connectTeamsByotRoute, async (c) => {
         );
       }
 
+      // BYOT has no tenant context — use appId as the primary key (tenant_id column)
       yield* Effect.tryPromise({
         try: () =>
           saveTeamsInstallation(appId, {
             orgId,
-            tenantName: appId,
             appPassword,
           }),
         catch: (err) => err instanceof Error ? err : new Error(String(err)),
@@ -780,7 +786,7 @@ const connectDiscordByotRoute = createRoute({
       },
     },
     400: {
-      description: "Invalid bot token or no active organization",
+      description: "Invalid bot token, no active organization, or internal database not configured",
       content: { "application/json": { schema: ErrorSchema } },
     },
     401: {
@@ -817,6 +823,7 @@ adminIntegrations.openapi(connectDiscordByotRoute, async (c) => {
       const { botToken, applicationId, publicKey } = c.req.valid("json");
 
       // Validate token by calling Discord's /users/@me API.
+      // Inner catches log the original error for debugging but return sanitized user-facing messages.
       const meResult = yield* Effect.tryPromise({
         try: async () => {
           let res: Response;
@@ -824,16 +831,25 @@ adminIntegrations.openapi(connectDiscordByotRoute, async (c) => {
             res = await fetch("https://discord.com/api/v10/users/@me", {
               headers: { Authorization: `Bot ${botToken}` },
             });
-          } catch {
+          } catch (err) {
+            log.warn({ err: err instanceof Error ? err.message : String(err) }, "Discord /users/@me fetch failed");
             return { ok: false as const, error: "Could not reach Discord API. Please try again." };
           }
           if (!res.ok) {
-            return { ok: false as const, error: `Discord API returned ${res.status}` };
+            let detail = `status ${res.status}`;
+            try {
+              const errBody = (await res.json()) as { message?: string };
+              if (errBody.message) detail = errBody.message;
+            } catch {
+              // intentionally ignored: response body may not be JSON
+            }
+            return { ok: false as const, error: `Discord API error: ${detail}` };
           }
           let data: { id?: string; username?: string };
           try {
             data = (await res.json()) as typeof data;
-          } catch {
+          } catch (err) {
+            log.warn({ err: err instanceof Error ? err.message : String(err) }, "Discord /users/@me response parse failed");
             return { ok: false as const, error: "Discord API returned an invalid response" };
           }
           if (!data.id) {
@@ -841,17 +857,18 @@ adminIntegrations.openapi(connectDiscordByotRoute, async (c) => {
           }
           return { ok: true as const, botId: data.id, botUsername: data.username ?? null };
         },
-        catch: () => new Error("Discord token validation failed"),
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
       });
 
       if (!meResult.ok) {
         return c.json(
-          { error: "invalid_token", message: `Invalid Discord bot token: ${meResult.error}` },
+          { error: "invalid_token", message: `Discord validation failed: ${meResult.error}` },
           400,
         );
       }
 
-      // Use applicationId as guild_id key for BYOT (no guild context from token validation)
+      // Use applicationId as guild_id primary key for BYOT — no real guild context from
+      // token validation, so each BYOT installation maps 1:1 to a Discord application
       yield* Effect.tryPromise({
         try: () =>
           saveDiscordInstallation(applicationId, {

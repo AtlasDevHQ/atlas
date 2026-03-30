@@ -2,10 +2,10 @@
  * Discord installation storage.
  *
  * Stores per-guild authorization records in the internal database.
- * App credentials (DISCORD_CLIENT_ID, DISCORD_CLIENT_SECRET) are platform-level
- * env vars — what changes per-org is which Discord guild authorized the bot.
- * Like Teams, the bot token itself is a platform-level credential, not stored
- * per-guild.
+ * In the platform OAuth flow, app credentials (DISCORD_CLIENT_ID, etc.) are
+ * platform-level env vars. In BYOT mode, bot credentials (token, application
+ * ID, public key) are stored per-guild so workspace admins can connect without
+ * platform-level env vars.
  */
 
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
@@ -132,7 +132,7 @@ export async function getDiscordInstallationByOrg(
 // ---------------------------------------------------------------------------
 
 /**
- * Save or update a Discord installation (OAuth2 callback).
+ * Save or update a Discord installation (OAuth2 callback or BYOT credential submission).
  * Throws if the guild is already bound to a different organization (hijack protection).
  * Throws if the database write fails.
  */

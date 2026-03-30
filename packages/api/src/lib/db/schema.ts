@@ -920,6 +920,7 @@ export const teamsInstallations = pgTable(
     tenantId: text("tenant_id").primaryKey(),
     orgId: text("org_id"),
     tenantName: text("tenant_name"),
+    appPassword: text("app_password"),
     installedAt: timestamp("installed_at", { withTimezone: true }).defaultNow(),
   },
   (t) => [
@@ -937,6 +938,9 @@ export const discordInstallations = pgTable(
     guildId: text("guild_id").primaryKey(),
     orgId: text("org_id"),
     guildName: text("guild_name"),
+    botToken: text("bot_token"),
+    applicationId: text("application_id"),
+    publicKey: text("public_key"),
     installedAt: timestamp("installed_at", { withTimezone: true }).defaultNow(),
   },
   (t) => [

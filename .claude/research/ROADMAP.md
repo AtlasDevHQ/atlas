@@ -678,6 +678,12 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [ ] Email integration connect flow in Integrations hub (#1028)
 - [ ] Self-hosted deploy validation via GH Actions for template repos (#1029)
 
+### Dual-Mode Integrations (BYOT)
+
+- [x] Slack BYOT — bot token form when OAuth not configured (#1060, PR #1063)
+- [x] Teams BYOT — app credentials form when OAuth not configured (#1061, PR #1063)
+- [x] Discord BYOT — bot credentials form when OAuth not configured (#1062, PR #1063)
+
 ### Follow-ups
 
 - [x] Telegram connect sends empty POST body — botToken not wrapped in body (#1057, PR #1058)

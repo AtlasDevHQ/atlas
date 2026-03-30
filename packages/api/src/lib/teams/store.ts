@@ -2,9 +2,9 @@
  * Teams installation storage.
  *
  * Stores per-tenant authorization records in the internal database.
- * Unlike Slack, Teams app credentials (appId, appPassword) are platform-level
- * env vars — what changes per-org is the Azure AD tenant authorization
- * (proof that a workspace admin consented to the bot).
+ * In the platform OAuth flow, app credentials (TEAMS_APP_ID, TEAMS_APP_PASSWORD)
+ * come from env vars. In BYOT mode, the app password is stored per-tenant so
+ * workspace admins can connect without platform-level env vars.
  */
 
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
@@ -16,6 +16,7 @@ export interface TeamsInstallation {
   tenant_id: string;
   org_id: string | null;
   tenant_name: string | null;
+  app_password: string | null;
   installed_at: string;
 }
 
@@ -40,6 +41,7 @@ function parseInstallationRow(
     tenant_id: tenantIdVal,
     org_id: typeof row.org_id === "string" ? row.org_id : null,
     tenant_name: typeof row.tenant_name === "string" ? row.tenant_name : null,
+    app_password: typeof row.app_password === "string" ? row.app_password : null,
     installed_at: typeof row.installed_at === "string" ? row.installed_at : new Date().toISOString(),
   };
 }
@@ -58,7 +60,7 @@ export async function getTeamsInstallation(
   if (hasInternalDB()) {
     try {
       const rows = await internalQuery<Record<string, unknown>>(
-        "SELECT tenant_id, org_id, tenant_name, installed_at::text FROM teams_installations WHERE tenant_id = $1",
+        "SELECT tenant_id, org_id, tenant_name, app_password, installed_at::text FROM teams_installations WHERE tenant_id = $1",
         [tenantId],
       );
       if (rows.length > 0) {
@@ -81,6 +83,7 @@ export async function getTeamsInstallation(
       tenant_id: tenantId,
       org_id: null,
       tenant_name: null,
+      app_password: null,
       installed_at: new Date().toISOString(),
     };
   }
@@ -102,7 +105,7 @@ export async function getTeamsInstallationByOrg(
 
   try {
     const rows = await internalQuery<Record<string, unknown>>(
-      "SELECT tenant_id, org_id, tenant_name, installed_at::text FROM teams_installations WHERE org_id = $1",
+      "SELECT tenant_id, org_id, tenant_name, app_password, installed_at::text FROM teams_installations WHERE org_id = $1",
       [orgId],
     );
     if (rows.length > 0) {
@@ -123,12 +126,12 @@ export async function getTeamsInstallationByOrg(
 // ---------------------------------------------------------------------------
 
 /**
- * Save or update a Teams installation (admin consent flow).
+ * Save or update a Teams installation (admin consent flow or BYOT credential submission).
  * Throws if the database write fails.
  */
 export async function saveTeamsInstallation(
   tenantId: string,
-  opts?: { orgId?: string; tenantName?: string },
+  opts?: { orgId?: string; tenantName?: string; appPassword?: string },
 ): Promise<void> {
   if (!hasInternalDB()) {
     throw new Error("Cannot save Teams installation — no internal database configured");
@@ -136,6 +139,7 @@ export async function saveTeamsInstallation(
 
   const orgId = opts?.orgId ?? null;
   const tenantName = opts?.tenantName ?? null;
+  const appPassword = opts?.appPassword ?? null;
 
   try {
     // Reject if the tenant is already bound to a different org (prevents hijacking).
@@ -156,13 +160,14 @@ export async function saveTeamsInstallation(
     }
 
     await internalQuery(
-      `INSERT INTO teams_installations (tenant_id, org_id, tenant_name)
-       VALUES ($1, $2, $3)
+      `INSERT INTO teams_installations (tenant_id, org_id, tenant_name, app_password)
+       VALUES ($1, $2, $3, $4)
        ON CONFLICT (tenant_id) DO UPDATE SET
          org_id = COALESCE($2, teams_installations.org_id),
          tenant_name = COALESCE($3, teams_installations.tenant_name),
+         app_password = COALESCE($4, teams_installations.app_password),
          installed_at = now()`,
-      [tenantId, orgId, tenantName],
+      [tenantId, orgId, tenantName, appPassword],
     );
   } catch (err) {
     log.error(

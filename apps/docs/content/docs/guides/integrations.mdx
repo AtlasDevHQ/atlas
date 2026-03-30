@@ -23,7 +23,7 @@ The page shows a card for each integration with its connection status:
 
 - **Connected** — Integration is active and working
 - **Disconnected** — Integration is available but not connected
-- **Not Available** — (SaaS only) Integration is not configured for this workspace
+- **Not Available** — Integration cannot be connected (no OAuth configured and no internal database for BYOT)
 
 A **Delivery Channels** card at the bottom summarizes all available notification channels (email, Slack, webhook) for use with [scheduled tasks](/guides/scheduled-tasks).
 
@@ -35,19 +35,21 @@ Connect Slack to enable the `/atlas` slash command and thread follow-ups in Slac
 
 ### Self-Hosted Setup
 
-There are two ways to connect Slack:
+There are three ways to connect Slack:
 
 1. **OAuth (recommended)** — Set `SLACK_CLIENT_ID` and `SLACK_CLIENT_SECRET`, then click **Connect to Slack** in the admin UI. This opens Slack's OAuth flow and stores the token per-workspace.
 
-2. **Environment variable** — Set `SLACK_BOT_TOKEN` and `SLACK_SIGNING_SECRET` directly. The integration shows as connected, but cannot be managed from the UI.
+2. **Bot token (BYOT)** — If OAuth is not configured but an internal database is available (`DATABASE_URL`), the card shows a bot token form. Create a [Slack app](https://api.slack.com/apps), copy the Bot User OAuth Token (`xoxb-...`), and enter it on the Integrations page. The token is validated via `auth.test` and stored per-workspace.
+
+3. **Environment variable** — Set `SLACK_BOT_TOKEN` and `SLACK_SIGNING_SECRET` directly. The integration shows as connected, but cannot be managed from the UI.
 
 <Callout type="info">
-When using environment variables, the Slack card shows "Using environment variable (SLACK_BOT_TOKEN)" and the Disconnect button is hidden. To enable self-serve management, configure OAuth credentials instead.
+When using environment variables, the Slack card shows "Using environment variable (SLACK_BOT_TOKEN)" and the Disconnect button is hidden. To enable self-serve management, configure OAuth credentials or use the BYOT token form.
 </Callout>
 
 ### SaaS Mode
 
-In SaaS deployments, workspace admins see a **Connect to Slack** button if the platform has OAuth configured. If not, the card shows **Not Available** with a message to contact the administrator.
+In SaaS deployments, workspace admins see a **Connect to Slack** button if the platform has OAuth configured. If OAuth is not configured, the card falls back to the BYOT token form (since SaaS always has an internal database). The card only shows **Not Available** when neither OAuth nor BYOT is possible.
 
 ### Disconnecting
 
@@ -63,11 +65,15 @@ Connect Microsoft Teams to enable `@atlas` mentions and channel conversations.
 
 ### Self-Hosted Setup
 
-Set `TEAMS_APP_ID` and `TEAMS_APP_PASSWORD` environment variables. The admin UI **Connect to Teams** button appears once `TEAMS_APP_ID` is detected, and initiates the admin consent flow.
+There are two ways to connect Teams:
+
+1. **Platform OAuth (recommended)** — Set `TEAMS_APP_ID` and `TEAMS_APP_PASSWORD` environment variables. The admin UI **Connect to Teams** button appears once `TEAMS_APP_ID` is detected, and initiates the admin consent flow.
+
+2. **App credentials (BYOT)** — If platform env vars are not set but an internal database is available (`DATABASE_URL`), the card shows a credentials form. Create an [Azure Bot](https://dev.botframework.com/bots/new), copy the App ID and App Password, and enter them on the Integrations page. Credentials are validated via Azure AD client credentials token acquisition.
 
 ### SaaS Mode
 
-Workspace admins see a **Connect to Teams** button if the platform has Teams configured. The admin consent flow redirects to Microsoft's consent page and returns the tenant connection to Atlas.
+Workspace admins see a **Connect to Teams** button if the platform has Teams configured. If not, the card falls back to the BYOT credentials form. The card only shows **Not Available** when neither OAuth nor BYOT is possible.
 
 ### Connection Details
 
@@ -89,11 +95,15 @@ Connect Discord to enable bot commands and server conversations.
 
 ### Self-Hosted Setup
 
-Set `DISCORD_CLIENT_ID` and `DISCORD_CLIENT_SECRET` environment variables. The admin UI **Connect to Discord** button appears once `DISCORD_CLIENT_ID` is detected, and initiates the OAuth flow to add the bot to your server.
+There are two ways to connect Discord:
+
+1. **Platform OAuth (recommended)** — Set `DISCORD_CLIENT_ID` and `DISCORD_CLIENT_SECRET` environment variables. The admin UI **Connect to Discord** button appears once `DISCORD_CLIENT_ID` is detected, and initiates the OAuth flow to add the bot to your server.
+
+2. **Bot credentials (BYOT)** — If platform env vars are not set but an internal database is available (`DATABASE_URL`), the card shows a credentials form. Create a [Discord application](https://discord.com/developers/applications), copy the Bot Token, Application ID, and Public Key, and enter them on the Integrations page. The bot token is validated via the Discord API.
 
 ### SaaS Mode
 
-Workspace admins see a **Connect to Discord** button if the platform has Discord OAuth configured. If not, the card shows **Not Available**.
+Workspace admins see a **Connect to Discord** button if the platform has Discord OAuth configured. If not, the card falls back to the BYOT credentials form. The card only shows **Not Available** when neither OAuth nor BYOT is possible.
 
 ### Connection Details
 
@@ -148,12 +158,13 @@ In SaaS mode with webhook support enabled, a **Create Webhook** link navigates t
 
 | Behavior | Self-Hosted | SaaS |
 |----------|-------------|------|
-| Slack setup | OAuth credentials or env vars | OAuth via platform, self-serve connect |
-| Teams setup | Env vars + admin consent | Admin consent flow |
-| Discord setup | Env vars + OAuth flow | OAuth via platform, self-serve connect |
+| Slack setup | OAuth, BYOT token, or env vars | OAuth via platform, or BYOT token form |
+| Teams setup | Env vars + admin consent, or BYOT | Admin consent flow, or BYOT credentials |
+| Discord setup | Env vars + OAuth, or BYOT | OAuth via platform, or BYOT credentials |
 | Telegram setup | Bot token + internal DB | Bot token (always configurable) |
-| Env var hints | Shown when credentials missing | Hidden — shows "Not Available" instead |
-| Disconnect | Available when OAuth configured | Available for connected integrations |
+| BYOT fallback | Shown when OAuth not configured + internal DB available | Shown when platform OAuth not configured |
+| Env var hints | Shown when no OAuth and no internal DB | Hidden — shows "Not Available" instead |
+| Disconnect | Available for all connected integrations | Available for all connected integrations |
 
 ---
 
@@ -164,8 +175,11 @@ All endpoints require admin authentication.
 | Method | Path | Description |
 |--------|------|-------------|
 | `GET` | `/api/v1/admin/integrations/status` | Get all integration statuses |
+| `POST` | `/api/v1/admin/integrations/slack/byot` | Connect Slack via bot token (BYOT) |
 | `DELETE` | `/api/v1/admin/integrations/slack` | Disconnect Slack |
+| `POST` | `/api/v1/admin/integrations/teams/byot` | Connect Teams via app credentials (BYOT) |
 | `DELETE` | `/api/v1/admin/integrations/teams` | Disconnect Teams |
+| `POST` | `/api/v1/admin/integrations/discord/byot` | Connect Discord via bot credentials (BYOT) |
 | `DELETE` | `/api/v1/admin/integrations/discord` | Disconnect Discord |
 | `POST` | `/api/v1/admin/integrations/telegram` | Connect Telegram (validates bot token) |
 | `DELETE` | `/api/v1/admin/integrations/telegram` | Disconnect Telegram |

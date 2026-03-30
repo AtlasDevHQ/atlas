@@ -413,7 +413,12 @@ describe("BYOT routes", () => {
       expect(res.status).toBe(400);
     });
 
-    it("returns 400 with invalid bot token", async () => {
+    it("returns 422 with missing botToken", async () => {
+      const res = await jsonPost("/api/v1/admin/integrations/telegram", {});
+      expect(res.status).toBe(422);
+    });
+
+    it("returns 400 with invalid bot token (HTTP error)", async () => {
       mockFetchImpl.mockImplementation(() =>
         Promise.resolve(
           new Response(JSON.stringify({ ok: false, description: "Unauthorized" }), {
@@ -424,6 +429,34 @@ describe("BYOT routes", () => {
 
       const res = await jsonPost("/api/v1/admin/integrations/telegram", {
         botToken: "invalid-token",
+      });
+      expect(res.status).toBe(400);
+      const data = (await res.json()) as { error: string };
+      expect(data.error).toBe("invalid_token");
+    });
+
+    it("returns 400 with invalid bot token (body ok:false)", async () => {
+      mockFetchImpl.mockImplementation(() =>
+        Promise.resolve(
+          new Response(JSON.stringify({ ok: false }), { status: 200 }),
+        ),
+      );
+
+      const res = await jsonPost("/api/v1/admin/integrations/telegram", {
+        botToken: "invalid-token",
+      });
+      expect(res.status).toBe(400);
+      const data = (await res.json()) as { error: string };
+      expect(data.error).toBe("invalid_token");
+    });
+
+    it("returns 400 when fetch throws (network error)", async () => {
+      mockFetchImpl.mockImplementation(() => {
+        throw new Error("ECONNREFUSED");
+      });
+
+      const res = await jsonPost("/api/v1/admin/integrations/telegram", {
+        botToken: "123:ABC",
       });
       expect(res.status).toBe(400);
       const data = (await res.json()) as { error: string };
@@ -449,6 +482,11 @@ describe("BYOT routes", () => {
       expect(data.message).toContain("connected");
       expect(data.botUsername).toBe("atlas_bot");
       expect(mockSaveTelegramInstallation).toHaveBeenCalledTimes(1);
+      expect(mockSaveTelegramInstallation).toHaveBeenCalledWith("777", {
+        orgId: "org-1",
+        botUsername: "atlas_bot",
+        botToken: "123:ABC",
+      });
     });
 
     it("returns 500 when store save throws (org hijack)", async () => {
@@ -470,12 +508,12 @@ describe("BYOT routes", () => {
       expect(res.status).toBe(500);
     });
 
-    it("returns 400 when no internal DB", async () => {
+    it("returns 404 when no internal DB", async () => {
       mockHasInternalDB = false;
       const res = await jsonPost("/api/v1/admin/integrations/telegram", {
         botToken: "123:ABC",
       });
-      // requireOrgContext returns 404 when no internal DB
+      // requireOrgContext middleware returns 404 when no internal DB
       expect(res.status).toBe(404);
     });
   });
@@ -544,6 +582,19 @@ describe("BYOT routes", () => {
       expect(data.error).toBe("invalid_token");
     });
 
+    it("returns 400 when fetch throws (network error)", async () => {
+      mockFetchImpl.mockImplementation(() => {
+        throw new Error("ECONNREFUSED");
+      });
+
+      const res = await jsonPost("/api/v1/admin/integrations/slack/byot", {
+        botToken: "xoxb-test-token",
+      });
+      expect(res.status).toBe(400);
+      const data = (await res.json()) as { error: string };
+      expect(data.error).toBe("invalid_token");
+    });
+
     it("saves installation on success", async () => {
       mockFetchImpl.mockImplementation(() =>
         Promise.resolve(
@@ -564,6 +615,10 @@ describe("BYOT routes", () => {
       expect(data.workspaceName).toBe("My Workspace");
       expect(data.teamId).toBe("T123");
       expect(mockSaveSlackInstallation).toHaveBeenCalledTimes(1);
+      expect(mockSaveSlackInstallation).toHaveBeenCalledWith("T123", "xoxb-test-token", {
+        orgId: "org-1",
+        workspaceName: "My Workspace",
+      });
     });
 
     it("returns 500 when store save throws (org hijack)", async () => {
@@ -654,6 +709,20 @@ describe("BYOT routes", () => {
       expect(data.error).toBe("invalid_credentials");
     });
 
+    it("returns 400 when fetch throws (network error)", async () => {
+      mockFetchImpl.mockImplementation(() => {
+        throw new Error("ECONNREFUSED");
+      });
+
+      const res = await jsonPost("/api/v1/admin/integrations/teams/byot", {
+        appId: "app-123",
+        appPassword: "bad-secret",
+      });
+      expect(res.status).toBe(400);
+      const data = (await res.json()) as { error: string };
+      expect(data.error).toBe("invalid_credentials");
+    });
+
     it("saves installation on success", async () => {
       mockFetchImpl.mockImplementation(() =>
         Promise.resolve(
@@ -674,6 +743,10 @@ describe("BYOT routes", () => {
       expect(data.message).toContain("connected");
       expect(data.appId).toBe("app-123");
       expect(mockSaveTeamsInstallation).toHaveBeenCalledTimes(1);
+      expect(mockSaveTeamsInstallation).toHaveBeenCalledWith("app-123", {
+        orgId: "org-1",
+        appPassword: "good-secret",
+      });
     });
 
     it("returns 500 when store save throws (org hijack)", async () => {
@@ -767,6 +840,21 @@ describe("BYOT routes", () => {
       expect(data.error).toBe("invalid_token");
     });
 
+    it("returns 400 when fetch throws (network error)", async () => {
+      mockFetchImpl.mockImplementation(() => {
+        throw new Error("ECONNREFUSED");
+      });
+
+      const res = await jsonPost("/api/v1/admin/integrations/discord/byot", {
+        botToken: "discord-bot-token",
+        applicationId: "app-456",
+        publicKey: "pk-789",
+      });
+      expect(res.status).toBe(400);
+      const data = (await res.json()) as { error: string };
+      expect(data.error).toBe("invalid_token");
+    });
+
     it("saves installation on success", async () => {
       mockFetchImpl.mockImplementation(() =>
         Promise.resolve(
@@ -788,6 +876,13 @@ describe("BYOT routes", () => {
       expect(data.message).toContain("connected");
       expect(data.botUsername).toBe("atlas-discord-bot");
       expect(mockSaveDiscordInstallation).toHaveBeenCalledTimes(1);
+      expect(mockSaveDiscordInstallation).toHaveBeenCalledWith("app-456", {
+        orgId: "org-1",
+        guildName: "@atlas-discord-bot",
+        botToken: "discord-bot-token",
+        applicationId: "app-456",
+        publicKey: "pk-789",
+      });
     });
 
     it("returns 500 when store save throws (org hijack)", async () => {

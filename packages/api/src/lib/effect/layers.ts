@@ -354,15 +354,25 @@ export function makeSchedulerLive(
 
       // Clean expired OAuth state every 10 minutes (DB rows + in-memory fallback)
       const oauthCleanupTimer = setInterval(async () => {
+        let cleanExpiredOAuthState: () => Promise<void>;
         try {
-          const { cleanExpiredOAuthState } = await import(
+          ({ cleanExpiredOAuthState } = await import(
             "@atlas/api/lib/auth/oauth-state"
+          ));
+        } catch (err) {
+          log.error(
+            { err: err instanceof Error ? err.message : String(err) },
+            "OAuth state module failed to load — cleanup disabled",
           );
+          clearInterval(oauthCleanupTimer);
+          return;
+        }
+        try {
           await cleanExpiredOAuthState();
         } catch (err) {
           log.warn(
             { err: err instanceof Error ? err.message : String(err) },
-            "OAuth state cleanup failed",
+            "OAuth state cleanup query failed",
           );
         }
       }, 600_000);

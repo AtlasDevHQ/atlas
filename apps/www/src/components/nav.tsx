@@ -13,7 +13,7 @@ export function Nav({ currentPage, logoHref = "/" }: { currentPage?: string; log
   const [open, setOpen] = useState(false);
 
   return (
-    <nav className="animate-fade-in relative mx-auto max-w-5xl px-6 py-6">
+    <nav className="animate-fade-in relative z-50 mx-auto max-w-5xl px-6 py-6">
       <div className="flex items-center justify-between">
         <a href={logoHref} className="flex items-center gap-2.5">
           <AtlasLogo className="h-6 w-6 text-brand" />

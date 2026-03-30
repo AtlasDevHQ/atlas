@@ -151,23 +151,9 @@ export async function saveDiscordInstallation(
   const publicKey = opts?.publicKey ?? null;
 
   try {
-    // Reject if the guild is already bound to a different org (prevents hijacking).
-    const existing = await internalQuery<Record<string, unknown>>(
-      "SELECT org_id FROM discord_installations WHERE guild_id = $1",
-      [guildId],
-    );
-
-    if (existing.length > 0) {
-      const existingOrgId = existing[0].org_id;
-      if (existingOrgId && orgId && existingOrgId !== orgId) {
-        throw new Error(
-          `Guild ${guildId} is already bound to a different organization. ` +
-          `Disconnect the existing installation first.`,
-        );
-      }
-    }
-
-    await internalQuery(
+    // Atomic upsert with hijack protection — the WHERE clause rejects rows
+    // bound to a different org in one statement (no TOCTOU race).
+    const rows = await internalQuery<{ guild_id: string }>(
       `INSERT INTO discord_installations (guild_id, org_id, guild_name, bot_token, application_id, public_key)
        VALUES ($1, $2, $3, $4, $5, $6)
        ON CONFLICT (guild_id) DO UPDATE SET
@@ -176,9 +162,18 @@ export async function saveDiscordInstallation(
          bot_token = COALESCE($4, discord_installations.bot_token),
          application_id = COALESCE($5, discord_installations.application_id),
          public_key = COALESCE($6, discord_installations.public_key),
-         installed_at = now()`,
+         installed_at = now()
+       WHERE discord_installations.org_id IS NULL OR discord_installations.org_id = $2
+       RETURNING guild_id`,
       [guildId, orgId, guildName, botToken, applicationId, publicKey],
     );
+
+    if (rows.length === 0) {
+      throw new Error(
+        `Guild ${guildId} is already bound to a different organization. ` +
+        `Disconnect the existing installation first.`,
+      );
+    }
   } catch (err) {
     log.error(
       { err: err instanceof Error ? err.message : String(err), guildId },

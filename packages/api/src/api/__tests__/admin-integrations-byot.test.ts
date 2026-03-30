@@ -2,7 +2,9 @@
  * Tests for BYOT (Bring Your Own Token) admin integration routes.
  *
  * Tests: POST /integrations/telegram, POST /integrations/slack/byot,
- *        POST /integrations/teams/byot, POST /integrations/discord/byot.
+ *        POST /integrations/teams/byot, POST /integrations/discord/byot,
+ *        POST /integrations/linear, DELETE /integrations/linear,
+ *        POST /integrations/whatsapp, DELETE /integrations/whatsapp.
  */
 
 import {
@@ -183,6 +185,36 @@ mock.module("@atlas/api/lib/telegram/store", () => ({
   deleteTelegramInstallationByOrg: mock(async () => false),
 }));
 
+const mockSaveLinearInstallation: Mock<(...args: unknown[]) => Promise<void>> = mock(
+  async () => {},
+);
+const mockDeleteLinearInstallationByOrg: Mock<(...args: unknown[]) => Promise<boolean>> = mock(
+  async () => true,
+);
+
+mock.module("@atlas/api/lib/linear/store", () => ({
+  getLinearInstallation: mock(async () => null),
+  getLinearInstallationByOrg: mock(async () => null),
+  saveLinearInstallation: mockSaveLinearInstallation,
+  deleteLinearInstallation: mock(async () => {}),
+  deleteLinearInstallationByOrg: mockDeleteLinearInstallationByOrg,
+}));
+
+const mockSaveWhatsAppInstallation: Mock<(...args: unknown[]) => Promise<void>> = mock(
+  async () => {},
+);
+const mockDeleteWhatsAppInstallationByOrg: Mock<(...args: unknown[]) => Promise<boolean>> = mock(
+  async () => true,
+);
+
+mock.module("@atlas/api/lib/whatsapp/store", () => ({
+  getWhatsAppInstallation: mock(async () => null),
+  getWhatsAppInstallationByOrg: mock(async () => null),
+  saveWhatsAppInstallation: mockSaveWhatsAppInstallation,
+  deleteWhatsAppInstallation: mock(async () => {}),
+  deleteWhatsAppInstallationByOrg: mockDeleteWhatsAppInstallationByOrg,
+}));
+
 // --- Other mocks needed by the admin router ---
 
 mock.module("@atlas/api/lib/cache", () => ({
@@ -353,6 +385,14 @@ describe("BYOT routes", () => {
     mockSaveDiscordInstallation.mockImplementation(async () => {});
     mockSaveTelegramInstallation.mockReset();
     mockSaveTelegramInstallation.mockImplementation(async () => {});
+    mockSaveLinearInstallation.mockReset();
+    mockSaveLinearInstallation.mockImplementation(async () => {});
+    mockDeleteLinearInstallationByOrg.mockReset();
+    mockDeleteLinearInstallationByOrg.mockImplementation(async () => true);
+    mockSaveWhatsAppInstallation.mockReset();
+    mockSaveWhatsAppInstallation.mockImplementation(async () => {});
+    mockDeleteWhatsAppInstallationByOrg.mockReset();
+    mockDeleteWhatsAppInstallationByOrg.mockImplementation(async () => true);
     mockAuthenticateRequest.mockImplementation(() =>
       Promise.resolve({
         authenticated: true,
@@ -904,6 +944,396 @@ describe("BYOT routes", () => {
         publicKey: "pk-789",
       });
       expect(res.status).toBe(500);
+    });
+  });
+
+  // ═══════════════════════════════════════════════════════════════════
+  // POST /linear
+  // ═══════════════════════════════════════════════════════════════════
+
+  describe("POST /integrations/linear", () => {
+    it("returns 401 without auth", async () => {
+      mockAuthenticateRequest.mockImplementation(() =>
+        Promise.resolve({
+          authenticated: false,
+          error: "Invalid or expired token",
+          status: 401,
+        }),
+      );
+      const res = await jsonPost("/api/v1/admin/integrations/linear", {
+        apiKey: "lin_api_test",
+      });
+      expect(res.status).toBe(401);
+    });
+
+    it("returns 400 without org context", async () => {
+      mockAuthenticateRequest.mockImplementation(() =>
+        Promise.resolve({
+          authenticated: true,
+          mode: "simple-key",
+          user: {
+            id: "admin-1",
+            mode: "simple-key",
+            label: "Admin",
+            role: "admin",
+            activeOrganizationId: null,
+          },
+        }),
+      );
+      const res = await jsonPost("/api/v1/admin/integrations/linear", {
+        apiKey: "lin_api_test",
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it("returns 422 with missing apiKey", async () => {
+      const res = await jsonPost("/api/v1/admin/integrations/linear", {});
+      expect(res.status).toBe(422);
+    });
+
+    it("returns 400 when Linear API returns HTTP error", async () => {
+      mockFetchImpl.mockImplementation(() =>
+        Promise.resolve(
+          new Response(
+            JSON.stringify({ errors: [{ message: "Authentication required" }] }),
+            { status: 401 },
+          ),
+        ),
+      );
+
+      const res = await jsonPost("/api/v1/admin/integrations/linear", {
+        apiKey: "lin_api_invalid",
+      });
+      expect(res.status).toBe(400);
+      const data = (await res.json()) as { error: string };
+      expect(data.error).toBe("invalid_token");
+    });
+
+    it("returns 400 when Linear API returns GraphQL errors", async () => {
+      mockFetchImpl.mockImplementation(() =>
+        Promise.resolve(
+          new Response(
+            JSON.stringify({ errors: [{ message: "Invalid API key" }] }),
+            { status: 200 },
+          ),
+        ),
+      );
+
+      const res = await jsonPost("/api/v1/admin/integrations/linear", {
+        apiKey: "lin_api_invalid",
+      });
+      expect(res.status).toBe(400);
+      const data = (await res.json()) as { error: string };
+      expect(data.error).toBe("invalid_token");
+    });
+
+    it("returns 400 when fetch throws (network error)", async () => {
+      mockFetchImpl.mockImplementation(() => {
+        throw new Error("ECONNREFUSED");
+      });
+
+      const res = await jsonPost("/api/v1/admin/integrations/linear", {
+        apiKey: "lin_api_test",
+      });
+      expect(res.status).toBe(400);
+      const data = (await res.json()) as { error: string };
+      expect(data.error).toBe("invalid_token");
+    });
+
+    it("saves installation on success", async () => {
+      mockFetchImpl.mockImplementation(() =>
+        Promise.resolve(
+          new Response(
+            JSON.stringify({
+              data: { viewer: { id: "user-123", name: "Test User", email: "test@example.com" } },
+            }),
+            { status: 200 },
+          ),
+        ),
+      );
+
+      const res = await jsonPost("/api/v1/admin/integrations/linear", {
+        apiKey: "lin_api_test",
+      });
+      expect(res.status).toBe(200);
+
+      const data = (await res.json()) as { message: string; userName: string; userEmail: string };
+      expect(data.message).toContain("connected");
+      expect(data.userName).toBe("Test User");
+      expect(data.userEmail).toBe("test@example.com");
+      expect(mockSaveLinearInstallation).toHaveBeenCalledTimes(1);
+      expect(mockSaveLinearInstallation).toHaveBeenCalledWith("user-123", {
+        orgId: "org-1",
+        userName: "Test User",
+        userEmail: "test@example.com",
+        apiKey: "lin_api_test",
+      });
+    });
+
+    it("returns 409 when store save throws (org hijack)", async () => {
+      mockFetchImpl.mockImplementation(() =>
+        Promise.resolve(
+          new Response(
+            JSON.stringify({
+              data: { viewer: { id: "user-123", name: "Test User", email: "test@example.com" } },
+            }),
+            { status: 200 },
+          ),
+        ),
+      );
+      mockSaveLinearInstallation.mockImplementation(() => {
+        throw new Error("Linear user user-123 is already bound to a different organization.");
+      });
+
+      const res = await jsonPost("/api/v1/admin/integrations/linear", {
+        apiKey: "lin_api_test",
+      });
+      expect(res.status).toBe(409);
+      const data = (await res.json()) as { error: string };
+      expect(data.error).toBe("conflict");
+    });
+
+    it("returns 500 when store save throws (non-hijack DB error)", async () => {
+      mockFetchImpl.mockImplementation(() =>
+        Promise.resolve(
+          new Response(
+            JSON.stringify({
+              data: { viewer: { id: "user-123", name: "Test User", email: "test@example.com" } },
+            }),
+            { status: 200 },
+          ),
+        ),
+      );
+      mockSaveLinearInstallation.mockImplementation(() => {
+        throw new Error("connection terminated unexpectedly");
+      });
+
+      const res = await jsonPost("/api/v1/admin/integrations/linear", {
+        apiKey: "lin_api_test",
+      });
+      expect(res.status).toBe(500);
+    });
+
+    it("returns 404 when no internal DB", async () => {
+      mockHasInternalDB = false;
+      const res = await jsonPost("/api/v1/admin/integrations/linear", {
+        apiKey: "lin_api_test",
+      });
+      expect(res.status).toBe(404);
+    });
+  });
+
+  // ═══════════════════════════════════════════════════════════════════
+  // DELETE /linear
+  // ═══════════════════════════════════════════════════════════════════
+
+  describe("DELETE /integrations/linear", () => {
+    it("returns 200 on successful disconnect", async () => {
+      const res = await request("/api/v1/admin/integrations/linear", {
+        method: "DELETE",
+      });
+      expect(res.status).toBe(200);
+      const data = (await res.json()) as { message: string };
+      expect(data.message).toContain("disconnected");
+    });
+
+    it("returns 404 when no installation found", async () => {
+      mockDeleteLinearInstallationByOrg.mockImplementation(async () => false);
+
+      const res = await request("/api/v1/admin/integrations/linear", {
+        method: "DELETE",
+      });
+      expect(res.status).toBe(404);
+    });
+  });
+
+  // ═══════════════════════════════════════════════════════════════════
+  // POST /whatsapp
+  // ═══════════════════════════════════════════════════════════════════
+
+  describe("POST /integrations/whatsapp", () => {
+    it("returns 401 without auth", async () => {
+      mockAuthenticateRequest.mockImplementation(() =>
+        Promise.resolve({
+          authenticated: false,
+          error: "Invalid or expired token",
+          status: 401,
+        }),
+      );
+      const res = await jsonPost("/api/v1/admin/integrations/whatsapp", {
+        phoneNumberId: "12345",
+        accessToken: "EAAtest",
+      });
+      expect(res.status).toBe(401);
+    });
+
+    it("returns 400 without org context", async () => {
+      mockAuthenticateRequest.mockImplementation(() =>
+        Promise.resolve({
+          authenticated: true,
+          mode: "simple-key",
+          user: {
+            id: "admin-1",
+            mode: "simple-key",
+            label: "Admin",
+            role: "admin",
+            activeOrganizationId: null,
+          },
+        }),
+      );
+      const res = await jsonPost("/api/v1/admin/integrations/whatsapp", {
+        phoneNumberId: "12345",
+        accessToken: "EAAtest",
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it("returns 422 with missing fields", async () => {
+      const res = await jsonPost("/api/v1/admin/integrations/whatsapp", {});
+      expect(res.status).toBe(422);
+    });
+
+    it("returns 422 with non-numeric phoneNumberId", async () => {
+      const res = await jsonPost("/api/v1/admin/integrations/whatsapp", {
+        phoneNumberId: "abc-not-numeric",
+        accessToken: "EAAtest",
+      });
+      expect(res.status).toBe(422);
+    });
+
+    it("returns 400 when Meta API returns HTTP error", async () => {
+      mockFetchImpl.mockImplementation(() =>
+        Promise.resolve(
+          new Response(
+            JSON.stringify({ error: { message: "Invalid OAuth access token" } }),
+            { status: 401 },
+          ),
+        ),
+      );
+
+      const res = await jsonPost("/api/v1/admin/integrations/whatsapp", {
+        phoneNumberId: "12345",
+        accessToken: "EAAinvalid",
+      });
+      expect(res.status).toBe(400);
+      const data = (await res.json()) as { error: string };
+      expect(data.error).toBe("invalid_credentials");
+    });
+
+    it("returns 400 when fetch throws (network error)", async () => {
+      mockFetchImpl.mockImplementation(() => {
+        throw new Error("ECONNREFUSED");
+      });
+
+      const res = await jsonPost("/api/v1/admin/integrations/whatsapp", {
+        phoneNumberId: "12345",
+        accessToken: "EAAtest",
+      });
+      expect(res.status).toBe(400);
+      const data = (await res.json()) as { error: string };
+      expect(data.error).toBe("invalid_credentials");
+    });
+
+    it("saves installation on success", async () => {
+      mockFetchImpl.mockImplementation(() =>
+        Promise.resolve(
+          new Response(
+            JSON.stringify({ id: "12345", display_phone_number: "+1 555-0100" }),
+            { status: 200 },
+          ),
+        ),
+      );
+
+      const res = await jsonPost("/api/v1/admin/integrations/whatsapp", {
+        phoneNumberId: "12345",
+        accessToken: "EAAtest",
+      });
+      expect(res.status).toBe(200);
+
+      const data = (await res.json()) as { message: string; displayPhone: string };
+      expect(data.message).toContain("connected");
+      expect(data.displayPhone).toBe("+1 555-0100");
+      expect(mockSaveWhatsAppInstallation).toHaveBeenCalledTimes(1);
+      expect(mockSaveWhatsAppInstallation).toHaveBeenCalledWith("12345", {
+        orgId: "org-1",
+        displayPhone: "+1 555-0100",
+        accessToken: "EAAtest",
+      });
+    });
+
+    it("returns 409 when store save throws (org hijack)", async () => {
+      mockFetchImpl.mockImplementation(() =>
+        Promise.resolve(
+          new Response(
+            JSON.stringify({ id: "12345", display_phone_number: "+1 555-0100" }),
+            { status: 200 },
+          ),
+        ),
+      );
+      mockSaveWhatsAppInstallation.mockImplementation(() => {
+        throw new Error("WhatsApp phone number 12345 is already bound to a different organization.");
+      });
+
+      const res = await jsonPost("/api/v1/admin/integrations/whatsapp", {
+        phoneNumberId: "12345",
+        accessToken: "EAAtest",
+      });
+      expect(res.status).toBe(409);
+      const data = (await res.json()) as { error: string };
+      expect(data.error).toBe("conflict");
+    });
+
+    it("returns 500 when store save throws (non-hijack DB error)", async () => {
+      mockFetchImpl.mockImplementation(() =>
+        Promise.resolve(
+          new Response(
+            JSON.stringify({ id: "12345", display_phone_number: "+1 555-0100" }),
+            { status: 200 },
+          ),
+        ),
+      );
+      mockSaveWhatsAppInstallation.mockImplementation(() => {
+        throw new Error("connection terminated unexpectedly");
+      });
+
+      const res = await jsonPost("/api/v1/admin/integrations/whatsapp", {
+        phoneNumberId: "12345",
+        accessToken: "EAAtest",
+      });
+      expect(res.status).toBe(500);
+    });
+
+    it("returns 404 when no internal DB", async () => {
+      mockHasInternalDB = false;
+      const res = await jsonPost("/api/v1/admin/integrations/whatsapp", {
+        phoneNumberId: "12345",
+        accessToken: "EAAtest",
+      });
+      expect(res.status).toBe(404);
+    });
+  });
+
+  // ═══════════════════════════════════════════════════════════════════
+  // DELETE /whatsapp
+  // ═══════════════════════════════════════════════════════════════════
+
+  describe("DELETE /integrations/whatsapp", () => {
+    it("returns 200 on successful disconnect", async () => {
+      const res = await request("/api/v1/admin/integrations/whatsapp", {
+        method: "DELETE",
+      });
+      expect(res.status).toBe(200);
+      const data = (await res.json()) as { message: string };
+      expect(data.message).toContain("disconnected");
+    });
+
+    it("returns 404 when no installation found", async () => {
+      mockDeleteWhatsAppInstallationByOrg.mockImplementation(async () => false);
+
+      const res = await request("/api/v1/admin/integrations/whatsapp", {
+        method: "DELETE",
+      });
+      expect(res.status).toBe(404);
     });
   });
 });

@@ -199,6 +199,59 @@ Click **Disconnect** and confirm. GitHub integration stops working until you rec
 
 ---
 
+## Linear
+
+Connect Linear for issue tracking and project management integration. Linear uses a **personal API key**.
+
+### Setup
+
+Linear integration requires an internal database (`DATABASE_URL`). It is always BYOT — workspace admins provide their own API key.
+
+1. Go to [Linear workspace settings > API](https://linear.app/settings/api) and create a new API key
+2. On the Integrations page, paste the key into the **API Key** field on the Linear card
+3. Click **Connect** — the key is validated via the Linear GraphQL API (`{ viewer { id name email } }`)
+
+### Connection Details
+
+When connected, the card shows:
+
+- **User** — The Linear user name associated with the API key
+- **Email** — The Linear user email
+- **Connected** — Timestamp of when the connection was established
+
+### Disconnecting
+
+Click **Disconnect** and confirm. Linear integration stops working until you reconnect with a new API key.
+
+---
+
+## WhatsApp
+
+Connect WhatsApp for messaging and notification delivery. WhatsApp uses the **Cloud API** via Meta Business Suite.
+
+### Setup
+
+WhatsApp integration requires an internal database (`DATABASE_URL`). It is always BYOT — workspace admins provide their own Cloud API credentials.
+
+1. Create or access your [WhatsApp Business Account](https://business.facebook.com/settings/whatsapp-business-accounts) in Meta Business Suite
+2. Copy the **Phone Number ID** and generate a **permanent access token**
+3. On the Integrations page, enter both values on the WhatsApp card
+4. Click **Connect** — the credentials are validated via the Meta Graph API (`GET /v18.0/{phoneNumberId}`)
+
+### Connection Details
+
+When connected, the card shows:
+
+- **Phone** — The WhatsApp display phone number
+- **Phone Number ID** — The Meta phone number identifier
+- **Connected** — Timestamp of when the connection was established
+
+### Disconnecting
+
+Click **Disconnect** and confirm. WhatsApp messaging stops working until you reconnect with new credentials.
+
+---
+
 ## Webhooks
 
 The webhook card shows the count of active webhook delivery tasks. Webhooks are created via [Scheduled Tasks](/guides/scheduled-tasks) — the Integrations page provides a summary view.
@@ -217,6 +270,8 @@ In SaaS mode with webhook support enabled, a **Create Webhook** link navigates t
 | Telegram setup | Bot token + internal DB | Bot token (always configurable) |
 | Google Chat setup | Service account JSON + internal DB | Service account JSON (always configurable) |
 | GitHub setup | PAT + internal DB | PAT (always configurable) |
+| Linear setup | API key + internal DB | API key (always configurable) |
+| WhatsApp setup | Cloud API credentials + internal DB | Cloud API credentials (always configurable) |
 | BYOT fallback | Shown when OAuth not configured + internal DB available | Shown when platform OAuth not configured |
 | Env var hints | Shown when no OAuth and no internal DB | Hidden — shows "Not Available" instead |
 | Disconnect | Available for all connected integrations | Available for all connected integrations |

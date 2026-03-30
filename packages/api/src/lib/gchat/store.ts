@@ -129,32 +129,27 @@ export async function saveGChatInstallation(
   const orgId = opts.orgId ?? null;
 
   try {
-    // Reject if already bound to a different org (hijack protection)
-    const existing = await internalQuery<Record<string, unknown>>(
-      "SELECT org_id FROM gchat_installations WHERE project_id = $1",
-      [projectId],
-    );
-
-    if (existing.length > 0) {
-      const existingOrgId = existing[0].org_id;
-      if (existingOrgId && orgId && existingOrgId !== orgId) {
-        throw new Error(
-          `Service account ${projectId} is already bound to a different organization. ` +
-          `Disconnect the existing installation first.`,
-        );
-      }
-    }
-
-    await internalQuery(
+    // Atomic upsert with hijack protection — the WHERE clause rejects rows
+    // bound to a different org in one statement (no TOCTOU race).
+    const rows = await internalQuery<{ project_id: string }>(
       `INSERT INTO gchat_installations (project_id, service_account_email, credentials_json, org_id)
        VALUES ($1, $2, $3, $4)
        ON CONFLICT (project_id) DO UPDATE SET
          service_account_email = $2,
          credentials_json = $3,
          org_id = COALESCE($4, gchat_installations.org_id),
-         installed_at = now()`,
+         installed_at = now()
+       WHERE gchat_installations.org_id IS NULL OR gchat_installations.org_id = $4
+       RETURNING project_id`,
       [projectId, opts.serviceAccountEmail, opts.credentialsJson, orgId],
     );
+
+    if (rows.length === 0) {
+      throw new Error(
+        `Service account ${projectId} is already bound to a different organization. ` +
+        `Disconnect the existing installation first.`,
+      );
+    }
   } catch (err) {
     log.error(
       { err: err instanceof Error ? err.message : String(err), projectId },

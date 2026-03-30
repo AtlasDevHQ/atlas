@@ -1003,6 +1003,43 @@ export const githubInstallations = pgTable(
 );
 
 // ---------------------------------------------------------------------------
+// Linear integration (0009_linear_installations.sql)
+// ---------------------------------------------------------------------------
+
+export const linearInstallations = pgTable(
+  "linear_installations",
+  {
+    userId: text("user_id").primaryKey(),
+    apiKey: text("api_key").notNull(),
+    userName: text("user_name"),
+    userEmail: text("user_email"),
+    orgId: text("org_id"),
+    installedAt: timestamp("installed_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [
+    index("idx_linear_installations_org").on(t.orgId),
+  ],
+);
+
+// ---------------------------------------------------------------------------
+// WhatsApp integration (0010_whatsapp_installations.sql)
+// ---------------------------------------------------------------------------
+
+export const whatsappInstallations = pgTable(
+  "whatsapp_installations",
+  {
+    phoneNumberId: text("phone_number_id").primaryKey(),
+    accessToken: text("access_token").notNull(),
+    displayPhone: text("display_phone"),
+    orgId: text("org_id"),
+    installedAt: timestamp("installed_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [
+    index("idx_whatsapp_installations_org").on(t.orgId),
+  ],
+);
+
+// ---------------------------------------------------------------------------
 // OAuth state (0005_oauth_state.sql)
 // ---------------------------------------------------------------------------
 

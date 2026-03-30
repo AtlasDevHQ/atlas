@@ -199,33 +199,29 @@ describe("store", () => {
   describe("saveInstallation", () => {
     it("resolves when DB write succeeds", async () => {
       mockHasInternalDB.mockReturnValue(true);
-      mockPoolQuery.mockResolvedValue({ rows: [] });
+      mockPoolQuery.mockResolvedValue({ rows: [{ team_id: "T123" }] });
 
       await expect(saveInstallation("T123", "xoxb-new")).resolves.toBeUndefined();
-      expect(mockPoolQuery).toHaveBeenCalledTimes(2); // SELECT check + INSERT
-      // First call: hijack check
-      const [selectSql] = mockPoolQuery.mock.calls[0];
-      expect(selectSql).toContain("SELECT org_id FROM slack_installations");
-      // Second call: upsert
-      const [insertSql, insertParams] = mockPoolQuery.mock.calls[1];
+      expect(mockPoolQuery).toHaveBeenCalledTimes(1); // Single atomic upsert
+      const [insertSql, insertParams] = mockPoolQuery.mock.calls[0];
       expect(insertSql).toContain("INSERT INTO slack_installations");
+      expect(insertSql).toContain("RETURNING team_id");
       expect(insertParams).toEqual(["T123", "xoxb-new", null, null]);
     });
 
     it("passes orgId and workspaceName when provided", async () => {
       mockHasInternalDB.mockReturnValue(true);
-      mockPoolQuery.mockResolvedValue({ rows: [] });
+      mockPoolQuery.mockResolvedValue({ rows: [{ team_id: "T123" }] });
 
       await saveInstallation("T123", "xoxb-new", { orgId: "org-1", workspaceName: "My Team" });
-      // Second call is the INSERT
-      const [, insertParams] = mockPoolQuery.mock.calls[1];
+      const [, insertParams] = mockPoolQuery.mock.calls[0];
       expect(insertParams).toEqual(["T123", "xoxb-new", "org-1", "My Team"]);
     });
 
     it("rejects when team is bound to a different org", async () => {
       mockHasInternalDB.mockReturnValue(true);
-      // SELECT returns existing row with different org
-      mockPoolQuery.mockResolvedValueOnce({ rows: [{ org_id: "org-other" }] });
+      // Atomic upsert returns 0 rows when org_id doesn't match (hijack protection)
+      mockPoolQuery.mockResolvedValueOnce({ rows: [] });
 
       await expect(
         saveInstallation("T123", "xoxb-new", { orgId: "org-mine" }),

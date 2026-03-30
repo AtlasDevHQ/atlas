@@ -3,7 +3,7 @@
  *
  * Mounted under /api/v1/admin/integrations. All routes require admin role
  * and org context. Provides aggregated integration status, connect,
- * and disconnect operations for Slack, Teams, Discord, Telegram, Google Chat, and GitHub.
+ * and disconnect operations for Slack, Teams, Discord, Telegram, Google Chat, GitHub, Linear, and WhatsApp.
  */
 
 import { Effect } from "effect";
@@ -37,6 +37,16 @@ import {
   saveGitHubInstallation,
   deleteGitHubInstallationByOrg,
 } from "@atlas/api/lib/github/store";
+import {
+  getLinearInstallationByOrg,
+  saveLinearInstallation,
+  deleteLinearInstallationByOrg,
+} from "@atlas/api/lib/linear/store";
+import {
+  getWhatsAppInstallationByOrg,
+  saveWhatsAppInstallation,
+  deleteWhatsAppInstallationByOrg,
+} from "@atlas/api/lib/whatsapp/store";
 import { getConfig } from "@atlas/api/lib/config";
 import { createLogger } from "@atlas/api/lib/logger";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
@@ -107,6 +117,24 @@ const GitHubStatusSchema = z.object({
   configurable: z.boolean(),
 });
 
+const LinearStatusSchema = z.object({
+  connected: z.boolean(),
+  userName: z.string().nullable(),
+  userEmail: z.string().nullable(),
+  installedAt: z.string().datetime().nullable(),
+  /** Configurable when internal DB is available. BYOT — bring your own API key */
+  configurable: z.boolean(),
+});
+
+const WhatsAppStatusSchema = z.object({
+  connected: z.boolean(),
+  phoneNumberId: z.string().nullable(),
+  displayPhone: z.string().nullable(),
+  installedAt: z.string().datetime().nullable(),
+  /** Configurable when internal DB is available. BYOT — bring your own Cloud API credentials */
+  configurable: z.boolean(),
+});
+
 const WebhookStatusSchema = z.object({
   activeCount: z.number().int().nonnegative(),
   /** Whether the workspace admin can create/manage webhooks */
@@ -120,6 +148,8 @@ const IntegrationStatusSchema = z.object({
   telegram: TelegramStatusSchema,
   gchat: GChatStatusSchema,
   github: GitHubStatusSchema,
+  linear: LinearStatusSchema,
+  whatsapp: WhatsAppStatusSchema,
   webhooks: WebhookStatusSchema,
   /** Delivery channels available for scheduled tasks */
   deliveryChannels: z.array(DeliveryChannelEnum),
@@ -140,7 +170,7 @@ const getStatusRoute = createRoute({
   summary: "Get integration status",
   description:
     "Returns the status of all configured integrations for the current workspace: " +
-    "Slack, Teams, Discord, Telegram, webhooks, available delivery channels, deploy mode, and internal database availability.",
+    "Slack, Teams, Discord, Telegram, Google Chat, GitHub, Linear, WhatsApp, webhooks, available delivery channels, deploy mode, and internal database availability.",
   responses: {
     200: {
       description: "Integration status",
@@ -266,7 +296,7 @@ adminIntegrations.openapi(getStatusRoute, async (c) => {
       const deployMode = getConfig()?.deployMode ?? "self-hosted";
 
       // Run all integration lookups in parallel — they are independent
-      const [slackInstall, teamsInstall, discordInstall, telegramInstall, gchatInstall, githubInstall, webhookActiveCount] =
+      const [slackInstall, teamsInstall, discordInstall, telegramInstall, gchatInstall, githubInstall, linearInstall, whatsappInstall, webhookActiveCount] =
         yield* Effect.all(
           [
             Effect.tryPromise({
@@ -291,6 +321,14 @@ adminIntegrations.openapi(getStatusRoute, async (c) => {
             }),
             Effect.tryPromise({
               try: () => getGitHubInstallationByOrg(orgId),
+              catch: (err) => err instanceof Error ? err : new Error(String(err)),
+            }),
+            Effect.tryPromise({
+              try: () => getLinearInstallationByOrg(orgId),
+              catch: (err) => err instanceof Error ? err : new Error(String(err)),
+            }),
+            Effect.tryPromise({
+              try: () => getWhatsAppInstallationByOrg(orgId),
               catch: (err) => err instanceof Error ? err : new Error(String(err)),
             }),
             Effect.tryPromise({
@@ -377,6 +415,26 @@ adminIntegrations.openapi(getStatusRoute, async (c) => {
         configurable: githubConfigurable,
       };
 
+      // Linear status — BYOT-only, configurable when internal DB is available.
+      const linearConfigurable = hasInternalDB();
+      const linear = {
+        connected: linearInstall !== null,
+        userName: linearInstall?.user_name ?? null,
+        userEmail: linearInstall?.user_email ?? null,
+        installedAt: linearInstall?.installed_at ?? null,
+        configurable: linearConfigurable,
+      };
+
+      // WhatsApp status — BYOT-only, configurable when internal DB is available.
+      const whatsappConfigurable = hasInternalDB();
+      const whatsapp = {
+        connected: whatsappInstall !== null,
+        phoneNumberId: whatsappInstall?.phone_number_id ?? null,
+        displayPhone: whatsappInstall?.display_phone ?? null,
+        installedAt: whatsappInstall?.installed_at ?? null,
+        configurable: whatsappConfigurable,
+      };
+
       // Available delivery channels
       const deliveryChannels: Array<"email" | "slack" | "webhook"> = ["email"];
       if (slack.connected || slack.envConfigured) {
@@ -395,6 +453,8 @@ adminIntegrations.openapi(getStatusRoute, async (c) => {
           telegram,
           gchat,
           github,
+          linear,
+          whatsapp,
           webhooks: { activeCount: webhookActiveCount, configurable: webhooksConfigurable },
           deliveryChannels,
           deployMode,
@@ -1583,6 +1643,480 @@ adminIntegrations.openapi(disconnectGitHubRoute, async (c) => {
       return c.json({ message: "GitHub disconnected successfully." }, 200);
     }),
     { label: "disconnect github" },
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Linear routes (BYOT-only — API key)
+// ---------------------------------------------------------------------------
+
+const connectLinearRoute = createRoute({
+  method: "post",
+  path: "/linear",
+  tags: ["Admin — Integrations"],
+  summary: "Connect Linear via API key",
+  description:
+    "Validates a Linear personal API key via the Linear GraphQL API and saves the installation " +
+    "for the current workspace.",
+  request: {
+    body: {
+      content: {
+        "application/json": {
+          schema: z.object({
+            apiKey: z
+              .string()
+              .min(1)
+              .openapi({ description: "Linear personal API key" }),
+          }),
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "Linear connected",
+      content: {
+        "application/json": {
+          schema: z.object({
+            message: z.string(),
+            userName: z.string().nullable(),
+            userEmail: z.string().nullable(),
+          }),
+        },
+      },
+    },
+    400: {
+      description: "Invalid API key, no active organization, or internal database not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    409: {
+      description: "Linear user already bound to a different organization",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+adminIntegrations.openapi(connectLinearRoute, async (c) => {
+  return runEffect(
+    c,
+    Effect.gen(function* () {
+      const { orgId } = yield* AuthContext;
+
+      if (!orgId) {
+        return c.json(
+          { error: "bad_request", message: "No active organization." },
+          400,
+        );
+      }
+
+      if (!hasInternalDB()) {
+        return c.json(
+          { error: "not_configured", message: "Linear integration requires an internal database. Configure DATABASE_URL." },
+          400,
+        );
+      }
+
+      const { apiKey } = c.req.valid("json");
+
+      // Validate key by calling Linear's GraphQL API with a viewer query.
+      const viewerResult = yield* Effect.tryPromise({
+        try: async () => {
+          let res: Response;
+          try {
+            res = await fetch("https://api.linear.app/graphql", {
+              method: "POST",
+              headers: {
+                Authorization: `Bearer ${apiKey}`,
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({ query: "{ viewer { id name email } }" }),
+              signal: AbortSignal.timeout(10_000),
+            });
+          } catch (err) {
+            log.warn({ err: err instanceof Error ? err.message : String(err) }, "Linear GraphQL fetch failed");
+            return { ok: false as const, error: "Could not reach Linear API. Please try again." };
+          }
+          if (!res.ok) {
+            let detail = `status ${res.status}`;
+            try {
+              const errBody = (await res.json()) as { errors?: Array<{ message?: string }> };
+              if (errBody.errors?.[0]?.message) detail = errBody.errors[0].message;
+            } catch {
+              // intentionally ignored: response body may not be JSON
+            }
+            return { ok: false as const, error: `Linear API error: ${detail}` };
+          }
+          let data: { data?: { viewer?: { id?: string; name?: string; email?: string } }; errors?: Array<{ message?: string }> };
+          try {
+            data = (await res.json()) as typeof data;
+          } catch (err) {
+            log.warn({ err: err instanceof Error ? err.message : String(err) }, "Linear GraphQL response parse failed");
+            return { ok: false as const, error: "Linear API returned an invalid response" };
+          }
+          if (data.errors?.length) {
+            return { ok: false as const, error: data.errors[0].message ?? "GraphQL error" };
+          }
+          if (!data.data?.viewer?.id) {
+            return { ok: false as const, error: "Invalid API key" };
+          }
+          return {
+            ok: true as const,
+            userId: data.data.viewer.id,
+            userName: data.data.viewer.name ?? null,
+            userEmail: data.data.viewer.email ?? null,
+          };
+        },
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      });
+
+      if (!viewerResult.ok) {
+        return c.json(
+          { error: "invalid_token", message: `Invalid Linear API key: ${viewerResult.error}` },
+          400,
+        );
+      }
+
+      const saveResult = yield* Effect.tryPromise({
+        try: () =>
+          saveLinearInstallation(viewerResult.userId, {
+            orgId,
+            userName: viewerResult.userName ?? undefined,
+            userEmail: viewerResult.userEmail ?? undefined,
+            apiKey,
+          }),
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      }).pipe(
+        Effect.map(() => ({ ok: true as const })),
+        Effect.catchAll((err) => {
+          if (err.message.includes("already bound to a different organization")) {
+            return Effect.succeed({ ok: false as const, message: err.message });
+          }
+          return Effect.fail(err);
+        }),
+      );
+
+      if (!saveResult.ok) {
+        return c.json(
+          { error: "conflict", message: saveResult.message },
+          409,
+        );
+      }
+
+      log.info({ orgId, userId: viewerResult.userId, userName: viewerResult.userName }, "Linear installation saved by admin");
+      return c.json(
+        { message: "Linear connected successfully.", userName: viewerResult.userName, userEmail: viewerResult.userEmail },
+        200,
+      );
+    }),
+    { label: "connect linear" },
+  );
+});
+
+const disconnectLinearRoute = createRoute({
+  method: "delete",
+  path: "/linear",
+  tags: ["Admin — Integrations"],
+  summary: "Disconnect Linear",
+  description:
+    "Removes the Linear installation for the current workspace. " +
+    "Any Linear integration functionality will stop working until reconnected.",
+  responses: {
+    200: {
+      description: "Linear disconnected",
+      content: {
+        "application/json": {
+          schema: z.object({ message: z.string() }),
+        },
+      },
+    },
+    400: {
+      description: "No active organization",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "No Linear installation found",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+adminIntegrations.openapi(disconnectLinearRoute, async (c) => {
+  return runEffect(
+    c,
+    Effect.gen(function* () {
+      const { orgId } = yield* AuthContext;
+
+      if (!orgId) {
+        return c.json(
+          { error: "bad_request", message: "No active organization." },
+          400,
+        );
+      }
+
+      const deleted = yield* Effect.tryPromise({
+        try: () => deleteLinearInstallationByOrg(orgId),
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      });
+
+      if (!deleted) {
+        return c.json(
+          { error: "not_found", message: "No Linear installation found for this workspace." },
+          404,
+        );
+      }
+
+      log.info({ orgId }, "Linear installation disconnected by admin");
+      return c.json({ message: "Linear disconnected successfully." }, 200);
+    }),
+    { label: "disconnect linear" },
+  );
+});
+
+// ---------------------------------------------------------------------------
+// WhatsApp routes (BYOT-only — Cloud API credentials)
+// ---------------------------------------------------------------------------
+
+const connectWhatsAppRoute = createRoute({
+  method: "post",
+  path: "/whatsapp",
+  tags: ["Admin — Integrations"],
+  summary: "Connect WhatsApp via Cloud API credentials",
+  description:
+    "Validates WhatsApp Cloud API credentials via the Meta Graph API and saves the installation " +
+    "for the current workspace.",
+  request: {
+    body: {
+      content: {
+        "application/json": {
+          schema: z.object({
+            phoneNumberId: z
+              .string()
+              .min(1)
+              .regex(/^\d+$/, "Phone number ID must be numeric")
+              .openapi({ description: "WhatsApp phone number ID from Meta Business Suite" }),
+            accessToken: z
+              .string()
+              .min(1)
+              .openapi({ description: "Permanent access token from Meta" }),
+          }),
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "WhatsApp connected",
+      content: {
+        "application/json": {
+          schema: z.object({
+            message: z.string(),
+            displayPhone: z.string().nullable(),
+          }),
+        },
+      },
+    },
+    400: {
+      description: "Invalid credentials, no active organization, or internal database not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    409: {
+      description: "Phone number already bound to a different organization",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+adminIntegrations.openapi(connectWhatsAppRoute, async (c) => {
+  return runEffect(
+    c,
+    Effect.gen(function* () {
+      const { orgId } = yield* AuthContext;
+
+      if (!orgId) {
+        return c.json(
+          { error: "bad_request", message: "No active organization." },
+          400,
+        );
+      }
+
+      if (!hasInternalDB()) {
+        return c.json(
+          { error: "not_configured", message: "WhatsApp integration requires an internal database. Configure DATABASE_URL." },
+          400,
+        );
+      }
+
+      const { phoneNumberId, accessToken } = c.req.valid("json");
+
+      // Validate credentials by calling Meta's Graph API.
+      const phoneResult = yield* Effect.tryPromise({
+        try: async () => {
+          let res: Response;
+          try {
+            res = await fetch(`https://graph.facebook.com/v18.0/${encodeURIComponent(phoneNumberId)}`, {
+              headers: { Authorization: `Bearer ${accessToken}` },
+              signal: AbortSignal.timeout(10_000),
+            });
+          } catch (err) {
+            log.warn({ err: err instanceof Error ? err.message : String(err) }, "WhatsApp Graph API fetch failed");
+            return { ok: false as const, error: "Could not reach Meta API. Please try again." };
+          }
+          if (!res.ok) {
+            let detail = `status ${res.status}`;
+            try {
+              const errBody = (await res.json()) as { error?: { message?: string } };
+              if (errBody.error?.message) detail = errBody.error.message;
+            } catch {
+              // intentionally ignored: response body may not be JSON
+            }
+            return { ok: false as const, error: `Meta API error: ${detail}` };
+          }
+          let data: { id?: string; display_phone_number?: string };
+          try {
+            data = (await res.json()) as typeof data;
+          } catch (err) {
+            log.warn({ err: err instanceof Error ? err.message : String(err) }, "WhatsApp Graph API response parse failed");
+            return { ok: false as const, error: "Meta API returned an invalid response" };
+          }
+          if (!data.id) {
+            return { ok: false as const, error: "Invalid phone number ID or access token" };
+          }
+          return { ok: true as const, displayPhone: data.display_phone_number ?? null };
+        },
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      });
+
+      if (!phoneResult.ok) {
+        return c.json(
+          { error: "invalid_credentials", message: `Invalid WhatsApp credentials: ${phoneResult.error}` },
+          400,
+        );
+      }
+
+      const saveResult = yield* Effect.tryPromise({
+        try: () =>
+          saveWhatsAppInstallation(phoneNumberId, {
+            orgId,
+            displayPhone: phoneResult.displayPhone ?? undefined,
+            accessToken,
+          }),
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      }).pipe(
+        Effect.map(() => ({ ok: true as const })),
+        Effect.catchAll((err) => {
+          if (err.message.includes("already bound to a different organization")) {
+            return Effect.succeed({ ok: false as const, message: err.message });
+          }
+          return Effect.fail(err);
+        }),
+      );
+
+      if (!saveResult.ok) {
+        return c.json(
+          { error: "conflict", message: saveResult.message },
+          409,
+        );
+      }
+
+      log.info({ orgId, phoneNumberId, displayPhone: phoneResult.displayPhone }, "WhatsApp installation saved by admin");
+      return c.json(
+        { message: "WhatsApp connected successfully.", displayPhone: phoneResult.displayPhone },
+        200,
+      );
+    }),
+    { label: "connect whatsapp" },
+  );
+});
+
+const disconnectWhatsAppRoute = createRoute({
+  method: "delete",
+  path: "/whatsapp",
+  tags: ["Admin — Integrations"],
+  summary: "Disconnect WhatsApp",
+  description:
+    "Removes the WhatsApp installation for the current workspace. " +
+    "Any WhatsApp messaging functionality will stop working until reconnected.",
+  responses: {
+    200: {
+      description: "WhatsApp disconnected",
+      content: {
+        "application/json": {
+          schema: z.object({ message: z.string() }),
+        },
+      },
+    },
+    400: {
+      description: "No active organization",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "No WhatsApp installation found",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+adminIntegrations.openapi(disconnectWhatsAppRoute, async (c) => {
+  return runEffect(
+    c,
+    Effect.gen(function* () {
+      const { orgId } = yield* AuthContext;
+
+      if (!orgId) {
+        return c.json(
+          { error: "bad_request", message: "No active organization." },
+          400,
+        );
+      }
+
+      const deleted = yield* Effect.tryPromise({
+        try: () => deleteWhatsAppInstallationByOrg(orgId),
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      });
+
+      if (!deleted) {
+        return c.json(
+          { error: "not_found", message: "No WhatsApp installation found for this workspace." },
+          404,
+        );
+      }
+
+      log.info({ orgId }, "WhatsApp installation disconnected by admin");
+      return c.json({ message: "WhatsApp disconnected successfully." }, 200);
+    }),
+    { label: "disconnect whatsapp" },
   );
 });
 

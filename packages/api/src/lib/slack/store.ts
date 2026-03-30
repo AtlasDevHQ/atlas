@@ -146,31 +146,27 @@ export async function saveInstallation(
   const workspaceName = opts?.workspaceName ?? null;
   const pool = getInternalDB();
 
-  // Reject if the team is already bound to a different org (prevents hijacking).
-  const existing = await pool.query(
-    "SELECT org_id FROM slack_installations WHERE team_id = $1",
-    [teamId],
-  );
-  if (existing.rows.length > 0) {
-    const existingOrgId = existing.rows[0].org_id;
-    if (existingOrgId && orgId && existingOrgId !== orgId) {
-      throw new Error(
-        `Slack workspace ${teamId} is already bound to a different organization. ` +
-        `Disconnect the existing installation first.`,
-      );
-    }
-  }
-
-  await pool.query(
+  // Atomic upsert with hijack protection — the WHERE clause rejects rows
+  // bound to a different org in one statement (no TOCTOU race).
+  const result = await pool.query(
     `INSERT INTO slack_installations (team_id, bot_token, org_id, workspace_name)
      VALUES ($1, $2, $3, $4)
      ON CONFLICT (team_id) DO UPDATE SET
        bot_token = $2,
        org_id = COALESCE($3, slack_installations.org_id),
        workspace_name = COALESCE($4, slack_installations.workspace_name),
-       installed_at = now()`,
+       installed_at = now()
+     WHERE slack_installations.org_id IS NULL OR slack_installations.org_id = $3
+     RETURNING team_id`,
     [teamId, botToken, orgId, workspaceName],
   );
+
+  if (result.rows.length === 0) {
+    throw new Error(
+      `Slack workspace ${teamId} is already bound to a different organization. ` +
+      `Disconnect the existing installation first.`,
+    );
+  }
 }
 
 /**

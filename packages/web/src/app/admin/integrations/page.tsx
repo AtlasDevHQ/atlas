@@ -40,6 +40,8 @@ import {
   Loader2,
   ExternalLink,
   GitBranch,
+  BarChart3,
+  Phone,
 } from "lucide-react";
 
 // -- Types (mirrors IntegrationStatusSchema in packages/api/src/api/routes/admin-integrations.ts) --
@@ -96,6 +98,22 @@ interface GitHubStatus {
   configurable: boolean;
 }
 
+interface LinearStatus {
+  connected: boolean;
+  userName: string | null;
+  userEmail: string | null;
+  installedAt: string | null;
+  configurable: boolean;
+}
+
+interface WhatsAppStatus {
+  connected: boolean;
+  phoneNumberId: string | null;
+  displayPhone: string | null;
+  installedAt: string | null;
+  configurable: boolean;
+}
+
 interface WebhookStatus {
   activeCount: number;
   /** Whether the workspace admin can create/manage webhooks */
@@ -109,6 +127,8 @@ interface IntegrationStatus {
   telegram: TelegramStatus;
   gchat: GChatStatus;
   github: GitHubStatus;
+  linear: LinearStatus;
+  whatsapp: WhatsAppStatus;
   webhooks: WebhookStatus;
   deliveryChannels: DeliveryChannel[];
   deployMode: "saas" | "self-hosted";
@@ -213,6 +233,37 @@ export default function IntegrationsPage() {
     invalidates: refetch,
   });
 
+  const linearConnectMutation = useAdminMutation<{
+    message: string;
+    userName: string | null;
+    userEmail: string | null;
+  }>({
+    path: "/api/v1/admin/integrations/linear",
+    method: "POST",
+    invalidates: refetch,
+  });
+
+  const linearDisconnectMutation = useAdminMutation<{ message: string }>({
+    path: "/api/v1/admin/integrations/linear",
+    method: "DELETE",
+    invalidates: refetch,
+  });
+
+  const whatsappConnectMutation = useAdminMutation<{
+    message: string;
+    displayPhone: string | null;
+  }>({
+    path: "/api/v1/admin/integrations/whatsapp",
+    method: "POST",
+    invalidates: refetch,
+  });
+
+  const whatsappDisconnectMutation = useAdminMutation<{ message: string }>({
+    path: "/api/v1/admin/integrations/whatsapp",
+    method: "DELETE",
+    invalidates: refetch,
+  });
+
   async function handleDisconnect() {
     await disconnectMutation.mutate({});
   }
@@ -261,6 +312,22 @@ export default function IntegrationsPage() {
     await githubDisconnectMutation.mutate({});
   }
 
+  async function handleLinearConnect(apiKey: string) {
+    await linearConnectMutation.mutate({ body: { apiKey } });
+  }
+
+  async function handleLinearDisconnect() {
+    await linearDisconnectMutation.mutate({});
+  }
+
+  async function handleWhatsAppConnect(phoneNumberId: string, accessToken: string) {
+    await whatsappConnectMutation.mutate({ body: { phoneNumberId, accessToken } });
+  }
+
+  async function handleWhatsAppDisconnect() {
+    await whatsappDisconnectMutation.mutate({});
+  }
+
   const isSaas = data?.deployMode === "saas";
   const hasDB = data?.hasInternalDB ?? false;
   const slack = data?.slack;
@@ -269,6 +336,8 @@ export default function IntegrationsPage() {
   const telegram = data?.telegram;
   const gchat = data?.gchat;
   const github = data?.github;
+  const linear = data?.linear;
+  const whatsapp = data?.whatsapp;
   const webhooks = data?.webhooks;
   const deliveryChannels = data?.deliveryChannels ?? [];
 
@@ -366,6 +435,28 @@ export default function IntegrationsPage() {
               onDisconnect={handleGitHubDisconnect}
               disconnecting={githubDisconnectMutation.saving}
               disconnectError={githubDisconnectMutation.error}
+            />
+
+            {/* Linear card */}
+            <LinearCard
+              linear={linear!}
+              onConnect={handleLinearConnect}
+              connecting={linearConnectMutation.saving}
+              connectError={linearConnectMutation.error}
+              onDisconnect={handleLinearDisconnect}
+              disconnecting={linearDisconnectMutation.saving}
+              disconnectError={linearDisconnectMutation.error}
+            />
+
+            {/* WhatsApp card */}
+            <WhatsAppCard
+              whatsapp={whatsapp!}
+              onConnect={handleWhatsAppConnect}
+              connecting={whatsappConnectMutation.saving}
+              connectError={whatsappConnectMutation.error}
+              onDisconnect={handleWhatsAppDisconnect}
+              disconnecting={whatsappDisconnectMutation.saving}
+              disconnectError={whatsappDisconnectMutation.error}
             />
 
             {/* Webhooks card */}
@@ -1332,6 +1423,354 @@ function GitHubConnectForm({
   );
 }
 
+// -- Linear Card --
+
+function LinearCard({
+  linear,
+  onConnect,
+  connecting,
+  connectError,
+  onDisconnect,
+  disconnecting,
+  disconnectError,
+}: {
+  linear: LinearStatus;
+  onConnect: (apiKey: string) => void;
+  connecting: boolean;
+  connectError: string | null;
+  onDisconnect: () => void;
+  disconnecting: boolean;
+  disconnectError: string | null;
+}) {
+  const canConnect = linear.configurable;
+
+  const statusBadge = linear.connected ? (
+    <Badge variant="default">Connected</Badge>
+  ) : !canConnect ? (
+    <Badge variant="outline">Not Available</Badge>
+  ) : (
+    <Badge variant="secondary">Disconnected</Badge>
+  );
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <BarChart3 className="size-5 text-muted-foreground" />
+            <CardTitle className="text-base">Linear</CardTitle>
+          </div>
+          {statusBadge}
+        </div>
+        <CardDescription>
+          Connect Linear for issue tracking and project management
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {linear.connected && (
+          <div className="space-y-2 text-sm">
+            {linear.userName && (
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">User</span>
+                <span className="font-medium">{linear.userName}</span>
+              </div>
+            )}
+            {linear.userEmail && (
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Email</span>
+                <span>{linear.userEmail}</span>
+              </div>
+            )}
+            {linear.installedAt && (
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Connected</span>
+                <span>{formatDateTime(linear.installedAt)}</span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {!linear.connected && !canConnect && (
+          <p className="text-sm text-muted-foreground">
+            Linear integration requires an internal database. Configure{" "}
+            <code className="rounded bg-muted px-1 text-xs">DATABASE_URL</code>{" "}
+            to enable it.
+          </p>
+        )}
+
+        {!linear.connected && canConnect && (
+          <LinearConnectForm
+            onConnect={onConnect}
+            connecting={connecting}
+            error={connectError}
+          />
+        )}
+
+        {(disconnectError || (linear.connected && connectError)) && (
+          <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            {disconnectError ?? connectError}
+          </div>
+        )}
+
+        <div className="flex gap-2">
+          {linear.connected && canConnect && (
+            <DisconnectDialog
+              name="Linear"
+              description="This will remove the Linear connection for this workspace. Issue tracking integration will stop working until you reconnect."
+              onConfirm={onDisconnect}
+              disconnecting={disconnecting}
+            />
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+// -- Linear Connect Form --
+
+function LinearConnectForm({
+  onConnect,
+  connecting,
+  error,
+}: {
+  onConnect: (apiKey: string) => void;
+  connecting: boolean;
+  error: string | null;
+}) {
+  const [token, setToken] = useState("");
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (token.trim()) {
+      onConnect(token.trim());
+    }
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-3">
+      <div className="space-y-1.5">
+        <label htmlFor="linear-api-key" className="text-sm font-medium">
+          API Key
+        </label>
+        <p className="text-xs text-muted-foreground">
+          Create an{" "}
+          <a
+            href="https://linear.app/settings/api"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="underline underline-offset-2"
+          >
+            API key
+          </a>{" "}
+          from your Linear workspace settings
+        </p>
+        <Input
+          id="linear-api-key"
+          type="password"
+          placeholder="lin_api_..."
+          value={token}
+          onChange={(e) => setToken(e.target.value)}
+          disabled={connecting}
+        />
+      </div>
+      {error && (
+        <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {error}
+        </div>
+      )}
+      <Button type="submit" size="sm" disabled={connecting || !token.trim()}>
+        {connecting && <Loader2 className="mr-1.5 size-3.5 animate-spin" />}
+        Connect
+      </Button>
+    </form>
+  );
+}
+
+// -- WhatsApp Card --
+
+function WhatsAppCard({
+  whatsapp,
+  onConnect,
+  connecting,
+  connectError,
+  onDisconnect,
+  disconnecting,
+  disconnectError,
+}: {
+  whatsapp: WhatsAppStatus;
+  onConnect: (phoneNumberId: string, accessToken: string) => void;
+  connecting: boolean;
+  connectError: string | null;
+  onDisconnect: () => void;
+  disconnecting: boolean;
+  disconnectError: string | null;
+}) {
+  const canConnect = whatsapp.configurable;
+
+  const statusBadge = whatsapp.connected ? (
+    <Badge variant="default">Connected</Badge>
+  ) : !canConnect ? (
+    <Badge variant="outline">Not Available</Badge>
+  ) : (
+    <Badge variant="secondary">Disconnected</Badge>
+  );
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Phone className="size-5 text-muted-foreground" />
+            <CardTitle className="text-base">WhatsApp</CardTitle>
+          </div>
+          {statusBadge}
+        </div>
+        <CardDescription>
+          Connect WhatsApp for messaging and notification delivery
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {whatsapp.connected && (
+          <div className="space-y-2 text-sm">
+            {whatsapp.displayPhone && (
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Phone</span>
+                <span className="font-medium">{whatsapp.displayPhone}</span>
+              </div>
+            )}
+            {whatsapp.phoneNumberId && (
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Phone Number ID</span>
+                <code className="rounded bg-muted px-1.5 py-0.5 text-xs">
+                  {whatsapp.phoneNumberId}
+                </code>
+              </div>
+            )}
+            {whatsapp.installedAt && (
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Connected</span>
+                <span>{formatDateTime(whatsapp.installedAt)}</span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {!whatsapp.connected && !canConnect && (
+          <p className="text-sm text-muted-foreground">
+            WhatsApp integration requires an internal database. Configure{" "}
+            <code className="rounded bg-muted px-1 text-xs">DATABASE_URL</code>{" "}
+            to enable it.
+          </p>
+        )}
+
+        {!whatsapp.connected && canConnect && (
+          <WhatsAppConnectForm
+            onConnect={onConnect}
+            connecting={connecting}
+            error={connectError}
+          />
+        )}
+
+        {(disconnectError || (whatsapp.connected && connectError)) && (
+          <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            {disconnectError ?? connectError}
+          </div>
+        )}
+
+        <div className="flex gap-2">
+          {whatsapp.connected && canConnect && (
+            <DisconnectDialog
+              name="WhatsApp"
+              description="This will remove the WhatsApp connection for this workspace. WhatsApp messaging will stop working until you reconnect."
+              onConfirm={onDisconnect}
+              disconnecting={disconnecting}
+            />
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+// -- WhatsApp Connect Form --
+
+function WhatsAppConnectForm({
+  onConnect,
+  connecting,
+  error,
+}: {
+  onConnect: (phoneNumberId: string, accessToken: string) => void;
+  connecting: boolean;
+  error: string | null;
+}) {
+  const [phoneNumberId, setPhoneNumberId] = useState("");
+  const [accessToken, setAccessToken] = useState("");
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (phoneNumberId.trim() && accessToken.trim()) {
+      onConnect(phoneNumberId.trim(), accessToken.trim());
+    }
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-3">
+      <div className="space-y-1.5">
+        <label htmlFor="whatsapp-phone-id" className="text-sm font-medium">
+          Phone Number ID
+        </label>
+        <p className="text-xs text-muted-foreground">
+          From your{" "}
+          <a
+            href="https://business.facebook.com/settings/whatsapp-business-accounts"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="underline underline-offset-2"
+          >
+            Meta Business Suite
+          </a>{" "}
+          WhatsApp settings
+        </p>
+        <Input
+          id="whatsapp-phone-id"
+          type="text"
+          placeholder="Phone number ID"
+          value={phoneNumberId}
+          onChange={(e) => setPhoneNumberId(e.target.value)}
+          disabled={connecting}
+        />
+      </div>
+      <div className="space-y-1.5">
+        <label htmlFor="whatsapp-access-token" className="text-sm font-medium">
+          Access Token
+        </label>
+        <Input
+          id="whatsapp-access-token"
+          type="password"
+          placeholder="Permanent access token"
+          value={accessToken}
+          onChange={(e) => setAccessToken(e.target.value)}
+          disabled={connecting}
+        />
+      </div>
+      {error && (
+        <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {error}
+        </div>
+      )}
+      <Button
+        type="submit"
+        size="sm"
+        disabled={connecting || !phoneNumberId.trim() || !accessToken.trim()}
+      >
+        {connecting && <Loader2 className="mr-1.5 size-3.5 animate-spin" />}
+        Connect
+      </Button>
+    </form>
+  );
+}
+
 // -- Slack BYOT Form --
 
 function SlackByotForm({
@@ -1669,6 +2108,10 @@ function ChannelIcon({ channel }: { channel: string }) {
       return <MessageSquareText className="size-3" />;
     case "github":
       return <GitBranch className="size-3" />;
+    case "linear":
+      return <BarChart3 className="size-3" />;
+    case "whatsapp":
+      return <Phone className="size-3" />;
     case "webhook":
       return <Webhook className="size-3" />;
     case "email":

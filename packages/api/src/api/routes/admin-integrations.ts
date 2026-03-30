@@ -1734,10 +1734,11 @@ adminIntegrations.openapi(connectLinearRoute, async (c) => {
             res = await fetch("https://api.linear.app/graphql", {
               method: "POST",
               headers: {
-                Authorization: apiKey,
+                Authorization: `Bearer ${apiKey}`,
                 "Content-Type": "application/json",
               },
               body: JSON.stringify({ query: "{ viewer { id name email } }" }),
+              signal: AbortSignal.timeout(10_000),
             });
           } catch (err) {
             log.warn({ err: err instanceof Error ? err.message : String(err) }, "Linear GraphQL fetch failed");
@@ -1794,7 +1795,12 @@ adminIntegrations.openapi(connectLinearRoute, async (c) => {
         catch: (err) => err instanceof Error ? err : new Error(String(err)),
       }).pipe(
         Effect.map(() => ({ ok: true as const })),
-        Effect.catchAll((err) => Effect.succeed({ ok: false as const, message: err.message })),
+        Effect.catchAll((err) => {
+          if (err.message.includes("already bound to a different organization")) {
+            return Effect.succeed({ ok: false as const, message: err.message });
+          }
+          return Effect.fail(err);
+        }),
       );
 
       if (!saveResult.ok) {
@@ -1902,6 +1908,7 @@ const connectWhatsAppRoute = createRoute({
             phoneNumberId: z
               .string()
               .min(1)
+              .regex(/^\d+$/, "Phone number ID must be numeric")
               .openapi({ description: "WhatsApp phone number ID from Meta Business Suite" }),
             accessToken: z
               .string()
@@ -1970,8 +1977,9 @@ adminIntegrations.openapi(connectWhatsAppRoute, async (c) => {
         try: async () => {
           let res: Response;
           try {
-            res = await fetch(`https://graph.facebook.com/v18.0/${phoneNumberId}`, {
+            res = await fetch(`https://graph.facebook.com/v18.0/${encodeURIComponent(phoneNumberId)}`, {
               headers: { Authorization: `Bearer ${accessToken}` },
+              signal: AbortSignal.timeout(10_000),
             });
           } catch (err) {
             log.warn({ err: err instanceof Error ? err.message : String(err) }, "WhatsApp Graph API fetch failed");
@@ -2019,7 +2027,12 @@ adminIntegrations.openapi(connectWhatsAppRoute, async (c) => {
         catch: (err) => err instanceof Error ? err : new Error(String(err)),
       }).pipe(
         Effect.map(() => ({ ok: true as const })),
-        Effect.catchAll((err) => Effect.succeed({ ok: false as const, message: err.message })),
+        Effect.catchAll((err) => {
+          if (err.message.includes("already bound to a different organization")) {
+            return Effect.succeed({ ok: false as const, message: err.message });
+          }
+          return Effect.fail(err);
+        }),
       );
 
       if (!saveResult.ok) {

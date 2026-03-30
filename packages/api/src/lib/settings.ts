@@ -366,7 +366,9 @@ function isSaasMode(): boolean {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { getConfig } = require("@atlas/api/lib/config") as { getConfig: () => { deployMode?: string } | null };
     return getConfig()?.deployMode === "saas";
-  } catch {
+  } catch (err) {
+    // intentionally ignored: config module may not be ready during early module init
+    console.debug("isSaasMode: config not yet available:", err instanceof Error ? err.message : String(err));
     return false;
   }
 }
@@ -705,9 +707,12 @@ function applySettingSideEffect(key: string, value: string): void {
   if (key === "ATLAS_LOG_LEVEL") {
     try {
       // eslint-disable-next-line @typescript-eslint/no-require-imports -- lazy import avoids circular dependency
-      const { setLogLevel } = require("@atlas/api/lib/logger") as { setLogLevel: (level: string) => void };
-      setLogLevel(value);
-      log.info({ level: value }, "Log level updated via hot-reload");
+      const { setLogLevel } = require("@atlas/api/lib/logger") as { setLogLevel: (level: string) => boolean };
+      if (setLogLevel(value)) {
+        log.info({ level: value }, "Log level updated via hot-reload");
+      } else {
+        log.warn({ level: value }, "Log level change rejected — invalid level");
+      }
     } catch (err) {
       log.warn({ err: err instanceof Error ? err.message : String(err) }, "Failed to apply log level change");
     }

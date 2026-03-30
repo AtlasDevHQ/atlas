@@ -484,25 +484,37 @@ function applyRLSEffect(
     const config = getConfig();
     let rlsConfig = config?.rls;
 
-    // In SaaS mode, overlay settings-based RLS config for hot-reload.
-    // Settings override the boot-time config values for enabled/column/claim.
-    const rlsEnabledSetting = getSettingAuto("ATLAS_RLS_ENABLED");
-    if (rlsEnabledSetting !== undefined) {
-      if (rlsEnabledSetting !== "true") {
-        // Explicitly disabled via settings — skip RLS
-        if (!rlsConfig?.enabled) return sql;
-        // Setting says disabled, but boot config said enabled — honor the setting
-        return sql;
-      }
-      // Setting says enabled — build/overlay config from settings
-      const column = getSettingAuto("ATLAS_RLS_COLUMN");
-      const claim = getSettingAuto("ATLAS_RLS_CLAIM");
-      if (column && claim) {
-        rlsConfig = {
-          enabled: true,
-          policies: [{ tables: ["*"], column, claim }],
-          combineWith: rlsConfig?.combineWith ?? "and",
-        };
+    // In SaaS mode only, overlay settings-based RLS config for hot-reload.
+    // Only activates when there is a DB override for ATLAS_RLS_ENABLED — env
+    // vars and defaults are handled by the boot-time config and don't trigger
+    // the overlay, preserving multi-policy configs from atlas.config.ts.
+    if (config?.deployMode === "saas") {
+      const rlsEnabledSetting = getSettingAuto("ATLAS_RLS_ENABLED");
+      if (rlsEnabledSetting !== undefined) {
+        if (rlsEnabledSetting !== "true") {
+          // Explicitly disabled via settings — skip RLS
+          return sql;
+        }
+        // Setting says enabled — build/overlay config from settings
+        const column = getSettingAuto("ATLAS_RLS_COLUMN");
+        const claim = getSettingAuto("ATLAS_RLS_CLAIM");
+        if (column && claim) {
+          rlsConfig = {
+            enabled: true,
+            policies: [{ tables: ["*"], column, claim }],
+            combineWith: rlsConfig?.combineWith ?? "and",
+          };
+        } else {
+          // RLS enabled but missing required config — fail closed
+          log.error(
+            { column: !!column, claim: !!claim },
+            "RLS enabled via settings but ATLAS_RLS_COLUMN or ATLAS_RLS_CLAIM is missing — blocking query",
+          );
+          return yield* new RLSError({
+            message: "Row-level security is enabled but not fully configured. Contact your administrator.",
+            phase: "filter",
+          });
+        }
       }
     }
 

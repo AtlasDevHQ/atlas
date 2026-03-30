@@ -60,6 +60,9 @@ export class AtlasAiModel extends Context.Tag("AtlasAiModel")<
 
 /**
  * Resolve model from current settings. Used both at boot and per-request in SaaS mode.
+ *
+ * Uses `getModelForConfig()` to build the model from explicit provider/model values,
+ * avoiding process.env mutation.
  */
 function resolveModelFromSettings(): { model: LanguageModel; providerType: ProviderType; modelId: string } {
   // Read settings — in SaaS mode these may have been changed via admin UI
@@ -67,34 +70,15 @@ function resolveModelFromSettings(): { model: LanguageModel; providerType: Provi
   const { getSettingAuto } = require("@atlas/api/lib/settings") as {
     getSettingAuto: (key: string) => string | undefined;
   };
+  // eslint-disable-next-line @typescript-eslint/no-require-imports -- lazy import avoids circular dependency
+  const { getModelForConfig } = require("@atlas/api/lib/providers") as {
+    getModelForConfig: (provider?: string, model?: string) => { model: LanguageModel; providerType: ProviderType; modelId: string };
+  };
 
   const providerSetting = getSettingAuto("ATLAS_PROVIDER");
   const modelSetting = getSettingAuto("ATLAS_MODEL");
 
-  // Temporarily inject into process.env so providers.ts resolveProvider() picks them up.
-  // providers.ts reads from process.env — this is the least-invasive bridge.
-  const origProvider = process.env.ATLAS_PROVIDER;
-  const origModel = process.env.ATLAS_MODEL;
-  try {
-    if (providerSetting) process.env.ATLAS_PROVIDER = providerSetting;
-    if (modelSetting) process.env.ATLAS_MODEL = modelSetting;
-
-    // eslint-disable-next-line @typescript-eslint/no-require-imports -- lazy import avoids circular dependency
-    const { getModel, getProviderType } = require("@atlas/api/lib/providers") as {
-      getModel: () => LanguageModel;
-      getProviderType: () => ProviderType;
-    };
-    const model = getModel();
-    const providerType = getProviderType();
-    const modelId = modelSetting ?? process.env.ATLAS_MODEL ?? (model as { modelId?: string }).modelId ?? "unknown";
-    return { model, providerType, modelId };
-  } finally {
-    // Restore original env vars
-    if (origProvider !== undefined) process.env.ATLAS_PROVIDER = origProvider;
-    else delete process.env.ATLAS_PROVIDER;
-    if (origModel !== undefined) process.env.ATLAS_MODEL = origModel;
-    else delete process.env.ATLAS_MODEL;
-  }
+  return getModelForConfig(providerSetting, modelSetting);
 }
 
 /**
@@ -129,8 +113,9 @@ export const AtlasAiModelLive: Layer.Layer<AtlasAiModel, Error> = Layer.effect(
         getConfig: () => { deployMode?: string } | null;
       };
       saas = getConfig()?.deployMode === "saas";
-    } catch {
-      // not SaaS
+    } catch (err) {
+      // intentionally ignored: config may not be ready during Layer construction
+      log.debug({ err: err instanceof Error ? err.message : String(err) }, "SaaS mode detection failed — using static model");
     }
 
     if (saas) {

@@ -12,7 +12,6 @@
 
 import { OpenAPIHono } from "@hono/zod-openapi";
 import { HTTPException } from "hono/http-exception";
-import { cors } from "hono/cors";
 import {
   trace,
   SpanStatusCode,
@@ -80,30 +79,54 @@ app.use("/api/*", async (c, next) => {
 // In SaaS mode, the origin is read per-request from the settings cache so
 // admin changes take effect without a server restart.
 const bootCorsOrigin = process.env.ATLAS_CORS_ORIGIN;
-app.use(
-  "/api/*",
-  cors({
-    origin: (requestOrigin) => {
-      let corsOrigin: string | undefined;
-      try {
-        // eslint-disable-next-line @typescript-eslint/no-require-imports -- lazy import avoids circular dependency at module load
-        const { getSettingAuto } = require("@atlas/api/lib/settings") as {
-          getSettingAuto: (key: string) => string | undefined;
-        };
-        corsOrigin = getSettingAuto("ATLAS_CORS_ORIGIN") ?? bootCorsOrigin;
-      } catch {
-        corsOrigin = bootCorsOrigin;
-      }
-      const origin = corsOrigin ?? "*";
-      // When origin is "*", return wildcard literal. Otherwise match the configured origin.
-      if (origin === "*") return "*";
-      return origin === requestOrigin ? requestOrigin : origin;
-    },
-    credentials: !!bootCorsOrigin, // only send credentials header when origin is explicit
-    allowHeaders: ["Content-Type", "Authorization"],
-    exposeHeaders: ["Retry-After", "x-conversation-id"],
-  }),
-);
+let corsSettingsWarnLogged = false;
+
+function resolveCorsOrigin(): string {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports -- lazy import avoids circular dependency at module load
+    const { getSettingAuto } = require("@atlas/api/lib/settings") as {
+      getSettingAuto: (key: string) => string | undefined;
+    };
+    return getSettingAuto("ATLAS_CORS_ORIGIN") ?? bootCorsOrigin ?? "*";
+  } catch (err) {
+    if (!corsSettingsWarnLogged) {
+      log.warn(
+        { err: err instanceof Error ? err.message : String(err) },
+        "CORS: failed to read live setting — falling back to boot-time origin",
+      );
+      corsSettingsWarnLogged = true;
+    }
+    return bootCorsOrigin ?? "*";
+  }
+}
+
+app.use("/api/*", async (c, next) => {
+  const requestOrigin = c.req.header("Origin") ?? "";
+  const configuredOrigin = resolveCorsOrigin();
+  const isWildcard = configuredOrigin === "*";
+  const isMatch = isWildcard || configuredOrigin === requestOrigin;
+
+  // Set CORS headers dynamically
+  if (isWildcard) {
+    c.header("Access-Control-Allow-Origin", "*");
+    // credentials must NOT be set with wildcard origin per CORS spec
+  } else if (isMatch) {
+    c.header("Access-Control-Allow-Origin", requestOrigin);
+    c.header("Access-Control-Allow-Credentials", "true");
+  }
+  // Non-matching origin: no CORS headers set — browser will reject
+
+  c.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  c.header("Access-Control-Expose-Headers", "Retry-After, x-conversation-id");
+
+  // Handle preflight
+  if (c.req.method === "OPTIONS") {
+    c.header("Access-Control-Allow-Methods", "GET, HEAD, PUT, POST, DELETE, PATCH");
+    return c.body(null, 204);
+  }
+
+  await next();
+});
 
 // Plugin hook middleware — dispatches onRequest/onResponse to plugin hooks.
 // Dynamic import avoids circular deps; dispatchHook is a no-op when no plugins.

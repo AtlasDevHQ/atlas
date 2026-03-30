@@ -157,6 +157,7 @@ export default function SandboxPage() {
     saveMutation.error ?? saveUrlMutation.error ?? resetMutation.error;
 
   return (
+    <div className="p-6">
     <ErrorBoundary>
       <div className="space-y-6">
         <div>
@@ -219,6 +220,7 @@ export default function SandboxPage() {
         </AdminContentWrapper>
       </div>
     </ErrorBoundary>
+    </div>
   );
 }
 

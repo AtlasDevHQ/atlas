@@ -252,7 +252,7 @@ function RegionPickerBase({
   const [showConfirm, setShowConfirm] = useState(false);
 
   const selectedLabel =
-    status.availableRegions.find((r) => r.id === selected)?.label ?? selected || "Unknown region";
+    (status.availableRegions.find((r) => r.id === selected)?.label ?? selected) || "Unknown region";
 
   return (
     <>

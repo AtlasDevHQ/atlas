@@ -651,7 +651,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 
 ### Self-Service Features (P1)
 
-- [x] Make restart-required settings hot-reloadable in SaaS mode (#1023, PR #1083)
+- [x] Make restart-required settings hot-reloadable in SaaS mode (#1023, PR #1087)
 - [x] OAuth-first integration connect flows for SaaS workspaces (#1024)
   - [x] Connect flow framework + Microsoft Teams (#1040, PR #1039)
   - [x] Discord (#1041, PR #1053)
@@ -676,7 +676,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 
 ### Finishing Touches (P2)
 
-- [x] Email integration connect flow in Integrations hub (#1028)
+- [x] Email integration connect flow in Integrations hub (#1028, PR #1086)
 - [ ] Self-hosted deploy validation via GH Actions for template repos (#1029)
 
 ### Dual-Mode Integrations (BYOT)
@@ -700,7 +700,12 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] Google Chat + GitHub connect flows (#1043, #1044, PR #1081)
 - [x] Linear + WhatsApp connect flows (#1045, #1046, PR #1083)
 - [x] OAuth cleanup scheduler + BYOT tests (#1077, #1075, PR #1082)
-- [x] useAdminFetch type safety — Zod schema validation replaces blind `as T` casts (#1073)
+- [x] useAdminFetch type safety — Zod schema validation replaces blind `as T` casts (#1073, PR #1088)
+- [ ] Hot-reload settings — comment accuracy + test coverage gaps (#1089)
+- [ ] Migrate remaining useAdminFetch calls to Zod schema validation (#1090)
+- [ ] useAdminFetch does not clear stale data on HTTP error during refetch (#1091)
+- [ ] Periodic settings refresh for multi-instance SaaS (#1092)
+- [ ] Deduplicate provider switch in getModelForConfig (#1093)
 
 ---
 

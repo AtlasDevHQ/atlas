@@ -67,6 +67,7 @@ export default function ResidencyPage() {
   });
 
   return (
+    <div className="p-6">
     <ErrorBoundary>
       <div className="space-y-6">
         <div>
@@ -115,6 +116,7 @@ export default function ResidencyPage() {
         </AdminContentWrapper>
       </div>
     </ErrorBoundary>
+    </div>
   );
 }
 

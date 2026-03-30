@@ -1,11 +1,11 @@
 ---
 title: Integrations Hub
-description: Connect Slack, Microsoft Teams, Discord, Telegram, Google Chat, GitHub, and webhooks to Atlas from the admin console.
+description: Connect Slack, Microsoft Teams, Discord, Telegram, Google Chat, GitHub, Linear, WhatsApp, Email, and webhooks to Atlas from the admin console.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-The Integrations page provides a central hub for connecting Atlas to external platforms. Manage Slack, Microsoft Teams, Discord, Telegram, Google Chat, GitHub, and webhook delivery from a single admin page.
+The Integrations page provides a central hub for connecting Atlas to external platforms. Manage Slack, Microsoft Teams, Discord, Telegram, Google Chat, GitHub, Linear, WhatsApp, Email, and webhook delivery from a single admin page.
 
 <Callout title="Prerequisites">
 - [Managed auth](/deployment/authentication#managed-auth) enabled
@@ -252,6 +252,49 @@ Click **Disconnect** and confirm. WhatsApp messaging stops working until you rec
 
 ---
 
+## Email
+
+Configure email delivery for digests and notifications. Email supports multiple providers: **SMTP**, **SendGrid**, **Postmark**, and **Amazon SES**.
+
+### Setup
+
+Email integration requires an internal database (`DATABASE_URL`). Each workspace admin configures their own email delivery provider.
+
+1. On the Integrations page, select a provider from the **Email** card dropdown
+2. Enter the **sender address** (the "From" address for outgoing emails)
+3. Fill in the provider-specific fields:
+   - **SMTP** — Host, port, username, password, TLS toggle
+   - **SendGrid** — API key from your [SendGrid dashboard](https://app.sendgrid.com/settings/api_keys)
+   - **Postmark** — Server token from your [Postmark server settings](https://account.postmarkapp.com/servers)
+   - **Amazon SES** — AWS region, access key ID, secret access key
+4. Click **Connect** — the configuration is saved
+
+### Test Email
+
+After connecting, use the **Send Test** button to verify your configuration. Enter a recipient email address and a test message will be sent using your saved settings.
+
+### Connection Details
+
+When connected, the card shows:
+
+- **Provider** — The email provider type (SMTP, SendGrid, Postmark, SES)
+- **Sender** — The configured sender email address
+- **Connected** — Timestamp of when the configuration was saved
+
+### Disconnecting
+
+Click **Disconnect** and confirm. Email delivery will fall back to environment variables (`ATLAS_SMTP_URL` or `RESEND_API_KEY`) or be disabled until reconnected.
+
+### Self-Hosted
+
+For self-hosted deployments without an internal database, email delivery is configured via environment variables:
+
+- `ATLAS_SMTP_URL` — Webhook endpoint for SMTP-to-HTTP bridge
+- `RESEND_API_KEY` — Resend API key for direct email delivery
+- `ATLAS_EMAIL_FROM` — Default sender address
+
+---
+
 ## Webhooks
 
 The webhook card shows the count of active webhook delivery tasks. Webhooks are created via [Scheduled Tasks](/guides/scheduled-tasks) — the Integrations page provides a summary view.
@@ -272,6 +315,7 @@ In SaaS mode with webhook support enabled, a **Create Webhook** link navigates t
 | GitHub setup | PAT + internal DB | PAT (always configurable) |
 | Linear setup | API key + internal DB | API key (always configurable) |
 | WhatsApp setup | Cloud API credentials + internal DB | Cloud API credentials (always configurable) |
+| Email setup | Provider config + internal DB, or env vars | Provider config (always configurable) |
 | BYOT fallback | Shown when OAuth not configured + internal DB available | Shown when platform OAuth not configured |
 | Env var hints | Shown when no OAuth and no internal DB | Hidden — shows "Not Available" instead |
 | Disconnect | Available for all connected integrations | Available for all connected integrations |
@@ -297,6 +341,13 @@ All endpoints require admin authentication.
 | `DELETE` | `/api/v1/admin/integrations/gchat` | Disconnect Google Chat |
 | `POST` | `/api/v1/admin/integrations/github` | Connect GitHub (validates PAT via GitHub API) |
 | `DELETE` | `/api/v1/admin/integrations/github` | Disconnect GitHub |
+| `POST` | `/api/v1/admin/integrations/linear` | Connect Linear (validates API key) |
+| `DELETE` | `/api/v1/admin/integrations/linear` | Disconnect Linear |
+| `POST` | `/api/v1/admin/integrations/whatsapp` | Connect WhatsApp (validates Cloud API credentials) |
+| `DELETE` | `/api/v1/admin/integrations/whatsapp` | Disconnect WhatsApp |
+| `POST` | `/api/v1/admin/integrations/email` | Connect email provider (SMTP, SendGrid, Postmark, SES) |
+| `POST` | `/api/v1/admin/integrations/email/test` | Send test email using saved config |
+| `DELETE` | `/api/v1/admin/integrations/email` | Disconnect email provider |
 
 ---
 

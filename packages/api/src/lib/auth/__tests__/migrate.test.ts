@@ -249,6 +249,7 @@ describe("migrateAuthTables", () => {
             { name: "0008_github_installations.sql" },
             { name: "0009_linear_installations.sql" },
             { name: "0010_whatsapp_installations.sql" },
+            { name: "0011_email_installations.sql" },
           ],
         };
       }

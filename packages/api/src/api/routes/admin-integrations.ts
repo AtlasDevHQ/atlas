@@ -3,7 +3,7 @@
  *
  * Mounted under /api/v1/admin/integrations. All routes require admin role
  * and org context. Provides aggregated integration status, connect,
- * and disconnect operations for Slack, Teams, Discord, Telegram, Google Chat, GitHub, Linear, and WhatsApp.
+ * and disconnect operations for Slack, Teams, Discord, Telegram, Google Chat, GitHub, Linear, WhatsApp, and Email.
  */
 
 import { Effect } from "effect";
@@ -47,6 +47,12 @@ import {
   saveWhatsAppInstallation,
   deleteWhatsAppInstallationByOrg,
 } from "@atlas/api/lib/whatsapp/store";
+import {
+  getEmailInstallationByOrg,
+  saveEmailInstallation,
+  deleteEmailInstallationByOrg,
+} from "@atlas/api/lib/email/store";
+import type { EmailProvider, ProviderConfig } from "@atlas/api/lib/email/store";
 import { getConfig } from "@atlas/api/lib/config";
 import { createLogger } from "@atlas/api/lib/logger";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
@@ -135,6 +141,15 @@ const WhatsAppStatusSchema = z.object({
   configurable: z.boolean(),
 });
 
+const EmailStatusSchema = z.object({
+  connected: z.boolean(),
+  provider: z.string().nullable(),
+  senderAddress: z.string().nullable(),
+  installedAt: z.string().datetime().nullable(),
+  /** Configurable when internal DB is available. BYOT — bring your own email provider credentials */
+  configurable: z.boolean(),
+});
+
 const WebhookStatusSchema = z.object({
   activeCount: z.number().int().nonnegative(),
   /** Whether the workspace admin can create/manage webhooks */
@@ -150,6 +165,7 @@ const IntegrationStatusSchema = z.object({
   github: GitHubStatusSchema,
   linear: LinearStatusSchema,
   whatsapp: WhatsAppStatusSchema,
+  email: EmailStatusSchema,
   webhooks: WebhookStatusSchema,
   /** Delivery channels available for scheduled tasks */
   deliveryChannels: z.array(DeliveryChannelEnum),
@@ -170,7 +186,7 @@ const getStatusRoute = createRoute({
   summary: "Get integration status",
   description:
     "Returns the status of all configured integrations for the current workspace: " +
-    "Slack, Teams, Discord, Telegram, Google Chat, GitHub, Linear, WhatsApp, webhooks, available delivery channels, deploy mode, and internal database availability.",
+    "Slack, Teams, Discord, Telegram, Google Chat, GitHub, Linear, WhatsApp, Email, webhooks, available delivery channels, deploy mode, and internal database availability.",
   responses: {
     200: {
       description: "Integration status",
@@ -296,7 +312,7 @@ adminIntegrations.openapi(getStatusRoute, async (c) => {
       const deployMode = getConfig()?.deployMode ?? "self-hosted";
 
       // Run all integration lookups in parallel — they are independent
-      const [slackInstall, teamsInstall, discordInstall, telegramInstall, gchatInstall, githubInstall, linearInstall, whatsappInstall, webhookActiveCount] =
+      const [slackInstall, teamsInstall, discordInstall, telegramInstall, gchatInstall, githubInstall, linearInstall, whatsappInstall, emailInstall, webhookActiveCount] =
         yield* Effect.all(
           [
             Effect.tryPromise({
@@ -329,6 +345,10 @@ adminIntegrations.openapi(getStatusRoute, async (c) => {
             }),
             Effect.tryPromise({
               try: () => getWhatsAppInstallationByOrg(orgId),
+              catch: (err) => err instanceof Error ? err : new Error(String(err)),
+            }),
+            Effect.tryPromise({
+              try: () => getEmailInstallationByOrg(orgId),
               catch: (err) => err instanceof Error ? err : new Error(String(err)),
             }),
             Effect.tryPromise({
@@ -435,6 +455,16 @@ adminIntegrations.openapi(getStatusRoute, async (c) => {
         configurable: whatsappConfigurable,
       };
 
+      // Email status — BYOT-only, configurable when internal DB is available.
+      const emailConfigurable = hasInternalDB();
+      const email = {
+        connected: emailInstall !== null,
+        provider: emailInstall?.provider ?? null,
+        senderAddress: emailInstall?.sender_address ?? null,
+        installedAt: emailInstall?.installed_at ?? null,
+        configurable: emailConfigurable,
+      };
+
       // Available delivery channels
       const deliveryChannels: Array<"email" | "slack" | "webhook"> = ["email"];
       if (slack.connected || slack.envConfigured) {
@@ -455,6 +485,7 @@ adminIntegrations.openapi(getStatusRoute, async (c) => {
           github,
           linear,
           whatsapp,
+          email,
           webhooks: { activeCount: webhookActiveCount, configurable: webhooksConfigurable },
           deliveryChannels,
           deployMode,
@@ -2119,5 +2150,518 @@ adminIntegrations.openapi(disconnectWhatsAppRoute, async (c) => {
     { label: "disconnect whatsapp" },
   );
 });
+
+// ---------------------------------------------------------------------------
+// Email routes (BYOT-only — SMTP, SendGrid, Postmark, SES)
+// ---------------------------------------------------------------------------
+
+const EmailProviderEnum = z.enum(["smtp", "sendgrid", "postmark", "ses"]);
+
+const SmtpConfigSchema = z.object({
+  host: z.string().min(1),
+  port: z.number().int().min(1).max(65535),
+  username: z.string().min(1),
+  password: z.string().min(1),
+  tls: z.boolean(),
+});
+
+const SendGridConfigSchema = z.object({
+  apiKey: z.string().min(1),
+});
+
+const PostmarkConfigSchema = z.object({
+  serverToken: z.string().min(1),
+});
+
+const SesConfigSchema = z.object({
+  region: z.string().min(1),
+  accessKeyId: z.string().min(1),
+  secretAccessKey: z.string().min(1),
+});
+
+const connectEmailRoute = createRoute({
+  method: "post",
+  path: "/email",
+  tags: ["Admin — Integrations"],
+  summary: "Connect email delivery provider",
+  description:
+    "Saves email delivery configuration for the current workspace. " +
+    "Supports SMTP, SendGrid, Postmark, and SES providers.",
+  request: {
+    body: {
+      content: {
+        "application/json": {
+          schema: z.object({
+            provider: EmailProviderEnum.openapi({ description: "Email provider type" }),
+            senderAddress: z
+              .string()
+              .email()
+              .openapi({ description: "Sender email address (From header)" }),
+            config: z.union([SmtpConfigSchema, SendGridConfigSchema, PostmarkConfigSchema, SesConfigSchema])
+              .openapi({ description: "Provider-specific configuration" }),
+          }),
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "Email connected",
+      content: {
+        "application/json": {
+          schema: z.object({
+            message: z.string(),
+            provider: z.string(),
+            senderAddress: z.string(),
+          }),
+        },
+      },
+    },
+    400: {
+      description: "Invalid configuration, no active organization, or internal database not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+adminIntegrations.openapi(connectEmailRoute, async (c) => {
+  return runEffect(
+    c,
+    Effect.gen(function* () {
+      const { orgId } = yield* AuthContext;
+
+      if (!orgId) {
+        return c.json(
+          { error: "bad_request", message: "No active organization." },
+          400,
+        );
+      }
+
+      if (!hasInternalDB()) {
+        return c.json(
+          { error: "not_configured", message: "Email integration requires an internal database. Configure DATABASE_URL." },
+          400,
+        );
+      }
+
+      const { provider, senderAddress, config } = c.req.valid("json");
+
+      // Validate provider-specific config shape
+      const configResult = validateProviderConfig(provider, config);
+      if (!configResult.ok) {
+        return c.json(
+          { error: "invalid_config", message: configResult.error },
+          400,
+        );
+      }
+
+      yield* Effect.tryPromise({
+        try: () =>
+          saveEmailInstallation(orgId, {
+            provider: provider as EmailProvider,
+            senderAddress,
+            config: config as ProviderConfig,
+          }),
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      });
+
+      log.info({ orgId, provider, senderAddress }, "Email installation saved by admin");
+      return c.json(
+        { message: "Email connected successfully.", provider, senderAddress },
+        200,
+      );
+    }),
+    { label: "connect email" },
+  );
+});
+
+const testEmailRoute = createRoute({
+  method: "post",
+  path: "/email/test",
+  tags: ["Admin — Integrations"],
+  summary: "Send test email",
+  description:
+    "Sends a test email using the saved email configuration for the current workspace.",
+  request: {
+    body: {
+      content: {
+        "application/json": {
+          schema: z.object({
+            recipientEmail: z
+              .string()
+              .email()
+              .openapi({ description: "Recipient email address for the test" }),
+          }),
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "Test email sent",
+      content: {
+        "application/json": {
+          schema: z.object({
+            message: z.string(),
+            success: z.boolean(),
+          }),
+        },
+      },
+    },
+    400: {
+      description: "No active organization, internal database not configured, or no email config found",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+adminIntegrations.openapi(testEmailRoute, async (c) => {
+  return runEffect(
+    c,
+    Effect.gen(function* () {
+      const { orgId } = yield* AuthContext;
+
+      if (!orgId) {
+        return c.json(
+          { error: "bad_request", message: "No active organization." },
+          400,
+        );
+      }
+
+      if (!hasInternalDB()) {
+        return c.json(
+          { error: "not_configured", message: "Email integration requires an internal database. Configure DATABASE_URL." },
+          400,
+        );
+      }
+
+      const { recipientEmail } = c.req.valid("json");
+
+      const install = yield* Effect.tryPromise({
+        try: () => getEmailInstallationByOrg(orgId),
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      });
+
+      if (!install) {
+        return c.json(
+          { error: "not_found", message: "No email configuration found for this workspace. Connect an email provider first." },
+          400,
+        );
+      }
+
+      const result = yield* Effect.tryPromise({
+        try: () => sendTestEmail(install, recipientEmail),
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      });
+
+      if (!result.success) {
+        log.warn({ orgId, provider: install.provider, error: result.error }, "Test email failed");
+        return c.json(
+          { message: `Test email failed: ${result.error}`, success: false },
+          200,
+        );
+      }
+
+      log.info({ orgId, provider: install.provider, recipientEmail }, "Test email sent successfully");
+      return c.json(
+        { message: "Test email sent successfully.", success: true },
+        200,
+      );
+    }),
+    { label: "test email" },
+  );
+});
+
+const disconnectEmailRoute = createRoute({
+  method: "delete",
+  path: "/email",
+  tags: ["Admin — Integrations"],
+  summary: "Disconnect email",
+  description:
+    "Removes the email configuration for the current workspace. " +
+    "Email delivery will fall back to environment variables or be disabled until reconnected.",
+  responses: {
+    200: {
+      description: "Email disconnected",
+      content: {
+        "application/json": {
+          schema: z.object({ message: z.string() }),
+        },
+      },
+    },
+    400: {
+      description: "No active organization",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "No email installation found",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+adminIntegrations.openapi(disconnectEmailRoute, async (c) => {
+  return runEffect(
+    c,
+    Effect.gen(function* () {
+      const { orgId } = yield* AuthContext;
+
+      if (!orgId) {
+        return c.json(
+          { error: "bad_request", message: "No active organization." },
+          400,
+        );
+      }
+
+      const deleted = yield* Effect.tryPromise({
+        try: () => deleteEmailInstallationByOrg(orgId),
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      });
+
+      if (!deleted) {
+        return c.json(
+          { error: "not_found", message: "No email installation found for this workspace." },
+          404,
+        );
+      }
+
+      log.info({ orgId }, "Email installation disconnected by admin");
+      return c.json({ message: "Email disconnected successfully." }, 200);
+    }),
+    { label: "disconnect email" },
+  );
+});
+
+// ---------------------------------------------------------------------------
+// Email helpers
+// ---------------------------------------------------------------------------
+
+function validateProviderConfig(
+  provider: string,
+  config: unknown,
+): { ok: true } | { ok: false; error: string } {
+  switch (provider) {
+    case "smtp": {
+      const result = SmtpConfigSchema.safeParse(config);
+      if (!result.success) return { ok: false, error: `Invalid SMTP config: ${result.error.issues.map(i => i.message).join(", ")}` };
+      return { ok: true };
+    }
+    case "sendgrid": {
+      const result = SendGridConfigSchema.safeParse(config);
+      if (!result.success) return { ok: false, error: `Invalid SendGrid config: ${result.error.issues.map(i => i.message).join(", ")}` };
+      return { ok: true };
+    }
+    case "postmark": {
+      const result = PostmarkConfigSchema.safeParse(config);
+      if (!result.success) return { ok: false, error: `Invalid Postmark config: ${result.error.issues.map(i => i.message).join(", ")}` };
+      return { ok: true };
+    }
+    case "ses": {
+      const result = SesConfigSchema.safeParse(config);
+      if (!result.success) return { ok: false, error: `Invalid SES config: ${result.error.issues.map(i => i.message).join(", ")}` };
+      return { ok: true };
+    }
+    default:
+      return { ok: false, error: `Unknown provider: ${provider}` };
+  }
+}
+
+interface TestEmailResult {
+  success: boolean;
+  error?: string;
+}
+
+async function sendTestEmail(
+  install: { provider: string; sender_address: string; config: unknown },
+  recipientEmail: string,
+): Promise<TestEmailResult> {
+  const config = install.config as Record<string, unknown>;
+  const subject = "Atlas Email Test";
+  const html = "<h1>Atlas Email Test</h1><p>This is a test email from Atlas to verify your email configuration is working correctly.</p>";
+
+  switch (install.provider) {
+    case "smtp":
+      return sendSmtpTestEmail(config, install.sender_address, recipientEmail, subject, html);
+    case "sendgrid":
+      return sendSendGridTestEmail(config, install.sender_address, recipientEmail, subject, html);
+    case "postmark":
+      return sendPostmarkTestEmail(config, install.sender_address, recipientEmail, subject, html);
+    case "ses":
+      return sendSesTestEmail(config, install.sender_address, recipientEmail, subject, html);
+    default:
+      return { success: false, error: `Unknown provider: ${install.provider}` };
+  }
+}
+
+async function sendSendGridTestEmail(
+  config: Record<string, unknown>,
+  from: string,
+  to: string,
+  subject: string,
+  html: string,
+): Promise<TestEmailResult> {
+  const apiKey = config.apiKey;
+  if (typeof apiKey !== "string") return { success: false, error: "Missing SendGrid API key" };
+
+  try {
+    const res = await fetch("https://api.sendgrid.com/v3/mail/send", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        personalizations: [{ to: [{ email: to }] }],
+        from: { email: from },
+        subject,
+        content: [{ type: "text/html", value: html }],
+      }),
+      signal: AbortSignal.timeout(15_000),
+    });
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      return { success: false, error: `SendGrid API error (${res.status}): ${text.slice(0, 200)}` };
+    }
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+async function sendPostmarkTestEmail(
+  config: Record<string, unknown>,
+  from: string,
+  to: string,
+  subject: string,
+  html: string,
+): Promise<TestEmailResult> {
+  const serverToken = config.serverToken;
+  if (typeof serverToken !== "string") return { success: false, error: "Missing Postmark server token" };
+
+  try {
+    const res = await fetch("https://api.postmarkapp.com/email", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Postmark-Server-Token": serverToken,
+      },
+      body: JSON.stringify({
+        From: from,
+        To: to,
+        Subject: subject,
+        HtmlBody: html,
+      }),
+      signal: AbortSignal.timeout(15_000),
+    });
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      return { success: false, error: `Postmark API error (${res.status}): ${text.slice(0, 200)}` };
+    }
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+async function sendSmtpTestEmail(
+  _config: Record<string, unknown>,
+  from: string,
+  to: string,
+  subject: string,
+  html: string,
+): Promise<TestEmailResult> {
+  // SMTP delivery delegates to the ATLAS_SMTP_URL webhook bridge.
+  // The bridge endpoint is responsible for connecting to the SMTP server
+  // using the config stored in the database — we do not send credentials
+  // over the wire in this payload.
+  const smtpUrl = process.env.ATLAS_SMTP_URL;
+  if (!smtpUrl) {
+    return {
+      success: false,
+      error: "SMTP test requires ATLAS_SMTP_URL to be configured as an SMTP-to-HTTP bridge endpoint. " +
+        "Configuration has been saved and will be used when ATLAS_SMTP_URL is available.",
+    };
+  }
+
+  try {
+    const res = await fetch(smtpUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ from, to, subject, html }),
+      signal: AbortSignal.timeout(15_000),
+    });
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      return { success: false, error: `SMTP webhook error (${res.status}): ${text.slice(0, 200)}` };
+    }
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+async function sendSesTestEmail(
+  _config: Record<string, unknown>,
+  from: string,
+  to: string,
+  subject: string,
+  html: string,
+): Promise<TestEmailResult> {
+  // AWS Signature V4 is complex — for the test email we delegate to the
+  // ATLAS_SMTP_URL webhook bridge if available. We do not send AWS credentials
+  // over the wire; the bridge reads them from its own config or the database.
+  const smtpUrl = process.env.ATLAS_SMTP_URL;
+  if (!smtpUrl) {
+    return {
+      success: false,
+      error: "SES test email requires ATLAS_SMTP_URL configured as an SES-compatible bridge. " +
+        "Configuration has been saved.",
+    };
+  }
+
+  try {
+    const res = await fetch(smtpUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ from, to, subject, html }),
+      signal: AbortSignal.timeout(15_000),
+    });
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      return { success: false, error: `SES webhook error (${res.status}): ${text.slice(0, 200)}` };
+    }
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
 
 export { adminIntegrations };

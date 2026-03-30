@@ -29,6 +29,13 @@ import {
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   Cable,
   MessageSquare,
   MessageSquareText,
@@ -114,6 +121,14 @@ interface WhatsAppStatus {
   configurable: boolean;
 }
 
+interface EmailStatus {
+  connected: boolean;
+  provider: string | null;
+  senderAddress: string | null;
+  installedAt: string | null;
+  configurable: boolean;
+}
+
 interface WebhookStatus {
   activeCount: number;
   /** Whether the workspace admin can create/manage webhooks */
@@ -129,6 +144,7 @@ interface IntegrationStatus {
   github: GitHubStatus;
   linear: LinearStatus;
   whatsapp: WhatsAppStatus;
+  email: EmailStatus;
   webhooks: WebhookStatus;
   deliveryChannels: DeliveryChannel[];
   deployMode: "saas" | "self-hosted";
@@ -264,6 +280,31 @@ export default function IntegrationsPage() {
     invalidates: refetch,
   });
 
+  const emailConnectMutation = useAdminMutation<{
+    message: string;
+    provider: string;
+    senderAddress: string;
+  }>({
+    path: "/api/v1/admin/integrations/email",
+    method: "POST",
+    invalidates: refetch,
+  });
+
+  const emailTestMutation = useAdminMutation<{
+    message: string;
+    success: boolean;
+  }>({
+    path: "/api/v1/admin/integrations/email/test",
+    method: "POST",
+    invalidates: refetch,
+  });
+
+  const emailDisconnectMutation = useAdminMutation<{ message: string }>({
+    path: "/api/v1/admin/integrations/email",
+    method: "DELETE",
+    invalidates: refetch,
+  });
+
   async function handleDisconnect() {
     await disconnectMutation.mutate({});
   }
@@ -328,6 +369,18 @@ export default function IntegrationsPage() {
     await whatsappDisconnectMutation.mutate({});
   }
 
+  async function handleEmailConnect(provider: string, senderAddress: string, config: Record<string, unknown>) {
+    await emailConnectMutation.mutate({ body: { provider, senderAddress, config } });
+  }
+
+  async function handleEmailTest(recipientEmail: string) {
+    await emailTestMutation.mutate({ body: { recipientEmail } });
+  }
+
+  async function handleEmailDisconnect() {
+    await emailDisconnectMutation.mutate({});
+  }
+
   const isSaas = data?.deployMode === "saas";
   const hasDB = data?.hasInternalDB ?? false;
   const slack = data?.slack;
@@ -338,6 +391,7 @@ export default function IntegrationsPage() {
   const github = data?.github;
   const linear = data?.linear;
   const whatsapp = data?.whatsapp;
+  const emailStatus = data?.email;
   const webhooks = data?.webhooks;
   const deliveryChannels = data?.deliveryChannels ?? [];
 
@@ -457,6 +511,20 @@ export default function IntegrationsPage() {
               onDisconnect={handleWhatsAppDisconnect}
               disconnecting={whatsappDisconnectMutation.saving}
               disconnectError={whatsappDisconnectMutation.error}
+            />
+
+            {/* Email card */}
+            <EmailCard
+              email={emailStatus!}
+              onConnect={handleEmailConnect}
+              connecting={emailConnectMutation.saving}
+              connectError={emailConnectMutation.error}
+              onTest={handleEmailTest}
+              testing={emailTestMutation.saving}
+              testResult={emailTestMutation.error}
+              onDisconnect={handleEmailDisconnect}
+              disconnecting={emailDisconnectMutation.saving}
+              disconnectError={emailDisconnectMutation.error}
             />
 
             {/* Webhooks card */}
@@ -2007,6 +2075,352 @@ function DiscordByotForm({
 }
 
 // -- Disconnect Dialog (shared) --
+
+// -- Email Card --
+
+function EmailCard({
+  email,
+  onConnect,
+  connecting,
+  connectError,
+  onTest,
+  testing,
+  testResult,
+  onDisconnect,
+  disconnecting,
+  disconnectError,
+}: {
+  email: EmailStatus;
+  onConnect: (provider: string, senderAddress: string, config: Record<string, unknown>) => void;
+  connecting: boolean;
+  connectError: string | null;
+  onTest: (recipientEmail: string) => void;
+  testing: boolean;
+  testResult: string | null;
+  onDisconnect: () => void;
+  disconnecting: boolean;
+  disconnectError: string | null;
+}) {
+  const canConnect = email.configurable;
+
+  const statusBadge = email.connected ? (
+    <Badge variant="default">Connected</Badge>
+  ) : !canConnect ? (
+    <Badge variant="outline">Not Available</Badge>
+  ) : (
+    <Badge variant="secondary">Disconnected</Badge>
+  );
+
+  const providerLabel: Record<string, string> = {
+    smtp: "SMTP",
+    sendgrid: "SendGrid",
+    postmark: "Postmark",
+    ses: "Amazon SES",
+  };
+
+  return (
+    <Card>
+      <CardHeader className="pb-3">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Mail className="size-5 text-muted-foreground" />
+            <CardTitle className="text-base">Email</CardTitle>
+          </div>
+          {statusBadge}
+        </div>
+        <CardDescription>
+          Configure email delivery for digests and notifications
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {email.connected && (
+          <div className="space-y-2 text-sm">
+            {email.provider && (
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Provider</span>
+                <span className="font-medium">{providerLabel[email.provider] ?? email.provider}</span>
+              </div>
+            )}
+            {email.senderAddress && (
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Sender</span>
+                <code className="rounded bg-muted px-1.5 py-0.5 text-xs">
+                  {email.senderAddress}
+                </code>
+              </div>
+            )}
+            {email.installedAt && (
+              <div className="flex justify-between">
+                <span className="text-muted-foreground">Connected</span>
+                <span>{formatDateTime(email.installedAt)}</span>
+              </div>
+            )}
+          </div>
+        )}
+
+        {email.connected && canConnect && (
+          <EmailTestForm onTest={onTest} testing={testing} testResult={testResult} />
+        )}
+
+        {!email.connected && !canConnect && (
+          <p className="text-sm text-muted-foreground">
+            Email integration requires an internal database. Configure{" "}
+            <code className="rounded bg-muted px-1 text-xs">DATABASE_URL</code>{" "}
+            to enable it.
+          </p>
+        )}
+
+        {!email.connected && canConnect && (
+          <EmailConnectForm
+            onConnect={onConnect}
+            connecting={connecting}
+            error={connectError}
+          />
+        )}
+
+        {(disconnectError || (email.connected && connectError)) && (
+          <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            {disconnectError ?? connectError}
+          </div>
+        )}
+
+        <div className="flex gap-2">
+          {email.connected && canConnect && (
+            <DisconnectDialog
+              name="Email"
+              description="This will remove the email configuration for this workspace. Email delivery will fall back to environment variables or be disabled until you reconnect."
+              onConfirm={onDisconnect}
+              disconnecting={disconnecting}
+            />
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+// -- Email Connect Form --
+
+type EmailProviderKey = "smtp" | "sendgrid" | "postmark" | "ses";
+
+function EmailConnectForm({
+  onConnect,
+  connecting,
+  error,
+}: {
+  onConnect: (provider: string, senderAddress: string, config: Record<string, unknown>) => void;
+  connecting: boolean;
+  error: string | null;
+}) {
+  const [provider, setProvider] = useState<EmailProviderKey | "">("");
+  const [senderAddress, setSenderAddress] = useState("");
+
+  // SMTP fields
+  const [smtpHost, setSmtpHost] = useState("");
+  const [smtpPort, setSmtpPort] = useState("587");
+  const [smtpUsername, setSmtpUsername] = useState("");
+  const [smtpPassword, setSmtpPassword] = useState("");
+  const [smtpTls, setSmtpTls] = useState(true);
+
+  // SendGrid fields
+  const [sgApiKey, setSgApiKey] = useState("");
+
+  // Postmark fields
+  const [pmServerToken, setPmServerToken] = useState("");
+
+  // SES fields
+  const [sesRegion, setSesRegion] = useState("");
+  const [sesAccessKeyId, setSesAccessKeyId] = useState("");
+  const [sesSecretAccessKey, setSesSecretAccessKey] = useState("");
+
+  function buildConfig(): Record<string, unknown> | null {
+    switch (provider) {
+      case "smtp":
+        if (!smtpHost || !smtpUsername || !smtpPassword) return null;
+        return { host: smtpHost, port: parseInt(smtpPort, 10) || 587, username: smtpUsername, password: smtpPassword, tls: smtpTls };
+      case "sendgrid":
+        if (!sgApiKey) return null;
+        return { apiKey: sgApiKey };
+      case "postmark":
+        if (!pmServerToken) return null;
+        return { serverToken: pmServerToken };
+      case "ses":
+        if (!sesRegion || !sesAccessKeyId || !sesSecretAccessKey) return null;
+        return { region: sesRegion, accessKeyId: sesAccessKeyId, secretAccessKey: sesSecretAccessKey };
+      default:
+        return null;
+    }
+  }
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    const config = buildConfig();
+    if (provider && senderAddress.trim() && config) {
+      onConnect(provider, senderAddress.trim(), config);
+    }
+  }
+
+  const config = buildConfig();
+  const canSubmit = !!provider && !!senderAddress.trim() && !!config && !connecting;
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-3">
+      <div className="space-y-1.5">
+        <label htmlFor="email-provider" className="text-sm font-medium">
+          Provider
+        </label>
+        <Select value={provider} onValueChange={(v) => setProvider(v as EmailProviderKey)}>
+          <SelectTrigger id="email-provider">
+            <SelectValue placeholder="Select email provider" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="smtp">SMTP</SelectItem>
+            <SelectItem value="sendgrid">SendGrid</SelectItem>
+            <SelectItem value="postmark">Postmark</SelectItem>
+            <SelectItem value="ses">Amazon SES</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+
+      <div className="space-y-1.5">
+        <label htmlFor="email-sender" className="text-sm font-medium">
+          Sender Address
+        </label>
+        <Input
+          id="email-sender"
+          type="email"
+          placeholder="noreply@example.com"
+          value={senderAddress}
+          onChange={(e) => setSenderAddress(e.target.value)}
+          disabled={connecting}
+        />
+      </div>
+
+      {provider === "smtp" && (
+        <>
+          <div className="space-y-1.5">
+            <label htmlFor="smtp-host" className="text-sm font-medium">Host</label>
+            <Input id="smtp-host" placeholder="smtp.example.com" value={smtpHost} onChange={(e) => setSmtpHost(e.target.value)} disabled={connecting} />
+          </div>
+          <div className="space-y-1.5">
+            <label htmlFor="smtp-port" className="text-sm font-medium">Port</label>
+            <Input id="smtp-port" type="number" placeholder="587" value={smtpPort} onChange={(e) => setSmtpPort(e.target.value)} disabled={connecting} />
+          </div>
+          <div className="space-y-1.5">
+            <label htmlFor="smtp-username" className="text-sm font-medium">Username</label>
+            <Input id="smtp-username" placeholder="username" value={smtpUsername} onChange={(e) => setSmtpUsername(e.target.value)} disabled={connecting} />
+          </div>
+          <div className="space-y-1.5">
+            <label htmlFor="smtp-password" className="text-sm font-medium">Password</label>
+            <Input id="smtp-password" type="password" placeholder="Password" value={smtpPassword} onChange={(e) => setSmtpPassword(e.target.value)} disabled={connecting} />
+          </div>
+          <div className="flex items-center gap-2">
+            <input id="smtp-tls" type="checkbox" checked={smtpTls} onChange={(e) => setSmtpTls(e.target.checked)} disabled={connecting} className="size-4 rounded border-input" />
+            <label htmlFor="smtp-tls" className="text-sm">Use TLS</label>
+          </div>
+        </>
+      )}
+
+      {provider === "sendgrid" && (
+        <div className="space-y-1.5">
+          <label htmlFor="sg-api-key" className="text-sm font-medium">API Key</label>
+          <p className="text-xs text-muted-foreground">
+            From your{" "}
+            <a href="https://app.sendgrid.com/settings/api_keys" target="_blank" rel="noopener noreferrer" className="underline underline-offset-2">
+              SendGrid dashboard
+            </a>
+          </p>
+          <Input id="sg-api-key" type="password" placeholder="SG...." value={sgApiKey} onChange={(e) => setSgApiKey(e.target.value)} disabled={connecting} />
+        </div>
+      )}
+
+      {provider === "postmark" && (
+        <div className="space-y-1.5">
+          <label htmlFor="pm-server-token" className="text-sm font-medium">Server Token</label>
+          <p className="text-xs text-muted-foreground">
+            From your{" "}
+            <a href="https://account.postmarkapp.com/servers" target="_blank" rel="noopener noreferrer" className="underline underline-offset-2">
+              Postmark server settings
+            </a>
+          </p>
+          <Input id="pm-server-token" type="password" placeholder="Server token" value={pmServerToken} onChange={(e) => setPmServerToken(e.target.value)} disabled={connecting} />
+        </div>
+      )}
+
+      {provider === "ses" && (
+        <>
+          <div className="space-y-1.5">
+            <label htmlFor="ses-region" className="text-sm font-medium">AWS Region</label>
+            <Input id="ses-region" placeholder="us-east-1" value={sesRegion} onChange={(e) => setSesRegion(e.target.value)} disabled={connecting} />
+          </div>
+          <div className="space-y-1.5">
+            <label htmlFor="ses-access-key" className="text-sm font-medium">Access Key ID</label>
+            <Input id="ses-access-key" placeholder="AKIA..." value={sesAccessKeyId} onChange={(e) => setSesAccessKeyId(e.target.value)} disabled={connecting} />
+          </div>
+          <div className="space-y-1.5">
+            <label htmlFor="ses-secret-key" className="text-sm font-medium">Secret Access Key</label>
+            <Input id="ses-secret-key" type="password" placeholder="Secret key" value={sesSecretAccessKey} onChange={(e) => setSesSecretAccessKey(e.target.value)} disabled={connecting} />
+          </div>
+        </>
+      )}
+
+      {error && (
+        <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {error}
+        </div>
+      )}
+      <Button type="submit" size="sm" disabled={!canSubmit}>
+        {connecting && <Loader2 className="mr-1.5 size-3.5 animate-spin" />}
+        Connect
+      </Button>
+    </form>
+  );
+}
+
+// -- Email Test Form --
+
+function EmailTestForm({
+  onTest,
+  testing,
+  testResult,
+}: {
+  onTest: (recipientEmail: string) => void;
+  testing: boolean;
+  testResult: string | null;
+}) {
+  const [recipientEmail, setRecipientEmail] = useState("");
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (recipientEmail.trim()) {
+      onTest(recipientEmail.trim());
+    }
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-2">
+      <div className="flex gap-2">
+        <Input
+          type="email"
+          placeholder="test@example.com"
+          value={recipientEmail}
+          onChange={(e) => setRecipientEmail(e.target.value)}
+          disabled={testing}
+          className="h-8 text-sm"
+        />
+        <Button type="submit" size="sm" variant="outline" disabled={testing || !recipientEmail.trim()}>
+          {testing && <Loader2 className="mr-1.5 size-3.5 animate-spin" />}
+          Send Test
+        </Button>
+      </div>
+      {testResult && (
+        <div className="rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground">
+          {testResult}
+        </div>
+      )}
+    </form>
+  );
+}
 
 function DisconnectDialog({
   name,

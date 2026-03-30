@@ -215,6 +215,22 @@ mock.module("@atlas/api/lib/whatsapp/store", () => ({
   deleteWhatsAppInstallationByOrg: mockDeleteWhatsAppInstallationByOrg,
 }));
 
+const mockSaveEmailInstallation: Mock<(...args: unknown[]) => Promise<void>> = mock(
+  async () => {},
+);
+const mockGetEmailInstallationByOrg: Mock<(...args: unknown[]) => Promise<unknown>> = mock(
+  async () => null,
+);
+const mockDeleteEmailInstallationByOrg: Mock<(...args: unknown[]) => Promise<boolean>> = mock(
+  async () => true,
+);
+
+mock.module("@atlas/api/lib/email/store", () => ({
+  getEmailInstallationByOrg: mockGetEmailInstallationByOrg,
+  saveEmailInstallation: mockSaveEmailInstallation,
+  deleteEmailInstallationByOrg: mockDeleteEmailInstallationByOrg,
+}));
+
 // --- Other mocks needed by the admin router ---
 
 mock.module("@atlas/api/lib/cache", () => ({
@@ -395,6 +411,12 @@ describe("BYOT routes", () => {
     mockSaveWhatsAppInstallation.mockImplementation(async () => {});
     mockDeleteWhatsAppInstallationByOrg.mockReset();
     mockDeleteWhatsAppInstallationByOrg.mockImplementation(async () => true);
+    mockSaveEmailInstallation.mockReset();
+    mockSaveEmailInstallation.mockImplementation(async () => {});
+    mockGetEmailInstallationByOrg.mockReset();
+    mockGetEmailInstallationByOrg.mockImplementation(async () => null);
+    mockDeleteEmailInstallationByOrg.mockReset();
+    mockDeleteEmailInstallationByOrg.mockImplementation(async () => true);
     mockAuthenticateRequest.mockImplementation(() =>
       Promise.resolve({
         authenticated: true,
@@ -1333,6 +1355,200 @@ describe("BYOT routes", () => {
       mockDeleteWhatsAppInstallationByOrg.mockImplementation(async () => false);
 
       const res = await request("/api/v1/admin/integrations/whatsapp", {
+        method: "DELETE",
+      });
+      expect(res.status).toBe(404);
+    });
+  });
+
+  // ═══════════════════════════════════════════════════════════════════
+  // POST /email (connect)
+  // ═══════════════════════════════════════════════════════════════════
+
+  describe("POST /integrations/email", () => {
+    it("returns 401 without auth", async () => {
+      mockAuthenticateRequest.mockImplementation(() =>
+        Promise.resolve({
+          authenticated: false,
+          error: "Invalid or expired token",
+          status: 401,
+        }),
+      );
+      const res = await jsonPost("/api/v1/admin/integrations/email", {
+        provider: "sendgrid",
+        senderAddress: "noreply@example.com",
+        config: { apiKey: "SG.test" },
+      });
+      expect(res.status).toBe(401);
+    });
+
+    it("returns 400 without org context", async () => {
+      mockAuthenticateRequest.mockImplementation(() =>
+        Promise.resolve({
+          authenticated: true,
+          mode: "simple-key",
+          user: {
+            id: "admin-1",
+            mode: "simple-key",
+            label: "Admin",
+            role: "admin",
+            activeOrganizationId: null,
+          },
+        }),
+      );
+      const res = await jsonPost("/api/v1/admin/integrations/email", {
+        provider: "sendgrid",
+        senderAddress: "noreply@example.com",
+        config: { apiKey: "SG.test" },
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it("returns 422 with missing fields", async () => {
+      const res = await jsonPost("/api/v1/admin/integrations/email", {});
+      expect(res.status).toBe(422);
+    });
+
+    it("saves SendGrid config on success", async () => {
+      const res = await jsonPost("/api/v1/admin/integrations/email", {
+        provider: "sendgrid",
+        senderAddress: "noreply@example.com",
+        config: { apiKey: "SG.test-key" },
+      });
+      expect(res.status).toBe(200);
+
+      const data = (await res.json()) as { message: string; provider: string; senderAddress: string };
+      expect(data.message).toContain("connected");
+      expect(data.provider).toBe("sendgrid");
+      expect(data.senderAddress).toBe("noreply@example.com");
+      expect(mockSaveEmailInstallation).toHaveBeenCalledTimes(1);
+      expect(mockSaveEmailInstallation).toHaveBeenCalledWith("org-1", {
+        provider: "sendgrid",
+        senderAddress: "noreply@example.com",
+        config: { apiKey: "SG.test-key" },
+      });
+    });
+
+    it("saves Postmark config on success", async () => {
+      const res = await jsonPost("/api/v1/admin/integrations/email", {
+        provider: "postmark",
+        senderAddress: "noreply@example.com",
+        config: { serverToken: "pm-test-token" },
+      });
+      expect(res.status).toBe(200);
+      expect(mockSaveEmailInstallation).toHaveBeenCalledTimes(1);
+      expect(mockSaveEmailInstallation).toHaveBeenCalledWith("org-1", {
+        provider: "postmark",
+        senderAddress: "noreply@example.com",
+        config: { serverToken: "pm-test-token" },
+      });
+    });
+
+    it("saves SMTP config on success", async () => {
+      const res = await jsonPost("/api/v1/admin/integrations/email", {
+        provider: "smtp",
+        senderAddress: "noreply@example.com",
+        config: { host: "smtp.example.com", port: 587, username: "user", password: "pass", tls: true },
+      });
+      expect(res.status).toBe(200);
+      expect(mockSaveEmailInstallation).toHaveBeenCalledTimes(1);
+      expect(mockSaveEmailInstallation).toHaveBeenCalledWith("org-1", {
+        provider: "smtp",
+        senderAddress: "noreply@example.com",
+        config: { host: "smtp.example.com", port: 587, username: "user", password: "pass", tls: true },
+      });
+    });
+
+    it("saves SES config on success", async () => {
+      const res = await jsonPost("/api/v1/admin/integrations/email", {
+        provider: "ses",
+        senderAddress: "noreply@example.com",
+        config: { region: "us-east-1", accessKeyId: "AKIA...", secretAccessKey: "secret" },
+      });
+      expect(res.status).toBe(200);
+      expect(mockSaveEmailInstallation).toHaveBeenCalledTimes(1);
+      expect(mockSaveEmailInstallation).toHaveBeenCalledWith("org-1", {
+        provider: "ses",
+        senderAddress: "noreply@example.com",
+        config: { region: "us-east-1", accessKeyId: "AKIA...", secretAccessKey: "secret" },
+      });
+    });
+
+    it("returns 404 when no internal DB", async () => {
+      mockHasInternalDB = false;
+      const res = await jsonPost("/api/v1/admin/integrations/email", {
+        provider: "sendgrid",
+        senderAddress: "noreply@example.com",
+        config: { apiKey: "SG.test" },
+      });
+      // requireOrgContext middleware returns 404 when no internal DB
+      expect(res.status).toBe(404);
+    });
+  });
+
+  // ═══════════════════════════════════════════════════════════════════
+  // POST /email/test
+  // ═══════════════════════════════════════════════════════════════════
+
+  describe("POST /integrations/email/test", () => {
+    it("returns 400 when no email config exists", async () => {
+      mockGetEmailInstallationByOrg.mockImplementation(async () => null);
+
+      const res = await jsonPost("/api/v1/admin/integrations/email/test", {
+        recipientEmail: "test@example.com",
+      });
+      expect(res.status).toBe(400);
+      const data = (await res.json()) as { error: string };
+      expect(data.error).toBe("not_found");
+    });
+
+    it("returns 200 with success when SendGrid config exists", async () => {
+      mockGetEmailInstallationByOrg.mockImplementation(async () => ({
+        config_id: "test-id",
+        provider: "sendgrid",
+        sender_address: "noreply@example.com",
+        config: { apiKey: "SG.test" },
+        org_id: "org-1",
+        installed_at: new Date().toISOString(),
+      }));
+
+      // Mock SendGrid API success
+      mockFetchImpl.mockImplementation(() =>
+        Promise.resolve(new Response("", { status: 202 })),
+      );
+
+      const res = await jsonPost("/api/v1/admin/integrations/email/test", {
+        recipientEmail: "test@example.com",
+      });
+      expect(res.status).toBe(200);
+      const data = (await res.json()) as { success: boolean };
+      expect(data.success).toBe(true);
+    });
+
+    it("returns 422 with missing recipientEmail", async () => {
+      const res = await jsonPost("/api/v1/admin/integrations/email/test", {});
+      expect(res.status).toBe(422);
+    });
+  });
+
+  // ═══════════════════════════════════════════════════════════════════
+  // DELETE /email
+  // ═══════════════════════════════════════════════════════════════════
+
+  describe("DELETE /integrations/email", () => {
+    it("returns 200 on successful disconnect", async () => {
+      const res = await request("/api/v1/admin/integrations/email", {
+        method: "DELETE",
+      });
+      expect(res.status).toBe(200);
+      const data = (await res.json()) as { message: string };
+      expect(data.message).toContain("disconnected");
+    });
+
+    it("returns 404 when no installation found", async () => {
+      mockDeleteEmailInstallationByOrg.mockImplementation(async () => false);
+
+      const res = await request("/api/v1/admin/integrations/email", {
         method: "DELETE",
       });
       expect(res.status).toBe(404);

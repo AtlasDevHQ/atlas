@@ -1040,6 +1040,25 @@ export const whatsappInstallations = pgTable(
 );
 
 // ---------------------------------------------------------------------------
+// Email integration (0011_email_installations.sql)
+// ---------------------------------------------------------------------------
+
+export const emailInstallations = pgTable(
+  "email_installations",
+  {
+    configId: text("config_id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+    provider: text("provider").notNull(),
+    senderAddress: text("sender_address").notNull(),
+    config: jsonb("config").notNull().$type<Record<string, unknown>>().default({}),
+    orgId: text("org_id"),
+    installedAt: timestamp("installed_at", { withTimezone: true }).defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("idx_email_installations_org").on(t.orgId),
+  ],
+);
+
+// ---------------------------------------------------------------------------
 // OAuth state (0005_oauth_state.sql)
 // ---------------------------------------------------------------------------
 

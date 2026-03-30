@@ -25678,7 +25678,7 @@
           "Admin — Integrations"
         ],
         "summary": "Get integration status",
-        "description": "Returns the status of all configured integrations for the current workspace: Slack, Teams, Discord, Telegram, webhooks, available delivery channels, and deploy mode.",
+        "description": "Returns the status of all configured integrations for the current workspace: Slack, Teams, Discord, Telegram, Google Chat, GitHub, Linear, WhatsApp, Email, webhooks, available delivery channels, deploy mode, and internal database availability.",
         "responses": {
           "200": {
             "description": "Integration status",
@@ -25843,6 +25843,184 @@
                         "configurable"
                       ]
                     },
+                    "gchat": {
+                      "type": "object",
+                      "properties": {
+                        "connected": {
+                          "type": "boolean"
+                        },
+                        "projectId": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "serviceAccountEmail": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "installedAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "format": "date-time"
+                        },
+                        "configurable": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "connected",
+                        "projectId",
+                        "serviceAccountEmail",
+                        "installedAt",
+                        "configurable"
+                      ]
+                    },
+                    "github": {
+                      "type": "object",
+                      "properties": {
+                        "connected": {
+                          "type": "boolean"
+                        },
+                        "username": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "installedAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "format": "date-time"
+                        },
+                        "configurable": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "connected",
+                        "username",
+                        "installedAt",
+                        "configurable"
+                      ]
+                    },
+                    "linear": {
+                      "type": "object",
+                      "properties": {
+                        "connected": {
+                          "type": "boolean"
+                        },
+                        "userName": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "userEmail": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "installedAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "format": "date-time"
+                        },
+                        "configurable": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "connected",
+                        "userName",
+                        "userEmail",
+                        "installedAt",
+                        "configurable"
+                      ]
+                    },
+                    "whatsapp": {
+                      "type": "object",
+                      "properties": {
+                        "connected": {
+                          "type": "boolean"
+                        },
+                        "phoneNumberId": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "displayPhone": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "installedAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "format": "date-time"
+                        },
+                        "configurable": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "connected",
+                        "phoneNumberId",
+                        "displayPhone",
+                        "installedAt",
+                        "configurable"
+                      ]
+                    },
+                    "email": {
+                      "type": "object",
+                      "properties": {
+                        "connected": {
+                          "type": "boolean"
+                        },
+                        "provider": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "senderAddress": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "installedAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ],
+                          "format": "date-time"
+                        },
+                        "configurable": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "connected",
+                        "provider",
+                        "senderAddress",
+                        "installedAt",
+                        "configurable"
+                      ]
+                    },
                     "webhooks": {
                       "type": "object",
                       "properties": {
@@ -25876,6 +26054,9 @@
                         "saas",
                         "self-hosted"
                       ]
+                    },
+                    "hasInternalDB": {
+                      "type": "boolean"
                     }
                   },
                   "required": [
@@ -25883,9 +26064,15 @@
                     "teams",
                     "discord",
                     "telegram",
+                    "gchat",
+                    "github",
+                    "linear",
+                    "whatsapp",
+                    "email",
                     "webhooks",
                     "deliveryChannels",
-                    "deployMode"
+                    "deployMode",
+                    "hasInternalDB"
                   ]
                 }
               }
@@ -26329,6 +26516,379 @@
         "operationId": "deleteAdminIntegrationsDiscord"
       }
     },
+    "/api/v1/admin/integrations/slack/byot": {
+      "post": {
+        "tags": [
+          "Admin — Integrations"
+        ],
+        "summary": "Connect Slack via bot token (BYOT)",
+        "description": "Validates a Slack bot token via auth.test and saves the installation for the current workspace. Use when platform OAuth is not configured.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "botToken": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Slack bot token (xoxb-...)"
+                  }
+                },
+                "required": [
+                  "botToken"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Slack connected via BYOT",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string"
+                    },
+                    "workspaceName": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "teamId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "message",
+                    "workspaceName",
+                    "teamId"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid bot token, no active organization, or internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postAdminIntegrationsSlackByot"
+      }
+    },
+    "/api/v1/admin/integrations/teams/byot": {
+      "post": {
+        "tags": [
+          "Admin — Integrations"
+        ],
+        "summary": "Connect Teams via app credentials (BYOT)",
+        "description": "Validates Azure Bot app credentials via client credentials token acquisition and saves the installation for the current workspace.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "appId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Azure Bot App ID (client_id)"
+                  },
+                  "appPassword": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Azure Bot App Password (client_secret)"
+                  }
+                },
+                "required": [
+                  "appId",
+                  "appPassword"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Teams connected via BYOT",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string"
+                    },
+                    "appId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "message",
+                    "appId"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid credentials, no active organization, or internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postAdminIntegrationsTeamsByot"
+      }
+    },
+    "/api/v1/admin/integrations/discord/byot": {
+      "post": {
+        "tags": [
+          "Admin — Integrations"
+        ],
+        "summary": "Connect Discord via bot credentials (BYOT)",
+        "description": "Validates a Discord bot token via the Discord API and saves the installation for the current workspace.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "botToken": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Discord bot token"
+                  },
+                  "applicationId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Discord application ID"
+                  },
+                  "publicKey": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Discord application public key (for interaction verification)"
+                  }
+                },
+                "required": [
+                  "botToken",
+                  "applicationId",
+                  "publicKey"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Discord connected via BYOT",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string"
+                    },
+                    "botUsername": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "message",
+                    "botUsername"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid bot token, no active organization, or internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postAdminIntegrationsDiscordByot"
+      }
+    },
     "/api/v1/admin/integrations/telegram": {
       "post": {
         "tags": [
@@ -26558,6 +27118,1492 @@
           }
         },
         "operationId": "deleteAdminIntegrationsTelegram"
+      }
+    },
+    "/api/v1/admin/integrations/gchat": {
+      "post": {
+        "tags": [
+          "Admin — Integrations"
+        ],
+        "summary": "Connect Google Chat via service account",
+        "description": "Parses a Google Chat service account JSON key, validates required fields (client_email, private_key), and saves the installation for the current workspace. Structural validation only — does not call the Google API.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "credentialsJson": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Google Cloud service account JSON key"
+                  }
+                },
+                "required": [
+                  "credentialsJson"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Google Chat connected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string"
+                    },
+                    "projectId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "serviceAccountEmail": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "message",
+                    "projectId",
+                    "serviceAccountEmail"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid credentials, no active organization, or internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Service account already bound to a different organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postAdminIntegrationsGchat"
+      },
+      "delete": {
+        "tags": [
+          "Admin — Integrations"
+        ],
+        "summary": "Disconnect Google Chat",
+        "description": "Removes the Google Chat installation for the current workspace. Any Google Chat bot functionality will stop working until reconnected.",
+        "responses": {
+          "200": {
+            "description": "Google Chat disconnected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No Google Chat installation found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "deleteAdminIntegrationsGchat"
+      }
+    },
+    "/api/v1/admin/integrations/github": {
+      "post": {
+        "tags": [
+          "Admin — Integrations"
+        ],
+        "summary": "Connect GitHub via personal access token",
+        "description": "Validates a GitHub personal access token via the GitHub API and saves the installation for the current workspace.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "accessToken": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "GitHub personal access token (ghp_ or github_pat_ prefix)"
+                  }
+                },
+                "required": [
+                  "accessToken"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "GitHub connected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string"
+                    },
+                    "username": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "message",
+                    "username"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid token, no active organization, or internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "GitHub user already bound to a different organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postAdminIntegrationsGithub"
+      },
+      "delete": {
+        "tags": [
+          "Admin — Integrations"
+        ],
+        "summary": "Disconnect GitHub",
+        "description": "Removes the GitHub installation for the current workspace. Any GitHub integration functionality will stop working until reconnected.",
+        "responses": {
+          "200": {
+            "description": "GitHub disconnected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No GitHub installation found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "deleteAdminIntegrationsGithub"
+      }
+    },
+    "/api/v1/admin/integrations/linear": {
+      "post": {
+        "tags": [
+          "Admin — Integrations"
+        ],
+        "summary": "Connect Linear via API key",
+        "description": "Validates a Linear personal API key via the Linear GraphQL API and saves the installation for the current workspace.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "apiKey": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Linear personal API key"
+                  }
+                },
+                "required": [
+                  "apiKey"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Linear connected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string"
+                    },
+                    "userName": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "userEmail": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "message",
+                    "userName",
+                    "userEmail"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid API key, no active organization, or internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Linear user already bound to a different organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postAdminIntegrationsLinear"
+      },
+      "delete": {
+        "tags": [
+          "Admin — Integrations"
+        ],
+        "summary": "Disconnect Linear",
+        "description": "Removes the Linear installation for the current workspace. Any Linear integration functionality will stop working until reconnected.",
+        "responses": {
+          "200": {
+            "description": "Linear disconnected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No Linear installation found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "deleteAdminIntegrationsLinear"
+      }
+    },
+    "/api/v1/admin/integrations/whatsapp": {
+      "post": {
+        "tags": [
+          "Admin — Integrations"
+        ],
+        "summary": "Connect WhatsApp via Cloud API credentials",
+        "description": "Validates WhatsApp Cloud API credentials via the Meta Graph API and saves the installation for the current workspace.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "phoneNumberId": {
+                    "type": "string",
+                    "minLength": 1,
+                    "pattern": "^\\d+$",
+                    "description": "WhatsApp phone number ID from Meta Business Suite"
+                  },
+                  "accessToken": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Permanent access token from Meta"
+                  }
+                },
+                "required": [
+                  "phoneNumberId",
+                  "accessToken"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "WhatsApp connected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string"
+                    },
+                    "displayPhone": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "message",
+                    "displayPhone"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid credentials, no active organization, or internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Phone number already bound to a different organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postAdminIntegrationsWhatsapp"
+      },
+      "delete": {
+        "tags": [
+          "Admin — Integrations"
+        ],
+        "summary": "Disconnect WhatsApp",
+        "description": "Removes the WhatsApp installation for the current workspace. Any WhatsApp messaging functionality will stop working until reconnected.",
+        "responses": {
+          "200": {
+            "description": "WhatsApp disconnected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No WhatsApp installation found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "deleteAdminIntegrationsWhatsapp"
+      }
+    },
+    "/api/v1/admin/integrations/email": {
+      "post": {
+        "tags": [
+          "Admin — Integrations"
+        ],
+        "summary": "Connect email delivery provider",
+        "description": "Saves email delivery configuration for the current workspace. Supports SMTP, SendGrid, Postmark, and SES providers.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "provider": {
+                    "type": "string",
+                    "enum": [
+                      "smtp",
+                      "sendgrid",
+                      "postmark",
+                      "ses"
+                    ],
+                    "description": "Email provider type"
+                  },
+                  "senderAddress": {
+                    "type": "string",
+                    "format": "email",
+                    "description": "Sender email address (From header)"
+                  },
+                  "config": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "host": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "port": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 65535
+                          },
+                          "username": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "password": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "tls": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "host",
+                          "port",
+                          "username",
+                          "password",
+                          "tls"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "apiKey": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "apiKey"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "serverToken": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "serverToken"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "region": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "accessKeyId": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "secretAccessKey": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "region",
+                          "accessKeyId",
+                          "secretAccessKey"
+                        ]
+                      }
+                    ],
+                    "description": "Provider-specific configuration"
+                  }
+                },
+                "required": [
+                  "provider",
+                  "senderAddress",
+                  "config"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Email connected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string"
+                    },
+                    "provider": {
+                      "type": "string"
+                    },
+                    "senderAddress": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "message",
+                    "provider",
+                    "senderAddress"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid configuration, no active organization, or internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postAdminIntegrationsEmail"
+      },
+      "delete": {
+        "tags": [
+          "Admin — Integrations"
+        ],
+        "summary": "Disconnect email",
+        "description": "Removes the email configuration for the current workspace. Email delivery will fall back to environment variables or be disabled until reconnected.",
+        "responses": {
+          "200": {
+            "description": "Email disconnected",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No email installation found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "deleteAdminIntegrationsEmail"
+      }
+    },
+    "/api/v1/admin/integrations/email/test": {
+      "post": {
+        "tags": [
+          "Admin — Integrations"
+        ],
+        "summary": "Send test email",
+        "description": "Sends a test email using the saved email configuration for the current workspace.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "recipientEmail": {
+                    "type": "string",
+                    "format": "email",
+                    "description": "Recipient email address for the test"
+                  }
+                },
+                "required": [
+                  "recipientEmail"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Test email sent",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string"
+                    },
+                    "success": {
+                      "type": "boolean"
+                    }
+                  },
+                  "required": [
+                    "message",
+                    "success"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No active organization, internal database not configured, or no email config found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postAdminIntegrationsEmailTest"
       }
     },
     "/api/v1/admin/sandbox/status": {

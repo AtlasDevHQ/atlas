@@ -128,23 +128,9 @@ export async function saveLinearInstallation(
   const userEmail = opts.userEmail ?? null;
 
   try {
-    // Reject if already bound to a different org (hijack protection)
-    const existing = await internalQuery<Record<string, unknown>>(
-      "SELECT org_id FROM linear_installations WHERE user_id = $1",
-      [userId],
-    );
-
-    if (existing.length > 0) {
-      const existingOrgId = existing[0].org_id;
-      if (existingOrgId && orgId && existingOrgId !== orgId) {
-        throw new Error(
-          `Linear user ${userId} is already bound to a different organization. ` +
-          `Disconnect the existing installation first.`,
-        );
-      }
-    }
-
-    await internalQuery(
+    // Atomic upsert with hijack protection — the WHERE clause rejects rows
+    // bound to a different org in one statement (no TOCTOU race).
+    const rows = await internalQuery<{ user_id: string }>(
       `INSERT INTO linear_installations (user_id, api_key, user_name, user_email, org_id)
        VALUES ($1, $2, $3, $4, $5)
        ON CONFLICT (user_id) DO UPDATE SET
@@ -152,9 +138,18 @@ export async function saveLinearInstallation(
          user_name = COALESCE($3, linear_installations.user_name),
          user_email = COALESCE($4, linear_installations.user_email),
          org_id = COALESCE($5, linear_installations.org_id),
-         installed_at = now()`,
+         installed_at = now()
+       WHERE linear_installations.org_id IS NULL OR linear_installations.org_id = $5
+       RETURNING user_id`,
       [userId, opts.apiKey, userName, userEmail, orgId],
     );
+
+    if (rows.length === 0) {
+      throw new Error(
+        `Linear user ${userId} is already bound to a different organization. ` +
+        `Disconnect the existing installation first.`,
+      );
+    }
   } catch (err) {
     log.error(
       { err: err instanceof Error ? err.message : String(err), userId },

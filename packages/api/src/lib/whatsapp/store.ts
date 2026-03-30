@@ -126,32 +126,27 @@ export async function saveWhatsAppInstallation(
   const displayPhone = opts.displayPhone ?? null;
 
   try {
-    // Reject if already bound to a different org (hijack protection)
-    const existing = await internalQuery<Record<string, unknown>>(
-      "SELECT org_id FROM whatsapp_installations WHERE phone_number_id = $1",
-      [phoneNumberId],
-    );
-
-    if (existing.length > 0) {
-      const existingOrgId = existing[0].org_id;
-      if (existingOrgId && orgId && existingOrgId !== orgId) {
-        throw new Error(
-          `WhatsApp phone number ${phoneNumberId} is already bound to a different organization. ` +
-          `Disconnect the existing installation first.`,
-        );
-      }
-    }
-
-    await internalQuery(
+    // Atomic upsert with hijack protection — the WHERE clause rejects rows
+    // bound to a different org in one statement (no TOCTOU race).
+    const rows = await internalQuery<{ phone_number_id: string }>(
       `INSERT INTO whatsapp_installations (phone_number_id, access_token, display_phone, org_id)
        VALUES ($1, $2, $3, $4)
        ON CONFLICT (phone_number_id) DO UPDATE SET
          access_token = $2,
          display_phone = COALESCE($3, whatsapp_installations.display_phone),
          org_id = COALESCE($4, whatsapp_installations.org_id),
-         installed_at = now()`,
+         installed_at = now()
+       WHERE whatsapp_installations.org_id IS NULL OR whatsapp_installations.org_id = $4
+       RETURNING phone_number_id`,
       [phoneNumberId, opts.accessToken, displayPhone, orgId],
     );
+
+    if (rows.length === 0) {
+      throw new Error(
+        `WhatsApp phone number ${phoneNumberId} is already bound to a different organization. ` +
+        `Disconnect the existing installation first.`,
+      );
+    }
   } catch (err) {
     log.error(
       { err: err instanceof Error ? err.message : String(err), phoneNumberId },

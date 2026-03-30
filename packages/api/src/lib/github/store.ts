@@ -125,32 +125,27 @@ export async function saveGitHubInstallation(
   const username = opts.username ?? null;
 
   try {
-    // Reject if already bound to a different org (hijack protection)
-    const existing = await internalQuery<Record<string, unknown>>(
-      "SELECT org_id FROM github_installations WHERE user_id = $1",
-      [userId],
-    );
-
-    if (existing.length > 0) {
-      const existingOrgId = existing[0].org_id;
-      if (existingOrgId && orgId && existingOrgId !== orgId) {
-        throw new Error(
-          `GitHub user ${userId} is already bound to a different organization. ` +
-          `Disconnect the existing installation first.`,
-        );
-      }
-    }
-
-    await internalQuery(
+    // Atomic upsert with hijack protection — the WHERE clause rejects rows
+    // bound to a different org in one statement (no TOCTOU race).
+    const rows = await internalQuery<{ user_id: string }>(
       `INSERT INTO github_installations (user_id, access_token, username, org_id)
        VALUES ($1, $2, $3, $4)
        ON CONFLICT (user_id) DO UPDATE SET
          access_token = $2,
          username = COALESCE($3, github_installations.username),
          org_id = COALESCE($4, github_installations.org_id),
-         installed_at = now()`,
+         installed_at = now()
+       WHERE github_installations.org_id IS NULL OR github_installations.org_id = $4
+       RETURNING user_id`,
       [userId, opts.accessToken, username, orgId],
     );
+
+    if (rows.length === 0) {
+      throw new Error(
+        `GitHub user ${userId} is already bound to a different organization. ` +
+        `Disconnect the existing installation first.`,
+      );
+    }
   } catch (err) {
     log.error(
       { err: err instanceof Error ? err.message : String(err), userId },

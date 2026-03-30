@@ -128,32 +128,27 @@ export async function saveTelegramInstallation(
   const botUsername = opts.botUsername ?? null;
 
   try {
-    // Reject if the bot is already bound to a different org (prevents hijacking).
-    const existing = await internalQuery<Record<string, unknown>>(
-      "SELECT org_id FROM telegram_installations WHERE bot_id = $1",
-      [botId],
-    );
-
-    if (existing.length > 0) {
-      const existingOrgId = existing[0].org_id;
-      if (existingOrgId && orgId && existingOrgId !== orgId) {
-        throw new Error(
-          `Bot ${botId} is already bound to a different organization. ` +
-          `Disconnect the existing installation first.`,
-        );
-      }
-    }
-
-    await internalQuery(
+    // Atomic upsert with hijack protection — the WHERE clause rejects rows
+    // bound to a different org in one statement (no TOCTOU race).
+    const rows = await internalQuery<{ bot_id: string }>(
       `INSERT INTO telegram_installations (bot_id, bot_token, bot_username, org_id)
        VALUES ($1, $2, $3, $4)
        ON CONFLICT (bot_id) DO UPDATE SET
          bot_token = $2,
          bot_username = COALESCE($3, telegram_installations.bot_username),
          org_id = COALESCE($4, telegram_installations.org_id),
-         installed_at = now()`,
+         installed_at = now()
+       WHERE telegram_installations.org_id IS NULL OR telegram_installations.org_id = $4
+       RETURNING bot_id`,
       [botId, opts.botToken, botUsername, orgId],
     );
+
+    if (rows.length === 0) {
+      throw new Error(
+        `Bot ${botId} is already bound to a different organization. ` +
+        `Disconnect the existing installation first.`,
+      );
+    }
   } catch (err) {
     log.error(
       { err: err instanceof Error ? err.message : String(err), botId },

@@ -27,7 +27,7 @@ import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
 import { withSourceSlot } from "@atlas/api/lib/db/source-rate-limit";
 import { getConfig } from "@atlas/api/lib/config";
 import { resolveRLSFilters, injectRLSConditions, type RLSFilterGroup } from "@atlas/api/lib/rls";
-import { getSetting } from "@atlas/api/lib/settings";
+import { getSetting, getSettingAuto } from "@atlas/api/lib/settings";
 import { getCache, buildCacheKey, cacheEnabled, getDefaultTtl } from "@atlas/api/lib/cache/index";
 import { proposePatternIfNovel } from "@atlas/api/lib/learn/pattern-proposer";
 import {
@@ -279,8 +279,9 @@ export function validateSQL(sql: string, connectionId?: string): SQLValidationRe
     };
   }
 
-  // 3. Table whitelist check
-  if (process.env.ATLAS_TABLE_WHITELIST !== "false") {
+  // 3. Table whitelist check — use getSettingAuto for SaaS hot-reload
+  const whitelistSetting = getSettingAuto("ATLAS_TABLE_WHITELIST") ?? process.env.ATLAS_TABLE_WHITELIST;
+  if (whitelistSetting !== "false") {
     try {
       const tables = parser.tableList(trimmed, { database: parserDatabase(dbType, connectionId) });
       const orgId = getRequestContext()?.user?.activeOrganizationId;
@@ -481,7 +482,42 @@ function applyRLSEffect(
 ): Effect.Effect<string, RLSError> {
   return Effect.gen(function* () {
     const config = getConfig();
-    const rlsConfig = config?.rls;
+    let rlsConfig = config?.rls;
+
+    // In SaaS mode only, overlay settings-based RLS config for hot-reload.
+    // Only activates when there is a DB override for ATLAS_RLS_ENABLED — env
+    // vars and defaults are handled by the boot-time config and don't trigger
+    // the overlay, preserving multi-policy configs from atlas.config.ts.
+    if (config?.deployMode === "saas") {
+      const rlsEnabledSetting = getSettingAuto("ATLAS_RLS_ENABLED");
+      if (rlsEnabledSetting !== undefined) {
+        if (rlsEnabledSetting !== "true") {
+          // Explicitly disabled via settings — skip RLS
+          return sql;
+        }
+        // Setting says enabled — build/overlay config from settings
+        const column = getSettingAuto("ATLAS_RLS_COLUMN");
+        const claim = getSettingAuto("ATLAS_RLS_CLAIM");
+        if (column && claim) {
+          rlsConfig = {
+            enabled: true,
+            policies: [{ tables: ["*"], column, claim }],
+            combineWith: rlsConfig?.combineWith ?? "and",
+          };
+        } else {
+          // RLS enabled but missing required config — fail closed
+          log.error(
+            { column: !!column, claim: !!claim },
+            "RLS enabled via settings but ATLAS_RLS_COLUMN or ATLAS_RLS_CLAIM is missing — blocking query",
+          );
+          return yield* new RLSError({
+            message: "Row-level security is enabled but not fully configured. Contact your administrator.",
+            phase: "filter",
+          });
+        }
+      }
+    }
+
     if (!rlsConfig?.enabled) return sql;
 
     const ctx = getRequestContext();

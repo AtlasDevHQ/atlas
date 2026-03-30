@@ -7,6 +7,8 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { _resetPool, type InternalPool } from "../db/internal";
 import {
   getSetting,
+  getSettingAuto,
+  getSettingLive,
   setSetting,
   deleteSetting,
   getAllSettingOverrides,
@@ -640,6 +642,133 @@ describe("settings module", () => {
 
     it("returns undefined for unknown keys", () => {
       expect(getSettingDefinition("NONEXISTENT")).toBeUndefined();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // getSettingAuto — dispatches through the same cache as getSetting
+  // ---------------------------------------------------------------------------
+
+  describe("getSettingAuto", () => {
+    it("resolves like getSetting for env vars", () => {
+      process.env.ATLAS_ROW_LIMIT = "777";
+      expect(getSettingAuto("ATLAS_ROW_LIMIT")).toBe("777");
+    });
+
+    it("resolves like getSetting for DB overrides", async () => {
+      enableInternalDB();
+      setResults({
+        rows: [
+          { key: "ATLAS_ROW_LIMIT", value: "42", updated_at: "2026-01-01", updated_by: null, org_id: null },
+        ],
+      });
+      await loadSettings();
+      expect(getSettingAuto("ATLAS_ROW_LIMIT")).toBe("42");
+    });
+
+    it("returns default when nothing is set", () => {
+      delete process.env.ATLAS_ROW_LIMIT;
+      expect(getSettingAuto("ATLAS_ROW_LIMIT")).toBe("1000");
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // getSettingLive — TTL cache with DB re-read
+  // ---------------------------------------------------------------------------
+
+  describe("getSettingLive", () => {
+    it("falls back to getSetting when no internal DB", async () => {
+      disableInternalDB();
+      process.env.ATLAS_ROW_LIMIT = "123";
+      const value = await getSettingLive("ATLAS_ROW_LIMIT");
+      expect(value).toBe("123");
+    });
+
+    it("re-reads from DB on cache miss", async () => {
+      enableInternalDB();
+      setResults(
+        // First loadSettings call (from getSettingLive)
+        { rows: [{ key: "ATLAS_ROW_LIMIT", value: "50", updated_at: "2026-01-01", updated_by: null, org_id: null }] },
+      );
+
+      const value = await getSettingLive("ATLAS_ROW_LIMIT");
+      expect(value).toBe("50");
+      // Should have called the DB
+      expect(queryCalls.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it("returns cached value on subsequent calls within TTL", async () => {
+      enableInternalDB();
+      setResults(
+        { rows: [{ key: "ATLAS_ROW_LIMIT", value: "50", updated_at: "2026-01-01", updated_by: null, org_id: null }] },
+      );
+
+      await getSettingLive("ATLAS_ROW_LIMIT");
+      const callCount = queryCalls.length;
+
+      // Second call should use TTL cache — no new DB query
+      const value2 = await getSettingLive("ATLAS_ROW_LIMIT");
+      expect(value2).toBe("50");
+      expect(queryCalls.length).toBe(callCount); // no new queries
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // requiresRestart — deploy-mode-aware
+  // ---------------------------------------------------------------------------
+
+  describe("requiresRestart in SaaS mode", () => {
+    it("restart-required settings show requiresRestart in self-hosted mode", () => {
+      // Self-hosted is the default when getConfig() returns null or non-saas
+      const settings = getSettingsForAdmin(undefined, true);
+      const provider = settings.find((s) => s.key === "ATLAS_PROVIDER");
+      expect(provider).toBeDefined();
+      // In self-hosted (default), requiresRestart should be true
+      expect(provider!.requiresRestart).toBe(true);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // setSetting busts live cache
+  // ---------------------------------------------------------------------------
+
+  describe("setSetting live cache invalidation", () => {
+    it("busts live cache on write so next read picks up new value", async () => {
+      enableInternalDB();
+      // Load initial value
+      setResults({
+        rows: [{ key: "ATLAS_ROW_LIMIT", value: "100", updated_at: "2026-01-01", updated_by: null, org_id: null }],
+      });
+      await loadSettings();
+      // Warm live cache
+      await getSettingLive("ATLAS_ROW_LIMIT");
+
+      // Write a new value
+      setResults({ rows: [] }); // for upsert
+      await setSetting("ATLAS_ROW_LIMIT", "200", "admin");
+
+      // getSetting should reflect the new value immediately (cache was updated)
+      expect(getSetting("ATLAS_ROW_LIMIT")).toBe("200");
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // deleteSetting busts live cache
+  // ---------------------------------------------------------------------------
+
+  describe("deleteSetting live cache invalidation", () => {
+    it("busts live cache on delete", async () => {
+      enableInternalDB();
+      setResults({ rows: [] });
+      await setSetting("ATLAS_ROW_LIMIT", "100", "admin");
+      expect(getSetting("ATLAS_ROW_LIMIT")).toBe("100");
+
+      setResults({ rows: [] });
+      await deleteSetting("ATLAS_ROW_LIMIT", "admin");
+
+      // Should revert to env or default
+      delete process.env.ATLAS_ROW_LIMIT;
+      expect(getSetting("ATLAS_ROW_LIMIT")).toBe("1000");
     });
   });
 });

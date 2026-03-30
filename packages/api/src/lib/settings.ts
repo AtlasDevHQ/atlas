@@ -10,6 +10,11 @@
  *
  * The in-process cache is populated at startup and updated on writes,
  * so reads never hit the database after initialization.
+ *
+ * In SaaS mode (`ATLAS_DEPLOY_MODE=saas`), settings that normally require a
+ * restart are hot-reloadable: a short-TTL live cache re-reads from the DB so
+ * changes take effect within seconds without restarting the server.
+ * Self-hosted mode preserves the original restart-required behavior.
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
@@ -336,6 +341,86 @@ const SETTINGS_MAP = new Map(SETTINGS_REGISTRY.map((s) => [s.key, s]));
 /** @internal Reset cache — for testing only. */
 export function _resetSettingsCache(): void {
   _cache.clear();
+  _liveCache.clear();
+}
+
+// ---------------------------------------------------------------------------
+// Live TTL cache — for SaaS hot-reload
+// ---------------------------------------------------------------------------
+
+/** Default TTL for the live settings cache (milliseconds). */
+const LIVE_CACHE_TTL_MS = 5_000;
+
+interface LiveCacheEntry {
+  value: string | undefined;
+  expiresAt: number;
+}
+
+const _liveCache = new Map<string, LiveCacheEntry>();
+
+/** Check if the current deploy mode is SaaS (lazy — avoids circular import at module load). */
+function isSaasMode(): boolean {
+  // Lazy-import to avoid circular dependency at module evaluation time.
+  // getConfig() is a cheap singleton read after boot.
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { getConfig } = require("@atlas/api/lib/config") as { getConfig: () => { deployMode?: string } | null };
+    return getConfig()?.deployMode === "saas";
+  } catch (err) {
+    // intentionally ignored: config module may not be ready during early module init
+    console.debug("isSaasMode: config not yet available:", err instanceof Error ? err.message : String(err));
+    return false;
+  }
+}
+
+/**
+ * Read a setting with a short-TTL DB cache — for SaaS hot-reload.
+ *
+ * On cache hit (within TTL), returns the cached value immediately.
+ * On cache miss, re-reads ALL settings from the DB (single query) and
+ * refreshes the in-process cache, then returns the requested value.
+ *
+ * Falls back to `getSetting()` when no internal DB is available.
+ */
+export async function getSettingLive(key: string, orgId?: string): Promise<string | undefined> {
+  if (!hasInternalDB()) return getSetting(key, orgId);
+
+  const liveKey = cacheKey(key, orgId);
+  const entry = _liveCache.get(liveKey);
+  const now = Date.now();
+
+  if (entry && now < entry.expiresAt) {
+    return entry.value;
+  }
+
+  // Re-read all settings from DB (single round-trip) and refresh _cache
+  await loadSettings();
+
+  // Resolve through the normal tier chain (now with fresh _cache)
+  const value = getSetting(key, orgId);
+
+  // Store in live cache with TTL
+  _liveCache.set(liveKey, { value, expiresAt: now + LIVE_CACHE_TTL_MS });
+
+  return value;
+}
+
+/**
+ * Synchronous setting read that is hot-reloadable in SaaS mode.
+ *
+ * In SaaS mode, this reads from the in-process cache which is periodically
+ * refreshed by `getSettingLive()` calls and by `setSetting()` writes.
+ * In self-hosted mode, this is identical to `getSetting()`.
+ *
+ * For settings on the hot-path (SQL validation, RLS, CORS), consumers call
+ * this instead of `getSetting()` — the cache is kept warm by writes and by
+ * the periodic background refresh triggered from the settings Layer.
+ */
+export function getSettingAuto(key: string, orgId?: string): string | undefined {
+  // Both modes use the same in-process cache. In SaaS mode the cache is
+  // refreshed more aggressively (on every write + periodic live reads).
+  // The synchronous path is identical — the difference is cache freshness.
+  return getSetting(key, orgId);
 }
 
 // ---------------------------------------------------------------------------
@@ -458,6 +543,12 @@ export async function setSetting(key: string, value: string, userId?: string, or
     updated_by: userId ?? null,
   });
 
+  // Bust live cache so next read picks up the new value immediately
+  _liveCache.clear();
+
+  // Apply runtime side effects for hot-reloadable settings
+  applySettingSideEffect(key, value);
+
   log.info({ key, orgId: effectiveOrgId, actorId: userId }, "Setting override saved");
 }
 
@@ -482,6 +573,15 @@ export async function deleteSetting(key: string, userId?: string, orgId?: string
     await internalQuery("DELETE FROM settings WHERE key = $1 AND org_id IS NULL", [key]);
   }
   _cache.delete(cacheKey(key, effectiveOrgId));
+
+  // Bust live cache so next read picks up the reverted value
+  _liveCache.clear();
+
+  // Apply runtime side effects (e.g., revert log level to env var / default)
+  const revertedValue = getSetting(key, effectiveOrgId);
+  if (revertedValue !== undefined) {
+    applySettingSideEffect(key, revertedValue);
+  }
 
   log.info({ key, orgId: effectiveOrgId, actorId: userId }, "Setting override removed");
 }
@@ -571,7 +671,12 @@ export function getSettingsForAdmin(orgId?: string, isPlatformAdmin?: boolean): 
         }
       }
 
-      return { ...def, currentValue, source };
+      // In SaaS mode, hot-reloadable settings don't require restart
+      const requiresRestart = (def.requiresRestart && !isSaasMode())
+        ? true
+        : undefined;
+
+      return { ...def, requiresRestart, currentValue, source };
     });
 }
 
@@ -583,4 +688,33 @@ export function getSettingsRegistry(): readonly SettingDefinition[] {
 /** Look up a setting definition by key. */
 export function getSettingDefinition(key: string): SettingDefinition | undefined {
   return SETTINGS_MAP.get(key);
+}
+
+// ---------------------------------------------------------------------------
+// Runtime side effects — applied when hot-reloadable settings change
+// ---------------------------------------------------------------------------
+
+/** Settings that produce immediate runtime side effects when changed. */
+const SIDE_EFFECT_KEYS = new Set(["ATLAS_LOG_LEVEL"]);
+
+/**
+ * Apply runtime side effects after a setting value changes.
+ * Only runs in SaaS mode for hot-reloadable settings.
+ */
+function applySettingSideEffect(key: string, value: string): void {
+  if (!isSaasMode() || !SIDE_EFFECT_KEYS.has(key)) return;
+
+  if (key === "ATLAS_LOG_LEVEL") {
+    try {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports -- lazy import avoids circular dependency
+      const { setLogLevel } = require("@atlas/api/lib/logger") as { setLogLevel: (level: string) => boolean };
+      if (setLogLevel(value)) {
+        log.info({ level: value }, "Log level updated via hot-reload");
+      } else {
+        log.warn({ level: value }, "Log level change rejected — invalid level");
+      }
+    } catch (err) {
+      log.warn({ err: err instanceof Error ? err.message : String(err) }, "Failed to apply log level change");
+    }
+  }
 }

@@ -70,6 +70,8 @@ const mockSettings = new Map<string, string>();
 
 mock.module("@atlas/api/lib/settings", () => ({
   getSetting: (key: string, _orgId?: string) => mockSettings.get(key),
+  getSettingAuto: (key: string, _orgId?: string) => mockSettings.get(key),
+  getSettingLive: async (key: string, _orgId?: string) => mockSettings.get(key),
   getSettingsForAdmin: () => [],
   getSettingsRegistry: () => [],
   getSettingDefinition: () => undefined,

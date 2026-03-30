@@ -651,7 +651,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 
 ### Self-Service Features (P1)
 
-- [ ] Make restart-required settings hot-reloadable in SaaS mode (#1023)
+- [x] Make restart-required settings hot-reloadable in SaaS mode (#1023, PR #1083)
 - [x] OAuth-first integration connect flows for SaaS workspaces (#1024)
   - [x] Connect flow framework + Microsoft Teams (#1040, PR #1039)
   - [x] Discord (#1041, PR #1053)

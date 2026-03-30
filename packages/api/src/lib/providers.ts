@@ -140,6 +140,99 @@ export function getModel(): LanguageModel {
   }
 }
 
+/**
+ * Create a model + provider type from explicit provider/model values.
+ *
+ * Used by the SaaS hot-reload path to resolve the model from settings
+ * without mutating process.env. Falls back to env vars / defaults for
+ * any value that is undefined.
+ */
+export function getModelForConfig(
+  providerOverride?: string,
+  modelOverride?: string,
+): { model: LanguageModel; providerType: ProviderType; modelId: string } {
+  const raw = providerOverride ?? process.env.ATLAS_PROVIDER ?? getDefaultProvider();
+  if (!VALID_PROVIDERS.has(raw as ConfigProvider)) {
+    throw new Error(
+      `Unknown provider "${raw}". Supported: ${[...VALID_PROVIDERS].join(", ")}`
+    );
+  }
+  const provider = raw as ConfigProvider;
+  const modelId = modelOverride ?? process.env.ATLAS_MODEL ?? PROVIDER_DEFAULTS[provider];
+  if (!modelId) {
+    throw new Error(
+      `ATLAS_MODEL is required when using the "${provider}" provider. ` +
+        "Set it to the model ID served by your inference server (e.g. ATLAS_MODEL=llama3.1)."
+    );
+  }
+
+  const model = getModel(); // delegates to resolveProvider() which reads process.env
+
+  // For the resolved model, we need to create from the override values.
+  // Reuse getModel's switch logic by temporarily providing the values.
+  // Since getModel reads from resolveProvider() (process.env), and we
+  // want the override values, we need to build the model directly.
+  let resolvedModel: LanguageModel;
+
+  // If overrides match what process.env already has, reuse getModel()
+  const envProvider = process.env.ATLAS_PROVIDER ?? getDefaultProvider();
+  const envModel = process.env.ATLAS_MODEL;
+  if (providerOverride === envProvider && modelOverride === envModel) {
+    resolvedModel = model;
+  } else {
+    // Build model from the specific provider + model ID
+    switch (provider) {
+      case "anthropic":
+        resolvedModel = anthropic(modelId);
+        break;
+      case "openai":
+        resolvedModel = openai(modelId);
+        break;
+      case "bedrock":
+        resolvedModel = isBedrockAnthropicModel(modelId)
+          ? bedrockAnthropic(modelId)
+          : bedrock(modelId);
+        break;
+      case "ollama": {
+        const ollama = createOpenAI({
+          baseURL: process.env.OLLAMA_BASE_URL ?? "http://localhost:11434/v1",
+          apiKey: "not-needed",
+        });
+        resolvedModel = ollama(modelId);
+        break;
+      }
+      case "openai-compatible": {
+        const baseURL = process.env.OPENAI_COMPATIBLE_BASE_URL;
+        if (!baseURL) {
+          throw new Error("OPENAI_COMPATIBLE_BASE_URL is required when using the openai-compatible provider.");
+        }
+        const compatible = createOpenAI({
+          baseURL,
+          apiKey: process.env.OPENAI_COMPATIBLE_API_KEY ?? "not-needed",
+        });
+        resolvedModel = compatible(modelId);
+        break;
+      }
+      case "gateway":
+        if (!process.env.AI_GATEWAY_API_KEY) {
+          throw new Error("AI_GATEWAY_API_KEY is not set. The gateway provider requires an API key.");
+        }
+        resolvedModel = gateway(modelId);
+        break;
+      default: {
+        const _exhaustive: never = provider;
+        throw new Error(`Unknown provider "${_exhaustive}"`);
+      }
+    }
+  }
+
+  const providerType: ProviderType = (provider === "bedrock" && isBedrockAnthropicModel(modelId))
+    ? "bedrock-anthropic"
+    : provider;
+
+  return { model: resolvedModel, providerType, modelId };
+}
+
 // ── Workspace-level model resolution ────────────────────────────────
 
 /**

@@ -53,6 +53,20 @@ mock.module("@atlas/api/lib/auth/detect", () => ({
   resetAuthModeCache: () => {},
 }));
 
+mock.module("@atlas/api/lib/settings", () => ({
+  getSetting: () => undefined,
+  getSettingAuto: () => undefined,
+  getSettingLive: async () => undefined,
+  setSetting: async () => {},
+  deleteSetting: async () => {},
+  getAllSettingOverrides: async () => [],
+  loadSettings: async () => 0,
+  getSettingsForAdmin: () => [],
+  getSettingsRegistry: () => [],
+  getSettingDefinition: () => undefined,
+  _resetSettingsCache: () => {},
+}));
+
 // Import after mocks
 const { app } = await import("../index");
 

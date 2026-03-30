@@ -149,11 +149,24 @@ mock.module("@atlas/api/lib/settings", () => ({
     if (key === "ATLAS_SESSION_ABSOLUTE_TIMEOUT") return "0";
     return undefined;
   },
+  getSettingAuto: (key: string) => {
+    if (key === "ATLAS_SESSION_IDLE_TIMEOUT") return "0";
+    if (key === "ATLAS_SESSION_ABSOLUTE_TIMEOUT") return "0";
+    return undefined;
+  },
+  getSettingLive: async (key: string) => {
+    if (key === "ATLAS_SESSION_IDLE_TIMEOUT") return "0";
+    if (key === "ATLAS_SESSION_ABSOLUTE_TIMEOUT") return "0";
+    return undefined;
+  },
   getSettingsForAdmin: () => [],
   getSettingsRegistry: () => [],
   getSettingDefinition: () => undefined,
   setSetting: mock(() => Promise.resolve()),
   deleteSetting: mock(() => Promise.resolve()),
+  loadSettings: mock(async () => 0),
+  getAllSettingOverrides: mock(async () => []),
+  _resetSettingsCache: () => {},
   initializeSettings: mock(() => Promise.resolve()),
 }));
 

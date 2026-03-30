@@ -352,6 +352,22 @@ export function makeSchedulerLive(
         }),
       );
 
+      // Clean expired OAuth state every 10 minutes (DB rows + in-memory fallback)
+      const oauthCleanupTimer = setInterval(async () => {
+        try {
+          const { cleanExpiredOAuthState } = await import(
+            "@atlas/api/lib/auth/oauth-state"
+          );
+          await cleanExpiredOAuthState();
+        } catch (err) {
+          log.warn(
+            { err: err instanceof Error ? err.message : String(err) },
+            "OAuth state cleanup failed",
+          );
+        }
+      }, 600_000);
+      oauthCleanupTimer.unref();
+
       // --- Finalizer: stop all schedulers ---
       yield* Effect.addFinalizer(() =>
         Effect.gen(function* () {
@@ -388,6 +404,8 @@ export function makeSchedulerLive(
               return Effect.void;
             }),
           );
+
+          clearInterval(oauthCleanupTimer);
 
           log.info("Schedulers shut down via Effect scope");
         }),

@@ -693,9 +693,9 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] syncpack picks up .next/standalone build artifacts (#1068)
 - [ ] Slack route still uses in-memory OAuth state map (#1076)
 - [ ] Slack store saveInstallation lacks org hijack protection (#1074)
-- [ ] Wire cleanExpiredOAuthState into scheduler (#1077)
+- [x] Wire cleanExpiredOAuthState into scheduler (#1077)
 - [ ] useDeployMode silently defaults to self-hosted on settings fetch error (#1072)
-- [ ] Add BYOT route tests for Slack, Teams, Discord (#1075)
+- [x] Add BYOT route tests for Slack, Teams, Discord (#1075)
 
 ---
 

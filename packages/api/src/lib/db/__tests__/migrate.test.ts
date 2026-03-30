@@ -62,7 +62,7 @@ describe("runMigrations", () => {
 
     const count = await runMigrations(pool);
 
-    expect(count).toBe(6);
+    expect(count).toBe(7);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -97,6 +97,7 @@ describe("runMigrations", () => {
         "0003_telegram_installations.sql",
         "0004_sandbox_credentials.sql",
         "0005_oauth_state.sql",
+        "0006_byot_credentials.sql",
       ],
     });
 

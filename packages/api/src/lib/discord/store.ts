@@ -17,6 +17,9 @@ export interface DiscordInstallation {
   guild_id: string;
   org_id: string | null;
   guild_name: string | null;
+  bot_token: string | null;
+  application_id: string | null;
+  public_key: string | null;
   installed_at: string;
 }
 
@@ -41,6 +44,9 @@ function parseInstallationRow(
     guild_id: guildIdVal,
     org_id: typeof row.org_id === "string" ? row.org_id : null,
     guild_name: typeof row.guild_name === "string" ? row.guild_name : null,
+    bot_token: typeof row.bot_token === "string" ? row.bot_token : null,
+    application_id: typeof row.application_id === "string" ? row.application_id : null,
+    public_key: typeof row.public_key === "string" ? row.public_key : null,
     installed_at: typeof row.installed_at === "string" ? row.installed_at : new Date().toISOString(),
   };
 }
@@ -59,7 +65,7 @@ export async function getDiscordInstallation(
   if (hasInternalDB()) {
     try {
       const rows = await internalQuery<Record<string, unknown>>(
-        "SELECT guild_id, org_id, guild_name, installed_at::text FROM discord_installations WHERE guild_id = $1",
+        "SELECT guild_id, org_id, guild_name, bot_token, application_id, public_key, installed_at::text FROM discord_installations WHERE guild_id = $1",
         [guildId],
       );
       if (rows.length > 0) {
@@ -82,6 +88,9 @@ export async function getDiscordInstallation(
       guild_id: guildId,
       org_id: null,
       guild_name: null,
+      bot_token: null,
+      application_id: null,
+      public_key: null,
       installed_at: new Date().toISOString(),
     };
   }
@@ -102,7 +111,7 @@ export async function getDiscordInstallationByOrg(
 
   try {
     const rows = await internalQuery<Record<string, unknown>>(
-      "SELECT guild_id, org_id, guild_name, installed_at::text FROM discord_installations WHERE org_id = $1",
+      "SELECT guild_id, org_id, guild_name, bot_token, application_id, public_key, installed_at::text FROM discord_installations WHERE org_id = $1",
       [orgId],
     );
     if (rows.length > 0) {
@@ -129,7 +138,7 @@ export async function getDiscordInstallationByOrg(
  */
 export async function saveDiscordInstallation(
   guildId: string,
-  opts?: { orgId?: string; guildName?: string },
+  opts?: { orgId?: string; guildName?: string; botToken?: string; applicationId?: string; publicKey?: string },
 ): Promise<void> {
   if (!hasInternalDB()) {
     throw new Error("Cannot save Discord installation — no internal database configured");
@@ -137,6 +146,9 @@ export async function saveDiscordInstallation(
 
   const orgId = opts?.orgId ?? null;
   const guildName = opts?.guildName ?? null;
+  const botToken = opts?.botToken ?? null;
+  const applicationId = opts?.applicationId ?? null;
+  const publicKey = opts?.publicKey ?? null;
 
   try {
     // Reject if the guild is already bound to a different org (prevents hijacking).
@@ -156,13 +168,16 @@ export async function saveDiscordInstallation(
     }
 
     await internalQuery(
-      `INSERT INTO discord_installations (guild_id, org_id, guild_name)
-       VALUES ($1, $2, $3)
+      `INSERT INTO discord_installations (guild_id, org_id, guild_name, bot_token, application_id, public_key)
+       VALUES ($1, $2, $3, $4, $5, $6)
        ON CONFLICT (guild_id) DO UPDATE SET
          org_id = COALESCE($2, discord_installations.org_id),
          guild_name = COALESCE($3, discord_installations.guild_name),
+         bot_token = COALESCE($4, discord_installations.bot_token),
+         application_id = COALESCE($5, discord_installations.application_id),
+         public_key = COALESCE($6, discord_installations.public_key),
          installed_at = now()`,
-      [guildId, orgId, guildName],
+      [guildId, orgId, guildName, botToken, applicationId, publicKey],
     );
   } catch (err) {
     log.error(

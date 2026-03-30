@@ -92,6 +92,7 @@ interface IntegrationStatus {
   webhooks: WebhookStatus;
   deliveryChannels: DeliveryChannel[];
   deployMode: "saas" | "self-hosted";
+  hasInternalDB: boolean;
 }
 
 // -- Component --
@@ -118,6 +119,34 @@ export default function IntegrationsPage() {
     invalidates: refetch,
   });
 
+  const slackByotMutation = useAdminMutation<{
+    message: string;
+    workspaceName: string | null;
+    teamId: string | null;
+  }>({
+    path: "/api/v1/admin/integrations/slack/byot",
+    method: "POST",
+    invalidates: refetch,
+  });
+
+  const teamsByotMutation = useAdminMutation<{
+    message: string;
+    appId: string;
+  }>({
+    path: "/api/v1/admin/integrations/teams/byot",
+    method: "POST",
+    invalidates: refetch,
+  });
+
+  const discordByotMutation = useAdminMutation<{
+    message: string;
+    botUsername: string | null;
+  }>({
+    path: "/api/v1/admin/integrations/discord/byot",
+    method: "POST",
+    invalidates: refetch,
+  });
+
   const telegramConnectMutation = useAdminMutation<{
     message: string;
     botUsername: string | null;
@@ -137,12 +166,24 @@ export default function IntegrationsPage() {
     await disconnectMutation.mutate({});
   }
 
+  async function handleSlackByot(botToken: string) {
+    await slackByotMutation.mutate({ body: { botToken } });
+  }
+
   async function handleTeamsDisconnect() {
     await teamsDisconnectMutation.mutate({});
   }
 
+  async function handleTeamsByot(appId: string, appPassword: string) {
+    await teamsByotMutation.mutate({ body: { appId, appPassword } });
+  }
+
   async function handleDiscordDisconnect() {
     await discordDisconnectMutation.mutate({});
+  }
+
+  async function handleDiscordByot(botToken: string, applicationId: string, publicKey: string) {
+    await discordByotMutation.mutate({ body: { botToken, applicationId, publicKey } });
   }
 
   async function handleTelegramConnect(botToken: string) {
@@ -154,6 +195,7 @@ export default function IntegrationsPage() {
   }
 
   const isSaas = data?.deployMode === "saas";
+  const hasDB = data?.hasInternalDB ?? false;
   const slack = data?.slack;
   const teams = data?.teams;
   const discord = data?.discord;
@@ -188,27 +230,39 @@ export default function IntegrationsPage() {
             <SlackCard
               slack={slack!}
               isSaas={isSaas}
+              hasInternalDB={hasDB}
               onDisconnect={handleDisconnect}
               disconnecting={disconnectMutation.saving}
               disconnectError={disconnectMutation.error}
+              onByotConnect={handleSlackByot}
+              byotConnecting={slackByotMutation.saving}
+              byotError={slackByotMutation.error}
             />
 
             {/* Teams card */}
             <TeamsCard
               teams={teams!}
               isSaas={isSaas}
+              hasInternalDB={hasDB}
               onDisconnect={handleTeamsDisconnect}
               disconnecting={teamsDisconnectMutation.saving}
               disconnectError={teamsDisconnectMutation.error}
+              onByotConnect={handleTeamsByot}
+              byotConnecting={teamsByotMutation.saving}
+              byotError={teamsByotMutation.error}
             />
 
             {/* Discord card */}
             <DiscordCard
               discord={discord!}
               isSaas={isSaas}
+              hasInternalDB={hasDB}
               onDisconnect={handleDiscordDisconnect}
               disconnecting={discordDisconnectMutation.saving}
               disconnectError={discordDisconnectMutation.error}
+              onByotConnect={handleDiscordByot}
+              byotConnecting={discordByotMutation.saving}
+              byotError={discordByotMutation.error}
             />
 
             {/* Telegram card */}
@@ -269,22 +323,30 @@ export default function IntegrationsPage() {
 function SlackCard({
   slack,
   isSaas,
+  hasInternalDB,
   onDisconnect,
   disconnecting,
   disconnectError,
+  onByotConnect,
+  byotConnecting,
+  byotError,
 }: {
   slack: SlackStatus;
   isSaas: boolean;
+  hasInternalDB: boolean;
   onDisconnect: () => void;
   disconnecting: boolean;
   disconnectError: string | null;
+  onByotConnect: (botToken: string) => void;
+  byotConnecting: boolean;
+  byotError: string | null;
 }) {
   const canConnect = slack.configurable;
+  const canByot = !canConnect && hasInternalDB;
 
-  // Status badge: Connected / Not Available (SaaS only) / Disconnected
   const statusBadge = slack.connected ? (
     <Badge variant="default">Connected</Badge>
-  ) : isSaas && !canConnect ? (
+  ) : !canConnect && !canByot ? (
     <Badge variant="outline">Not Available</Badge>
   ) : (
     <Badge variant="secondary">Disconnected</Badge>
@@ -327,7 +389,6 @@ function SlackCard({
                 <span>{formatDateTime(slack.installedAt)}</span>
               </div>
             )}
-            {/* Only show env var hint in self-hosted mode */}
             {!isSaas && slack.envConfigured && !slack.oauthConfigured && (
               <p className="text-xs text-muted-foreground">
                 Using environment variable (SLACK_BOT_TOKEN). Configure OAuth
@@ -337,8 +398,17 @@ function SlackCard({
           </div>
         )}
 
-        {/* Not connected: SaaS vs self-hosted messaging */}
-        {!slack.connected && !canConnect && (
+        {/* Not connected + no OAuth + BYOT available: show token form */}
+        {!slack.connected && canByot && (
+          <SlackByotForm
+            onConnect={onByotConnect}
+            connecting={byotConnecting}
+            error={byotError}
+          />
+        )}
+
+        {/* Not connected + no OAuth + no BYOT: truly unavailable */}
+        {!slack.connected && !canConnect && !canByot && (
           isSaas ? (
             <p className="text-sm text-muted-foreground">
               Slack integration is not available. Contact your administrator.
@@ -347,7 +417,9 @@ function SlackCard({
             <p className="text-sm text-muted-foreground">
               Set <code className="rounded bg-muted px-1 text-xs">SLACK_CLIENT_ID</code>{" "}
               and <code className="rounded bg-muted px-1 text-xs">SLACK_CLIENT_SECRET</code>{" "}
-              to enable Slack OAuth.
+              to enable Slack OAuth, or configure{" "}
+              <code className="rounded bg-muted px-1 text-xs">DATABASE_URL</code>{" "}
+              to use a bot token.
             </p>
           )
         )}
@@ -359,36 +431,13 @@ function SlackCard({
         )}
 
         <div className="flex gap-2">
-          {slack.connected && canConnect && (
-            <AlertDialog>
-              <AlertDialogTrigger asChild>
-                <Button variant="outline" size="sm" disabled={disconnecting}>
-                  {disconnecting && (
-                    <Loader2 className="mr-1.5 size-3.5 animate-spin" />
-                  )}
-                  Disconnect
-                </Button>
-              </AlertDialogTrigger>
-              <AlertDialogContent>
-                <AlertDialogHeader>
-                  <AlertDialogTitle>Disconnect Slack?</AlertDialogTitle>
-                  <AlertDialogDescription>
-                    This will remove the Slack connection for this workspace.
-                    The /atlas command and thread follow-ups will stop working
-                    until you reconnect.
-                  </AlertDialogDescription>
-                </AlertDialogHeader>
-                <AlertDialogFooter>
-                  <AlertDialogCancel>Cancel</AlertDialogCancel>
-                  <AlertDialogAction
-                    onClick={onDisconnect}
-                    className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                  >
-                    Disconnect
-                  </AlertDialogAction>
-                </AlertDialogFooter>
-              </AlertDialogContent>
-            </AlertDialog>
+          {slack.connected && (canConnect || canByot) && (
+            <DisconnectDialog
+              name="Slack"
+              description="This will remove the Slack connection for this workspace. The /atlas command and thread follow-ups will stop working until you reconnect."
+              onConfirm={onDisconnect}
+              disconnecting={disconnecting}
+            />
           )}
 
           {!slack.connected && canConnect && (
@@ -419,22 +468,30 @@ function SlackCard({
 function TeamsCard({
   teams,
   isSaas,
+  hasInternalDB,
   onDisconnect,
   disconnecting,
   disconnectError,
+  onByotConnect,
+  byotConnecting,
+  byotError,
 }: {
   teams: TeamsStatus;
   isSaas: boolean;
+  hasInternalDB: boolean;
   onDisconnect: () => void;
   disconnecting: boolean;
   disconnectError: string | null;
+  onByotConnect: (appId: string, appPassword: string) => void;
+  byotConnecting: boolean;
+  byotError: string | null;
 }) {
   const canConnect = teams.configurable;
+  const canByot = !canConnect && hasInternalDB;
 
-  // Status badge: Connected / Not Available (SaaS only) / Disconnected
   const statusBadge = teams.connected ? (
     <Badge variant="default">Connected</Badge>
-  ) : isSaas && !canConnect ? (
+  ) : !canConnect && !canByot ? (
     <Badge variant="outline">Not Available</Badge>
   ) : (
     <Badge variant="secondary">Disconnected</Badge>
@@ -477,17 +534,20 @@ function TeamsCard({
                 <span>{formatDateTime(teams.installedAt)}</span>
               </div>
             )}
-            {/* Only show env var hint in self-hosted mode when not using OAuth */}
-            {!isSaas && !teams.configurable && (
-              <p className="text-xs text-muted-foreground">
-                Using environment variables (TEAMS_APP_ID, TEAMS_APP_PASSWORD).
-              </p>
-            )}
           </div>
         )}
 
-        {/* Not connected: SaaS vs self-hosted messaging */}
-        {!teams.connected && !canConnect && (
+        {/* Not connected + no OAuth + BYOT available: show credentials form */}
+        {!teams.connected && canByot && (
+          <TeamsByotForm
+            onConnect={onByotConnect}
+            connecting={byotConnecting}
+            error={byotError}
+          />
+        )}
+
+        {/* Not connected + no OAuth + no BYOT: truly unavailable */}
+        {!teams.connected && !canConnect && !canByot && (
           isSaas ? (
             <p className="text-sm text-muted-foreground">
               Teams integration is not available. Contact your administrator.
@@ -497,10 +557,10 @@ function TeamsCard({
               Set{" "}
               <code className="rounded bg-muted px-1 text-xs">TEAMS_APP_ID</code>{" "}
               and{" "}
-              <code className="rounded bg-muted px-1 text-xs">
-                TEAMS_APP_PASSWORD
-              </code>{" "}
-              to enable Microsoft Teams integration.
+              <code className="rounded bg-muted px-1 text-xs">TEAMS_APP_PASSWORD</code>{" "}
+              to enable Teams, or configure{" "}
+              <code className="rounded bg-muted px-1 text-xs">DATABASE_URL</code>{" "}
+              to use your own app credentials.
             </p>
           )
         )}
@@ -512,36 +572,13 @@ function TeamsCard({
         )}
 
         <div className="flex gap-2">
-          {teams.connected && canConnect && (
-            <AlertDialog>
-              <AlertDialogTrigger asChild>
-                <Button variant="outline" size="sm" disabled={disconnecting}>
-                  {disconnecting && (
-                    <Loader2 className="mr-1.5 size-3.5 animate-spin" />
-                  )}
-                  Disconnect
-                </Button>
-              </AlertDialogTrigger>
-              <AlertDialogContent>
-                <AlertDialogHeader>
-                  <AlertDialogTitle>Disconnect Microsoft Teams?</AlertDialogTitle>
-                  <AlertDialogDescription>
-                    This will remove the Teams connection for this tenant. The
-                    @atlas mentions and channel conversations will stop working
-                    until you reconnect.
-                  </AlertDialogDescription>
-                </AlertDialogHeader>
-                <AlertDialogFooter>
-                  <AlertDialogCancel>Cancel</AlertDialogCancel>
-                  <AlertDialogAction
-                    onClick={onDisconnect}
-                    className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                  >
-                    Disconnect
-                  </AlertDialogAction>
-                </AlertDialogFooter>
-              </AlertDialogContent>
-            </AlertDialog>
+          {teams.connected && (canConnect || canByot) && (
+            <DisconnectDialog
+              name="Microsoft Teams"
+              description="This will remove the Teams connection for this tenant. The @atlas mentions and channel conversations will stop working until you reconnect."
+              onConfirm={onDisconnect}
+              disconnecting={disconnecting}
+            />
           )}
 
           {!teams.connected && canConnect && (
@@ -572,21 +609,30 @@ function TeamsCard({
 function DiscordCard({
   discord,
   isSaas,
+  hasInternalDB,
   onDisconnect,
   disconnecting,
   disconnectError,
+  onByotConnect,
+  byotConnecting,
+  byotError,
 }: {
   discord: DiscordStatus;
   isSaas: boolean;
+  hasInternalDB: boolean;
   onDisconnect: () => void;
   disconnecting: boolean;
   disconnectError: string | null;
+  onByotConnect: (botToken: string, applicationId: string, publicKey: string) => void;
+  byotConnecting: boolean;
+  byotError: string | null;
 }) {
   const canConnect = discord.configurable;
+  const canByot = !canConnect && hasInternalDB;
 
   const statusBadge = discord.connected ? (
     <Badge variant="default">Connected</Badge>
-  ) : isSaas && !canConnect ? (
+  ) : !canConnect && !canByot ? (
     <Badge variant="outline">Not Available</Badge>
   ) : (
     <Badge variant="secondary">Disconnected</Badge>
@@ -632,7 +678,17 @@ function DiscordCard({
           </div>
         )}
 
-        {!discord.connected && !canConnect && (
+        {/* Not connected + no OAuth + BYOT available: show credentials form */}
+        {!discord.connected && canByot && (
+          <DiscordByotForm
+            onConnect={onByotConnect}
+            connecting={byotConnecting}
+            error={byotError}
+          />
+        )}
+
+        {/* Not connected + no OAuth + no BYOT: truly unavailable */}
+        {!discord.connected && !canConnect && !canByot && (
           isSaas ? (
             <p className="text-sm text-muted-foreground">
               Discord integration is not available. Contact your administrator.
@@ -642,10 +698,10 @@ function DiscordCard({
               Set{" "}
               <code className="rounded bg-muted px-1 text-xs">DISCORD_CLIENT_ID</code>{" "}
               and{" "}
-              <code className="rounded bg-muted px-1 text-xs">
-                DISCORD_CLIENT_SECRET
-              </code>{" "}
-              to enable Discord integration.
+              <code className="rounded bg-muted px-1 text-xs">DISCORD_CLIENT_SECRET</code>{" "}
+              to enable Discord OAuth, or configure{" "}
+              <code className="rounded bg-muted px-1 text-xs">DATABASE_URL</code>{" "}
+              to use your own bot credentials.
             </p>
           )
         )}
@@ -657,36 +713,13 @@ function DiscordCard({
         )}
 
         <div className="flex gap-2">
-          {discord.connected && canConnect && (
-            <AlertDialog>
-              <AlertDialogTrigger asChild>
-                <Button variant="outline" size="sm" disabled={disconnecting}>
-                  {disconnecting && (
-                    <Loader2 className="mr-1.5 size-3.5 animate-spin" />
-                  )}
-                  Disconnect
-                </Button>
-              </AlertDialogTrigger>
-              <AlertDialogContent>
-                <AlertDialogHeader>
-                  <AlertDialogTitle>Disconnect Discord?</AlertDialogTitle>
-                  <AlertDialogDescription>
-                    This will remove the Discord connection for this server. The
-                    bot commands and conversations will stop working until you
-                    reconnect.
-                  </AlertDialogDescription>
-                </AlertDialogHeader>
-                <AlertDialogFooter>
-                  <AlertDialogCancel>Cancel</AlertDialogCancel>
-                  <AlertDialogAction
-                    onClick={onDisconnect}
-                    className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                  >
-                    Disconnect
-                  </AlertDialogAction>
-                </AlertDialogFooter>
-              </AlertDialogContent>
-            </AlertDialog>
+          {discord.connected && (canConnect || canByot) && (
+            <DisconnectDialog
+              name="Discord"
+              description="This will remove the Discord connection for this server. The bot commands and conversations will stop working until you reconnect."
+              onConfirm={onDisconnect}
+              disconnecting={disconnecting}
+            />
           )}
 
           {!discord.connected && canConnect && (
@@ -808,48 +841,12 @@ function TelegramCard({
 
         <div className="flex gap-2">
           {telegram.connected && canConnect && (
-            <AlertDialog>
-              <AlertDialogTrigger asChild>
-                <Button variant="outline" size="sm" disabled={disconnecting}>
-                  {disconnecting && (
-                    <Loader2 className="mr-1.5 size-3.5 animate-spin" />
-                  )}
-                  Disconnect
-                </Button>
-              </AlertDialogTrigger>
-              <AlertDialogContent>
-                <AlertDialogHeader>
-                  <AlertDialogTitle>Disconnect Telegram?</AlertDialogTitle>
-                  <AlertDialogDescription>
-                    This will remove the Telegram bot connection for this
-                    workspace. Bot conversations will stop working until you
-                    reconnect.
-                  </AlertDialogDescription>
-                </AlertDialogHeader>
-                <AlertDialogFooter>
-                  <AlertDialogCancel>Cancel</AlertDialogCancel>
-                  <AlertDialogAction
-                    onClick={onDisconnect}
-                    className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                  >
-                    Disconnect
-                  </AlertDialogAction>
-                </AlertDialogFooter>
-              </AlertDialogContent>
-            </AlertDialog>
-          )}
-
-          {telegram.connected && canConnect && (
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => {
-                /* Re-showing the form is handled by disconnect + reconnect */
-              }}
-              disabled
-            >
-              Reconnect via form above
-            </Button>
+            <DisconnectDialog
+              name="Telegram"
+              description="This will remove the Telegram bot connection for this workspace. Bot conversations will stop working until you reconnect."
+              onConfirm={onDisconnect}
+              disconnecting={disconnecting}
+            />
           )}
         </div>
       </CardContent>
@@ -914,6 +911,283 @@ function TelegramConnectForm({
         Connect
       </Button>
     </form>
+  );
+}
+
+// -- Slack BYOT Form --
+
+function SlackByotForm({
+  onConnect,
+  connecting,
+  error,
+}: {
+  onConnect: (botToken: string) => void;
+  connecting: boolean;
+  error: string | null;
+}) {
+  const [token, setToken] = useState("");
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (token.trim()) {
+      onConnect(token.trim());
+    }
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-3">
+      <div className="space-y-1.5">
+        <label htmlFor="slack-bot-token" className="text-sm font-medium">
+          Bot Token
+        </label>
+        <p className="text-xs text-muted-foreground">
+          Create a{" "}
+          <a
+            href="https://api.slack.com/apps"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="underline underline-offset-2"
+          >
+            Slack app
+          </a>{" "}
+          and copy the Bot User OAuth Token
+        </p>
+        <Input
+          id="slack-bot-token"
+          type="password"
+          placeholder="xoxb-..."
+          value={token}
+          onChange={(e) => setToken(e.target.value)}
+          disabled={connecting}
+        />
+      </div>
+      {error && (
+        <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {error}
+        </div>
+      )}
+      <Button type="submit" size="sm" disabled={connecting || !token.trim()}>
+        {connecting && <Loader2 className="mr-1.5 size-3.5 animate-spin" />}
+        Connect
+      </Button>
+    </form>
+  );
+}
+
+// -- Teams BYOT Form --
+
+function TeamsByotForm({
+  onConnect,
+  connecting,
+  error,
+}: {
+  onConnect: (appId: string, appPassword: string) => void;
+  connecting: boolean;
+  error: string | null;
+}) {
+  const [appId, setAppId] = useState("");
+  const [appPassword, setAppPassword] = useState("");
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (appId.trim() && appPassword.trim()) {
+      onConnect(appId.trim(), appPassword.trim());
+    }
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-3">
+      <div className="space-y-1.5">
+        <label htmlFor="teams-app-id" className="text-sm font-medium">
+          App ID
+        </label>
+        <p className="text-xs text-muted-foreground">
+          Create an{" "}
+          <a
+            href="https://dev.botframework.com/bots/new"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="underline underline-offset-2"
+          >
+            Azure Bot
+          </a>{" "}
+          and copy the App ID (client_id)
+        </p>
+        <Input
+          id="teams-app-id"
+          type="text"
+          placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+          value={appId}
+          onChange={(e) => setAppId(e.target.value)}
+          disabled={connecting}
+        />
+      </div>
+      <div className="space-y-1.5">
+        <label htmlFor="teams-app-password" className="text-sm font-medium">
+          App Password
+        </label>
+        <Input
+          id="teams-app-password"
+          type="password"
+          placeholder="App password (client_secret)"
+          value={appPassword}
+          onChange={(e) => setAppPassword(e.target.value)}
+          disabled={connecting}
+        />
+      </div>
+      {error && (
+        <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {error}
+        </div>
+      )}
+      <Button
+        type="submit"
+        size="sm"
+        disabled={connecting || !appId.trim() || !appPassword.trim()}
+      >
+        {connecting && <Loader2 className="mr-1.5 size-3.5 animate-spin" />}
+        Connect
+      </Button>
+    </form>
+  );
+}
+
+// -- Discord BYOT Form --
+
+function DiscordByotForm({
+  onConnect,
+  connecting,
+  error,
+}: {
+  onConnect: (botToken: string, applicationId: string, publicKey: string) => void;
+  connecting: boolean;
+  error: string | null;
+}) {
+  const [botToken, setBotToken] = useState("");
+  const [applicationId, setApplicationId] = useState("");
+  const [publicKey, setPublicKey] = useState("");
+
+  function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    if (botToken.trim() && applicationId.trim() && publicKey.trim()) {
+      onConnect(botToken.trim(), applicationId.trim(), publicKey.trim());
+    }
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-3">
+      <div className="space-y-1.5">
+        <label htmlFor="discord-bot-token" className="text-sm font-medium">
+          Bot Token
+        </label>
+        <p className="text-xs text-muted-foreground">
+          Create a{" "}
+          <a
+            href="https://discord.com/developers/applications"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="underline underline-offset-2"
+          >
+            Discord application
+          </a>{" "}
+          and copy the bot token
+        </p>
+        <Input
+          id="discord-bot-token"
+          type="password"
+          placeholder="Bot token"
+          value={botToken}
+          onChange={(e) => setBotToken(e.target.value)}
+          disabled={connecting}
+        />
+      </div>
+      <div className="space-y-1.5">
+        <label htmlFor="discord-app-id" className="text-sm font-medium">
+          Application ID
+        </label>
+        <Input
+          id="discord-app-id"
+          type="text"
+          placeholder="Application ID"
+          value={applicationId}
+          onChange={(e) => setApplicationId(e.target.value)}
+          disabled={connecting}
+        />
+      </div>
+      <div className="space-y-1.5">
+        <label htmlFor="discord-public-key" className="text-sm font-medium">
+          Public Key
+        </label>
+        <Input
+          id="discord-public-key"
+          type="text"
+          placeholder="Public key (for interaction verification)"
+          value={publicKey}
+          onChange={(e) => setPublicKey(e.target.value)}
+          disabled={connecting}
+        />
+      </div>
+      {error && (
+        <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {error}
+        </div>
+      )}
+      <Button
+        type="submit"
+        size="sm"
+        disabled={
+          connecting ||
+          !botToken.trim() ||
+          !applicationId.trim() ||
+          !publicKey.trim()
+        }
+      >
+        {connecting && <Loader2 className="mr-1.5 size-3.5 animate-spin" />}
+        Connect
+      </Button>
+    </form>
+  );
+}
+
+// -- Disconnect Dialog (shared) --
+
+function DisconnectDialog({
+  name,
+  description,
+  onConfirm,
+  disconnecting,
+}: {
+  name: string;
+  description: string;
+  onConfirm: () => void;
+  disconnecting: boolean;
+}) {
+  return (
+    <AlertDialog>
+      <AlertDialogTrigger asChild>
+        <Button variant="outline" size="sm" disabled={disconnecting}>
+          {disconnecting && (
+            <Loader2 className="mr-1.5 size-3.5 animate-spin" />
+          )}
+          Disconnect
+        </Button>
+      </AlertDialogTrigger>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>Disconnect {name}?</AlertDialogTitle>
+          <AlertDialogDescription>{description}</AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>Cancel</AlertDialogCancel>
+          <AlertDialogAction
+            onClick={onConfirm}
+            className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+          >
+            Disconnect
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   );
 }
 

@@ -170,3 +170,9 @@ export const SemanticDiffResponseSchema = z.object({
   }),
   warnings: z.array(z.string()).optional(),
 }) as z.ZodType<SemanticDiffResponse>;
+
+// ── Connections list (shared by connections + schema-diff pages) ───
+
+export const ConnectionsResponseSchema = z.object({
+  connections: z.array(ConnectionInfoSchema).optional(),
+}).transform((r) => r.connections ?? []);

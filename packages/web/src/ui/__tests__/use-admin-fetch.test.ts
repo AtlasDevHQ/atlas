@@ -330,14 +330,13 @@ describe("useAdminFetch", () => {
   test("sets error when schema validation fails", async () => {
     const TestSchema = z.object({ name: z.string(), count: z.number() });
 
-    // Return data with wrong types — count is a string, not a number
     globalThis.fetch = mock(() =>
       Promise.resolve(new Response(JSON.stringify({ name: "atlas", count: "not-a-number" }), { status: 200 })),
     ) as unknown as typeof fetch;
 
+    const warnMock = mock(() => {});
     const originalWarn = console.warn;
-    const warnings: unknown[][] = [];
-    console.warn = (...args: unknown[]) => { warnings.push(args); };
+    console.warn = warnMock as typeof console.warn;
 
     const { result } = renderHook(
       () => useAdminFetch("/api/test", { schema: TestSchema }),
@@ -350,8 +349,9 @@ describe("useAdminFetch", () => {
 
     expect(result.current.data).toBeNull();
     expect(result.current.error).not.toBeNull();
-    expect(result.current.error!.message).toContain("Invalid API response");
-    expect(warnings.length).toBeGreaterThan(0);
+    expect(result.current.error!.message).toContain("Unexpected response format");
+    expect(result.current.error!.message).toContain("/api/test");
+    expect(warnMock).toHaveBeenCalled();
 
     console.warn = originalWarn;
   });
@@ -359,13 +359,12 @@ describe("useAdminFetch", () => {
   test("sets error when schema validation fails on missing field", async () => {
     const TestSchema = z.object({ name: z.string(), count: z.number() });
 
-    // Return data missing required "count" field
     globalThis.fetch = mock(() =>
       Promise.resolve(new Response(JSON.stringify({ name: "atlas" }), { status: 200 })),
     ) as unknown as typeof fetch;
 
     const originalWarn = console.warn;
-    console.warn = () => {};
+    console.warn = mock(() => {}) as typeof console.warn;
 
     const { result } = renderHook(
       () => useAdminFetch("/api/test", { schema: TestSchema }),
@@ -377,8 +376,9 @@ describe("useAdminFetch", () => {
     });
 
     expect(result.current.data).toBeNull();
+    expect(result.current.loading).toBe(false);
     expect(result.current.error).not.toBeNull();
-    expect(result.current.error!.message).toContain("Invalid API response");
+    expect(result.current.error!.message).toContain("Unexpected response format");
 
     console.warn = originalWarn;
   });
@@ -402,5 +402,102 @@ describe("useAdminFetch", () => {
     });
 
     expect(result.current.data).toEqual(["a", "b", "c"]);
+  });
+
+  test("clears stale data when refetch returns invalid response", async () => {
+    const TestSchema = z.object({ value: z.number() });
+    let callCount = 0;
+
+    globalThis.fetch = mock(() => {
+      callCount++;
+      // First call: valid. Second call: invalid (string instead of number).
+      const body = callCount === 1
+        ? JSON.stringify({ value: 42 })
+        : JSON.stringify({ value: "oops" });
+      return Promise.resolve(new Response(body, { status: 200 }));
+    }) as unknown as typeof fetch;
+
+    const originalWarn = console.warn;
+    console.warn = mock(() => {}) as typeof console.warn;
+
+    const { result } = renderHook(
+      () => useAdminFetch("/api/test", { schema: TestSchema }),
+      { wrapper },
+    );
+
+    // First fetch succeeds
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+    expect(result.current.data).toEqual({ value: 42 });
+    expect(result.current.error).toBeNull();
+
+    // Refetch returns invalid data — stale data must be cleared
+    await act(async () => {
+      result.current.refetch();
+    });
+
+    await waitFor(() => {
+      expect(result.current.error).not.toBeNull();
+    });
+
+    expect(result.current.data).toBeNull();
+    expect(result.current.error!.message).toContain("Unexpected response format");
+
+    console.warn = originalWarn;
+  });
+
+  test("schema takes precedence over transform when both provided", async () => {
+    const TestSchema = z.object({ value: z.number() });
+
+    globalThis.fetch = mock(() =>
+      Promise.resolve(new Response(JSON.stringify({ value: 99 }), { status: 200 })),
+    ) as unknown as typeof fetch;
+
+    const { result } = renderHook(
+      () => useAdminFetch("/api/test", {
+        schema: TestSchema,
+        // transform would return something different — schema should win
+        transform: () => ({ value: -1 }) as { value: number },
+      }),
+      { wrapper },
+    );
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    // Schema parsed the response (value: 99), not transform (value: -1)
+    expect(result.current.data).toEqual({ value: 99 });
+  });
+
+  test("sets error when schema transform throws", async () => {
+    // In Zod 4, safeParse does NOT catch transform throws — they propagate
+    // to the outer catch block, which reports them as generic request errors.
+    const ThrowingSchema = z.object({
+      items: z.array(z.string()),
+    }).transform(() => { throw new Error("transform boom"); });
+
+    globalThis.fetch = mock(() =>
+      Promise.resolve(new Response(JSON.stringify({ items: ["a"] }), { status: 200 })),
+    ) as unknown as typeof fetch;
+
+    const originalWarn = console.warn;
+    console.warn = mock(() => {}) as typeof console.warn;
+
+    const { result } = renderHook(
+      () => useAdminFetch("/api/test", { schema: ThrowingSchema }),
+      { wrapper },
+    );
+
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+
+    expect(result.current.data).toBeNull();
+    expect(result.current.error).not.toBeNull();
+    expect(result.current.error!.message).toContain("transform boom");
+
+    console.warn = originalWarn;
   });
 });

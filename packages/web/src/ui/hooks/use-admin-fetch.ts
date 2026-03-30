@@ -52,13 +52,13 @@ export function useAdminFetch<T>(
         const parsed = opts.schema.safeParse(json);
         if (!parsed.success) {
           if (!signal?.aborted) {
-            const msg = `Invalid API response for ${path}: ${parsed.error.message}`;
-            console.warn(msg);
-            setError({ message: msg });
+            console.warn(`useAdminFetch schema validation failed for ${path}:`, parsed.error.issues);
+            setData(null);
+            setError({ message: `Unexpected response format from ${path}. Try refreshing the page.` });
           }
           return;
         }
-        result = parsed.data as T;
+        result = parsed.data;
       } else if (opts?.transform) {
         result = opts.transform(json);
       } else {

@@ -52,11 +52,7 @@ import {
   type ConnectionDetail,
   type PoolMetrics,
 } from "@/ui/lib/types";
-import { ConnectionInfoSchema } from "@/ui/lib/admin-schemas";
-
-const ConnectionsResponseSchema = z.object({
-  connections: z.array(ConnectionInfoSchema).optional(),
-}).transform((r) => r.connections ?? []);
+import { ConnectionsResponseSchema } from "@/ui/lib/admin-schemas";
 
 // ── Connection Form Dialog ───────────────────────────────────────
 

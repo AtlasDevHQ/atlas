@@ -41,13 +41,8 @@ import {
   ArrowRightLeft,
   Terminal,
 } from "lucide-react";
-import { z } from "zod";
 import type { SemanticTableDiff, ConnectionInfo } from "@/ui/lib/types";
-import { ConnectionInfoSchema, SemanticDiffResponseSchema } from "@/ui/lib/admin-schemas";
-
-const ConnectionsResponseSchema = z.object({
-  connections: z.array(ConnectionInfoSchema),
-}).transform((r) => r.connections ?? []);
+import { ConnectionsResponseSchema, SemanticDiffResponseSchema } from "@/ui/lib/admin-schemas";
 
 // ---------------------------------------------------------------------------
 

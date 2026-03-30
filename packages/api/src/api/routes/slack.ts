@@ -672,26 +672,34 @@ slack.openapi(interactionsRoute, async (c) => {
   return c.json({ ok: true }, 200);
 });
 
-// --- OAuth CSRF state ---
+// --- OAuth CSRF state (shared DB-backed store) ---
 
-const pendingOAuthStates = new Map<string, number>();
-setInterval(() => {
-  const now = Date.now();
-  for (const [state, expiry] of pendingOAuthStates) {
-    if (now > expiry) pendingOAuthStates.delete(state);
-  }
-}, 600_000).unref();
+import { saveOAuthState, consumeOAuthState } from "@atlas/api/lib/auth/oauth-state";
 
 // --- GET /api/v1/slack/install ---
 
-slack.openapi(installRoute, (c) => {
+slack.openapi(installRoute, async (c) => {
   const clientId = process.env.SLACK_CLIENT_ID;
   if (!clientId) {
     return c.json({ error: "oauth_not_configured", message: "OAuth not configured" }, 501);
   }
 
+  // Extract orgId from session if available
+  let orgId: string | undefined;
+  try {
+    const authResult = c.get("authResult" as never) as
+      | { user?: { activeOrganizationId?: string } }
+      | undefined;
+    orgId = authResult?.user?.activeOrganizationId ?? undefined;
+  } catch (err) {
+    log.debug(
+      { err: err instanceof Error ? err.message : String(err) },
+      "authResult not available on Slack install route",
+    );
+  }
+
   const state = crypto.randomUUID();
-  pendingOAuthStates.set(state, Date.now() + 600_000);
+  await saveOAuthState(state, { orgId, provider: "slack" });
 
   const scopes = "commands,chat:write,app_mentions:read";
   const url = `https://slack.com/oauth/v2/authorize?client_id=${clientId}&scope=${scopes}&state=${state}`;
@@ -709,10 +717,10 @@ slack.openapi(callbackRoute, async (c) => {
   }
 
   const state = c.req.query("state");
-  if (!state || !pendingOAuthStates.has(state)) {
+  const oauthState = state ? await consumeOAuthState(state) : null;
+  if (!oauthState) {
     return c.json({ error: "invalid_state", message: "Invalid or expired state parameter" }, 400);
   }
-  pendingOAuthStates.delete(state);
 
   const code = c.req.query("code");
   if (!code) {
@@ -738,15 +746,8 @@ slack.openapi(callbackRoute, async (c) => {
 
   if (teamId && accessToken) {
     try {
-      // Extract org context if available (install may have been initiated by an authenticated admin)
-      let orgId: string | undefined;
-      try {
-        const authResult = c.get("authResult" as never) as { user?: { activeOrganizationId?: string } } | undefined;
-        orgId = authResult?.user?.activeOrganizationId ?? undefined;
-      } catch (err) {
-        // Expected: authResult not available on unauthenticated Slack routes
-        log.debug({ err: err instanceof Error ? err.message : String(err) }, "authResult not available on Slack callback route");
-      }
+      // Use orgId from the OAuth state (set during /install)
+      const orgId = oauthState.orgId;
 
       await saveInstallation(teamId, accessToken, { orgId, workspaceName: teamName ?? undefined });
       log.info({ teamId, orgId, teamName }, "Slack installation saved");

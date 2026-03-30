@@ -142,12 +142,34 @@ export async function saveInstallation(
     throw new Error("Cannot save Slack installation — no internal database configured");
   }
 
+  const orgId = opts?.orgId ?? null;
+  const workspaceName = opts?.workspaceName ?? null;
   const pool = getInternalDB();
+
+  // Reject if the team is already bound to a different org (prevents hijacking).
+  const existing = await pool.query(
+    "SELECT org_id FROM slack_installations WHERE team_id = $1",
+    [teamId],
+  );
+  if (existing.rows.length > 0) {
+    const existingOrgId = existing.rows[0].org_id;
+    if (existingOrgId && orgId && existingOrgId !== orgId) {
+      throw new Error(
+        `Slack workspace ${teamId} is already bound to a different organization. ` +
+        `Disconnect the existing installation first.`,
+      );
+    }
+  }
+
   await pool.query(
     `INSERT INTO slack_installations (team_id, bot_token, org_id, workspace_name)
      VALUES ($1, $2, $3, $4)
-     ON CONFLICT (team_id) DO UPDATE SET bot_token = $2, org_id = $3, workspace_name = $4, installed_at = now()`,
-    [teamId, botToken, opts?.orgId ?? null, opts?.workspaceName ?? null],
+     ON CONFLICT (team_id) DO UPDATE SET
+       bot_token = $2,
+       org_id = COALESCE($3, slack_installations.org_id),
+       workspace_name = COALESCE($4, slack_installations.workspace_name),
+       installed_at = now()`,
+    [teamId, botToken, orgId, workspaceName],
   );
 }
 

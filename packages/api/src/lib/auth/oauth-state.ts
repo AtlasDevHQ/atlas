@@ -15,7 +15,7 @@ const log = createLogger("oauth-state");
 // Types
 // ---------------------------------------------------------------------------
 
-export type OAuthProvider = "teams" | "discord";
+export type OAuthProvider = "slack" | "teams" | "discord";
 
 interface MemoryState {
   orgId: string | undefined;

@@ -8,11 +8,11 @@ import { StickyNav } from "../../components/sticky-nav";
 export const metadata: Metadata = {
   title: "Pricing — Atlas",
   description:
-    "Atlas pricing: 14-day free trial, Team, and Enterprise plans. Self-host for free or let us handle infrastructure with Atlas Cloud.",
+    "Atlas pricing: self-host for free, Team plan with 14-day trial, and Enterprise. Open-source under AGPL-3.0.",
   openGraph: {
     title: "Pricing — Atlas",
     description:
-      "Atlas pricing: 14-day free trial, Team, and Enterprise plans. Self-host for free or use Atlas Cloud.",
+      "Atlas pricing: self-host for free, Team plan with 14-day trial, and Enterprise.",
     url: "https://useatlas.dev/pricing",
     siteName: "Atlas",
     type: "website",
@@ -27,6 +27,7 @@ interface Tier {
   name: string;
   price: string;
   priceSuffix?: string;
+  badge?: string;
   description: string;
   cta: string;
   ctaHref: string;
@@ -36,20 +37,20 @@ interface Tier {
 
 const TIERS: Tier[] = [
   {
-    name: "Trial",
+    name: "Self-Hosted",
     price: "Free",
-    priceSuffix: "14 days",
+    priceSuffix: "forever",
     description:
-      "Full Team-tier access for 14 days. No credit card required. Connect your database and start asking questions today.",
-    cta: "Start free trial",
-    ctaHref: "https://app.useatlas.dev/signup",
+      "Full-featured Atlas on your own infrastructure. Open-source under AGPL-3.0. No usage limits, no time limits.",
+    cta: "Get started",
+    ctaHref: "https://docs.useatlas.dev/getting-started",
     features: [
-      "10,000 queries / month",
-      "5M tokens / month",
-      "Up to 25 members",
-      "5 datasource connections",
-      "All databases & plugins",
+      "Unlimited queries & tokens",
+      "Unlimited members",
+      "Unlimited datasource connections",
+      "All 7 databases & 21+ plugins",
       "Admin console & API",
+      "MCP server",
       "Community support",
     ],
   },
@@ -57,8 +58,9 @@ const TIERS: Tier[] = [
     name: "Team",
     price: "$49",
     priceSuffix: "/ seat / month",
+    badge: "14-day free trial",
     description:
-      "Everything in Trial, with no time limit. The plan for teams that query their data daily.",
+      "We handle infrastructure, security, and scaling. Start with a free trial — no credit card required.",
     cta: "Start free trial",
     ctaHref: "https://app.useatlas.dev/signup",
     highlighted: true,
@@ -81,10 +83,8 @@ const TIERS: Tier[] = [
     cta: "Contact sales",
     ctaHref: "mailto:sales@useatlas.dev",
     features: [
-      "Unlimited queries",
-      "Unlimited tokens",
-      "Unlimited members",
-      "Unlimited connections",
+      "Unlimited queries & tokens",
+      "Unlimited members & connections",
       "SSO & SCIM provisioning",
       "Custom roles & approval workflows",
       "Audit retention & compliance reporting",
@@ -100,7 +100,6 @@ type CellValue = boolean | string;
 interface ComparisonRow {
   feature: string;
   selfHosted: CellValue;
-  trial: CellValue;
   team: CellValue;
   enterprise: CellValue;
 }
@@ -109,26 +108,26 @@ interface ComparisonRow {
 // keys, but BYOT in the Cloud billing context means using your own keys to reduce
 // your Atlas bill. The feature toggle and billing optimization are Cloud-only.
 const COMPARISON: ComparisonRow[] = [
-  { feature: "Text-to-SQL agent", selfHosted: true, trial: true, team: true, enterprise: true },
-  { feature: "Semantic layer", selfHosted: true, trial: true, team: true, enterprise: true },
-  { feature: "All 7 databases", selfHosted: true, trial: true, team: true, enterprise: true },
-  { feature: "21+ plugins", selfHosted: true, trial: true, team: true, enterprise: true },
-  { feature: "Embeddable widget", selfHosted: true, trial: true, team: true, enterprise: true },
-  { feature: "Admin console", selfHosted: true, trial: true, team: true, enterprise: true },
-  { feature: "MCP server", selfHosted: true, trial: true, team: true, enterprise: true },
-  { feature: "Dynamic learning", selfHosted: true, trial: true, team: true, enterprise: true },
-  { feature: "Queries / month", selfHosted: "Unlimited", trial: "10,000", team: "10,000", enterprise: "Unlimited" },
-  { feature: "Tokens / month", selfHosted: "Unlimited", trial: "5M", team: "5M", enterprise: "Unlimited" },
-  { feature: "Team members", selfHosted: "Unlimited", trial: "25", team: "25", enterprise: "Unlimited" },
-  { feature: "Datasource connections", selfHosted: "Unlimited", trial: "5", team: "5", enterprise: "Unlimited" },
-  { feature: "BYOT (bring your own token)", selfHosted: false, trial: false, team: true, enterprise: true },
-  { feature: "SSO & SCIM", selfHosted: false, trial: false, team: false, enterprise: true },
-  { feature: "Custom roles", selfHosted: false, trial: false, team: false, enterprise: true },
-  { feature: "Approval workflows", selfHosted: false, trial: false, team: false, enterprise: true },
-  { feature: "Compliance reporting", selfHosted: false, trial: false, team: false, enterprise: true },
-  { feature: "Data residency", selfHosted: false, trial: false, team: false, enterprise: true },
-  { feature: "SLA & backups", selfHosted: false, trial: false, team: false, enterprise: true },
-  { feature: "Support", selfHosted: "Community", trial: "Community", team: "Email", enterprise: "Dedicated" },
+  { feature: "Text-to-SQL agent", selfHosted: true, team: true, enterprise: true },
+  { feature: "Semantic layer", selfHosted: true, team: true, enterprise: true },
+  { feature: "All 7 databases", selfHosted: true, team: true, enterprise: true },
+  { feature: "21+ plugins", selfHosted: true, team: true, enterprise: true },
+  { feature: "Embeddable widget", selfHosted: true, team: true, enterprise: true },
+  { feature: "Admin console", selfHosted: true, team: true, enterprise: true },
+  { feature: "MCP server", selfHosted: true, team: true, enterprise: true },
+  { feature: "Dynamic learning", selfHosted: true, team: true, enterprise: true },
+  { feature: "Queries / month", selfHosted: "Unlimited", team: "10,000", enterprise: "Unlimited" },
+  { feature: "Tokens / month", selfHosted: "Unlimited", team: "5M", enterprise: "Unlimited" },
+  { feature: "Team members", selfHosted: "Unlimited", team: "25", enterprise: "Unlimited" },
+  { feature: "Datasource connections", selfHosted: "Unlimited", team: "5", enterprise: "Unlimited" },
+  { feature: "BYOT (bring your own token)", selfHosted: false, team: true, enterprise: true },
+  { feature: "SSO & SCIM", selfHosted: false, team: false, enterprise: true },
+  { feature: "Custom roles", selfHosted: false, team: false, enterprise: true },
+  { feature: "Approval workflows", selfHosted: false, team: false, enterprise: true },
+  { feature: "Compliance reporting", selfHosted: false, team: false, enterprise: true },
+  { feature: "Data residency", selfHosted: false, team: false, enterprise: true },
+  { feature: "SLA & backups", selfHosted: false, team: false, enterprise: true },
+  { feature: "Support", selfHosted: "Community", team: "Email", enterprise: "Dedicated" },
 ];
 
 interface FAQ {
@@ -138,9 +137,9 @@ interface FAQ {
 
 const FAQS: FAQ[] = [
   {
-    question: "Is there a free tier?",
+    question: "Is there a free option?",
     answer:
-      "Self-hosted Atlas is free and always will be (AGPL-3.0). For Atlas Cloud, every workspace starts with a 14-day free trial with full Team-tier access — no credit card required.",
+      "Yes — self-hosted Atlas is free and always will be (AGPL-3.0). Deploy on your own infrastructure with unlimited everything. For Atlas Cloud, the Team plan includes a 14-day free trial with no credit card required.",
   },
   {
     question: "What is BYOT (bring your own token)?",
@@ -150,7 +149,7 @@ const FAQS: FAQ[] = [
   {
     question: "What happens when my trial ends?",
     answer:
-      "Your workspace becomes read-only — you can still view past conversations and export data, but new queries are paused until you subscribe to a paid plan.",
+      "Your workspace becomes read-only — you can still view past conversations and export data, but new queries are paused until you subscribe to the Team plan.",
   },
   {
     question: "Can I change plans later?",
@@ -181,7 +180,6 @@ const FAQS: FAQ[] = [
 
 const TIER_LABELS: Record<string, string> = {
   selfHosted: "Self-Hosted",
-  trial: "Trial",
   team: "Team",
   enterprise: "Enterprise",
 };
@@ -226,9 +224,9 @@ function TierCard({ tier }: { tier: Tier }) {
         <span className="font-mono text-xs tracking-widest text-brand/80 uppercase">
           {tier.name}
         </span>
-        {tier.highlighted && (
+        {tier.badge && (
           <span className="rounded-full border border-brand/20 bg-brand/10 px-2 py-0.5 font-mono text-[10px] font-medium tracking-wider text-brand uppercase">
-            Most popular
+            {tier.badge}
           </span>
         )}
       </div>
@@ -353,7 +351,6 @@ export default function PricingPage() {
               <tr className="border-b border-zinc-800/60 bg-zinc-900/50">
                 <th scope="col" className="px-6 py-4 text-left text-sm font-medium text-zinc-300">Feature</th>
                 <th scope="col" className="px-6 py-4 text-center text-sm font-medium text-zinc-300">Self-Hosted</th>
-                <th scope="col" className="px-6 py-4 text-center text-sm font-medium text-zinc-300">Trial</th>
                 <th scope="col" className="px-6 py-4 text-center text-sm font-medium text-zinc-300">Team</th>
                 <th scope="col" className="px-6 py-4 text-center text-sm font-medium text-zinc-300">Enterprise</th>
               </tr>
@@ -364,9 +361,6 @@ export default function PricingPage() {
                   <td className="px-6 py-3.5 text-sm text-zinc-400">{row.feature}</td>
                   <td className="px-6 py-3.5 text-center">
                     <span className="inline-flex justify-center"><ComparisonCell value={row.selfHosted} /></span>
-                  </td>
-                  <td className="px-6 py-3.5 text-center">
-                    <span className="inline-flex justify-center"><ComparisonCell value={row.trial} /></span>
                   </td>
                   <td className="px-6 py-3.5 text-center">
                     <span className="inline-flex justify-center"><ComparisonCell value={row.team} /></span>
@@ -382,7 +376,7 @@ export default function PricingPage() {
 
         {/* Mobile comparison (stacked cards) */}
         <div className="space-y-6 md:hidden">
-          {(["selfHosted", "trial", "team", "enterprise"] as const).map((tierKey) => (
+          {(["selfHosted", "team", "enterprise"] as const).map((tierKey) => (
             <div key={tierKey} className="rounded-xl border border-zinc-800/60 bg-zinc-900/30">
               <div className="border-b border-zinc-800/60 px-5 py-3">
                 <h3 className="font-mono text-sm font-medium text-zinc-100">{TIER_LABELS[tierKey]}</h3>

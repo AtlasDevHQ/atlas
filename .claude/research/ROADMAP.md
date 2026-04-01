@@ -677,7 +677,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 ### Finishing Touches (P2)
 
 - [x] Email integration connect flow in Integrations hub (#1028, PR #1086)
-- [ ] Self-hosted deploy validation via GH Actions for template repos (#1029)
+- [x] Self-hosted deploy validation via GH Actions for template repos (#1029, PR #1114)
 - [ ] Create platform OAuth apps for Slack/Teams/Discord on Railway (#1063) — blocks dual-mode #1059
 
 ### Dual-Mode Integrations (BYOT)
@@ -721,7 +721,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] Hot-reload settings — comment accuracy + test coverage gaps (#1089, PR #1112)
 - [x] Migrate remaining useAdminFetch calls to Zod schema validation (#1090, PR #1111)
 - [x] useAdminFetch does not clear stale data on HTTP error during refetch (#1091, PR #1111)
-- [ ] Periodic settings refresh for multi-instance SaaS (#1092)
+- [x] Periodic settings refresh for multi-instance SaaS (#1092, PR #1113)
 - [x] Deduplicate provider switch in getModelForConfig (#1093, PR #1110)
 
 ### Refactors
@@ -733,6 +733,11 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 
 - [x] Region selection during workspace signup flow (#1066, PR #1115)
 - [ ] Data residency region migration flow (#1067)
+
+### Follow-ups
+
+- [ ] Atomic cache swap in loadSettings to prevent brief stale reads (#1116)
+- [ ] Deploy-validation CI missing bun install for create-atlas deps (#1117)
 
 ---
 

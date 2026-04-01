@@ -94,7 +94,7 @@ Returns the current abuse detection threshold configuration.
 
 ## Relationship to Rate Limiting
 
-Abuse prevention is separate from [rate limiting](/docs/guides/rate-limiting):
+Abuse prevention is separate from [rate limiting](/guides/rate-limiting):
 
 - **Rate limiting** (ATLAS_RATE_LIMIT_RPM) is per-user, per-minute, and returns 429 immediately
 - **Abuse prevention** is per-workspace, uses a longer sliding window, and applies graduated response

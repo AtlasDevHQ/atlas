@@ -732,7 +732,8 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 ### Data Residency
 
 - [x] Region selection during workspace signup flow (#1066, PR #1115)
-- [ ] Data residency region migration flow (#1067)
+- [ ] Data residency region migration flow — Phase 1: request UI + status tracking (#1067)
+- [ ] Automated region migration orchestration — Phase 2: snapshot, replicate, cutover (#1118)
 
 ### Follow-ups
 

@@ -208,11 +208,18 @@ export const PlatformWorkspaceSchema = z.object({
   slug: z.string(),
   planTier: z.string(),
   status: z.string(),
+  byot: z.boolean(),
   members: z.number(),
   connections: z.number(),
   conversations: z.number(),
   queriesLast24h: z.number(),
+  scheduledTasks: z.number(),
+  stripeCustomerId: z.string().nullable(),
+  trialEndsAt: z.string().nullable(),
+  suspendedAt: z.string().nullable(),
+  deletedAt: z.string().nullable(),
   region: z.string().nullable(),
+  regionAssignedAt: z.string().nullable(),
   createdAt: z.string(),
 }) as z.ZodType<PlatformWorkspace>;
 
@@ -258,9 +265,10 @@ export const BackupEntrySchema = z.object({
   id: z.string(),
   status: z.string(),
   sizeBytes: z.number().nullable(),
+  storagePath: z.string(),
   createdAt: z.string(),
   retentionExpiresAt: z.string(),
-  errorMessage: z.string().nullable().optional(),
+  errorMessage: z.string().nullable(),
 }) as z.ZodType<BackupEntry>;
 
 export const BackupConfigSchema = z.object({
@@ -330,6 +338,8 @@ export const WorkspaceSLASummarySchema = z.object({
   errorRatePct: z.number(),
   uptimePct: z.number(),
   totalQueries: z.number(),
+  failedQueries: z.number(),
+  lastQueryAt: z.string().nullable(),
 }) as z.ZodType<WorkspaceSLASummary>;
 
 const SLAMetricPointSchema = z.object({
@@ -355,6 +365,7 @@ export const SLAAlertSchema = z.object({
   firedAt: z.string(),
   resolvedAt: z.string().nullable(),
   acknowledgedAt: z.string().nullable(),
+  acknowledgedBy: z.string().nullable(),
 }) as z.ZodType<SLAAlert>;
 
 export const SLAThresholdsSchema = z.object({
@@ -693,10 +704,10 @@ export const IntegrationStatusSchema = z.object({
 
 const PluginDescriptionSchema = z.object({
   id: z.string(),
-  types: z.array(z.string()),
+  types: z.array(z.enum(["datasource", "context", "interaction", "action", "sandbox"])),
   version: z.string(),
   name: z.string(),
-  status: z.string(),
+  status: z.enum(["registered", "initializing", "healthy", "unhealthy", "teardown"]),
   enabled: z.boolean(),
 });
 

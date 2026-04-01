@@ -722,12 +722,12 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [ ] Migrate remaining useAdminFetch calls to Zod schema validation (#1090)
 - [ ] useAdminFetch does not clear stale data on HTTP error during refetch (#1091)
 - [ ] Periodic settings refresh for multi-instance SaaS (#1092)
-- [ ] Deduplicate provider switch in getModelForConfig (#1093)
+- [x] Deduplicate provider switch in getModelForConfig (#1093, PR #1110)
 
 ### Refactors
 
-- [ ] Split integration installation types into secret/public variants (#1084)
-- [ ] Extract shared BaseInstallation type for integration stores (#1085)
+- [x] Split integration installation types into secret/public variants (#1084, PR #1110)
+- [x] Extract shared BaseInstallation type for integration stores (#1085, PR #1110)
 
 ### Data Residency
 

@@ -128,7 +128,10 @@ export type {
   RegionPickerItem,
   WorkspaceRegion,
   RegionStatus,
+  MigrationStatus,
+  RegionMigration,
 } from "@useatlas/types";
+export { MIGRATION_STATUSES } from "@useatlas/types";
 export type {
   CustomDomain,
   DomainStatus,

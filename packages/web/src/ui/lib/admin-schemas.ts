@@ -25,6 +25,8 @@ import type {
   BackupEntry,
   BackupConfig,
   CustomDomain,
+  MIGRATION_STATUSES,
+  RegionMigration,
   RegionPickerItem,
   RegionStatus,
   WorkspaceRegion,
@@ -332,6 +334,22 @@ export const RegionsResponseSchema = z.object({
 
 export const AssignmentsResponseSchema = z.object({
   assignments: z.array(WorkspaceRegionSchema),
+});
+
+export const RegionMigrationSchema = z.object({
+  id: z.string(),
+  workspaceId: z.string(),
+  sourceRegion: z.string(),
+  targetRegion: z.string(),
+  status: z.enum(MIGRATION_STATUSES),
+  requestedBy: z.string().nullable(),
+  requestedAt: z.string(),
+  completedAt: z.string().nullable(),
+  errorMessage: z.string().nullable(),
+}) as z.ZodType<RegionMigration>;
+
+export const MigrationStatusResponseSchema = z.object({
+  migration: RegionMigrationSchema.nullable(),
 });
 
 // ── SLA ──────────────────────────────────────────────────────────

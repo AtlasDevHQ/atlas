@@ -305,6 +305,43 @@ describe("useAdminFetch", () => {
     expect(result.current.error!.message).toBe("Internal error");
   });
 
+  test("clears stale data when refetch throws network error", async () => {
+    let callCount = 0;
+    const originalWarn = console.warn;
+    console.warn = mock(() => {}) as typeof console.warn;
+
+    globalThis.fetch = mock(() => {
+      callCount++;
+      if (callCount === 1) {
+        return Promise.resolve(new Response(JSON.stringify({ value: 7 }), { status: 200 }));
+      }
+      return Promise.reject(new Error("Network error"));
+    }) as unknown as typeof fetch;
+
+    const { result } = renderHook(() => useAdminFetch<{ value: number }>("/api/test"), { wrapper });
+
+    // First fetch succeeds
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+    expect(result.current.data).toEqual({ value: 7 });
+    expect(result.current.error).toBeNull();
+
+    // Refetch throws network error — stale data must be cleared
+    await act(async () => {
+      result.current.refetch();
+    });
+
+    await waitFor(() => {
+      expect(result.current.error).not.toBeNull();
+    });
+
+    expect(result.current.data).toBeNull();
+    expect(result.current.error!.message).toBe("Network error");
+
+    console.warn = originalWarn;
+  });
+
   test("uses same-origin credentials when not cross-origin", async () => {
     const fetchMock = mock(() =>
       Promise.resolve(new Response(JSON.stringify({}), { status: 200 })),

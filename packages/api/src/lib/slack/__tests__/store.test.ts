@@ -140,7 +140,9 @@ describe("store", () => {
       ]);
 
       const result = await getInstallationByOrg("org-1");
-      expect(result).toEqual({
+      // Runtime object still contains all fields from parseInstallationRow;
+      // the public return type hides secrets at the type level only.
+      expect(result as unknown as Record<string, unknown>).toEqual({
         team_id: "T123",
         bot_token: "xoxb-abc",
         org_id: "org-1",

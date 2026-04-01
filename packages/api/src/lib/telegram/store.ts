@@ -8,16 +8,11 @@
 
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
+import type { TelegramInstallation, TelegramInstallationWithSecret } from "@atlas/api/lib/integrations/types";
+
+export type { TelegramInstallation, TelegramInstallationWithSecret } from "@atlas/api/lib/integrations/types";
 
 const log = createLogger("telegram-store");
-
-export interface TelegramInstallation {
-  bot_id: string;
-  bot_token: string;
-  bot_username: string | null;
-  org_id: string | null;
-  installed_at: string;
-}
 
 // ---------------------------------------------------------------------------
 // Shared row parser
@@ -30,7 +25,7 @@ export interface TelegramInstallation {
 function parseInstallationRow(
   row: Record<string, unknown>,
   context: Record<string, unknown>,
-): TelegramInstallation | null {
+): TelegramInstallationWithSecret | null {
   const botIdVal = row.bot_id;
   const botTokenVal = row.bot_token;
   if (typeof botIdVal !== "string" || !botIdVal || typeof botTokenVal !== "string" || !botTokenVal) {
@@ -55,7 +50,7 @@ function parseInstallationRow(
  */
 export async function getTelegramInstallation(
   botId: string,
-): Promise<TelegramInstallation | null> {
+): Promise<TelegramInstallationWithSecret | null> {
   if (!hasInternalDB()) {
     return null;
   }
@@ -85,6 +80,7 @@ export async function getTelegramInstallation(
 export async function getTelegramInstallationByOrg(
   orgId: string,
 ): Promise<TelegramInstallation | null> {
+  // Returns public type — secret fields are inaccessible to callers
   if (!hasInternalDB()) {
     return null;
   }

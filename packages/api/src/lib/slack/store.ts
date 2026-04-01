@@ -7,16 +7,11 @@
 
 import { hasInternalDB, internalQuery, getInternalDB } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
+import type { SlackInstallation, SlackInstallationWithSecret } from "@atlas/api/lib/integrations/types";
+
+export type { SlackInstallation, SlackInstallationWithSecret } from "@atlas/api/lib/integrations/types";
 
 const log = createLogger("slack-store");
-
-export interface SlackInstallation {
-  team_id: string;
-  bot_token: string;
-  org_id: string | null;
-  workspace_name: string | null;
-  installed_at: string;
-}
 
 /** Sentinel team_id for env-var-based installations (no real Slack team). */
 export const ENV_TEAM_ID = "env" as const;
@@ -32,7 +27,7 @@ export const ENV_TEAM_ID = "env" as const;
 function parseInstallationRow(
   row: Record<string, unknown>,
   context: Record<string, unknown>,
-): SlackInstallation | null {
+): SlackInstallationWithSecret | null {
   const teamIdVal = row.team_id;
   const botToken = row.bot_token;
   const installedAt = row.installed_at;
@@ -59,7 +54,7 @@ function parseInstallationRow(
  */
 export async function getInstallation(
   teamId: string,
-): Promise<SlackInstallation | null> {
+): Promise<SlackInstallationWithSecret | null> {
   if (hasInternalDB()) {
     try {
       const rows = await internalQuery<Record<string, unknown>>(
@@ -101,6 +96,7 @@ export async function getInstallation(
 export async function getInstallationByOrg(
   orgId: string,
 ): Promise<SlackInstallation | null> {
+  // Returns public type — secret fields are inaccessible to callers
   if (!hasInternalDB()) {
     // Org-scoped installations require an internal database.
     // Env-based status is reported separately via envConfigured flag.

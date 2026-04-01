@@ -10,18 +10,11 @@
 
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
+import type { DiscordInstallation, DiscordInstallationWithSecret } from "@atlas/api/lib/integrations/types";
+
+export type { DiscordInstallation, DiscordInstallationWithSecret } from "@atlas/api/lib/integrations/types";
 
 const log = createLogger("discord-store");
-
-export interface DiscordInstallation {
-  guild_id: string;
-  org_id: string | null;
-  guild_name: string | null;
-  bot_token: string | null;
-  application_id: string | null;
-  public_key: string | null;
-  installed_at: string;
-}
 
 // ---------------------------------------------------------------------------
 // Shared row parser
@@ -34,7 +27,7 @@ export interface DiscordInstallation {
 function parseInstallationRow(
   row: Record<string, unknown>,
   context: Record<string, unknown>,
-): DiscordInstallation | null {
+): DiscordInstallationWithSecret | null {
   const guildIdVal = row.guild_id;
   if (typeof guildIdVal !== "string") {
     log.warn(context, "Invalid Discord installation record in database");
@@ -61,7 +54,7 @@ function parseInstallationRow(
  */
 export async function getDiscordInstallation(
   guildId: string,
-): Promise<DiscordInstallation | null> {
+): Promise<DiscordInstallationWithSecret | null> {
   if (hasInternalDB()) {
     try {
       const rows = await internalQuery<Record<string, unknown>>(
@@ -105,6 +98,7 @@ export async function getDiscordInstallation(
 export async function getDiscordInstallationByOrg(
   orgId: string,
 ): Promise<DiscordInstallation | null> {
+  // Returns public type — secret fields are inaccessible to callers
   if (!hasInternalDB()) {
     return null;
   }

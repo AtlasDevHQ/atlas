@@ -7,18 +7,11 @@
 
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
+import type { GitHubInstallation, GitHubInstallationWithSecret } from "@atlas/api/lib/integrations/types";
+
+export type { GitHubInstallation, GitHubInstallationWithSecret } from "@atlas/api/lib/integrations/types";
 
 const log = createLogger("github-store");
-
-export interface GitHubInstallation {
-  /** GitHub numeric user ID (stable, unlike login names). Contains secret — do not expose in API responses. */
-  user_id: string;
-  /** Personal access token. Contains secret — do not expose in API responses. */
-  access_token: string;
-  username: string | null;
-  org_id: string | null;
-  installed_at: string;
-}
 
 // ---------------------------------------------------------------------------
 // Shared row parser
@@ -27,7 +20,7 @@ export interface GitHubInstallation {
 function parseInstallationRow(
   row: Record<string, unknown>,
   context: Record<string, unknown>,
-): GitHubInstallation | null {
+): GitHubInstallationWithSecret | null {
   const userId = row.user_id;
   const accessToken = row.access_token;
   if (typeof userId !== "string" || !userId || typeof accessToken !== "string" || !accessToken) {
@@ -52,7 +45,7 @@ function parseInstallationRow(
  */
 export async function getGitHubInstallation(
   userId: string,
-): Promise<GitHubInstallation | null> {
+): Promise<GitHubInstallationWithSecret | null> {
   if (!hasInternalDB()) {
     return null;
   }
@@ -82,6 +75,7 @@ export async function getGitHubInstallation(
 export async function getGitHubInstallationByOrg(
   orgId: string,
 ): Promise<GitHubInstallation | null> {
+  // Returns public type — secret fields are inaccessible to callers
   if (!hasInternalDB()) {
     return null;
   }

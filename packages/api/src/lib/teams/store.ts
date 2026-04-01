@@ -9,16 +9,11 @@
 
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
+import type { TeamsInstallation, TeamsInstallationWithSecret } from "@atlas/api/lib/integrations/types";
+
+export type { TeamsInstallation, TeamsInstallationWithSecret } from "@atlas/api/lib/integrations/types";
 
 const log = createLogger("teams-store");
-
-export interface TeamsInstallation {
-  tenant_id: string;
-  org_id: string | null;
-  tenant_name: string | null;
-  app_password: string | null;
-  installed_at: string;
-}
 
 // ---------------------------------------------------------------------------
 // Shared row parser
@@ -31,7 +26,7 @@ export interface TeamsInstallation {
 function parseInstallationRow(
   row: Record<string, unknown>,
   context: Record<string, unknown>,
-): TeamsInstallation | null {
+): TeamsInstallationWithSecret | null {
   const tenantIdVal = row.tenant_id;
   if (typeof tenantIdVal !== "string") {
     log.warn(context, "Invalid Teams installation record in database");
@@ -56,7 +51,7 @@ function parseInstallationRow(
  */
 export async function getTeamsInstallation(
   tenantId: string,
-): Promise<TeamsInstallation | null> {
+): Promise<TeamsInstallationWithSecret | null> {
   if (hasInternalDB()) {
     try {
       const rows = await internalQuery<Record<string, unknown>>(
@@ -98,6 +93,7 @@ export async function getTeamsInstallation(
 export async function getTeamsInstallationByOrg(
   orgId: string,
 ): Promise<TeamsInstallation | null> {
+  // Returns public type — secret fields are inaccessible to callers
   if (!hasInternalDB()) {
     // Org-scoped installations require an internal database.
     return null;

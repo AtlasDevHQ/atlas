@@ -39,7 +39,7 @@ import {
 } from "@/components/ui/dialog";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
-import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
+import { useAdminFetch, friendlyError } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { useDeployMode } from "@/ui/hooks/use-deploy-mode";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
@@ -126,7 +126,7 @@ export default function ResidencyPage() {
 
         {migrationFetchError && (
           <ErrorBanner
-            message={migrationFetchError}
+            message={friendlyError(migrationFetchError)}
             onRetry={refetchMigration}
           />
         )}

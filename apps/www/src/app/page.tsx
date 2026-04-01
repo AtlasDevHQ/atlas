@@ -146,7 +146,7 @@ export default function Home() {
               your own questions.
             </p>
             <a
-              href="https://demo.useatlas.dev"
+              href="https://app.useatlas.dev"
               className="group inline-flex items-center gap-2 rounded-lg bg-brand px-5 py-2.5 text-sm font-medium text-zinc-950 transition-all hover:bg-brand-hover"
             >
               Try the live demo

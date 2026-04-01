@@ -43,7 +43,10 @@ export function useAdminFetch<T>(
       });
       if (!res.ok) {
         const e = await extractFetchError(res);
-        if (!signal?.aborted) setError(e);
+        if (!signal?.aborted) {
+          setData(null);
+          setError(e);
+        }
         return;
       }
       const json: unknown = await res.json();

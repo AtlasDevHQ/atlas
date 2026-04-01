@@ -30,6 +30,7 @@ import { Puzzle, Loader2, Settings2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { PluginListResponseSchema } from "@/ui/lib/admin-schemas";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { useDeployMode } from "@/ui/hooks/use-deploy-mode";
 
@@ -42,11 +43,6 @@ interface PluginDescription {
   name: string;
   status: "registered" | "initializing" | "healthy" | "unhealthy" | "teardown";
   enabled: boolean;
-}
-
-interface PluginListResponse {
-  plugins?: PluginDescription[];
-  manageable?: boolean;
 }
 
 interface ConfigSchemaField {
@@ -281,18 +277,10 @@ export default function PluginsPage() {
   const [configPlugin, setConfigPlugin] = useState<PluginDescription | null>(null);
   const { deployMode } = useDeployMode();
 
-  const { data, loading, error, refetch } = useAdminFetch<{
-    plugins: PluginDescription[];
-    manageable: boolean;
-  }>("/api/v1/admin/plugins", {
-    transform: (json) => {
-      const resp = json as PluginListResponse;
-      return {
-        plugins: resp.plugins ?? [],
-        manageable: resp.manageable ?? false,
-      };
-    },
-  });
+  const { data, loading, error, refetch } = useAdminFetch(
+    "/api/v1/admin/plugins",
+    { schema: PluginListResponseSchema },
+  );
 
   const displayPlugins = data?.plugins ?? [];
   const manageable = data?.manageable ?? false;

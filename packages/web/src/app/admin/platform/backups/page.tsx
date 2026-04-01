@@ -37,10 +37,11 @@ import { StatCard } from "@/ui/components/admin/stat-card";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { BackupsResponseSchema, BackupConfigSchema } from "@/ui/lib/admin-schemas";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { LoadingState } from "@/ui/components/admin/loading-state";
 import { usePlatformAdminGuard } from "@/ui/hooks/use-platform-admin-guard";
-import type { BackupEntry, BackupConfig, BackupStatus } from "@/ui/lib/types";
+import type { BackupConfig, BackupStatus } from "@/ui/lib/types";
 import {
   Archive,
   CheckCircle2,
@@ -104,11 +105,13 @@ export default function BackupsPage() {
 
 function BackupsPageContent() {
   // Data
-  const { data: backupsData, loading: backupsLoading, error: backupsError, refetch: refetchBackups } = useAdminFetch<{ backups: BackupEntry[] }>(
+  const { data: backupsData, loading: backupsLoading, error: backupsError, refetch: refetchBackups } = useAdminFetch(
     "/api/v1/platform/backups",
+    { schema: BackupsResponseSchema },
   );
-  const { data: configData, loading: configLoading, refetch: refetchConfig } = useAdminFetch<BackupConfig>(
+  const { data: configData, loading: configLoading, refetch: refetchConfig } = useAdminFetch(
     "/api/v1/platform/backups/config",
+    { schema: BackupConfigSchema },
   );
 
   // Mutations

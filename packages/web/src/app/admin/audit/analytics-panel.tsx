@@ -2,6 +2,13 @@
 
 import dynamic from "next/dynamic";
 import { useAdminFetch, type FetchError } from "@/ui/hooks/use-admin-fetch";
+import {
+  AuditVolumeResponseSchema,
+  AuditSlowResponseSchema,
+  AuditFrequentResponseSchema,
+  AuditErrorsResponseSchema,
+  AuditUsersResponseSchema,
+} from "@/ui/lib/admin-schemas";
 import { useDarkMode } from "@/ui/hooks/use-dark-mode";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { LoadingState } from "@/ui/components/admin/loading-state";
@@ -14,9 +21,6 @@ import {
   getSlowQueryColumns,
   getFrequentQueryColumns,
   getUserActivityColumns,
-  type SlowQuery,
-  type FrequentQuery,
-  type AuditUserStats,
 } from "./analytics-columns";
 import { BarChart3, Clock, AlertTriangle, Users, Repeat } from "lucide-react";
 
@@ -60,29 +64,29 @@ export function AnalyticsPanel({ from, to }: { from: string; to: string }) {
   const qs = buildQS(from, to);
   const dark = useDarkMode();
 
-  const { data: volumeData, loading: volumeLoading, error: volumeError } = useAdminFetch<{ volume: VolumePoint[] }>(
+  const { data: volumeData, loading: volumeLoading, error: volumeError } = useAdminFetch(
     `/api/v1/admin/audit/analytics/volume${qs}`,
-    { deps: [qs] },
+    { schema: AuditVolumeResponseSchema, deps: [qs] },
   );
 
-  const { data: slowData, loading: slowLoading, error: slowError } = useAdminFetch<{ queries: SlowQuery[] }>(
+  const { data: slowData, loading: slowLoading, error: slowError } = useAdminFetch(
     `/api/v1/admin/audit/analytics/slow${qs}`,
-    { deps: [qs] },
+    { schema: AuditSlowResponseSchema, deps: [qs] },
   );
 
-  const { data: frequentData, loading: frequentLoading, error: frequentError } = useAdminFetch<{ queries: FrequentQuery[] }>(
+  const { data: frequentData, loading: frequentLoading, error: frequentError } = useAdminFetch(
     `/api/v1/admin/audit/analytics/frequent${qs}`,
-    { deps: [qs] },
+    { schema: AuditFrequentResponseSchema, deps: [qs] },
   );
 
-  const { data: errorData, loading: errorLoading, error: errorsError } = useAdminFetch<{ errors: ErrorGroup[] }>(
+  const { data: errorData, loading: errorLoading, error: errorsError } = useAdminFetch(
     `/api/v1/admin/audit/analytics/errors${qs}`,
-    { deps: [qs] },
+    { schema: AuditErrorsResponseSchema, deps: [qs] },
   );
 
-  const { data: userData, loading: userLoading, error: userError } = useAdminFetch<{ users: AuditUserStats[] }>(
+  const { data: userData, loading: userLoading, error: userError } = useAdminFetch(
     `/api/v1/admin/audit/analytics/users${qs}`,
-    { deps: [qs] },
+    { schema: AuditUsersResponseSchema, deps: [qs] },
   );
 
   // Data tables for each section

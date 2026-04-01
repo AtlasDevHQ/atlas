@@ -27,6 +27,7 @@ import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { DomainResponseSchema } from "@/ui/lib/admin-schemas";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { formatDate } from "@/lib/format";
 import type { CustomDomain } from "@/ui/lib/types";
@@ -41,12 +42,6 @@ import {
   Copy,
   ArrowUpRight,
 } from "lucide-react";
-
-// ── Types ─────────────────────────────────────────────────────────
-
-interface DomainResponse {
-  domain: CustomDomain | null;
-}
 
 // ── Helpers ───────────────────────────────────────────────────────
 
@@ -84,7 +79,7 @@ function CustomDomainPageContent() {
     loading,
     error,
     refetch,
-  } = useAdminFetch<DomainResponse>("/api/v1/admin/domain");
+  } = useAdminFetch("/api/v1/admin/domain", { schema: DomainResponseSchema });
 
   const { mutate: addDomain, saving: adding, error: addError, clearError: clearAddError } = useAdminMutation<CustomDomain>({
     invalidates: refetch,

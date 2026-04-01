@@ -268,6 +268,43 @@ describe("useAdminFetch", () => {
     });
   });
 
+  test("clears stale data when refetch returns HTTP error", async () => {
+    let callCount = 0;
+    globalThis.fetch = mock(() => {
+      callCount++;
+      // First call: success. Second call: HTTP 500.
+      if (callCount === 1) {
+        return Promise.resolve(new Response(JSON.stringify({ value: 42 }), { status: 200 }));
+      }
+      return Promise.resolve(new Response(
+        JSON.stringify({ message: "Internal error" }),
+        { status: 500, headers: { "Content-Type": "application/json" } },
+      ));
+    }) as unknown as typeof fetch;
+
+    const { result } = renderHook(() => useAdminFetch<{ value: number }>("/api/test"), { wrapper });
+
+    // First fetch succeeds
+    await waitFor(() => {
+      expect(result.current.loading).toBe(false);
+    });
+    expect(result.current.data).toEqual({ value: 42 });
+    expect(result.current.error).toBeNull();
+
+    // Refetch returns HTTP 500 — stale data must be cleared
+    await act(async () => {
+      result.current.refetch();
+    });
+
+    await waitFor(() => {
+      expect(result.current.error).not.toBeNull();
+    });
+
+    expect(result.current.data).toBeNull();
+    expect(result.current.error!.status).toBe(500);
+    expect(result.current.error!.message).toBe("Internal error");
+  });
+
   test("uses same-origin credentials when not cross-origin", async () => {
     const fetchMock = mock(() =>
       Promise.resolve(new Response(JSON.stringify({}), { status: 200 })),

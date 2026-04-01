@@ -4,6 +4,7 @@ import { useState } from "react";
 import dynamic from "next/dynamic";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { UsageSummarySchema } from "@/ui/lib/admin-schemas";
 import { useDarkMode } from "@/ui/hooks/use-dark-mode";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -15,7 +16,7 @@ import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { DataTable } from "@/components/data-table/data-table";
 import { DataTableToolbar } from "@/components/data-table/data-table-toolbar";
 import { DataTableSortList } from "@/components/data-table/data-table-sort-list";
-import { getUserUsageColumns, type UserUsageRow } from "./columns";
+import { getUserUsageColumns } from "./columns";
 import { formatNumber } from "./format";
 import { useDataTable } from "@/hooks/use-data-table";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
@@ -30,8 +31,6 @@ import {
 } from "lucide-react";
 import type { ReactNode } from "react";
 
-import type { DailyUsagePoint } from "./usage-chart";
-
 // Dynamic import — Recharts is heavy
 const UsageChart = dynamic(() => import("./usage-chart"), {
   ssr: false,
@@ -41,33 +40,6 @@ const UsageChart = dynamic(() => import("./usage-chart"), {
     </div>
   ),
 });
-
-// ── Types ─────────────────────────────────────────────────────────
-
-interface UsageSummary {
-  workspaceId: string;
-  current: {
-    queryCount: number;
-    tokenCount: number;
-    activeUsers: number;
-    periodStart: string;
-    periodEnd: string;
-  };
-  plan: {
-    tier: string;
-    displayName: string;
-    trialEndsAt: string | null;
-  };
-  limits: {
-    queriesPerMonth: number | null;
-    tokensPerMonth: number | null;
-    maxMembers: number | null;
-    maxConnections: number | null;
-  };
-  history: DailyUsagePoint[];
-  users: UserUsageRow[];
-  hasStripe: boolean;
-}
 
 // ── Helpers ───────────────────────────────────────────────────────
 
@@ -89,8 +61,9 @@ function formatPeriod(start: string, end: string): string {
 export default function UsageDashboardPage() {
   const dark = useDarkMode();
 
-  const { data, loading, error, refetch } = useAdminFetch<UsageSummary>(
+  const { data, loading, error, refetch } = useAdminFetch(
     "/api/v1/admin/usage/summary",
+    { schema: UsageSummarySchema },
   );
 
   const { mutate: portalMutate, saving: portalLoading, error: portalError } =

@@ -4,6 +4,7 @@ import { useState } from "react";
 import { z } from "zod";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { ListApiKeysResponseSchema } from "@/ui/lib/admin-schemas";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
@@ -35,11 +36,6 @@ import { Key, Plus, Copy, Check, Loader2 } from "lucide-react";
 
 // -- Types --
 
-interface ListApiKeysResponse {
-  apiKeys: ApiKeyRow[];
-  total: number;
-}
-
 interface CreateApiKeyResponse {
   key: string;
   id: string;
@@ -61,7 +57,7 @@ export default function ApiKeysPage() {
     loading,
     error,
     refetch,
-  } = useAdminFetch<ListApiKeysResponse>("/api/auth/api-key/list");
+  } = useAdminFetch("/api/auth/api-key/list", { schema: ListApiKeysResponseSchema });
   const apiKeys = listData?.apiKeys ?? [];
 
   // Create mutation — no invalidates here because onSuccess captures

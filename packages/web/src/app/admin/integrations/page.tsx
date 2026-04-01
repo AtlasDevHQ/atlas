@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { IntegrationStatusSchema } from "@/ui/lib/admin-schemas";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { formatDateTime } from "@/lib/format";
@@ -51,9 +52,7 @@ import {
   Phone,
 } from "lucide-react";
 
-// -- Types (mirrors IntegrationStatusSchema in packages/api/src/api/routes/admin-integrations.ts) --
-
-type DeliveryChannel = "email" | "slack" | "webhook";
+// -- Types (used by child components for props) --
 
 interface SlackStatus {
   connected: boolean;
@@ -135,27 +134,11 @@ interface WebhookStatus {
   configurable: boolean;
 }
 
-interface IntegrationStatus {
-  slack: SlackStatus;
-  teams: TeamsStatus;
-  discord: DiscordStatus;
-  telegram: TelegramStatus;
-  gchat: GChatStatus;
-  github: GitHubStatus;
-  linear: LinearStatus;
-  whatsapp: WhatsAppStatus;
-  email: EmailStatus;
-  webhooks: WebhookStatus;
-  deliveryChannels: DeliveryChannel[];
-  deployMode: "saas" | "self-hosted";
-  hasInternalDB: boolean;
-}
-
 // -- Component --
 
 export default function IntegrationsPage() {
   const { data, loading, error, refetch } =
-    useAdminFetch<IntegrationStatus>("/api/v1/admin/integrations/status");
+    useAdminFetch("/api/v1/admin/integrations/status", { schema: IntegrationStatusSchema });
 
   const disconnectMutation = useAdminMutation<{ message: string }>({
     path: "/api/v1/admin/integrations/slack",

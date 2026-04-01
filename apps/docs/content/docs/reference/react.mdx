@@ -321,7 +321,7 @@ function CustomFetcher() {
 Lower-level conversation management hook that accepts explicit auth configuration instead of reading from `AtlasProvider`. Use this when you need full control over request headers and credentials, or when integrating outside the `AtlasProvider` context. `useAtlasConversations` wraps this hook with context-derived credentials.
 
 ```tsx
-import { useConversations } from "@useatlas/react/hooks";
+import { useConversations } from "@useatlas/react";
 
 function ConversationManager() {
   const {
@@ -846,6 +846,13 @@ interface NotebookStateWire {
   textCells?: Record<string, { content: string }>;
 }
 
+interface ForkBranchWire {
+  conversationId: string;
+  forkPointCellId: string;
+  label: string;
+  createdAt: string;
+}
+
 // ConversationWithMessages — returned by the GET /api/v1/conversations/:id endpoint
 interface ConversationWithMessages extends Conversation {
   messages: Message[];
@@ -979,13 +986,16 @@ import type {
   // useAtlasConversations
   UseAtlasConversationsOptions,
   UseAtlasConversationsReturn,
-  // useConversations
-  UseConversationsOptions,
-  UseConversationsReturn,
   // useAtlasTheme
   UseAtlasThemeReturn,
   ThemeMode,
 } from "@useatlas/react/hooks";
+
+// Root entry point exports (not available from /hooks subpath)
+import type {
+  UseConversationsOptions,
+  UseConversationsReturn,
+} from "@useatlas/react";
 ```
 
 ---

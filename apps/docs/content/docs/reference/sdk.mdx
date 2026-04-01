@@ -342,6 +342,13 @@ interface NotebookStateWire {
   textCells?: Record<string, { content: string }>;
 }
 
+interface ForkBranchWire {
+  conversationId: string;
+  forkPointCellId: string;
+  label: string;
+  createdAt: string;
+}
+
 interface ConversationWithMessages extends Conversation {
   messages: Message[];
 }

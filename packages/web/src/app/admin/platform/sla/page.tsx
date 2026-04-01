@@ -32,6 +32,12 @@ import { StatCard } from "@/ui/components/admin/stat-card";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { useAdminFetch, friendlyError } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import {
+  SLAWorkspacesResponseSchema,
+  SLAAlertsResponseSchema,
+  SLAThresholdsSchema,
+  WorkspaceSLADetailSchema,
+} from "@/ui/lib/admin-schemas";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import {
   Activity,
@@ -48,9 +54,6 @@ import {
   XCircle,
 } from "lucide-react";
 import type {
-  WorkspaceSLASummary,
-  WorkspaceSLADetail,
-  SLAAlert,
   SLAAlertStatus,
   SLAThresholds,
 } from "@/ui/lib/types";
@@ -133,14 +136,17 @@ function SLAPageContent() {
   const [tab, setTab] = useQueryState("tab", parseAsStringEnum(["overview", "alerts"]).withDefault("overview"));
 
   // Data
-  const { data: slaData, loading: slaLoading, error: slaError, refetch: refetchSLA } = useAdminFetch<{ workspaces: WorkspaceSLASummary[]; hoursBack: number }>(
+  const { data: slaData, loading: slaLoading, error: slaError, refetch: refetchSLA } = useAdminFetch(
     "/api/v1/platform/sla",
+    { schema: SLAWorkspacesResponseSchema },
   );
-  const { data: alertsData, loading: alertsLoading, error: alertsError, refetch: refetchAlerts } = useAdminFetch<{ alerts: SLAAlert[] }>(
+  const { data: alertsData, loading: alertsLoading, error: alertsError, refetch: refetchAlerts } = useAdminFetch(
     "/api/v1/platform/sla/alerts",
+    { schema: SLAAlertsResponseSchema },
   );
-  const { data: thresholdsData, loading: thresholdsLoading, refetch: refetchThresholds } = useAdminFetch<SLAThresholds>(
+  const { data: thresholdsData, loading: thresholdsLoading, refetch: refetchThresholds } = useAdminFetch(
     "/api/v1/platform/sla/thresholds",
+    { schema: SLAThresholdsSchema },
   );
 
   // Sorting
@@ -149,9 +155,9 @@ function SLAPageContent() {
 
   // Workspace detail dialog
   const [detailId, setDetailId] = useState<string | null>(null);
-  const { data: detailData, loading: detailLoading, error: detailError } = useAdminFetch<WorkspaceSLADetail>(
+  const { data: detailData, loading: detailLoading, error: detailError } = useAdminFetch(
     detailId ? `/api/v1/platform/sla/${detailId}` : "",
-    { deps: [detailId] },
+    { schema: WorkspaceSLADetailSchema, deps: [detailId] },
   );
 
   // Threshold edit dialog

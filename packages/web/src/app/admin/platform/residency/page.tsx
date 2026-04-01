@@ -35,8 +35,9 @@ import { StatCard } from "@/ui/components/admin/stat-card";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { RegionsResponseSchema, AssignmentsResponseSchema } from "@/ui/lib/admin-schemas";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
-import type { RegionStatus, WorkspaceRegion } from "@/ui/lib/types";
+import type { WorkspaceRegion } from "@/ui/lib/types";
 import {
   Globe,
   MapPin,
@@ -44,17 +45,6 @@ import {
   XCircle,
   Loader2,
 } from "lucide-react";
-
-// ── Types ─────────────────────────────────────────────────────────
-
-interface RegionsResponse {
-  regions: RegionStatus[];
-  defaultRegion: string;
-}
-
-interface AssignmentsResponse {
-  assignments: WorkspaceRegion[];
-}
 
 // ── Page ──────────────────────────────────────────────────────────
 
@@ -64,14 +54,14 @@ function ResidencyPageContent() {
     loading: regionsLoading,
     error: regionsError,
     refetch: refetchRegions,
-  } = useAdminFetch<RegionsResponse>("/api/v1/platform/residency/regions");
+  } = useAdminFetch("/api/v1/platform/residency/regions", { schema: RegionsResponseSchema });
 
   const {
     data: assignmentsData,
     loading: assignmentsLoading,
     error: assignmentsError,
     refetch: refetchAssignments,
-  } = useAdminFetch<AssignmentsResponse>("/api/v1/platform/residency/assignments");
+  } = useAdminFetch("/api/v1/platform/residency/assignments", { schema: AssignmentsResponseSchema });
 
   const { mutate: assignRegion, saving: assigning, error: assignError, clearError: clearAssignError } = useAdminMutation<WorkspaceRegion>({
     invalidates: () => { refetchRegions(); refetchAssignments(); },

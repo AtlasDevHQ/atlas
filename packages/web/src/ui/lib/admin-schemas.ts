@@ -18,6 +18,20 @@ import type {
   AbuseThresholdConfig,
   PIIColumnClassification,
   SemanticDiffResponse,
+  PlatformStats,
+  PlatformWorkspace,
+  PlatformWorkspaceUser,
+  NoisyNeighbor,
+  BackupEntry,
+  BackupConfig,
+  CustomDomain,
+  RegionStatus,
+  WorkspaceRegion,
+  WorkspaceSLASummary,
+  WorkspaceSLADetail,
+  SLAAlert,
+  SLAThresholds,
+  SLAMetricPoint,
 } from "@/ui/lib/types";
 
 // ── Connection ────────────────────────────────────────────────────
@@ -176,3 +190,520 @@ export const SemanticDiffResponseSchema = z.object({
 export const ConnectionsResponseSchema = z.object({
   connections: z.array(ConnectionInfoSchema).optional(),
 }).transform((r) => r.connections ?? []);
+
+// ── Platform ─────────────────────────────────────────────────────
+
+export const PlatformStatsSchema = z.object({
+  totalWorkspaces: z.number(),
+  activeWorkspaces: z.number(),
+  suspendedWorkspaces: z.number(),
+  totalUsers: z.number(),
+  totalQueries24h: z.number(),
+  mrr: z.number(),
+}) as z.ZodType<PlatformStats>;
+
+export const PlatformWorkspaceSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  slug: z.string(),
+  planTier: z.string(),
+  status: z.string(),
+  members: z.number(),
+  connections: z.number(),
+  conversations: z.number(),
+  queriesLast24h: z.number(),
+  region: z.string().nullable(),
+  createdAt: z.string(),
+}) as z.ZodType<PlatformWorkspace>;
+
+const PlatformWorkspaceUserSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  email: z.string(),
+  role: z.string(),
+  createdAt: z.string(),
+}) as z.ZodType<PlatformWorkspaceUser>;
+
+export const NoisyNeighborSchema = z.object({
+  workspaceId: z.string(),
+  workspaceName: z.string(),
+  planTier: z.string(),
+  metric: z.string(),
+  value: z.number(),
+  median: z.number(),
+  ratio: z.number(),
+}) as z.ZodType<NoisyNeighbor>;
+
+export const PlatformWorkspacesResponseSchema = z.object({
+  workspaces: z.array(PlatformWorkspaceSchema),
+});
+
+export const PlatformNeighborsResponseSchema = z.object({
+  neighbors: z.array(NoisyNeighborSchema),
+  medians: z.object({
+    queries: z.number(),
+    tokens: z.number(),
+    storage: z.number(),
+  }),
+});
+
+export const PlatformWorkspaceDetailResponseSchema = z.object({
+  workspace: PlatformWorkspaceSchema,
+  users: z.array(PlatformWorkspaceUserSchema),
+});
+
+// ── Backups ──────────────────────────────────────────────────────
+
+export const BackupEntrySchema = z.object({
+  id: z.string(),
+  status: z.string(),
+  sizeBytes: z.number().nullable(),
+  createdAt: z.string(),
+  retentionExpiresAt: z.string(),
+  errorMessage: z.string().nullable().optional(),
+}) as z.ZodType<BackupEntry>;
+
+export const BackupConfigSchema = z.object({
+  schedule: z.string(),
+  retentionDays: z.number(),
+  storagePath: z.string(),
+}) as z.ZodType<BackupConfig>;
+
+export const BackupsResponseSchema = z.object({
+  backups: z.array(BackupEntrySchema),
+});
+
+// ── Custom Domain ────────────────────────────────────────────────
+
+export const CustomDomainSchema = z.object({
+  id: z.string(),
+  workspaceId: z.string(),
+  domain: z.string(),
+  status: z.string(),
+  railwayDomainId: z.string().nullable(),
+  cnameTarget: z.string().nullable(),
+  certificateStatus: z.string().nullable(),
+  createdAt: z.string(),
+  verifiedAt: z.string().nullable(),
+}) as z.ZodType<CustomDomain>;
+
+export const DomainResponseSchema = z.object({
+  domain: CustomDomainSchema.nullable(),
+});
+
+export const DomainsResponseSchema = z.object({
+  domains: z.array(CustomDomainSchema),
+});
+
+// ── Region / Residency ───────────────────────────────────────────
+
+export const RegionStatusSchema = z.object({
+  region: z.string(),
+  label: z.string(),
+  workspaceCount: z.number(),
+  healthy: z.boolean(),
+}) as z.ZodType<RegionStatus>;
+
+export const WorkspaceRegionSchema = z.object({
+  workspaceId: z.string(),
+  region: z.string(),
+  assignedAt: z.string(),
+}) as z.ZodType<WorkspaceRegion>;
+
+export const RegionsResponseSchema = z.object({
+  regions: z.array(RegionStatusSchema),
+  defaultRegion: z.string(),
+});
+
+export const AssignmentsResponseSchema = z.object({
+  assignments: z.array(WorkspaceRegionSchema),
+});
+
+// ── SLA ──────────────────────────────────────────────────────────
+
+export const WorkspaceSLASummarySchema = z.object({
+  workspaceId: z.string(),
+  workspaceName: z.string(),
+  latencyP50Ms: z.number(),
+  latencyP95Ms: z.number(),
+  latencyP99Ms: z.number(),
+  errorRatePct: z.number(),
+  uptimePct: z.number(),
+  totalQueries: z.number(),
+}) as z.ZodType<WorkspaceSLASummary>;
+
+const SLAMetricPointSchema = z.object({
+  timestamp: z.string(),
+  value: z.number(),
+}) as z.ZodType<SLAMetricPoint>;
+
+export const WorkspaceSLADetailSchema = z.object({
+  summary: WorkspaceSLASummarySchema,
+  latencyTimeline: z.array(SLAMetricPointSchema),
+  errorTimeline: z.array(SLAMetricPointSchema),
+}) as z.ZodType<WorkspaceSLADetail>;
+
+export const SLAAlertSchema = z.object({
+  id: z.string(),
+  workspaceId: z.string(),
+  workspaceName: z.string(),
+  type: z.string(),
+  status: z.string(),
+  message: z.string(),
+  currentValue: z.number(),
+  threshold: z.number(),
+  firedAt: z.string(),
+  resolvedAt: z.string().nullable(),
+  acknowledgedAt: z.string().nullable(),
+}) as z.ZodType<SLAAlert>;
+
+export const SLAThresholdsSchema = z.object({
+  latencyP99Ms: z.number(),
+  errorRatePct: z.number(),
+}) as z.ZodType<SLAThresholds>;
+
+export const SLAWorkspacesResponseSchema = z.object({
+  workspaces: z.array(WorkspaceSLASummarySchema),
+  hoursBack: z.number(),
+});
+
+export const SLAAlertsResponseSchema = z.object({
+  alerts: z.array(SLAAlertSchema),
+});
+
+// ── Audit ────────────────────────────────────────────────────────
+
+export const AuditStatsSchema = z.object({
+  totalQueries: z.number(),
+  totalErrors: z.number(),
+  errorRate: z.number(),
+  queriesPerDay: z.array(z.object({ day: z.string(), count: z.number() })),
+});
+
+export const AuditFacetsSchema = z.object({
+  tables: z.array(z.string()),
+  columns: z.array(z.string()),
+});
+
+export const AuditConnectionMetaSchema = z.object({
+  connections: z.array(z.object({
+    id: z.string(),
+    description: z.string().optional(),
+  })),
+});
+
+// ── Audit Analytics ──────────────────────────────────────────────
+
+export const VolumePointSchema = z.object({
+  day: z.string(),
+  count: z.number(),
+  errors: z.number(),
+});
+
+export const SlowQuerySchema = z.object({
+  query: z.string(),
+  avgDuration: z.number(),
+  maxDuration: z.number(),
+  count: z.number(),
+});
+
+export const FrequentQuerySchema = z.object({
+  query: z.string(),
+  count: z.number(),
+  avgDuration: z.number(),
+  errorCount: z.number(),
+});
+
+export const ErrorGroupSchema = z.object({
+  error: z.string(),
+  count: z.number(),
+});
+
+export const AuditUserStatsSchema = z.object({
+  userId: z.string(),
+  userEmail: z.string().nullable().optional(),
+  count: z.number(),
+  avgDuration: z.number(),
+  errorCount: z.number(),
+  errorRate: z.number(),
+});
+
+export const AuditVolumeResponseSchema = z.object({
+  volume: z.array(VolumePointSchema),
+});
+
+export const AuditSlowResponseSchema = z.object({
+  queries: z.array(SlowQuerySchema),
+});
+
+export const AuditFrequentResponseSchema = z.object({
+  queries: z.array(FrequentQuerySchema),
+});
+
+export const AuditErrorsResponseSchema = z.object({
+  errors: z.array(ErrorGroupSchema),
+});
+
+export const AuditUsersResponseSchema = z.object({
+  users: z.array(AuditUserStatsSchema),
+});
+
+// ── Billing ──────────────────────────────────────────────────────
+
+export const BillingStatusSchema = z.object({
+  workspaceId: z.string(),
+  plan: z.object({
+    tier: z.string(),
+    displayName: z.string(),
+    byot: z.boolean(),
+    trialEndsAt: z.string().nullable(),
+  }),
+  limits: z.object({
+    queriesPerMonth: z.number().nullable(),
+    tokensPerMonth: z.number().nullable(),
+    maxMembers: z.number().nullable(),
+    maxConnections: z.number().nullable(),
+  }),
+  usage: z.object({
+    queryCount: z.number(),
+    tokenCount: z.number(),
+    queryUsagePercent: z.number(),
+    tokenUsagePercent: z.number(),
+    queryOverageStatus: z.string(),
+    tokenOverageStatus: z.string(),
+    periodStart: z.string(),
+    periodEnd: z.string(),
+  }),
+  subscription: z.object({
+    stripeSubscriptionId: z.string(),
+    plan: z.string(),
+    status: z.string(),
+  }).nullable(),
+});
+
+// ── Sessions ─────────────────────────────────────────────────────
+
+export const SessionStatsSchema = z.object({
+  total: z.number(),
+  active: z.number(),
+  uniqueUsers: z.number(),
+});
+
+// ── Token Usage ──────────────────────────────────────────────────
+
+export const TokenSummarySchema = z.object({
+  totalPromptTokens: z.number(),
+  totalCompletionTokens: z.number(),
+  totalTokens: z.number(),
+  totalRequests: z.number(),
+  from: z.string(),
+  to: z.string(),
+});
+
+const UserTokenRowSchema = z.object({
+  userId: z.string(),
+  userEmail: z.string().nullable().optional(),
+  promptTokens: z.number(),
+  completionTokens: z.number(),
+  totalTokens: z.number(),
+  requestCount: z.number(),
+});
+
+const TrendPointSchema = z.object({
+  day: z.string(),
+  promptTokens: z.number(),
+  completionTokens: z.number(),
+  totalTokens: z.number(),
+  requestCount: z.number(),
+});
+
+export const TrendsResponseSchema = z.object({
+  trends: z.array(TrendPointSchema),
+  from: z.string(),
+  to: z.string(),
+});
+
+export const TokenUserResponseSchema = z.object({
+  users: z.array(UserTokenRowSchema),
+});
+
+// ── Usage ────────────────────────────────────────────────────────
+
+const DailyUsagePointSchema = z.object({
+  period_start: z.string(),
+  query_count: z.number(),
+  token_count: z.number(),
+  active_users: z.number(),
+});
+
+const UserUsageRowSchema = z.object({
+  user_id: z.string(),
+  query_count: z.number(),
+  token_count: z.number(),
+  login_count: z.number(),
+});
+
+export const UsageSummarySchema = z.object({
+  workspaceId: z.string(),
+  current: z.object({
+    queryCount: z.number(),
+    tokenCount: z.number(),
+    activeUsers: z.number(),
+    periodStart: z.string(),
+    periodEnd: z.string(),
+  }),
+  plan: z.object({
+    tier: z.string(),
+    displayName: z.string(),
+    trialEndsAt: z.string().nullable(),
+  }),
+  limits: z.object({
+    queriesPerMonth: z.number().nullable(),
+    tokensPerMonth: z.number().nullable(),
+    maxMembers: z.number().nullable(),
+    maxConnections: z.number().nullable(),
+  }),
+  history: z.array(DailyUsagePointSchema),
+  users: z.array(UserUsageRowSchema),
+  hasStripe: z.boolean(),
+});
+
+// ── Users ────────────────────────────────────────────────────────
+
+export const UserStatsSchema = z.object({
+  total: z.number(),
+  banned: z.number(),
+  byRole: z.record(z.string(), z.number()),
+});
+
+// ── API Keys ─────────────────────────────────────────────────────
+
+const ApiKeyRowSchema = z.object({
+  id: z.string(),
+  name: z.string().nullable(),
+  start: z.string().nullable(),
+  prefix: z.string().nullable(),
+  createdAt: z.string(),
+  expiresAt: z.string().nullable(),
+  lastRequest: z.string().nullable(),
+});
+
+export const ListApiKeysResponseSchema = z.object({
+  apiKeys: z.array(ApiKeyRowSchema),
+  total: z.number(),
+});
+
+// ── Integrations ─────────────────────────────────────────────────
+
+const SlackStatusSchema = z.object({
+  connected: z.boolean(),
+  teamId: z.string().nullable(),
+  workspaceName: z.string().nullable(),
+  installedAt: z.string().nullable(),
+  oauthConfigured: z.boolean(),
+  envConfigured: z.boolean(),
+  configurable: z.boolean(),
+});
+
+const TeamsStatusSchema = z.object({
+  connected: z.boolean(),
+  tenantId: z.string().nullable(),
+  tenantName: z.string().nullable(),
+  installedAt: z.string().nullable(),
+  configurable: z.boolean(),
+});
+
+const DiscordStatusSchema = z.object({
+  connected: z.boolean(),
+  guildId: z.string().nullable(),
+  guildName: z.string().nullable(),
+  installedAt: z.string().nullable(),
+  configurable: z.boolean(),
+});
+
+const TelegramStatusSchema = z.object({
+  connected: z.boolean(),
+  botId: z.string().nullable(),
+  botUsername: z.string().nullable(),
+  installedAt: z.string().nullable(),
+  configurable: z.boolean(),
+});
+
+const GChatStatusSchema = z.object({
+  connected: z.boolean(),
+  projectId: z.string().nullable(),
+  serviceAccountEmail: z.string().nullable(),
+  installedAt: z.string().nullable(),
+  configurable: z.boolean(),
+});
+
+const GitHubStatusSchema = z.object({
+  connected: z.boolean(),
+  username: z.string().nullable(),
+  installedAt: z.string().nullable(),
+  configurable: z.boolean(),
+});
+
+const LinearStatusSchema = z.object({
+  connected: z.boolean(),
+  userName: z.string().nullable(),
+  userEmail: z.string().nullable(),
+  installedAt: z.string().nullable(),
+  configurable: z.boolean(),
+});
+
+const WhatsAppStatusSchema = z.object({
+  connected: z.boolean(),
+  phoneNumberId: z.string().nullable(),
+  displayPhone: z.string().nullable(),
+  installedAt: z.string().nullable(),
+  configurable: z.boolean(),
+});
+
+const EmailStatusSchema = z.object({
+  connected: z.boolean(),
+  provider: z.string().nullable(),
+  senderAddress: z.string().nullable(),
+  installedAt: z.string().nullable(),
+  configurable: z.boolean(),
+});
+
+const WebhookStatusSchema = z.object({
+  activeCount: z.number(),
+  configurable: z.boolean(),
+});
+
+export const IntegrationStatusSchema = z.object({
+  slack: SlackStatusSchema,
+  teams: TeamsStatusSchema,
+  discord: DiscordStatusSchema,
+  telegram: TelegramStatusSchema,
+  gchat: GChatStatusSchema,
+  github: GitHubStatusSchema,
+  linear: LinearStatusSchema,
+  whatsapp: WhatsAppStatusSchema,
+  email: EmailStatusSchema,
+  webhooks: WebhookStatusSchema,
+  deliveryChannels: z.array(z.string()),
+  deployMode: z.string(),
+  hasInternalDB: z.boolean(),
+});
+
+// ── Plugins ──────────────────────────────────────────────────────
+
+const PluginDescriptionSchema = z.object({
+  id: z.string(),
+  types: z.array(z.string()),
+  version: z.string(),
+  name: z.string(),
+  status: z.string(),
+  enabled: z.boolean(),
+});
+
+export const PluginListResponseSchema = z.object({
+  plugins: z.array(PluginDescriptionSchema).optional(),
+  manageable: z.boolean().optional(),
+}).transform((r) => ({
+  plugins: r.plugins ?? [],
+  manageable: r.manageable ?? false,
+}));

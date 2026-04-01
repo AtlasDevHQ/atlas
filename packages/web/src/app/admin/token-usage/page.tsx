@@ -4,6 +4,7 @@ import dynamic from "next/dynamic";
 import { useQueryStates } from "nuqs";
 import { tokenUsageSearchParams } from "./search-params";
 import { useAdminFetch, type FetchError } from "@/ui/hooks/use-admin-fetch";
+import { TokenSummarySchema, TrendsResponseSchema, TokenUserResponseSchema } from "@/ui/lib/admin-schemas";
 import { useDarkMode } from "@/ui/hooks/use-dark-mode";
 import { formatNumber } from "@/lib/format";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -17,33 +18,14 @@ import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { DataTable } from "@/components/data-table/data-table";
 import { DataTableToolbar } from "@/components/data-table/data-table-toolbar";
 import { DataTableSortList } from "@/components/data-table/data-table-sort-list";
-import { getTokenUsageColumns, type UserTokenRow } from "./columns";
+import { getTokenUsageColumns } from "./columns";
 import { useDataTable } from "@/hooks/use-data-table";
 import { Coins, TrendingUp, Users, MessageSquare, Search } from "lucide-react";
 import { useState } from "react";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 
-import type { TrendPoint } from "./token-chart";
-
 // Dynamic import — Recharts is heavy
 const TokenChart = dynamic(() => import("./token-chart"), { ssr: false });
-
-// ── Types ─────────────────────────────────────────────────────────
-
-interface TokenSummary {
-  totalPromptTokens: number;
-  totalCompletionTokens: number;
-  totalTokens: number;
-  totalRequests: number;
-  from: string;
-  to: string;
-}
-
-interface TrendsResponse {
-  trends: TrendPoint[];
-  from: string;
-  to: string;
-}
 
 // ── Helpers ───────────────────────────────────────────────────────
 
@@ -71,13 +53,13 @@ export default function TokenUsagePage() {
   const qs = buildQS(params.from, params.to);
 
   const { data: summary, loading: summaryLoading, error: summaryError } =
-    useAdminFetch<TokenSummary>(`/api/v1/admin/tokens/summary${qs}`, { deps: [qs] });
+    useAdminFetch(`/api/v1/admin/tokens/summary${qs}`, { schema: TokenSummarySchema, deps: [qs] });
 
   const { data: trendsData, loading: trendsLoading, error: trendsError } =
-    useAdminFetch<TrendsResponse>(`/api/v1/admin/tokens/trends${qs}`, { deps: [qs] });
+    useAdminFetch(`/api/v1/admin/tokens/trends${qs}`, { schema: TrendsResponseSchema, deps: [qs] });
 
   const { data: usersData, loading: usersLoading, error: usersError } =
-    useAdminFetch<{ users: UserTokenRow[] }>(`/api/v1/admin/tokens/by-user${qs}`, { deps: [qs] });
+    useAdminFetch(`/api/v1/admin/tokens/by-user${qs}`, { schema: TokenUserResponseSchema, deps: [qs] });
 
   // Data table for top users
   const tokenColumns = getTokenUsageColumns();

@@ -27,28 +27,10 @@ import { ScrollText, Search, AlertTriangle, Database, BarChart3, Download, X, Sh
 import { RetentionPanel } from "./retention-panel";
 import { useAdminFetch, type FetchError } from "@/ui/hooks/use-admin-fetch";
 import { extractFetchError } from "@/ui/lib/fetch-error";
+import { AuditStatsSchema, AuditFacetsSchema, AuditConnectionMetaSchema } from "@/ui/lib/admin-schemas";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 
-// ── Types ─────────────────────────────────────────────────────────
-
-interface AuditStats {
-  totalQueries: number;
-  totalErrors: number;
-  errorRate: number;
-  queriesPerDay: { day: string; count: number }[];
-}
-
-interface ConnectionMeta {
-  id: string;
-  description?: string;
-}
-
 const LIMIT = 50;
-
-interface AuditFacets {
-  tables: string[];
-  columns: string[];
-}
 
 interface AuditQueryParams {
   pageSize: number;
@@ -104,14 +86,16 @@ export default function AuditPage() {
   const [analyticsTo, setAnalyticsTo] = useState("");
 
   // Connection list for filter dropdown
-  const { data: connectionsData, error: connectionsError } = useAdminFetch<{ connections: ConnectionMeta[] }>(
+  const { data: connectionsData, error: connectionsError } = useAdminFetch(
     "/api/v1/admin/connections",
+    { schema: AuditConnectionMetaSchema },
   );
   const connectionList = connectionsData?.connections ?? [];
 
   // Facets for table/column filter dropdowns
-  const { data: facetsData, error: facetsError } = useAdminFetch<AuditFacets>(
+  const { data: facetsData, error: facetsError } = useAdminFetch(
     "/api/v1/admin/audit/facets",
+    { schema: AuditFacetsSchema },
   );
   if (facetsError && !facetsError.status) {
     // Log client-side so devs can diagnose why dropdowns fell back to text inputs
@@ -137,8 +121,9 @@ export default function AuditPage() {
   });
 
   // Stats — non-critical, shown when available
-  const { data: stats, error: statsError } = useAdminFetch<AuditStats>(
+  const { data: stats, error: statsError } = useAdminFetch(
     "/api/v1/admin/audit/stats",
+    { schema: AuditStatsSchema },
   );
 
   // Clear stale errors when switching tabs

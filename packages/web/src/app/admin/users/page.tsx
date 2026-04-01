@@ -69,6 +69,7 @@ import {
   type FetchError,
 } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { UserStatsSchema } from "@/ui/lib/admin-schemas";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import {
   Users,
@@ -90,12 +91,6 @@ import {
 } from "lucide-react";
 
 // -- Types --
-
-interface UserStats {
-  total: number;
-  banned: number;
-  byRole: Record<string, number>;
-}
 
 type ConfirmAction =
   | { type: "ban"; user: User }
@@ -154,8 +149,9 @@ export default function UsersPage() {
   const [invitationsLoading, setInvitationsLoading] = useState(true);
   const [invitationsVersion, setInvitationsVersion] = useState(0);
 
-  const { data: stats, error: statsError } = useAdminFetch<UserStats>(
+  const { data: stats, error: statsError } = useAdminFetch(
     "/api/v1/admin/users/stats",
+    { schema: UserStatsSchema },
   );
 
   // Data table columns (actions column uses component callbacks)

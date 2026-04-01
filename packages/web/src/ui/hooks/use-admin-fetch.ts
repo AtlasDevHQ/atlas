@@ -43,7 +43,10 @@ export function useAdminFetch<T>(
       });
       if (!res.ok) {
         const e = await extractFetchError(res);
-        if (!signal?.aborted) setError(e);
+        if (!signal?.aborted) {
+          setData(null);
+          setError(e);
+        }
         return;
       }
       const json: unknown = await res.json();
@@ -70,6 +73,7 @@ export function useAdminFetch<T>(
       if (!signal?.aborted) {
         const msg = err instanceof Error ? err.message : String(err);
         console.warn(`useAdminFetch ${path}:`, msg);
+        setData(null);
         setError({ message: msg || "Request failed" });
       }
     } finally {

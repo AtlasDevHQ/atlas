@@ -17,6 +17,7 @@ import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { Monitor, Search, X, Users, Activity, Trash2 } from "lucide-react";
 import { useAdminFetch, type FetchError } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { SessionStatsSchema } from "@/ui/lib/admin-schemas";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import {
   AlertDialog,
@@ -29,14 +30,6 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
-
-// ── Types ─────────────────────────────────────────────────────────
-
-interface SessionStats {
-  total: number;
-  active: number;
-  uniqueUsers: number;
-}
 
 const LIMIT = 50;
 
@@ -90,9 +83,9 @@ export default function SessionsPage() {
   });
 
   // Stats
-  const { data: stats, error: statsError } = useAdminFetch<SessionStats>(
+  const { data: stats, error: statsError } = useAdminFetch(
     "/api/v1/admin/sessions/stats",
-    { deps: [fetchKey] },
+    { schema: SessionStatsSchema, deps: [fetchKey] },
   );
 
   // Read pagination from table state

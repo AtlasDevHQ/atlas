@@ -37,6 +37,12 @@ import { usePlatformAdminGuard } from "@/ui/hooks/use-platform-admin-guard";
 import { StatCard } from "@/ui/components/admin/stat-card";
 import { useAdminFetch, friendlyError, useInProgressSet } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import {
+  PlatformStatsSchema,
+  PlatformWorkspacesResponseSchema,
+  PlatformNeighborsResponseSchema,
+  PlatformWorkspaceDetailResponseSchema,
+} from "@/ui/lib/admin-schemas";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import {
   Building2,
@@ -54,9 +60,6 @@ import {
 } from "lucide-react";
 import type {
   PlatformWorkspace,
-  PlatformWorkspaceUser,
-  PlatformStats,
-  NoisyNeighbor,
   WorkspaceStatus,
   PlanTier,
 } from "@/ui/lib/types";
@@ -141,21 +144,24 @@ function PlatformPageContent() {
   const [sortDir, setSortDir] = useState<SortDir>("desc");
 
   // Data
-  const { data: stats, loading: statsLoading, error: statsError } = useAdminFetch<PlatformStats>(
+  const { data: stats, loading: statsLoading, error: statsError } = useAdminFetch(
     "/api/v1/platform/stats",
+    { schema: PlatformStatsSchema },
   );
-  const { data: wsData, loading: wsLoading, error: wsError, refetch: refetchWorkspaces } = useAdminFetch<{ workspaces: PlatformWorkspace[] }>(
+  const { data: wsData, loading: wsLoading, error: wsError, refetch: refetchWorkspaces } = useAdminFetch(
     "/api/v1/platform/workspaces",
+    { schema: PlatformWorkspacesResponseSchema },
   );
-  const { data: neighborsData, loading: neighborsLoading, error: neighborsError } = useAdminFetch<{ neighbors: NoisyNeighbor[]; medians: { queries: number; tokens: number; storage: number } }>(
+  const { data: neighborsData, loading: neighborsLoading, error: neighborsError } = useAdminFetch(
     "/api/v1/platform/noisy-neighbors",
+    { schema: PlatformNeighborsResponseSchema },
   );
 
   // Workspace detail dialog
   const [detailId, setDetailId] = useState<string | null>(null);
-  const { data: detailData, loading: detailLoading, error: detailError } = useAdminFetch<{ workspace: PlatformWorkspace; users: PlatformWorkspaceUser[] }>(
+  const { data: detailData, loading: detailLoading, error: detailError } = useAdminFetch(
     detailId ? `/api/v1/platform/workspaces/${detailId}` : "",
-    { deps: [detailId] },
+    { schema: PlatformWorkspaceDetailResponseSchema, deps: [detailId] },
   );
 
   // Confirmation dialog

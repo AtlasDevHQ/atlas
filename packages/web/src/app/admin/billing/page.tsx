@@ -10,6 +10,7 @@ import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { BillingStatusSchema } from "@/ui/lib/admin-schemas";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { formatDate, formatNumber } from "@/lib/format";
 import {
@@ -83,8 +84,9 @@ function overageColor(status: string): string {
 // ── Component ─────────────────────────────────────────────────────
 
 export default function BillingPage() {
-  const { data, loading, error, refetch } = useAdminFetch<BillingStatus>(
+  const { data, loading, error, refetch } = useAdminFetch(
     "/api/v1/billing",
+    { schema: BillingStatusSchema },
   );
 
   // Framework-level 404 (billing routes not mounted) means self-hosted / no Stripe.

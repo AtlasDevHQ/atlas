@@ -27,6 +27,7 @@ import { StatCard } from "@/ui/components/admin/stat-card";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { DomainsResponseSchema } from "@/ui/lib/admin-schemas";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { LoadingState } from "@/ui/components/admin/loading-state";
 import { usePlatformAdminGuard } from "@/ui/hooks/use-platform-admin-guard";
@@ -42,12 +43,6 @@ import {
   RefreshCw,
   Copy,
 } from "lucide-react";
-
-// ── Types ─────────────────────────────────────────────────────────
-
-interface DomainsResponse {
-  domains: CustomDomain[];
-}
 
 // ── Helpers ───────────────────────────────────────────────────────
 
@@ -97,7 +92,7 @@ function DomainsPageContent() {
     loading,
     error,
     refetch,
-  } = useAdminFetch<DomainsResponse>("/api/v1/platform/domains");
+  } = useAdminFetch("/api/v1/platform/domains", { schema: DomainsResponseSchema });
 
   const { mutate: registerDomain, saving: registering, error: registerError, clearError: clearRegisterError } = useAdminMutation<CustomDomain>({
     invalidates: refetch,

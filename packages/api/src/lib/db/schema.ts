@@ -1073,6 +1073,32 @@ export const oauthState = pgTable("oauth_state", {
 ]);
 
 // ---------------------------------------------------------------------------
+// Region migrations (0012_region_migrations.sql)
+// ---------------------------------------------------------------------------
+
+export const regionMigrations = pgTable(
+  "region_migrations",
+  {
+    id: text("id").primaryKey(),
+    workspaceId: text("workspace_id").notNull(),
+    sourceRegion: text("source_region").notNull(),
+    targetRegion: text("target_region").notNull(),
+    status: text("status").notNull().default("pending"),
+    requestedBy: text("requested_by"),
+    errorMessage: text("error_message"),
+    requestedAt: timestamp("requested_at", { withTimezone: true }).notNull().defaultNow(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+  },
+  (t) => [
+    index("idx_region_migrations_workspace").on(t.workspaceId),
+    index("idx_region_migrations_status").on(t.status),
+    uniqueIndex("idx_region_migrations_one_active")
+      .on(t.workspaceId)
+      .where(sql`status IN ('pending', 'in_progress')`),
+  ],
+);
+
+// ---------------------------------------------------------------------------
 // Sandbox credentials (0004_sandbox_credentials.sql)
 // ---------------------------------------------------------------------------
 

@@ -1,7 +1,8 @@
 /**
  * Tests for periodic settings refresh timer (#1092).
  *
- * Uses mock.module for config (SaaS mode detection) and internal DB.
+ * Uses mock.module for config (SaaS mode detection) and logger,
+ * plus `_resetPool()` for internal DB mocking.
  * Runs in its own file because mock.module affects the entire module graph.
  */
 
@@ -239,6 +240,19 @@ describe("periodic settings refresh (#1092)", () => {
   it("uses explicit intervalMs over env var", () => {
     process.env.ATLAS_SETTINGS_REFRESH_INTERVAL = "999999";
     startSettingsRefreshTimer(50);
+    expect(_getRefreshTimer()).not.toBeNull();
+  });
+
+  it("falls back to default for non-numeric ATLAS_SETTINGS_REFRESH_INTERVAL", () => {
+    process.env.ATLAS_SETTINGS_REFRESH_INTERVAL = "30s";
+    startSettingsRefreshTimer();
+    // Timer should still start (with default interval, not NaN)
+    expect(_getRefreshTimer()).not.toBeNull();
+  });
+
+  it("falls back to default for sub-minimum ATLAS_SETTINGS_REFRESH_INTERVAL", () => {
+    process.env.ATLAS_SETTINGS_REFRESH_INTERVAL = "100";
+    startSettingsRefreshTimer();
     expect(_getRefreshTimer()).not.toBeNull();
   });
 });

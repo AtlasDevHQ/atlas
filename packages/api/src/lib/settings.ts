@@ -429,7 +429,8 @@ export function getSettingAuto(key: string, orgId?: string): string | undefined 
 
 /**
  * Load all settings from the internal DB into the in-process cache.
- * Call once at startup. No-op when no internal DB.
+ * Called at startup and periodically by the refresh timer in SaaS mode.
+ * No-op when no internal DB.
  */
 export async function loadSettings(): Promise<number> {
   if (!hasInternalDB()) return 0;
@@ -691,22 +692,14 @@ export function getSettingDefinition(key: string): SettingDefinition | undefined
 }
 
 // ---------------------------------------------------------------------------
-// Runtime side effects — applied when hot-reloadable settings change
-// ---------------------------------------------------------------------------
-
-/** Settings that produce immediate runtime side effects when changed. */
-const SIDE_EFFECT_KEYS = new Set(["ATLAS_LOG_LEVEL"]);
-
-/**
- * Apply runtime side effects after a setting value changes.
- * Only runs in SaaS mode for hot-reloadable settings.
- */
-// ---------------------------------------------------------------------------
 // Periodic settings refresh — for SaaS multi-instance consistency
 // ---------------------------------------------------------------------------
 
 /** Default refresh interval: 30 seconds. */
 const DEFAULT_REFRESH_INTERVAL_MS = 30_000;
+
+/** Minimum allowed interval to prevent accidental tight loops. */
+const MIN_REFRESH_INTERVAL_MS = 1_000;
 
 let _refreshTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -718,21 +711,32 @@ let _refreshTimer: ReturnType<typeof setInterval> | null = null;
  * until restart. This timer ensures all instances converge within one
  * interval (default 30s).
  *
- * The timer is resilient — `loadSettings()` failures are logged as warnings
- * and do not stop the interval.
+ * The timer is resilient — `loadSettings()` handles its own errors internally
+ * (logged at error level). If an unexpected error escapes, it is caught and
+ * logged as a warning without stopping the interval.
  *
+ * @param intervalMs Override interval in milliseconds. Falls back to
+ *   `ATLAS_SETTINGS_REFRESH_INTERVAL` env var, then 30s default.
  * @returns A cleanup function that clears the interval.
  */
 export function startSettingsRefreshTimer(
   intervalMs?: number,
 ): () => void {
-  const interval =
-    intervalMs ??
-    (process.env.ATLAS_SETTINGS_REFRESH_INTERVAL
-      ? Number(process.env.ATLAS_SETTINGS_REFRESH_INTERVAL)
-      : DEFAULT_REFRESH_INTERVAL_MS);
+  let interval = intervalMs ?? DEFAULT_REFRESH_INTERVAL_MS;
 
-  // Avoid duplicate timers
+  if (intervalMs === undefined && process.env.ATLAS_SETTINGS_REFRESH_INTERVAL) {
+    const parsed = Number(process.env.ATLAS_SETTINGS_REFRESH_INTERVAL);
+    if (!Number.isFinite(parsed) || parsed < MIN_REFRESH_INTERVAL_MS) {
+      log.warn(
+        { raw: process.env.ATLAS_SETTINGS_REFRESH_INTERVAL, parsed },
+        `Invalid ATLAS_SETTINGS_REFRESH_INTERVAL — using default ${DEFAULT_REFRESH_INTERVAL_MS}ms (must be a number >= ${MIN_REFRESH_INTERVAL_MS})`,
+      );
+      interval = DEFAULT_REFRESH_INTERVAL_MS;
+    } else {
+      interval = parsed;
+    }
+  }
+
   if (_refreshTimer !== null) {
     clearInterval(_refreshTimer);
   }
@@ -779,6 +783,13 @@ export function _getRefreshTimer(): ReturnType<typeof setInterval> | null {
 // Runtime side effects — applied when hot-reloadable settings change
 // ---------------------------------------------------------------------------
 
+/** Settings that produce immediate runtime side effects when changed. */
+const SIDE_EFFECT_KEYS = new Set(["ATLAS_LOG_LEVEL"]);
+
+/**
+ * Apply runtime side effects after a setting value changes.
+ * Only runs in SaaS mode for hot-reloadable settings.
+ */
 function applySettingSideEffect(key: string, value: string): void {
   if (!isSaasMode() || !SIDE_EFFECT_KEYS.has(key)) return;
 

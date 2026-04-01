@@ -267,9 +267,9 @@ export const SettingsLive: Layer.Layer<Settings> = Layer.scoped(
       catch: (err) => (err instanceof Error ? err.message : String(err)),
     }).pipe(
       Effect.catchAll((errMsg) => {
-        log.debug(
+        log.warn(
           { err: new Error(errMsg) },
-          "Settings refresh timer not started — config not available",
+          "Settings refresh timer failed to start — multi-instance settings sync disabled",
         );
         return Effect.succeed(null);
       }),
@@ -469,7 +469,7 @@ export function makeSchedulerLive(
  * The remaining layers use dynamic imports to reach their modules and do
  * not consume Config from the Effect context.
  *
- * On shutdown, Effect disposes scoped layers (Telemetry, Scheduler) via
+ * On shutdown, Effect disposes scoped layers (Telemetry, Settings, Scheduler) via
  * their finalizers. Order among independent layers is unspecified.
  * Connection and plugin shutdown is handled imperatively in server.ts.
  */

@@ -62,4 +62,7 @@ export {
   type PluginHealthCheckResponse,
   type RunStatus,
   type ActionApprovalMode,
+  type ValidateSQLResponse,
+  type ValidationLayer,
+  type RollbackActionResponse,
 } from "./client";

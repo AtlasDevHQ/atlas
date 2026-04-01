@@ -301,7 +301,7 @@ $ cd my-app && bun run dev
             href="https://app.useatlas.dev"
             className="group inline-flex items-center gap-2 rounded-lg bg-brand px-5 py-2.5 text-sm font-medium text-zinc-950 transition-all hover:bg-brand-hover"
           >
-            Try Atlas Cloud
+            Get started
             <ArrowIcon />
           </a>
           <a

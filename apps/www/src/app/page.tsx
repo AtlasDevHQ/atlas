@@ -149,7 +149,7 @@ export default function Home() {
               href="https://app.useatlas.dev"
               className="group inline-flex items-center gap-2 rounded-lg bg-brand px-5 py-2.5 text-sm font-medium text-zinc-950 transition-all hover:bg-brand-hover"
             >
-              Try the live demo
+              Get started
               <svg
                 className="h-4 w-4 transition-transform group-hover:translate-x-0.5"
                 fill="none"

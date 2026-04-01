@@ -269,6 +269,14 @@ export const milestones: Milestone[] = [
     githubMilestone: 29,
   },
   {
+    version: "0.9.8",
+    title: "Docs & Polish",
+    status: "planned",
+    summary:
+      "Documentation, reference pages, and guide coverage for 0.9.7 features. Integration type refactors, data residency signup/migration flows, and follow-up fixes for hot-reload settings and useAdminFetch.",
+    githubMilestone: 30,
+  },
+  {
     version: "1.0.0",
     title: "SaaS Launch",
     status: "planned",

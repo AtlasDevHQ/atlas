@@ -702,11 +702,37 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] Linear + WhatsApp connect flows (#1045, #1046, PR #1083)
 - [x] OAuth cleanup scheduler + BYOT tests (#1077, #1075, PR #1082)
 - [x] useAdminFetch type safety — Zod schema validation replaces blind `as T` casts (#1073, PR #1088)
+
+---
+
+## 0.9.8 — Docs & Polish
+
+**Documentation, reference pages, guide coverage, and follow-up fixes for 0.9.7 features.**
+
+### Docs
+
+- [x] Add Discord + Teams integration env vars to docs, .env.example, and OpenAPI extract (#1102, PR #1106)
+- [x] Update admin console guide for SaaS hot-reload settings (#1103, PR #1107)
+- [x] Update SDK + React reference — missing exports and stale types (#1104, PR #1108)
+- [x] Add per-action timeout to config reference + fix learn --suggestions CLI help (#1105, PR #1109)
+
+### Follow-ups from 0.9.7
+
 - [ ] Hot-reload settings — comment accuracy + test coverage gaps (#1089)
 - [ ] Migrate remaining useAdminFetch calls to Zod schema validation (#1090)
 - [ ] useAdminFetch does not clear stale data on HTTP error during refetch (#1091)
 - [ ] Periodic settings refresh for multi-instance SaaS (#1092)
 - [ ] Deduplicate provider switch in getModelForConfig (#1093)
+
+### Refactors
+
+- [ ] Split integration installation types into secret/public variants (#1084)
+- [ ] Extract shared BaseInstallation type for integration stores (#1085)
+
+### Data Residency
+
+- [ ] Region selection during workspace signup flow (#1066)
+- [ ] Data residency region migration flow (#1067)
 
 ---
 
@@ -723,6 +749,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [ ] Documentation for hosted users — separate onboarding flow from self-hosted docs (#876)
 - [x] Status page — public health dashboard (#877, PR #921)
 - [ ] Status page follow-up — incident management, subscriptions, maintenance (#953)
+- [ ] Regional API deployment for tier-2 data residency compliance (#1069)
 
 ---
 

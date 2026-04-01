@@ -21,6 +21,7 @@ process.env.STRIPE_SECRET_KEY ??= "sk_extract_openapi_placeholder";
 process.env.STRIPE_WEBHOOK_SECRET ??= "whsec_extract_openapi_placeholder";
 process.env.SLACK_SIGNING_SECRET ??= "extract_openapi_placeholder";
 process.env.TEAMS_APP_ID ??= "extract_openapi_placeholder";
+process.env.DISCORD_CLIENT_ID ??= "extract_openapi_placeholder";
 
 // Import the full app — the merged OpenAPI endpoint lives on the app instance.
 // @ts-expect-error — Bun resolves .ts imports at runtime

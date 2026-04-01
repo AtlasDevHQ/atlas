@@ -542,6 +542,34 @@ See [Slack guide](/guides/slack) for the full setup.
 
 ---
 
+## Discord Integration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DISCORD_CLIENT_ID` | — | Discord OAuth application client ID. Enables Discord integration routes. Required for Discord OAuth connect flow |
+| `DISCORD_CLIENT_SECRET` | — | Discord OAuth application client secret. Required for Discord OAuth token exchange |
+
+```bash
+# Discord integration for guild (server) authorization
+DISCORD_CLIENT_ID=123456789012345678
+DISCORD_CLIENT_SECRET=your-discord-client-secret
+```
+
+---
+
+## Teams Integration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `TEAMS_APP_ID` | — | Microsoft Teams app ID. Enables Teams integration routes. Required for Teams connect flow |
+
+```bash
+# Teams integration via Azure AD admin consent
+TEAMS_APP_ID=your-teams-app-id
+```
+
+---
+
 ## JIRA Integration
 
 | Variable | Default | Description |

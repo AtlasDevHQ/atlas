@@ -164,6 +164,25 @@ describe("logger", () => {
     expect(parsed.safe).toBe("this-should-remain");
   });
 
+  // ---------------------------------------------------------------------------
+  // setLogLevel validation (#1089 gap 3)
+  // ---------------------------------------------------------------------------
+
+  test("setLogLevel accepts valid levels", async () => {
+    const { setLogLevel } = await import("../logger");
+    for (const level of ["trace", "debug", "info", "warn", "error", "fatal"]) {
+      expect(setLogLevel(level)).toBe(true);
+    }
+  });
+
+  test("setLogLevel rejects invalid levels", async () => {
+    const { setLogLevel } = await import("../logger");
+    expect(setLogLevel("verbose")).toBe(false);
+    expect(setLogLevel("")).toBe(false);
+    expect(setLogLevel("INFO")).toBe(false);
+    expect(setLogLevel("critical")).toBe(false);
+  });
+
   test("redaction works for nested fields", () => {
     const chunks: Buffer[] = [];
     const stream = new Writable({

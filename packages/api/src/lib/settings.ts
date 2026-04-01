@@ -408,17 +408,17 @@ export async function getSettingLive(key: string, orgId?: string): Promise<strin
 /**
  * Synchronous setting read that is hot-reloadable in SaaS mode.
  *
- * In SaaS mode, this reads from the in-process cache which is periodically
- * refreshed by `getSettingLive()` calls and by `setSetting()` writes.
+ * In SaaS mode, this reads from the in-process cache which is refreshed
+ * on demand by `getSettingLive()` calls and by `setSetting()` writes.
  * In self-hosted mode, this is identical to `getSetting()`.
  *
  * For settings on the hot-path (SQL validation, RLS, CORS), consumers call
- * this instead of `getSetting()` — the cache is kept warm by writes and by
- * the periodic background refresh triggered from the settings Layer.
+ * this instead of `getSetting()` — the cache is kept warm by writes and
+ * by demand-driven `getSettingLive()` reads.
  */
 export function getSettingAuto(key: string, orgId?: string): string | undefined {
   // Both modes use the same in-process cache. In SaaS mode the cache is
-  // refreshed more aggressively (on every write + periodic live reads).
+  // refreshed more aggressively (on every write + demand-driven live reads).
   // The synchronous path is identical — the difference is cache freshness.
   return getSetting(key, orgId);
 }

@@ -678,6 +678,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 
 - [x] Email integration connect flow in Integrations hub (#1028, PR #1086)
 - [ ] Self-hosted deploy validation via GH Actions for template repos (#1029)
+- [ ] Create platform OAuth apps for Slack/Teams/Discord on Railway (#1063) — blocks dual-mode #1059
 
 ### Dual-Mode Integrations (BYOT)
 

@@ -10,6 +10,7 @@ CREATE TABLE IF NOT EXISTS region_migrations (
   source_region TEXT NOT NULL,
   target_region TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'in_progress', 'completed', 'failed')),
+  requested_by TEXT,                         -- user ID of who requested the migration
   error_message TEXT,
   requested_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   completed_at TIMESTAMPTZ

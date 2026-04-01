@@ -14,6 +14,8 @@ import { runEffect } from "@atlas/api/lib/effect/hono";
 import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
+import { MIGRATION_STATUSES } from "@useatlas/types";
+import type { RegionMigration } from "@useatlas/types";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 
@@ -168,11 +170,12 @@ const MigrationSchema = z.object({
   workspaceId: z.string(),
   sourceRegion: z.string(),
   targetRegion: z.string(),
-  status: z.enum(["pending", "in_progress", "completed", "failed"]),
+  status: z.enum(MIGRATION_STATUSES),
+  requestedBy: z.string().nullable(),
   requestedAt: z.string(),
   completedAt: z.string().nullable(),
   errorMessage: z.string().nullable(),
-});
+}) as z.ZodType<RegionMigration>;
 
 const MigrationStatusResponseSchema = z.object({
   migration: MigrationSchema.nullable(),
@@ -405,11 +408,12 @@ adminResidency.openapi(getMigrationStatusRoute, async (c) => {
           source_region: string;
           target_region: string;
           status: string;
+          requested_by: string | null;
           requested_at: string;
           completed_at: string | null;
           error_message: string | null;
         }>(
-          `SELECT id, workspace_id, source_region, target_region, status, requested_at, completed_at, error_message
+          `SELECT id, workspace_id, source_region, target_region, status, requested_by, requested_at, completed_at, error_message
            FROM region_migrations
            WHERE workspace_id = $1
            ORDER BY requested_at DESC
@@ -423,9 +427,8 @@ adminResidency.openapi(getMigrationStatusRoute, async (c) => {
         return c.json({ migration: null }, 200);
       }
 
-      const VALID_STATUSES = ["pending", "in_progress", "completed", "failed"] as const;
-      const status = VALID_STATUSES.includes(row.status as typeof VALID_STATUSES[number])
-        ? (row.status as typeof VALID_STATUSES[number])
+      const status = (MIGRATION_STATUSES as readonly string[]).includes(row.status)
+        ? (row.status as typeof MIGRATION_STATUSES[number])
         : "failed";
 
       return c.json({
@@ -435,6 +438,7 @@ adminResidency.openapi(getMigrationStatusRoute, async (c) => {
           sourceRegion: row.source_region,
           targetRegion: row.target_region,
           status,
+          requestedBy: row.requested_by,
           requestedAt: row.requested_at,
           completedAt: row.completed_at,
           errorMessage: row.error_message,
@@ -530,16 +534,18 @@ adminResidency.openapi(requestMigrationRoute, async (c) => {
       const migrationId = `mig_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
       const now = new Date().toISOString();
 
+      const requestedBy = user?.id ?? null;
+
       yield* Effect.promise(() =>
         internalQuery(
-          `INSERT INTO region_migrations (id, workspace_id, source_region, target_region, status, requested_at)
-           VALUES ($1, $2, $3, $4, 'pending', $5)`,
-          [migrationId, orgId, assignment.region, targetRegion, now],
+          `INSERT INTO region_migrations (id, workspace_id, source_region, target_region, status, requested_by, requested_at)
+           VALUES ($1, $2, $3, $4, 'pending', $5, $6)`,
+          [migrationId, orgId, assignment.region, targetRegion, requestedBy, now],
         ),
       );
 
       log.info(
-        { requestId, orgId, migrationId, sourceRegion: assignment.region, targetRegion, userId: user?.id },
+        { requestId, orgId, migrationId, sourceRegion: assignment.region, targetRegion, userId: requestedBy },
         "Region migration requested",
       );
 
@@ -549,6 +555,7 @@ adminResidency.openapi(requestMigrationRoute, async (c) => {
         sourceRegion: assignment.region,
         targetRegion,
         status: "pending" as const,
+        requestedBy,
         requestedAt: now,
         completedAt: null,
         errorMessage: null,

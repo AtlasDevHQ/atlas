@@ -131,6 +131,7 @@ export type {
   MigrationStatus,
   RegionMigration,
 } from "@useatlas/types";
+export { MIGRATION_STATUSES } from "@useatlas/types";
 export type {
   CustomDomain,
   DomainStatus,

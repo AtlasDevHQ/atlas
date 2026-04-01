@@ -692,6 +692,232 @@ onboarding.openapi(
 );
 
 // ---------------------------------------------------------------------------
+// Region selection during signup
+// ---------------------------------------------------------------------------
+
+type ResidencyModule = typeof import("@atlas/ee/platform/residency");
+
+async function loadResidency(): Promise<ResidencyModule | null> {
+  try {
+    return await import("@atlas/ee/platform/residency");
+  } catch (err) {
+    if (
+      err != null &&
+      typeof err === "object" &&
+      "code" in err &&
+      (err as NodeJS.ErrnoException).code === "MODULE_NOT_FOUND"
+    ) {
+      return null;
+    }
+    throw err;
+  }
+}
+
+const OnboardingRegionSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  isDefault: z.boolean(),
+});
+
+const OnboardingRegionsResponseSchema = z.object({
+  configured: z.boolean(),
+  defaultRegion: z.string(),
+  availableRegions: z.array(OnboardingRegionSchema),
+});
+
+const AssignRegionBodySchema = z.object({
+  region: z.string().min(1),
+});
+
+const AssignRegionResponseSchema = z.object({
+  workspaceId: z.string(),
+  region: z.string(),
+  assignedAt: z.string(),
+});
+
+const getRegionsRoute = createRoute({
+  method: "get",
+  path: "/regions",
+  tags: ["Onboarding"],
+  summary: "List available data residency regions",
+  description:
+    "Returns available data residency regions for the signup flow. " +
+    "If residency is not configured (self-hosted or EE not available), " +
+    "returns configured=false so the frontend can skip the region step.",
+  responses: {
+    200: {
+      description: "Available regions",
+      content: { "application/json": { schema: OnboardingRegionsResponseSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    404: {
+      description: "Onboarding requires managed auth mode",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const assignRegionRoute = createRoute({
+  method: "post",
+  path: "/assign-region",
+  tags: ["Onboarding"],
+  summary: "Assign data residency region during signup",
+  description:
+    "Assigns a data residency region to the user's workspace during the signup flow. " +
+    "This must be called before connecting a database. The region cannot be changed " +
+    "after assignment.",
+  request: {
+    body: {
+      content: { "application/json": { schema: AssignRegionBodySchema } },
+      required: true,
+    },
+  },
+  responses: {
+    200: {
+      description: "Region assigned",
+      content: { "application/json": { schema: AssignRegionResponseSchema } },
+    },
+    400: {
+      description: "Invalid region or no active organization",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    404: {
+      description: "Onboarding requires managed auth mode or residency not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    409: {
+      description: "Region already assigned (immutable)",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    422: {
+      description: "Validation error",
+      content: {
+        "application/json": {
+          schema: ErrorSchema.extend({ details: z.array(z.unknown()).optional() }),
+        },
+      },
+    },
+    503: {
+      description: "Service unavailable (no internal database)",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+onboarding.use("/regions", standardAuth);
+onboarding.use("/regions", requestContext);
+onboarding.use("/assign-region", standardAuth);
+onboarding.use("/assign-region", requestContext);
+
+// GET /regions — available data residency regions for signup
+
+onboarding.openapi(getRegionsRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+
+    if (detectAuthMode() !== "managed") {
+      return c.json({ error: "not_available", message: "Onboarding requires managed auth mode.", requestId }, 404);
+    }
+
+    const mod = yield* Effect.promise(() => loadResidency());
+    if (!mod) {
+      return c.json({ configured: false, defaultRegion: "none", availableRegions: [] }, 200);
+    }
+
+    try {
+      const defaultRegion = mod.getDefaultRegion();
+      const regions = mod.getConfiguredRegions();
+      const availableRegions = Object.entries(regions).map(([id, cfg]) => ({
+        id,
+        label: cfg.label,
+        isDefault: id === defaultRegion,
+      }));
+      return c.json({ configured: true, defaultRegion, availableRegions }, 200);
+    } catch (err) {
+      if (err instanceof mod.ResidencyError && err.code === "not_configured") {
+        return c.json({ configured: false, defaultRegion: "none", availableRegions: [] }, 200);
+      }
+      throw err;
+    }
+  }), { label: "get onboarding regions" });
+});
+
+// POST /assign-region — assign region during signup
+
+onboarding.openapi(
+  assignRegionRoute,
+  async (c) => {
+    return runEffect(c, Effect.gen(function* () {
+      const { requestId } = yield* RequestContext;
+      const { orgId } = yield* AuthContext;
+
+      if (detectAuthMode() !== "managed") {
+        return c.json({ error: "not_available", message: "Onboarding requires managed auth mode.", requestId }, 404);
+      }
+
+      if (!orgId) {
+        return c.json({ error: "no_organization", message: "No active organization. Create a workspace first.", requestId }, 400);
+      }
+
+      const { region } = c.req.valid("json");
+
+      const mod = yield* Effect.promise(() => loadResidency());
+      if (!mod) {
+        return c.json({ error: "not_available", message: "Data residency is not available in this deployment.", requestId }, 404);
+      }
+
+      try {
+        const result = yield* Effect.promise(() => mod.assignWorkspaceRegion(orgId, region));
+        log.info({ orgId, region, requestId }, "Workspace region assigned during signup");
+        return c.json(result, 200);
+      } catch (err) {
+        if (err instanceof mod.ResidencyError) {
+          switch (err.code) {
+            case "invalid_region":
+              return c.json({ error: "invalid_region", message: err.message, requestId }, 400);
+            case "already_assigned":
+              return c.json({ error: "already_assigned", message: err.message, requestId }, 409);
+            case "workspace_not_found":
+              return c.json({ error: "workspace_not_found", message: err.message, requestId }, 404);
+            case "no_internal_db":
+              return c.json({ error: "no_internal_db", message: err.message, requestId }, 503);
+            case "not_configured":
+              return c.json({ error: "not_configured", message: err.message, requestId }, 404);
+            default:
+              log.warn({ code: err.code, requestId }, "Unhandled ResidencyError code");
+              throw err;
+          }
+        }
+        throw err;
+      }
+    }), { label: "assign region during signup" });
+  },
+  (result, c) => {
+    if (!result.success) {
+      return c.json(
+        { error: "validation_error", message: "Invalid request body.", details: result.error.issues },
+        422,
+      );
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
 // Tour status & completion
 // ---------------------------------------------------------------------------
 

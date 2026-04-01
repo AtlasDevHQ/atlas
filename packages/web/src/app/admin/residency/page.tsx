@@ -34,18 +34,13 @@ import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { useDeployMode } from "@/ui/hooks/use-deploy-mode";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
+import { RegionCardGrid, ComplianceBadge } from "@/ui/components/region-picker";
+import { RegionPickerItemSchema } from "@/ui/lib/admin-schemas";
+import type { RegionPickerItem } from "@/ui/lib/types";
 import { formatDate } from "@/lib/format";
-import { cn } from "@/lib/utils";
-import { Globe, MapPin, AlertTriangle, Check } from "lucide-react";
+import { Globe, MapPin, AlertTriangle } from "lucide-react";
 
 // ── Schemas ───────────────────────────────────────────────────────
-
-const RegionSchema = z.object({
-  id: z.string(),
-  label: z.string(),
-  isDefault: z.boolean(),
-});
-type Region = z.infer<typeof RegionSchema>;
 
 const ResidencyStatusSchema = z.object({
   configured: z.boolean(),
@@ -53,7 +48,7 @@ const ResidencyStatusSchema = z.object({
   regionLabel: z.string().nullable(),
   assignedAt: z.string().nullable(),
   defaultRegion: z.string(),
-  availableRegions: z.array(RegionSchema),
+  availableRegions: z.array(RegionPickerItemSchema),
 });
 type ResidencyStatus = z.infer<typeof ResidencyStatusSchema>;
 
@@ -154,7 +149,7 @@ function ResidencyContent({
     >
       {(selected, setSelected) =>
         isSaas ? (
-          <SaasRegionGrid
+          <RegionCardGrid
             regions={data.availableRegions}
             selected={selected}
             onSelect={setSelected}
@@ -337,7 +332,7 @@ function SelfHostedRegionSelect({
   selected,
   onSelect,
 }: {
-  regions: Region[];
+  regions: RegionPickerItem[];
   defaultRegion: string;
   selected: string;
   onSelect: (id: string) => void;
@@ -366,71 +361,6 @@ function SelfHostedRegionSelect({
   );
 }
 
-// ── SaaS Region Grid (cards) ────────────────────────────────────
-
-function SaasRegionGrid({
-  regions,
-  selected,
-  onSelect,
-}: {
-  regions: Region[];
-  selected: string;
-  onSelect: (id: string) => void;
-}) {
-  if (regions.length === 0) {
-    return (
-      <p className="text-sm text-muted-foreground">
-        No regions are available. Contact support for assistance.
-      </p>
-    );
-  }
-
-  return (
-    <div className="grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
-      {regions.map((region) => (
-        <Card
-          key={region.id}
-          role="button"
-          tabIndex={0}
-          aria-pressed={selected === region.id}
-          className={cn(
-            "relative cursor-pointer transition-all hover:shadow-md",
-            selected === region.id
-              ? "ring-2 ring-primary border-primary"
-              : "hover:border-muted-foreground/30",
-          )}
-          onClick={() => onSelect(region.id)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" || e.key === " ") {
-              e.preventDefault();
-              onSelect(region.id);
-            }
-          }}
-        >
-          <CardContent className="flex flex-col items-center gap-3 p-6 text-center">
-            <MapPin className="h-8 w-8 text-muted-foreground" />
-            <div className="space-y-1">
-              <p className="font-medium">{region.label}</p>
-              <div className="flex flex-wrap items-center justify-center gap-1.5">
-                {region.isDefault && (
-                  <Badge variant="outline" className="text-xs">
-                    Default
-                  </Badge>
-                )}
-                <ComplianceBadge regionId={region.id} />
-              </div>
-            </div>
-            {selected === region.id && (
-              <Badge variant="default" className="absolute right-3 top-3">
-                <Check className="h-3 w-3" />
-              </Badge>
-            )}
-          </CardContent>
-        </Card>
-      ))}
-    </div>
-  );
-}
 
 // ── Not Configured Card ──────────────────────────────────────────
 
@@ -454,28 +384,3 @@ function NotConfiguredCard({ isSaas }: { isSaas: boolean }) {
   );
 }
 
-// ── Compliance Badge ────────────────────────────────────────────
-
-function getComplianceLabel(regionId: string): string | null {
-  const lower = regionId.toLowerCase();
-  // Match "eu" or "us" as standalone segments (e.g. "eu-west-1", "us-east-1")
-  if (/(?:^|[-_])eu(?:[-_]|$)/.test(lower)) return "GDPR compliant";
-  if (/(?:^|[-_])us(?:[-_]|$)/.test(lower)) return "SOC 2 compliant";
-  return null;
-}
-
-function ComplianceBadge({
-  regionId,
-  className,
-}: {
-  regionId: string;
-  className?: string;
-}) {
-  const label = getComplianceLabel(regionId);
-  if (!label) return null;
-  return (
-    <Badge variant="secondary" className={cn("text-xs", className)}>
-      {label}
-    </Badge>
-  );
-}

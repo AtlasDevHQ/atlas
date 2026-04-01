@@ -25,6 +25,7 @@ import type {
   BackupEntry,
   BackupConfig,
   CustomDomain,
+  RegionPickerItem,
   RegionStatus,
   WorkspaceRegion,
   WorkspaceSLASummary,
@@ -304,6 +305,12 @@ export const DomainsResponseSchema = z.object({
 });
 
 // ── Region / Residency ───────────────────────────────────────────
+
+export const RegionPickerItemSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+  isDefault: z.boolean(),
+}) as z.ZodType<RegionPickerItem>;
 
 export const RegionStatusSchema = z.object({
   region: z.string(),

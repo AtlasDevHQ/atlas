@@ -88,11 +88,12 @@ export interface GChatInstallationWithSecret extends GChatInstallation {
 // ---------------------------------------------------------------------------
 
 export interface GitHubInstallation extends BaseInstallation {
+  /** GitHub numeric user ID (stable identifier, unlike login names). */
+  user_id: string;
   username: string | null;
 }
 
 export interface GitHubInstallationWithSecret extends GitHubInstallation {
-  user_id: string;
   access_token: string;
 }
 
@@ -101,12 +102,13 @@ export interface GitHubInstallationWithSecret extends GitHubInstallation {
 // ---------------------------------------------------------------------------
 
 export interface LinearInstallation extends BaseInstallation {
+  /** Linear viewer ID (stable identifier from /viewer query). */
+  user_id: string;
   user_name: string | null;
   user_email: string | null;
 }
 
 export interface LinearInstallationWithSecret extends LinearInstallation {
-  user_id: string;
   api_key: string;
 }
 

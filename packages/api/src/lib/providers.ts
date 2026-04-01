@@ -81,6 +81,9 @@ function resolveProvider(): { provider: ConfigProvider; modelId: string } {
 /**
  * Build a LanguageModel from an explicit provider + model ID pair.
  * Both `getModel()` and `getModelForConfig()` delegate to this.
+ *
+ * @throws {Error} When required env vars are missing for the given provider
+ *   (`OPENAI_COMPATIBLE_BASE_URL` for openai-compatible, `AI_GATEWAY_API_KEY` for gateway).
  */
 function buildModel(provider: ConfigProvider, modelId: string): LanguageModel {
   switch (provider) {
@@ -142,6 +145,11 @@ function buildModel(provider: ConfigProvider, modelId: string): LanguageModel {
 // Resolve provider type
 // ---------------------------------------------------------------------------
 
+/**
+ * Map a config-level provider to its runtime ProviderType.
+ * Bedrock models using Anthropic's API get `bedrock-anthropic` for
+ * cache-control and prompt formatting decisions.
+ */
 function resolveProviderType(provider: ConfigProvider, modelId: string): ProviderType {
   if (provider === "bedrock" && isBedrockAnthropicModel(modelId)) {
     return "bedrock-anthropic";

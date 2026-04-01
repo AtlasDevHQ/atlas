@@ -88,7 +88,7 @@ export async function getLinearInstallationByOrg(
     if (rows.length > 0) {
       const full = parseInstallationRow(rows[0], { orgId });
       if (!full) return null;
-      const { user_id: _, api_key: _k, ...pub } = full;
+      const { api_key: _, ...pub } = full;
       return pub;
     }
     return null;

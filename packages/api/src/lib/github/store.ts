@@ -87,7 +87,7 @@ export async function getGitHubInstallationByOrg(
     if (rows.length > 0) {
       const full = parseInstallationRow(rows[0], { orgId });
       if (!full) return null;
-      const { user_id: _, access_token: _t, ...pub } = full;
+      const { access_token: _, ...pub } = full;
       return pub;
     }
     return null;

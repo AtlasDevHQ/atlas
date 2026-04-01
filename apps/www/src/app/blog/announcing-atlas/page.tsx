@@ -291,17 +291,17 @@ $ cd my-app && bun run dev
         {/* ── CTA ── */}
         <SectionHeading>Try it</SectionHeading>
         <Paragraph>
-          The fastest way to see Atlas is the cloud version. Connect your
-          own database, or explore the demo dataset — a cybersecurity SaaS
-          schema with 60 tables and 200K rows of realistic, messy data.
+          The fastest way to see Atlas is the live demo. No signup, no
+          installation. It&apos;s connected to a cybersecurity SaaS dataset with
+          60 tables and 200K rows of realistic, messy data.
         </Paragraph>
 
         <div className="mt-8 flex flex-wrap items-center gap-4">
           <a
-            href="https://app.useatlas.dev"
+            href="https://app.useatlas.dev/demo"
             className="group inline-flex items-center gap-2 rounded-lg bg-brand px-5 py-2.5 text-sm font-medium text-zinc-950 transition-all hover:bg-brand-hover"
           >
-            Get started
+            Try the live demo
             <ArrowIcon />
           </a>
           <a

@@ -146,10 +146,10 @@ export default function Home() {
               your own questions.
             </p>
             <a
-              href="https://app.useatlas.dev"
+              href="https://app.useatlas.dev/demo"
               className="group inline-flex items-center gap-2 rounded-lg bg-brand px-5 py-2.5 text-sm font-medium text-zinc-950 transition-all hover:bg-brand-hover"
             >
-              Get started
+              Try the live demo
               <svg
                 className="h-4 w-4 transition-transform group-hover:translate-x-0.5"
                 fill="none"

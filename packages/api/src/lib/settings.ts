@@ -334,13 +334,13 @@ function cacheKey(key: string, orgId?: string | null): string {
   return orgId ? `${key}\0${orgId}` : key;
 }
 
-const _cache = new Map<string, { value: string; updated_at: string; updated_by: string | null }>();
+let _cache = new Map<string, { value: string; updated_at: string; updated_by: string | null }>();
 
 const SETTINGS_MAP = new Map(SETTINGS_REGISTRY.map((s) => [s.key, s]));
 
 /** @internal Reset cache — for testing only. */
 export function _resetSettingsCache(): void {
-  _cache.clear();
+  _cache = new Map();
   _liveCache.clear();
 }
 
@@ -440,14 +440,15 @@ export async function loadSettings(): Promise<number> {
       "SELECT key, value, updated_at::text, updated_by, org_id FROM settings",
     );
 
-    _cache.clear();
+    const next = new Map<string, { value: string; updated_at: string; updated_by: string | null }>();
     for (const row of rows) {
-      _cache.set(cacheKey(row.key, row.org_id), {
+      next.set(cacheKey(row.key, row.org_id), {
         value: row.value,
         updated_at: row.updated_at,
         updated_by: row.updated_by,
       });
     }
+    _cache = next; // atomic swap — readers see old or new, never empty
 
     if (rows.length > 0) {
       log.info({ count: rows.length }, "Loaded settings from internal DB");

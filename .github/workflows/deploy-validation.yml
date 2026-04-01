@@ -52,6 +52,9 @@ jobs:
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
+      - name: Install create-atlas dependencies
+        run: cd create-atlas && bun install
+
       - name: Run scaffold smoke test
         run: bash create-atlas/smoke-test.sh ${{ matrix.platform }}
         env:

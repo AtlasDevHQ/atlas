@@ -28,6 +28,15 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
@@ -35,10 +44,13 @@ import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { useDeployMode } from "@/ui/hooks/use-deploy-mode";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { RegionCardGrid, ComplianceBadge } from "@/ui/components/region-picker";
-import { RegionPickerItemSchema } from "@/ui/lib/admin-schemas";
-import type { RegionPickerItem } from "@/ui/lib/types";
+import {
+  RegionPickerItemSchema,
+  MigrationStatusResponseSchema,
+} from "@/ui/lib/admin-schemas";
+import type { RegionPickerItem, RegionMigration } from "@/ui/lib/types";
 import { formatDate } from "@/lib/format";
-import { Globe, MapPin, AlertTriangle } from "lucide-react";
+import { Globe, MapPin, AlertTriangle, ArrowRight, Clock, Loader2, XCircle, CheckCircle2 } from "lucide-react";
 
 // ── Schemas ───────────────────────────────────────────────────────
 
@@ -63,14 +75,30 @@ export default function ResidencyPage() {
     { schema: ResidencyStatusSchema },
   );
 
+  const { data: migrationData, refetch: refetchMigration } = useAdminFetch(
+    "/api/v1/admin/residency/migration",
+    { schema: MigrationStatusResponseSchema },
+  );
+
   const assignMutation = useAdminMutation({
     path: "/api/v1/admin/residency",
     method: "PUT",
     invalidates: refetch,
   });
 
+  const migrateMutation = useAdminMutation({
+    path: "/api/v1/admin/residency/migrate",
+    method: "POST",
+    invalidates: () => { refetch(); refetchMigration(); },
+  });
+
   const handleAssign = async (region: string) => {
     const result = await assignMutation.mutate({ body: { region } });
+    return result.ok;
+  };
+
+  const handleMigrate = async (targetRegion: string) => {
+    const result = await migrateMutation.mutate({ body: { targetRegion } });
     return result.ok;
   };
 
@@ -96,6 +124,16 @@ export default function ResidencyPage() {
           />
         )}
 
+        {migrateMutation.error && (
+          <ErrorBanner
+            message={migrateMutation.error}
+            onRetry={() => {
+              migrateMutation.clearError();
+              refetchMigration();
+            }}
+          />
+        )}
+
         <AdminContentWrapper
           loading={loading}
           error={error}
@@ -108,8 +146,11 @@ export default function ResidencyPage() {
             <ResidencyContent
               data={data}
               isSaas={isSaas}
+              migration={migrationData?.migration ?? null}
               onAssign={handleAssign}
+              onMigrate={handleMigrate}
               saving={assignMutation.saving}
+              migrating={migrateMutation.saving}
             />
           )}
         </AdminContentWrapper>
@@ -124,20 +165,39 @@ export default function ResidencyPage() {
 function ResidencyContent({
   data,
   isSaas,
+  migration,
   onAssign,
+  onMigrate,
   saving,
+  migrating,
 }: {
   data: ResidencyStatus;
   isSaas: boolean;
+  migration: RegionMigration | null;
   onAssign: (region: string) => Promise<boolean>;
+  onMigrate: (targetRegion: string) => Promise<boolean>;
   saving: boolean;
+  migrating: boolean;
 }) {
   if (!data.configured) {
     return <NotConfiguredCard isSaas={isSaas} />;
   }
 
   if (data.region) {
-    return <AssignedRegionCard status={data} isSaas={isSaas} />;
+    return (
+      <div className="space-y-4">
+        {migration && (migration.status === "pending" || migration.status === "in_progress" || migration.status === "completed" || migration.status === "failed") && (
+          <MigrationStatusBanner migration={migration} />
+        )}
+        <AssignedRegionCard
+          status={data}
+          isSaas={isSaas}
+          migration={migration}
+          onMigrate={onMigrate}
+          migrating={migrating}
+        />
+      </div>
+    );
   }
 
   return (
@@ -167,10 +227,95 @@ function ResidencyContent({
   );
 }
 
+// ── Migration Status Banner ──────────────────────────────────────
+
+function MigrationStatusBanner({ migration }: { migration: RegionMigration }) {
+  switch (migration.status) {
+    case "pending":
+      return (
+        <div className="flex items-start gap-3 rounded-md border border-blue-200 bg-blue-50 p-4 dark:border-blue-900 dark:bg-blue-950/50">
+          <Clock className="mt-0.5 h-5 w-5 shrink-0 text-blue-600 dark:text-blue-400" />
+          <div className="text-sm">
+            <p className="font-medium text-blue-800 dark:text-blue-200">
+              Migration requested
+            </p>
+            <p className="mt-1 text-blue-700 dark:text-blue-300">
+              Your request to migrate from <strong>{migration.sourceRegion}</strong> to{" "}
+              <strong>{migration.targetRegion}</strong> has been recorded. Our team will
+              process this shortly.
+            </p>
+            <p className="mt-1 text-xs text-blue-600 dark:text-blue-400">
+              Requested {formatDate(migration.requestedAt)}
+            </p>
+          </div>
+        </div>
+      );
+    case "in_progress":
+      return (
+        <div className="flex items-start gap-3 rounded-md border border-amber-200 bg-amber-50 p-4 dark:border-amber-900 dark:bg-amber-950/50">
+          <Loader2 className="mt-0.5 h-5 w-5 shrink-0 animate-spin text-amber-600 dark:text-amber-400" />
+          <div className="text-sm">
+            <p className="font-medium text-amber-800 dark:text-amber-200">
+              Migration in progress
+            </p>
+            <p className="mt-1 text-amber-700 dark:text-amber-300">
+              Data is being migrated from <strong>{migration.sourceRegion}</strong> to{" "}
+              <strong>{migration.targetRegion}</strong>. Some features may be temporarily
+              unavailable.
+            </p>
+          </div>
+        </div>
+      );
+    case "completed":
+      return (
+        <div className="flex items-start gap-3 rounded-md border border-green-200 bg-green-50 p-4 dark:border-green-900 dark:bg-green-950/50">
+          <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-green-600 dark:text-green-400" />
+          <div className="text-sm">
+            <p className="font-medium text-green-800 dark:text-green-200">
+              Migration complete
+            </p>
+            <p className="mt-1 text-green-700 dark:text-green-300">
+              Your workspace has been migrated to <strong>{migration.targetRegion}</strong>.
+              {migration.completedAt && ` Completed ${formatDate(migration.completedAt)}.`}
+            </p>
+          </div>
+        </div>
+      );
+    case "failed":
+      return (
+        <div className="flex items-start gap-3 rounded-md border border-red-200 bg-red-50 p-4 dark:border-red-900 dark:bg-red-950/50">
+          <XCircle className="mt-0.5 h-5 w-5 shrink-0 text-red-600 dark:text-red-400" />
+          <div className="text-sm">
+            <p className="font-medium text-red-800 dark:text-red-200">
+              Migration failed
+            </p>
+            <p className="mt-1 text-red-700 dark:text-red-300">
+              {migration.errorMessage ?? "The migration could not be completed. Please contact support for assistance."}
+            </p>
+          </div>
+        </div>
+      );
+  }
+}
+
 // ── Assigned Region Card ─────────────────────────────────────────
 
-function AssignedRegionCard({ status, isSaas }: { status: ResidencyStatus; isSaas: boolean }) {
+function AssignedRegionCard({
+  status,
+  isSaas,
+  migration,
+  onMigrate,
+  migrating,
+}: {
+  status: ResidencyStatus;
+  isSaas: boolean;
+  migration: RegionMigration | null;
+  onMigrate: (targetRegion: string) => Promise<boolean>;
+  migrating: boolean;
+}) {
   const displayLabel = status.regionLabel ?? status.region ?? "Unknown";
+  const hasPendingMigration = migration?.status === "pending" || migration?.status === "in_progress";
+  const otherRegions = status.availableRegions.filter((r) => r.id !== status.region);
 
   return (
     <Card>
@@ -216,18 +361,151 @@ function AssignedRegionCard({ status, isSaas }: { status: ResidencyStatus; isSaa
             )}
           </div>
         </div>
-        {isSaas ? (
-          <p className="mt-3 text-sm text-muted-foreground">
-            All workspace data is stored and processed in {displayLabel}.
-          </p>
+
+        {isSaas && otherRegions.length > 0 ? (
+          <div className="mt-4">
+            <MigrationDialog
+              currentRegion={status.region!}
+              currentLabel={displayLabel}
+              availableRegions={otherRegions}
+              onMigrate={onMigrate}
+              migrating={migrating}
+              disabled={hasPendingMigration}
+            />
+          </div>
         ) : (
           <p className="mt-3 text-xs text-muted-foreground">
-            Region assignment is permanent and cannot be changed. Contact support
-            if you need to migrate to a different region.
+            {isSaas
+              ? `All workspace data is stored and processed in ${displayLabel}.`
+              : "Region assignment is permanent and cannot be changed. Contact support if you need to migrate to a different region."}
           </p>
         )}
       </CardContent>
     </Card>
+  );
+}
+
+// ── Migration Dialog ─────────────────────────────────────────────
+
+function MigrationDialog({
+  currentRegion,
+  currentLabel,
+  availableRegions,
+  onMigrate,
+  migrating,
+  disabled,
+}: {
+  currentRegion: string;
+  currentLabel: string;
+  availableRegions: RegionPickerItem[];
+  onMigrate: (targetRegion: string) => Promise<boolean>;
+  migrating: boolean;
+  disabled: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [selected, setSelected] = useState("");
+  const [showConfirm, setShowConfirm] = useState(false);
+
+  const selectedLabel =
+    availableRegions.find((r) => r.id === selected)?.label ?? selected;
+
+  async function handleConfirm() {
+    const success = await onMigrate(selected);
+    if (success) {
+      setShowConfirm(false);
+      setOpen(false);
+      setSelected("");
+    }
+  }
+
+  return (
+    <>
+      <Dialog open={open} onOpenChange={(v) => { setOpen(v); if (!v) { setSelected(""); setShowConfirm(false); } }}>
+        <DialogTrigger asChild>
+          <Button variant="outline" size="sm" disabled={disabled}>
+            {disabled ? "Migration in progress..." : "Change Region"}
+          </Button>
+        </DialogTrigger>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Request Region Migration</DialogTitle>
+            <DialogDescription>
+              Select the region you want to migrate to. Your current region is{" "}
+              <strong>{currentLabel}</strong>.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4 py-2">
+            <div className="flex items-center gap-3 rounded-md border bg-muted/50 p-3 text-sm">
+              <MapPin className="h-4 w-4 shrink-0 text-muted-foreground" />
+              <span className="text-muted-foreground">Current:</span>
+              <span className="font-medium">{currentLabel}</span>
+              <ComplianceBadge regionId={currentRegion} />
+              <ArrowRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+              <span className="text-muted-foreground">New:</span>
+              {selected ? (
+                <>
+                  <span className="font-medium">{selectedLabel}</span>
+                  <ComplianceBadge regionId={selected} />
+                </>
+              ) : (
+                <span className="italic text-muted-foreground">Select below</span>
+              )}
+            </div>
+
+            <RegionCardGrid
+              regions={availableRegions}
+              selected={selected}
+              onSelect={setSelected}
+              disabled={migrating}
+            />
+          </div>
+
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setOpen(false)}
+              disabled={migrating}
+            >
+              Cancel
+            </Button>
+            <Button
+              onClick={() => setShowConfirm(true)}
+              disabled={!selected || migrating}
+            >
+              {migrating ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Requesting...
+                </>
+              ) : (
+                "Request Migration"
+              )}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <AlertDialog open={showConfirm} onOpenChange={setShowConfirm}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Confirm migration request</AlertDialogTitle>
+            <AlertDialogDescription>
+              You are requesting to migrate your workspace from{" "}
+              <strong>{currentLabel}</strong> to <strong>{selectedLabel}</strong>.
+              Our team will process this request. During migration, some features
+              may be temporarily unavailable.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={migrating}>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={handleConfirm} disabled={migrating}>
+              {migrating ? "Requesting..." : "Confirm Migration"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
   );
 }
 
@@ -361,7 +639,6 @@ function SelfHostedRegionSelect({
   );
 }
 
-
 // ── Not Configured Card ──────────────────────────────────────────
 
 function NotConfiguredCard({ isSaas }: { isSaas: boolean }) {
@@ -383,4 +660,3 @@ function NotConfiguredCard({ isSaas }: { isSaas: boolean }) {
     </Card>
   );
 }
-

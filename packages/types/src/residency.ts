@@ -72,6 +72,28 @@ export interface RegionPickerItem {
 }
 
 // ---------------------------------------------------------------------------
+// Region migration
+// ---------------------------------------------------------------------------
+
+/** Status of a region migration request. */
+export type MigrationStatus = "pending" | "in_progress" | "completed" | "failed";
+
+/** A workspace region migration request. */
+export interface RegionMigration {
+  id: string;
+  workspaceId: string;
+  sourceRegion: string;
+  targetRegion: string;
+  status: MigrationStatus;
+  /** ISO 8601 timestamp of when the migration was requested. */
+  requestedAt: string;
+  /** ISO 8601 timestamp of when the migration completed (or failed). */
+  completedAt: string | null;
+  /** Error message if the migration failed. */
+  errorMessage: string | null;
+}
+
+// ---------------------------------------------------------------------------
 // Region status (admin view)
 // ---------------------------------------------------------------------------
 

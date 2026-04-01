@@ -164,7 +164,8 @@ describe("AtlasAiModel SaaS TTL cache", () => {
 
         // First access via model getter — triggers TTL check and resolution
         const model1 = ai.model;
-        expect(model1.modelId).toBe("claude-opus-4-20250514");
+        const id1 = typeof model1 === "string" ? model1 : model1.modelId;
+        expect(id1).toBe("claude-opus-4-20250514");
 
         // Now make resolution fail
         shouldThrow = true;
@@ -176,7 +177,8 @@ describe("AtlasAiModel SaaS TTL cache", () => {
         // Access via model getter after TTL + failure — triggers re-resolution
         // which fails, so the catch block should preserve the cached model
         const model2 = ai.model;
-        expect(model2.modelId).toBe("claude-opus-4-20250514");
+        const id2 = typeof model2 === "string" ? model2 : model2.modelId;
+        expect(id2).toBe("claude-opus-4-20250514");
 
         // Verify re-resolution was actually attempted (TTL expired)
         expect(resolveCallCount).toBeGreaterThan(countBeforeWait);

@@ -555,6 +555,7 @@ export default defineConfig({
 | `[actionType].enabled` | `boolean` | Enable/disable this action |
 | `[actionType].approval` | `string` | Override approval mode for this action |
 | `[actionType].requiredRole` | `string` | Minimum role to approve: `viewer`, `analyst`, `admin` |
+| `[actionType].timeout` | `number` | Execution timeout in ms. Overrides `defaults.timeout` for this action type |
 | `[actionType].credentials` | `object` | Required env vars (`{ VAR_NAME: { env: "VAR_NAME" } }`) |
 | `[actionType].rateLimit` | `number` | Max executions per minute for this action type |
 

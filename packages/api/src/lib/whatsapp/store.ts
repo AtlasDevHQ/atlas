@@ -8,18 +8,11 @@
 
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
+import type { WhatsAppInstallation, WhatsAppInstallationWithSecret } from "@atlas/api/lib/integrations/types";
+
+export type { WhatsAppInstallation, WhatsAppInstallationWithSecret } from "@atlas/api/lib/integrations/types";
 
 const log = createLogger("whatsapp-store");
-
-export interface WhatsAppInstallation {
-  /** WhatsApp phone number ID from Meta Business Suite. */
-  phone_number_id: string;
-  /** Permanent access token. Contains secret — do not expose in API responses. */
-  access_token: string;
-  display_phone: string | null;
-  org_id: string | null;
-  installed_at: string;
-}
 
 // ---------------------------------------------------------------------------
 // Shared row parser
@@ -28,7 +21,7 @@ export interface WhatsAppInstallation {
 function parseInstallationRow(
   row: Record<string, unknown>,
   context: Record<string, unknown>,
-): WhatsAppInstallation | null {
+): WhatsAppInstallationWithSecret | null {
   const phoneNumberId = row.phone_number_id;
   const accessToken = row.access_token;
   if (typeof phoneNumberId !== "string" || !phoneNumberId || typeof accessToken !== "string" || !accessToken) {
@@ -53,7 +46,7 @@ function parseInstallationRow(
  */
 export async function getWhatsAppInstallation(
   phoneNumberId: string,
-): Promise<WhatsAppInstallation | null> {
+): Promise<WhatsAppInstallationWithSecret | null> {
   if (!hasInternalDB()) {
     return null;
   }
@@ -93,7 +86,10 @@ export async function getWhatsAppInstallationByOrg(
       [orgId],
     );
     if (rows.length > 0) {
-      return parseInstallationRow(rows[0], { orgId });
+      const full = parseInstallationRow(rows[0], { orgId });
+      if (!full) return null;
+      const { access_token: _, ...pub } = full;
+      return pub;
     }
     return null;
   } catch (err) {

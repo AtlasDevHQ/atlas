@@ -8,17 +8,11 @@
 
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
+import type { GChatInstallation, GChatInstallationWithSecret } from "@atlas/api/lib/integrations/types";
+
+export type { GChatInstallation, GChatInstallationWithSecret } from "@atlas/api/lib/integrations/types";
 
 const log = createLogger("gchat-store");
-
-export interface GChatInstallation {
-  project_id: string;
-  service_account_email: string;
-  /** Full service account key JSON. Contains secret (private_key) — do not expose in API responses. */
-  credentials_json: string;
-  org_id: string | null;
-  installed_at: string;
-}
 
 // ---------------------------------------------------------------------------
 // Shared row parser
@@ -27,7 +21,7 @@ export interface GChatInstallation {
 function parseInstallationRow(
   row: Record<string, unknown>,
   context: Record<string, unknown>,
-): GChatInstallation | null {
+): GChatInstallationWithSecret | null {
   const projectId = row.project_id;
   const serviceAccountEmail = row.service_account_email;
   const credentialsJson = row.credentials_json;
@@ -57,7 +51,7 @@ function parseInstallationRow(
  */
 export async function getGChatInstallation(
   projectId: string,
-): Promise<GChatInstallation | null> {
+): Promise<GChatInstallationWithSecret | null> {
   if (!hasInternalDB()) {
     return null;
   }
@@ -97,7 +91,10 @@ export async function getGChatInstallationByOrg(
       [orgId],
     );
     if (rows.length > 0) {
-      return parseInstallationRow(rows[0], { orgId });
+      const full = parseInstallationRow(rows[0], { orgId });
+      if (!full) return null;
+      const { credentials_json: _, ...pub } = full;
+      return pub;
     }
     return null;
   } catch (err) {

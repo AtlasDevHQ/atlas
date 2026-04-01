@@ -7,16 +7,11 @@
 
 import { hasInternalDB, internalQuery, getInternalDB } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
+import type { SlackInstallation, SlackInstallationWithSecret } from "@atlas/api/lib/integrations/types";
+
+export type { SlackInstallation, SlackInstallationWithSecret } from "@atlas/api/lib/integrations/types";
 
 const log = createLogger("slack-store");
-
-export interface SlackInstallation {
-  team_id: string;
-  bot_token: string;
-  org_id: string | null;
-  workspace_name: string | null;
-  installed_at: string;
-}
 
 /** Sentinel team_id for env-var-based installations (no real Slack team). */
 export const ENV_TEAM_ID = "env" as const;
@@ -26,13 +21,13 @@ export const ENV_TEAM_ID = "env" as const;
 // ---------------------------------------------------------------------------
 
 /**
- * Parse a DB row into a SlackInstallation, validating required fields.
+ * Parse a DB row into a SlackInstallationWithSecret, validating required fields.
  * Returns null and logs a warning if the row is malformed.
  */
 function parseInstallationRow(
   row: Record<string, unknown>,
   context: Record<string, unknown>,
-): SlackInstallation | null {
+): SlackInstallationWithSecret | null {
   const teamIdVal = row.team_id;
   const botToken = row.bot_token;
   const installedAt = row.installed_at;
@@ -59,7 +54,7 @@ function parseInstallationRow(
  */
 export async function getInstallation(
   teamId: string,
-): Promise<SlackInstallation | null> {
+): Promise<SlackInstallationWithSecret | null> {
   if (hasInternalDB()) {
     try {
       const rows = await internalQuery<Record<string, unknown>>(
@@ -113,7 +108,10 @@ export async function getInstallationByOrg(
       [orgId],
     );
     if (rows.length > 0) {
-      return parseInstallationRow(rows[0], { orgId });
+      const full = parseInstallationRow(rows[0], { orgId });
+      if (!full) return null;
+      const { bot_token: _, ...pub } = full;
+      return pub;
     }
     return null;
   } catch (err) {

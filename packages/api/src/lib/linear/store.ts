@@ -7,19 +7,11 @@
 
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
+import type { LinearInstallation, LinearInstallationWithSecret } from "@atlas/api/lib/integrations/types";
+
+export type { LinearInstallation, LinearInstallationWithSecret } from "@atlas/api/lib/integrations/types";
 
 const log = createLogger("linear-store");
-
-export interface LinearInstallation {
-  /** Linear user ID (stable identifier from /viewer query). */
-  user_id: string;
-  /** API key. Contains secret — do not expose in API responses. */
-  api_key: string;
-  user_name: string | null;
-  user_email: string | null;
-  org_id: string | null;
-  installed_at: string;
-}
 
 // ---------------------------------------------------------------------------
 // Shared row parser
@@ -28,7 +20,7 @@ export interface LinearInstallation {
 function parseInstallationRow(
   row: Record<string, unknown>,
   context: Record<string, unknown>,
-): LinearInstallation | null {
+): LinearInstallationWithSecret | null {
   const userId = row.user_id;
   const apiKey = row.api_key;
   if (typeof userId !== "string" || !userId || typeof apiKey !== "string" || !apiKey) {
@@ -54,7 +46,7 @@ function parseInstallationRow(
  */
 export async function getLinearInstallation(
   userId: string,
-): Promise<LinearInstallation | null> {
+): Promise<LinearInstallationWithSecret | null> {
   if (!hasInternalDB()) {
     return null;
   }
@@ -94,7 +86,10 @@ export async function getLinearInstallationByOrg(
       [orgId],
     );
     if (rows.length > 0) {
-      return parseInstallationRow(rows[0], { orgId });
+      const full = parseInstallationRow(rows[0], { orgId });
+      if (!full) return null;
+      const { api_key: _, ...pub } = full;
+      return pub;
     }
     return null;
   } catch (err) {

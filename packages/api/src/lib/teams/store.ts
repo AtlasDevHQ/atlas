@@ -9,29 +9,24 @@
 
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
+import type { TeamsInstallation, TeamsInstallationWithSecret } from "@atlas/api/lib/integrations/types";
+
+export type { TeamsInstallation, TeamsInstallationWithSecret } from "@atlas/api/lib/integrations/types";
 
 const log = createLogger("teams-store");
-
-export interface TeamsInstallation {
-  tenant_id: string;
-  org_id: string | null;
-  tenant_name: string | null;
-  app_password: string | null;
-  installed_at: string;
-}
 
 // ---------------------------------------------------------------------------
 // Shared row parser
 // ---------------------------------------------------------------------------
 
 /**
- * Parse a DB row into a TeamsInstallation, validating required fields.
+ * Parse a DB row into a TeamsInstallationWithSecret, validating required fields.
  * Returns null and logs a warning if the row is malformed.
  */
 function parseInstallationRow(
   row: Record<string, unknown>,
   context: Record<string, unknown>,
-): TeamsInstallation | null {
+): TeamsInstallationWithSecret | null {
   const tenantIdVal = row.tenant_id;
   if (typeof tenantIdVal !== "string") {
     log.warn(context, "Invalid Teams installation record in database");
@@ -56,7 +51,7 @@ function parseInstallationRow(
  */
 export async function getTeamsInstallation(
   tenantId: string,
-): Promise<TeamsInstallation | null> {
+): Promise<TeamsInstallationWithSecret | null> {
   if (hasInternalDB()) {
     try {
       const rows = await internalQuery<Record<string, unknown>>(
@@ -109,7 +104,10 @@ export async function getTeamsInstallationByOrg(
       [orgId],
     );
     if (rows.length > 0) {
-      return parseInstallationRow(rows[0], { orgId });
+      const full = parseInstallationRow(rows[0], { orgId });
+      if (!full) return null;
+      const { app_password: _, ...pub } = full;
+      return pub;
     }
     return null;
   } catch (err) {

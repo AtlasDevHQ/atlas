@@ -8,47 +8,20 @@
 
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
+import type { EmailInstallationWithSecret, EmailProvider, ProviderConfig } from "@atlas/api/lib/integrations/types";
+
+export type {
+  EmailInstallation,
+  EmailInstallationWithSecret,
+  EmailProvider,
+  ProviderConfig,
+  SmtpConfig,
+  SendGridConfig,
+  PostmarkConfig,
+  SesConfig,
+} from "@atlas/api/lib/integrations/types";
 
 const log = createLogger("email-store");
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-export type EmailProvider = "smtp" | "sendgrid" | "postmark" | "ses";
-
-export interface SmtpConfig {
-  host: string;
-  port: number;
-  username: string;
-  password: string;
-  tls: boolean;
-}
-
-export interface SendGridConfig {
-  apiKey: string;
-}
-
-export interface PostmarkConfig {
-  serverToken: string;
-}
-
-export interface SesConfig {
-  region: string;
-  accessKeyId: string;
-  secretAccessKey: string;
-}
-
-export type ProviderConfig = SmtpConfig | SendGridConfig | PostmarkConfig | SesConfig;
-
-export interface EmailInstallation {
-  config_id: string;
-  provider: EmailProvider;
-  sender_address: string;
-  config: ProviderConfig;
-  org_id: string | null;
-  installed_at: string;
-}
 
 // ---------------------------------------------------------------------------
 // Shared row parser
@@ -57,7 +30,7 @@ export interface EmailInstallation {
 function parseInstallationRow(
   row: Record<string, unknown>,
   context: Record<string, unknown>,
-): EmailInstallation | null {
+): EmailInstallationWithSecret | null {
   const configId = row.config_id;
   const provider = row.provider;
   const senderAddress = row.sender_address;
@@ -88,10 +61,14 @@ function parseInstallationRow(
 /**
  * Get the email installation for an org. Returns null if not found or
  * if no internal database is configured.
+ *
+ * Returns the full WithSecret type because email delivery (delivery.ts)
+ * needs the provider credentials to send. The status endpoint only uses
+ * public fields from the result.
  */
 export async function getEmailInstallationByOrg(
   orgId: string,
-): Promise<EmailInstallation | null> {
+): Promise<EmailInstallationWithSecret | null> {
   if (!hasInternalDB()) {
     return null;
   }

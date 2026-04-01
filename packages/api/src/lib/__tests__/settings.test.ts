@@ -276,6 +276,27 @@ describe("settings module", () => {
       mockPool.query = savedQuery;
     });
 
+    it("atomic swap — error during reload preserves old cache", async () => {
+      enableInternalDB();
+
+      // Load initial data
+      setResults({
+        rows: [
+          { key: "ATLAS_ROW_LIMIT", value: "100", updated_at: "2026-01-01", updated_by: null, org_id: null },
+        ],
+      });
+      await loadSettings();
+      expect(getSetting("ATLAS_ROW_LIMIT")).toBe("100");
+
+      // Next load throws
+      queryThrow = new Error("connection reset by peer");
+      const count = await loadSettings();
+      expect(count).toBe(0);
+
+      // Old cache value is still readable (not wiped)
+      expect(getSetting("ATLAS_ROW_LIMIT")).toBe("100");
+    });
+
     it("atomic swap — stale entries are removed (full replacement, not merge)", async () => {
       enableInternalDB();
 

@@ -324,6 +324,12 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
 // In-process cache
 // ---------------------------------------------------------------------------
 
+interface CacheEntry {
+  value: string;
+  updated_at: string;
+  updated_by: string | null;
+}
+
 /**
  * Cache key format:
  * - Platform (global): "KEY"
@@ -334,7 +340,7 @@ function cacheKey(key: string, orgId?: string | null): string {
   return orgId ? `${key}\0${orgId}` : key;
 }
 
-let _cache = new Map<string, { value: string; updated_at: string; updated_by: string | null }>();
+let _cache = new Map<string, CacheEntry>();
 
 const SETTINGS_MAP = new Map(SETTINGS_REGISTRY.map((s) => [s.key, s]));
 
@@ -440,7 +446,7 @@ export async function loadSettings(): Promise<number> {
       "SELECT key, value, updated_at::text, updated_by, org_id FROM settings",
     );
 
-    const next = new Map<string, { value: string; updated_at: string; updated_by: string | null }>();
+    const next = new Map<string, CacheEntry>();
     for (const row of rows) {
       next.set(cacheKey(row.key, row.org_id), {
         value: row.value,
@@ -455,6 +461,7 @@ export async function loadSettings(): Promise<number> {
     }
     return rows.length;
   } catch (err) {
+    // On error, _cache is unchanged — atomic swap ensures readers see last successful load
     const msg = err instanceof Error ? err.message : String(err);
     // "42P01" = relation does not exist — expected on first boot before migration
     const isTableMissing = msg.includes("does not exist") || msg.includes("42P01");

@@ -17,6 +17,7 @@ import type { LanguageModel } from "ai";
 
 let resolveCallCount = 0;
 let shouldThrow = false;
+let warnCalls: Array<unknown[]> = [];
 
 function createMockModel(id: string): LanguageModel {
   return {
@@ -76,7 +77,7 @@ mock.module("@atlas/api/lib/providers", () => ({
 mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
-    warn: () => {},
+    warn: (...args: unknown[]) => { warnCalls.push(args); },
     error: () => {},
     debug: () => {},
   }),
@@ -152,6 +153,7 @@ describe("AtlasAiModel SaaS TTL cache", () => {
   it("gracefully degrades to cached model on resolution failure", async () => {
     resolveCallCount = 0;
     shouldThrow = false;
+    warnCalls = [];
     currentModelId = "claude-opus-4-20250514";
 
     const layer = AtlasAiModelLive;
@@ -160,20 +162,28 @@ describe("AtlasAiModel SaaS TTL cache", () => {
       Effect.gen(function* () {
         const ai = yield* AtlasAiModel;
 
-        // First access works fine
-        const model1Id = ai.modelId;
-        expect(model1Id).toBe("claude-opus-4-20250514");
+        // First access via model getter — triggers TTL check and resolution
+        const model1 = ai.model;
+        expect(model1.modelId).toBe("claude-opus-4-20250514");
 
         // Now make resolution fail
         shouldThrow = true;
+        const countBeforeWait = resolveCallCount;
 
-        // Wait for TTL to expire (6s > 5s TTL)
-        yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 6000)));
+        // Wait for TTL to expire (7s > 5s TTL, with margin for timer imprecision)
+        yield* Effect.promise(() => new Promise((resolve) => setTimeout(resolve, 7000)));
 
-        // Access after TTL + failure should still return the cached model
-        const model2Id = ai.modelId;
-        expect(model2Id).toBe("claude-opus-4-20250514");
+        // Access via model getter after TTL + failure — triggers re-resolution
+        // which fails, so the catch block should preserve the cached model
+        const model2 = ai.model;
+        expect(model2.modelId).toBe("claude-opus-4-20250514");
+
+        // Verify re-resolution was actually attempted (TTL expired)
+        expect(resolveCallCount).toBeGreaterThan(countBeforeWait);
+
+        // Verify the warning was logged (operationally important)
+        expect(warnCalls.length).toBeGreaterThanOrEqual(1);
       }).pipe(Effect.provide(layer)),
     );
-  }, 10_000); // 10s timeout for the TTL wait
+  }, 15_000); // 15s timeout for the TTL wait
 });

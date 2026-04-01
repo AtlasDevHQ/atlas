@@ -4,7 +4,9 @@
  * Validates that:
  * - Settings can disable boot-time RLS
  * - Settings can enable RLS with column + claim
- * - Missing column/claim fails closed (query blocked)
+ * - Missing column fails closed (query blocked, error logged)
+ * - Missing claim fails closed (query blocked, error logged)
+ * - Non-SaaS mode ignores settings overlay
  */
 
 import { describe, expect, it, beforeEach, mock, type Mock } from "bun:test";
@@ -58,7 +60,7 @@ mock.module("@atlas/api/lib/tracing", () => ({
 }));
 
 mock.module("@atlas/api/lib/db/source-rate-limit", () => ({
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Effect type is complex to express in mock
   withSourceSlot: (_sourceId: string, effect: any) => effect,
 }));
 
@@ -74,11 +76,14 @@ mock.module("@atlas/api/lib/plugins/hooks", () => ({
   dispatchMutableHook: async (_name: string, ctx: { sql: string }) => ctx.sql,
 }));
 
+// Track error log calls for security audit trail assertions
+let errorLogCalls: Array<unknown[]> = [];
+
 mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
     info: () => {},
     warn: () => {},
-    error: () => {},
+    error: (...args: unknown[]) => { errorLogCalls.push(args); },
     debug: () => {},
   }),
   getRequestContext: () => ({
@@ -146,6 +151,7 @@ describe("RLS settings overlay in SaaS mode", () => {
     };
     mockConfig = {};
     rlsResolveCalls = [];
+    errorLogCalls = [];
     (mockDBConnection.query as Mock<typeof mockDBConnection.query>).mockReset();
     (mockDBConnection.query as Mock<typeof mockDBConnection.query>).mockResolvedValue({
       columns: ["id"],
@@ -205,6 +211,8 @@ describe("RLS settings overlay in SaaS mode", () => {
 
     expect(result.success).toBe(false);
     expect(result.error).toContain("not fully configured");
+    // Security audit trail: error must be logged for RLS misconfiguration
+    expect(errorLogCalls.length).toBeGreaterThanOrEqual(1);
   });
 
   it("RLS enabled but missing claim fails closed (query blocked)", async () => {
@@ -220,6 +228,8 @@ describe("RLS settings overlay in SaaS mode", () => {
 
     expect(result.success).toBe(false);
     expect(result.error).toContain("not fully configured");
+    // Security audit trail: error must be logged for RLS misconfiguration
+    expect(errorLogCalls.length).toBeGreaterThanOrEqual(1);
   });
 
   it("non-SaaS mode ignores RLS settings overlay", async () => {

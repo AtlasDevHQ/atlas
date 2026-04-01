@@ -140,15 +140,14 @@ describe("store", () => {
       ]);
 
       const result = await getInstallationByOrg("org-1");
-      // Runtime object still contains all fields from parseInstallationRow;
-      // the public return type hides secrets at the type level only.
-      expect(result as unknown as Record<string, unknown>).toEqual({
+      // Secret fields are stripped at runtime — only public fields returned
+      expect(result).toEqual({
         team_id: "T123",
-        bot_token: "xoxb-abc",
         org_id: "org-1",
         workspace_name: "My Team",
         installed_at: "2025-01-01T00:00:00Z",
       });
+      expect((result as unknown as Record<string, unknown>).bot_token).toBeUndefined();
       expect(mockInternalQuery).toHaveBeenCalledTimes(1);
       const [sql, params] = mockInternalQuery.mock.calls[0];
       expect(sql).toContain("WHERE org_id = $1");

@@ -76,7 +76,6 @@ export async function getWhatsAppInstallation(
 export async function getWhatsAppInstallationByOrg(
   orgId: string,
 ): Promise<WhatsAppInstallation | null> {
-  // Returns public type — secret fields are inaccessible to callers
   if (!hasInternalDB()) {
     return null;
   }
@@ -87,7 +86,10 @@ export async function getWhatsAppInstallationByOrg(
       [orgId],
     );
     if (rows.length > 0) {
-      return parseInstallationRow(rows[0], { orgId });
+      const full = parseInstallationRow(rows[0], { orgId });
+      if (!full) return null;
+      const { access_token: _, ...pub } = full;
+      return pub;
     }
     return null;
   } catch (err) {

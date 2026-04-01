@@ -21,7 +21,7 @@ const log = createLogger("discord-store");
 // ---------------------------------------------------------------------------
 
 /**
- * Parse a DB row into a DiscordInstallation, validating required fields.
+ * Parse a DB row into a DiscordInstallationWithSecret, validating required fields.
  * Returns null and logs a warning if the row is malformed.
  */
 function parseInstallationRow(
@@ -98,7 +98,6 @@ export async function getDiscordInstallation(
 export async function getDiscordInstallationByOrg(
   orgId: string,
 ): Promise<DiscordInstallation | null> {
-  // Returns public type — secret fields are inaccessible to callers
   if (!hasInternalDB()) {
     return null;
   }
@@ -109,7 +108,10 @@ export async function getDiscordInstallationByOrg(
       [orgId],
     );
     if (rows.length > 0) {
-      return parseInstallationRow(rows[0], { orgId });
+      const full = parseInstallationRow(rows[0], { orgId });
+      if (!full) return null;
+      const { bot_token: _, ...pub } = full;
+      return pub;
     }
     return null;
   } catch (err) {

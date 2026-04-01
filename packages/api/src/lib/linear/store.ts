@@ -76,7 +76,6 @@ export async function getLinearInstallation(
 export async function getLinearInstallationByOrg(
   orgId: string,
 ): Promise<LinearInstallation | null> {
-  // Returns public type — secret fields are inaccessible to callers
   if (!hasInternalDB()) {
     return null;
   }
@@ -87,7 +86,10 @@ export async function getLinearInstallationByOrg(
       [orgId],
     );
     if (rows.length > 0) {
-      return parseInstallationRow(rows[0], { orgId });
+      const full = parseInstallationRow(rows[0], { orgId });
+      if (!full) return null;
+      const { user_id: _, api_key: _k, ...pub } = full;
+      return pub;
     }
     return null;
   } catch (err) {

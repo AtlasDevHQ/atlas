@@ -19,7 +19,7 @@ const log = createLogger("telegram-store");
 // ---------------------------------------------------------------------------
 
 /**
- * Parse a DB row into a TelegramInstallation, validating required fields.
+ * Parse a DB row into a TelegramInstallationWithSecret, validating required fields.
  * Returns null and logs a warning if the row is malformed.
  */
 function parseInstallationRow(
@@ -80,7 +80,6 @@ export async function getTelegramInstallation(
 export async function getTelegramInstallationByOrg(
   orgId: string,
 ): Promise<TelegramInstallation | null> {
-  // Returns public type — secret fields are inaccessible to callers
   if (!hasInternalDB()) {
     return null;
   }
@@ -91,7 +90,10 @@ export async function getTelegramInstallationByOrg(
       [orgId],
     );
     if (rows.length > 0) {
-      return parseInstallationRow(rows[0], { orgId });
+      const full = parseInstallationRow(rows[0], { orgId });
+      if (!full) return null;
+      const { bot_token: _, ...pub } = full;
+      return pub;
     }
     return null;
   } catch (err) {

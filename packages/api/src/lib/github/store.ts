@@ -75,7 +75,6 @@ export async function getGitHubInstallation(
 export async function getGitHubInstallationByOrg(
   orgId: string,
 ): Promise<GitHubInstallation | null> {
-  // Returns public type — secret fields are inaccessible to callers
   if (!hasInternalDB()) {
     return null;
   }
@@ -86,7 +85,10 @@ export async function getGitHubInstallationByOrg(
       [orgId],
     );
     if (rows.length > 0) {
-      return parseInstallationRow(rows[0], { orgId });
+      const full = parseInstallationRow(rows[0], { orgId });
+      if (!full) return null;
+      const { user_id: _, access_token: _t, ...pub } = full;
+      return pub;
     }
     return null;
   } catch (err) {

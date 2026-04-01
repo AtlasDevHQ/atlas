@@ -20,7 +20,7 @@ const log = createLogger("teams-store");
 // ---------------------------------------------------------------------------
 
 /**
- * Parse a DB row into a TeamsInstallation, validating required fields.
+ * Parse a DB row into a TeamsInstallationWithSecret, validating required fields.
  * Returns null and logs a warning if the row is malformed.
  */
 function parseInstallationRow(
@@ -93,7 +93,6 @@ export async function getTeamsInstallation(
 export async function getTeamsInstallationByOrg(
   orgId: string,
 ): Promise<TeamsInstallation | null> {
-  // Returns public type — secret fields are inaccessible to callers
   if (!hasInternalDB()) {
     // Org-scoped installations require an internal database.
     return null;
@@ -105,7 +104,10 @@ export async function getTeamsInstallationByOrg(
       [orgId],
     );
     if (rows.length > 0) {
-      return parseInstallationRow(rows[0], { orgId });
+      const full = parseInstallationRow(rows[0], { orgId });
+      if (!full) return null;
+      const { app_password: _, ...pub } = full;
+      return pub;
     }
     return null;
   } catch (err) {

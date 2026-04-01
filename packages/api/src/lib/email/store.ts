@@ -61,6 +61,10 @@ function parseInstallationRow(
 /**
  * Get the email installation for an org. Returns null if not found or
  * if no internal database is configured.
+ *
+ * Returns the full WithSecret type because email delivery (delivery.ts)
+ * needs the provider credentials to send. The status endpoint only uses
+ * public fields from the result.
  */
 export async function getEmailInstallationByOrg(
   orgId: string,

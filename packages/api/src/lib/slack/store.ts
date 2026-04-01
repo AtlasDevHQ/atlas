@@ -21,7 +21,7 @@ export const ENV_TEAM_ID = "env" as const;
 // ---------------------------------------------------------------------------
 
 /**
- * Parse a DB row into a SlackInstallation, validating required fields.
+ * Parse a DB row into a SlackInstallationWithSecret, validating required fields.
  * Returns null and logs a warning if the row is malformed.
  */
 function parseInstallationRow(
@@ -96,7 +96,6 @@ export async function getInstallation(
 export async function getInstallationByOrg(
   orgId: string,
 ): Promise<SlackInstallation | null> {
-  // Returns public type — secret fields are inaccessible to callers
   if (!hasInternalDB()) {
     // Org-scoped installations require an internal database.
     // Env-based status is reported separately via envConfigured flag.
@@ -109,7 +108,10 @@ export async function getInstallationByOrg(
       [orgId],
     );
     if (rows.length > 0) {
-      return parseInstallationRow(rows[0], { orgId });
+      const full = parseInstallationRow(rows[0], { orgId });
+      if (!full) return null;
+      const { bot_token: _, ...pub } = full;
+      return pub;
     }
     return null;
   } catch (err) {

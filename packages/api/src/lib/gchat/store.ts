@@ -81,7 +81,6 @@ export async function getGChatInstallation(
 export async function getGChatInstallationByOrg(
   orgId: string,
 ): Promise<GChatInstallation | null> {
-  // Returns public type — secret fields are inaccessible to callers
   if (!hasInternalDB()) {
     return null;
   }
@@ -92,7 +91,10 @@ export async function getGChatInstallationByOrg(
       [orgId],
     );
     if (rows.length > 0) {
-      return parseInstallationRow(rows[0], { orgId });
+      const full = parseInstallationRow(rows[0], { orgId });
+      if (!full) return null;
+      const { credentials_json: _, ...pub } = full;
+      return pub;
     }
     return null;
   } catch (err) {

@@ -3,8 +3,8 @@
  *
  * Each platform has a public type (safe for API responses) and a
  * WithSecret variant (for internal store operations). The public type
- * omits tokens, keys, and credentials so they cannot be accidentally
- * serialized into status endpoints.
+ * excludes tokens, keys, and credentials. Store `*ByOrg` functions
+ * strip secret fields at runtime before returning the public type.
  */
 
 // ---------------------------------------------------------------------------

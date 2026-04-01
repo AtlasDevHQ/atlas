@@ -718,7 +718,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 
 ### Follow-ups from 0.9.7
 
-- [ ] Hot-reload settings — comment accuracy + test coverage gaps (#1089)
+- [x] Hot-reload settings — comment accuracy + test coverage gaps (#1089, PR #1112)
 - [ ] Migrate remaining useAdminFetch calls to Zod schema validation (#1090)
 - [ ] useAdminFetch does not clear stale data on HTTP error during refetch (#1091)
 - [ ] Periodic settings refresh for multi-instance SaaS (#1092)

@@ -12,7 +12,7 @@ import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
-import { hasInternalDB, internalQuery, internalExecute } from "@atlas/api/lib/db/internal";
+import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
@@ -419,19 +419,26 @@ adminResidency.openapi(getMigrationStatusRoute, async (c) => {
       );
 
       const row = rows[0];
+      if (!row) {
+        return c.json({ migration: null }, 200);
+      }
+
+      const VALID_STATUSES = ["pending", "in_progress", "completed", "failed"] as const;
+      const status = VALID_STATUSES.includes(row.status as typeof VALID_STATUSES[number])
+        ? (row.status as typeof VALID_STATUSES[number])
+        : "failed";
+
       return c.json({
-        migration: row
-          ? {
-              id: row.id,
-              workspaceId: row.workspace_id,
-              sourceRegion: row.source_region,
-              targetRegion: row.target_region,
-              status: row.status as "pending" | "in_progress" | "completed" | "failed",
-              requestedAt: row.requested_at,
-              completedAt: row.completed_at,
-              errorMessage: row.error_message,
-            }
-          : null,
+        migration: {
+          id: row.id,
+          workspaceId: row.workspace_id,
+          sourceRegion: row.source_region,
+          targetRegion: row.target_region,
+          status,
+          requestedAt: row.requested_at,
+          completedAt: row.completed_at,
+          errorMessage: row.error_message,
+        },
       }, 200);
     }),
     { label: "get migration status" },
@@ -450,6 +457,10 @@ adminResidency.openapi(requestMigrationRoute, async (c) => {
       const { orgId, user } = yield* AuthContext;
       const { targetRegion } = c.req.valid("json");
 
+      if (!orgId) {
+        return c.json({ error: "no_organization", message: "No active organization.", requestId }, 400);
+      }
+
       if (!hasInternalDB()) {
         return c.json({ error: "not_available", message: "Migration tracking requires an internal database.", requestId }, 404);
       }
@@ -461,7 +472,7 @@ adminResidency.openapi(requestMigrationRoute, async (c) => {
       }
 
       // Validate workspace has a region assigned
-      const assignment = yield* Effect.promise(() => mod.getWorkspaceRegionAssignment(orgId!));
+      const assignment = yield* Effect.promise(() => mod.getWorkspaceRegionAssignment(orgId));
       if (!assignment) {
         return c.json({ error: "no_region", message: "No region is assigned to this workspace. Assign a region first.", requestId }, 400);
       }
@@ -476,7 +487,8 @@ adminResidency.openapi(requestMigrationRoute, async (c) => {
         if (!mod.isConfiguredRegion(targetRegion)) {
           return c.json({ error: "invalid_region", message: `Region "${targetRegion}" is not configured.`, requestId }, 400);
         }
-      } catch {
+      } catch (err) {
+        log.warn({ err: err instanceof Error ? err.message : String(err), targetRegion, requestId }, "isConfiguredRegion check failed");
         return c.json({ error: "invalid_region", message: `Region "${targetRegion}" is not configured.`, requestId }, 400);
       }
 
@@ -518,14 +530,13 @@ adminResidency.openapi(requestMigrationRoute, async (c) => {
       const migrationId = `mig_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
       const now = new Date().toISOString();
 
-      yield* Effect.promise(() => {
-        internalExecute(
+      yield* Effect.promise(() =>
+        internalQuery(
           `INSERT INTO region_migrations (id, workspace_id, source_region, target_region, status, requested_at)
            VALUES ($1, $2, $3, $4, 'pending', $5)`,
           [migrationId, orgId, assignment.region, targetRegion, now],
-        );
-        return Promise.resolve();
-      });
+        ),
+      );
 
       log.info(
         { requestId, orgId, migrationId, sourceRegion: assignment.region, targetRegion, userId: user?.id },
@@ -534,7 +545,7 @@ adminResidency.openapi(requestMigrationRoute, async (c) => {
 
       const migration = {
         id: migrationId,
-        workspaceId: orgId!,
+        workspaceId: orgId,
         sourceRegion: assignment.region,
         targetRegion,
         status: "pending" as const,

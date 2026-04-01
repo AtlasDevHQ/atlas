@@ -75,7 +75,7 @@ export default function ResidencyPage() {
     { schema: ResidencyStatusSchema },
   );
 
-  const { data: migrationData, refetch: refetchMigration } = useAdminFetch(
+  const { data: migrationData, error: migrationFetchError, refetch: refetchMigration } = useAdminFetch(
     "/api/v1/admin/residency/migration",
     { schema: MigrationStatusResponseSchema },
   );
@@ -121,6 +121,13 @@ export default function ResidencyPage() {
               assignMutation.clearError();
               refetch();
             }}
+          />
+        )}
+
+        {migrationFetchError && (
+          <ErrorBanner
+            message={migrationFetchError}
+            onRetry={refetchMigration}
           />
         )}
 
@@ -186,9 +193,7 @@ function ResidencyContent({
   if (data.region) {
     return (
       <div className="space-y-4">
-        {migration && (migration.status === "pending" || migration.status === "in_progress" || migration.status === "completed" || migration.status === "failed") && (
-          <MigrationStatusBanner migration={migration} />
-        )}
+        {migration && <MigrationStatusBanner migration={migration} />}
         <AssignedRegionCard
           status={data}
           isSaas={isSaas}
@@ -412,10 +417,11 @@ function MigrationDialog({
   async function handleConfirm() {
     const success = await onMigrate(selected);
     if (success) {
-      setShowConfirm(false);
-      setOpen(false);
       setSelected("");
     }
+    // Close both dialogs regardless — on failure the ErrorBanner is visible at page level
+    setShowConfirm(false);
+    setOpen(false);
   }
 
   return (

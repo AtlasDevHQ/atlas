@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
+import { z } from "zod";
 import { API_URL, IS_CROSS_ORIGIN } from "@/lib/api-url";
 import { Button } from "@/components/ui/button";
 import {
@@ -11,7 +12,9 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { RegionCardGrid, type RegionInfo } from "@/ui/components/region-picker";
+import { RegionCardGrid } from "@/ui/components/region-picker";
+import { RegionPickerItemSchema } from "@/ui/lib/admin-schemas";
+import type { RegionPickerItem } from "@/ui/lib/types";
 import { Loader2, MapPin } from "lucide-react";
 
 function getApiBase(): string {
@@ -24,15 +27,15 @@ function getCredentials(): RequestCredentials {
   return IS_CROSS_ORIGIN ? "include" : "same-origin";
 }
 
-interface RegionsResponse {
-  configured: boolean;
-  defaultRegion: string;
-  availableRegions: RegionInfo[];
-}
+const RegionsResponseSchema = z.object({
+  configured: z.boolean(),
+  defaultRegion: z.string(),
+  availableRegions: z.array(RegionPickerItemSchema),
+});
 
 export default function RegionPage() {
   const router = useRouter();
-  const [regions, setRegions] = useState<RegionInfo[]>([]);
+  const [regions, setRegions] = useState<RegionPickerItem[]>([]);
   const [defaultRegion, setDefaultRegion] = useState("");
   const [selected, setSelected] = useState("");
   const [loading, setLoading] = useState(true);
@@ -47,7 +50,8 @@ export default function RegionPage() {
         if (!res.ok) throw new Error(`Regions returned ${res.status}`);
         return res.json();
       })
-      .then((data: RegionsResponse) => {
+      .then((raw) => RegionsResponseSchema.parse(raw))
+      .then((data) => {
         if (!data.configured || data.availableRegions.length === 0) {
           // No residency configured — skip to connect
           setSkipping(true);
@@ -62,9 +66,10 @@ export default function RegionPage() {
       })
       .catch((err: unknown) => {
         console.warn("Failed to fetch regions:", err instanceof Error ? err.message : String(err));
-        // If we can't fetch regions, skip the step
-        setSkipping(true);
-        router.replace("/signup/connect");
+        // Show error instead of silently skipping — auto-skip only happens
+        // when the API explicitly returns configured=false (200 response).
+        setError("Unable to load region options. Please refresh the page or try again.");
+        setLoading(false);
       });
   }, [router]);
 
@@ -86,7 +91,8 @@ export default function RegionPage() {
       let data: Record<string, unknown>;
       try {
         data = await res.json() as Record<string, unknown>;
-      } catch {
+      } catch (parseErr) {
+        console.warn("Failed to parse assign-region response:", parseErr instanceof Error ? parseErr.message : String(parseErr));
         setError("Server returned an unexpected response.");
         return;
       }
@@ -98,10 +104,12 @@ export default function RegionPage() {
 
       router.push("/signup/connect");
     } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn("Region assignment failed:", message);
       setError(
         err instanceof TypeError
-          ? "Unable to reach the server"
-          : "Failed to assign region",
+          ? "Unable to reach the server. Check your connection and try again."
+          : `Failed to assign region: ${message}`,
       );
     } finally {
       setSaving(false);

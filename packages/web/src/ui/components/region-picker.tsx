@@ -3,15 +3,8 @@
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
+import type { RegionPickerItem } from "@/ui/lib/types";
 import { Check, MapPin } from "lucide-react";
-
-// ── Types ──────────────────────────────────────────────────────
-
-export interface RegionInfo {
-  id: string;
-  label: string;
-  isDefault: boolean;
-}
 
 // ── Compliance Badge ───────────────────────────────────────────
 
@@ -46,7 +39,7 @@ export function RegionCardGrid({
   onSelect,
   disabled,
 }: {
-  regions: RegionInfo[];
+  regions: RegionPickerItem[];
   selected: string;
   onSelect: (regionId: string) => void;
   disabled?: boolean;

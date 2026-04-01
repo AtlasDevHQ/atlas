@@ -35,17 +35,12 @@ import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { useDeployMode } from "@/ui/hooks/use-deploy-mode";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { RegionCardGrid, ComplianceBadge } from "@/ui/components/region-picker";
+import { RegionPickerItemSchema } from "@/ui/lib/admin-schemas";
+import type { RegionPickerItem } from "@/ui/lib/types";
 import { formatDate } from "@/lib/format";
 import { Globe, MapPin, AlertTriangle } from "lucide-react";
 
 // ── Schemas ───────────────────────────────────────────────────────
-
-const RegionSchema = z.object({
-  id: z.string(),
-  label: z.string(),
-  isDefault: z.boolean(),
-});
-type Region = z.infer<typeof RegionSchema>;
 
 const ResidencyStatusSchema = z.object({
   configured: z.boolean(),
@@ -53,7 +48,7 @@ const ResidencyStatusSchema = z.object({
   regionLabel: z.string().nullable(),
   assignedAt: z.string().nullable(),
   defaultRegion: z.string(),
-  availableRegions: z.array(RegionSchema),
+  availableRegions: z.array(RegionPickerItemSchema),
 });
 type ResidencyStatus = z.infer<typeof ResidencyStatusSchema>;
 
@@ -337,7 +332,7 @@ function SelfHostedRegionSelect({
   selected,
   onSelect,
 }: {
-  regions: Region[];
+  regions: RegionPickerItem[];
   defaultRegion: string;
   selected: string;
   onSelect: (id: string) => void;

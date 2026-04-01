@@ -58,6 +58,20 @@ export interface WorkspaceRegion {
 }
 
 // ---------------------------------------------------------------------------
+// Region picker item (user-facing selection UI)
+// ---------------------------------------------------------------------------
+
+/** A region projected for selection UI — safe for the frontend. */
+export interface RegionPickerItem {
+  /** Region identifier (e.g. "us-east", "eu-west"). */
+  id: string;
+  /** Human-readable display label (e.g. "US East", "EU West"). */
+  label: string;
+  /** Whether this region is the deployment's default. */
+  isDefault: boolean;
+}
+
+// ---------------------------------------------------------------------------
 // Region status (admin view)
 // ---------------------------------------------------------------------------
 

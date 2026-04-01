@@ -808,6 +808,10 @@ const assignRegionRoute = createRoute({
         },
       },
     },
+    503: {
+      description: "Service unavailable (no internal database)",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
     500: {
       description: "Internal server error",
       content: { "application/json": { schema: ErrorSchema } },
@@ -867,33 +871,36 @@ onboarding.openapi(
       }
 
       if (!orgId) {
-        return c.json({ error: "no_organization", message: "No active organization. Create a workspace first." }, 400);
+        return c.json({ error: "no_organization", message: "No active organization. Create a workspace first.", requestId }, 400);
       }
 
       const { region } = c.req.valid("json");
 
       const mod = yield* Effect.promise(() => loadResidency());
       if (!mod) {
-        return c.json({ error: "not_available", message: "Data residency is not available in this deployment." }, 404);
+        return c.json({ error: "not_available", message: "Data residency is not available in this deployment.", requestId }, 404);
       }
 
       try {
-        const result = yield* Effect.promise(() => mod.assignWorkspaceRegion(orgId, region as string));
+        const result = yield* Effect.promise(() => mod.assignWorkspaceRegion(orgId, region));
         log.info({ orgId, region, requestId }, "Workspace region assigned during signup");
         return c.json(result, 200);
       } catch (err) {
         if (err instanceof mod.ResidencyError) {
           switch (err.code) {
             case "invalid_region":
-              return c.json({ error: "invalid_region", message: err.message }, 400);
+              return c.json({ error: "invalid_region", message: err.message, requestId }, 400);
             case "already_assigned":
-              return c.json({ error: "already_assigned", message: err.message }, 409);
+              return c.json({ error: "already_assigned", message: err.message, requestId }, 409);
             case "workspace_not_found":
-              return c.json({ error: "workspace_not_found", message: err.message }, 404);
+              return c.json({ error: "workspace_not_found", message: err.message, requestId }, 404);
             case "no_internal_db":
-              return c.json({ error: "no_internal_db", message: err.message }, 500);
+              return c.json({ error: "no_internal_db", message: err.message, requestId }, 503);
             case "not_configured":
-              return c.json({ error: "not_configured", message: err.message }, 404);
+              return c.json({ error: "not_configured", message: err.message, requestId }, 404);
+            default:
+              log.warn({ code: err.code, requestId }, "Unhandled ResidencyError code");
+              throw err;
           }
         }
         throw err;

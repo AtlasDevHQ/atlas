@@ -125,6 +125,7 @@ export type {
 export type {
   Region,
   RegionConfig,
+  RegionPickerItem,
   WorkspaceRegion,
   RegionStatus,
 } from "@useatlas/types";

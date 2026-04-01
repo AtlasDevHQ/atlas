@@ -1,0 +1,117 @@
+name: Deploy Validation
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "create-atlas/**"
+      - "examples/**"
+      - "packages/api/src/**"
+      - "packages/web/src/**"
+      - "packages/types/src/**"
+      - "packages/cli/bin/**"
+      - "packages/cli/data/**"
+      - "scripts/prepare-templates.sh"
+      - "scripts/check-template-drift.sh"
+      - ".github/workflows/deploy-validation.yml"
+  push:
+    branches: [main]
+    paths:
+      - "create-atlas/**"
+      - "examples/**"
+      - "packages/api/src/**"
+      - "packages/web/src/**"
+      - "packages/types/src/**"
+      - "packages/cli/bin/**"
+      - "packages/cli/data/**"
+      - "scripts/prepare-templates.sh"
+      - "scripts/check-template-drift.sh"
+      - ".github/workflows/deploy-validation.yml"
+
+permissions:
+  contents: read
+
+env:
+  BUN_VERSION: "1.3.11"
+
+jobs:
+  # Scaffold a project via create-atlas, install deps, and build.
+  # Validates the full end-to-end scaffolding pipeline for each platform.
+  scaffold-smoke:
+    name: Scaffold (${{ matrix.platform }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [docker, vercel]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: oven-sh/setup-bun@e3914758a49697077f7bcd190d36582a61667aad # v2 + node24 (pending release)
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Run scaffold smoke test
+        run: bash create-atlas/smoke-test.sh ${{ matrix.platform }}
+        env:
+          SKIP_SYNCPACK: "1"
+
+  # Build the nextjs-standalone example from the monorepo workspace.
+  # Catches Next.js build failures from API/web source changes.
+  standalone-build:
+    name: Standalone Example Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: oven-sh/setup-bun@e3914758a49697077f7bcd190d36582a61667aad # v2 + node24 (pending release)
+        with:
+          bun-version: ${{ env.BUN_VERSION }}
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build SDK packages
+        run: bun run --filter '@useatlas/types' build && bun run --filter '@useatlas/plugin-sdk' build && bun run --filter '@useatlas/sdk' build
+
+      - name: Build widget bundle
+        run: bun run --filter '@useatlas/react' build
+
+      - name: Build nextjs-standalone example
+        run: bun run --filter '@atlas/nextjs-standalone' build
+
+  # Lightweight checks that don't need bun: Docker compose validation + deploy mode defaults.
+  config-validation:
+    name: Config & Deploy Mode
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Validate docker-compose configs
+        run: |
+          # env_file in compose references ../../.env — create it so config validation passes
+          touch .env
+          docker compose -f examples/docker/docker-compose.yml config > /dev/null
+          docker compose -f examples/docker/docker-compose.ollama.yml config > /dev/null
+          docker compose -f examples/docker/docker-compose.vllm.yml config > /dev/null
+          echo "All docker-compose configs are valid"
+
+      - name: Verify templates default to self-hosted
+        run: |
+          # Self-hosted templates must never set ATLAS_DEPLOY_MODE=saas in env/config files.
+          # Source code that reads the env var at runtime is expected and fine.
+          if grep -rn 'ATLAS_DEPLOY_MODE[=: ]*saas' \
+            --include='*.env*' --include='*.yml' --include='*.yaml' --include='*.json' \
+            create-atlas/templates/ examples/; then
+            echo "::error::Template config sets ATLAS_DEPLOY_MODE to saas — self-hosted deployments must not default to SaaS mode"
+            exit 1
+          fi
+          # Scaffolder must not write ATLAS_DEPLOY_MODE=saas to generated .env
+          if grep -n 'DEPLOY_MODE=saas' create-atlas/index.ts; then
+            echo "::error file=create-atlas/index.ts::Scaffolder writes ATLAS_DEPLOY_MODE=saas to generated .env"
+            exit 1
+          fi
+          echo "Deploy mode check passed — all templates default to self-hosted"

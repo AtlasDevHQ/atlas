@@ -74,6 +74,7 @@ mock.module("@atlas/api/lib/logger", () => ({
 const {
   loadSettings,
   getSetting,
+  getSettingLive,
   startSettingsRefreshTimer,
   stopSettingsRefreshTimer,
   _getRefreshTimer,
@@ -254,5 +255,42 @@ describe("periodic settings refresh (#1092)", () => {
     process.env.ATLAS_SETTINGS_REFRESH_INTERVAL = "100";
     startSettingsRefreshTimer();
     expect(_getRefreshTimer()).not.toBeNull();
+  });
+
+  // -------------------------------------------------------------------------
+  // Live cache invalidation
+  // -------------------------------------------------------------------------
+
+  it("timer busts live cache so getSettingLive picks up DB changes", async () => {
+    enableInternalDB();
+
+    // Make the mock pool always return the current queryResults[0]
+    // (getSettingLive calls loadSettings internally on cache miss)
+    const row100 = { key: "ATLAS_ROW_LIMIT", value: "100", updated_at: "2026-01-01", updated_by: null, org_id: null };
+    queryResults = [{ rows: [row100] }];
+    queryResultIndex = 0;
+
+    // Warm both caches — loadSettings populates _cache, getSettingLive populates _liveCache
+    await loadSettings();
+    queryResultIndex = 0; // reset so getSettingLive's internal loadSettings also succeeds
+    const initial = await getSettingLive("ATLAS_ROW_LIMIT");
+    expect(initial).toBe("100");
+
+    // Start timer with a short interval
+    startSettingsRefreshTimer(30);
+
+    // Simulate another instance writing "500" to the DB
+    queryResults = [
+      { rows: [{ key: "ATLAS_ROW_LIMIT", value: "500", updated_at: "2026-01-04", updated_by: null, org_id: null }] },
+    ];
+    queryResultIndex = 0;
+
+    // Wait for the main cache to update (timer fires loadSettings + clears _liveCache)
+    await waitFor(() => getSetting("ATLAS_ROW_LIMIT") === "500");
+
+    // getSettingLive should also see the new value — live cache was busted by the timer
+    queryResultIndex = 0; // reset for getSettingLive's internal loadSettings
+    const updated = await getSettingLive("ATLAS_ROW_LIMIT");
+    expect(updated).toBe("500");
   });
 });

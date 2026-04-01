@@ -233,8 +233,12 @@ export class Settings extends Context.Tag("Settings")<
 /**
  * Load settings overrides from internal DB into in-process cache.
  * Non-fatal: loadSettings() handles errors internally.
+ *
+ * In SaaS mode, starts a periodic refresh timer so that settings changes
+ * from other API replicas propagate within ~30s. The timer is cleaned up
+ * via Effect finalizer on shutdown.
  */
-export const SettingsLive: Layer.Layer<Settings> = Layer.effect(
+export const SettingsLive: Layer.Layer<Settings> = Layer.scoped(
   Settings,
   Effect.gen(function* () {
     const loaded = yield* Effect.tryPromise({
@@ -247,6 +251,33 @@ export const SettingsLive: Layer.Layer<Settings> = Layer.effect(
       Effect.catchAll((errMsg) => {
         log.error({ err: new Error(errMsg) }, "Settings load failed");
         return Effect.succeed(0);
+      }),
+    );
+
+    // In SaaS mode, start periodic refresh for multi-instance consistency
+    const timerCleanup = yield* Effect.tryPromise({
+      try: async () => {
+        const { getConfig } = await import("@atlas/api/lib/config");
+        if (getConfig()?.deployMode === "saas") {
+          const { startSettingsRefreshTimer } = await import("@atlas/api/lib/settings");
+          return startSettingsRefreshTimer();
+        }
+        return null;
+      },
+      catch: (err) => (err instanceof Error ? err.message : String(err)),
+    }).pipe(
+      Effect.catchAll((errMsg) => {
+        log.warn(
+          { err: new Error(errMsg) },
+          "Settings refresh timer failed to start — multi-instance settings sync disabled",
+        );
+        return Effect.succeed(null);
+      }),
+    );
+
+    yield* Effect.addFinalizer(() =>
+      Effect.sync(() => {
+        if (timerCleanup) timerCleanup();
       }),
     );
 
@@ -438,7 +469,7 @@ export function makeSchedulerLive(
  * The remaining layers use dynamic imports to reach their modules and do
  * not consume Config from the Effect context.
  *
- * On shutdown, Effect disposes scoped layers (Telemetry, Scheduler) via
+ * On shutdown, Effect disposes scoped layers (Telemetry, Settings, Scheduler) via
  * their finalizers. Order among independent layers is unspecified.
  * Connection and plugin shutdown is handled imperatively in server.ts.
  */

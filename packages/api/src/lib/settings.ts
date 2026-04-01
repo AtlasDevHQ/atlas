@@ -429,7 +429,8 @@ export function getSettingAuto(key: string, orgId?: string): string | undefined 
 
 /**
  * Load all settings from the internal DB into the in-process cache.
- * Call once at startup. No-op when no internal DB.
+ * Called at startup and periodically by the refresh timer in SaaS mode.
+ * No-op when no internal DB.
  */
 export async function loadSettings(): Promise<number> {
   if (!hasInternalDB()) return 0;
@@ -688,6 +689,94 @@ export function getSettingsRegistry(): readonly SettingDefinition[] {
 /** Look up a setting definition by key. */
 export function getSettingDefinition(key: string): SettingDefinition | undefined {
   return SETTINGS_MAP.get(key);
+}
+
+// ---------------------------------------------------------------------------
+// Periodic settings refresh — for SaaS multi-instance consistency
+// ---------------------------------------------------------------------------
+
+/** Default refresh interval: 30 seconds. */
+const DEFAULT_REFRESH_INTERVAL_MS = 30_000;
+
+/** Minimum allowed interval to prevent accidental tight loops. */
+const MIN_REFRESH_INTERVAL_MS = 1_000;
+
+let _refreshTimer: ReturnType<typeof setInterval> | null = null;
+
+/**
+ * Start a periodic timer that re-reads all settings from the DB.
+ *
+ * In SaaS mode with multiple API replicas, `setSetting()` on instance A
+ * updates the DB and local cache, but other instances never see the change
+ * until restart. This timer ensures all instances converge within one
+ * interval (default 30s).
+ *
+ * The timer is resilient — `loadSettings()` handles its own errors internally
+ * (logged at error level). If an unexpected error escapes, it is caught and
+ * logged as a warning without stopping the interval.
+ *
+ * @param intervalMs Override interval in milliseconds. Falls back to
+ *   `ATLAS_SETTINGS_REFRESH_INTERVAL` env var, then 30s default.
+ * @returns A cleanup function that clears the interval.
+ */
+export function startSettingsRefreshTimer(
+  intervalMs?: number,
+): () => void {
+  let interval = intervalMs ?? DEFAULT_REFRESH_INTERVAL_MS;
+
+  if (intervalMs === undefined && process.env.ATLAS_SETTINGS_REFRESH_INTERVAL) {
+    const parsed = Number(process.env.ATLAS_SETTINGS_REFRESH_INTERVAL);
+    if (!Number.isFinite(parsed) || parsed < MIN_REFRESH_INTERVAL_MS) {
+      log.warn(
+        { raw: process.env.ATLAS_SETTINGS_REFRESH_INTERVAL, parsed },
+        `Invalid ATLAS_SETTINGS_REFRESH_INTERVAL — using default ${DEFAULT_REFRESH_INTERVAL_MS}ms (must be a number >= ${MIN_REFRESH_INTERVAL_MS})`,
+      );
+      interval = DEFAULT_REFRESH_INTERVAL_MS;
+    } else {
+      interval = parsed;
+    }
+  }
+
+  if (_refreshTimer !== null) {
+    clearInterval(_refreshTimer);
+  }
+
+  _refreshTimer = setInterval(async () => {
+    try {
+      await loadSettings();
+      // Bust live cache so next getSettingLive() picks up fresh values
+      _liveCache.clear();
+    } catch (err) {
+      log.warn(
+        { err: err instanceof Error ? err.message : String(err) },
+        "Periodic settings refresh failed — will retry next interval",
+      );
+    }
+  }, interval);
+
+  // Don't keep the process alive just for settings refresh
+  _refreshTimer.unref();
+
+  log.info({ intervalMs: interval }, "Started periodic settings refresh timer");
+
+  return () => stopSettingsRefreshTimer();
+}
+
+/**
+ * Stop the periodic settings refresh timer.
+ * Safe to call even if no timer is running.
+ */
+export function stopSettingsRefreshTimer(): void {
+  if (_refreshTimer !== null) {
+    clearInterval(_refreshTimer);
+    _refreshTimer = null;
+    log.info("Stopped periodic settings refresh timer");
+  }
+}
+
+/** @internal Expose timer state for testing. */
+export function _getRefreshTimer(): ReturnType<typeof setInterval> | null {
+  return _refreshTimer;
 }
 
 // ---------------------------------------------------------------------------

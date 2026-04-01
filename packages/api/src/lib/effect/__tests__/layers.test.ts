@@ -144,6 +144,27 @@ describe("SettingsLive", () => {
     expect(typeof result).toBe("number");
     expect(result).toBeGreaterThanOrEqual(0);
   });
+
+  test("does not start refresh timer in self-hosted mode", async () => {
+    const { _getRefreshTimer } = await import("@atlas/api/lib/settings");
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* Settings;
+      }).pipe(Effect.provide(SettingsLive)),
+    );
+
+    // In self-hosted mode (default), no periodic timer should be running
+    expect(_getRefreshTimer()).toBeNull();
+  });
+
+  test("finalizer runs on disposal without error", async () => {
+    const rt = ManagedRuntime.make(SettingsLive);
+    await Effect.runPromise(rt.runtimeEffect);
+
+    // Disposal should run the Effect finalizer without throwing
+    await rt.dispose();
+  });
 });
 
 // ── Scheduler ──────────────────────────────────────────────────────

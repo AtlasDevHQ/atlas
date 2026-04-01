@@ -737,8 +737,8 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 
 ### Follow-ups
 
-- [ ] Atomic cache swap in loadSettings to prevent brief stale reads (#1116)
-- [ ] Deploy-validation CI missing bun install for create-atlas deps (#1117)
+- [x] Atomic cache swap in loadSettings to prevent brief stale reads (#1116, PR #1119)
+- [x] Deploy-validation CI missing bun install for create-atlas deps (#1117, PR #1119)
 
 ---
 

@@ -240,6 +240,87 @@ describe("settings module", () => {
       const count = await loadSettings();
       expect(count).toBe(0);
     });
+
+    it("atomic swap — getSetting sees old values while load is in-flight", async () => {
+      enableInternalDB();
+
+      // Load initial data
+      setResults({
+        rows: [
+          { key: "ATLAS_ROW_LIMIT", value: "100", updated_at: "2026-01-01", updated_by: null, org_id: null },
+        ],
+      });
+      await loadSettings();
+      expect(getSetting("ATLAS_ROW_LIMIT")).toBe("100");
+
+      // Intercept mock query to read getSetting during the DB await
+      let midQueryValue: string | undefined;
+      const savedQuery = mockPool.query;
+      mockPool.query = async (sql: string, params?: unknown[]) => {
+        midQueryValue = getSetting("ATLAS_ROW_LIMIT");
+        return savedQuery(sql, params);
+      };
+
+      setResults({
+        rows: [
+          { key: "ATLAS_ROW_LIMIT", value: "200", updated_at: "2026-01-02", updated_by: null, org_id: null },
+        ],
+      });
+      await loadSettings();
+
+      // During the query, old value was still readable (not undefined/default)
+      expect(midQueryValue).toBe("100");
+      // After load completes, new value is visible
+      expect(getSetting("ATLAS_ROW_LIMIT")).toBe("200");
+
+      mockPool.query = savedQuery;
+    });
+
+    it("atomic swap — error during reload preserves old cache", async () => {
+      enableInternalDB();
+
+      // Load initial data
+      setResults({
+        rows: [
+          { key: "ATLAS_ROW_LIMIT", value: "100", updated_at: "2026-01-01", updated_by: null, org_id: null },
+        ],
+      });
+      await loadSettings();
+      expect(getSetting("ATLAS_ROW_LIMIT")).toBe("100");
+
+      // Next load throws
+      queryThrow = new Error("connection reset by peer");
+      const count = await loadSettings();
+      expect(count).toBe(0);
+
+      // Old cache value is still readable (not wiped)
+      expect(getSetting("ATLAS_ROW_LIMIT")).toBe("100");
+    });
+
+    it("atomic swap — stale entries are removed (full replacement, not merge)", async () => {
+      enableInternalDB();
+
+      // Load two entries
+      setResults({
+        rows: [
+          { key: "ATLAS_ROW_LIMIT", value: "100", updated_at: "2026-01-01", updated_by: null, org_id: null },
+          { key: "ATLAS_QUERY_TIMEOUT", value: "5000", updated_at: "2026-01-01", updated_by: null, org_id: null },
+        ],
+      });
+      await loadSettings();
+      expect(getSetting("ATLAS_ROW_LIMIT")).toBe("100");
+      expect(getSetting("ATLAS_QUERY_TIMEOUT")).toBe("5000");
+
+      // Reload with only one entry — the other should fall through to default
+      setResults({
+        rows: [
+          { key: "ATLAS_ROW_LIMIT", value: "200", updated_at: "2026-01-02", updated_by: null, org_id: null },
+        ],
+      });
+      await loadSettings();
+      expect(getSetting("ATLAS_ROW_LIMIT")).toBe("200");
+      expect(getSetting("ATLAS_QUERY_TIMEOUT")).toBe("30000"); // default
+    });
   });
 
   // ---------------------------------------------------------------------------

@@ -76,8 +76,8 @@ app.use("/api/*", async (c, next) => {
 // Default "*" is fine for API key / BYOT auth (header-based).
 // Managed auth (cookies) needs explicit origin + credentials — see docs/hono-extraction-design.md.
 //
-// In SaaS mode, the origin is read per-request from the settings cache so
-// admin changes take effect without a server restart.
+// The origin is read per-request from the settings cache so admin changes
+// take effect without a server restart.
 const bootCorsOrigin = process.env.ATLAS_CORS_ORIGIN;
 let corsSettingsWarnLogged = false;
 

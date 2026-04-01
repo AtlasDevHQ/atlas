@@ -8,8 +8,8 @@
  * and uses Vercel AI SDK under the hood. P10c will migrate to native
  * @effect/ai AiLanguageModel.
  *
- * In SaaS mode, the model is re-resolved per request from settings so
- * that ATLAS_PROVIDER / ATLAS_MODEL changes take effect without restart.
+ * In SaaS mode, the model is re-resolved on a short TTL (5s) from settings
+ * so that ATLAS_PROVIDER / ATLAS_MODEL changes take effect without restart.
  *
  * @example
  * ```ts
@@ -59,7 +59,7 @@ export class AtlasAiModel extends Context.Tag("AtlasAiModel")<
 // ── Live Layer ───────────────────────────────────────────────────────
 
 /**
- * Resolve model from current settings. Used both at boot and per-request in SaaS mode.
+ * Resolve model from current settings. Used at boot and on a short TTL (5s) in SaaS mode.
  *
  * Uses `getModelForConfig()` to build the model from explicit provider/model values,
  * avoiding process.env mutation.
@@ -87,9 +87,9 @@ function resolveModelFromSettings(): { model: LanguageModel; providerType: Provi
  * Reads ATLAS_PROVIDER and ATLAS_MODEL from env vars via providers.ts.
  * Fails the Layer if the provider is misconfigured.
  *
- * In SaaS mode, the service returns a dynamic proxy that re-resolves the
- * model from settings on each property access, so admin changes take effect
- * without a server restart.
+ * In SaaS mode, the service uses getter properties that re-resolve the
+ * model from settings on access (with a 5s TTL cache), so admin changes
+ * take effect without a server restart.
  */
 export const AtlasAiModelLive: Layer.Layer<AtlasAiModel, Error> = Layer.effect(
   AtlasAiModel,

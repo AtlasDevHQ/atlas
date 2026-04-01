@@ -49,7 +49,7 @@ export default function SuccessPage() {
         </Button>
 
         <div className="flex justify-center">
-          <StepIndicator current={4} total={4} />
+          <StepIndicator current={5} total={5} />
         </div>
       </CardContent>
     </Card>

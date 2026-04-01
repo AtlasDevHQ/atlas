@@ -319,7 +319,7 @@ export default function ConnectPage() {
         )}
 
         <div className="flex justify-center">
-          <StepIndicator current={3} total={4} />
+          <StepIndicator current={4} total={5} />
         </div>
       </CardContent>
     </Card>

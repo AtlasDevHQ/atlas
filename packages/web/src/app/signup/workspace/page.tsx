@@ -73,7 +73,7 @@ export default function WorkspacePage() {
         }
       }
 
-      router.push("/signup/connect");
+      router.push("/signup/region");
     } catch (err) {
       setError(
         err instanceof Error ? err.message : "Failed to create workspace",
@@ -133,7 +133,7 @@ export default function WorkspacePage() {
         </form>
 
         <div className="mt-4 flex justify-center">
-          <StepIndicator current={2} total={4} />
+          <StepIndicator current={2} total={5} />
         </div>
       </CardContent>
     </Card>

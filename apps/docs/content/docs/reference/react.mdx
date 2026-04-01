@@ -280,6 +280,188 @@ useAtlasConversations({
 
 ---
 
+## useAtlasContext
+
+Provides raw access to the `AtlasProvider` context value. Throws if called outside `<AtlasProvider>`. Useful for building custom hooks or components that need direct access to the API URL, credentials, and cross-origin status.
+
+```tsx
+import { useAtlasContext } from "@useatlas/react/hooks";
+
+function CustomFetcher() {
+  const { apiUrl, apiKey, isCrossOrigin } = useAtlasContext();
+
+  // Build a custom fetch call using provider-supplied credentials
+  async function fetchCustomEndpoint() {
+    const headers: Record<string, string> = {};
+    if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
+    const res = await fetch(`${apiUrl}/api/v1/custom`, {
+      headers,
+      credentials: isCrossOrigin ? "include" : "same-origin",
+    });
+    return res.json();
+  }
+
+  // ...
+}
+```
+
+### useAtlasContext return value
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `apiUrl` | `string` | Atlas API server URL |
+| `apiKey` | `string \| undefined` | API key for `simple-key` auth mode |
+| `authClient` | `AtlasAuthClient` | Auth client instance (noop if not provided to `AtlasProvider`) |
+| `isCrossOrigin` | `boolean` | Whether the API URL is cross-origin (derived from `apiUrl` at render time) |
+
+---
+
+## useConversations
+
+Lower-level conversation management hook that accepts explicit auth configuration instead of reading from `AtlasProvider`. Use this when you need full control over request headers and credentials, or when integrating outside the `AtlasProvider` context. `useAtlasConversations` wraps this hook with context-derived credentials.
+
+```tsx
+import { useConversations } from "@useatlas/react";
+
+function ConversationManager() {
+  const {
+    conversations,
+    total,
+    loading,
+    available,
+    fetchError,
+    selectedId,
+    setSelectedId,
+    fetchList,
+    loadConversation,
+    deleteConversation,
+    starConversation,
+    refresh,
+  } = useConversations({
+    apiUrl: "https://your-atlas-api.example.com",
+    enabled: true,
+    getHeaders: () => ({ Authorization: "Bearer sk-..." }),
+    getCredentials: () => "same-origin",
+  });
+
+  // ...
+}
+```
+
+### useConversations options
+
+```typescript
+interface UseConversationsOptions {
+  apiUrl: string;
+  enabled: boolean;
+  getHeaders: () => Record<string, string>;
+  getCredentials: () => RequestCredentials;
+  /** Custom conversations API endpoint path. Defaults to "/api/v1/conversations". */
+  conversationsEndpoint?: string;
+}
+```
+
+### useConversations return value
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `conversations` | `Conversation[]` | Array of conversation metadata |
+| `total` | `number` | Total count of conversations |
+| `loading` | `boolean` | Whether the conversation list is loading |
+| `available` | `boolean` | Whether the conversation API is available |
+| `fetchError` | `string \| null` | Error message from the last fetch attempt |
+| `selectedId` | `string \| null` | Currently selected conversation ID |
+| `setSelectedId` | `(id: string \| null) => void` | Set the selected conversation |
+| `fetchList` | `() => Promise<void>` | Fetch the conversation list |
+| `loadConversation` | `(id: string) => Promise<UIMessage[]>` | Load a conversation's messages (returns AI SDK format) |
+| `deleteConversation` | `(id: string) => Promise<void>` | Delete a conversation |
+| `starConversation` | `(id: string, starred: boolean) => Promise<void>` | Star or unstar a conversation |
+| `refresh` | `() => Promise<void>` | Alias for `fetchList` |
+
+---
+
+## useAtlasConfig
+
+Provides access to the `AtlasUIProvider` context value. This is the provider-level equivalent for the pre-built `AtlasChat` component tree (as opposed to `useAtlasContext` which reads from `AtlasProvider`). Throws if called outside `<AtlasUIProvider>`.
+
+```tsx
+import { useAtlasConfig } from "@useatlas/react";
+
+function CustomWidget() {
+  const { apiUrl, authClient, isCrossOrigin } = useAtlasConfig();
+  // ...
+}
+```
+
+### useAtlasConfig return value
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `apiUrl` | `string` | Atlas API server URL |
+| `authClient` | `AtlasAuthClient` | Auth client instance |
+| `isCrossOrigin` | `boolean` | Whether the API URL is cross-origin |
+
+---
+
+## Utilities
+
+### parseChatError
+
+Parses an AI SDK chat error into a user-friendly `ChatErrorInfo` object. Expects `error.message` to contain a JSON string with `{ error, message, retryAfterSeconds? }`. Falls back to a generic title when the body is not valid JSON (network failures, HTML error pages, etc.), preserving the original message as `detail` (truncated to 200 characters). Also classifies client-side errors (network failures, offline, HTTP status) via the `clientCode` field.
+
+```typescript
+import { parseChatError } from "@useatlas/react/hooks";
+
+const errorInfo = parseChatError(error, "managed");
+
+console.log(errorInfo.title);              // "Authentication required"
+console.log(errorInfo.code);               // "auth_error"
+console.log(errorInfo.retryable);          // false
+console.log(errorInfo.clientCode);         // undefined (server error, not client-side)
+console.log(errorInfo.requestId);          // "abc-123" (for log correlation)
+```
+
+#### Signature
+
+```typescript
+function parseChatError(error: Error, authMode: AuthMode): ChatErrorInfo
+```
+
+#### Return value (`ChatErrorInfo`)
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `title` | `string` | Primary user-facing message |
+| `detail` | `string \| undefined` | Optional secondary context |
+| `retryAfterSeconds` | `number \| undefined` | Seconds until retry (`rate_limited` only, clamped 0--300) |
+| `code` | `ChatErrorCode \| undefined` | Server error code, if parseable |
+| `clientCode` | `ClientErrorCode \| undefined` | Client-side classification (network/offline/HTTP status) |
+| `retryable` | `boolean \| undefined` | `true` = transient, `false` = permanent, `undefined` = unknown |
+| `requestId` | `string \| undefined` | Server-assigned request ID (UUID) for log correlation |
+
+### AUTH_MODES
+
+A constant tuple of all valid `AuthMode` values. Useful for validation and iteration.
+
+```typescript
+import { AUTH_MODES } from "@useatlas/react/hooks";
+
+console.log(AUTH_MODES); // ["none", "simple-key", "managed", "byot"]
+
+// Type-safe iteration
+for (const mode of AUTH_MODES) {
+  console.log(mode); // "none" | "simple-key" | "managed" | "byot"
+}
+```
+
+#### Definition
+
+```typescript
+const AUTH_MODES: readonly ["none", "simple-key", "managed", "byot"];
+```
+
+---
+
 ## useAtlasTheme
 
 Manages light/dark/system theme mode with localStorage persistence.
@@ -645,12 +827,30 @@ interface Message {
 interface Conversation {
   id: string;
   userId: string | null;
-  title: string | null;        // Auto-generated from first message, or null
+  title: string | null;                        // Auto-generated from first message, or null
   surface: "web" | "api" | "mcp" | "slack";
-  connectionId: string | null; // Datasource used for this conversation
-  starred: boolean;            // Pinned by user
-  createdAt: string;           // ISO 8601 timestamp
-  updatedAt: string;           // ISO 8601 timestamp
+  connectionId: string | null;                 // Datasource used for this conversation
+  starred: boolean;                            // Pinned by user
+  createdAt: string;                           // ISO 8601 timestamp
+  updatedAt: string;                           // ISO 8601 timestamp
+  notebookState?: NotebookStateWire | null;    // Server-persisted notebook layout
+}
+
+interface NotebookStateWire {
+  version: number;
+  cellOrder?: string[];
+  cellProps?: Record<string, { collapsed?: boolean }>;
+  branches?: ForkBranchWire[];
+  forkRootId?: string;
+  forkPointCellId?: string;
+  textCells?: Record<string, { content: string }>;
+}
+
+interface ForkBranchWire {
+  conversationId: string;
+  forkPointCellId: string;
+  label: string;
+  createdAt: string;
 }
 
 // ConversationWithMessages — returned by the GET /api/v1/conversations/:id endpoint
@@ -781,6 +981,8 @@ import type {
   AtlasChatStatus,
   // useAtlasAuth
   UseAtlasAuthReturn,
+  // useAtlasContext
+  AtlasContextValue,
   // useAtlasConversations
   UseAtlasConversationsOptions,
   UseAtlasConversationsReturn,
@@ -788,6 +990,12 @@ import type {
   UseAtlasThemeReturn,
   ThemeMode,
 } from "@useatlas/react/hooks";
+
+// Root entry point exports (not available from /hooks subpath)
+import type {
+  UseConversationsOptions,
+  UseConversationsReturn,
+} from "@useatlas/react";
 ```
 
 ---

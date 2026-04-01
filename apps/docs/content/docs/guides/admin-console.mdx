@@ -260,6 +260,10 @@ Manage application configuration from the UI. Settings follow a three-tier resol
 - **SaaS mode** — Workspace admins only see settings marked as workspace-visible. Platform admins see all settings. The response includes a `deployMode` field and a `manageable` flag indicating whether settings can be persisted
 
 <Callout type="info">
+On **app.useatlas.dev** (SaaS mode), most settings are hot-reloadable — changes are picked up on the next request without a server restart. A few infrastructure settings (LLM provider, model) may still require redeployment to fully take effect. The restart requirement mainly applies to self-hosted deployments.
+</Callout>
+
+<Callout type="info">
 Settings overrides require an internal database (`DATABASE_URL`). Without it, the settings page is read-only — all values come from environment variables.
 </Callout>
 
@@ -672,7 +676,7 @@ All admin endpoints are at `/api/v1/admin/` and require the `admin` role. See th
 
 **Cause:** Some settings (Security, Agent) require a server restart, while others (Query Limits, Rate Limiting) apply immediately. The settings page shows a **Live** or **Requires restart** badge on each setting.
 
-**Fix:** Check the badge next to the setting you changed. If it says **Requires restart**, restart the Atlas server for the change to apply.
+**Fix:** Check the badge next to the setting you changed. If it says **Requires restart**, restart the Atlas server for the change to apply. On **app.useatlas.dev** (SaaS mode), most settings are picked up on the next request without a restart — though infrastructure settings like LLM provider and model may require redeployment.
 
 For more, see [Troubleshooting](/guides/troubleshooting).
 

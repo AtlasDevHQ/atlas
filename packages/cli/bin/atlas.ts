@@ -3520,6 +3520,7 @@ const SUBCOMMAND_HELP: Record<string, SubcommandHelp> = {
     usage: "learn [options]",
     flags: [
       { flag: "--apply", description: "Write proposed changes to YAML files (default: dry-run)" },
+      { flag: "--suggestions", description: "Generate query suggestions from the audit log" },
       { flag: "--limit <n>", description: "Max audit log entries to analyze (default: 1000)" },
       { flag: "--since <date>", description: "Only analyze queries after this date (ISO 8601)" },
       { flag: "--source <name>", description: "Read from/write to semantic/{name}/ subdirectory" },

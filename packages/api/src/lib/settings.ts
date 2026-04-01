@@ -701,6 +701,84 @@ const SIDE_EFFECT_KEYS = new Set(["ATLAS_LOG_LEVEL"]);
  * Apply runtime side effects after a setting value changes.
  * Only runs in SaaS mode for hot-reloadable settings.
  */
+// ---------------------------------------------------------------------------
+// Periodic settings refresh — for SaaS multi-instance consistency
+// ---------------------------------------------------------------------------
+
+/** Default refresh interval: 30 seconds. */
+const DEFAULT_REFRESH_INTERVAL_MS = 30_000;
+
+let _refreshTimer: ReturnType<typeof setInterval> | null = null;
+
+/**
+ * Start a periodic timer that re-reads all settings from the DB.
+ *
+ * In SaaS mode with multiple API replicas, `setSetting()` on instance A
+ * updates the DB and local cache, but other instances never see the change
+ * until restart. This timer ensures all instances converge within one
+ * interval (default 30s).
+ *
+ * The timer is resilient — `loadSettings()` failures are logged as warnings
+ * and do not stop the interval.
+ *
+ * @returns A cleanup function that clears the interval.
+ */
+export function startSettingsRefreshTimer(
+  intervalMs?: number,
+): () => void {
+  const interval =
+    intervalMs ??
+    (process.env.ATLAS_SETTINGS_REFRESH_INTERVAL
+      ? Number(process.env.ATLAS_SETTINGS_REFRESH_INTERVAL)
+      : DEFAULT_REFRESH_INTERVAL_MS);
+
+  // Avoid duplicate timers
+  if (_refreshTimer !== null) {
+    clearInterval(_refreshTimer);
+  }
+
+  _refreshTimer = setInterval(async () => {
+    try {
+      await loadSettings();
+      // Bust live cache so next getSettingLive() picks up fresh values
+      _liveCache.clear();
+    } catch (err) {
+      log.warn(
+        { err: err instanceof Error ? err.message : String(err) },
+        "Periodic settings refresh failed — will retry next interval",
+      );
+    }
+  }, interval);
+
+  // Don't keep the process alive just for settings refresh
+  _refreshTimer.unref();
+
+  log.info({ intervalMs: interval }, "Started periodic settings refresh timer");
+
+  return () => stopSettingsRefreshTimer();
+}
+
+/**
+ * Stop the periodic settings refresh timer.
+ * Safe to call even if no timer is running.
+ */
+export function stopSettingsRefreshTimer(): void {
+  if (_refreshTimer !== null) {
+    clearInterval(_refreshTimer);
+    _refreshTimer = null;
+    log.info("Stopped periodic settings refresh timer");
+  }
+}
+
+/** @internal Expose timer state for testing. */
+export function _getRefreshTimer(): ReturnType<typeof setInterval> | null {
+  return _refreshTimer;
+}
+
+// ---------------------------------------------------------------------------
+// Runtime side effects — applied when hot-reloadable settings change
+// ---------------------------------------------------------------------------
+
 function applySettingSideEffect(key: string, value: string): void {
   if (!isSaasMode() || !SIDE_EFFECT_KEYS.has(key)) return;
 

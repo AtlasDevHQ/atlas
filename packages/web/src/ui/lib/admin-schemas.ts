@@ -280,10 +280,11 @@ export const CustomDomainSchema = z.object({
   workspaceId: z.string(),
   domain: z.string(),
   status: z.string(),
+  railwayDomainId: z.string().nullable(),
   cnameTarget: z.string().nullable(),
   certificateStatus: z.string().nullable(),
   createdAt: z.string(),
-  updatedAt: z.string(),
+  verifiedAt: z.string().nullable(),
 }) as z.ZodType<CustomDomain>;
 
 export const DomainResponseSchema = z.object({
@@ -513,7 +514,7 @@ const TrendPointSchema = z.object({
   promptTokens: z.number(),
   completionTokens: z.number(),
   totalTokens: z.number(),
-  requests: z.number(),
+  requestCount: z.number(),
 });
 
 export const TrendsResponseSchema = z.object({

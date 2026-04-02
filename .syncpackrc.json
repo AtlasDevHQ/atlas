@@ -11,6 +11,12 @@
   ],
   "versionGroups": [
     {
+      "label": "Templates use npm ranges for @useatlas packages (not workspace:)",
+      "packages": ["%PROJECT_NAME%"],
+      "dependencies": ["@useatlas/**"],
+      "isIgnored": true
+    },
+    {
       "label": "Workspace packages use workspace: protocol",
       "dependencies": ["@atlas/**", "@useatlas/**"],
       "dependencyTypes": ["prod", "dev"],

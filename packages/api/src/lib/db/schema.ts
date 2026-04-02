@@ -362,6 +362,33 @@ export const semanticEntities = pgTable(
 );
 
 // ---------------------------------------------------------------------------
+// Semantic entity versions (version history for rollback + diff)
+// ---------------------------------------------------------------------------
+
+export const semanticEntityVersions = pgTable(
+  "semantic_entity_versions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    entityId: uuid("entity_id").notNull().references(() => semanticEntities.id, { onDelete: "cascade" }),
+    orgId: text("org_id").notNull(),
+    entityType: text("entity_type").notNull(),
+    name: text("name").notNull(),
+    yamlContent: text("yaml_content").notNull(),
+    changeSummary: text("change_summary"),
+    authorId: text("author_id"),
+    authorLabel: text("author_label"),
+    versionNumber: integer("version_number").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("idx_sev_entity").on(t.entityId),
+    index("idx_sev_org_type_name").on(t.orgId, t.entityType, t.name),
+    index("idx_sev_created").on(t.entityId, sql`created_at DESC`),
+    uniqueIndex("idx_sev_entity_version").on(t.entityId, t.versionNumber),
+  ],
+);
+
+// ---------------------------------------------------------------------------
 // Learned patterns (dynamic learning layer)
 // ---------------------------------------------------------------------------
 

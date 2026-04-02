@@ -19,7 +19,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { BookOpen, BarChart3, FileText, FolderOpen, Code, LayoutDashboard, Terminal, Plus, Pencil, Trash2 } from "lucide-react";
+import { BookOpen, BarChart3, FileText, FolderOpen, Code, LayoutDashboard, Terminal, Plus, Pencil, Trash2, History } from "lucide-react";
 import { EntityDetail, type EntityData } from "@/ui/components/admin/entity-detail";
 import {
   EntityEditorDialog,
@@ -37,6 +37,7 @@ import { type FetchError } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { useDeployMode } from "@/ui/hooks/use-deploy-mode";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
+import { EntityVersionHistory } from "@/ui/components/admin/entity-version-history";
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -289,9 +290,9 @@ function selectionToRawPath(sel: SemanticSelection): string | null {
   }
 }
 
-type ViewMode = "pretty" | "yaml";
+type ViewMode = "pretty" | "yaml" | "history";
 
-function ViewToggle({ mode, onChange }: { mode: ViewMode; onChange: (m: ViewMode) => void }) {
+function ViewToggle({ mode, onChange, showHistory }: { mode: ViewMode; onChange: (m: ViewMode) => void; showHistory?: boolean }) {
   return (
     <ToggleGroup
       type="single"
@@ -307,6 +308,12 @@ function ViewToggle({ mode, onChange }: { mode: ViewMode; onChange: (m: ViewMode
         <Code className="size-3" />
         YAML
       </ToggleGroupItem>
+      {showHistory && (
+        <ToggleGroupItem value="history" className="gap-1.5 text-xs">
+          <History className="size-3" />
+          History
+        </ToggleGroupItem>
+      )}
     </ToggleGroup>
   );
 }
@@ -628,7 +635,7 @@ export default function SemanticPage() {
                   </>
                 )}
               </div>
-              <ViewToggle mode={viewMode} onChange={(m) => { startTransition(() => { setParams({ view: m }); }); }} />
+              <ViewToggle mode={viewMode} onChange={(m) => { startTransition(() => { setParams({ view: m }); }); }} showHistory={isSaas && selection?.type === "entity"} />
             </div>
           )}
 
@@ -642,6 +649,14 @@ export default function SemanticPage() {
                 <p className="mt-3 text-sm">Select a file to view its contents</p>
               </div>
             </div>
+          ) : viewMode === "history" && selection.type === "entity" ? (
+            <EntityVersionHistory
+              entityName={selection.name}
+              onRollback={() => {
+                refetchAll();
+                startTransition(() => { setParams({ view: "pretty" }); });
+              }}
+            />
           ) : viewMode === "yaml" ? (
             rawYamlLoading ? (
               <LoadingState message="Loading YAML..." />

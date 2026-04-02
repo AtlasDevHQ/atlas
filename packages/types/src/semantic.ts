@@ -105,3 +105,24 @@ export interface TableInfo {
   description: string;
   columns: TableColumn[];
 }
+
+// ---------------------------------------------------------------------------
+// Semantic entity version history
+// ---------------------------------------------------------------------------
+
+/** Version summary returned in list endpoints (no YAML content). */
+export interface SemanticEntityVersionSummary {
+  id: string;
+  versionNumber: number;
+  changeSummary: string | null;
+  authorId: string | null;
+  authorLabel: string | null;
+  createdAt: string;
+}
+
+/** Full version detail including YAML content. */
+export interface SemanticEntityVersionDetail extends SemanticEntityVersionSummary {
+  name: string;
+  entityType: string;
+  yamlContent: string;
+}

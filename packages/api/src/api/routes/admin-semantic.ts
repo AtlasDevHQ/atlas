@@ -88,6 +88,44 @@ const EntityResponseSchema = z.object({
 });
 
 // ---------------------------------------------------------------------------
+// Zod schemas — version history
+// ---------------------------------------------------------------------------
+
+const VersionSummarySchema = z.object({
+  id: z.string(),
+  versionNumber: z.number(),
+  changeSummary: z.string().nullable(),
+  authorId: z.string().nullable(),
+  authorLabel: z.string().nullable(),
+  createdAt: z.string(),
+});
+
+const VersionListResponseSchema = z.object({
+  versions: z.array(VersionSummarySchema),
+  total: z.number(),
+});
+
+const VersionDetailSchema = VersionSummarySchema.extend({
+  name: z.string(),
+  entityType: z.string(),
+  yamlContent: z.string(),
+});
+
+const VersionDetailResponseSchema = z.object({
+  version: VersionDetailSchema,
+});
+
+const RollbackBodySchema = z.object({
+  versionId: z.string().uuid(),
+});
+
+const RollbackResponseSchema = z.object({
+  ok: z.boolean(),
+  name: z.string(),
+  versionNumber: z.number(),
+});
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -272,6 +310,127 @@ export const getColumnsRoute = createRoute({
 });
 
 // ---------------------------------------------------------------------------
+// Route definitions — version history
+// ---------------------------------------------------------------------------
+
+export const getEntityVersionsRoute = createRoute({
+  method: "get",
+  path: "/semantic/entities/{name}/versions",
+  tags: ["Admin — Semantic"],
+  summary: "List versions for a semantic entity",
+  description: "Returns paginated version history for the named entity, ordered newest first.",
+  request: {
+    params: createParamSchema("name", "users"),
+    query: z.object({
+      limit: z.coerce.number().int().min(1).max(100).optional().default(20),
+      offset: z.coerce.number().int().min(0).optional().default(0),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Version list",
+      content: { "application/json": { schema: VersionListResponseSchema } },
+    },
+    400: {
+      description: "Invalid request",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    501: {
+      description: "Internal database not available",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+export const getVersionDetailRoute = createRoute({
+  method: "get",
+  path: "/semantic/entities/versions/{versionId}",
+  tags: ["Admin — Semantic"],
+  summary: "Get a single version with full YAML content",
+  request: {
+    params: createParamSchema("versionId", "550e8400-e29b-41d4-a716-446655440000"),
+  },
+  responses: {
+    200: {
+      description: "Version detail",
+      content: { "application/json": { schema: VersionDetailResponseSchema } },
+    },
+    400: {
+      description: "Invalid request",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Version not found",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    501: {
+      description: "Internal database not available",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+export const postRollbackRoute = createRoute({
+  method: "post",
+  path: "/semantic/entities/{name}/rollback",
+  tags: ["Admin — Semantic"],
+  summary: "Rollback an entity to a previous version",
+  description:
+    "Restores the entity's YAML content from the specified version. " +
+    "Creates a new version snapshot recording the rollback.",
+  request: {
+    params: createParamSchema("name", "users"),
+    body: {
+      content: {
+        "application/json": { schema: RollbackBodySchema },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "Entity rolled back",
+      content: { "application/json": { schema: RollbackResponseSchema } },
+    },
+    400: {
+      description: "Invalid request",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Version or entity not found",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    501: {
+      description: "Internal database not available",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+// ---------------------------------------------------------------------------
 // Auth function type
 // ---------------------------------------------------------------------------
 
@@ -320,8 +479,30 @@ export function registerSemanticEditorRoutes(
       const yamlContent = await entityToYaml(body);
 
       // Store in DB
-      const { upsertEntity } = await import("@atlas/api/lib/semantic/entities");
+      const { upsertEntity, getEntity, createVersion, generateChangeSummary } = await import("@atlas/api/lib/semantic/entities");
+
+      // Fetch previous version for change summary (before upsert overwrites it)
+      const previousEntity = await getEntity(orgId, "entity", name);
+      const oldYaml = previousEntity?.yaml_content ?? null;
+
       await upsertEntity(orgId, "entity", name, yamlContent, body.connectionId);
+
+      // Create version snapshot — non-fatal
+      try {
+        const entity = await getEntity(orgId, "entity", name);
+        if (entity) {
+          const changeSummary = await generateChangeSummary(oldYaml, yamlContent);
+          await createVersion(
+            entity.id, orgId, "entity", name, yamlContent, changeSummary,
+            authResult.user?.id ?? null, authResult.user?.label ?? null,
+          );
+        }
+      } catch (versionErr) {
+        log.warn(
+          { err: versionErr instanceof Error ? versionErr.message : String(versionErr), requestId, orgId, name },
+          "Entity saved but version snapshot failed — version history may be incomplete",
+        );
+      }
 
       // Invalidate caches
       const { invalidateOrgWhitelist } = await import("@atlas/api/lib/semantic");
@@ -462,6 +643,154 @@ export function registerSemanticEditorRoutes(
         );
         return c.json({ error: "query_failed", message: `Failed to query column metadata for "${tableName}". The table may not exist or the datasource may be unavailable.`, requestId }, 500);
       }
+    }),
+  );
+
+  // ---------------------------------------------------------------------------
+  // Version history routes
+  // ---------------------------------------------------------------------------
+
+  // GET /semantic/entities/{name}/versions — list versions
+  admin.openapi(getEntityVersionsRoute, async (c) =>
+    runHandler(c, "list entity versions", async () => {
+      const { name } = c.req.valid("param");
+      const { limit, offset } = c.req.valid("query");
+      const { authResult, requestId } = await authFn(c);
+
+      const orgId = authResult.user?.activeOrganizationId;
+      if (!orgId) {
+        return c.json({ error: "org_not_found", message: "No active organization. Select an organization and try again." }, 400);
+      }
+
+      if (!hasInternalDB()) {
+        return c.json({ error: "not_available", message: "Version history requires an internal database (DATABASE_URL).", requestId }, 501);
+      }
+
+      const { listVersions } = await import("@atlas/api/lib/semantic/entities");
+      const { versions, total } = await listVersions(orgId, "entity", name, limit, offset);
+
+      return c.json({
+        versions: versions.map((v) => ({
+          id: String(v.id),
+          versionNumber: Number(v.version_number),
+          changeSummary: v.change_summary as string | null,
+          authorId: v.author_id as string | null,
+          authorLabel: v.author_label as string | null,
+          createdAt: String(v.created_at),
+        })),
+        total,
+      }, 200);
+    }),
+  );
+
+  // GET /semantic/entities/versions/{versionId} — version detail
+  admin.openapi(getVersionDetailRoute, async (c) =>
+    runHandler(c, "get entity version detail", async () => {
+      const { versionId } = c.req.valid("param");
+      const { authResult, requestId } = await authFn(c);
+
+      const orgId = authResult.user?.activeOrganizationId;
+      if (!orgId) {
+        return c.json({ error: "org_not_found", message: "No active organization. Select an organization and try again." }, 400);
+      }
+
+      if (!hasInternalDB()) {
+        return c.json({ error: "not_available", message: "Version history requires an internal database (DATABASE_URL).", requestId }, 501);
+      }
+
+      const { getVersion } = await import("@atlas/api/lib/semantic/entities");
+      const version = await getVersion(versionId, orgId);
+
+      if (!version) {
+        return c.json({ error: "not_found", message: `Version "${versionId}" not found.` }, 404);
+      }
+
+      return c.json({
+        version: {
+          id: String(version.id),
+          versionNumber: Number(version.version_number),
+          name: String(version.name),
+          entityType: String(version.entity_type),
+          yamlContent: String(version.yaml_content),
+          changeSummary: version.change_summary as string | null,
+          authorId: version.author_id as string | null,
+          authorLabel: version.author_label as string | null,
+          createdAt: String(version.created_at),
+        },
+      }, 200);
+    }),
+  );
+
+  // POST /semantic/entities/{name}/rollback — rollback to version
+  admin.openapi(postRollbackRoute, async (c) =>
+    runHandler(c, "rollback semantic entity", async () => {
+      const { name } = c.req.valid("param");
+      const { versionId } = c.req.valid("json");
+      const { authResult, requestId } = await authFn(c);
+
+      const orgId = authResult.user?.activeOrganizationId;
+      if (!orgId) {
+        return c.json({ error: "org_not_found", message: "No active organization. Select an organization and try again." }, 400);
+      }
+
+      if (!hasInternalDB()) {
+        return c.json({ error: "not_available", message: "Rollback requires an internal database (DATABASE_URL).", requestId }, 501);
+      }
+
+      const { getVersion, getEntity, upsertEntity, createVersion, generateChangeSummary } = await import("@atlas/api/lib/semantic/entities");
+
+      // Fetch the target version
+      const targetVersion = await getVersion(versionId, orgId);
+      if (!targetVersion || targetVersion.name !== name) {
+        return c.json({ error: "not_found", message: `Version "${versionId}" not found for entity "${name}".` }, 404);
+      }
+
+      // Get current entity for change summary
+      const currentEntity = await getEntity(orgId, "entity", name);
+      const currentYaml = currentEntity?.yaml_content ?? null;
+
+      // Upsert entity with the target version's YAML
+      await upsertEntity(orgId, "entity", name, targetVersion.yaml_content, currentEntity?.connection_id ?? undefined);
+
+      // Create a new version snapshot for the rollback
+      let newVersionNumber = 0;
+      try {
+        const entity = await getEntity(orgId, "entity", name);
+        if (entity) {
+          const changeSummary = await generateChangeSummary(currentYaml, targetVersion.yaml_content);
+          const rollbackSummary = `Rolled back to v${targetVersion.version_number}${changeSummary ? ` (${changeSummary})` : ""}`;
+          const vid = await createVersion(
+            entity.id, orgId, "entity", name, targetVersion.yaml_content, rollbackSummary,
+            authResult.user?.id ?? null, authResult.user?.label ?? null,
+          );
+          // Fetch the version we just created to get its number
+          const newVersion = await getVersion(vid, orgId);
+          newVersionNumber = newVersion?.version_number ?? 0;
+        }
+      } catch (versionErr) {
+        log.warn(
+          { err: versionErr instanceof Error ? versionErr.message : String(versionErr), requestId, orgId, name },
+          "Rollback succeeded but version snapshot failed",
+        );
+      }
+
+      // Invalidate caches
+      const { invalidateOrgWhitelist } = await import("@atlas/api/lib/semantic");
+      invalidateOrgWhitelist(orgId);
+
+      // Sync to disk — non-fatal
+      try {
+        const { syncEntityToDisk } = await import("@atlas/api/lib/semantic/sync");
+        await syncEntityToDisk(orgId, name, "entity", targetVersion.yaml_content);
+      } catch (syncErr) {
+        log.warn(
+          { err: syncErr instanceof Error ? syncErr.message : String(syncErr), requestId, orgId, name },
+          "Rollback succeeded but disk sync failed — will be synced on next restart",
+        );
+      }
+
+      log.info({ requestId, orgId, name, targetVersion: targetVersion.version_number }, "Semantic entity rolled back");
+      return c.json({ ok: true, name, versionNumber: newVersionNumber }, 200);
     }),
   );
 }

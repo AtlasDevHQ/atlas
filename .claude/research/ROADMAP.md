@@ -739,6 +739,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 
 - [x] Atomic cache swap in loadSettings to prevent brief stale reads (#1116, PR #1119)
 - [x] Deploy-validation CI missing bun install for create-atlas deps (#1117, PR #1119)
+- [x] Scaffold template missing @useatlas/types + @useatlas/react deps (#1121, PR #1122)
 
 ---
 

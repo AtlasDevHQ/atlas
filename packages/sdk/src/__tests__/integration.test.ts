@@ -511,6 +511,12 @@ describe("validateSQL()", () => {
     expect(result.errors[0].layer).toBe("empty_check");
   });
 
+  test("passes connectionId when provided", async () => {
+    const result = await client().validateSQL("SELECT 1 FROM users", "warehouse");
+
+    expect(result.valid).toBe(true);
+  });
+
   test("401 unauthorized → AtlasError", async () => {
     try {
       await badClient().validateSQL("SELECT 1");

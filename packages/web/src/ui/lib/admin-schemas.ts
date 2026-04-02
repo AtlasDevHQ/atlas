@@ -770,19 +770,3 @@ export const AvailablePluginsResponseSchema = z.object({
   plugins: z.array(CatalogEntrySchema),
   total: z.number(),
 });
-
-export const WorkspacePluginSchema = z.object({
-  id: z.string(),
-  workspaceId: z.string(),
-  catalogId: z.string(),
-  config: z.unknown(),
-  enabled: z.boolean(),
-  installedAt: z.string(),
-  installedBy: z.string().nullable(),
-  name: z.string().optional(),
-  slug: z.string().optional(),
-  type: z.string().optional(),
-  description: z.string().nullable().optional(),
-});
-
-export type WorkspacePlugin = z.infer<typeof WorkspacePluginSchema>;

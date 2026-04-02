@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Select,
   SelectContent,
@@ -62,6 +63,7 @@ import {
   type CatalogEntry,
 } from "@/ui/lib/admin-schemas";
 import { useDeployMode } from "@/ui/hooks/use-deploy-mode";
+import type { DeployMode } from "@/ui/lib/types";
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -96,6 +98,9 @@ interface PluginSchemaResponse {
   manageable: boolean;
 }
 
+/** Marketplace-installed plugin with a guaranteed non-null installationId. */
+type InstalledCatalogEntry = CatalogEntry & { installationId: string };
+
 function toHealthStatus(status: PluginDescription["status"]) {
   if (status === "healthy") return "healthy" as const;
   if (status === "registered" || status === "initializing") return "unknown" as const;
@@ -110,6 +115,149 @@ const TYPE_LABELS: Record<PluginType, string> = {
   sandbox: "Sandbox",
 };
 
+function switchTitle(manageable: boolean, enabled: boolean, deployMode: DeployMode): string {
+  if (!manageable) {
+    return deployMode === "saas" ? "Configuration unavailable" : "Requires internal database";
+  }
+  return enabled ? "Disable plugin" : "Enable plugin";
+}
+
+// ── Shared: Schema-driven Config Fields ──────────────────────────
+
+function SchemaConfigFields({
+  properties,
+  values,
+  onChange,
+  idPrefix,
+}: {
+  properties: Record<string, Record<string, unknown>>;
+  values: Record<string, unknown>;
+  onChange: (key: string, value: unknown) => void;
+  idPrefix: string;
+}) {
+  return (
+    <div className="space-y-4 py-2">
+      {Object.entries(properties).map(([key, prop]) => {
+        const fieldType = String(prop.type ?? "string");
+        return (
+          <div key={key} className="space-y-1.5">
+            <Label htmlFor={`${idPrefix}-${key}`} className="text-sm">
+              {String(prop.title ?? key)}
+            </Label>
+            {fieldType === "boolean" ? (
+              <div className="flex items-center gap-2">
+                <Switch
+                  id={`${idPrefix}-${key}`}
+                  checked={Boolean(values[key])}
+                  onCheckedChange={(v) => onChange(key, v)}
+                />
+              </div>
+            ) : (
+              <Input
+                id={`${idPrefix}-${key}`}
+                type={fieldType === "number" ? "number" : "text"}
+                value={String(values[key] ?? "")}
+                onChange={(e) =>
+                  onChange(key, fieldType === "number" ? Number(e.target.value) : e.target.value)
+                }
+              />
+            )}
+            {prop.description && (
+              <p className="text-xs text-muted-foreground">{String(prop.description)}</p>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function getSchemaProperties(configSchema: unknown): Record<string, Record<string, unknown>> {
+  const schemaObj = configSchema as Record<string, unknown> | null;
+  return (schemaObj?.properties ?? {}) as Record<string, Record<string, unknown>>;
+}
+
+// ── Shared: Loaded Plugin Card ───────────────────────────────────
+
+function LoadedPluginCard({
+  plugin,
+  deployMode,
+  manageable,
+  checkMutating,
+  toggleMutating,
+  onHealthCheck,
+  onToggle,
+  onConfigure,
+}: {
+  plugin: PluginDescription;
+  deployMode: DeployMode;
+  manageable: boolean;
+  checkMutating: boolean;
+  toggleMutating: boolean;
+  onHealthCheck: () => void;
+  onToggle: (enabled: boolean) => void;
+  onConfigure: () => void;
+}) {
+  return (
+    <Card
+      className={cn(
+        "shadow-none transition-opacity",
+        !plugin.enabled && "opacity-60",
+      )}
+    >
+      <CardHeader className="py-3 pb-1">
+        <CardTitle className="flex items-center gap-2 text-sm">
+          <span className="truncate">{plugin.name}</span>
+          <Badge variant="outline" className="text-[10px]">
+            {plugin.types.join(", ")}
+          </Badge>
+          {!plugin.enabled && (
+            <Badge variant="secondary" className="text-[10px]">
+              disabled
+            </Badge>
+          )}
+        </CardTitle>
+      </CardHeader>
+      <CardContent className="py-2">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <span className="text-xs text-muted-foreground">v{plugin.version}</span>
+            <HealthBadge status={toHealthStatus(plugin.status)} />
+          </div>
+          <div className="flex items-center gap-1">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 text-xs"
+              disabled={checkMutating}
+              onClick={onHealthCheck}
+            >
+              {checkMutating ? <Loader2 className="mr-1 size-3 animate-spin" /> : null}
+              Health
+            </Button>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-7"
+              onClick={onConfigure}
+              title="Configure"
+            >
+              <Settings2 className="size-3.5" />
+            </Button>
+            <Switch
+              size="sm"
+              checked={plugin.enabled}
+              onCheckedChange={onToggle}
+              disabled={toggleMutating || !manageable}
+              title={switchTitle(manageable, plugin.enabled, deployMode)}
+            />
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 // ── Config Dialog (existing plugins) ─────────────────────────────
 
 function ConfigDialog({
@@ -121,7 +269,7 @@ function ConfigDialog({
   plugin: PluginDescription;
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  deployMode: "saas" | "self-hosted";
+  deployMode: DeployMode;
 }) {
   const { apiUrl, isCrossOrigin } = useAtlasConfig();
   const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
@@ -344,10 +492,8 @@ function MarketplaceConfigDialog({
     if (result.ok) handleOpenChange(false);
   }
 
-  // Derive simple fields from config_schema if available
-  const schemaObj = plugin.configSchema as Record<string, unknown> | null;
-  const properties = (schemaObj?.properties ?? {}) as Record<string, Record<string, unknown>>;
-  const fieldKeys = Object.keys(properties);
+  const properties = getSchemaProperties(plugin.configSchema);
+  const hasFields = Object.keys(properties).length > 0;
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
@@ -359,62 +505,31 @@ function MarketplaceConfigDialog({
           </DialogDescription>
         </DialogHeader>
 
-        {fieldKeys.length === 0 ? (
+        {!hasFields ? (
           <div className="space-y-3 py-2">
             <p className="text-sm text-muted-foreground">
               Enter configuration as JSON key-value pairs.
             </p>
-            <textarea
-              className="w-full rounded-md border bg-transparent p-3 font-mono text-xs"
+            <Textarea
+              className="font-mono text-xs"
               rows={6}
               value={JSON.stringify(values, null, 2)}
               onChange={(e) => {
                 try {
                   setValues(JSON.parse(e.target.value) as Record<string, unknown>);
                 } catch {
-                  // Allow in-progress typing — don't clear on parse error
+                  // intentionally ignored: JSON.parse fails during mid-keystroke editing; state preserves last valid value
                 }
               }}
             />
           </div>
         ) : (
-          <div className="space-y-4 py-2">
-            {fieldKeys.map((key) => {
-              const prop = properties[key]!;
-              const fieldType = String(prop.type ?? "string");
-              return (
-                <div key={key} className="space-y-1.5">
-                  <Label htmlFor={`mkt-cfg-${key}`} className="text-sm">
-                    {String(prop.title ?? key)}
-                  </Label>
-                  {fieldType === "boolean" ? (
-                    <div className="flex items-center gap-2">
-                      <Switch
-                        id={`mkt-cfg-${key}`}
-                        checked={Boolean(values[key])}
-                        onCheckedChange={(v) => setValues((p) => ({ ...p, [key]: v }))}
-                      />
-                    </div>
-                  ) : (
-                    <Input
-                      id={`mkt-cfg-${key}`}
-                      type={fieldType === "number" ? "number" : "text"}
-                      value={String(values[key] ?? "")}
-                      onChange={(e) =>
-                        setValues((p) => ({
-                          ...p,
-                          [key]: fieldType === "number" ? Number(e.target.value) : e.target.value,
-                        }))
-                      }
-                    />
-                  )}
-                  {prop.description && (
-                    <p className="text-xs text-muted-foreground">{String(prop.description)}</p>
-                  )}
-                </div>
-              );
-            })}
-          </div>
+          <SchemaConfigFields
+            properties={properties}
+            values={values}
+            onChange={(key, val) => setValues((p) => ({ ...p, [key]: val }))}
+            idPrefix="mkt-cfg"
+          />
         )}
 
         {saveMutation.error && (
@@ -473,10 +588,8 @@ function InstallDialog({
     if (result.ok) handleOpenChange(false);
   }
 
-  const schemaObj = plugin.configSchema as Record<string, unknown> | null;
-  const properties = (schemaObj?.properties ?? {}) as Record<string, Record<string, unknown>>;
-  const fieldKeys = Object.keys(properties);
-  const hasConfig = fieldKeys.length > 0;
+  const properties = getSchemaProperties(plugin.configSchema);
+  const hasConfig = Object.keys(properties).length > 0;
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
@@ -491,43 +604,12 @@ function InstallDialog({
         </DialogHeader>
 
         {hasConfig && (
-          <div className="space-y-4 py-2">
-            {fieldKeys.map((key) => {
-              const prop = properties[key]!;
-              const fieldType = String(prop.type ?? "string");
-              return (
-                <div key={key} className="space-y-1.5">
-                  <Label htmlFor={`inst-cfg-${key}`} className="text-sm">
-                    {String(prop.title ?? key)}
-                  </Label>
-                  {fieldType === "boolean" ? (
-                    <div className="flex items-center gap-2">
-                      <Switch
-                        id={`inst-cfg-${key}`}
-                        checked={Boolean(config[key])}
-                        onCheckedChange={(v) => setConfig((p) => ({ ...p, [key]: v }))}
-                      />
-                    </div>
-                  ) : (
-                    <Input
-                      id={`inst-cfg-${key}`}
-                      type={fieldType === "number" ? "number" : "text"}
-                      value={String(config[key] ?? "")}
-                      onChange={(e) =>
-                        setConfig((p) => ({
-                          ...p,
-                          [key]: fieldType === "number" ? Number(e.target.value) : e.target.value,
-                        }))
-                      }
-                    />
-                  )}
-                  {prop.description && (
-                    <p className="text-xs text-muted-foreground">{String(prop.description)}</p>
-                  )}
-                </div>
-              );
-            })}
-          </div>
+          <SchemaConfigFields
+            properties={properties}
+            values={config}
+            onChange={(key, val) => setConfig((p) => ({ ...p, [key]: val }))}
+            idPrefix="inst-cfg"
+          />
         )}
 
         {installMutation.error && (
@@ -595,8 +677,12 @@ function PluginFilterBar({
 
 function InstalledTab({
   deployMode,
+  marketplacePlugins,
+  refetchMarketplace,
 }: {
-  deployMode: "saas" | "self-hosted";
+  deployMode: DeployMode;
+  marketplacePlugins: CatalogEntry[];
+  refetchMarketplace: () => void;
 }) {
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState("all");
@@ -618,22 +704,17 @@ function InstalledTab({
   const { data: pluginData, loading: pluginsLoading, error: pluginsError, refetch: refetchPlugins } =
     useAdminFetch("/api/v1/admin/plugins", { schema: PluginListResponseSchema });
 
-  // Marketplace installations — only in SaaS mode
-  const { data: availableData, loading: availableLoading, error: availableError, refetch: refetchAvailable } =
-    useAdminFetch(
-      "/api/v1/admin/plugins/marketplace/available",
-      { schema: AvailablePluginsResponseSchema },
-    );
-
   const loadedPlugins = pluginData?.plugins ?? [];
   const manageable = pluginData?.manageable ?? false;
 
-  // Marketplace-installed plugins (from the available list, where installed === true)
-  const marketplaceInstalled = (availableData?.plugins ?? []).filter((p) => p.installed);
+  // Marketplace-installed plugins — type guard ensures installationId is string
+  const marketplaceInstalled = marketplacePlugins.filter(
+    (p): p is InstalledCatalogEntry => p.installed === true && typeof p.installationId === "string",
+  );
 
   function refetchAll() {
     refetchPlugins();
-    refetchAvailable();
+    refetchMarketplace();
   }
 
   // Filter loaded plugins
@@ -651,8 +732,7 @@ function InstalledTab({
   });
 
   const totalInstalled = filteredLoaded.length + filteredMarketplace.length;
-  const isLoading = pluginsLoading || availableLoading;
-  const fetchError = pluginsError ?? availableError;
+  const isLoading = pluginsLoading;
   const hasFilters = search !== "" || typeFilter !== "all";
 
   async function handleHealthCheck(id: string) {
@@ -706,7 +786,7 @@ function InstalledTab({
 
       <AdminContentWrapper
         loading={isLoading}
-        error={fetchError}
+        error={pluginsError}
         feature="Plugins"
         onRetry={refetchAll}
         loadingMessage="Loading plugins..."
@@ -724,73 +804,17 @@ function InstalledTab({
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {/* Config-file / runtime plugins */}
           {filteredLoaded.map((plugin) => (
-            <Card
+            <LoadedPluginCard
               key={`loaded-${plugin.id}`}
-              className={cn(
-                "shadow-none transition-opacity",
-                !plugin.enabled && "opacity-60",
-              )}
-            >
-              <CardHeader className="py-3 pb-1">
-                <CardTitle className="flex items-center gap-2 text-sm">
-                  <span className="truncate">{plugin.name}</span>
-                  <Badge variant="outline" className="text-[10px]">
-                    {plugin.types.join(", ")}
-                  </Badge>
-                  {!plugin.enabled && (
-                    <Badge variant="secondary" className="text-[10px]">
-                      disabled
-                    </Badge>
-                  )}
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="py-2">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-3">
-                    <span className="text-xs text-muted-foreground">v{plugin.version}</span>
-                    <HealthBadge status={toHealthStatus(plugin.status)} />
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-7 text-xs"
-                      disabled={checkMutation.isMutating(plugin.id)}
-                      onClick={() => handleHealthCheck(plugin.id)}
-                    >
-                      {checkMutation.isMutating(plugin.id) ? (
-                        <Loader2 className="mr-1 size-3 animate-spin" />
-                      ) : null}
-                      Health
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="size-7"
-                      onClick={() => setConfigPlugin(plugin)}
-                      title="Configure"
-                    >
-                      <Settings2 className="size-3.5" />
-                    </Button>
-                    <Switch
-                      size="sm"
-                      checked={plugin.enabled}
-                      onCheckedChange={(checked) => handleToggle(plugin.id, checked)}
-                      disabled={toggleMutation.isMutating(plugin.id) || !manageable}
-                      title={
-                        !manageable
-                          ? deployMode === "saas"
-                            ? "Configuration unavailable"
-                            : "Requires internal database"
-                          : plugin.enabled
-                            ? "Disable plugin"
-                            : "Enable plugin"
-                      }
-                    />
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
+              plugin={plugin}
+              deployMode={deployMode}
+              manageable={manageable}
+              checkMutating={checkMutation.isMutating(plugin.id)}
+              toggleMutating={toggleMutation.isMutating(plugin.id)}
+              onHealthCheck={() => handleHealthCheck(plugin.id)}
+              onToggle={(enabled) => handleToggle(plugin.id, enabled)}
+              onConfigure={() => setConfigPlugin(plugin)}
+            />
           ))}
 
           {/* Marketplace-installed plugins */}
@@ -822,7 +846,7 @@ function InstalledTab({
                     className="size-7"
                     onClick={() =>
                       setMktConfigTarget({
-                        installationId: plugin.installationId!,
+                        installationId: plugin.installationId,
                         name: plugin.name,
                         config: {},
                         configSchema: plugin.configSchema,
@@ -838,7 +862,7 @@ function InstalledTab({
                     className="size-7 text-destructive hover:text-destructive"
                     onClick={() =>
                       setUninstallTarget({
-                        id: plugin.installationId!,
+                        id: plugin.installationId,
                         name: plugin.name,
                       })
                     }
@@ -902,28 +926,22 @@ function InstalledTab({
 // ── Available Tab ────────────────────────────────────────────────
 
 function AvailableTab({
-  onInstalled,
+  marketplacePlugins,
+  loading,
+  error,
+  refetch,
 }: {
-  onInstalled: () => void;
+  marketplacePlugins: CatalogEntry[];
+  loading: boolean;
+  error: ReturnType<typeof useAdminFetch>["error"];
+  refetch: () => void;
 }) {
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState("all");
   const [installTarget, setInstallTarget] = useState<CatalogEntry | null>(null);
 
-  const { data, loading, error, refetch } = useAdminFetch(
-    "/api/v1/admin/plugins/marketplace/available",
-    { schema: AvailablePluginsResponseSchema },
-  );
-
-  function handleInstalled() {
-    refetch();
-    onInstalled();
-  }
-
-  const allPlugins = data?.plugins ?? [];
-
   // Only show not-yet-installed
-  const notInstalled = allPlugins.filter((p) => !p.installed);
+  const notInstalled = marketplacePlugins.filter((p) => !p.installed);
 
   const filtered = notInstalled.filter((p) => {
     if (search && !p.name.toLowerCase().includes(search.toLowerCase())) return false;
@@ -998,7 +1016,7 @@ function AvailableTab({
           plugin={installTarget}
           open={!!installTarget}
           onOpenChange={(open) => !open && setInstallTarget(null)}
-          onInstalled={handleInstalled}
+          onInstalled={refetch}
         />
       )}
     </div>
@@ -1066,71 +1084,17 @@ function SelfHostedPlugins() {
       >
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {displayPlugins.map((plugin) => (
-            <Card
+            <LoadedPluginCard
               key={plugin.id}
-              className={cn(
-                "shadow-none transition-opacity",
-                !plugin.enabled && "opacity-60",
-              )}
-            >
-              <CardHeader className="py-3 pb-1">
-                <CardTitle className="flex items-center gap-2 text-sm">
-                  <span className="truncate">{plugin.name}</span>
-                  <Badge variant="outline" className="text-[10px]">
-                    {plugin.types.join(", ")}
-                  </Badge>
-                  {!plugin.enabled && (
-                    <Badge variant="secondary" className="text-[10px]">
-                      disabled
-                    </Badge>
-                  )}
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="py-2">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-3">
-                    <span className="text-xs text-muted-foreground">v{plugin.version}</span>
-                    <HealthBadge status={toHealthStatus(plugin.status)} />
-                  </div>
-                  <div className="flex items-center gap-1">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="h-7 text-xs"
-                      disabled={checkMutation.isMutating(plugin.id)}
-                      onClick={() => handleHealthCheck(plugin.id)}
-                    >
-                      {checkMutation.isMutating(plugin.id) ? (
-                        <Loader2 className="mr-1 size-3 animate-spin" />
-                      ) : null}
-                      Health
-                    </Button>
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      className="size-7"
-                      onClick={() => setConfigPlugin(plugin)}
-                      title="Configure"
-                    >
-                      <Settings2 className="size-3.5" />
-                    </Button>
-                    <Switch
-                      size="sm"
-                      checked={plugin.enabled}
-                      onCheckedChange={(checked) => handleToggle(plugin.id, checked)}
-                      disabled={toggleMutation.isMutating(plugin.id) || !manageable}
-                      title={
-                        !manageable
-                          ? "Requires internal database"
-                          : plugin.enabled
-                            ? "Disable plugin"
-                            : "Enable plugin"
-                      }
-                    />
-                  </div>
-                </div>
-              </CardContent>
-            </Card>
+              plugin={plugin}
+              deployMode="self-hosted"
+              manageable={manageable}
+              checkMutating={checkMutation.isMutating(plugin.id)}
+              toggleMutating={toggleMutation.isMutating(plugin.id)}
+              onHealthCheck={() => handleHealthCheck(plugin.id)}
+              onToggle={(enabled) => handleToggle(plugin.id, enabled)}
+              onConfigure={() => setConfigPlugin(plugin)}
+            />
           ))}
         </div>
       </AdminContentWrapper>
@@ -1151,7 +1115,15 @@ function SelfHostedPlugins() {
 
 export default function PluginsPage() {
   const { deployMode } = useDeployMode();
-  const [installedKey, setInstalledKey] = useState(0);
+
+  // Marketplace available plugins — fetched once, shared by both tabs (SaaS only)
+  const { data: availableData, loading: availableLoading, error: availableError, refetch: refetchAvailable } =
+    useAdminFetch(
+      "/api/v1/admin/plugins/marketplace/available",
+      { schema: AvailablePluginsResponseSchema },
+    );
+
+  const marketplacePlugins = availableData?.plugins ?? [];
 
   return (
     <div className="p-6">
@@ -1172,10 +1144,19 @@ export default function PluginsPage() {
               <TabsTrigger value="available">Available</TabsTrigger>
             </TabsList>
             <TabsContent value="installed">
-              <InstalledTab key={installedKey} deployMode={deployMode} />
+              <InstalledTab
+                deployMode={deployMode}
+                marketplacePlugins={marketplacePlugins}
+                refetchMarketplace={refetchAvailable}
+              />
             </TabsContent>
             <TabsContent value="available">
-              <AvailableTab onInstalled={() => setInstalledKey((k) => k + 1)} />
+              <AvailableTab
+                marketplacePlugins={marketplacePlugins}
+                loading={availableLoading}
+                error={availableError}
+                refetch={refetchAvailable}
+              />
             </TabsContent>
           </Tabs>
         ) : (

@@ -4462,12 +4462,20 @@ admin.openapi(getSettingsRoute, async (c) => runHandler(c, "list settings", asyn
   // Strip internal-only saasVisible field from response
   const settings = filtered.map(({ saasVisible: _, ...rest }) => rest);
 
-  // Resolve regional API URL for the workspace (if residency is configured)
+  // Resolve regional API URL for the workspace (if residency is configured).
+  // Wrapped in try-catch so a transient DB error doesn't break the entire settings response.
   let regionApiUrl: string | undefined;
   if (orgId && config?.residency) {
-    const region = await getWorkspaceRegion(orgId);
-    if (region) {
-      regionApiUrl = config.residency.regions[region]?.apiUrl ?? undefined;
+    try {
+      const region = await getWorkspaceRegion(orgId);
+      if (region) {
+        regionApiUrl = config.residency.regions[region]?.apiUrl ?? undefined;
+      }
+    } catch (err) {
+      log.warn(
+        { err: err instanceof Error ? err.message : String(err), orgId },
+        "Failed to resolve workspace region for settings response — omitting regionApiUrl",
+      );
     }
   }
 

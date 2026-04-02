@@ -799,5 +799,61 @@ describe("admin settings routes", () => {
       const data = (await res.json()) as { regionApiUrl?: string };
       expect(data.regionApiUrl).toBeUndefined();
     });
+
+    it("omits regionApiUrl when workspace region is not in config (region drift)", async () => {
+      mockWorkspaceRegion = "ap-south"; // region assigned but decommissioned from config
+      mockConfigOverride = {
+        residency: {
+          regions: {
+            "eu-west": { label: "EU West", databaseUrl: "postgresql://eu-west/atlas", apiUrl: "https://api-eu.useatlas.dev" },
+          },
+          defaultRegion: "eu-west",
+        },
+      };
+
+      mockAuthenticateRequest.mockImplementationOnce(() =>
+        Promise.resolve({
+          authenticated: true,
+          mode: "better-auth",
+          user: { id: "ws-admin-1", mode: "better-auth", label: "WS Admin", role: "admin", activeOrganizationId: "org-1" },
+        }),
+      );
+
+      const res = await request("/api/v1/admin/settings");
+      expect(res.status).toBe(200);
+      const data = (await res.json()) as { regionApiUrl?: string };
+      expect(data.regionApiUrl).toBeUndefined();
+    });
+
+    it("returns 200 and omits regionApiUrl when getWorkspaceRegion throws", async () => {
+      mockWorkspaceRegion = null;
+      mockConfigOverride = {
+        residency: {
+          regions: {
+            "eu-west": { label: "EU West", databaseUrl: "postgresql://eu-west/atlas", apiUrl: "https://api-eu.useatlas.dev" },
+          },
+          defaultRegion: "eu-west",
+        },
+      };
+
+      // Override getWorkspaceRegion to throw (simulating a DB error)
+      const { getWorkspaceRegion: gwrMock } = await import("@atlas/api/lib/db/internal");
+      (gwrMock as ReturnType<typeof mock>).mockImplementationOnce(() => {
+        throw new Error("connection refused");
+      });
+
+      mockAuthenticateRequest.mockImplementationOnce(() =>
+        Promise.resolve({
+          authenticated: true,
+          mode: "better-auth",
+          user: { id: "ws-admin-1", mode: "better-auth", label: "WS Admin", role: "admin", activeOrganizationId: "org-1" },
+        }),
+      );
+
+      const res = await request("/api/v1/admin/settings");
+      expect(res.status).toBe(200);
+      const data = (await res.json()) as { regionApiUrl?: string };
+      expect(data.regionApiUrl).toBeUndefined();
+    });
   });
 });

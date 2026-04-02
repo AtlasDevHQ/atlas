@@ -764,6 +764,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] Status page — public health dashboard (#877, PR #921)
 - [ ] Status page follow-up — incident management, subscriptions, maintenance (#953)
 - [ ] Regional API deployment for tier-2 data residency compliance (#1069)
+- [x] Docs — semantic editor, plugin marketplace, platform plugin catalog guides (#1141)
 
 ---
 

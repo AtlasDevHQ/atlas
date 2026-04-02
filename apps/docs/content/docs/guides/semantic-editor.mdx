@@ -1,0 +1,131 @@
+---
+title: Semantic Editor
+description: Create, edit, and version semantic entities from the web UI with schema-aware autocomplete and full version history.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+The semantic editor lets workspace admins create and manage semantic entities directly from the admin console — no YAML files or CLI required.
+
+<Callout title="Prerequisites">
+- [Managed auth](/deployment/authentication#managed-auth) enabled
+- An internal database configured (`DATABASE_URL`)
+- A user with the `admin` role
+- **SaaS mode** — entity editing is available on app.useatlas.dev. In self-hosted mode the semantic layer is read-only in the UI (manage it via YAML files or the CLI)
+</Callout>
+
+---
+
+## Browsing the Semantic Layer
+
+Navigate to **Admin > Semantic Layer** (`/admin/semantic`). The page has two panels:
+
+- **Left sidebar** — A file tree showing entities, metrics, glossary, and catalog
+- **Right panel** — Detail view with a **Pretty** / **YAML** / **History** toggle
+
+Click any item in the sidebar to view its details. Entities show parsed dimensions, measures, joins, and query patterns in Pretty mode. Switch to YAML mode to see the raw source.
+
+---
+
+## Creating an Entity
+
+1. Click **Add Entity** in the top-right corner
+2. Fill in the entity form:
+   - **Table Name** — The database table this entity maps to
+   - **Description** — What this table contains (used by the agent for context)
+   - **Dimensions** — Columns the agent can group or filter by (name, SQL expression, type, description, sample values)
+   - **Measures** — Aggregation expressions (name, SQL expression, aggregation type, description)
+   - **Joins** — Relationships to other entities (name, join SQL, description)
+   - **Query Patterns** — Pre-built SQL templates the agent can reference (name, description, SQL)
+3. Click **Create Entity**
+
+The entity is immediately available to the agent for query generation.
+
+### Schema-Aware Autocomplete
+
+When you type a table name, Atlas queries the connected datasource for column metadata. This provides:
+
+- **Column name suggestions** — Dimension and measure SQL fields offer autocomplete from actual database columns via a browser `<datalist>`
+- **Automatic type detection** — When you enter a column name in a dimension's SQL field and tab out, the type dropdown auto-selects the matching type (e.g., `varchar` → `string`, `timestamp` → `timestamp`, `integer` → `number`)
+- **Column validation warnings** — If a SQL expression references a column that doesn't exist in the table, an amber warning appears: "Column not found in table"
+- **Table not found warning** — If the table name doesn't exist in the connected datasource, a banner warns you but still allows saving
+
+---
+
+## Editing an Entity
+
+1. Select an entity in the sidebar
+2. Click **Edit** in the toolbar above the detail view
+3. The editor dialog opens pre-populated with the entity's current values
+4. Modify any fields — add or remove dimensions, update descriptions, change join conditions
+5. Click **Save Changes**
+
+Changes take effect immediately — the agent uses the updated entity definition on its next query.
+
+<Callout type="info">
+The **Table Name** field is read-only when editing. To rename a table mapping, delete the entity and create a new one.
+</Callout>
+
+---
+
+## Deleting an Entity
+
+1. Select an entity in the sidebar
+2. Click **Delete** in the toolbar
+3. Confirm the deletion in the dialog
+
+Deletion is permanent — the agent will no longer be able to query this table. A version snapshot is not created for deletions.
+
+---
+
+## Version History
+
+Every time you save an entity through the editor, Atlas creates a version snapshot. View the history by selecting an entity and switching to the **History** tab in the toggle bar.
+
+### Viewing Versions
+
+The version list shows:
+
+- **Version number** — Sequential, starting from 1
+- **Timestamp** — When the version was created (relative time, hover for absolute)
+- **Author** — Who made the change
+- **Change summary** — Auto-generated description of what changed (e.g., "Added 2 dimensions, removed 1 measure")
+- **Current badge** — The latest version is marked as "current"
+
+### Comparing Versions
+
+1. Check the boxes next to two versions you want to compare
+2. Click **Compare**
+3. A diff view shows structural changes grouped by section (Dimensions, Measures, Joins, Patterns, Meta):
+   - **Added** items in green
+   - **Removed** items in red
+   - **Changed** items in amber
+
+### Restoring a Previous Version
+
+1. Click **Restore** next to any non-current version
+2. Confirm the rollback in the dialog
+3. The entity content is restored from that version
+
+Restoring creates a new version recording the rollback — you can always undo by restoring a newer version. The original versions are preserved.
+
+---
+
+## API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `PUT` | `/api/v1/admin/semantic/entities/edit/:name` | Create or update an entity |
+| `DELETE` | `/api/v1/admin/semantic/entities/edit/:name` | Delete an entity |
+| `GET` | `/api/v1/admin/semantic/columns/:tableName` | Get column metadata for autocomplete |
+| `GET` | `/api/v1/admin/semantic/entities/:name/versions` | List version history (paginated) |
+| `GET` | `/api/v1/admin/semantic/entities/versions/:versionId` | Get version detail with YAML content |
+| `POST` | `/api/v1/admin/semantic/entities/:name/rollback` | Rollback to a previous version |
+
+---
+
+## See Also
+
+- [Semantic Layer](/getting-started/semantic-layer) — YAML format reference
+- [Admin Console](/guides/admin-console#semantic-layer-browser) — Browsing the semantic layer
+- [Semantic Layer Wizard](/guides/semantic-layer-wizard) — CLI-based generation with `atlas init`

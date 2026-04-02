@@ -9,6 +9,7 @@
     "sla-monitoring",
     "backups",
     "data-residency",
-    "abuse-prevention"
+    "abuse-prevention",
+    "plugin-catalog"
   ]
 }

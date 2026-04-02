@@ -1,0 +1,120 @@
+---
+title: Plugin Catalog Management
+description: Manage the global plugin catalog that controls which plugins workspaces can discover and install.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+The plugin catalog is the platform-level registry of plugins available for installation. Platform operators add plugins to the catalog, set plan-tier requirements, and control visibility. Workspaces install plugins from this catalog via the [Plugin Marketplace](/guides/plugin-marketplace).
+
+<Callout title="Prerequisites">
+- [Managed auth](/deployment/authentication#managed-auth) enabled
+- Internal database configured (`DATABASE_URL`)
+- `platform_admin` user role
+</Callout>
+
+---
+
+## Accessing the Catalog
+
+Navigate to **Admin > Platform Admin > Plugin Catalog** (`/admin/platform/plugins`). The page shows a table of all catalog entries with columns for plugin name, type, minimum plan, enabled status, and creation date.
+
+---
+
+## Adding a Plugin to the Catalog
+
+1. Click **Add Plugin** in the top-right corner
+2. Fill in the form:
+   - **Name** — Display name shown to workspace admins
+   - **Slug** — Unique lowercase identifier (e.g., `my-datasource`). Cannot be changed after creation
+   - **Description** — What the plugin does (shown in the marketplace)
+   - **Type** — Plugin category: Datasource, Context, Interaction, Action, or Sandbox
+   - **Minimum Plan** — The lowest plan tier that can install this plugin (Free, Trial, Team, or Enterprise)
+   - **npm Package** — Optional package name (e.g., `@useatlas/plugin-bigquery`)
+   - **Icon URL** — Optional icon for marketplace display
+   - **Config Schema (JSON)** — Optional JSON Schema defining configuration fields. When set, workspace admins see typed form fields during installation and configuration
+   - **Enabled** — Whether the plugin is visible to workspaces
+3. Click **Add to Catalog**
+
+The plugin is immediately available for workspaces on matching plan tiers.
+
+---
+
+## Editing a Catalog Entry
+
+1. Click the **pencil icon** next to any entry in the table
+2. Modify fields as needed (the slug cannot be changed)
+3. Click **Save Changes**
+
+Changes to visibility or plan requirements take effect immediately — workspaces see the updated catalog on their next page load.
+
+---
+
+## Enabling and Disabling Plugins
+
+Use the **toggle switch** in the Status column to enable or disable a plugin:
+
+- **Enabled** — Visible in the workspace marketplace. Workspaces can install it
+- **Disabled** — Hidden from the marketplace. Existing installations continue to work, but no new installations are allowed
+
+---
+
+## Removing a Plugin from the Catalog
+
+1. Click the **trash icon** next to the entry
+2. Confirm the deletion
+
+<Callout type="warn">
+Deleting a catalog entry **automatically uninstalls the plugin from all workspaces** that currently have it. This action cannot be undone. Consider disabling the plugin instead if you want to prevent new installations while preserving existing ones.
+</Callout>
+
+---
+
+## Config Schema
+
+The config schema uses JSON Schema format to define fields that workspace admins fill in when installing or configuring a plugin. Example:
+
+```json
+{
+  "properties": {
+    "apiKey": {
+      "type": "string",
+      "title": "API Key",
+      "description": "Your service API key"
+    },
+    "region": {
+      "type": "string",
+      "title": "Region",
+      "description": "Deployment region"
+    },
+    "enableCache": {
+      "type": "boolean",
+      "title": "Enable Cache",
+      "description": "Cache query results"
+    }
+  }
+}
+```
+
+When a config schema is set, the marketplace shows a typed form with proper input controls (text fields, toggles, etc.) instead of a raw JSON editor.
+
+---
+
+## API Endpoints
+
+All platform catalog endpoints require the `platform_admin` role.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/v1/platform/plugins/catalog` | List all catalog entries |
+| `POST` | `/api/v1/platform/plugins/catalog` | Create a new catalog entry |
+| `PUT` | `/api/v1/platform/plugins/catalog/:id` | Update a catalog entry |
+| `DELETE` | `/api/v1/platform/plugins/catalog/:id` | Delete entry + cascade uninstall |
+
+---
+
+## See Also
+
+- [Plugin Marketplace](/guides/plugin-marketplace) — Workspace admin guide for installing plugins
+- [Platform Admin Console](/platform-ops/platform-admin) — Cross-tenant management overview
+- [Plugin Authoring Guide](/plugins/authoring-guide) — Build custom plugins

@@ -1,0 +1,129 @@
+---
+title: Plugin Marketplace
+description: Browse, install, configure, and uninstall plugins from the workspace plugin marketplace.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+The plugin marketplace lets workspace admins discover and install plugins without editing configuration files. Browse available plugins, install them with one click, configure settings, and uninstall when no longer needed.
+
+<Callout title="Prerequisites">
+- [Managed auth](/deployment/authentication#managed-auth) enabled
+- An internal database configured (`DATABASE_URL`)
+- A user with the `admin` role
+- **SaaS mode** — the marketplace is available on app.useatlas.dev. In self-hosted mode, manage plugins via `atlas.config.ts`
+</Callout>
+
+---
+
+## Accessing the Marketplace
+
+Navigate to **Admin > Plugins** (`/admin/plugins`). In SaaS mode, the page shows two tabs:
+
+- **Installed** — Plugins currently active in your workspace (both config-loaded and marketplace-installed)
+- **Available** — Plugins in the platform catalog that you haven't installed yet
+
+In self-hosted mode, only config-loaded plugins are shown with a note to manage them via `atlas.config.ts`.
+
+---
+
+## Browsing Available Plugins
+
+Switch to the **Available** tab to see plugins you can install. Each card shows:
+
+- **Name** and **type badge** (Datasource, Context, Interaction, Action, Sandbox)
+- **Description** of what the plugin does
+- **Enterprise badge** — if the plugin requires an enterprise plan
+- **Install button**
+
+Use the **search bar** to filter by name or the **type dropdown** to filter by plugin category.
+
+<Callout type="info">
+Available plugins are filtered by your workspace's plan tier. Enterprise-only plugins won't appear on team plans.
+</Callout>
+
+---
+
+## Installing a Plugin
+
+1. Find the plugin in the **Available** tab
+2. Click **Install**
+3. If the plugin has a config schema, a dialog appears with configuration fields — fill them in
+4. If no config is needed, a confirmation dialog appears
+5. Click **Install** to confirm
+
+The plugin is immediately available in your workspace. It appears in the **Installed** tab with a **marketplace** badge.
+
+---
+
+## Configuring Installed Plugins
+
+### Marketplace Plugins
+
+1. In the **Installed** tab, find the marketplace plugin (marked with a "marketplace" badge)
+2. Click the **gear icon** (Configure)
+3. If the plugin defines a config schema, typed form fields appear (text, number, boolean, select). If not, a JSON editor is shown
+4. Edit the configuration values
+5. Click **Save**
+
+Changes take effect immediately.
+
+### Config-Loaded Plugins
+
+Config-loaded plugins (from `atlas.config.ts`) also appear in the Installed tab. Click the **gear icon** to open the config dialog:
+
+- If the plugin exposes a `getConfigSchema()`, a typed form is shown
+- If not, current config is displayed as read-only JSON
+- Config changes are saved to the internal database and take effect on restart
+
+<Callout type="info">
+Without an internal database, plugin configuration is read-only — all values come from `atlas.config.ts`.
+</Callout>
+
+---
+
+## Managing Plugin State
+
+For config-loaded plugins:
+
+- **Enable/disable toggle** — Toggle a plugin on or off without restarting. Disabled plugins are excluded from the agent loop
+- **Health check** — Click **Health** to run a live probe and see the plugin's status
+
+<Callout type="info">
+The enable/disable toggle requires an internal database (`DATABASE_URL`). Without it, all plugins are always enabled.
+</Callout>
+
+---
+
+## Uninstalling a Plugin
+
+1. In the **Installed** tab, find the marketplace plugin
+2. Click the **trash icon** (Uninstall)
+3. Confirm in the dialog
+
+The plugin is removed from your workspace. You can reinstall it later from the Available tab. Config-loaded plugins cannot be uninstalled from the UI — remove them from `atlas.config.ts`.
+
+---
+
+## API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/v1/admin/plugins/marketplace/available` | List available plugins for this workspace |
+| `POST` | `/api/v1/admin/plugins/marketplace/install` | Install a plugin (body: `{ catalogId, config? }`) |
+| `DELETE` | `/api/v1/admin/plugins/marketplace/:id` | Uninstall a marketplace plugin |
+| `PUT` | `/api/v1/admin/plugins/marketplace/:id/config` | Update marketplace plugin config |
+| `GET` | `/api/v1/admin/plugins` | List all installed plugins (config + marketplace) |
+| `POST` | `/api/v1/admin/plugins/:id/health` | Run health check |
+| `POST` | `/api/v1/admin/plugins/:id/enable` | Enable a plugin |
+| `POST` | `/api/v1/admin/plugins/:id/disable` | Disable a plugin |
+| `GET` | `/api/v1/admin/plugins/:id/schema` | Get config schema and values |
+| `PUT` | `/api/v1/admin/plugins/:id/config` | Update config-loaded plugin config |
+
+---
+
+## See Also
+
+- [Admin Console — Plugins](/guides/admin-console#plugins) — Overview of the plugins admin page
+- [Plugin Catalog](/platform-ops/plugin-catalog) — Platform operator guide for managing the catalog
+- [Plugin Authoring Guide](/plugins/authoring-guide) — Build custom plugins

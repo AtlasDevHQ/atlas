@@ -5,7 +5,7 @@
   "description": "Atlas text-to-SQL data analyst agent (Next.js + Vercel)",
   "scripts": {
     "dev": "next dev --turbopack",
-    "build": "bun run type && next build",
+    "build": "next build",
     "start": "next start",
     "lint": "eslint src/",
     "type": "tsgo --noEmit",

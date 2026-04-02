@@ -21,7 +21,7 @@ The semantic editor lets workspace admins create and manage semantic entities di
 Navigate to **Admin > Semantic Layer** (`/admin/semantic`). The page has two panels:
 
 - **Left sidebar** — A file tree showing entities, metrics, glossary, and catalog
-- **Right panel** — Detail view with a **Pretty** / **YAML** / **History** toggle
+- **Right panel** — Detail view with a **Pretty** / **YAML** toggle (entities also show a **History** tab)
 
 Click any item in the sidebar to view its details. Entities show parsed dimensions, measures, joins, and query patterns in Pretty mode. Switch to YAML mode to see the raw source.
 
@@ -46,7 +46,7 @@ The entity is immediately available to the agent for query generation.
 When you type a table name, Atlas queries the connected datasource for column metadata. This provides:
 
 - **Column name suggestions** — Dimension and measure SQL fields offer autocomplete from actual database columns via a browser `<datalist>`
-- **Automatic type detection** — When you enter a column name in a dimension's SQL field and tab out, the type dropdown auto-selects the matching type (e.g., `varchar` → `string`, `timestamp` → `timestamp`, `integer` → `number`)
+- **Automatic type detection** — When you enter a column name in a dimension's SQL field and tab out, the type dropdown auto-selects the matching type (e.g., `varchar` → `string`, `timestamp` → `timestamp`, `integer` → `number`). Only applies when the type is still set to the default ("string") — manually chosen types are not overwritten
 - **Column validation warnings** — If a SQL expression references a column that doesn't exist in the table, an amber warning appears: "Column not found in table"
 - **Table not found warning** — If the table name doesn't exist in the connected datasource, a banner warns you but still allows saving
 
@@ -120,7 +120,7 @@ Restoring creates a new version recording the rollback — you can always undo b
 | `GET` | `/api/v1/admin/semantic/columns/:tableName` | Get column metadata for autocomplete |
 | `GET` | `/api/v1/admin/semantic/entities/:name/versions` | List version history (paginated) |
 | `GET` | `/api/v1/admin/semantic/entities/versions/:versionId` | Get version detail with YAML content |
-| `POST` | `/api/v1/admin/semantic/entities/:name/rollback` | Rollback to a previous version |
+| `POST` | `/api/v1/admin/semantic/entities/:name/rollback` | Rollback to a previous version (body: `{ versionId }`) |
 
 ---
 

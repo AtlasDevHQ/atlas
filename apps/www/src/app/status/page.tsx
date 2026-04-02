@@ -3,6 +3,15 @@
 import { useEffect, useState } from "react";
 
 // ---------------------------------------------------------------------------
+// External status page redirect
+// ---------------------------------------------------------------------------
+// When NEXT_PUBLIC_STATUS_URL is set (SaaS deployment), redirect to the
+// external status page (e.g. OpenStatus at status.useatlas.dev). The external
+// page runs on independent infrastructure so it's reachable during outages.
+// Self-hosted deployments leave this unset and get the built-in health checks.
+const EXTERNAL_STATUS_URL = process.env.NEXT_PUBLIC_STATUS_URL;
+
+// ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
@@ -211,6 +220,32 @@ function ArrowLeftIcon() {
 // ---------------------------------------------------------------------------
 
 export default function StatusPage() {
+  // ---- External redirect (SaaS mode) ----
+  useEffect(() => {
+    if (EXTERNAL_STATUS_URL) {
+      window.location.replace(EXTERNAL_STATUS_URL);
+    }
+  }, []);
+
+  if (EXTERNAL_STATUS_URL) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-zinc-950">
+        <p className="font-mono text-sm text-zinc-500">
+          Redirecting to{" "}
+          <a href={EXTERNAL_STATUS_URL} className="text-zinc-300 underline">
+            status page
+          </a>
+          ...
+        </p>
+      </div>
+    );
+  }
+
+  // ---- Built-in health checks (self-hosted mode) ----
+  return <BuiltInStatusPage />;
+}
+
+function BuiltInStatusPage() {
   const [services, setServices] = useState<ServiceState[]>(
     SERVICES.map((s) => ({ name: s.name, description: s.description, status: "checking" })),
   );

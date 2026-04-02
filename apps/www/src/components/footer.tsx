@@ -1,5 +1,7 @@
 import { AtlasLogo, GitHubIcon } from "./shared";
 
+const STATUS_URL = process.env.NEXT_PUBLIC_STATUS_URL || "/status";
+
 export function Footer() {
   return (
     <footer className="mx-auto max-w-5xl px-6 pb-12">
@@ -28,7 +30,7 @@ export function Footer() {
           <a href="https://app.useatlas.dev" className="text-xs text-zinc-600 transition-colors hover:text-zinc-400">
             Atlas Cloud
           </a>
-          <a href="/status" className="text-xs text-zinc-600 transition-colors hover:text-zinc-400">
+          <a href={STATUS_URL} className="text-xs text-zinc-600 transition-colors hover:text-zinc-400">
             Status
           </a>
           <a href="https://github.com/AtlasDevHQ/atlas" className="text-xs text-zinc-600 transition-colors hover:text-zinc-400">

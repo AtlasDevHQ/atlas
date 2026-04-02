@@ -5,6 +5,10 @@ import { AtlasChat } from "@useatlas/react";
 import { authClient } from "@/lib/auth/client";
 import { API_URL, IS_CROSS_ORIGIN } from "@/lib/api-url";
 import { NavBar } from "@/ui/components/tour/nav-bar";
+import { IncidentBanner } from "@/ui/components/incident-banner";
+
+const OPENSTATUS_SLUG = process.env.NEXT_PUBLIC_OPENSTATUS_SLUG;
+const STATUS_URL = process.env.NEXT_PUBLIC_STATUS_URL;
 
 const GuidedTour = dynamic(
   () => import("@/ui/components/tour/guided-tour").then((m) => m.GuidedTour),
@@ -32,6 +36,7 @@ export default function Home() {
       serverTrackingEnabled={serverTrackingEnabled}
     >
       <div className="flex h-dvh flex-col">
+        <IncidentBanner slug={OPENSTATUS_SLUG} statusUrl={STATUS_URL} />
         <NavBar isAdmin={isAdmin} />
         {/* Override AtlasChat's h-dvh so it fills remaining space below the NavBar */}
         <div className="flex-1 overflow-hidden [&_.atlas-root]:h-full">

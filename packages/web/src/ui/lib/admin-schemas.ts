@@ -340,7 +340,7 @@ export const RegionMigrationSchema = z.object({
   workspaceId: z.string(),
   sourceRegion: z.string(),
   targetRegion: z.string(),
-  status: z.enum(["pending", "in_progress", "completed", "failed"]),
+  status: z.enum(["pending", "in_progress", "completed", "failed", "cancelled"]),
   requestedBy: z.string().nullable(),
   requestedAt: z.string(),
   completedAt: z.string().nullable(),

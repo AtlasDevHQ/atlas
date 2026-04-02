@@ -14,6 +14,12 @@ import { runEffect } from "@atlas/api/lib/effect/hono";
 import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
+import {
+  triggerMigrationExecution,
+  failStaleMigrations,
+  resetMigrationForRetry,
+  cancelMigration,
+} from "@atlas/api/lib/residency/migrate";
 import { MIGRATION_STATUSES } from "@useatlas/types";
 import type { RegionMigration } from "@useatlas/types";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
@@ -258,6 +264,72 @@ const requestMigrationRoute = createRoute({
     },
     429: {
       description: "Rate limited — one migration per 30 days",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const retryMigrationRoute = createRoute({
+  method: "post",
+  path: "/migrate/{id}/retry",
+  tags: ["Admin — Data Residency"],
+  summary: "Retry a failed migration",
+  description:
+    "Resets a failed migration to pending status and re-triggers execution. " +
+    "Only works for migrations in 'failed' status.",
+  request: {
+    params: z.object({ id: z.string() }),
+  },
+  responses: {
+    200: {
+      description: "Migration retried",
+      content: { "application/json": { schema: MigrationSchema } },
+    },
+    400: {
+      description: "Migration cannot be retried",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    404: {
+      description: "Migration or internal database not found",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const cancelMigrationRoute = createRoute({
+  method: "post",
+  path: "/migrate/{id}/cancel",
+  tags: ["Admin — Data Residency"],
+  summary: "Cancel a pending migration",
+  description:
+    "Cancels a migration that is still in 'pending' status. " +
+    "In-progress migrations cannot be cancelled.",
+  request: {
+    params: z.object({ id: z.string() }),
+  },
+  responses: {
+    200: {
+      description: "Migration cancelled",
+      content: {
+        "application/json": {
+          schema: z.object({ cancelled: z.boolean() }),
+        },
+      },
+    },
+    400: {
+      description: "Migration cannot be cancelled",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    404: {
+      description: "Migration or internal database not found",
       content: { "application/json": { schema: ErrorSchema } },
     },
     500: {
@@ -549,6 +621,14 @@ adminResidency.openapi(requestMigrationRoute, async (c) => {
         "Region migration requested",
       );
 
+      // Trigger background execution (Phase 2)
+      triggerMigrationExecution(migrationId);
+
+      // Also check for stale migrations while we're here
+      failStaleMigrations().catch((err) => {
+        log.warn({ err: err instanceof Error ? err.message : String(err) }, "Stale migration check failed");
+      });
+
       const migration = {
         id: migrationId,
         workspaceId: orgId,
@@ -564,6 +644,102 @@ adminResidency.openapi(requestMigrationRoute, async (c) => {
       return c.json(migration, 201);
     }),
     { label: "request region migration" },
+  );
+});
+
+// ---------------------------------------------------------------------------
+// POST /migrate/:id/retry — retry a failed migration
+// ---------------------------------------------------------------------------
+
+adminResidency.openapi(retryMigrationRoute, async (c) => {
+  return runEffect(
+    c,
+    Effect.gen(function* () {
+      const { requestId } = yield* RequestContext;
+      const { orgId } = yield* AuthContext;
+      const { id } = c.req.valid("param");
+
+      if (!hasInternalDB()) {
+        return c.json({ error: "not_available", message: "Migration tracking requires an internal database.", requestId }, 404);
+      }
+
+      const result = yield* Effect.promise(() => resetMigrationForRetry(id, orgId!));
+      if (!result.ok) {
+        const status = result.reason === "not_found" ? 404 : 400;
+        return c.json({ error: "retry_failed", message: result.error, requestId }, status as 400 | 404);
+      }
+
+      // Re-trigger execution
+      triggerMigrationExecution(id);
+
+      // Fetch updated migration to return
+      const rows = yield* Effect.promise(() =>
+        internalQuery<{
+          id: string;
+          workspace_id: string;
+          source_region: string;
+          target_region: string;
+          status: string;
+          requested_by: string | null;
+          requested_at: string;
+          completed_at: string | null;
+          error_message: string | null;
+        }>(
+          `SELECT id, workspace_id, source_region, target_region, status, requested_by, requested_at, completed_at, error_message
+           FROM region_migrations WHERE id = $1 AND workspace_id = $2`,
+          [id, orgId],
+        ),
+      );
+
+      const row = rows[0];
+      if (!row) {
+        return c.json({ error: "retry_failed", message: "Migration record not found after reset.", requestId }, 404);
+      }
+
+      log.info({ requestId, migrationId: id }, "Migration retry triggered");
+
+      return c.json({
+        id: row.id,
+        workspaceId: row.workspace_id,
+        sourceRegion: row.source_region,
+        targetRegion: row.target_region,
+        status: row.status as typeof MIGRATION_STATUSES[number],
+        requestedBy: row.requested_by,
+        requestedAt: row.requested_at,
+        completedAt: row.completed_at,
+        errorMessage: row.error_message,
+      }, 200);
+    }),
+    { label: "retry region migration" },
+  );
+});
+
+// ---------------------------------------------------------------------------
+// POST /migrate/:id/cancel — cancel a pending migration
+// ---------------------------------------------------------------------------
+
+adminResidency.openapi(cancelMigrationRoute, async (c) => {
+  return runEffect(
+    c,
+    Effect.gen(function* () {
+      const { requestId } = yield* RequestContext;
+      const { orgId } = yield* AuthContext;
+      const { id } = c.req.valid("param");
+
+      if (!hasInternalDB()) {
+        return c.json({ error: "not_available", message: "Migration tracking requires an internal database.", requestId }, 404);
+      }
+
+      const result = yield* Effect.promise(() => cancelMigration(id, orgId!));
+      if (!result.ok) {
+        const status = result.reason === "not_found" ? 404 : 400;
+        return c.json({ error: "cancel_failed", message: result.error, requestId }, status as 400 | 404);
+      }
+
+      log.info({ requestId, migrationId: id }, "Migration cancelled");
+      return c.json({ cancelled: true }, 200);
+    }),
+    { label: "cancel region migration" },
   );
 });
 

@@ -50,7 +50,7 @@ import {
 } from "@/ui/lib/admin-schemas";
 import type { RegionPickerItem, RegionMigration } from "@/ui/lib/types";
 import { formatDate } from "@/lib/format";
-import { Globe, MapPin, AlertTriangle, ArrowRight, Clock, Loader2, XCircle, CheckCircle2 } from "lucide-react";
+import { Globe, MapPin, AlertTriangle, ArrowRight, Clock, Loader2, XCircle, CheckCircle2, RefreshCw, Ban } from "lucide-react";
 
 // ── Schemas ───────────────────────────────────────────────────────
 
@@ -92,6 +92,16 @@ export default function ResidencyPage() {
     invalidates: () => { refetch(); refetchMigration(); },
   });
 
+  const retryMutation = useAdminMutation({
+    method: "POST",
+    invalidates: () => { refetch(); refetchMigration(); },
+  });
+
+  const cancelMutation = useAdminMutation({
+    method: "POST",
+    invalidates: () => { refetch(); refetchMigration(); },
+  });
+
   const handleAssign = async (region: string) => {
     const result = await assignMutation.mutate({ body: { region } });
     return result.ok;
@@ -99,6 +109,20 @@ export default function ResidencyPage() {
 
   const handleMigrate = async (targetRegion: string) => {
     const result = await migrateMutation.mutate({ body: { targetRegion } });
+    return result.ok;
+  };
+
+  const handleRetry = async (migrationId: string) => {
+    const result = await retryMutation.mutate({
+      path: `/api/v1/admin/residency/migrate/${migrationId}/retry`,
+    });
+    return result.ok;
+  };
+
+  const handleCancel = async (migrationId: string) => {
+    const result = await cancelMutation.mutate({
+      path: `/api/v1/admin/residency/migrate/${migrationId}/cancel`,
+    });
     return result.ok;
   };
 
@@ -141,6 +165,26 @@ export default function ResidencyPage() {
           />
         )}
 
+        {retryMutation.error && (
+          <ErrorBanner
+            message={retryMutation.error}
+            onRetry={() => {
+              retryMutation.clearError();
+              refetchMigration();
+            }}
+          />
+        )}
+
+        {cancelMutation.error && (
+          <ErrorBanner
+            message={cancelMutation.error}
+            onRetry={() => {
+              cancelMutation.clearError();
+              refetchMigration();
+            }}
+          />
+        )}
+
         <AdminContentWrapper
           loading={loading}
           error={error}
@@ -156,8 +200,12 @@ export default function ResidencyPage() {
               migration={migrationData?.migration ?? null}
               onAssign={handleAssign}
               onMigrate={handleMigrate}
+              onRetry={handleRetry}
+              onCancel={handleCancel}
               saving={assignMutation.saving}
               migrating={migrateMutation.saving}
+              retrying={retryMutation.saving}
+              cancelling={cancelMutation.saving}
             />
           )}
         </AdminContentWrapper>
@@ -175,16 +223,24 @@ function ResidencyContent({
   migration,
   onAssign,
   onMigrate,
+  onRetry,
+  onCancel,
   saving,
   migrating,
+  retrying,
+  cancelling,
 }: {
   data: ResidencyStatus;
   isSaas: boolean;
   migration: RegionMigration | null;
   onAssign: (region: string) => Promise<boolean>;
   onMigrate: (targetRegion: string) => Promise<boolean>;
+  onRetry: (migrationId: string) => Promise<boolean>;
+  onCancel: (migrationId: string) => Promise<boolean>;
   saving: boolean;
   migrating: boolean;
+  retrying: boolean;
+  cancelling: boolean;
 }) {
   if (!data.configured) {
     return <NotConfiguredCard isSaas={isSaas} />;
@@ -193,7 +249,15 @@ function ResidencyContent({
   if (data.region) {
     return (
       <div className="space-y-4">
-        {migration && <MigrationStatusBanner migration={migration} />}
+        {migration && (
+          <MigrationStatusBanner
+            migration={migration}
+            onRetry={onRetry}
+            onCancel={onCancel}
+            retrying={retrying}
+            cancelling={cancelling}
+          />
+        )}
         <AssignedRegionCard
           status={data}
           isSaas={isSaas}
@@ -234,24 +298,53 @@ function ResidencyContent({
 
 // ── Migration Status Banner ──────────────────────────────────────
 
-function MigrationStatusBanner({ migration }: { migration: RegionMigration }) {
+function MigrationStatusBanner({
+  migration,
+  onRetry,
+  onCancel,
+  retrying,
+  cancelling,
+}: {
+  migration: RegionMigration;
+  onRetry: (migrationId: string) => Promise<boolean>;
+  onCancel: (migrationId: string) => Promise<boolean>;
+  retrying: boolean;
+  cancelling: boolean;
+}) {
   switch (migration.status) {
     case "pending":
       return (
         <div className="flex items-start gap-3 rounded-md border border-blue-200 bg-blue-50 p-4 dark:border-blue-900 dark:bg-blue-950/50">
           <Clock className="mt-0.5 h-5 w-5 shrink-0 text-blue-600 dark:text-blue-400" />
-          <div className="text-sm">
+          <div className="flex-1 text-sm">
             <p className="font-medium text-blue-800 dark:text-blue-200">
               Migration requested
             </p>
             <p className="mt-1 text-blue-700 dark:text-blue-300">
               Your request to migrate from <strong>{migration.sourceRegion}</strong> to{" "}
-              <strong>{migration.targetRegion}</strong> has been recorded. Our team will
-              process this shortly.
+              <strong>{migration.targetRegion}</strong> is queued for processing.
             </p>
             <p className="mt-1 text-xs text-blue-600 dark:text-blue-400">
               Requested {formatDate(migration.requestedAt)}
             </p>
+            <div className="mt-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => onCancel(migration.id)}
+                disabled={cancelling}
+                className="border-blue-300 text-blue-700 hover:bg-blue-100 dark:border-blue-800 dark:text-blue-300 dark:hover:bg-blue-900"
+              >
+                {cancelling ? (
+                  <>
+                    <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />
+                    Cancelling...
+                  </>
+                ) : (
+                  "Cancel Migration"
+                )}
+              </Button>
+            </div>
           </div>
         </div>
       );
@@ -290,12 +383,49 @@ function MigrationStatusBanner({ migration }: { migration: RegionMigration }) {
       return (
         <div className="flex items-start gap-3 rounded-md border border-red-200 bg-red-50 p-4 dark:border-red-900 dark:bg-red-950/50">
           <XCircle className="mt-0.5 h-5 w-5 shrink-0 text-red-600 dark:text-red-400" />
-          <div className="text-sm">
+          <div className="flex-1 text-sm">
             <p className="font-medium text-red-800 dark:text-red-200">
               Migration failed
             </p>
             <p className="mt-1 text-red-700 dark:text-red-300">
               {migration.errorMessage ?? "The migration could not be completed. Please contact support for assistance."}
+            </p>
+            <div className="mt-2">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => onRetry(migration.id)}
+                disabled={retrying}
+                className="border-red-300 text-red-700 hover:bg-red-100 dark:border-red-800 dark:text-red-300 dark:hover:bg-red-900"
+              >
+                {retrying ? (
+                  <>
+                    <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />
+                    Retrying...
+                  </>
+                ) : (
+                  <>
+                    <RefreshCw className="mr-1.5 h-3 w-3" />
+                    Retry Migration
+                  </>
+                )}
+              </Button>
+            </div>
+          </div>
+        </div>
+      );
+    case "cancelled":
+      return (
+        <div className="flex items-start gap-3 rounded-md border border-border bg-muted/50 p-4">
+          <Ban className="mt-0.5 h-5 w-5 shrink-0 text-muted-foreground" />
+          <div className="text-sm">
+            <p className="font-medium">
+              Migration cancelled
+            </p>
+            <p className="mt-1 text-muted-foreground">
+              The migration from <strong>{migration.sourceRegion}</strong> to{" "}
+              <strong>{migration.targetRegion}</strong> was cancelled.
+              {migration.completedAt && ` Cancelled ${formatDate(migration.completedAt)}.`}
             </p>
           </div>
         </div>

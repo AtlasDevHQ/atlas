@@ -20,9 +20,9 @@ Atlas has three built-in roles:
 
 | Role | Permissions |
 |------|------------|
-| **Member** | Ask questions, create notebooks, share conversations, use scheduled tasks |
-| **Admin** | All member permissions + manage connections, settings, users, semantic layer, plugins, integrations |
-| **Owner** | All admin permissions + billing, workspace deletion, ownership transfer |
+| **Member** | Ask questions, create notebooks, share conversations |
+| **Admin** | All member permissions + manage connections, settings, users, semantic layer, plugins, integrations, scheduled tasks |
+| **Owner** | All admin permissions + billing, workspace deletion |
 
 Enterprise plan workspaces can define [Custom Roles](/guides/custom-roles) with granular permissions.
 
@@ -34,7 +34,7 @@ Enterprise plan workspaces can define [Custom Roles](/guides/custom-roles) with 
 <Step>
 ### Send invitations
 
-Go to **Admin > Users** (`/admin/users`) and click **Invite User**. Enter the email address and select a role.
+Go to **Admin > Users** (`/admin/users`) and click **Invite user**. Enter the email address and select a role.
 
 The invitee receives an email with a link to join your workspace. Invitations expire after 7 days — resend from the same page if needed.
 </Step>
@@ -54,8 +54,8 @@ The **Admin > Users** page shows all workspace members with their:
 
 - **Name and email**
 - **Role** — click to change (admin or owner required)
-- **Status** — active, invited (pending acceptance), or suspended
-- **Last active** — when they last used Atlas
+- **Status** — active, invited (pending acceptance), or banned
+- **Joined** — when they created their account
 
 ### Changing a member's role
 

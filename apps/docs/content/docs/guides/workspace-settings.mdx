@@ -31,7 +31,6 @@ Control how the agent executes SQL queries against your connected datasources.
 |---------|---------|-------------|
 | **Row limit** | 1,000 | Maximum rows returned per query. Lower this to reduce load on your database |
 | **Query timeout** | 30 seconds | Maximum execution time per query. Queries exceeding this are cancelled |
-| **Table whitelist** | Enabled | When enabled, only tables defined in the semantic layer are queryable |
 
 These settings apply to all queries — both interactive chat and scheduled tasks.
 
@@ -44,24 +43,23 @@ Configure how the AI agent processes questions.
 | Setting | Default | Description |
 |---------|---------|-------------|
 | **Max steps** | 25 | Maximum number of tool calls the agent can make per question (range: 1–100) |
-| **LLM provider** | Workspace default | The AI provider used for query generation |
-| **Model** | Provider default | Specific model within the chosen provider |
 
-See [Model Routing](/guides/model-routing) for advanced multi-model configurations.
+On the hosted platform, the LLM provider and model are managed by the platform. For workspace-level model overrides on Enterprise plans, see [Model Routing](/guides/model-routing).
 
 ---
 
-## Display Settings
+## Branding
 
-Customize the look and feel of Atlas in your workspace.
+Customize the look and feel of Atlas in your workspace from **Admin > Branding** (`/admin/branding`):
 
 | Setting | Description |
 |---------|-------------|
-| **Branding** | Custom logo, accent color, and workspace name displayed in the chat UI |
-| **Welcome message** | The message shown to users when they open a new chat |
-| **Suggested questions** | Starter questions displayed on the chat home page |
+| **Logo** | Custom logo URL displayed in the chat UI |
+| **Logo text** | Text displayed alongside the logo |
+| **Primary color** | Accent color used throughout the interface |
+| **Favicon** | Custom favicon URL |
 
-For full white-labeling (custom domain, logo, colors), see [White-Labeling](/guides/white-labeling).
+For full white-labeling (custom domain, colors), see [White-Labeling](/guides/white-labeling).
 
 ---
 

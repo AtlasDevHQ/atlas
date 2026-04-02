@@ -30,13 +30,7 @@ Every workspace starts with a **14-day trial** with full access to all features.
 
 Go to **Admin > Users** to invite team members by email. Invitees receive an email with a link to join your workspace.
 
-You can manage roles from the same page:
-
-| Role | What they can do |
-|------|-----------------|
-| **Member** | Ask questions, create notebooks, share conversations |
-| **Admin** | All member permissions + manage connections, settings, users, semantic layer |
-| **Owner** | All admin permissions + billing, workspace deletion |
+Members can ask questions and share conversations. Admins can also manage connections, settings, and users. See [Team Management](/guides/team-management) for full role details.
 
 You can always invite more people later — skip this for now if you prefer.
 </Step>
@@ -85,7 +79,7 @@ For BigQuery, ClickHouse, Snowflake, DuckDB, or Salesforce, see the database-spe
 1. Go to **Admin > Connections** (`/admin/connections`)
 2. Click **Add Connection**
 3. Paste your connection string (e.g., `postgresql://atlas_reader:password@host:5432/your_db`)
-4. Atlas tests the connection automatically — you'll see a green checkmark on success
+4. Click **Test** to verify the connection — you'll see a confirmation with latency on success
 
 <Callout type="info">
 **SSL:** Most managed database providers (AWS RDS, Supabase, Neon, PlanetScale) require SSL. Append `?sslmode=require` (PostgreSQL) or `?ssl=true` (MySQL) to your connection string.
@@ -186,7 +180,7 @@ You're up and running. Here's where to go from here:
 The hosted platform at app.useatlas.dev is a fully managed SaaS — Atlas handles infrastructure, updates, scaling, and sandbox isolation. Self-hosted deployments give you full control over the environment and data residency. Both use the same Atlas agent and query engine. The hosted platform adds a web-based onboarding wizard, managed semantic layer, plugin marketplace, and workspace billing.
 </Accordion>
 <Accordion title="Where does my data go?">
-Atlas connects to your database over the network and runs read-only queries. Query results pass through Atlas's infrastructure to render in the chat UI. Atlas does not copy, store, or replicate your underlying data. Conversation history and metadata are stored in Atlas's internal database. See [Security](/security) for more details.
+Atlas connects to your database over the network and runs read-only queries. Query results pass through Atlas's infrastructure to render in the chat UI. Atlas does not copy, store, or replicate your underlying data. Conversation history and metadata are stored in Atlas's internal database. See [SQL Validation](/security/sql-validation) and [Row-Level Security](/security/row-level-security) for more details.
 </Accordion>
 <Accordion title="Can I migrate from hosted to self-hosted (or vice versa)?">
 Yes. Your semantic layer (entity definitions, metrics, glossary) can be exported as YAML files for a self-hosted deployment. See the [Migration](/guides/migration) guide for step-by-step instructions.

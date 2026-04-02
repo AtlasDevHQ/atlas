@@ -396,10 +396,17 @@ function resolveConnectionEffect(
   return Effect.tryPromise({
     try: async () => {
       let db: DBConnection;
-      if (orgId) db = await getRegionAwareConnection(orgId, connId);
-      else if (connId === "default") db = connections.getDefault();
-      else db = connections.get(connId);
-      const dbType = connections.getDBType(connId);
+      let resolvedConnId = connId;
+      if (orgId) {
+        const result = await getRegionAwareConnection(orgId, connId);
+        db = result.db;
+        resolvedConnId = result.resolvedConnId;
+      } else if (connId === "default") {
+        db = connections.getDefault();
+      } else {
+        db = connections.get(connId);
+      }
+      const dbType = connections.getDBType(resolvedConnId);
       return { db, dbType };
     },
     catch: (err) => {

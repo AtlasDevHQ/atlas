@@ -76,8 +76,9 @@ describe("getRegionAwareConnection", () => {
   });
 
   it("falls back to default connection when no region is configured", async () => {
-    const conn = await getRegionAwareConnection("org-1", "default");
-    expect(conn).toBeDefined();
+    const { db, resolvedConnId } = await getRegionAwareConnection("org-1", "default");
+    expect(db).toBeDefined();
+    expect(resolvedConnId).toBe("default");
     expect(connections.hasOrgPool("org-1", "default")).toBe(true);
   });
 
@@ -90,8 +91,9 @@ describe("getRegionAwareConnection", () => {
       }),
     );
 
-    const conn = await getRegionAwareConnection("org-1", "default");
-    expect(conn).toBeDefined();
+    const { db, resolvedConnId } = await getRegionAwareConnection("org-1", "default");
+    expect(db).toBeDefined();
+    expect(resolvedConnId).toBe("region:us-east-1");
 
     // Should have registered the region connection
     expect(connections.has("region:us-east-1")).toBe(true);
@@ -114,11 +116,11 @@ describe("getRegionAwareConnection", () => {
       }),
     );
 
-    const conn1 = await getRegionAwareConnection("org-1", "default");
-    const conn2 = await getRegionAwareConnection("org-1", "default");
+    const result1 = await getRegionAwareConnection("org-1", "default");
+    const result2 = await getRegionAwareConnection("org-1", "default");
 
     // Same pool instance returned
-    expect(conn1).toBe(conn2);
+    expect(result1.db).toBe(result2.db);
 
     // resolveRegionDatabaseUrl called twice but register only once
     expect(connections.has("region:eu-west-1")).toBe(true);
@@ -133,8 +135,9 @@ describe("getRegionAwareConnection", () => {
       }),
     );
 
-    const conn = await getRegionAwareConnection("org-1", "default");
-    expect(conn).toBeDefined();
+    const { db, resolvedConnId } = await getRegionAwareConnection("org-1", "default");
+    expect(db).toBeDefined();
+    expect(resolvedConnId).toBe("default");
 
     // Should NOT have registered a region connection
     expect(connections.has("region:us-east-1")).toBe(false);
@@ -160,12 +163,12 @@ describe("getRegionAwareConnection", () => {
       });
     });
 
-    const conn1 = await getRegionAwareConnection("org-1", "default");
-    const conn2 = await getRegionAwareConnection("org-2", "default");
+    const result1 = await getRegionAwareConnection("org-1", "default");
+    const result2 = await getRegionAwareConnection("org-2", "default");
 
-    expect(conn1).toBeDefined();
-    expect(conn2).toBeDefined();
-    expect(conn1).not.toBe(conn2);
+    expect(result1.db).toBeDefined();
+    expect(result2.db).toBeDefined();
+    expect(result1.db).not.toBe(result2.db);
 
     const metrics = connections.getOrgPoolMetrics();
     expect(metrics).toHaveLength(2);

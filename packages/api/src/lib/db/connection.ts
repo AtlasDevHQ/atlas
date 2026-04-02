@@ -515,19 +515,17 @@ export class ConnectionRegistry {
   }
 
   private _orgKey(orgId: string, connectionId: string, region?: string): string {
-    if (process.env.NODE_ENV !== "production") {
-      // orgId and region must not contain ':' (they are the first/last segments).
-      // connectionId CAN contain ':' (e.g. "region:us-east-1") because _parseOrgKey
-      // uses indexOf/lastIndexOf to extract it from the middle segment.
-      const regionStr = region ?? "default";
-      if (orgId.includes(":")) {
-        throw new Error(`orgId must not contain ':' — got orgId="${orgId}"`);
-      }
-      if (regionStr.includes(":")) {
-        throw new Error(`region must not contain ':' — got region="${regionStr}"`);
-      }
+    // orgId and region must not contain ':' (they are the first/last segments).
+    // connectionId CAN contain ':' (e.g. "region:us-east-1") because _parseOrgKey
+    // uses indexOf/lastIndexOf to extract it from the middle segment.
+    const regionStr = region ?? "default";
+    if (orgId.includes(":")) {
+      throw new Error(`orgId must not contain ':' — got orgId="${orgId}"`);
     }
-    return `${orgId}:${connectionId}:${region ?? "default"}`;
+    if (regionStr.includes(":")) {
+      throw new Error(`region must not contain ':' — got region="${regionStr}"`);
+    }
+    return `${orgId}:${connectionId}:${regionStr}`;
   }
 
   private _parseOrgKey(key: string): { orgId: string; connectionId: string; region: string } {
@@ -856,6 +854,11 @@ export class ConnectionRegistry {
    * The prefix fallback handles region-aware pools where the caller only knows
    * the original connectionId (e.g. "default") but the pool was created under
    * "region:<region>" by getRegionAwareConnection().
+   *
+   * Prefix scan priority:
+   * 1. Exact key match (orgId + connectionId + default region)
+   * 2. Same org + same connectionId in a different region
+   * 3. Same org + any connectionId (only if the org has exactly one pool)
    */
   private _findOrgEntry(orgId: string, connectionId: string): { key: string; entry: RegistryEntry } | undefined {
     // Exact match (covers non-regional pools and callers that know the region)
@@ -863,12 +866,27 @@ export class ConnectionRegistry {
     const exact = this.orgEntries.get(exactKey);
     if (exact) return { key: exactKey, entry: exact };
 
-    // Prefix scan: find any entry for this org
+    // Prefix scan: prefer entries with matching connectionId, fall back to
+    // single-pool orgs only (never silently pick from multiple pools).
     const prefix = `${orgId}:`;
+    let fallback: { key: string; entry: RegistryEntry } | undefined;
+    let orgPoolCount = 0;
     for (const [key, entry] of this.orgEntries) {
       if (key.startsWith(prefix)) {
-        return { key, entry };
+        orgPoolCount++;
+        const parsed = this._parseOrgKey(key);
+        // Match by connectionId across regions
+        if (parsed.connectionId === connectionId) {
+          return { key, entry };
+        }
+        fallback = { key, entry };
       }
+    }
+
+    // Only return the fallback if the org has exactly one pool — avoids
+    // silently picking the wrong pool when multiple pools exist.
+    if (orgPoolCount === 1 && fallback) {
+      return fallback;
     }
     return undefined;
   }
@@ -1324,6 +1342,13 @@ export function getDB(): DBConnection {
   return connections.getDefault();
 }
 
+/** Result from region-aware connection resolution. */
+export interface RegionAwareResult {
+  db: DBConnection;
+  /** The actual connection ID used (may differ from requested if region-routed). */
+  resolvedConnId: string;
+}
+
 /**
  * Resolve a region-aware connection for a workspace.
  *
@@ -1339,20 +1364,32 @@ export function getDB(): DBConnection {
 export async function getRegionAwareConnection(
   orgId: string,
   connectionId: string = "default",
-): Promise<DBConnection> {
+): Promise<RegionAwareResult> {
   let resolveRegionDatabaseUrl: Awaited<typeof import("@atlas/ee/platform/residency")>["resolveRegionDatabaseUrl"];
   try {
     ({ resolveRegionDatabaseUrl } = await import("@atlas/ee/platform/residency"));
   } catch (err) {
     // ee module not installed — non-enterprise deployment, use default
     if (err instanceof Error && "code" in err && (err as NodeJS.ErrnoException).code === "MODULE_NOT_FOUND") {
-      return connections.getForOrg(orgId, connectionId);
+      return { db: connections.getForOrg(orgId, connectionId), resolvedConnId: connectionId };
     }
-    log.warn({ err: err instanceof Error ? err.message : String(err), orgId }, "Failed to load residency module");
-    return connections.getForOrg(orgId, connectionId);
+    // EE module exists but failed to load — this is a real error.
+    // Data residency cannot be guaranteed; refuse to silently downgrade.
+    log.error({ err: err instanceof Error ? err.message : String(err), orgId }, "Residency module failed to load — cannot guarantee data residency");
+    throw err instanceof Error ? err : new Error(String(err));
   }
 
-  const regionInfo = await resolveRegionDatabaseUrl(orgId);
+  let regionInfo: Awaited<ReturnType<typeof resolveRegionDatabaseUrl>>;
+  try {
+    regionInfo = await resolveRegionDatabaseUrl(orgId);
+  } catch (err) {
+    log.warn(
+      { err: err instanceof Error ? err.message : String(err), orgId },
+      "Region resolution failed — falling back to default datasource",
+    );
+    return { db: connections.getForOrg(orgId, connectionId), resolvedConnId: connectionId };
+  }
+
   if (regionInfo?.datasourceUrl) {
     const regionConnId = `region:${regionInfo.region}`;
     if (!connections.has(regionConnId)) {
@@ -1362,8 +1399,11 @@ export async function getRegionAwareConnection(
       });
       log.info({ connectionId: regionConnId, region: regionInfo.region }, "Registered region datasource");
     }
-    return connections.getForOrg(orgId, regionConnId, regionInfo.region);
+    return {
+      db: connections.getForOrg(orgId, regionConnId, regionInfo.region),
+      resolvedConnId: regionConnId,
+    };
   }
 
-  return connections.getForOrg(orgId, connectionId);
+  return { db: connections.getForOrg(orgId, connectionId), resolvedConnId: connectionId };
 }

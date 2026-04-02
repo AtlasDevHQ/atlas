@@ -160,7 +160,7 @@ describe("AtlasProvider integration", () => {
 // ---------------------------------------------------------------------------
 
 describe("auth header behavior", () => {
-  it("API key mode sends Authorization header on fetch", async () => {
+  it("makes health check request when API key is configured", async () => {
     const { result } = renderHook(() => useAtlasAuth(), { wrapper: apiKeyWrapper });
 
     await waitFor(() => {

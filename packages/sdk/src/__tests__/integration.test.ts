@@ -396,6 +396,8 @@ describe("auth modes", () => {
       () => bad.admin.connections(),
       () => bad.admin.audit(),
       () => bad.admin.plugins(),
+      () => bad.listTables(),
+      () => bad.validateSQL("SELECT 1"),
     ];
 
     for (const fn of endpoints) {

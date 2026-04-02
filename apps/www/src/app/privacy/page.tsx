@@ -289,8 +289,53 @@ const SECTIONS: Section[] = [
     ),
   },
   {
+    id: "ccpa-rights",
+    title: "8. Your Rights (CCPA)",
+    content: (
+      <>
+        <p>
+          If you are a California resident, the California Consumer Privacy Act
+          (CCPA) provides you with additional rights:
+        </p>
+        <ul>
+          <li>
+            <strong>Right to know.</strong> You may request that we disclose the
+            categories and specific pieces of personal information we have
+            collected about you, the sources of that information, and the
+            business purposes for collecting it.
+          </li>
+          <li>
+            <strong>Right to delete.</strong> You may request deletion of your
+            personal information, subject to certain exceptions (e.g., data
+            needed to complete a transaction or comply with legal obligations).
+          </li>
+          <li>
+            <strong>Right to opt-out of sale.</strong> We do not sell personal
+            information. We do not share personal information for cross-context
+            behavioral advertising.
+          </li>
+          <li>
+            <strong>Non-discrimination.</strong> We will not discriminate against
+            you for exercising your CCPA rights.
+          </li>
+        </ul>
+        <p>
+          To exercise these rights, contact{" "}
+          <a
+            href="mailto:privacy@useatlas.dev"
+
+          >
+            privacy@useatlas.dev
+          </a>
+          . We will verify your identity before processing your request and
+          respond within 45 days.
+        </p>
+      </>
+    ),
+  },
+  {
     id: "cookies",
-    title: "8. Cookies",
+    title: "9. Cookies",
     content: (
       <>
         <p>
@@ -318,7 +363,7 @@ const SECTIONS: Section[] = [
   },
   {
     id: "security",
-    title: "9. Security",
+    title: "10. Security",
     content: (
       <>
         <p>
@@ -360,7 +405,7 @@ const SECTIONS: Section[] = [
   },
   {
     id: "children",
-    title: "10. Children's Privacy",
+    title: "11. Children's Privacy",
     content: (
       <p>
         Atlas Cloud is not intended for use by individuals under 18 years of age.
@@ -372,7 +417,7 @@ const SECTIONS: Section[] = [
   },
   {
     id: "changes",
-    title: "11. Changes to This Policy",
+    title: "12. Changes to This Policy",
     content: (
       <p>
         We may update this Privacy Policy from time to time. Material changes
@@ -384,7 +429,7 @@ const SECTIONS: Section[] = [
   },
   {
     id: "contact",
-    title: "12. Contact",
+    title: "13. Contact",
     content: (
       <>
         <p>

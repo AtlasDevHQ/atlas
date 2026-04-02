@@ -313,33 +313,84 @@ const SECTIONS: Section[] = [
     ),
   },
   {
-    id: "limitation-of-liability",
-    title: "8. Limitation of Liability",
+    id: "disclaimer-of-warranties",
+    title: "8. Disclaimer of Warranties",
     content: (
       <>
         <p>
-          To the maximum extent permitted by law, Atlas DevHQ shall not be liable
-          for any indirect, incidental, special, consequential, or punitive
-          damages, including but not limited to loss of data, profits, or
-          business opportunities.
+          ATLAS CLOUD IS PROVIDED &quot;AS IS&quot; AND &quot;AS AVAILABLE&quot;
+          WITHOUT WARRANTIES OF ANY KIND, WHETHER EXPRESS, IMPLIED, OR STATUTORY,
+          INCLUDING BUT NOT LIMITED TO IMPLIED WARRANTIES OF MERCHANTABILITY,
+          FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT.
         </p>
         <p>
-          Our total liability for any claim arising from these Terms or your use
-          of Atlas Cloud shall not exceed the amount you paid us in the 12 months
-          preceding the claim.
+          Without limiting the foregoing, Atlas does not warrant that: (a) the
+          service will be uninterrupted or error-free; (b) AI-generated SQL
+          queries or results will be accurate, complete, or suitable for any
+          particular purpose; (c) any defects will be corrected; or (d) the
+          service will meet your specific requirements.
+        </p>
+        <p>
+          You are responsible for evaluating AI-generated queries before relying
+          on results for business decisions.
+        </p>
+      </>
+    ),
+  },
+  {
+    id: "limitation-of-liability",
+    title: "9. Limitation of Liability",
+    content: (
+      <>
+        <p>
+          TO THE MAXIMUM EXTENT PERMITTED BY LAW, ATLAS DEVHQ SHALL NOT BE
+          LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, OR
+          PUNITIVE DAMAGES, INCLUDING BUT NOT LIMITED TO LOSS OF DATA, PROFITS,
+          OR BUSINESS OPPORTUNITIES, ARISING OUT OF OR IN CONNECTION WITH THESE
+          TERMS OR YOUR USE OF ATLAS CLOUD.
+        </p>
+        <p>
+          Our total aggregate liability for any claim arising from these Terms or
+          your use of Atlas Cloud shall not exceed the greater of (a) the amount
+          you paid us in the 12 months preceding the claim, or (b) one hundred
+          US dollars ($100).
         </p>
         <p>
           Atlas executes read-only queries against your databases. While we
           enforce strict validation, you are responsible for ensuring your
-          datasource credentials have appropriate permissions. Atlas is not
-          responsible for the accuracy of AI-generated SQL or query results.
+          datasource credentials have appropriate permissions.
+        </p>
+      </>
+    ),
+  },
+  {
+    id: "indemnification",
+    title: "10. Indemnification",
+    content: (
+      <>
+        <p>
+          <strong>By you.</strong> You agree to indemnify and hold harmless Atlas
+          DevHQ from any claims, damages, losses, liabilities, and expenses
+          (including reasonable attorney&apos;s fees) arising from: (a) your
+          violation of these Terms; (b) your use of Atlas Cloud; (c) any data
+          you submit or make accessible through Atlas Cloud; or (d) your
+          violation of any third-party rights.
+        </p>
+        <p>
+          <strong>By us.</strong> Atlas DevHQ will indemnify you from third-party
+          claims alleging that Atlas Cloud infringes the intellectual property
+          rights of a third party, provided that: (a) you promptly notify us of
+          the claim; (b) you give us sole control over the defense; and (c) you
+          provide reasonable cooperation. This indemnification does not apply to
+          claims arising from your data, your modifications to the self-hosted
+          version, or use in combination with non-Atlas products.
         </p>
       </>
     ),
   },
   {
     id: "termination",
-    title: "9. Termination",
+    title: "11. Termination",
     content: (
       <>
         <p>
@@ -363,7 +414,7 @@ const SECTIONS: Section[] = [
   },
   {
     id: "changes",
-    title: "10. Changes to Terms",
+    title: "12. Changes to Terms",
     content: (
       <>
         <p>
@@ -377,20 +428,35 @@ const SECTIONS: Section[] = [
   },
   {
     id: "governing-law",
-    title: "11. Governing Law",
+    title: "13. Governing Law and Disputes",
     content: (
       <>
         <p>
           These Terms are governed by the laws of the State of Delaware, United
-          States, without regard to conflict of law principles. Any disputes
-          shall be resolved in the courts of Delaware.
+          States, without regard to conflict of law principles.
+        </p>
+        <p>
+          Any dispute arising from these Terms or your use of Atlas Cloud shall
+          be resolved through binding arbitration administered by the American
+          Arbitration Association (AAA) under its Commercial Arbitration Rules.
+          Arbitration shall be conducted by a single arbitrator in Wilmington,
+          Delaware. The arbitrator&apos;s decision shall be final and binding.
+        </p>
+        <p>
+          YOU AND ATLAS DEVHQ AGREE THAT EACH MAY BRING CLAIMS AGAINST THE
+          OTHER ONLY IN YOUR OR ITS INDIVIDUAL CAPACITY, AND NOT AS A PLAINTIFF
+          OR CLASS MEMBER IN ANY PURPORTED CLASS OR REPRESENTATIVE PROCEEDING.
+        </p>
+        <p>
+          Either party may seek injunctive or equitable relief in any court of
+          competent jurisdiction to protect its intellectual property rights.
         </p>
       </>
     ),
   },
   {
     id: "contact",
-    title: "12. Contact",
+    title: "14. Contact",
     content: (
       <>
         <p>

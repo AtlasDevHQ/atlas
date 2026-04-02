@@ -136,8 +136,18 @@ function CatalogFormDialog({
       type: (entry?.type as CatalogFormValues["type"]) ?? "datasource",
       npmPackage: entry?.npmPackage ?? "",
       iconUrl: entry?.iconUrl ?? "",
-      configSchema: entry?.configSchema ? JSON.stringify(entry.configSchema, null, 2) : "",
-      minPlan: (entry?.minPlan as CatalogFormValues["minPlan"]) ?? "team",
+      configSchema: (() => {
+        if (!entry?.configSchema) return "";
+        try {
+          return JSON.stringify(entry.configSchema, null, 2);
+        } catch (err) {
+          console.warn("Failed to serialize configSchema:", err instanceof Error ? err.message : String(err));
+          return String(entry.configSchema);
+        }
+      })(),
+      minPlan: (PLAN_TIERS as readonly string[]).includes(entry?.minPlan ?? "")
+        ? (entry!.minPlan as CatalogFormValues["minPlan"])
+        : "team",
       enabled: entry?.enabled ?? true,
     },
   });
@@ -170,8 +180,9 @@ function CatalogFormDialog({
     if (values.configSchema) {
       try {
         body.configSchema = JSON.parse(values.configSchema);
-      } catch {
-        form.setError("configSchema", { message: "Invalid JSON" });
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        form.setError("configSchema", { message: `Invalid JSON: ${detail}` });
         return;
       }
     }
@@ -437,7 +448,7 @@ export default function PlatformPluginCatalogPage() {
     if (result.ok) {
       refetch();
     } else {
-      setMutationError(`Failed to ${entry.enabled ? "disable" : "enable"} "${entry.name}"`);
+      setMutationError(`Failed to ${entry.enabled ? "disable" : "enable"} "${entry.name}": ${result.error}`);
     }
   }
 
@@ -451,7 +462,7 @@ export default function PlatformPluginCatalogPage() {
     if (result.ok) {
       refetch();
     } else {
-      setMutationError(`Failed to delete "${deleteTarget.name}"`);
+      setMutationError(`Failed to delete "${deleteTarget.name}": ${result.error}`);
     }
     setDeleteTarget(null);
   }
@@ -474,7 +485,7 @@ export default function PlatformPluginCatalogPage() {
       <ErrorBoundary>
         {mutationError && (
           <div className="mb-4">
-            <ErrorBanner message={mutationError} onRetry={() => setMutationError(null)} />
+            <ErrorBanner message={mutationError} onRetry={refetch} />
           </div>
         )}
 
@@ -569,8 +580,9 @@ export default function PlatformPluginCatalogPage() {
           </div>
         </AdminContentWrapper>
 
-        {/* Add/Edit dialog */}
+        {/* Add/Edit dialog — key forces remount so useForm picks up new defaultValues */}
         <CatalogFormDialog
+          key={editEntry?.id ?? "new"}
           entry={editEntry}
           open={formOpen}
           onOpenChange={setFormOpen}

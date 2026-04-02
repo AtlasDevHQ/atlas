@@ -26,6 +26,19 @@ auth.all("/*", async (c) => {
     const { getAuthInstance } = await import("@atlas/api/lib/auth/server");
     const authInstance = getAuthInstance();
     const response = await authInstance.handler(c.req.raw);
+
+    // Better Auth returns a raw Response, bypassing Hono's response
+    // pipeline. Copy CORS headers set by the upstream middleware so
+    // cross-origin requests (app.useatlas.dev → api.useatlas.dev) work.
+    const corsOrigin = c.res.headers.get("Access-Control-Allow-Origin");
+    if (corsOrigin) {
+      response.headers.set("Access-Control-Allow-Origin", corsOrigin);
+      const corsCreds = c.res.headers.get("Access-Control-Allow-Credentials");
+      if (corsCreds) response.headers.set("Access-Control-Allow-Credentials", corsCreds);
+      const corsExpose = c.res.headers.get("Access-Control-Expose-Headers");
+      if (corsExpose) response.headers.set("Access-Control-Expose-Headers", corsExpose);
+    }
+
     return response;
   } catch (err) {
     log.error(

@@ -15,7 +15,7 @@ import { runEffect } from "@atlas/api/lib/effect/hono";
 import { RequestContext } from "@atlas/api/lib/effect/services";
 import { createLogger } from "@atlas/api/lib/logger";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
-import { PLAN_TIERS } from "@useatlas/types";
+import { PLAN_TIERS, type PlanTier } from "@useatlas/types";
 import {
   ErrorSchema,
   AuthErrorSchema,
@@ -35,8 +35,10 @@ type PluginType = (typeof PLUGIN_TYPES)[number];
 /**
  * Plan tier ordering for eligibility checks.
  * A workspace with tier N can install plugins with min_plan <= N.
+ * Typed as Record<PlanTier, number> so adding a tier to @useatlas/types
+ * produces a compile error here until the rank is assigned.
  */
-const PLAN_RANK: Record<string, number> = {
+const PLAN_RANK: Record<PlanTier, number> = {
   free: 0,
   trial: 1,
   team: 2,
@@ -44,7 +46,12 @@ const PLAN_RANK: Record<string, number> = {
 };
 
 function isPlanEligible(workspacePlan: string, requiredPlan: string): boolean {
-  return (PLAN_RANK[workspacePlan] ?? 0) >= (PLAN_RANK[requiredPlan] ?? 0);
+  const requiredRank = PLAN_RANK[requiredPlan as PlanTier];
+  if (requiredRank === undefined) {
+    log.warn({ requiredPlan }, "Unknown required plan tier — denying access");
+    return false;
+  }
+  return (PLAN_RANK[workspacePlan as PlanTier] ?? 0) >= requiredRank;
 }
 
 // ---------------------------------------------------------------------------
@@ -117,7 +124,7 @@ const UpdateConfigBodySchema = z.object({
 // Row types
 // ---------------------------------------------------------------------------
 
-interface CatalogRow {
+interface CatalogRow extends Record<string, unknown> {
   id: string;
   name: string;
   slug: string;
@@ -130,10 +137,9 @@ interface CatalogRow {
   enabled: boolean;
   created_at: string;
   updated_at: string;
-  [key: string]: unknown;
 }
 
-interface WorkspacePluginRow {
+interface WorkspacePluginRow extends Record<string, unknown> {
   id: string;
   workspace_id: string;
   catalog_id: string;
@@ -146,7 +152,6 @@ interface WorkspacePluginRow {
   slug?: string;
   type?: string;
   description?: string | null;
-  [key: string]: unknown;
 }
 
 function catalogRowToJson(row: CatalogRow) {
@@ -333,6 +338,9 @@ platformCatalog.openapi(createCatalogRoute, async (c) => {
           ],
         ),
       );
+      if (rows.length === 0) {
+        return c.json({ error: "internal_error", message: "Failed to create catalog entry — no row returned.", requestId }, 500);
+      }
       log.info({ catalogId: id, slug: body.slug }, "Plugin added to catalog");
       return c.json(catalogRowToJson(rows[0]!), 201);
     }),
@@ -514,19 +522,13 @@ const updateConfigRoute = createRoute({
 const workspaceMarketplace = createAdminRouter();
 workspaceMarketplace.use(requireOrgContext());
 
-/** Get the plan tier for a workspace. Returns "team" as default if unavailable. */
+/** Get the plan tier for a workspace. Throws on DB errors (surfaces as 500 via runEffect). */
 async function getWorkspacePlan(orgId: string): Promise<string> {
-  try {
-    const rows = await internalQuery<{ plan_tier: string }>(
-      "SELECT plan_tier FROM organization WHERE id = $1",
-      [orgId],
-    );
-    return rows[0]?.plan_tier ?? "team";
-  } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
-    log.warn({ orgId, err: detail }, "Failed to fetch workspace plan — defaulting to team");
-    return "team";
-  }
+  const rows = await internalQuery<{ plan_tier: string; [key: string]: unknown }>(
+    "SELECT plan_tier FROM organization WHERE id = $1",
+    [orgId],
+  );
+  return rows[0]?.plan_tier ?? "team";
 }
 
 // GET /available — catalog entries available to this workspace
@@ -537,19 +539,16 @@ workspaceMarketplace.openapi(listAvailableRoute, async (c) => {
       yield* RequestContext;
       const { orgId } = c.var.orgContext;
 
-      const plan = yield* Effect.promise(() => getWorkspacePlan(orgId));
-
-      // Fetch enabled catalog entries
-      const catalog = yield* Effect.promise(() =>
-        internalQuery<CatalogRow>("SELECT * FROM plugin_catalog WHERE enabled = true ORDER BY name ASC"),
-      );
-
-      // Fetch workspace installations to mark installed plugins
-      const installations = yield* Effect.promise(() =>
-        internalQuery<{ catalog_id: string; id: string }>(
-          "SELECT catalog_id, id FROM workspace_plugins WHERE workspace_id = $1",
-          [orgId],
-        ),
+      // Independent queries — run in parallel
+      const [plan, catalog, installations] = yield* Effect.promise(() =>
+        Promise.all([
+          getWorkspacePlan(orgId),
+          internalQuery<CatalogRow>("SELECT * FROM plugin_catalog WHERE enabled = true ORDER BY name ASC"),
+          internalQuery<{ catalog_id: string; id: string; [key: string]: unknown }>(
+            "SELECT catalog_id, id FROM workspace_plugins WHERE workspace_id = $1",
+            [orgId],
+          ),
+        ]),
       );
       const installedMap = new Map(installations.map((i) => [i.catalog_id, i.id]));
 
@@ -589,8 +588,17 @@ workspaceMarketplace.openapi(installRoute, async (c) => {
       }
       const catalogEntry = catalogRows[0]!;
 
-      // Check plan eligibility
-      const plan = yield* Effect.promise(() => getWorkspacePlan(orgId));
+      // Plan check + existing check are independent — run in parallel
+      const [plan, existing] = yield* Effect.promise(() =>
+        Promise.all([
+          getWorkspacePlan(orgId),
+          internalQuery<{ id: string; [key: string]: unknown }>(
+            "SELECT id FROM workspace_plugins WHERE workspace_id = $1 AND catalog_id = $2",
+            [orgId, body.catalogId],
+          ),
+        ]),
+      );
+
       if (!isPlanEligible(plan, catalogEntry.min_plan)) {
         return c.json({
           error: "plan_ineligible",
@@ -599,13 +607,6 @@ workspaceMarketplace.openapi(installRoute, async (c) => {
         }, 400);
       }
 
-      // Check not already installed
-      const existing = yield* Effect.promise(() =>
-        internalQuery<{ id: string }>(
-          "SELECT id FROM workspace_plugins WHERE workspace_id = $1 AND catalog_id = $2",
-          [orgId, body.catalogId],
-        ),
-      );
       if (existing.length > 0) {
         return c.json({ error: "conflict", message: "Plugin is already installed in this workspace.", requestId }, 409);
       }
@@ -627,6 +628,9 @@ workspaceMarketplace.openapi(installRoute, async (c) => {
         ),
       );
 
+      if (rows.length === 0) {
+        return c.json({ error: "internal_error", message: "Failed to install plugin — no row returned.", requestId }, 500);
+      }
       log.info({ orgId, catalogId: body.catalogId, installationId: id }, "Plugin installed in workspace");
       return c.json(installRowToJson(rows[0]!), 201);
     }),

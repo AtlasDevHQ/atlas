@@ -53,6 +53,8 @@ export interface PoolMetrics {
 /** Wire format for per-org pool metrics (extends PoolMetrics with org scope). */
 export interface OrgPoolMetrics extends PoolMetrics {
   orgId: string;
+  /** Data residency region for this pool, if assigned. */
+  region?: string;
 }
 
 /** Wire format for org pool configuration (returned by admin API). */

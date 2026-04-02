@@ -17,7 +17,7 @@ import { tool } from "ai";
 import { z } from "zod";
 import { Effect } from "effect";
 import { Parser } from "node-sql-parser";
-import { connections, detectDBType, ConnectionNotRegisteredError, NoDatasourceConfiguredError, PoolCapacityExceededError } from "@atlas/api/lib/db/connection";
+import { connections, detectDBType, getRegionAwareConnection, ConnectionNotRegisteredError, NoDatasourceConfiguredError, PoolCapacityExceededError } from "@atlas/api/lib/db/connection";
 import type { DBConnection, DBType } from "@atlas/api/lib/db/connection";
 import { getWhitelistedTables, getOrgWhitelistedTables } from "@atlas/api/lib/semantic";
 import { logQueryAudit } from "@atlas/api/lib/auth/audit";
@@ -393,10 +393,10 @@ function resolveConnectionEffect(
   { db: DBConnection; dbType: DBType },
   ConnectionNotFoundError | PoolExhaustedError | NoDatasourceError
 > {
-  return Effect.try({
-    try: () => {
+  return Effect.tryPromise({
+    try: async () => {
       let db: DBConnection;
-      if (orgId) db = connections.getForOrg(orgId, connId);
+      if (orgId) db = await getRegionAwareConnection(orgId, connId);
       else if (connId === "default") db = connections.getDefault();
       else db = connections.get(connId);
       const dbType = connections.getDBType(connId);

@@ -765,6 +765,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] Status page follow-up — OpenStatus integration for incident management (#953, PR #1144)
 - [ ] Regional API deployment for tier-2 data residency compliance (#1069)
   - [x] Region API URL config — apiUrl in RegionConfigSchema + settings response (#1149)
+  - [x] Region-aware ConnectionRegistry (#1151)
 - [x] Docs — semantic editor, plugin marketplace, platform plugin catalog guides (#1141, PR #1142)
 - [x] Fix flaky DuckDB ingest test — timeout bump (#1145, 71246b7c)
 

@@ -451,4 +451,122 @@ describe("ConnectionRegistry org-scoped pools", () => {
       expect(warnings[0]).toContain("2.5×");
     });
   });
+
+  describe("region-aware pooling", () => {
+    it("creates separate pools for same org with different regions", () => {
+      registry.register("default", { url: "postgresql://localhost/test" });
+      registry.register("region:us-east-1", { url: "postgresql://us-east-1.rds/test" });
+
+      const defaultConn = registry.getForOrg("org-1", "default");
+      const regionConn = registry.getForOrg("org-1", "region:us-east-1", "us-east-1");
+
+      expect(defaultConn).toBeDefined();
+      expect(regionConn).toBeDefined();
+      expect(defaultConn).not.toBe(regionConn);
+    });
+
+    it("caches region-scoped pools correctly", () => {
+      registry.register("region:eu-west-1", { url: "postgresql://eu-west-1.rds/test" });
+
+      const conn1 = registry.getForOrg("org-1", "region:eu-west-1", "eu-west-1");
+      const conn2 = registry.getForOrg("org-1", "region:eu-west-1", "eu-west-1");
+      expect(conn1).toBe(conn2);
+    });
+
+    it("includes region in org pool metrics when set", () => {
+      registry.register("region:us-east-1", { url: "postgresql://us-east-1.rds/test" });
+      registry.getForOrg("org-1", "region:us-east-1", "us-east-1");
+
+      const metrics = registry.getOrgPoolMetrics("org-1");
+      expect(metrics).toHaveLength(1);
+      expect(metrics[0].region).toBe("us-east-1");
+    });
+
+    it("omits region from metrics when not set", () => {
+      registry.register("default", { url: "postgresql://localhost/test" });
+      registry.getForOrg("org-1", "default");
+
+      const metrics = registry.getOrgPoolMetrics("org-1");
+      expect(metrics).toHaveLength(1);
+      expect(metrics[0].region).toBeUndefined();
+    });
+
+    it("falls back to global connection when no region is specified", () => {
+      registry.register("default", { url: "postgresql://localhost/test" });
+
+      const conn = registry.getForOrg("org-1", "default");
+      expect(conn).toBeDefined();
+      expect(registry.hasOrgPool("org-1", "default")).toBe(true);
+    });
+
+    it("hasOrgPool distinguishes regional from default pools", () => {
+      registry.register("default", { url: "postgresql://localhost/test" });
+      registry.register("region:us-east-1", { url: "postgresql://us-east-1.rds/test" });
+
+      registry.getForOrg("org-1", "default");
+      registry.getForOrg("org-1", "region:us-east-1", "us-east-1");
+
+      expect(registry.hasOrgPool("org-1", "default")).toBe(true);
+      expect(registry.hasOrgPool("org-1", "region:us-east-1", "us-east-1")).toBe(true);
+      expect(registry.hasOrgPool("org-1", "region:us-east-1")).toBe(false); // wrong region key
+    });
+
+    it("drainOrg drains all region pools for an org", async () => {
+      registry.setOrgPoolConfig({ maxConnections: 5, idleTimeoutMs: 30000, maxOrgs: 50, warmupProbes: 0, drainThreshold: 5 });
+      registry.register("default", { url: "postgresql://localhost/test" });
+      registry.register("region:us-east-1", { url: "postgresql://us-east-1.rds/test" });
+
+      registry.getForOrg("org-1", "default");
+      registry.getForOrg("org-1", "region:us-east-1", "us-east-1");
+
+      const result = await registry.drainOrg("org-1");
+      expect(result.drained).toBe(2);
+      expect(registry.hasOrgPool("org-1", "default")).toBe(false);
+      expect(registry.hasOrgPool("org-1", "region:us-east-1", "us-east-1")).toBe(false);
+    });
+
+    it("recordQuery falls back to prefix scan for region-aware pools", () => {
+      registry.register("region:us-east-1", { url: "postgresql://us-east-1.rds/test" });
+      registry.getForOrg("org-1", "region:us-east-1", "us-east-1");
+
+      // Caller passes "default" as connId — _findOrgEntry falls back to prefix scan
+      registry.recordQuery("default", 100, "org-1");
+
+      const metrics = registry.getOrgPoolMetrics("org-1");
+      expect(metrics[0].totalQueries).toBe(1);
+    });
+
+    it("recordSuccess resets failures via prefix scan fallback", () => {
+      const origEnv = process.env.ATLAS_POOL_DRAIN_THRESHOLD;
+      process.env.ATLAS_POOL_DRAIN_THRESHOLD = "100";
+      try {
+        registry.setOrgPoolConfig({ drainThreshold: 100, maxConnections: 5, idleTimeoutMs: 30000, maxOrgs: 50, warmupProbes: 0 });
+        registry.register("region:us-east-1", { url: "postgresql://us-east-1.rds/test" });
+        registry.getForOrg("org-1", "region:us-east-1", "us-east-1");
+
+        registry.recordError("default", "org-1");
+        registry.recordError("default", "org-1");
+
+        const before = registry.getOrgPoolMetrics("org-1");
+        expect(before[0].consecutiveFailures).toBe(2);
+
+        registry.recordSuccess("default", "org-1");
+
+        const after = registry.getOrgPoolMetrics("org-1");
+        expect(after[0].consecutiveFailures).toBe(0);
+        expect(after[0].totalErrors).toBe(2); // total unchanged
+      } finally {
+        process.env.ATLAS_POOL_DRAIN_THRESHOLD = origEnv;
+      }
+    });
+
+    it("listOrgConnections deduplicates across regions", () => {
+      registry.register("default", { url: "postgresql://localhost/test" });
+      registry.getForOrg("org-1", "default");
+      registry.getForOrg("org-1", "default", "us-east-1");
+
+      const conns = registry.listOrgConnections("org-1");
+      expect(conns).toEqual(["default"]);
+    });
+  });
 });

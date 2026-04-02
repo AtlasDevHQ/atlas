@@ -48,7 +48,7 @@ export interface ConnectionRegistryShape {
   // --- Query operations ---
   get(id: string): DBConnection;
   getDefault(): DBConnection;
-  getForOrg(orgId: string, connectionId?: string): DBConnection;
+  getForOrg(orgId: string, connectionId?: string, region?: string): DBConnection;
 
   // --- Registration ---
   register(id: string, config: ConnectionConfig): void;
@@ -191,7 +191,7 @@ export function makeConnectionRegistryLive(
         // Query operations — delegate directly
         get: (id) => impl.get(id),
         getDefault: () => impl.getDefault(),
-        getForOrg: (orgId, connectionId) => impl.getForOrg(orgId, connectionId),
+        getForOrg: (orgId, connectionId, region) => impl.getForOrg(orgId, connectionId, region),
 
         // Registration
         register: (id, config) => impl.register(id, config),

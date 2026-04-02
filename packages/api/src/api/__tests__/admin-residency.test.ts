@@ -109,6 +109,7 @@ mock.module("@atlas/api/lib/auth/detect", () => ({
 // --- Internal DB mock ---
 
 let mockHasInternalDB = true;
+let mockInternalQueryResult: unknown[] = [];
 
 mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => mockHasInternalDB,
@@ -117,7 +118,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
     end: async () => {},
     on: () => {},
   }),
-  internalQuery: () => Promise.resolve([]),
+  internalQuery: () => Promise.resolve(mockInternalQueryResult),
   internalExecute: () => {},
   getWorkspaceRegion: () => Promise.resolve(null),
   setWorkspaceRegion: () => Promise.resolve({ assigned: true }),
@@ -189,6 +190,25 @@ mock.module("@atlas/api/lib/logger", () => ({
   withRequestContext: (_ctx: unknown, fn: () => unknown) => fn(),
 }));
 
+// --- Migration executor mock ---
+
+let mockResetResult: { reset: boolean; error?: string } = { reset: true };
+let mockCancelResult: { cancelled: boolean; error?: string } = { cancelled: true };
+
+mock.module("@atlas/api/lib/residency/migrate", () => ({
+  triggerMigrationExecution: () => {},
+  failStaleMigrations: () => Promise.resolve(0),
+  resetMigrationForRetry: () => Promise.resolve(mockResetResult),
+  cancelMigration: () => Promise.resolve(mockCancelResult),
+}));
+
+mock.module("@atlas/api/lib/cache/index", () => ({
+  flushCache: () => {},
+  getCache: () => null,
+  cacheEnabled: () => false,
+  buildCacheKey: () => "",
+}));
+
 // --- Import sub-router directly ---
 
 const { adminResidency } = await import("../routes/admin-residency");
@@ -207,6 +227,9 @@ function resetMocks() {
     "eu-west": { label: "EU West", databaseUrl: "postgresql://eu" },
     "ap-southeast": { label: "Asia Pacific", databaseUrl: "postgresql://ap" },
   };
+  mockInternalQueryResult = [];
+  mockResetResult = { reset: true };
+  mockCancelResult = { cancelled: true };
   mockEffectUser = {
     id: "admin-1",
     mode: "simple-key",
@@ -390,6 +413,80 @@ describe("PUT /api/v1/admin/residency", () => {
     );
     const res = await request("PUT", "/", { region: "eu-west" });
     expect(res.status).toBe(400);
+  });
+});
+
+describe("POST /migrate/:id/retry", () => {
+  beforeEach(resetMocks);
+
+  it("retries a failed migration successfully", async () => {
+    mockInternalQueryResult = [{
+      id: "mig-1",
+      workspace_id: "org-1",
+      source_region: "us-east",
+      target_region: "eu-west",
+      status: "pending",
+      requested_by: "admin-1",
+      requested_at: "2026-04-01T00:00:00Z",
+      completed_at: null,
+      error_message: null,
+    }];
+    const res = await request("POST", "/migrate/mig-1/retry");
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as { id: string; status: string };
+    expect(json.id).toBe("mig-1");
+    expect(json.status).toBe("pending");
+  });
+
+  it("returns 400 when migration cannot be retried", async () => {
+    mockResetResult = { reset: false, error: 'Cannot retry migration in "pending" status' };
+    const res = await request("POST", "/migrate/mig-1/retry");
+    expect(res.status).toBe(400);
+    const json = (await res.json()) as { error: string; message: string };
+    expect(json.error).toBe("retry_failed");
+  });
+
+  it("returns 404 when migration not found", async () => {
+    mockResetResult = { reset: false, error: "Migration not found" };
+    const res = await request("POST", "/migrate/mig-nonexistent/retry");
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 404 when internal DB not available", async () => {
+    mockHasInternalDB = false;
+    const res = await request("POST", "/migrate/mig-1/retry");
+    expect(res.status).toBe(404);
+  });
+});
+
+describe("POST /migrate/:id/cancel", () => {
+  beforeEach(resetMocks);
+
+  it("cancels a pending migration successfully", async () => {
+    const res = await request("POST", "/migrate/mig-1/cancel");
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as { cancelled: boolean };
+    expect(json.cancelled).toBe(true);
+  });
+
+  it("returns 400 when migration cannot be cancelled", async () => {
+    mockCancelResult = { cancelled: false, error: 'Cannot cancel migration in "in_progress" status' };
+    const res = await request("POST", "/migrate/mig-1/cancel");
+    expect(res.status).toBe(400);
+    const json = (await res.json()) as { error: string; message: string };
+    expect(json.error).toBe("cancel_failed");
+  });
+
+  it("returns 404 when migration not found", async () => {
+    mockCancelResult = { cancelled: false, error: "Migration not found" };
+    const res = await request("POST", "/migrate/mig-nonexistent/cancel");
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 404 when internal DB not available", async () => {
+    mockHasInternalDB = false;
+    const res = await request("POST", "/migrate/mig-1/cancel");
+    expect(res.status).toBe(404);
   });
 });
 

@@ -81,6 +81,16 @@ export const MIGRATION_STATUSES = ["pending", "in_progress", "completed", "faile
 /** Status of a region migration request. */
 export type MigrationStatus = (typeof MIGRATION_STATUSES)[number];
 
+/** Progress of a region migration step. */
+export interface MigrationProgress {
+  /** Current step label (e.g. "Updating region assignment"). */
+  step: string;
+  /** Total number of steps in the migration. */
+  total: number;
+  /** Current step number (1-based). */
+  current: number;
+}
+
 /** A workspace region migration request. */
 export interface RegionMigration {
   id: string;

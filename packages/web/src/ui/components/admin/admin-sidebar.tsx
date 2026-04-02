@@ -137,6 +137,7 @@ const navGroups: NavGroup[] = [
       { href: "/admin/platform/backups", label: "Backups" },
       { href: "/admin/platform/residency", label: "Data Residency" },
       { href: "/admin/platform/domains", label: "Custom Domains" },
+      { href: "/admin/platform/plugins", label: "Plugin Catalog" },
     ],
   },
 ];

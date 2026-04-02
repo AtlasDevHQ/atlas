@@ -771,3 +771,8 @@ export const AvailablePluginsResponseSchema = z.object({
   plugins: z.array(CatalogEntrySchema),
   total: z.number(),
 });
+
+export const PlatformCatalogResponseSchema = z.object({
+  entries: z.array(CatalogEntrySchema),
+  total: z.number(),
+});

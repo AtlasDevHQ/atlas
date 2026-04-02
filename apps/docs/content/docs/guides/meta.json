@@ -38,6 +38,7 @@
     "white-labeling",
     "self-hosted-models",
     "rate-limiting",
+    "migration",
     "troubleshooting"
   ]
 }

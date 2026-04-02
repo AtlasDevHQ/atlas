@@ -1,0 +1,181 @@
+---
+title: Migrating to Hosted Atlas
+description: Export your self-hosted Atlas workspace and import it into the hosted SaaS at app.useatlas.dev.
+---
+
+import { Callout, Steps, Step } from "fumadocs-ui/components";
+
+## Overview
+
+Atlas provides built-in migration tooling to move your workspace data from a
+self-hosted instance to the hosted SaaS (or between any two Atlas instances).
+The migration preserves:
+
+- **Conversations** with all messages, metadata, and timestamps
+- **Semantic entities** (DB-backed YAML definitions)
+- **Learned patterns** (approved, pending, and rejected)
+- **Settings** (org-scoped key/value pairs)
+
+The import is **idempotent** — running it multiple times skips already-imported
+data, so you can safely re-run after fixing errors or adding new data.
+
+## Prerequisites
+
+- A running self-hosted Atlas instance with `DATABASE_URL` configured
+- An API key for the target hosted workspace (generate one in **Admin > API Keys**)
+- The Atlas CLI installed (`bun install` in your Atlas repo, or via `create-atlas`)
+
+## Migration workflow
+
+<Steps>
+<Step>
+
+### Export from self-hosted
+
+Run `atlas export` against your self-hosted instance. This reads directly from
+the internal database (no running API server required).
+
+```bash
+# Basic export (global/unscoped data)
+atlas export
+
+# Export a specific org's data
+atlas export --org org_abc123
+
+# Custom output path
+atlas export --output my-backup.json
+```
+
+The command produces a JSON bundle file (e.g. `atlas-export-2026-04-02.json`)
+containing all workspace data with a manifest header.
+
+</Step>
+<Step>
+
+### Review the bundle
+
+The export bundle is a plain JSON file you can inspect:
+
+```bash
+# Check the manifest
+cat atlas-export-2026-04-02.json | jq '.manifest'
+```
+
+```json
+{
+  "version": 1,
+  "exportedAt": "2026-04-02T12:00:00.000Z",
+  "source": { "label": "self-hosted" },
+  "counts": {
+    "conversations": 42,
+    "messages": 380,
+    "semanticEntities": 15,
+    "learnedPatterns": 8,
+    "settings": 3
+  }
+}
+```
+
+</Step>
+<Step>
+
+### Import into hosted Atlas
+
+Send the bundle to the target instance using `atlas migrate-import`:
+
+```bash
+# Import to app.useatlas.dev (default)
+atlas migrate-import \
+  --bundle atlas-export-2026-04-02.json \
+  --api-key sk-your-admin-api-key
+
+# Import to a custom instance
+atlas migrate-import \
+  --bundle atlas-export-2026-04-02.json \
+  --target https://atlas.internal.company.com \
+  --api-key sk-your-admin-api-key
+```
+
+You can also set the API key via environment variable:
+
+```bash
+export ATLAS_API_KEY=sk-your-admin-api-key
+atlas migrate-import --bundle atlas-export-2026-04-02.json
+```
+
+</Step>
+<Step>
+
+### Verify the import
+
+The CLI prints a summary table showing imported and skipped counts:
+
+```
+Import complete!
+
+  Entity            Imported  Skipped
+  ----------------  --------  -------
+  Conversations           42        0
+  Semantic entities       15        0
+  Learned patterns         8        0
+  Settings                 3        0
+```
+
+Log into the hosted instance and verify your conversations and semantic layer
+are present.
+
+</Step>
+</Steps>
+
+## CLI reference
+
+### `atlas export`
+
+Exports workspace data from the internal database to a portable JSON bundle.
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--output <path>` | Output file path | `./atlas-export-{date}.json` |
+| `-o <path>` | Alias for `--output` | |
+| `--org <orgId>` | Export data for a specific org | Global (unscoped) |
+
+**Requires:** `DATABASE_URL` environment variable pointing to the Atlas internal database.
+
+### `atlas migrate-import`
+
+Sends an export bundle to a hosted Atlas instance for import.
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--bundle <path>` | Path to the export bundle (required) | |
+| `--target <url>` | Target Atlas API URL | `https://app.useatlas.dev` |
+| `--api-key <key>` | Admin API key for the target | `ATLAS_API_KEY` env var |
+
+### `POST /api/v1/admin/migrate/import`
+
+The API endpoint that receives and processes the bundle. Requires admin
+authentication and an active organization context.
+
+**Idempotency rules:**
+- Conversations: skipped if a conversation with the same ID already exists
+- Semantic entities: skipped if an entity with the same (type, name) exists
+- Learned patterns: skipped if a pattern with identical SQL already exists
+- Settings: skipped if the key already has a value (won't overwrite)
+
+## Troubleshooting
+
+<Callout type="warn" title="Authentication errors">
+  Ensure your API key has admin role access. Generate a new key at
+  **Admin > API Keys** in the target workspace.
+</Callout>
+
+<Callout type="warn" title="Bundle too large">
+  If the import fails with a 413 error, your bundle exceeds the request size
+  limit. Export a subset of data using `--org` or contact support for bulk
+  import assistance.
+</Callout>
+
+<Callout type="info" title="Re-running after errors">
+  The import is idempotent — previously imported items are skipped automatically.
+  Fix the issue and re-run the same command.
+</Callout>

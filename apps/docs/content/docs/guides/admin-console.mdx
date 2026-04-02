@@ -79,6 +79,8 @@ In **Pretty** mode, entities show parsed dimensions, joins, measures, and query 
 
 Browse entities by clicking them in the sidebar. The catalog shows `use_for` tags and `common_questions`. The glossary highlights ambiguous terms. Metrics display SQL, aggregation type, and objectives.
 
+In **SaaS mode**, admins can create, edit, and delete entities directly from the UI with schema-aware autocomplete and full version history. See [Semantic Editor](/guides/semantic-editor) for the full guide.
+
 See [Semantic Layer](/getting-started/semantic-layer) for the YAML format reference.
 
 ---
@@ -223,7 +225,11 @@ Token data is recorded automatically for every agent interaction (chat and query
 
 **Route:** `/admin/plugins`
 
-Manage installed plugins — enable/disable, health checks, and configuration:
+Manage installed plugins — enable/disable, health checks, and configuration.
+
+In **SaaS mode**, the page includes a tabbed interface with **Installed** and **Available** tabs, providing a full plugin marketplace for browsing, installing, configuring, and uninstalling plugins. See [Plugin Marketplace](/guides/plugin-marketplace) for the full guide.
+
+In **self-hosted mode**, the page shows config-loaded plugins with:
 
 - **Plugin cards** — Each card shows name, type(s), version, health status, and enabled state
 - **Health check** — Trigger a live health probe for any plugin
@@ -575,6 +581,12 @@ All admin endpoints are at `/api/v1/admin/` and require the `admin` role. See th
 | `GET` | `/semantic/catalog` | Get catalog |
 | `GET` | `/semantic/stats` | Semantic coverage stats |
 | `GET` | `/semantic/diff` | Schema diff (DB vs YAML) |
+| `PUT` | `/semantic/entities/edit/:name` | Create/update entity (structured JSON) |
+| `DELETE` | `/semantic/entities/edit/:name` | Delete entity |
+| `GET` | `/semantic/columns/:tableName` | Column metadata for autocomplete |
+| `GET` | `/semantic/entities/:name/versions` | Entity version history |
+| `GET` | `/semantic/entities/versions/:versionId` | Version detail with YAML |
+| `POST` | `/semantic/entities/:name/rollback` | Rollback to previous version |
 | `GET` | `/semantic/org/entities` | List org-scoped entities |
 | `GET` | `/semantic/org/entities/:name` | Get org entity detail |
 | `PUT` | `/semantic/org/entities/:name` | Create/update org entity |
@@ -601,6 +613,10 @@ All admin endpoints are at `/api/v1/admin/` and require the `admin` role. See th
 | `POST` | `/plugins/:id/disable` | Disable a plugin |
 | `GET` | `/plugins/:id/schema` | Get config schema and values |
 | `PUT` | `/plugins/:id/config` | Update plugin config |
+| `GET` | `/plugins/marketplace/available` | List available marketplace plugins |
+| `POST` | `/plugins/marketplace/install` | Install marketplace plugin |
+| `DELETE` | `/plugins/marketplace/:id` | Uninstall marketplace plugin |
+| `PUT` | `/plugins/marketplace/:id/config` | Update marketplace plugin config |
 | `GET` | `/sessions` | List all sessions |
 | `GET` | `/sessions/stats` | Session count stats |
 | `DELETE` | `/sessions/:id` | Revoke a session |
@@ -692,3 +708,5 @@ For more, see [Troubleshooting](/guides/troubleshooting).
 - [API Key Management](/guides/api-keys) — Create and manage API keys
 - [Integrations Hub](/guides/integrations) — Connect Slack, Teams, and webhooks
 - [Sandbox Configuration](/guides/sandbox) — Configure sandbox backends
+- [Semantic Editor](/guides/semantic-editor) — Create and edit entities from the UI
+- [Plugin Marketplace](/guides/plugin-marketplace) — Browse and install plugins

@@ -661,6 +661,9 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
   - [x] Linear (#1045, PR #1083)
   - [x] WhatsApp (#1046, PR #1083)
 - [ ] Plugin marketplace — browse, install, configure per workspace (#1025)
+  - [ ] Phase 1: catalog + workspace installations backend (#1127)
+  - [ ] Phase 2: browse + install UI (#1129)
+  - [ ] Phase 3: platform admin catalog management (#1130)
 - [x] Sandbox integration library — BYOC execution environments (#1026, PR #1054)
 - [x] Product-focused data residency UX for SaaS users (#1027, PR #1065)
 - [x] Missing p-6 padding on sandbox and residency admin pages (PR #1064)
@@ -668,6 +671,9 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 ### SaaS Management
 
 - [ ] SaaS-native semantic layer management — web editor + version control (#1033)
+  - [ ] Phase 1: entity CRUD editor (#1124)
+  - [ ] Phase 2: schema-aware autocomplete (#1125)
+  - [ ] Phase 3: version history + rollback (#1126)
 
 ### Docs
 

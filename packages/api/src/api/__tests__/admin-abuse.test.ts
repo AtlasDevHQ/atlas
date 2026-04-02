@@ -104,6 +104,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   updateWorkspacePlanTier: mock(() => Promise.resolve(false)),
   cascadeWorkspaceDelete: mock(async () => ({ conversations: 0, semanticEntities: 0, learnedPatterns: 0, suggestions: 0, scheduledTasks: 0, settings: 0 })),
   getWorkspaceHealthSummary: mock(() => Promise.resolve(null)),
+  getWorkspaceRegion: mock(async () => null),
 }));
 
 mock.module("@atlas/api/lib/learn/pattern-cache", () => ({

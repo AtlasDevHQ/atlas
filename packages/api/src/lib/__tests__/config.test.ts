@@ -1492,3 +1492,58 @@ describe("configFromEnv ATLAS_SEMANTIC_INDEX_ENABLED", () => {
     expect(config.semanticIndex).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Region config — apiUrl validation
+// ---------------------------------------------------------------------------
+
+describe("RegionConfigSchema apiUrl", () => {
+  it("accepts region config with valid apiUrl", () => {
+    const config = defineConfig({
+      residency: {
+        regions: {
+          "eu-west": {
+            label: "EU West",
+            databaseUrl: "postgresql://eu-west/atlas",
+            apiUrl: "https://api-eu.useatlas.dev",
+          },
+        },
+        defaultRegion: "eu-west",
+      },
+    });
+    const resolved = validateAndResolve(config);
+    expect(resolved.residency!.regions["eu-west"].apiUrl).toBe("https://api-eu.useatlas.dev");
+  });
+
+  it("accepts region config without apiUrl", () => {
+    const config = defineConfig({
+      residency: {
+        regions: {
+          "us-east": {
+            label: "US East",
+            databaseUrl: "postgresql://us-east/atlas",
+          },
+        },
+        defaultRegion: "us-east",
+      },
+    });
+    const resolved = validateAndResolve(config);
+    expect(resolved.residency!.regions["us-east"].apiUrl).toBeUndefined();
+  });
+
+  it("rejects invalid apiUrl (not a URL)", () => {
+    const config = defineConfig({
+      residency: {
+        regions: {
+          "eu-west": {
+            label: "EU West",
+            databaseUrl: "postgresql://eu-west/atlas",
+            apiUrl: "not-a-url",
+          },
+        },
+        defaultRegion: "eu-west",
+      },
+    });
+    expect(() => validateAndResolve(config)).toThrow();
+  });
+});

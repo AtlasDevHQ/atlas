@@ -227,6 +227,8 @@ const RegionConfigSchema = z.object({
   databaseUrl: z.string().min(1, "Region database URL must not be empty"),
   /** Optional datasource URL override for analytics in this region. */
   datasourceUrl: z.string().min(1).optional(),
+  /** Public API endpoint for this region (e.g. "https://api-eu.useatlas.dev"). */
+  apiUrl: z.string().url().optional(),
 });
 
 export type RegionConfigInput = z.input<typeof RegionConfigSchema>;

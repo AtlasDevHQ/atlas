@@ -20,7 +20,7 @@ import { withRequestId } from "./middleware";
 import type { AuthResult } from "@atlas/api/lib/auth/types";
 import { authenticateRequest } from "@atlas/api/lib/auth/middleware";
 import { connections, detectDBType } from "@atlas/api/lib/db/connection";
-import { hasInternalDB, internalQuery, encryptUrl, decryptUrl } from "@atlas/api/lib/db/internal";
+import { hasInternalDB, internalQuery, encryptUrl, decryptUrl, getWorkspaceRegion } from "@atlas/api/lib/db/internal";
 import { maskConnectionUrl } from "@atlas/api/lib/security";
 import { _resetWhitelists } from "@atlas/api/lib/semantic";
 import { plugins } from "@atlas/api/lib/plugins/registry";
@@ -1933,6 +1933,7 @@ const getSettingsRoute = createRoute({
         })),
         manageable: z.boolean().describe("Whether settings can be persisted (internal DB is available)"),
         deployMode: z.enum(["self-hosted", "saas"]).describe("Current deploy mode"),
+        regionApiUrl: z.string().url().optional().describe("Regional API endpoint for the workspace's assigned region"),
       }) } },
     },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
@@ -4449,7 +4450,8 @@ admin.openapi(getSettingsRoute, async (c) => runHandler(c, "list settings", asyn
   const isPlatformAdmin = authResult.user?.role === "platform_admin";
   const allSettings = getSettingsForAdmin(orgId, isPlatformAdmin || !orgId);
   const manageable = hasInternalDB();
-  const deployMode = getConfig()?.deployMode ?? "self-hosted";
+  const config = getConfig();
+  const deployMode = config?.deployMode ?? "self-hosted";
 
   // In SaaS mode, workspace admins only see settings they can control.
   // Platform admins and self-hosted mode see everything.
@@ -4460,7 +4462,24 @@ admin.openapi(getSettingsRoute, async (c) => runHandler(c, "list settings", asyn
   // Strip internal-only saasVisible field from response
   const settings = filtered.map(({ saasVisible: _, ...rest }) => rest);
 
-  return c.json({ settings, manageable, deployMode }, 200);
+  // Resolve regional API URL for the workspace (if residency is configured).
+  // Wrapped in try-catch so a transient DB error doesn't break the entire settings response.
+  let regionApiUrl: string | undefined;
+  if (orgId && config?.residency) {
+    try {
+      const region = await getWorkspaceRegion(orgId);
+      if (region) {
+        regionApiUrl = config.residency.regions[region]?.apiUrl ?? undefined;
+      }
+    } catch (err) {
+      log.warn(
+        { err: err instanceof Error ? err.message : String(err), orgId },
+        "Failed to resolve workspace region for settings response — omitting regionApiUrl",
+      );
+    }
+  }
+
+  return c.json({ settings, manageable, deployMode, regionApiUrl }, 200);
 }));
 
 admin.openapi(updateSettingRoute, async (c) => runHandler(c, "save setting", async () => {

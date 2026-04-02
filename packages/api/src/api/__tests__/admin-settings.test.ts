@@ -90,6 +90,7 @@ mock.module("@atlas/api/lib/semantic", () => ({
 }));
 
 let mockHasInternalDB = true;
+let mockWorkspaceRegion: string | null = null;
 
 mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => mockHasInternalDB,
@@ -119,6 +120,14 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   updateWorkspacePlanTier: mock(async () => true),
   cascadeWorkspaceDelete: mock(async () => ({ conversations: 0, semanticEntities: 0, learnedPatterns: 0, suggestions: 0, scheduledTasks: 0, settings: 0 })),
   getWorkspaceHealthSummary: mock(async () => null),
+  getWorkspaceRegion: mock(async () => mockWorkspaceRegion),
+}));
+
+let mockConfigOverride: Record<string, unknown> | null = null;
+
+mock.module("@atlas/api/lib/config", () => ({
+  getConfig: () => mockConfigOverride,
+  defineConfig: (c: unknown) => c,
 }));
 
 mock.module("@atlas/api/lib/cache", () => ({
@@ -339,6 +348,8 @@ afterAll(() => {
 describe("admin settings routes", () => {
   beforeEach(() => {
     mockHasInternalDB = true;
+    mockWorkspaceRegion = null;
+    mockConfigOverride = null;
     mockSetSetting.mockClear();
     mockDeleteSetting.mockClear();
   });
@@ -683,6 +694,166 @@ describe("admin settings routes", () => {
       expect(mockSetSetting).toHaveBeenCalledTimes(1);
       // Self-hosted: no orgId
       expect(mockSetSetting).toHaveBeenCalledWith("ATLAS_PROVIDER", "openai", "admin-1", undefined);
+    });
+  });
+
+  // ─── regionApiUrl in response ──────────────────────────────────
+
+  describe("GET /api/v1/admin/settings regionApiUrl", () => {
+    it("includes regionApiUrl when workspace has region with apiUrl", async () => {
+      mockWorkspaceRegion = "eu-west";
+      mockConfigOverride = {
+        residency: {
+          regions: {
+            "eu-west": { label: "EU West", databaseUrl: "postgresql://eu-west/atlas", apiUrl: "https://api-eu.useatlas.dev" },
+          },
+          defaultRegion: "eu-west",
+        },
+      };
+
+      mockAuthenticateRequest.mockImplementationOnce(() =>
+        Promise.resolve({
+          authenticated: true,
+          mode: "better-auth",
+          user: { id: "ws-admin-1", mode: "better-auth", label: "WS Admin", role: "admin", activeOrganizationId: "org-1" },
+        }),
+      );
+
+      const res = await request("/api/v1/admin/settings");
+      expect(res.status).toBe(200);
+      const data = (await res.json()) as { regionApiUrl?: string };
+      expect(data.regionApiUrl).toBe("https://api-eu.useatlas.dev");
+    });
+
+    it("omits regionApiUrl when workspace has no region", async () => {
+      mockWorkspaceRegion = null;
+      mockConfigOverride = {
+        residency: {
+          regions: {
+            "eu-west": { label: "EU West", databaseUrl: "postgresql://eu-west/atlas", apiUrl: "https://api-eu.useatlas.dev" },
+          },
+          defaultRegion: "eu-west",
+        },
+      };
+
+      mockAuthenticateRequest.mockImplementationOnce(() =>
+        Promise.resolve({
+          authenticated: true,
+          mode: "better-auth",
+          user: { id: "ws-admin-1", mode: "better-auth", label: "WS Admin", role: "admin", activeOrganizationId: "org-1" },
+        }),
+      );
+
+      const res = await request("/api/v1/admin/settings");
+      expect(res.status).toBe(200);
+      const data = (await res.json()) as { regionApiUrl?: string };
+      expect(data.regionApiUrl).toBeUndefined();
+    });
+
+    it("omits regionApiUrl when region has no apiUrl configured", async () => {
+      mockWorkspaceRegion = "us-east";
+      mockConfigOverride = {
+        residency: {
+          regions: {
+            "us-east": { label: "US East", databaseUrl: "postgresql://us-east/atlas" },
+          },
+          defaultRegion: "us-east",
+        },
+      };
+
+      mockAuthenticateRequest.mockImplementationOnce(() =>
+        Promise.resolve({
+          authenticated: true,
+          mode: "better-auth",
+          user: { id: "ws-admin-1", mode: "better-auth", label: "WS Admin", role: "admin", activeOrganizationId: "org-1" },
+        }),
+      );
+
+      const res = await request("/api/v1/admin/settings");
+      expect(res.status).toBe(200);
+      const data = (await res.json()) as { regionApiUrl?: string };
+      expect(data.regionApiUrl).toBeUndefined();
+    });
+
+    it("omits regionApiUrl when no residency config", async () => {
+      // Default: mockConfigOverride = null → getConfig() returns null
+      const res = await request("/api/v1/admin/settings");
+      expect(res.status).toBe(200);
+      const data = (await res.json()) as { regionApiUrl?: string };
+      expect(data.regionApiUrl).toBeUndefined();
+    });
+
+    it("omits regionApiUrl for self-hosted admin (no org)", async () => {
+      mockConfigOverride = {
+        residency: {
+          regions: {
+            "eu-west": { label: "EU West", databaseUrl: "postgresql://eu-west/atlas", apiUrl: "https://api-eu.useatlas.dev" },
+          },
+          defaultRegion: "eu-west",
+        },
+      };
+
+      // Default mock: no activeOrganizationId
+      const res = await request("/api/v1/admin/settings");
+      expect(res.status).toBe(200);
+      const data = (await res.json()) as { regionApiUrl?: string };
+      expect(data.regionApiUrl).toBeUndefined();
+    });
+
+    it("omits regionApiUrl when workspace region is not in config (region drift)", async () => {
+      mockWorkspaceRegion = "ap-south"; // region assigned but decommissioned from config
+      mockConfigOverride = {
+        residency: {
+          regions: {
+            "eu-west": { label: "EU West", databaseUrl: "postgresql://eu-west/atlas", apiUrl: "https://api-eu.useatlas.dev" },
+          },
+          defaultRegion: "eu-west",
+        },
+      };
+
+      mockAuthenticateRequest.mockImplementationOnce(() =>
+        Promise.resolve({
+          authenticated: true,
+          mode: "better-auth",
+          user: { id: "ws-admin-1", mode: "better-auth", label: "WS Admin", role: "admin", activeOrganizationId: "org-1" },
+        }),
+      );
+
+      const res = await request("/api/v1/admin/settings");
+      expect(res.status).toBe(200);
+      const data = (await res.json()) as { regionApiUrl?: string };
+      expect(data.regionApiUrl).toBeUndefined();
+    });
+
+    it("returns 200 and omits regionApiUrl when getWorkspaceRegion throws", async () => {
+      mockWorkspaceRegion = null;
+      mockConfigOverride = {
+        residency: {
+          regions: {
+            "eu-west": { label: "EU West", databaseUrl: "postgresql://eu-west/atlas", apiUrl: "https://api-eu.useatlas.dev" },
+          },
+          defaultRegion: "eu-west",
+        },
+      };
+
+      // Override getWorkspaceRegion to throw (simulating a DB error)
+      const { getWorkspaceRegion: gwrMock } = await import("@atlas/api/lib/db/internal");
+      (gwrMock as ReturnType<typeof mock>).mockImplementationOnce(() => {
+        throw new Error("connection refused");
+      });
+
+      mockAuthenticateRequest.mockImplementationOnce(() =>
+        Promise.resolve({
+          authenticated: true,
+          mode: "better-auth",
+          user: { id: "ws-admin-1", mode: "better-auth", label: "WS Admin", role: "admin", activeOrganizationId: "org-1" },
+        }),
+      );
+
+      const res = await request("/api/v1/admin/settings");
+      expect(res.status).toBe(200);
+      const data = (await res.json()) as { regionApiUrl?: string };
+      expect(data.regionApiUrl).toBeUndefined();
     });
   });
 });

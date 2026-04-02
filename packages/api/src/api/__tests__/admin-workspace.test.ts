@@ -180,6 +180,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   updateWorkspacePlanTier: mockUpdateWorkspacePlanTier,
   cascadeWorkspaceDelete: mockCascadeWorkspaceDelete,
   getWorkspaceHealthSummary: mockGetWorkspaceHealthSummary,
+  getWorkspaceRegion: mock(async () => null),
 }));
 
 mock.module("@atlas/api/lib/learn/pattern-cache", () => ({

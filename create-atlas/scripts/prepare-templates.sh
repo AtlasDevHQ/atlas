@@ -68,22 +68,23 @@ cp "$NEXTJS_EXAMPLE/src/app/api/[...route]/route.ts" \
 # ── Step 2c: Copy UI components + web helpers into ALL templates ─────
 # Both templates use @/ path alias: page.tsx imports @/ui/context, @/lib/api-url, etc.
 for tpl in docker nextjs-standalone; do
-  echo ":: Syncing UI components → $tpl"
-  mkdir -p "$TEMPLATES/$tpl/src"
-  rm -rf "$TEMPLATES/$tpl/src/ui"
-  cp -r "$WEB_SRC/ui" "$TEMPLATES/$tpl/src/ui"
-  # Remove test files — not needed in scaffolded projects
-  find "$TEMPLATES/$tpl/src/ui" -name '__tests__' -type d -exec rm -rf {} + || true
-
-  # Copy shadcn primitives (src/components/ui/) — used by src/ui/ components
-  echo ":: Syncing shadcn components → $tpl"
-  rm -rf "$TEMPLATES/$tpl/src/components"
-  cp -r "$WEB_SRC/components" "$TEMPLATES/$tpl/src/components"
-
-  # Copy hooks (src/hooks/) — used by shadcn sidebar component
-  echo ":: Syncing hooks → $tpl"
-  rm -rf "$TEMPLATES/$tpl/src/hooks"
-  cp -r "$WEB_SRC/hooks" "$TEMPLATES/$tpl/src/hooks"
+  # Copy web-only directories (delete+replace — these don't conflict with API source)
+  echo ":: Syncing web source → $tpl"
+  for subdir in ui components config hooks types; do
+    rm -rf "$TEMPLATES/$tpl/src/$subdir"
+    if [ -d "$WEB_SRC/$subdir" ]; then
+      cp -r "$WEB_SRC/$subdir" "$TEMPLATES/$tpl/src/$subdir"
+    fi
+  done
+  # Merge web lib files into existing API lib (don't delete — API source lives there too)
+  if [ -d "$WEB_SRC/lib" ]; then
+    cp "$WEB_SRC"/lib/*.ts "$TEMPLATES/$tpl/src/lib/" 2>/dev/null || true
+    # Copy web lib subdirs that don't exist in API (auth/client.ts has special handling)
+  fi
+  # Remove test files from synced web source
+  find "$TEMPLATES/$tpl/src/ui" -name '__tests__' -type d -exec rm -rf {} + 2>/dev/null || true
+  find "$TEMPLATES/$tpl/src" -name '*.test.ts' -delete 2>/dev/null || true
+  find "$TEMPLATES/$tpl/src" -name '*.test.tsx' -delete 2>/dev/null || true
 done
 
 # Brand CSS — globals.css imports ../../brand.css (project root)
@@ -91,10 +92,8 @@ for tpl in docker nextjs-standalone; do
   cp "$MONOREPO/packages/web/brand.css" "$TEMPLATES/$tpl/brand.css"
 done
 
-# Docker template gets web helpers directly from packages/web
-echo ":: Syncing web helpers → docker"
-cp "$WEB_SRC/lib/api-url.ts" "$TEMPLATES/docker/src/lib/"
-cp "$WEB_SRC/lib/utils.ts"   "$TEMPLATES/docker/src/lib/"
+# Docker template: ensure auth/client.ts override from web (not API)
+echo ":: Syncing docker auth override"
 mkdir -p "$TEMPLATES/docker/src/lib/auth"
 cp "$WEB_SRC/lib/auth/client.ts" "$TEMPLATES/docker/src/lib/auth/"
 
@@ -124,8 +123,10 @@ cp "$NEXTJS_EXAMPLE/src/lib/api-url.ts"      "$TEMPLATES/nextjs-standalone/src/l
 mkdir -p "$TEMPLATES/nextjs-standalone/src/lib/auth"
 cp "$NEXTJS_EXAMPLE/src/lib/auth/client.ts"   "$TEMPLATES/nextjs-standalone/src/lib/auth/"
 
-# Copy utils.ts (cn() helper used by UI components)
-cp "$WEB_SRC/lib/utils.ts" "$TEMPLATES/nextjs-standalone/src/lib/"
+# Copy ALL web lib files (utils, format, data-table, parsers, compose-refs, etc.)
+for f in "$WEB_SRC"/lib/*.ts; do
+  cp "$f" "$TEMPLATES/nextjs-standalone/src/lib/" 2>/dev/null || true
+done
 
 # Copy Next.js app pages from packages/web
 mkdir -p "$TEMPLATES/nextjs-standalone/src/app"

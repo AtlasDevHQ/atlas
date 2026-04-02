@@ -250,22 +250,12 @@ export const milestones: Milestone[] = [
     githubMilestone: 28,
   },
 
-  // ── Current ──────────────────────────────────────────────
   {
     version: "0.9.7",
     title: "SaaS-First Admin Experience",
-    status: "current",
+    status: "shipped",
     summary:
-      "Make app.useatlas.dev feel like a real SaaS product, not a self-hosted deployment. Remove operator-facing UX from workspace admins, add plugin marketplace, OAuth-first integrations, and product-focused configuration pages.",
-    highlights: [
-      "Enterprise-gated deploy mode flag (saas vs self-hosted)",
-      "Hide env var names and restart badges from SaaS admins",
-      "Filter settings to workspace-relevant items",
-      "Hot-reloadable settings without restart",
-      "OAuth-first integration connect flows",
-      "Plugin marketplace — browse, install, configure per workspace",
-      "Product-focused sandbox and data residency UX",
-    ],
+      "Made app.useatlas.dev feel like a real SaaS product. Deploy mode flag, hot-reloadable settings, OAuth-first integration connect flows for 7 platforms, plugin marketplace with browse/install/configure, semantic layer web editor with autocomplete and version history, and dual-mode BYOT for self-hosted.",
     githubMilestone: 29,
   },
   {
@@ -276,18 +266,20 @@ export const milestones: Milestone[] = [
       "Documentation for 0.9.7 features, integration type safety refactors, data residency region selection during signup and automated migration orchestration, periodic settings refresh for multi-instance SaaS, and deploy-validation CI for scaffold templates.",
     githubMilestone: 30,
   },
+  // ── Current ──────────────────────────────────────────────
   {
     version: "1.0.0",
     title: "SaaS Launch",
-    status: "planned",
+    status: "current",
     summary:
-      "Public launch of hosted Atlas at app.useatlas.dev. Production SLAs, self-serve pricing and upgrade paths, enterprise dedicated instances, and launch content.",
+      "Public launch of hosted Atlas at app.useatlas.dev. Pricing page shipped, OpenStatus integration for incident management, migration tooling (atlas export/import), and launch content.",
     highlights: [
-      "Production SLAs and SOC 2 readiness",
-      "Public pricing page and upgrade paths",
-      "Migration tooling from self-hosted",
-      "Enterprise dedicated instances",
-      "Launch blog post and documentation",
+      "Public pricing page on useatlas.dev",
+      "OpenStatus integration for incident management and status page",
+      "Migration tooling — atlas export/import for self-hosted to SaaS",
+      "SLA commitments and legal (ToS, privacy, DPA)",
+      "Hosted user documentation",
+      "Regional API deployment for tier-2 compliance",
     ],
     githubMilestone: 24,
   },

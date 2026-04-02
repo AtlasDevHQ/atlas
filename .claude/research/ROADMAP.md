@@ -578,7 +578,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 
 ### Integration
 - [x] Browser e2e — tour dismissal fix (PR #996), 44/47 fast tests pass (#951). Filed #995 (axe violation)
-- [x] SDK, MCP, and widget integration — external integration points (#952)
+- [x] SDK, MCP, and widget integration — external integration points (#952, PR #1138)
 
 ### Follow-ups (bugs found during validation)
 - [x] Better Auth platform_admin role missing from roles config (#955, PR #956)
@@ -759,12 +759,12 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [ ] Terms of service, privacy policy, DPA for enterprise (#873)
 - [x] Launch content — blog post, Show HN, comparison pages updated (#874, PR #924)
 - [ ] Launch content follow-up — social media assets and demo video (#954)
-- [x] Migration tooling — self-hosted to hosted (export/import conversations, semantic layers, settings) (#875, PR #1140)
+- [x] Migration tooling — self-hosted to hosted (export/import conversations, semantic layers, settings) (#875, PR #1143)
 - [ ] Documentation for hosted users — separate onboarding flow from self-hosted docs (#876)
 - [x] Status page — public health dashboard (#877, PR #921)
 - [x] Status page follow-up — OpenStatus integration for incident management (#953, PR #1144)
 - [ ] Regional API deployment for tier-2 data residency compliance (#1069)
-- [x] Docs — semantic editor, plugin marketplace, platform plugin catalog guides (#1141)
+- [x] Docs — semantic editor, plugin marketplace, platform plugin catalog guides (#1141, PR #1142)
 
 ---
 

@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { AtlasChat } from "@useatlas/react";
-import { API_URL } from "@/lib/api-url";
+import { getApiUrl } from "@/lib/api-url";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -20,7 +20,8 @@ const DEMO_EMAIL_KEY = "atlas-demo-email";
 const DEMO_EXPIRES_KEY = "atlas-demo-expires";
 
 function getApiBase(): string {
-  if (API_URL) return API_URL;
+  const url = getApiUrl();
+  if (url) return url;
   if (typeof window !== "undefined") return window.location.origin;
   return "http://localhost:3000";
 }
@@ -190,7 +191,7 @@ export default function DemoPage() {
       {/* Chat UI */}
       <div className="flex-1 overflow-hidden">
         <AtlasChat
-          apiUrl={API_URL}
+          apiUrl={getApiUrl()}
           apiKey={token}
           chatEndpoint="/api/v1/demo/chat"
           conversationsEndpoint="/api/v1/demo/conversations"

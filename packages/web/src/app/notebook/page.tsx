@@ -9,7 +9,7 @@ import { useNotebook } from "@/ui/components/notebook/use-notebook";
 import { NotebookShell } from "@/ui/components/notebook/notebook-shell";
 import { ConversationSidebar } from "@/ui/components/conversations/conversation-sidebar";
 import { useConversations, transformMessages } from "@/ui/hooks/use-conversations";
-import { API_URL, IS_CROSS_ORIGIN } from "@/lib/api-url";
+import { getApiUrl, isCrossOrigin } from "@/lib/api-url";
 import { useAtlasTransport } from "@/ui/hooks/use-atlas-transport";
 import { authClient } from "@/lib/auth/client";
 import { NavBar } from "@/ui/components/tour/nav-bar";
@@ -66,8 +66,8 @@ function NotebookContent() {
     healthWarning,
     authResolved,
   } = useAtlasTransport({
-    apiUrl: API_URL,
-    isCrossOrigin: IS_CROSS_ORIGIN,
+    apiUrl: getApiUrl(),
+    isCrossOrigin: isCrossOrigin(),
     getConversationId: () => conversationId ?? null,
     onNewConversationId: (id) => {
       setParams({ id });
@@ -84,7 +84,7 @@ function NotebookContent() {
 
   // Conversations hook
   const convos = useConversations({
-    apiUrl: API_URL,
+    apiUrl: getApiUrl(),
     enabled: true,
     getHeaders,
     getCredentials,
@@ -288,8 +288,8 @@ function NotebookContent() {
 
   return (
     <GuidedTour
-      apiUrl={API_URL}
-      isCrossOrigin={IS_CROSS_ORIGIN}
+      apiUrl={getApiUrl()}
+      isCrossOrigin={isCrossOrigin()}
       isAdmin={isAdmin}
       serverTrackingEnabled={isSignedIn}
     >

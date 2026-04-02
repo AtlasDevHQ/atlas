@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { authClient } from "@/lib/auth/client";
-import { API_URL } from "@/lib/api-url";
+import { getApiUrl } from "@/lib/api-url";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -19,7 +19,8 @@ import { Database } from "lucide-react";
 import { GoogleIcon, GitHubIcon, MicrosoftIcon } from "@/ui/components/social-icons";
 
 function getApiBase(): string {
-  if (API_URL) return API_URL;
+  const url = getApiUrl();
+  if (url) return url;
   if (typeof window !== "undefined") return window.location.origin;
   return "http://localhost:3000";
 }

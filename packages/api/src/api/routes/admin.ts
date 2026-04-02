@@ -65,6 +65,7 @@ import { adminAbuse } from "./admin-abuse";
 import { adminIntegrations } from "./admin-integrations";
 import { adminSandbox } from "./admin-sandbox";
 import { adminResidency } from "./admin-residency";
+import { workspaceMarketplace } from "./admin-marketplace";
 import { ErrorSchema, AuthErrorSchema, parsePagination } from "./shared-schemas";
 import { runHandler } from "@atlas/api/lib/effect/hono";
 
@@ -189,6 +190,8 @@ admin.route("/sandbox", adminSandbox);
 admin.route("/sandbox/", adminSandbox);
 admin.route("/residency", adminResidency);
 admin.route("/residency/", adminResidency);
+admin.route("/plugins/marketplace", workspaceMarketplace);
+admin.route("/plugins/marketplace/", workspaceMarketplace);
 
 // Path traversal guard, YAML helpers, entity discovery, and file finding
 // are all imported from @atlas/api/lib/semantic/files above.

@@ -315,6 +315,18 @@ try {
   );
 }
 
+// Platform plugin catalog routes — platform_admin role.
+try {
+  const { platformCatalog } = await import("./routes/admin-marketplace");
+  app.route("/api/v1/platform/plugins/catalog", platformCatalog);
+  log.info("Platform plugin catalog routes enabled");
+} catch (err) {
+  log.error(
+    { err: err instanceof Error ? err : new Error(String(err)) },
+    "Failed to load platform plugin catalog routes — marketplace catalog will be unavailable",
+  );
+}
+
 // Billing routes — lazy import, only loaded if STRIPE_SECRET_KEY is set (SaaS mode).
 if (process.env.STRIPE_SECRET_KEY) {
   try {

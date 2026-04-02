@@ -155,10 +155,10 @@ interface _EntityDataLegacy {
 
 export function entityToFormValues(entity: EntityData): EntityFormValues {
   // normalizeList handles both Array and Record<string, T> shapes from @useatlas/types
-  const dims = normalizeList(entity.dimensions);
-  const measures = normalizeList(entity.measures);
-  const joins = normalizeList(entity.joins);
-  const patterns = normalizeList(entity.query_patterns);
+  const dims = normalizeList(entity.dimensions, "name");
+  const measures = normalizeList(entity.measures, "name");
+  const joins = normalizeList(entity.joins, "name");
+  const patterns = normalizeList(entity.query_patterns, "name");
   return {
     table: entity.table,
     description: entity.description ?? "",

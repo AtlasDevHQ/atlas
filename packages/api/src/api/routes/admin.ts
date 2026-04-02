@@ -190,6 +190,17 @@ admin.route("/sandbox", adminSandbox);
 admin.route("/sandbox/", adminSandbox);
 admin.route("/residency", adminResidency);
 admin.route("/residency/", adminResidency);
+// Plugin marketplace — lazy import to avoid crashing all admin routes if marketplace module fails
+try {
+  const { workspaceMarketplace } = await import("./admin-marketplace");
+  admin.route("/plugins/marketplace", workspaceMarketplace);
+  admin.route("/plugins/marketplace/", workspaceMarketplace);
+} catch (err) {
+  log.error(
+    { err: err instanceof Error ? err : new Error(String(err)) },
+    "Failed to load marketplace routes — plugin marketplace will be unavailable",
+  );
+}
 
 // Semantic entity editor routes — registered directly (not subrouter) to avoid
 // middleware conflicts with existing /semantic/* GET routes above.

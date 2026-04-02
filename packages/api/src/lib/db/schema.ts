@@ -1102,6 +1102,52 @@ export const regionMigrations = pgTable(
 // Sandbox credentials (0004_sandbox_credentials.sql)
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Plugin marketplace (0014_plugin_marketplace.sql)
+// ---------------------------------------------------------------------------
+
+export const pluginCatalog = pgTable(
+  "plugin_catalog",
+  {
+    id: text("id").primaryKey(),
+    name: text("name").notNull(),
+    slug: text("slug").notNull().unique(),
+    description: text("description"),
+    type: text("type").notNull(),
+    npmPackage: text("npm_package"),
+    iconUrl: text("icon_url"),
+    configSchema: jsonb("config_schema"),
+    minPlan: text("min_plan").notNull().default("team"),
+    enabled: boolean("enabled").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("idx_plugin_catalog_slug").on(t.slug),
+    index("idx_plugin_catalog_type").on(t.type),
+    index("idx_plugin_catalog_enabled").on(t.enabled).where(sql`enabled = true`),
+    check("chk_plugin_catalog_type", sql`type IN ('datasource', 'context', 'interaction', 'action', 'sandbox')`),
+  ],
+);
+
+export const workspacePlugins = pgTable(
+  "workspace_plugins",
+  {
+    id: text("id").primaryKey(),
+    workspaceId: text("workspace_id").notNull(),
+    catalogId: text("catalog_id").notNull().references(() => pluginCatalog.id, { onDelete: "cascade" }),
+    config: jsonb("config").notNull().default(sql`'{}'`),
+    enabled: boolean("enabled").notNull().default(true),
+    installedAt: timestamp("installed_at", { withTimezone: true }).notNull().defaultNow(),
+    installedBy: text("installed_by"),
+  },
+  (t) => [
+    uniqueIndex("idx_workspace_plugins_unique").on(t.workspaceId, t.catalogId),
+    index("idx_workspace_plugins_workspace").on(t.workspaceId),
+    index("idx_workspace_plugins_catalog").on(t.catalogId),
+  ],
+);
+
 export const sandboxCredentials = pgTable(
   "sandbox_credentials",
   {

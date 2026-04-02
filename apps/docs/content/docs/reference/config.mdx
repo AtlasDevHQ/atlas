@@ -6,6 +6,10 @@ description: Declarative configuration with atlas.config.ts for multi-datasource
 import { Callout } from "fumadocs-ui/components/callout";
 import { Tabs, Tab } from "fumadocs-ui/components/tabs";
 
+<Callout type="info" title="Self-hosted only">
+  Configuration files are used for self-hosted deployments. Hosted users at [app.useatlas.dev](https://app.useatlas.dev) can skip this — configure datasources, plugins, and settings from the admin console instead. See [Workspace Settings](/guides/workspace-settings).
+</Callout>
+
 Atlas can be configured via environment variables (see [Environment Variables](/reference/environment-variables)) or a declarative `atlas.config.ts` file. For multi-datasource setups, plugins, RLS, or actions, use the config file. For simple single-datasource deployments, env vars alone are sufficient.
 
 ## File Location

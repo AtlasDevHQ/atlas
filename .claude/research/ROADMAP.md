@@ -760,7 +760,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] Launch content — blog post, Show HN, comparison pages updated (#874, PR #924)
 - [ ] Launch content follow-up — social media assets and demo video (#954)
 - [x] Migration tooling — self-hosted to hosted (export/import conversations, semantic layers, settings) (#875, PR #1143)
-- [ ] Documentation for hosted users — separate onboarding flow from self-hosted docs (#876)
+- [x] Documentation for hosted users — separate onboarding flow from self-hosted docs (#876, PR #1145)
 - [x] Status page — public health dashboard (#877, PR #921)
 - [x] Status page follow-up — OpenStatus integration for incident management (#953, PR #1144)
 - [ ] Regional API deployment for tier-2 data residency compliance (#1069)

@@ -1,0 +1,90 @@
+---
+title: Team Management
+description: Invite members, assign roles, and manage access to your Atlas workspace.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+import { Steps, Step } from "fumadocs-ui/components/steps";
+
+Manage who has access to your Atlas workspace, what they can do, and how they authenticate.
+
+<Callout title="Prerequisites">
+- A user with the `admin` or `owner` role
+</Callout>
+
+---
+
+## Roles
+
+Atlas has three built-in roles:
+
+| Role | Permissions |
+|------|------------|
+| **Member** | Ask questions, create notebooks, share conversations, use scheduled tasks |
+| **Admin** | All member permissions + manage connections, settings, users, semantic layer, plugins, integrations |
+| **Owner** | All admin permissions + billing, workspace deletion, ownership transfer |
+
+Enterprise plan workspaces can define [Custom Roles](/guides/custom-roles) with granular permissions.
+
+---
+
+## Inviting Members
+
+<Steps>
+<Step>
+### Send invitations
+
+Go to **Admin > Users** (`/admin/users`) and click **Invite User**. Enter the email address and select a role.
+
+The invitee receives an email with a link to join your workspace. Invitations expire after 7 days — resend from the same page if needed.
+</Step>
+
+<Step>
+### Bulk invitations
+
+To invite multiple people, add email addresses one at a time from the invite dialog. Each invitation is sent independently. All invitees receive the same role you selected.
+</Step>
+</Steps>
+
+---
+
+## Managing Members
+
+The **Admin > Users** page shows all workspace members with their:
+
+- **Name and email**
+- **Role** — click to change (admin or owner required)
+- **Status** — active, invited (pending acceptance), or suspended
+- **Last active** — when they last used Atlas
+
+### Changing a member's role
+
+Click the role badge next to any member to change it. You cannot demote yourself below admin. Only owners can promote others to owner.
+
+### Removing a member
+
+Click the menu on a member's row and select **Remove**. Removed members immediately lose access. Their conversation history is retained for audit purposes.
+
+---
+
+## Authentication Methods
+
+How members sign in depends on your workspace configuration:
+
+| Method | Setup | Best for |
+|--------|-------|----------|
+| **Email + password** | Available by default | Small teams getting started |
+| **Social login** | Available by default (Google, GitHub) | Teams preferring OAuth |
+| **SSO (SAML/OIDC)** | Enterprise plan — see [SSO Setup](/guides/enterprise-sso) | Organizations with an identity provider |
+| **SCIM provisioning** | Enterprise plan — see [SCIM](/guides/scim) | Auto-provisioning from Okta, Azure AD, etc. |
+
+On the hosted platform, social login providers are pre-configured. Enterprise SSO and SCIM are available on the Enterprise plan.
+
+---
+
+## See Also
+
+- [Custom Roles](/guides/custom-roles) — granular permissions beyond the built-in roles (Enterprise plan)
+- [Enterprise SSO](/guides/enterprise-sso) — SAML and OIDC single sign-on
+- [SCIM Directory Sync](/guides/scim) — automatic user provisioning
+- [IP Allowlisting](/guides/ip-allowlisting) — restrict access by IP address (Enterprise plan)

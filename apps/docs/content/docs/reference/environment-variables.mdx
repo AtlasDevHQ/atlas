@@ -6,6 +6,10 @@ description: Complete reference for all Atlas environment variables with default
 import { Callout } from "fumadocs-ui/components/callout";
 import { Tabs, Tab } from "fumadocs-ui/components/tabs";
 
+<Callout type="info" title="Self-hosted only">
+  Environment variables are used for self-hosted deployments. Hosted users at [app.useatlas.dev](https://app.useatlas.dev) can skip this — the platform manages all configuration through the admin console. See [Workspace Settings](/guides/workspace-settings).
+</Callout>
+
 Atlas can be configured entirely via environment variables. Most have safe defaults — a minimal deployment needs only an LLM provider key and a datasource URL. For multi-datasource setups or advanced configuration, see the [Configuration reference](/reference/config).
 
 ## Precedence

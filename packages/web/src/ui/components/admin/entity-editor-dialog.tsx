@@ -645,7 +645,7 @@ export function EntityEditorDialog({
     : { table: "", description: "", dimensions: [], measures: [], joins: [], query_patterns: [] };
 
   const form = useForm<EntityFormValues>({
-    resolver: zodResolver(entityFormSchema),
+    resolver: zodResolver(entityFormSchema as z.ZodType<EntityFormValues, EntityFormValues>),
     defaultValues,
   });
 

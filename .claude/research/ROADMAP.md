@@ -663,7 +663,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [ ] Plugin marketplace — browse, install, configure per workspace (#1025)
   - [x] Phase 1: catalog + workspace installations backend (#1127, PR #1132)
   - [x] Phase 2: browse + install UI (#1129, PR #1134)
-  - [ ] Phase 3: platform admin catalog management (#1130)
+  - [x] Phase 3: platform admin catalog management (#1130)
 - [x] Sandbox integration library — BYOC execution environments (#1026, PR #1054)
 - [x] Product-focused data residency UX for SaaS users (#1027, PR #1065)
 - [x] Missing p-6 padding on sandbox and residency admin pages (PR #1064)

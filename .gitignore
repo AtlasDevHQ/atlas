@@ -15,6 +15,8 @@ create-atlas/templates/*/bin/
 create-atlas/templates/*/data/
 create-atlas/templates/*/docs/
 create-atlas/templates/*/src/
+create-atlas/templates/*/ee/
+create-atlas/templates/*/brand.css
 dist/
 routeTree.gen.ts
 e2e/browser/storage-state.json

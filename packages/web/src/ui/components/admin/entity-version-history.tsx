@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { useAtlasConfig } from "@/ui/context";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -134,7 +135,8 @@ function computeDiff(oldYaml: string, newYaml: string): DiffItem[] {
     }
 
     return items;
-  } catch {
+  } catch (err) {
+    console.warn("Failed to compute diff between versions:", err instanceof Error ? err.message : String(err));
     return [];
   }
 }
@@ -204,7 +206,9 @@ function parseSimpleYaml(yamlStr: string): Record<string, unknown> {
     }
 
     return result;
-  } catch {
+  } catch (err) {
+    // intentionally non-fatal: best-effort parser for diff; caller handles gracefully
+    console.warn("YAML parse failed for diff:", err instanceof Error ? err.message : String(err));
     return {};
   }
 }
@@ -266,11 +270,13 @@ function DiffView({ oldYaml, newYaml }: { oldYaml: string; newYaml: string }) {
 // ---------------------------------------------------------------------------
 
 export function EntityVersionHistory({ entityName, onRollback }: EntityVersionHistoryProps) {
+  const { apiUrl, isCrossOrigin } = useAtlasConfig();
   const [page, setPage] = useState(0);
   const pageSize = 20;
   const [compareIds, setCompareIds] = useState<[string | null, string | null]>([null, null]);
   const [compareData, setCompareData] = useState<{ a: SemanticEntityVersionDetail | null; b: SemanticEntityVersionDetail | null }>({ a: null, b: null });
   const [compareLoading, setCompareLoading] = useState(false);
+  const [compareError, setCompareError] = useState<string | null>(null);
   const [rollbackTarget, setRollbackTarget] = useState<SemanticEntityVersionSummary | null>(null);
 
   const { data, loading, error, refetch } = useAdminFetch<VersionListResponse>(
@@ -300,15 +306,28 @@ export function EntityVersionHistory({ entityName, onRollback }: EntityVersionHi
   };
 
   // Fetch comparison data when both IDs are set
+  const fetchOpts: RequestInit = { credentials: isCrossOrigin ? "include" : "same-origin" };
+
   const handleCompare = async () => {
     const [idA, idB] = compareIds;
     if (!idA || !idB) return;
 
     setCompareLoading(true);
+    setCompareError(null);
     try {
+      const [rawA, rawB] = await Promise.all([
+        fetch(`${apiUrl}/api/v1/admin/semantic/entities/versions/${idA}`, fetchOpts),
+        fetch(`${apiUrl}/api/v1/admin/semantic/entities/versions/${idB}`, fetchOpts),
+      ]);
+      if (!rawA.ok || !rawB.ok) {
+        const failedRes = !rawA.ok ? rawA : rawB;
+        const body = await failedRes.json().catch(() => ({})) as Record<string, unknown>;
+        setCompareError(typeof body.message === "string" ? body.message : `Failed to fetch version details (HTTP ${failedRes.status}).`);
+        return;
+      }
       const [resA, resB] = await Promise.all([
-        fetch(`/api/v1/admin/semantic/entities/versions/${idA}`, { credentials: "same-origin" }).then((r) => r.json() as Promise<VersionDetailResponse>),
-        fetch(`/api/v1/admin/semantic/entities/versions/${idB}`, { credentials: "same-origin" }).then((r) => r.json() as Promise<VersionDetailResponse>),
+        rawA.json() as Promise<VersionDetailResponse>,
+        rawB.json() as Promise<VersionDetailResponse>,
       ]);
       // Order: older first (lower version number = a)
       const a = resA.version;
@@ -319,7 +338,9 @@ export function EntityVersionHistory({ entityName, onRollback }: EntityVersionHi
         setCompareData({ a: b, b: a });
       }
     } catch (err) {
-      console.debug("Failed to fetch versions for comparison:", err instanceof Error ? err.message : String(err));
+      const msg = err instanceof Error ? err.message : String(err);
+      console.debug("Failed to fetch versions for comparison:", msg);
+      setCompareError(msg || "Failed to fetch versions for comparison. Check your connection and try again.");
     } finally {
       setCompareLoading(false);
     }
@@ -329,7 +350,7 @@ export function EntityVersionHistory({ entityName, onRollback }: EntityVersionHi
     if (!rollbackTarget) return;
     const result = await mutateRollback({
       path: `/api/v1/admin/semantic/entities/${encodeURIComponent(entityName)}/rollback`,
-      body: { versionId: rollbackTarget.id } as unknown as Record<string, unknown>,
+      body: { versionId: rollbackTarget.id } as Record<string, unknown>,
     });
     if (result.ok) {
       setRollbackTarget(null);
@@ -341,6 +362,7 @@ export function EntityVersionHistory({ entityName, onRollback }: EntityVersionHi
   const clearComparison = () => {
     setCompareIds([null, null]);
     setCompareData({ a: null, b: null });
+    setCompareError(null);
   };
 
   if (loading) return <LoadingState message="Loading version history..." />;
@@ -383,6 +405,11 @@ export function EntityVersionHistory({ entityName, onRollback }: EntityVersionHi
               </div>
             </CardContent>
           </Card>
+        )}
+
+        {/* Compare error */}
+        {compareError && (
+          <ErrorBanner message={compareError} />
         )}
 
         {/* Diff view */}

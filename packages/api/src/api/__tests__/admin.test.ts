@@ -1988,6 +1988,19 @@ describe("GET /api/v1/admin/semantic/entities/versions/:versionId", () => {
     mockGetVersion.mockResolvedValue(null);
   });
 
+  it("returns 400 when no active organization", async () => {
+    setAdmin();
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/entities/versions/550e8400-e29b-41d4-a716-446655440000"));
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 501 when no internal DB", async () => {
+    setOrgAdmin("org-1");
+    mockHasInternalDB = false;
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/entities/versions/550e8400-e29b-41d4-a716-446655440000"));
+    expect(res.status).toBe(501);
+  });
+
   it("returns 404 when version not found", async () => {
     setOrgAdmin("org-1");
     const res = await app.fetch(adminRequest("/api/v1/admin/semantic/entities/versions/550e8400-e29b-41d4-a716-446655440000"));
@@ -2040,6 +2053,15 @@ describe("POST /api/v1/admin/semantic/entities/:name/rollback", () => {
       versionId: "550e8400-e29b-41d4-a716-446655440000",
     }));
     expect(res.status).toBe(400);
+  });
+
+  it("returns 501 when no internal DB", async () => {
+    setOrgAdmin("org-1");
+    mockHasInternalDB = false;
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/entities/users/rollback", "POST", {
+      versionId: "550e8400-e29b-41d4-a716-446655440000",
+    }));
+    expect(res.status).toBe(501);
   });
 
   it("returns 404 when version not found", async () => {
@@ -2113,6 +2135,36 @@ describe("POST /api/v1/admin/semantic/entities/:name/rollback", () => {
 
     // Verify a new version was created for the rollback
     expect(mockCreateVersion).toHaveBeenCalledTimes(1);
+  });
+
+  it("succeeds even when version snapshot fails after rollback", async () => {
+    setOrgAdmin("org-1");
+    const versionUuid = "550e8400-e29b-41d4-a716-446655440001";
+    mockGetVersion.mockResolvedValueOnce({
+      id: versionUuid, entity_id: "e-1", org_id: "org-1", entity_type: "entity",
+      name: "users", yaml_content: "table: users\n", change_summary: "Initial version",
+      author_id: null, author_label: null, version_number: 1,
+      created_at: "2026-04-01T10:00:00Z",
+    });
+    mockGetEntityAdmin
+      .mockResolvedValueOnce({
+        id: "e-1", org_id: "org-1", entity_type: "entity", name: "users",
+        yaml_content: "table: users\n", connection_id: null,
+        created_at: "2026-04-01T10:00:00Z", updated_at: "2026-04-01T10:00:00Z",
+      })
+      .mockResolvedValueOnce({
+        id: "e-1", org_id: "org-1", entity_type: "entity", name: "users",
+        yaml_content: "table: users\n", connection_id: null,
+        created_at: "2026-04-01T10:00:00Z", updated_at: "2026-04-01T14:00:00Z",
+      });
+    mockCreateVersion.mockRejectedValue(new Error("DB timeout"));
+
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/entities/users/rollback", "POST", {
+      versionId: versionUuid,
+    }));
+    // Rollback still succeeds — entity was restored
+    expect(res.status).toBe(200);
+    expect(mockUpsertEntityAdmin).toHaveBeenCalledTimes(1);
   });
 });
 

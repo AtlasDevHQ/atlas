@@ -20,3 +20,4 @@ CREATE TABLE IF NOT EXISTS semantic_entity_versions (
 CREATE INDEX IF NOT EXISTS idx_sev_entity ON semantic_entity_versions(entity_id);
 CREATE INDEX IF NOT EXISTS idx_sev_org_type_name ON semantic_entity_versions(org_id, entity_type, name);
 CREATE INDEX IF NOT EXISTS idx_sev_created ON semantic_entity_versions(entity_id, created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_sev_entity_version ON semantic_entity_versions(entity_id, version_number);

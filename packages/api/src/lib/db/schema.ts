@@ -384,6 +384,7 @@ export const semanticEntityVersions = pgTable(
     index("idx_sev_entity").on(t.entityId),
     index("idx_sev_org_type_name").on(t.orgId, t.entityType, t.name),
     index("idx_sev_created").on(t.entityId, sql`created_at DESC`),
+    uniqueIndex("idx_sev_entity_version").on(t.entityId, t.versionNumber),
   ],
 );
 

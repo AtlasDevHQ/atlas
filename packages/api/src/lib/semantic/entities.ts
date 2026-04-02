@@ -174,22 +174,20 @@ export async function createVersion(
     throw new Error("Internal DB required for semantic entity versions");
   }
 
-  const nextRows = await internalQuery<{ next: string }>(
-    `SELECT COALESCE(MAX(version_number), 0) + 1 AS next
-     FROM semantic_entity_versions
-     WHERE entity_id = $1`,
-    [entityId],
-  );
-  const versionNumber = parseInt(nextRows[0]?.next ?? "1", 10);
-
   const rows = await internalQuery<{ id: string }>(
     `INSERT INTO semantic_entity_versions
        (entity_id, org_id, entity_type, name, yaml_content, change_summary, author_id, author_label, version_number)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+     SELECT $1, $2, $3, $4, $5, $6, $7, $8, COALESCE(MAX(version_number), 0) + 1
+     FROM semantic_entity_versions
+     WHERE entity_id = $1
      RETURNING id`,
-    [entityId, orgId, entityType, name, yamlContent, changeSummary, authorId, authorLabel, versionNumber],
+    [entityId, orgId, entityType, name, yamlContent, changeSummary, authorId, authorLabel],
   );
-  return rows[0]!.id;
+  const id = rows[0]?.id;
+  if (!id) {
+    throw new Error(`Failed to create version snapshot for entity ${entityId}: INSERT returned no rows`);
+  }
+  return id;
 }
 
 /**

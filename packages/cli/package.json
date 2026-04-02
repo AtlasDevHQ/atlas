@@ -10,6 +10,7 @@
   "dependencies": {
     "@atlas/api": "workspace:*",
     "@atlas/mcp": "workspace:*",
+    "@useatlas/types": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.28.0",
     "@clickhouse/client": "^1.18.2",
     "@duckdb/node-api": "^1.5.1-r.1",

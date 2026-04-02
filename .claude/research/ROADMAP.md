@@ -759,7 +759,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [ ] Terms of service, privacy policy, DPA for enterprise (#873)
 - [x] Launch content — blog post, Show HN, comparison pages updated (#874, PR #924)
 - [ ] Launch content follow-up — social media assets and demo video (#954)
-- [ ] Migration tooling — self-hosted to hosted (export/import conversations, semantic layers, settings) (#875)
+- [x] Migration tooling — self-hosted to hosted (export/import conversations, semantic layers, settings) (#875, PR #1140)
 - [ ] Documentation for hosted users — separate onboarding flow from self-hosted docs (#876)
 - [x] Status page — public health dashboard (#877, PR #921)
 - [ ] Status page follow-up — incident management, subscriptions, maintenance (#953)

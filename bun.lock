@@ -166,6 +166,7 @@
         "@clickhouse/client": "^1.18.2",
         "@duckdb/node-api": "^1.5.1-r.1",
         "@modelcontextprotocol/sdk": "^1.28.0",
+        "@useatlas/types": "workspace:*",
         "ai": "^6.0.141",
         "js-yaml": "^4.1.1",
         "jsforce": "^3.10.14",

@@ -3177,6 +3177,158 @@ Next steps:
 `);
 }
 
+// --- Export (migration bundle) ---
+
+async function handleExport(args: string[]): Promise<void> {
+  const outputArg = getFlag(args, "--output") ?? getFlag(args, "-o");
+  const orgArg = getFlag(args, "--org");
+
+  // Require DATABASE_URL
+  if (!process.env.DATABASE_URL) {
+    console.error(pc.red("DATABASE_URL is required for atlas export."));
+    console.error("  The export reads conversations, settings, and learned patterns from the internal database.");
+    console.error("  Set DATABASE_URL=postgresql://... to point to your Atlas internal database.");
+    process.exit(1);
+  }
+
+  const { getInternalDB, closeInternalDB } = await import("@atlas/api/lib/db/internal");
+  const pool = getInternalDB();
+
+  try {
+    console.log("\nAtlas Export — creating migration bundle...\n");
+
+    // Determine org filter
+    const orgFilter = orgArg ?? null;
+    const orgClause = orgFilter ? "org_id = $1" : "org_id IS NULL";
+    const orgParams = orgFilter ? [orgFilter] : [];
+
+    // 1. Conversations + messages
+    const convRows = await pool.query(
+      `SELECT id, user_id, title, surface, connection_id, starred, created_at, updated_at
+       FROM conversations
+       WHERE ${orgClause} AND deleted_at IS NULL
+       ORDER BY created_at`,
+      orgParams,
+    );
+    console.log(`  Conversations: ${convRows.rows.length}`);
+
+    let messageCount = 0;
+    const conversations = [];
+    for (const row of convRows.rows) {
+      const msgRows = await pool.query(
+        `SELECT id, role, content, created_at
+         FROM messages
+         WHERE conversation_id = $1
+         ORDER BY created_at`,
+        [row.id],
+      );
+      messageCount += msgRows.rows.length;
+      conversations.push({
+        id: row.id as string,
+        userId: (row.user_id as string) ?? null,
+        title: (row.title as string) ?? null,
+        surface: (row.surface as import("@useatlas/types").ExportedConversation["surface"]) ?? "web",
+        connectionId: (row.connection_id as string) ?? null,
+        starred: (row.starred as boolean) ?? false,
+        createdAt: String(row.created_at),
+        updatedAt: String(row.updated_at),
+        messages: msgRows.rows.map((m: Record<string, unknown>) => ({
+          id: m.id as string,
+          role: m.role as import("@useatlas/types").ExportedMessage["role"],
+          content: m.content,
+          createdAt: String(m.created_at),
+        })),
+      });
+    }
+    console.log(`  Messages:      ${messageCount}`);
+
+    // 2. Semantic entities (DB-backed)
+    const entRows = await pool.query(
+      `SELECT name, entity_type, yaml_content, connection_id
+       FROM semantic_entities
+       WHERE ${orgClause}
+       ORDER BY entity_type, name`,
+      orgParams,
+    );
+    const semanticEntities = entRows.rows.map((r: Record<string, unknown>) => ({
+      name: r.name as string,
+      entityType: r.entity_type as string,
+      yamlContent: r.yaml_content as string,
+      connectionId: (r.connection_id as string) ?? null,
+    }));
+    console.log(`  Entities:      ${semanticEntities.length}`);
+
+    // 3. Learned patterns
+    const patRows = await pool.query(
+      `SELECT pattern_sql, description, source_entity, confidence, status
+       FROM learned_patterns
+       WHERE ${orgClause}
+       ORDER BY created_at`,
+      orgParams,
+    );
+    const learnedPatterns = patRows.rows.map((r: Record<string, unknown>) => ({
+      patternSql: r.pattern_sql as string,
+      description: (r.description as string) ?? null,
+      sourceEntity: (r.source_entity as string) ?? null,
+      confidence: r.confidence as number,
+      status: r.status as import("@useatlas/types").LearnedPattern["status"],
+    }));
+    console.log(`  Patterns:      ${learnedPatterns.length}`);
+
+    // 4. Settings
+    const settRows = await pool.query(
+      `SELECT key, value
+       FROM settings
+       WHERE ${orgClause}
+       ORDER BY key`,
+      orgParams,
+    );
+    const settings = settRows.rows.map((r: Record<string, unknown>) => ({
+      key: r.key as string,
+      value: r.value as string,
+    }));
+    console.log(`  Settings:      ${settings.length}`);
+
+    // Build bundle
+    const { EXPORT_BUNDLE_VERSION } = await import("@useatlas/types");
+    const bundle: import("@useatlas/types").ExportBundle = {
+      manifest: {
+        version: EXPORT_BUNDLE_VERSION,
+        exportedAt: new Date().toISOString(),
+        source: {
+          label: orgFilter ? `org:${orgFilter}` : "self-hosted",
+          apiUrl: process.env.ATLAS_API_URL ?? "http://localhost:3001",
+        },
+        counts: {
+          conversations: conversations.length,
+          messages: messageCount,
+          semanticEntities: semanticEntities.length,
+          learnedPatterns: learnedPatterns.length,
+          settings: settings.length,
+        },
+      },
+      conversations,
+      semanticEntities,
+      learnedPatterns,
+      settings,
+    };
+
+    // Write output
+    const date = new Date().toISOString().slice(0, 10);
+    const outPath = outputArg ?? `./atlas-export-${date}.json`;
+    fs.writeFileSync(outPath, JSON.stringify(bundle, null, 2));
+    console.log(`\n${pc.green("✓")} Bundle written to ${pc.bold(outPath)}`);
+    console.log(`  Total size: ${(Buffer.byteLength(JSON.stringify(bundle)) / 1024).toFixed(1)} KB`);
+    console.log(`\nNext: ATLAS_API_KEY=sk-... atlas migrate-import --bundle ${outPath} --target https://app.useatlas.dev`);
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    console.error(pc.red(`Export failed: ${detail}`));
+    process.exit(1);
+  } finally {
+    await closeInternalDB();
+  }
+}
+
 // --- Import ---
 
 async function handleImport(args: string[]): Promise<void> {
@@ -3248,6 +3400,129 @@ async function handleImport(args: string[]): Promise<void> {
       console.error("  Set ATLAS_API_URL if the API is not on localhost:3001");
     } else {
       console.error(`Import failed: ${detail}`);
+    }
+    process.exit(1);
+  }
+}
+
+// --- Migrate-import (migration bundle → hosted instance) ---
+
+async function handleMigrateImport(args: string[]): Promise<void> {
+  const bundlePath = getFlag(args, "--bundle");
+  const targetUrl = getFlag(args, "--target") ?? "https://app.useatlas.dev";
+  const apiKey = getFlag(args, "--api-key") ?? process.env.ATLAS_API_KEY;
+
+  if (!bundlePath) {
+    console.error(pc.red("--bundle <path> is required."));
+    console.error("  Example: atlas migrate-import --bundle atlas-export-2026-04-02.json --target https://app.useatlas.dev");
+    process.exit(1);
+  }
+
+  if (!apiKey) {
+    console.error(pc.red("Authentication required."));
+    console.error("  Set ATLAS_API_KEY or pass --api-key <key>.");
+    process.exit(1);
+  }
+
+  // Read and validate the bundle file
+  if (!fs.existsSync(bundlePath)) {
+    console.error(pc.red(`Bundle file not found: ${bundlePath}`));
+    process.exit(1);
+  }
+
+  let bundle: unknown;
+  try {
+    const raw = fs.readFileSync(bundlePath, "utf-8");
+    bundle = JSON.parse(raw);
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    console.error(pc.red(`Failed to parse bundle: ${detail}`));
+    process.exit(1);
+  }
+
+  // Basic validation — mirror server-side checks to fail fast before upload
+  const b = bundle as Record<string, unknown>;
+  if (!b || typeof b !== "object" || !b.manifest || !Array.isArray(b.conversations) ||
+      !Array.isArray(b.semanticEntities) || !Array.isArray(b.learnedPatterns) || !Array.isArray(b.settings)) {
+    console.error(pc.red("Invalid bundle format. Expected an Atlas export bundle with manifest and all data arrays."));
+    process.exit(1);
+  }
+
+  const { EXPORT_BUNDLE_VERSION } = await import("@useatlas/types");
+  const manifest = (b.manifest as { version: number; counts: Record<string, number> });
+  if (manifest.version !== EXPORT_BUNDLE_VERSION) {
+    console.error(pc.red(`Unsupported bundle version: ${manifest.version}. This CLI supports version ${EXPORT_BUNDLE_VERSION}.`));
+    process.exit(1);
+  }
+
+  console.log(`\nAtlas Migrate-Import — sending bundle to ${pc.bold(targetUrl)}\n`);
+  console.log(`  Bundle: ${bundlePath}`);
+  console.log(`  Conversations: ${manifest.counts.conversations}`);
+  console.log(`  Entities:      ${manifest.counts.semanticEntities}`);
+  console.log(`  Patterns:      ${manifest.counts.learnedPatterns}`);
+  console.log(`  Settings:      ${manifest.counts.settings}`);
+  console.log();
+
+  const importUrl = `${targetUrl.replace(/\/$/, "")}/api/v1/admin/migrate/import`;
+
+  try {
+    const resp = await fetch(importUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify(bundle),
+      signal: AbortSignal.timeout(120_000),
+    });
+
+    if (!resp.ok) {
+      if (resp.status === 401 || resp.status === 403) {
+        console.error(pc.red("Import failed: authentication or authorization error."));
+        console.error("  Ensure your API key has admin access to the target workspace.");
+      } else if (resp.status === 413) {
+        console.error(pc.red("Import failed: bundle too large. Try exporting a smaller dataset."));
+      } else {
+        let errorMsg = `HTTP ${resp.status}`;
+        try {
+          const json = await resp.json() as { message?: string; error?: string };
+          errorMsg = json.message ?? json.error ?? errorMsg;
+        } catch {
+          // intentionally ignored: JSON parse failed
+          errorMsg = await resp.text().catch(() => errorMsg);
+        }
+        console.error(pc.red(`Import failed: ${errorMsg}`));
+      }
+      process.exit(1);
+    }
+
+    let result: import("@useatlas/types").ImportResult;
+    try {
+      result = await resp.json() as import("@useatlas/types").ImportResult;
+      if (!result?.conversations || !result?.semanticEntities) {
+        throw new Error("Unexpected response shape");
+      }
+    } catch (parseErr) {
+      console.error(pc.red("Import appeared to succeed (HTTP 200) but the response was not in the expected format."));
+      console.error("  Check the target Atlas instance version compatibility.");
+      console.error(`  Detail: ${parseErr instanceof Error ? parseErr.message : String(parseErr)}`);
+      process.exit(1);
+    }
+
+    console.log(`${pc.green("✓")} Import complete!\n`);
+    console.log("  Entity            Imported  Skipped");
+    console.log("  ────────────────  ────────  ───────");
+    console.log(`  Conversations     ${String(result.conversations.imported).padStart(8)}  ${String(result.conversations.skipped).padStart(7)}`);
+    console.log(`  Semantic entities ${String(result.semanticEntities.imported).padStart(8)}  ${String(result.semanticEntities.skipped).padStart(7)}`);
+    console.log(`  Learned patterns  ${String(result.learnedPatterns.imported).padStart(8)}  ${String(result.learnedPatterns.skipped).padStart(7)}`);
+    console.log(`  Settings          ${String(result.settings.imported).padStart(8)}  ${String(result.settings.skipped).padStart(7)}`);
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err);
+    if (detail.includes("ECONNREFUSED") || detail.includes("fetch failed")) {
+      console.error(pc.red(`Cannot reach Atlas API at ${targetUrl}.`));
+      console.error("  Check the --target URL and ensure the Atlas API is running.");
+    } else {
+      console.error(pc.red(`Import failed: ${detail}`));
     }
     process.exit(1);
   }
@@ -3532,6 +3807,34 @@ const SUBCOMMAND_HELP: Record<string, SubcommandHelp> = {
       "atlas learn --source warehouse",
     ],
   },
+  export: {
+    description: "Export workspace data to a portable migration bundle (JSON). Reads from the internal database.",
+    usage: "export [options]",
+    flags: [
+      { flag: "--output <path>", description: "Output file path (default: ./atlas-export-{date}.json)" },
+      { flag: "-o <path>", description: "Alias for --output" },
+      { flag: "--org <orgId>", description: "Export data for a specific org (default: global/unscoped)" },
+    ],
+    examples: [
+      "atlas export",
+      "atlas export --output backup.json",
+      "atlas export --org org_abc123",
+    ],
+  },
+  "migrate-import": {
+    description: "Import an export bundle into a hosted Atlas instance. Used for self-hosted → SaaS migration.",
+    usage: "migrate-import --bundle <path> [options]",
+    flags: [
+      { flag: "--bundle <path>", description: "Path to the export bundle JSON file (required)" },
+      { flag: "--target <url>", description: "Target Atlas API URL (default: https://app.useatlas.dev)" },
+      { flag: "--api-key <key>", description: "API key for the target workspace (or set ATLAS_API_KEY)" },
+    ],
+    examples: [
+      "atlas migrate-import --bundle atlas-export-2026-04-02.json",
+      "atlas migrate-import --bundle backup.json --target https://atlas.internal.company.com",
+      "ATLAS_API_KEY=sk-... atlas migrate-import --bundle backup.json",
+    ],
+  },
   migrate: {
     description: "Generate or apply plugin schema migrations.",
     usage: "migrate [options]",
@@ -3624,21 +3927,23 @@ function printOverviewHelp(): void {
     "Atlas CLI — profile databases, generate semantic layers, and query your data.\n\n" +
     "Usage: atlas <command> [options]\n\n" +
     "Commands:\n" +
-    "  init          Profile DB and generate semantic layer\n" +
-    "  import        Import semantic YAML files from disk into DB\n" +
-    "  index         Rebuild or inspect the semantic index\n" +
-    "  learn         Analyze audit log and propose YAML improvements\n" +
-    "  diff          Compare DB schema against existing semantic layer\n" +
-    "  query         Ask a question via the Atlas API\n" +
-    "  validate      Validate config, semantic layer, and connectivity\n" +
-    "  doctor        Alias for validate\n" +
-    "  eval          Run eval pipeline against demo schemas\n" +
-    "  smoke         Run E2E smoke tests against a running Atlas deployment\n" +
-    "  migrate       Generate/apply plugin schema migrations\n" +
-    "  plugin        Manage plugins (list, create, add)\n" +
-    "  benchmark     Run BIRD benchmark for text-to-SQL accuracy\n" +
-    "  mcp           Start MCP server (stdio or SSE transport)\n" +
-    "  completions   Output shell completion script (bash, zsh, fish)\n\n" +
+    "  init             Profile DB and generate semantic layer\n" +
+    "  import           Import semantic YAML files from disk into DB\n" +
+    "  export           Export workspace data to a migration bundle\n" +
+    "  migrate-import   Import a migration bundle into a hosted instance\n" +
+    "  index            Rebuild or inspect the semantic index\n" +
+    "  learn            Analyze audit log and propose YAML improvements\n" +
+    "  diff             Compare DB schema against existing semantic layer\n" +
+    "  query            Ask a question via the Atlas API\n" +
+    "  validate         Validate config, semantic layer, and connectivity\n" +
+    "  doctor           Alias for validate\n" +
+    "  eval             Run eval pipeline against demo schemas\n" +
+    "  smoke            Run E2E smoke tests against a running Atlas deployment\n" +
+    "  migrate          Generate/apply plugin schema migrations\n" +
+    "  plugin           Manage plugins (list, create, add)\n" +
+    "  benchmark        Run BIRD benchmark for text-to-SQL accuracy\n" +
+    "  mcp              Start MCP server (stdio or SSE transport)\n" +
+    "  completions      Output shell completion script (bash, zsh, fish)\n\n" +
     "Run atlas <command> --help for detailed usage of any command."
   );
 }
@@ -3780,8 +4085,16 @@ async function main() {
     return;
   }
 
+  if (command === "export") {
+    return handleExport(args);
+  }
+
   if (command === "import") {
     return handleImport(args);
+  }
+
+  if (command === "migrate-import") {
+    return handleMigrateImport(args);
   }
 
   if (command === "migrate") {

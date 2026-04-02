@@ -65,6 +65,7 @@ import { adminAbuse } from "./admin-abuse";
 import { adminIntegrations } from "./admin-integrations";
 import { adminSandbox } from "./admin-sandbox";
 import { adminResidency } from "./admin-residency";
+import { adminMigrate } from "./admin-migrate";
 import { registerSemanticEditorRoutes } from "./admin-semantic";
 import { ErrorSchema, AuthErrorSchema, parsePagination } from "./shared-schemas";
 import { runHandler } from "@atlas/api/lib/effect/hono";
@@ -190,6 +191,8 @@ admin.route("/sandbox", adminSandbox);
 admin.route("/sandbox/", adminSandbox);
 admin.route("/residency", adminResidency);
 admin.route("/residency/", adminResidency);
+admin.route("/migrate", adminMigrate);
+admin.route("/migrate/", adminMigrate);
 // Plugin marketplace — lazy import to avoid crashing all admin routes if marketplace module fails
 try {
   const { workspaceMarketplace } = await import("./admin-marketplace");

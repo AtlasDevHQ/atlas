@@ -1,6 +1,6 @@
 {
   "name": "@useatlas/react",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "Embeddable Atlas chat UI for React applications",
   "license": "MIT",
   "repository": {
@@ -91,7 +91,7 @@
     }
   },
   "dependencies": {
-    "@useatlas/types": "workspace:*",
+    "@useatlas/types": "^0.0.2",
     "@radix-ui/react-slot": "^1.2.4",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",

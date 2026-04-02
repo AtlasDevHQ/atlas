@@ -17,6 +17,13 @@
       "isIgnored": true
     },
     {
+      "label": "Published packages use npm ranges for @useatlas deps (not workspace:)",
+      "packages": ["@useatlas/react", "@useatlas/sdk"],
+      "dependencies": ["@useatlas/**"],
+      "dependencyTypes": ["prod"],
+      "isIgnored": true
+    },
+    {
       "label": "Workspace packages use workspace: protocol",
       "dependencies": ["@atlas/**", "@useatlas/**"],
       "dependencyTypes": ["prod", "dev"],

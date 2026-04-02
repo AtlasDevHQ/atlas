@@ -1,0 +1,191 @@
+---
+title: Hosted Quick Start
+description: Get started with Atlas on app.useatlas.dev — connect your database and ask your first question in minutes.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+import { Steps, Step } from "fumadocs-ui/components/steps";
+import { Tabs, Tab } from "fumadocs-ui/components/tabs";
+import { Accordions, Accordion } from "fumadocs-ui/components/accordion";
+
+Get up and running on Atlas's hosted platform. No servers, no CLI, no configuration files — sign up, connect your database, and start querying.
+
+<Callout type="info" title="Looking for self-hosted?">
+  This guide is for the hosted platform at [app.useatlas.dev](https://app.useatlas.dev). To deploy Atlas on your own infrastructure, see the [Self-Hosted Quick Start](/getting-started/quick-start).
+</Callout>
+
+## Sign up and create a workspace
+
+<Steps>
+<Step>
+### Create your account
+
+Go to [app.useatlas.dev](https://app.useatlas.dev) and sign up with your email or a social login provider (Google, GitHub). You'll be prompted to create a **workspace** — this is your team's home in Atlas.
+
+Every workspace starts with a **14-day trial** with full access to all features. See [Billing & Plans](/guides/billing-and-plans) for details on plan tiers after the trial.
+</Step>
+
+<Step>
+### Invite your team (optional)
+
+Go to **Admin > Users** to invite team members by email. Invitees receive an email with a link to join your workspace.
+
+Members can ask questions and share conversations. Admins can also manage connections, settings, and users. See [Team Management](/guides/team-management) for full role details.
+
+You can always invite more people later — skip this for now if you prefer.
+</Step>
+</Steps>
+
+---
+
+## Connect your database
+
+<Steps>
+<Step>
+### Prepare your database
+
+Before connecting, create a **read-only database user** for Atlas. This is the only step that happens outside of Atlas.
+
+<Tabs items={["PostgreSQL", "MySQL"]}>
+<Tab value="PostgreSQL">
+```sql
+CREATE USER atlas_reader WITH PASSWORD 'your-strong-password';
+GRANT CONNECT ON DATABASE your_db TO atlas_reader;
+GRANT USAGE ON SCHEMA public TO atlas_reader;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO atlas_reader;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public
+  GRANT SELECT ON TABLES TO atlas_reader;
+```
+</Tab>
+<Tab value="MySQL">
+```sql
+CREATE USER 'atlas_reader'@'%' IDENTIFIED BY 'your-strong-password';
+GRANT SELECT ON your_db.* TO 'atlas_reader'@'%';
+FLUSH PRIVILEGES;
+```
+</Tab>
+</Tabs>
+
+Atlas enforces SELECT-only queries at the application level, but a read-only user provides defense-in-depth.
+
+<Callout type="info">
+For BigQuery, ClickHouse, Snowflake, DuckDB, or Salesforce, see the database-specific setup in [Connect Your Data](/getting-started/connect-your-data). The database preparation steps (creating users, granting permissions) apply to all deployment modes.
+</Callout>
+</Step>
+
+<Step>
+### Add the connection in Atlas
+
+1. Go to **Admin > Connections** (`/admin/connections`)
+2. Click **Add Connection**
+3. Paste your connection string (e.g., `postgresql://atlas_reader:password@host:5432/your_db`)
+4. Click **Test** to verify the connection — you'll see a confirmation with latency on success
+
+<Callout type="info">
+**SSL:** Most managed database providers (AWS RDS, Supabase, Neon, PlanetScale) require SSL. Append `?sslmode=require` (PostgreSQL) or `?ssl=true` (MySQL) to your connection string.
+</Callout>
+
+<Accordions>
+<Accordion title="Connection test fails?">
+- Verify the connection string works from your local machine first
+- Check that your database allows connections from external IPs — Atlas connects from cloud infrastructure, so you may need to allowlist Atlas's IP ranges
+- For SSL errors, try adding the SSL parameter to your connection string
+</Accordion>
+<Accordion title="Using a private network?">
+If your database is in a private VPC or behind a firewall, you'll need to allowlist Atlas's egress IPs or set up a secure tunnel. Contact support for the current IP ranges.
+</Accordion>
+</Accordions>
+</Step>
+
+<Step>
+### Review the semantic layer
+
+Atlas automatically profiles your database and generates a **semantic layer** — a set of entity definitions that describe your tables, columns, relationships, and business terms. The agent reads these before writing any SQL.
+
+Go to **Admin > Semantic Layer** (`/admin/semantic`) to review what was generated:
+
+- **Entities** — one per table, with columns, types, sample values, joins, and measures
+- **Glossary** — auto-detected business terms and ambiguous field names
+- **Metrics** — pre-built aggregation queries
+
+You can edit entities directly in the web editor — add descriptions, adjust sample values, remove tables that shouldn't be queryable, or define custom measures. Better entity definitions produce better queries. See the [Semantic Editor](/guides/semantic-editor) guide for details.
+
+<Callout type="info">
+You don't need to edit anything to get started. The auto-generated semantic layer works out of the box. Refine it over time as you see which questions the agent handles well and where it needs more context.
+</Callout>
+</Step>
+</Steps>
+
+---
+
+## Ask your first question
+
+Open the chat at [app.useatlas.dev](https://app.useatlas.dev). You'll see suggested questions based on your data. Try one, or type your own:
+
+- "How many records are in each table?"
+- "What are the top 10 customers by revenue?"
+- "Show me a breakdown of orders by status this month"
+
+The agent will:
+1. Read the semantic layer to understand your schema
+2. Write a SQL query
+3. Execute it against your database (read-only)
+4. Return an interpreted answer with a data table
+
+The entire flow takes a few seconds. You'll see each step in the chat as the agent works.
+
+<Accordions>
+<Accordion title="Agent says it can't find any tables?">
+Check that the semantic layer was generated — go to **Admin > Semantic Layer** and verify entities exist. If the list is empty, go to **Admin > Connections** and verify your connection is healthy, then trigger a re-profile.
+</Accordion>
+<Accordion title="Query returns an error?">
+The agent shows the SQL it tried to run. Common issues:
+- **Permission denied** — the database user may not have SELECT on all tables. Check your grants
+- **Table not found** — the table may be in a different schema. Check the entity YAML to ensure the table name matches
+- **Timeout** — complex queries on large tables may exceed the timeout. Try a more specific question
+</Accordion>
+</Accordions>
+
+---
+
+## Next steps
+
+You're up and running. Here's where to go from here:
+
+### For everyone
+- **[Semantic Layer Concepts](/getting-started/concepts)** — understand entities, dimensions, measures, and how the agent uses them
+- **[Sharing Conversations](/guides/sharing-conversations)** — share query results with your team
+- **[Notebook View](/guides/notebook)** — build multi-step analyses with branching and export
+- **[Scheduled Tasks](/guides/scheduled-tasks)** — run queries on a schedule and deliver results via email, Slack, or webhook
+
+### For workspace admins
+- **[Workspace Settings](/guides/workspace-settings)** — configure workspace-level preferences
+- **[Team Management](/guides/team-management)** — invite members, assign roles, manage access
+- **[Billing & Plans](/guides/billing-and-plans)** — view usage, upgrade your plan, manage payment
+- **[Semantic Editor](/guides/semantic-editor)** — refine entity definitions from the web UI
+- **[Plugin Marketplace](/guides/plugin-marketplace)** — install plugins for additional datasources and integrations
+- **[Integrations](/guides/integrations)** — connect Slack, Teams, Discord, and more
+
+### For enterprise
+- **[SSO Setup](/guides/enterprise-sso)** — configure SAML or OIDC single sign-on (Enterprise plan)
+- **[SCIM Directory Sync](/guides/scim)** — auto-provision users from your identity provider (Enterprise plan)
+- **[Custom Roles](/guides/custom-roles)** — define granular permissions beyond member/admin (Enterprise plan)
+
+---
+
+## FAQ
+
+<Accordions>
+<Accordion title="How is the hosted platform different from self-hosted?">
+The hosted platform at app.useatlas.dev is a fully managed SaaS — Atlas handles infrastructure, updates, scaling, and sandbox isolation. Self-hosted deployments give you full control over the environment and data residency. Both use the same Atlas agent and query engine. The hosted platform adds a web-based onboarding wizard, managed semantic layer, plugin marketplace, and workspace billing.
+</Accordion>
+<Accordion title="Where does my data go?">
+Atlas connects to your database over the network and runs read-only queries. Query results pass through Atlas's infrastructure to render in the chat UI. Atlas does not copy, store, or replicate your underlying data. Conversation history and metadata are stored in Atlas's internal database. See [SQL Validation](/security/sql-validation) and [Row-Level Security](/security/row-level-security) for more details.
+</Accordion>
+<Accordion title="Can I migrate from hosted to self-hosted (or vice versa)?">
+Yes. Your semantic layer (entity definitions, metrics, glossary) can be exported as YAML files for a self-hosted deployment. See the [Migration](/guides/migration) guide for step-by-step instructions.
+</Accordion>
+<Accordion title="What databases are supported?">
+PostgreSQL, MySQL, BigQuery, ClickHouse, Snowflake, DuckDB (CSV/Parquet), and Salesforce. PostgreSQL and MySQL are built-in; others are available as plugins from the [Plugin Marketplace](/guides/plugin-marketplace).
+</Accordion>
+</Accordions>

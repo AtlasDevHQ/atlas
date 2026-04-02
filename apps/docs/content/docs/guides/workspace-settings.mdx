@@ -1,0 +1,78 @@
+---
+title: Workspace Settings
+description: Configure workspace-level preferences for query behavior, agent limits, and display options.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Workspace settings let admins configure how Atlas behaves for everyone in the workspace — query limits, agent behavior, display preferences, and safety controls. Changes take effect immediately for all workspace members.
+
+<Callout type="info" title="Hosted platform">
+  On [app.useatlas.dev](https://app.useatlas.dev), workspace settings are managed entirely from the admin console. Self-hosted operators configure these via environment variables or `atlas.config.ts` — see [Configuration](/reference/config) and [Environment Variables](/reference/environment-variables).
+</Callout>
+
+<Callout title="Prerequisites">
+- A user with the `admin` or `owner` role
+</Callout>
+
+---
+
+## Accessing Settings
+
+Navigate to **Admin > Settings** (`/admin/settings`). The settings page is split into sections, each controlling a different aspect of workspace behavior.
+
+---
+
+## Query Settings
+
+Control how the agent executes SQL queries against your connected datasources.
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| **Row limit** | 1,000 | Maximum rows returned per query. Lower this to reduce load on your database |
+| **Query timeout** | 30 seconds | Maximum execution time per query. Queries exceeding this are cancelled |
+
+These settings apply to all queries — both interactive chat and scheduled tasks.
+
+---
+
+## Agent Settings
+
+Configure how the AI agent processes questions.
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| **Max steps** | 25 | Maximum number of tool calls the agent can make per question (range: 1–100) |
+
+On the hosted platform, the LLM provider and model are managed by the platform. For workspace-level model overrides on Enterprise plans, see [Model Routing](/guides/model-routing).
+
+---
+
+## Branding
+
+Customize the look and feel of Atlas in your workspace from **Admin > Branding** (`/admin/branding`):
+
+| Setting | Description |
+|---------|-------------|
+| **Logo** | Custom logo URL displayed in the chat UI |
+| **Logo text** | Text displayed alongside the logo |
+| **Primary color** | Accent color used throughout the interface |
+| **Favicon** | Custom favicon URL |
+
+For full white-labeling (custom domain, colors), see [White-Labeling](/guides/white-labeling).
+
+---
+
+## Settings vs. Environment Variables
+
+On the hosted platform, all configuration happens through the settings UI. You do not need to set environment variables or edit configuration files — Atlas manages the infrastructure for you.
+
+For self-hosted deployments, workspace settings override environment variable defaults when an internal database is configured. See [Configuration](/reference/config) for precedence rules.
+
+---
+
+## See Also
+
+- [Admin Console](/guides/admin-console) — full admin page reference
+- [Model Routing](/guides/model-routing) — per-workspace LLM configuration
+- [White-Labeling](/guides/white-labeling) — custom branding and domains

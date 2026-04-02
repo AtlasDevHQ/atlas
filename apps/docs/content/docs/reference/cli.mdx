@@ -3,6 +3,12 @@ title: CLI Reference
 description: Complete reference for the Atlas CLI — init, diff, import, index, learn, query, doctor, validate, mcp, completions, and more.
 ---
 
+import { Callout } from "fumadocs-ui/components/callout";
+
+<Callout type="info" title="Self-hosted only">
+  The CLI is used for self-hosted deployments to profile databases, generate the semantic layer, and manage configuration from the terminal. Hosted users at [app.useatlas.dev](https://app.useatlas.dev) can skip this — the platform handles database profiling, semantic layer generation, and configuration through the web UI.
+</Callout>
+
 The Atlas CLI (`atlas`) profiles databases, generates semantic layers, validates configuration, and queries data from the terminal.
 
 ```bash

@@ -742,3 +742,47 @@ export const PluginListResponseSchema = z.object({
   plugins: r.plugins ?? [],
   manageable: r.manageable ?? false,
 }));
+
+// ── Plugin Marketplace ──────────────────────────────────────────
+
+const PLUGIN_TYPES = ["datasource", "context", "interaction", "action", "sandbox"] as const;
+
+export const CatalogEntrySchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  slug: z.string(),
+  description: z.string().nullable(),
+  type: z.enum(PLUGIN_TYPES),
+  npmPackage: z.string().nullable(),
+  iconUrl: z.string().nullable(),
+  configSchema: z.unknown().nullable(),
+  minPlan: z.string(),
+  enabled: z.boolean(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  installed: z.boolean().optional(),
+  installationId: z.string().nullable().optional(),
+});
+
+export type CatalogEntry = z.infer<typeof CatalogEntrySchema>;
+
+export const AvailablePluginsResponseSchema = z.object({
+  plugins: z.array(CatalogEntrySchema),
+  total: z.number(),
+});
+
+export const WorkspacePluginSchema = z.object({
+  id: z.string(),
+  workspaceId: z.string(),
+  catalogId: z.string(),
+  config: z.unknown(),
+  enabled: z.boolean(),
+  installedAt: z.string(),
+  installedBy: z.string().nullable(),
+  name: z.string().optional(),
+  slug: z.string().optional(),
+  type: z.string().optional(),
+  description: z.string().nullable().optional(),
+});
+
+export type WorkspacePlugin = z.infer<typeof WorkspacePluginSchema>;

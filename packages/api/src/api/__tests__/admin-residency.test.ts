@@ -192,8 +192,8 @@ mock.module("@atlas/api/lib/logger", () => ({
 
 // --- Migration executor mock ---
 
-let mockResetResult: { reset: boolean; error?: string } = { reset: true };
-let mockCancelResult: { cancelled: boolean; error?: string } = { cancelled: true };
+let mockResetResult: { ok: true } | { ok: false; reason: string; error: string } = { ok: true };
+let mockCancelResult: { ok: true } | { ok: false; reason: string; error: string } = { ok: true };
 
 mock.module("@atlas/api/lib/residency/migrate", () => ({
   triggerMigrationExecution: () => {},
@@ -228,8 +228,8 @@ function resetMocks() {
     "ap-southeast": { label: "Asia Pacific", databaseUrl: "postgresql://ap" },
   };
   mockInternalQueryResult = [];
-  mockResetResult = { reset: true };
-  mockCancelResult = { cancelled: true };
+  mockResetResult = { ok: true };
+  mockCancelResult = { ok: true };
   mockEffectUser = {
     id: "admin-1",
     mode: "simple-key",
@@ -439,7 +439,7 @@ describe("POST /migrate/:id/retry", () => {
   });
 
   it("returns 400 when migration cannot be retried", async () => {
-    mockResetResult = { reset: false, error: 'Cannot retry migration in "pending" status' };
+    mockResetResult = { ok: false, reason: "invalid_status", error: 'Cannot retry migration in "pending" status' };
     const res = await request("POST", "/migrate/mig-1/retry");
     expect(res.status).toBe(400);
     const json = (await res.json()) as { error: string; message: string };
@@ -447,7 +447,7 @@ describe("POST /migrate/:id/retry", () => {
   });
 
   it("returns 404 when migration not found", async () => {
-    mockResetResult = { reset: false, error: "Migration not found" };
+    mockResetResult = { ok: false, reason: "not_found", error: "Migration not found" };
     const res = await request("POST", "/migrate/mig-nonexistent/retry");
     expect(res.status).toBe(404);
   });
@@ -470,7 +470,7 @@ describe("POST /migrate/:id/cancel", () => {
   });
 
   it("returns 400 when migration cannot be cancelled", async () => {
-    mockCancelResult = { cancelled: false, error: 'Cannot cancel migration in "in_progress" status' };
+    mockCancelResult = { ok: false, reason: "invalid_status", error: 'Cannot cancel migration in "in_progress" status' };
     const res = await request("POST", "/migrate/mig-1/cancel");
     expect(res.status).toBe(400);
     const json = (await res.json()) as { error: string; message: string };
@@ -478,7 +478,7 @@ describe("POST /migrate/:id/cancel", () => {
   });
 
   it("returns 404 when migration not found", async () => {
-    mockCancelResult = { cancelled: false, error: "Migration not found" };
+    mockCancelResult = { ok: false, reason: "not_found", error: "Migration not found" };
     const res = await request("POST", "/migrate/mig-nonexistent/cancel");
     expect(res.status).toBe(404);
   });

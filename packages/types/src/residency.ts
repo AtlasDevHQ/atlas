@@ -76,20 +76,10 @@ export interface RegionPickerItem {
 // ---------------------------------------------------------------------------
 
 /** Valid migration status values — single source of truth for Zod schemas and type. */
-export const MIGRATION_STATUSES = ["pending", "in_progress", "completed", "failed"] as const;
+export const MIGRATION_STATUSES = ["pending", "in_progress", "completed", "failed", "cancelled"] as const;
 
 /** Status of a region migration request. */
 export type MigrationStatus = (typeof MIGRATION_STATUSES)[number];
-
-/** Progress of a region migration step. */
-export interface MigrationProgress {
-  /** Current step label (e.g. "Updating region assignment"). */
-  step: string;
-  /** Total number of steps in the migration. */
-  total: number;
-  /** Current step number (1-based). */
-  current: number;
-}
 
 /** A workspace region migration request. */
 export interface RegionMigration {

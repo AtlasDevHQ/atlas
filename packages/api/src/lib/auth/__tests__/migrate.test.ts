@@ -251,6 +251,7 @@ describe("migrateAuthTables", () => {
             { name: "0010_whatsapp_installations.sql" },
             { name: "0011_email_installations.sql" },
             { name: "0012_region_migrations.sql" },
+            { name: "0013_region_migration_cancelled.sql" },
           ],
         };
       }

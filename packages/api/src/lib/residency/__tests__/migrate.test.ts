@@ -86,14 +86,14 @@ describe("executeRegionMigration", () => {
     mockHasInternalDB = false;
     const result = await executeRegionMigration("mig-1");
     expect(result.success).toBe(false);
-    expect(result.error).toContain("Internal database");
+    if (!result.success) expect(result.error).toContain("Internal database");
   });
 
   it("returns error when migration is not found", async () => {
     // internalQuery returns empty for SELECT from region_migrations
     const result = await executeRegionMigration("mig-nonexistent");
     expect(result.success).toBe(false);
-    expect(result.error).toContain("not found");
+    if (!result.success) expect(result.error).toContain("not found");
   });
 
   it("returns error when migration is not in pending status", async () => {
@@ -102,8 +102,10 @@ describe("executeRegionMigration", () => {
     ];
     const result = await executeRegionMigration("mig-1");
     expect(result.success).toBe(false);
-    expect(result.error).toContain("completed");
-    expect(result.error).toContain("expected \"pending\"");
+    if (!result.success) {
+      expect(result.error).toContain("completed");
+      expect(result.error).toContain("expected \"pending\"");
+    }
   });
 
   it("executes migration successfully", async () => {
@@ -140,7 +142,7 @@ describe("executeRegionMigration", () => {
 
     const result = await executeRegionMigration("mig-1");
     expect(result.success).toBe(false);
-    expect(result.error).toContain("not found");
+    if (!result.success) expect(result.error).toContain("not found");
 
     // Verify status was set to failed
     const failedUpdate = capturedQueries.filter(
@@ -158,7 +160,7 @@ describe("executeRegionMigration", () => {
 
     const result = await executeRegionMigration("mig-1");
     expect(result.success).toBe(false);
-    expect(result.error).toContain("connection refused");
+    if (!result.success) expect(result.error).toContain("connection refused");
   });
 });
 
@@ -197,30 +199,47 @@ describe("resetMigrationForRetry", () => {
 
   it("returns error when internal DB is not available", async () => {
     mockHasInternalDB = false;
-    const result = await resetMigrationForRetry("mig-1");
-    expect(result.reset).toBe(false);
-    expect(result.error).toContain("Internal database");
+    const result = await resetMigrationForRetry("mig-1", "org-1");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("no_db");
+      expect(result.error).toContain("Internal database");
+    }
   });
 
   it("returns error when migration not found", async () => {
-    const result = await resetMigrationForRetry("mig-nonexistent");
-    expect(result.reset).toBe(false);
-    expect(result.error).toContain("not found");
+    const result = await resetMigrationForRetry("mig-nonexistent", "org-1");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("not_found");
+    }
+  });
+
+  it("returns not_found when workspace does not match", async () => {
+    mockQueryResults["SELECT id, status"] = [{ id: "mig-1", status: "failed", workspace_id: "org-other" }];
+    const result = await resetMigrationForRetry("mig-1", "org-1");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("not_found");
+    }
   });
 
   it("returns error when migration is not failed", async () => {
-    mockQueryResults["SELECT id, status"] = [{ id: "mig-1", status: "pending" }];
-    const result = await resetMigrationForRetry("mig-1");
-    expect(result.reset).toBe(false);
-    expect(result.error).toContain("pending");
+    mockQueryResults["SELECT id, status"] = [{ id: "mig-1", status: "pending", workspace_id: "org-1" }];
+    const result = await resetMigrationForRetry("mig-1", "org-1");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("invalid_status");
+      expect(result.error).toContain("pending");
+    }
   });
 
   it("resets a failed migration to pending", async () => {
-    mockQueryResults["SELECT id, status"] = [{ id: "mig-1", status: "failed" }];
+    mockQueryResults["SELECT id, status"] = [{ id: "mig-1", status: "failed", workspace_id: "org-1" }];
     mockQueryResults["UPDATE region_migrations"] = [];
 
-    const result = await resetMigrationForRetry("mig-1");
-    expect(result.reset).toBe(true);
+    const result = await resetMigrationForRetry("mig-1", "org-1");
+    expect(result.ok).toBe(true);
 
     const resetQuery = capturedQueries.find(
       (q) => q.sql.includes("status = 'pending'"),
@@ -234,33 +253,50 @@ describe("cancelMigration", () => {
 
   it("returns error when internal DB is not available", async () => {
     mockHasInternalDB = false;
-    const result = await cancelMigration("mig-1");
-    expect(result.cancelled).toBe(false);
-    expect(result.error).toContain("Internal database");
+    const result = await cancelMigration("mig-1", "org-1");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("no_db");
+      expect(result.error).toContain("Internal database");
+    }
   });
 
   it("returns error when migration not found", async () => {
-    const result = await cancelMigration("mig-nonexistent");
-    expect(result.cancelled).toBe(false);
-    expect(result.error).toContain("not found");
+    const result = await cancelMigration("mig-nonexistent", "org-1");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("not_found");
+    }
+  });
+
+  it("returns not_found when workspace does not match", async () => {
+    mockQueryResults["SELECT id, status"] = [{ id: "mig-1", status: "pending", workspace_id: "org-other" }];
+    const result = await cancelMigration("mig-1", "org-1");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("not_found");
+    }
   });
 
   it("returns error when migration is not pending", async () => {
-    mockQueryResults["SELECT id, status"] = [{ id: "mig-1", status: "in_progress" }];
-    const result = await cancelMigration("mig-1");
-    expect(result.cancelled).toBe(false);
-    expect(result.error).toContain("in_progress");
+    mockQueryResults["SELECT id, status"] = [{ id: "mig-1", status: "in_progress", workspace_id: "org-1" }];
+    const result = await cancelMigration("mig-1", "org-1");
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("invalid_status");
+      expect(result.error).toContain("in_progress");
+    }
   });
 
   it("cancels a pending migration", async () => {
-    mockQueryResults["SELECT id, status"] = [{ id: "mig-1", status: "pending" }];
+    mockQueryResults["SELECT id, status"] = [{ id: "mig-1", status: "pending", workspace_id: "org-1" }];
     mockQueryResults["UPDATE region_migrations"] = [];
 
-    const result = await cancelMigration("mig-1");
-    expect(result.cancelled).toBe(true);
+    const result = await cancelMigration("mig-1", "org-1");
+    expect(result.ok).toBe(true);
 
     const cancelQuery = capturedQueries.find(
-      (q) => q.sql.includes("status = 'failed'") && q.sql.includes("Cancelled by admin"),
+      (q) => q.sql.includes("status = 'cancelled'") && q.sql.includes("Cancelled by admin"),
     );
     expect(cancelQuery).toBeDefined();
   });

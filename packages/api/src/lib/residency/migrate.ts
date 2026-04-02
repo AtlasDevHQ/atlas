@@ -11,7 +11,7 @@
  * The migration:
  * - Updates the workspace_regions assignment in the organization table
  * - Flushes region-cached data (query cache)
- * - Records lifecycle events to the audit log
+ * - Records lifecycle events via structured pino logs
  * - Detects and fails stale in_progress migrations (stuck > 5 min)
  */
 
@@ -40,14 +40,12 @@ const MIGRATION_STEPS = [
 // Audit helpers
 // ---------------------------------------------------------------------------
 
-function logAuditEvent(
+/** Log a structured migration lifecycle event via pino. */
+function logMigrationEvent(
   event: string,
   migrationId: string,
   details: Record<string, unknown>,
 ): void {
-  if (!hasInternalDB()) return;
-
-  // Log to pino for structured log aggregation
   log.info({ event, migrationId, ...details }, `Migration audit: ${event}`);
 }
 
@@ -83,14 +81,25 @@ async function updateMigrationStatus(
 }
 
 // ---------------------------------------------------------------------------
-// Core executor
+// Result types
 // ---------------------------------------------------------------------------
 
-export interface MigrationResult {
-  success: boolean;
-  migrationId: string;
-  error?: string;
-}
+/** Discriminated result from migration execution. */
+export type MigrationResult =
+  | { readonly success: true; readonly migrationId: string }
+  | { readonly success: false; readonly migrationId: string; readonly error: string };
+
+/** Failure reason codes for structured HTTP status mapping. */
+export type MigrationFailureReason = "not_found" | "invalid_status" | "db_error" | "no_db";
+
+/** Discriminated result from retry/cancel operations. */
+export type OperationResult =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly reason: MigrationFailureReason; readonly error: string };
+
+// ---------------------------------------------------------------------------
+// Core executor
+// ---------------------------------------------------------------------------
 
 /**
  * Execute a region migration by ID.
@@ -103,6 +112,7 @@ export async function executeRegionMigration(
   migrationId: string,
 ): Promise<MigrationResult> {
   if (!hasInternalDB()) {
+    log.warn({ migrationId }, "Migration skipped — internal database not available");
     return { success: false, migrationId, error: "Internal database not available" };
   }
 
@@ -121,10 +131,12 @@ export async function executeRegionMigration(
 
   const migration = rows[0];
   if (!migration) {
+    log.warn({ migrationId }, "Migration skipped — record not found");
     return { success: false, migrationId, error: "Migration not found" };
   }
 
   if (migration.status !== "pending") {
+    log.warn({ migrationId, status: migration.status }, "Migration skipped — not in pending status");
     return {
       success: false,
       migrationId,
@@ -138,7 +150,7 @@ export async function executeRegionMigration(
   log.info({ migrationId, workspaceId, sourceRegion, targetRegion, step: MIGRATION_STEPS[0] }, "Migration starting");
   await updateMigrationStatus(migrationId, "in_progress");
 
-  logAuditEvent("region_migration_started", migrationId, {
+  logMigrationEvent("region_migration_started", migrationId, {
     workspaceId,
     sourceRegion,
     targetRegion,
@@ -173,7 +185,7 @@ export async function executeRegionMigration(
 
     // Step 4: Audit trail
     log.info({ migrationId, step: MIGRATION_STEPS[3] }, "Recording audit trail");
-    logAuditEvent("region_migration_completed", migrationId, {
+    logMigrationEvent("region_migration_completed", migrationId, {
       workspaceId,
       sourceRegion,
       targetRegion,
@@ -191,7 +203,7 @@ export async function executeRegionMigration(
     const errorMessage = err instanceof Error ? err.message : String(err);
     log.error({ err: errorMessage, migrationId, workspaceId }, "Migration failed");
 
-    logAuditEvent("region_migration_failed", migrationId, {
+    logMigrationEvent("region_migration_failed", migrationId, {
       workspaceId,
       sourceRegion,
       targetRegion,
@@ -225,14 +237,22 @@ export async function executeRegionMigration(
  * Returns immediately — the migration runs in the background.
  */
 export function triggerMigrationExecution(migrationId: string): void {
-  // Use setTimeout to avoid blocking the HTTP response
   setTimeout(() => {
-    executeRegionMigration(migrationId).catch((err) => {
-      log.error(
-        { err: err instanceof Error ? err.message : String(err), migrationId },
-        "Unhandled error in background migration execution",
-      );
-    });
+    executeRegionMigration(migrationId)
+      .then((result) => {
+        if (!result.success) {
+          log.error(
+            { migrationId, error: result.error },
+            "Background migration execution failed",
+          );
+        }
+      })
+      .catch((err) => {
+        log.error(
+          { err: err instanceof Error ? err.message : String(err), migrationId },
+          "Unhandled error in background migration execution",
+        );
+      });
   }, 0);
 }
 
@@ -247,11 +267,12 @@ export function triggerMigrationExecution(migrationId: string): void {
 export async function failStaleMigrations(): Promise<number> {
   if (!hasInternalDB()) return 0;
 
+  const staleThresholdSec = STALE_THRESHOLD_MS / 1000;
   const staleRows = await internalQuery<{ id: string; workspace_id: string }>(
     `SELECT id, workspace_id FROM region_migrations
      WHERE status = 'in_progress'
-       AND requested_at < NOW() - INTERVAL '${STALE_THRESHOLD_MS / 1000} seconds'`,
-    [],
+       AND requested_at < NOW() - make_interval(secs => $1)`,
+    [staleThresholdSec],
   );
 
   let failedCount = 0;
@@ -261,7 +282,7 @@ export async function failStaleMigrations(): Promise<number> {
         errorMessage: "Migration timed out — stuck in progress for over 5 minutes",
         completedAt: new Date().toISOString(),
       });
-      logAuditEvent("region_migration_failed", row.id, {
+      logMigrationEvent("region_migration_failed", row.id, {
         workspaceId: row.workspace_id,
         reason: "stale_timeout",
       });
@@ -285,35 +306,47 @@ export async function failStaleMigrations(): Promise<number> {
 /**
  * Reset a failed migration to "pending" so it can be re-executed.
  * Only works for migrations in "failed" status.
+ *
+ * @param workspaceId - The org ID that owns this migration (for authorization).
  */
 export async function resetMigrationForRetry(
   migrationId: string,
-): Promise<{ reset: boolean; error?: string }> {
+  workspaceId: string,
+): Promise<OperationResult> {
   if (!hasInternalDB()) {
-    return { reset: false, error: "Internal database not available" };
+    return { ok: false, reason: "no_db", error: "Internal database not available" };
   }
 
-  const rows = await internalQuery<{ id: string; status: string }>(
-    `SELECT id, status FROM region_migrations WHERE id = $1`,
-    [migrationId],
-  );
+  try {
+    const rows = await internalQuery<{ id: string; status: string; workspace_id: string }>(
+      `SELECT id, status, workspace_id FROM region_migrations WHERE id = $1`,
+      [migrationId],
+    );
 
-  if (rows.length === 0) {
-    return { reset: false, error: "Migration not found" };
+    if (rows.length === 0) {
+      return { ok: false, reason: "not_found", error: "Migration not found" };
+    }
+
+    if (rows[0].workspace_id !== workspaceId) {
+      return { ok: false, reason: "not_found", error: "Migration not found" };
+    }
+
+    if (rows[0].status !== "failed") {
+      return { ok: false, reason: "invalid_status", error: `Cannot retry migration in "${rows[0].status}" status` };
+    }
+
+    await internalQuery(
+      `UPDATE region_migrations SET status = 'pending', error_message = NULL, completed_at = NULL
+       WHERE id = $1`,
+      [migrationId],
+    );
+
+    log.info({ migrationId }, "Migration reset for retry");
+    return { ok: true };
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err.message : String(err), migrationId }, "Failed to reset migration for retry");
+    return { ok: false, reason: "db_error", error: "Database error while resetting migration" };
   }
-
-  if (rows[0].status !== "failed") {
-    return { reset: false, error: `Cannot retry migration in "${rows[0].status}" status` };
-  }
-
-  await internalQuery(
-    `UPDATE region_migrations SET status = 'pending', error_message = NULL, completed_at = NULL
-     WHERE id = $1`,
-    [migrationId],
-  );
-
-  log.info({ migrationId }, "Migration reset for retry");
-  return { reset: true };
 }
 
 // ---------------------------------------------------------------------------
@@ -323,34 +356,46 @@ export async function resetMigrationForRetry(
 /**
  * Cancel a pending migration. Only works for migrations in "pending" status.
  * In-progress migrations cannot be cancelled.
+ *
+ * @param workspaceId - The org ID that owns this migration (for authorization).
  */
 export async function cancelMigration(
   migrationId: string,
-): Promise<{ cancelled: boolean; error?: string }> {
+  workspaceId: string,
+): Promise<OperationResult> {
   if (!hasInternalDB()) {
-    return { cancelled: false, error: "Internal database not available" };
+    return { ok: false, reason: "no_db", error: "Internal database not available" };
   }
 
-  const rows = await internalQuery<{ id: string; status: string }>(
-    `SELECT id, status FROM region_migrations WHERE id = $1`,
-    [migrationId],
-  );
+  try {
+    const rows = await internalQuery<{ id: string; status: string; workspace_id: string }>(
+      `SELECT id, status, workspace_id FROM region_migrations WHERE id = $1`,
+      [migrationId],
+    );
 
-  if (rows.length === 0) {
-    return { cancelled: false, error: "Migration not found" };
+    if (rows.length === 0) {
+      return { ok: false, reason: "not_found", error: "Migration not found" };
+    }
+
+    if (rows[0].workspace_id !== workspaceId) {
+      return { ok: false, reason: "not_found", error: "Migration not found" };
+    }
+
+    if (rows[0].status !== "pending") {
+      return { ok: false, reason: "invalid_status", error: `Cannot cancel migration in "${rows[0].status}" status` };
+    }
+
+    await internalQuery(
+      `UPDATE region_migrations SET status = 'cancelled', error_message = 'Cancelled by admin', completed_at = $1
+       WHERE id = $2`,
+      [new Date().toISOString(), migrationId],
+    );
+
+    logMigrationEvent("region_migration_cancelled", migrationId, { workspaceId });
+    log.info({ migrationId }, "Migration cancelled");
+    return { ok: true };
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err.message : String(err), migrationId }, "Failed to cancel migration");
+    return { ok: false, reason: "db_error", error: "Database error while cancelling migration" };
   }
-
-  if (rows[0].status !== "pending") {
-    return { cancelled: false, error: `Cannot cancel migration in "${rows[0].status}" status` };
-  }
-
-  await internalQuery(
-    `UPDATE region_migrations SET status = 'failed', error_message = 'Cancelled by admin', completed_at = $1
-     WHERE id = $2`,
-    [new Date().toISOString(), migrationId],
-  );
-
-  logAuditEvent("region_migration_failed", migrationId, { reason: "cancelled_by_admin" });
-  log.info({ migrationId }, "Migration cancelled");
-  return { cancelled: true };
 }

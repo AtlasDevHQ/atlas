@@ -50,7 +50,7 @@ import {
 } from "@/ui/lib/admin-schemas";
 import type { RegionPickerItem, RegionMigration } from "@/ui/lib/types";
 import { formatDate } from "@/lib/format";
-import { Globe, MapPin, AlertTriangle, ArrowRight, Clock, Loader2, XCircle, CheckCircle2, RefreshCw } from "lucide-react";
+import { Globe, MapPin, AlertTriangle, ArrowRight, Clock, Loader2, XCircle, CheckCircle2, RefreshCw, Ban } from "lucide-react";
 
 // ── Schemas ───────────────────────────────────────────────────────
 
@@ -93,13 +93,11 @@ export default function ResidencyPage() {
   });
 
   const retryMutation = useAdminMutation({
-    path: "/api/v1/admin/residency/migrate",
     method: "POST",
     invalidates: () => { refetch(); refetchMigration(); },
   });
 
   const cancelMutation = useAdminMutation({
-    path: "/api/v1/admin/residency/migrate",
     method: "POST",
     invalidates: () => { refetch(); refetchMigration(); },
   });
@@ -413,6 +411,22 @@ function MigrationStatusBanner({
                 )}
               </Button>
             </div>
+          </div>
+        </div>
+      );
+    case "cancelled":
+      return (
+        <div className="flex items-start gap-3 rounded-md border border-border bg-muted/50 p-4">
+          <Ban className="mt-0.5 h-5 w-5 shrink-0 text-muted-foreground" />
+          <div className="text-sm">
+            <p className="font-medium">
+              Migration cancelled
+            </p>
+            <p className="mt-1 text-muted-foreground">
+              The migration from <strong>{migration.sourceRegion}</strong> to{" "}
+              <strong>{migration.targetRegion}</strong> was cancelled.
+              {migration.completedAt && ` Cancelled ${formatDate(migration.completedAt)}.`}
+            </p>
           </div>
         </div>
       );

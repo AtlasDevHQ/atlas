@@ -656,16 +656,17 @@ adminResidency.openapi(retryMigrationRoute, async (c) => {
     c,
     Effect.gen(function* () {
       const { requestId } = yield* RequestContext;
+      const { orgId } = yield* AuthContext;
       const { id } = c.req.valid("param");
 
       if (!hasInternalDB()) {
         return c.json({ error: "not_available", message: "Migration tracking requires an internal database.", requestId }, 404);
       }
 
-      const result = yield* Effect.promise(() => resetMigrationForRetry(id));
-      if (!result.reset) {
-        const status = result.error?.includes("not found") ? 404 : 400;
-        return c.json({ error: "retry_failed", message: result.error ?? "Cannot retry migration.", requestId }, status as 400 | 404);
+      const result = yield* Effect.promise(() => resetMigrationForRetry(id, orgId!));
+      if (!result.ok) {
+        const status = result.reason === "not_found" ? 404 : 400;
+        return c.json({ error: "retry_failed", message: result.error, requestId }, status as 400 | 404);
       }
 
       // Re-trigger execution
@@ -685,12 +686,16 @@ adminResidency.openapi(retryMigrationRoute, async (c) => {
           error_message: string | null;
         }>(
           `SELECT id, workspace_id, source_region, target_region, status, requested_by, requested_at, completed_at, error_message
-           FROM region_migrations WHERE id = $1`,
-          [id],
+           FROM region_migrations WHERE id = $1 AND workspace_id = $2`,
+          [id, orgId],
         ),
       );
 
-      const row = rows[0]!;
+      const row = rows[0];
+      if (!row) {
+        return c.json({ error: "retry_failed", message: "Migration record not found after reset.", requestId }, 404);
+      }
+
       log.info({ requestId, migrationId: id }, "Migration retry triggered");
 
       return c.json({
@@ -718,16 +723,17 @@ adminResidency.openapi(cancelMigrationRoute, async (c) => {
     c,
     Effect.gen(function* () {
       const { requestId } = yield* RequestContext;
+      const { orgId } = yield* AuthContext;
       const { id } = c.req.valid("param");
 
       if (!hasInternalDB()) {
         return c.json({ error: "not_available", message: "Migration tracking requires an internal database.", requestId }, 404);
       }
 
-      const result = yield* Effect.promise(() => cancelMigration(id));
-      if (!result.cancelled) {
-        const status = result.error?.includes("not found") ? 404 : 400;
-        return c.json({ error: "cancel_failed", message: result.error ?? "Cannot cancel migration.", requestId }, status as 400 | 404);
+      const result = yield* Effect.promise(() => cancelMigration(id, orgId!));
+      if (!result.ok) {
+        const status = result.reason === "not_found" ? 404 : 400;
+        return c.json({ error: "cancel_failed", message: result.error, requestId }, status as 400 | 404);
       }
 
       log.info({ requestId, migrationId: id }, "Migration cancelled");

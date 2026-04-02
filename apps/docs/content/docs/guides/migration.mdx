@@ -3,7 +3,8 @@ title: Migrating to Hosted Atlas
 description: Export your self-hosted Atlas workspace and import it into the hosted SaaS at app.useatlas.dev.
 ---
 
-import { Callout, Steps, Step } from "fumadocs-ui/components";
+import { Callout } from "fumadocs-ui/components/callout";
+import { Steps, Step } from "fumadocs-ui/components/steps";
 
 ## Overview
 
@@ -65,7 +66,7 @@ cat atlas-export-2026-04-02.json | jq '.manifest'
 {
   "version": 1,
   "exportedAt": "2026-04-02T12:00:00.000Z",
-  "source": { "label": "self-hosted" },
+  "source": { "label": "self-hosted", "apiUrl": "http://localhost:3001" },
   "counts": {
     "conversations": 42,
     "messages": 380,
@@ -114,7 +115,7 @@ The CLI prints a summary table showing imported and skipped counts:
 Import complete!
 
   Entity            Imported  Skipped
-  ----------------  --------  -------
+  ────────────────  ────────  ───────
   Conversations           42        0
   Semantic entities       15        0
   Learned patterns         8        0

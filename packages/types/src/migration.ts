@@ -1,6 +1,6 @@
 /** Migration bundle types — wire format for atlas export/import. */
 
-import type { Surface } from "./conversation";
+import type { MessageRole, Surface } from "./conversation";
 import type { LearnedPattern } from "./learned-pattern";
 
 // ---------------------------------------------------------------------------
@@ -49,7 +49,7 @@ export interface ExportedConversation {
 /** Exported message within a conversation. */
 export interface ExportedMessage {
   id: string;
-  role: string;
+  role: MessageRole;
   content: unknown;
   createdAt: string;
 }

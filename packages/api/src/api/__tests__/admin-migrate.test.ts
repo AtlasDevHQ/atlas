@@ -1,48 +1,13 @@
 /**
  * Tests for migration bundle validation and import logic.
  *
- * Tests the validateBundle function directly and verifies bundle
+ * Imports validateBundle directly from the route module and verifies bundle
  * type shapes for round-trip export → import compatibility.
  */
 
 import { describe, it, expect } from "bun:test";
 import type { ExportBundle, ImportResult } from "@useatlas/types";
-
-// ---------------------------------------------------------------------------
-// Extract validateBundle logic for direct testing (mirrors admin-migrate.ts)
-// ---------------------------------------------------------------------------
-
-function validateBundle(body: unknown): { ok: true; bundle: ExportBundle } | { ok: false; error: string } {
-  if (!body || typeof body !== "object") {
-    return { ok: false, error: "Request body must be a JSON object." };
-  }
-
-  const obj = body as Record<string, unknown>;
-
-  if (!obj.manifest || typeof obj.manifest !== "object") {
-    return { ok: false, error: "Missing or invalid 'manifest' field." };
-  }
-
-  const manifest = obj.manifest as Record<string, unknown>;
-  if (manifest.version !== 1) {
-    return { ok: false, error: `Unsupported bundle version: ${String(manifest.version)}. Expected 1.` };
-  }
-
-  if (!Array.isArray(obj.conversations)) {
-    return { ok: false, error: "Missing or invalid 'conversations' field. Expected an array." };
-  }
-  if (!Array.isArray(obj.semanticEntities)) {
-    return { ok: false, error: "Missing or invalid 'semanticEntities' field. Expected an array." };
-  }
-  if (!Array.isArray(obj.learnedPatterns)) {
-    return { ok: false, error: "Missing or invalid 'learnedPatterns' field. Expected an array." };
-  }
-  if (!Array.isArray(obj.settings)) {
-    return { ok: false, error: "Missing or invalid 'settings' field. Expected an array." };
-  }
-
-  return { ok: true, bundle: obj as unknown as ExportBundle };
-}
+import { validateBundle } from "../routes/admin-migrate";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -179,6 +144,67 @@ describe("validateBundle", () => {
     });
     const result = validateBundle(bundle);
     expect(result.ok).toBe(true);
+  });
+
+  // Per-element validation tests
+  it("rejects conversation missing id", () => {
+    const result = validateBundle({
+      manifest: { version: 1 },
+      conversations: [{ messages: [] }],
+      semanticEntities: [],
+      learnedPatterns: [],
+      settings: [],
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("conversations[0]");
+  });
+
+  it("rejects conversation missing messages array", () => {
+    const result = validateBundle({
+      manifest: { version: 1 },
+      conversations: [{ id: "conv-1" }],
+      semanticEntities: [],
+      learnedPatterns: [],
+      settings: [],
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("conversations[0]");
+  });
+
+  it("rejects semantic entity missing required fields", () => {
+    const result = validateBundle({
+      manifest: { version: 1 },
+      conversations: [],
+      semanticEntities: [{ name: "test" }],
+      learnedPatterns: [],
+      settings: [],
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("semanticEntities[0]");
+  });
+
+  it("rejects learned pattern missing patternSql", () => {
+    const result = validateBundle({
+      manifest: { version: 1 },
+      conversations: [],
+      semanticEntities: [],
+      learnedPatterns: [{ description: "test" }],
+      settings: [],
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("learnedPatterns[0]");
+  });
+
+  it("rejects setting missing key or value", () => {
+    const result = validateBundle({
+      manifest: { version: 1 },
+      conversations: [],
+      semanticEntities: [],
+      learnedPatterns: [],
+      settings: [{ key: "test" }],
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("settings[0]");
   });
 });
 

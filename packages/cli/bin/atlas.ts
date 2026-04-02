@@ -3224,17 +3224,17 @@ async function handleExport(args: string[]): Promise<void> {
       );
       messageCount += msgRows.rows.length;
       conversations.push({
-        id: row.id,
-        userId: row.user_id ?? null,
-        title: row.title ?? null,
-        surface: row.surface ?? "web",
-        connectionId: row.connection_id ?? null,
-        starred: row.starred ?? false,
+        id: row.id as string,
+        userId: (row.user_id as string) ?? null,
+        title: (row.title as string) ?? null,
+        surface: (row.surface as import("@useatlas/types").ExportedConversation["surface"]) ?? "web",
+        connectionId: (row.connection_id as string) ?? null,
+        starred: (row.starred as boolean) ?? false,
         createdAt: String(row.created_at),
         updatedAt: String(row.updated_at),
         messages: msgRows.rows.map((m: Record<string, unknown>) => ({
-          id: m.id,
-          role: m.role,
+          id: m.id as string,
+          role: m.role as import("@useatlas/types").ExportedMessage["role"],
           content: m.content,
           createdAt: String(m.created_at),
         })),
@@ -3271,7 +3271,7 @@ async function handleExport(args: string[]): Promise<void> {
       description: (r.description as string) ?? null,
       sourceEntity: (r.source_entity as string) ?? null,
       confidence: r.confidence as number,
-      status: r.status as string,
+      status: r.status as import("@useatlas/types").LearnedPattern["status"],
     }));
     console.log(`  Patterns:      ${learnedPatterns.length}`);
 
@@ -3290,9 +3290,10 @@ async function handleExport(args: string[]): Promise<void> {
     console.log(`  Settings:      ${settings.length}`);
 
     // Build bundle
-    const bundle = {
+    const { EXPORT_BUNDLE_VERSION } = await import("@useatlas/types");
+    const bundle: import("@useatlas/types").ExportBundle = {
       manifest: {
-        version: 1,
+        version: EXPORT_BUNDLE_VERSION,
         exportedAt: new Date().toISOString(),
         source: {
           label: orgFilter ? `org:${orgFilter}` : "self-hosted",
@@ -3318,7 +3319,7 @@ async function handleExport(args: string[]): Promise<void> {
     fs.writeFileSync(outPath, JSON.stringify(bundle, null, 2));
     console.log(`\n${pc.green("✓")} Bundle written to ${pc.bold(outPath)}`);
     console.log(`  Total size: ${(Buffer.byteLength(JSON.stringify(bundle)) / 1024).toFixed(1)} KB`);
-    console.log(`\nNext: atlas migrate-import --bundle ${outPath} --target https://app.useatlas.dev`);
+    console.log(`\nNext: ATLAS_API_KEY=sk-... atlas migrate-import --bundle ${outPath} --target https://app.useatlas.dev`);
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     console.error(pc.red(`Export failed: ${detail}`));
@@ -3439,15 +3440,18 @@ async function handleMigrateImport(args: string[]): Promise<void> {
     process.exit(1);
   }
 
-  // Basic validation
-  if (!bundle || typeof bundle !== "object" || !("manifest" in bundle) || !("conversations" in bundle)) {
-    console.error(pc.red("Invalid bundle format. Expected an Atlas export bundle with manifest and data."));
+  // Basic validation — mirror server-side checks to fail fast before upload
+  const b = bundle as Record<string, unknown>;
+  if (!b || typeof b !== "object" || !b.manifest || !Array.isArray(b.conversations) ||
+      !Array.isArray(b.semanticEntities) || !Array.isArray(b.learnedPatterns) || !Array.isArray(b.settings)) {
+    console.error(pc.red("Invalid bundle format. Expected an Atlas export bundle with manifest and all data arrays."));
     process.exit(1);
   }
 
-  const manifest = (bundle as { manifest: { version: number; counts: Record<string, number> } }).manifest;
-  if (manifest.version !== 1) {
-    console.error(pc.red(`Unsupported bundle version: ${manifest.version}. This CLI supports version 1.`));
+  const { EXPORT_BUNDLE_VERSION } = await import("@useatlas/types");
+  const manifest = (b.manifest as { version: number; counts: Record<string, number> });
+  if (manifest.version !== EXPORT_BUNDLE_VERSION) {
+    console.error(pc.red(`Unsupported bundle version: ${manifest.version}. This CLI supports version ${EXPORT_BUNDLE_VERSION}.`));
     process.exit(1);
   }
 
@@ -3492,12 +3496,18 @@ async function handleMigrateImport(args: string[]): Promise<void> {
       process.exit(1);
     }
 
-    const result = await resp.json() as {
-      conversations: { imported: number; skipped: number };
-      semanticEntities: { imported: number; skipped: number };
-      learnedPatterns: { imported: number; skipped: number };
-      settings: { imported: number; skipped: number };
-    };
+    let result: import("@useatlas/types").ImportResult;
+    try {
+      result = await resp.json() as import("@useatlas/types").ImportResult;
+      if (!result?.conversations || !result?.semanticEntities) {
+        throw new Error("Unexpected response shape");
+      }
+    } catch (parseErr) {
+      console.error(pc.red("Import appeared to succeed (HTTP 200) but the response was not in the expected format."));
+      console.error("  Check the target Atlas instance version compatibility.");
+      console.error(`  Detail: ${parseErr instanceof Error ? parseErr.message : String(parseErr)}`);
+      process.exit(1);
+    }
 
     console.log(`${pc.green("✓")} Import complete!\n`);
     console.log("  Entity            Imported  Skipped");

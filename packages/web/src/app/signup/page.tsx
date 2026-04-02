@@ -196,6 +196,18 @@ export default function SignupPage() {
           </Button>
         </form>
 
+        <p className="text-center text-xs text-muted-foreground">
+          By signing up, you agree to our{" "}
+          <a href="https://www.useatlas.dev/terms" className="text-primary hover:underline" target="_blank" rel="noopener noreferrer">
+            Terms of Service
+          </a>{" "}
+          and{" "}
+          <a href="https://www.useatlas.dev/privacy" className="text-primary hover:underline" target="_blank" rel="noopener noreferrer">
+            Privacy Policy
+          </a>
+          .
+        </p>
+
         <p className="text-center text-sm text-muted-foreground">
           Already have an account?{" "}
           <a href="/login" className="text-primary hover:underline">

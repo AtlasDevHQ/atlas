@@ -50,7 +50,7 @@ const SERVICES: { name: string; description: string; url: string; proxy?: boolea
   {
     name: "Landing Page",
     description: "Marketing site",
-    url: "https://useatlas.dev",
+    url: "https://www.useatlas.dev",
   },
 ];
 

@@ -5,6 +5,6 @@
   "minAppVersion": "1.0.0",
   "description": "Query your databases with natural language using Atlas, a text-to-SQL AI agent.",
   "author": "Atlas",
-  "authorUrl": "https://useatlas.dev",
+  "authorUrl": "https://www.useatlas.dev",
   "isDesktopOnly": false
 }

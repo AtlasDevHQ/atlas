@@ -1,6 +1,6 @@
 # Atlas for Obsidian
 
-Obsidian plugin for [Atlas](https://useatlas.dev) — query your databases with natural language and embed results directly in your notes.
+Obsidian plugin for [Atlas](https://www.useatlas.dev) — query your databases with natural language and embed results directly in your notes.
 
 ## Features
 

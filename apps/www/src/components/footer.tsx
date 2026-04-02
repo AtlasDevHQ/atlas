@@ -20,7 +20,7 @@ export function Footer() {
             Open source
           </a>
         </div>
-        <div className="flex items-center gap-6">
+        <div className="flex flex-wrap items-center gap-x-6 gap-y-2">
           <a href="/pricing" className="text-xs text-zinc-600 transition-colors hover:text-zinc-400">
             Pricing
           </a>
@@ -35,6 +35,15 @@ export function Footer() {
           </a>
           <a href={STATUS_URL} className="text-xs text-zinc-600 transition-colors hover:text-zinc-400">
             Status
+          </a>
+          <a href="/terms" className="text-xs text-zinc-600 transition-colors hover:text-zinc-400">
+            Terms
+          </a>
+          <a href="/privacy" className="text-xs text-zinc-600 transition-colors hover:text-zinc-400">
+            Privacy
+          </a>
+          <a href="/dpa" className="text-xs text-zinc-600 transition-colors hover:text-zinc-400">
+            DPA
           </a>
           <a href="https://github.com/AtlasDevHQ/atlas" className="text-xs text-zinc-600 transition-colors hover:text-zinc-400">
             Built by @msywulak

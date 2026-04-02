@@ -13,7 +13,7 @@ export const metadata: Metadata = {
     title: "Blog — Atlas",
     description:
       "Updates, announcements, and technical deep dives from the Atlas team.",
-    url: "https://useatlas.dev/blog",
+    url: "https://www.useatlas.dev/blog",
     siteName: "Atlas",
     type: "website",
   },

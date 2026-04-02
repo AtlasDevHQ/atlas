@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState } from "react";
 import { useForm, useFieldArray, type UseFormReturn } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -717,67 +717,67 @@ function useColumnMetadata(tableName: string, isSaas: boolean, dialogOpen: boole
   const [tableNotFound, setTableNotFound] = useState(false);
   const [loading, setLoading] = useState(false);
 
-  const fetchColumns = useCallback(async (name: string, signal: AbortSignal) => {
-    if (!name || !isSaas) {
+  useEffect(() => {
+    if (!dialogOpen || !tableName || !isSaas) {
       setColumns([]);
       setTableNotFound(false);
       return;
     }
 
     // Only fetch for valid SQL identifiers
-    if (!/^[a-zA-Z_][a-zA-Z0-9_.]*$/.test(name)) {
+    if (!/^[a-zA-Z_][a-zA-Z0-9_.]*$/.test(tableName)) {
       setColumns([]);
       setTableNotFound(false);
       return;
     }
 
-    setLoading(true);
-    try {
-      const res = await fetch(
-        `${apiUrl}/api/v1/admin/semantic/columns/${encodeURIComponent(name)}`,
-        {
-          credentials: isCrossOrigin ? "include" : "same-origin",
-          signal,
-        },
-      );
-      if (signal.aborted) return;
-      if (res.status === 404) {
-        setColumns([]);
-        setTableNotFound(true);
-        return;
-      }
-      if (!res.ok) {
-        setColumns([]);
-        setTableNotFound(false);
-        return;
-      }
-      const data = await res.json();
-      if (!signal.aborted) {
-        setColumns(Array.isArray(data?.columns) ? data.columns : []);
-        setTableNotFound(false);
-      }
-    } catch (err) {
-      if (err instanceof DOMException && err.name === "AbortError") return;
-      console.debug("Column metadata fetch failed:", err instanceof Error ? err.message : String(err));
-      if (!signal.aborted) {
-        setColumns([]);
-        setTableNotFound(false);
-      }
-    } finally {
-      if (!signal.aborted) setLoading(false);
-    }
-  }, [apiUrl, isCrossOrigin, isSaas]);
-
-  useEffect(() => {
-    if (!dialogOpen) return;
     const controller = new AbortController();
+    const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
+
     // Debounce column fetches
-    const timer = setTimeout(() => fetchColumns(tableName, controller.signal), 300);
+    const timer = setTimeout(async () => {
+      setLoading(true);
+      try {
+        const res = await fetch(
+          `${apiUrl}/api/v1/admin/semantic/columns/${encodeURIComponent(tableName)}`,
+          { credentials, signal: controller.signal },
+        );
+        if (controller.signal.aborted) return;
+        if (res.status === 404) {
+          setColumns([]);
+          setTableNotFound(true);
+          return;
+        }
+        if (!res.ok) {
+          const body = await res.json().catch(() => null);
+          const msg = (body as Record<string, unknown> | null)?.message ?? `HTTP ${res.status}`;
+          console.debug("Column metadata fetch failed:", msg);
+          setColumns([]);
+          setTableNotFound(false);
+          return;
+        }
+        const data = await res.json();
+        if (!controller.signal.aborted) {
+          setColumns(Array.isArray(data?.columns) ? data.columns : []);
+          setTableNotFound(false);
+        }
+      } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") return;
+        console.debug("Column metadata fetch failed:", err instanceof Error ? err.message : String(err));
+        if (!controller.signal.aborted) {
+          setColumns([]);
+          setTableNotFound(false);
+        }
+      } finally {
+        if (!controller.signal.aborted) setLoading(false);
+      }
+    }, 300);
+
     return () => {
       clearTimeout(timer);
       controller.abort();
     };
-  }, [tableName, dialogOpen, fetchColumns]);
+  }, [tableName, dialogOpen, apiUrl, isCrossOrigin, isSaas]);
 
   return { columns, tableNotFound, loading };
 }

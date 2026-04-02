@@ -14,6 +14,7 @@ import {
   expect,
   beforeEach,
   afterAll,
+  afterEach,
   mock,
   type Mock,
 } from "bun:test";
@@ -1842,7 +1843,7 @@ describe("GET /api/v1/admin/semantic/columns/:tableName", () => {
     };
   });
 
-  afterAll(() => {
+  afterEach(() => {
     mockDBConnection.query = originalQuery;
   });
 
@@ -1895,10 +1896,21 @@ describe("GET /api/v1/admin/semantic/columns/:tableName", () => {
     expect(body.requestId).toBeDefined();
   });
 
-  it("accepts schema-qualified table names", async () => {
+  it("splits schema-qualified table names into schema + table", async () => {
     setOrgAdmin("org-1");
+    let capturedSql = "";
+    (mockDBConnection as { query: (...args: unknown[]) => Promise<unknown> }).query = async (sql: unknown) => {
+      capturedSql = String(sql);
+      return {
+        columns: ["name", "type", "nullable"],
+        rows: [{ name: "id", type: "integer", nullable: "NO" }],
+      };
+    };
     const res = await app.fetch(adminRequest("/api/v1/admin/semantic/columns/public.users"));
     expect(res.status).toBe(200);
+    // Verify schema and table were split correctly in the SQL
+    expect(capturedSql).toContain("table_name = 'users'");
+    expect(capturedSql).toContain("table_schema = 'public'");
   });
 });
 

@@ -27,8 +27,8 @@ const log = createLogger("admin-semantic-editor");
 // ---------------------------------------------------------------------------
 
 const ColumnInfoSchema = z.object({
-  name: z.string(),
-  type: z.string(),
+  name: z.string().min(1),
+  type: z.string().min(1),
   nullable: z.boolean(),
 });
 
@@ -409,31 +409,46 @@ export function registerSemanticEditorRoutes(
         conn = connections.getForOrg(orgId, "default");
         dbType = connections.getDBType("default");
       } catch (err) {
-        log.warn(
+        log.error(
           { err: err instanceof Error ? err.message : String(err), requestId, orgId },
           "Failed to get datasource connection for column metadata",
         );
         return c.json({ error: "datasource_unavailable", message: "No analytics datasource is connected. Configure a datasource to enable column autocomplete.", requestId }, 500);
       }
 
-      // Escape single quotes for the string literal in the WHERE clause
-      const escapedName = tableName.replace(/'/g, "''");
-      try {
-        const { rows } = dbType === "mysql"
-          ? await conn.query(
-              `SELECT COLUMN_NAME AS name, DATA_TYPE AS type, IS_NULLABLE AS nullable FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = '${escapedName}' ORDER BY ORDINAL_POSITION`,
-              10000,
-            )
-          : await conn.query(
-              `SELECT column_name AS name, data_type AS type, is_nullable AS nullable FROM information_schema.columns WHERE table_name = '${escapedName}' AND table_schema = current_schema() ORDER BY ordinal_position`,
-              10000,
-            );
+      // Split schema-qualified names (e.g. "public.users" → schema="public", table="users")
+      // and escape single quotes for the WHERE clause string literal
+      const parts = tableName.split(".");
+      const rawTable = parts.length > 1 ? parts[parts.length - 1] : tableName;
+      const rawSchema = parts.length > 1 ? parts.slice(0, -1).join(".") : null;
+      const escapedTable = rawTable.replace(/'/g, "''");
+      const escapedSchema = rawSchema?.replace(/'/g, "''") ?? null;
 
-        if (rows.length === 0) {
+      try {
+        let queryResult;
+        if (dbType === "mysql") {
+          const schemaClause = escapedSchema
+            ? `TABLE_SCHEMA = '${escapedSchema}'`
+            : "TABLE_SCHEMA = DATABASE()";
+          queryResult = await conn.query(
+            `SELECT COLUMN_NAME AS name, DATA_TYPE AS type, IS_NULLABLE AS nullable FROM information_schema.COLUMNS WHERE ${schemaClause} AND TABLE_NAME = '${escapedTable}' ORDER BY ORDINAL_POSITION`,
+            10000,
+          );
+        } else {
+          const schemaClause = escapedSchema
+            ? `table_schema = '${escapedSchema}'`
+            : "table_schema = current_schema()";
+          queryResult = await conn.query(
+            `SELECT column_name AS name, data_type AS type, is_nullable AS nullable FROM information_schema.columns WHERE table_name = '${escapedTable}' AND ${schemaClause} ORDER BY ordinal_position`,
+            10000,
+          );
+        }
+
+        if (queryResult.rows.length === 0) {
           return c.json({ error: "not_found", message: `Table "${tableName}" not found in the connected datasource.` }, 404);
         }
 
-        const columns = rows.map((row) => ({
+        const columns = queryResult.rows.map((row) => ({
           name: String(row.name ?? ""),
           type: String(row.type ?? ""),
           nullable: String(row.nullable ?? "YES").toUpperCase() === "YES",
@@ -441,7 +456,7 @@ export function registerSemanticEditorRoutes(
 
         return c.json({ columns }, 200);
       } catch (err) {
-        log.warn(
+        log.error(
           { err: err instanceof Error ? err.message : String(err), requestId, orgId, tableName },
           "Failed to query column metadata",
         );

@@ -52,8 +52,9 @@ FROM base AS builder
 WORKDIR /app
 COPY --from=deps /app ./
 COPY . .
-# Build @useatlas/types first (exports point to dist/) then the Next.js app
+# Build workspace deps whose exports point to dist/ before the Next.js app
 RUN cd packages/types && bun run build
+RUN cd packages/react && bun run build
 # Bake build-time env vars into the client JS bundle
 ENV NEXT_PUBLIC_ATLAS_API_URL=https://api.useatlas.dev
 ENV NEXT_PUBLIC_ATLAS_AUTH_MODE=managed

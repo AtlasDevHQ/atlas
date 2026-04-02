@@ -55,7 +55,7 @@ export default async function SharedConversationEmbedPage({
       {/* "Powered by Atlas" link — opens in a new tab */}
       <div className="mt-4 border-t border-zinc-200 pt-3 text-center dark:border-zinc-800">
         <a
-          href="https://useatlas.dev"
+          href="https://www.useatlas.dev"
           target="_blank"
           rel="noopener noreferrer"
           className="text-xs text-zinc-400 transition-colors hover:text-zinc-600 dark:text-zinc-500 dark:hover:text-zinc-300"

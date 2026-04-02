@@ -40,7 +40,7 @@ TypeScript, Hono (API), Next.js (frontend), Effect.ts (backend services), Vercel
 
 ## Links
 
-- Website: https://useatlas.dev
+- Website: https://www.useatlas.dev
 - Documentation: https://docs.useatlas.dev
 - GitHub: https://github.com/AtlasDevHQ/atlas
 - Cloud: https://app.useatlas.dev

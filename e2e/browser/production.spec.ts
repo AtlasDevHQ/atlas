@@ -5,7 +5,7 @@ import { test, expect } from "@playwright/test";
 
 const PROD_APP_URL = process.env.PROD_APP_URL ?? "https://app.useatlas.dev";
 const PROD_API_URL = process.env.PROD_API_URL ?? "https://api.useatlas.dev";
-const PROD_WWW_URL = process.env.PROD_WWW_URL ?? "https://useatlas.dev";
+const PROD_WWW_URL = process.env.PROD_WWW_URL ?? "https://www.useatlas.dev";
 const PROD_DOCS_URL = process.env.PROD_DOCS_URL ?? "https://docs.useatlas.dev";
 
 test.describe("Production Smoke Tests", () => {

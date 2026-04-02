@@ -1,17 +1,17 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url>
-    <loc>https://useatlas.dev</loc>
+    <loc>https://www.useatlas.dev</loc>
     <changefreq>weekly</changefreq>
     <priority>1.0</priority>
   </url>
   <url>
-    <loc>https://useatlas.dev/pricing</loc>
+    <loc>https://www.useatlas.dev/pricing</loc>
     <changefreq>monthly</changefreq>
     <priority>0.8</priority>
   </url>
   <url>
-    <loc>https://useatlas.dev/status</loc>
+    <loc>https://www.useatlas.dev/status</loc>
     <changefreq>always</changefreq>
     <priority>0.3</priority>
   </url>

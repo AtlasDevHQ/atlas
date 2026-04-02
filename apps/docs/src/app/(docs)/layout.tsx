@@ -43,7 +43,7 @@ export default function Layout({ children }: { children: ReactNode }) {
       links={[
         {
           text: "Home",
-          url: "https://useatlas.dev",
+          url: "https://www.useatlas.dev",
           external: true,
         },
         {

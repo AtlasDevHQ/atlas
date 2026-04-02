@@ -1,6 +1,6 @@
 # @useatlas/sdk
 
-TypeScript SDK for the [Atlas](https://useatlas.dev) text-to-SQL agent API.
+TypeScript SDK for the [Atlas](https://www.useatlas.dev) text-to-SQL agent API.
 
 ## Install
 

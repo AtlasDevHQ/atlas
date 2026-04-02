@@ -13,7 +13,7 @@ export const metadata: Metadata = {
     title: "Announcing Atlas: Open-Source Text-to-SQL with a Semantic Layer",
     description:
       "Atlas 1.0 is here. Connect your database, auto-generate a semantic layer, and let an AI agent query your data.",
-    url: "https://useatlas.dev/blog/announcing-atlas",
+    url: "https://www.useatlas.dev/blog/announcing-atlas",
     siteName: "Atlas",
     type: "article",
   },

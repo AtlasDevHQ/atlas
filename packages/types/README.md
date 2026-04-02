@@ -1,6 +1,6 @@
 # @useatlas/types
 
-Shared TypeScript types for the [Atlas](https://useatlas.dev) text-to-SQL agent.
+Shared TypeScript types for the [Atlas](https://www.useatlas.dev) text-to-SQL agent.
 
 ## Install
 

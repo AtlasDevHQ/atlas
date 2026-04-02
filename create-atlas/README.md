@@ -209,7 +209,7 @@ bun run lint             # Lint with ESLint
 ## Links
 
 - [GitHub](https://github.com/AtlasDevHQ/atlas)
-- [Website](https://useatlas.dev)
+- [Website](https://www.useatlas.dev)
 - [Issues](https://github.com/AtlasDevHQ/atlas/issues)
 
 ## License

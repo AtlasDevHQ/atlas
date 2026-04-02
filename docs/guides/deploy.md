@@ -350,5 +350,5 @@ bun run build:www  # Produces apps/www/out/
 ### Verify
 
 ```bash
-curl https://useatlas.dev/health
+curl https://www.useatlas.dev/health
 ```

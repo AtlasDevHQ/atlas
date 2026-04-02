@@ -224,7 +224,7 @@ Build and deploy the Docker image to your platform of choice. See \`docs/deploy.
 
   return `# ${projectName}
 
-A text-to-SQL data analyst agent powered by [Atlas](https://useatlas.dev).
+A text-to-SQL data analyst agent powered by [Atlas](https://www.useatlas.dev).
 
 ${badgeLine}${dbNote} Ask natural-language questions, and the agent explores a semantic layer, writes validated SQL, and returns interpreted results.
 
@@ -273,7 +273,7 @@ See \`docs/deploy.md\` for the full variable reference.
 
 ## Learn More
 
-- [Atlas Documentation](https://useatlas.dev)
+- [Atlas Documentation](https://www.useatlas.dev)
 - [GitHub](https://github.com/AtlasDevHQ/atlas)
 `;
 }

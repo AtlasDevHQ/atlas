@@ -8,7 +8,7 @@ export const metadata: Metadata = {
     title: "System Status — Atlas",
     description:
       "Real-time status of Atlas services. Check API, web app, documentation, and infrastructure health.",
-    url: "https://useatlas.dev/status",
+    url: "https://www.useatlas.dev/status",
     siteName: "Atlas",
     type: "website",
   },

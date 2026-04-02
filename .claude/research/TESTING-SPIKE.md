@@ -263,7 +263,7 @@
 - [ ] Run a query through the production UI — **needs browser login**
 - [ ] Admin console accessible — **needs browser login**
 - [x] Docs site at `https://docs.useatlas.dev` — HTTP 200 ✓
-- [x] Landing page at `https://useatlas.dev` — HTTP 200 ✓
+- [x] Landing page at `https://www.useatlas.dev` — HTTP 200 ✓
 
 ### 3.3 Railway Starter Template
 - [ ] Deploy from scratch using Railway template (if feasible)

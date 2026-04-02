@@ -22,7 +22,7 @@ export const metadata: Metadata = {
     title: "Atlas — Quit copying SQL from ChatGPT",
     description:
       "AI writes better SQL than you — let it. Atlas connects to your schema, validates queries, and runs them. Open-source with 7 databases, 21+ plugins, and enterprise cloud.",
-    url: "https://useatlas.dev",
+    url: "https://www.useatlas.dev",
     siteName: "Atlas",
     type: "website",
     images: [

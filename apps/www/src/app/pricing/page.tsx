@@ -13,7 +13,7 @@ export const metadata: Metadata = {
     title: "Pricing — Atlas",
     description:
       "Atlas pricing: self-host for free, Team plan with 14-day trial, and Enterprise.",
-    url: "https://useatlas.dev/pricing",
+    url: "https://www.useatlas.dev/pricing",
     siteName: "Atlas",
     type: "website",
   },

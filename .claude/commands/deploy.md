@@ -27,7 +27,7 @@ Run these in parallel:
    curl -sf -o /dev/null -w "%{http_code}" https://docs.useatlas.dev
 
    # Landing page
-   curl -sf -o /dev/null -w "%{http_code}" https://useatlas.dev
+   curl -sf -o /dev/null -w "%{http_code}" https://www.useatlas.dev
    ```
 
 3. CI status (deploys are triggered by pushes to main):

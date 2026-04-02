@@ -12,7 +12,7 @@ export const metadata: Metadata = {
     title: "Terms of Service — Atlas",
     description:
       "Atlas Terms of Service for Atlas Cloud (app.useatlas.dev) and self-hosted deployments.",
-    url: "https://useatlas.dev/terms",
+    url: "https://www.useatlas.dev/terms",
     siteName: "Atlas",
     type: "website",
   },

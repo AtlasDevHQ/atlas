@@ -12,7 +12,7 @@ export const metadata: Metadata = {
     title: "Data Processing Agreement — Atlas",
     description:
       "Standard DPA for Atlas Cloud covering data processing, security, subprocessors, and GDPR compliance.",
-    url: "https://useatlas.dev/dpa",
+    url: "https://www.useatlas.dev/dpa",
     siteName: "Atlas",
     type: "website",
   },

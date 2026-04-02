@@ -12,7 +12,7 @@ export const metadata: Metadata = {
     title: "Privacy Policy — Atlas",
     description:
       "How Atlas handles your data: collection, use, retention, GDPR rights, and subprocessors.",
-    url: "https://useatlas.dev/privacy",
+    url: "https://www.useatlas.dev/privacy",
     siteName: "Atlas",
     type: "website",
   },

@@ -140,6 +140,15 @@ done
 mkdir -p "$TEMPLATES/docker/public"
 touch    "$TEMPLATES/docker/public/.gitkeep"
 
+# ── Step 5c: Copy CLI source files referenced by bin/atlas.ts ────────
+# bin/atlas.ts imports ../src/env-check and ../src/progress.
+# Must happen AFTER src/ is populated (Steps 2-4 wipe and rebuild src/).
+CLI_SRC="$MONOREPO/packages/cli/src"
+for tpl in docker nextjs-standalone; do
+  cp "$CLI_SRC/env-check.ts" "$TEMPLATES/$tpl/src/"
+  cp "$CLI_SRC/progress.ts"  "$TEMPLATES/$tpl/src/"
+done
+
 # ── Step 6: Sync dependency versions into templates ───────────────
 # Skip syncpack when SKIP_SYNCPACK=1 (used by CI drift check and sync-starter)
 if [[ "${SKIP_SYNCPACK:-}" != "1" ]]; then

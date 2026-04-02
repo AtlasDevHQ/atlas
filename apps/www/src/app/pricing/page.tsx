@@ -71,6 +71,7 @@ const TIERS: Tier[] = [
       "5 datasource connections",
       "All databases & plugins",
       "Admin console & API",
+      "99.9% uptime SLA",
       "BYOT support",
       "Email support",
     ],
@@ -89,8 +90,8 @@ const TIERS: Tier[] = [
       "Custom roles & approval workflows",
       "Audit retention & compliance reporting",
       "Data residency options",
-      "SLA monitoring & backups",
-      "Dedicated support & onboarding",
+      "99.95% uptime SLA",
+      "Priority support & onboarding",
     ],
   },
 ];
@@ -126,8 +127,8 @@ const COMPARISON: ComparisonRow[] = [
   { feature: "Approval workflows", selfHosted: false, team: false, enterprise: true },
   { feature: "Compliance reporting", selfHosted: false, team: false, enterprise: true },
   { feature: "Data residency", selfHosted: false, team: false, enterprise: true },
-  { feature: "SLA & backups", selfHosted: false, team: false, enterprise: true },
-  { feature: "Support", selfHosted: "Community", team: "Email", enterprise: "Dedicated" },
+  { feature: "Uptime SLA", selfHosted: false, team: "99.9%", enterprise: "99.95%" },
+  { feature: "Support", selfHosted: "Community", team: "Email", enterprise: "Priority" },
 ];
 
 interface FAQ {

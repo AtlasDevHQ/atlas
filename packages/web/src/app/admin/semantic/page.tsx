@@ -400,14 +400,20 @@ export default function SemanticPage() {
       if (glossaryRes.status === "fulfilled") {
         const data = glossaryRes.value;
         setGlossary(normalizeGlossary(data?.glossary ?? data));
+      } else {
+        console.warn("Failed to load glossary:", glossaryRes.reason instanceof Error ? glossaryRes.reason.message : String(glossaryRes.reason));
       }
       if (metricsRes.status === "fulfilled") {
         const data = metricsRes.value;
         setMetrics(normalizeMetrics(data?.metrics ?? data));
+      } else {
+        console.warn("Failed to load metrics:", metricsRes.reason instanceof Error ? metricsRes.reason.message : String(metricsRes.reason));
       }
       if (catalogRes.status === "fulfilled") {
         const data = catalogRes.value;
         setCatalog(data?.catalog ?? data ?? null);
+      } else {
+        console.warn("Failed to load catalog:", catalogRes.reason instanceof Error ? catalogRes.reason.message : String(catalogRes.reason));
       }
     }
 
@@ -509,7 +515,6 @@ export default function SemanticPage() {
   ) => {
     const result = await mutateSave({
       path: `/api/v1/admin/semantic/entities/edit/${encodeURIComponent(name)}`,
-      method: "PUT",
       body: body as unknown as Record<string, unknown>,
     });
     if (result.ok) {
@@ -526,7 +531,6 @@ export default function SemanticPage() {
     if (!deleteTarget) return;
     const result = await mutateDelete({
       path: `/api/v1/admin/semantic/entities/edit/${encodeURIComponent(deleteTarget)}`,
-      method: "DELETE",
     });
     if (result.ok) {
       setDeleteTarget(null);

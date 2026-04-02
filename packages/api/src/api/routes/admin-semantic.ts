@@ -14,7 +14,9 @@
 import { createRoute, z } from "@hono/zod-openapi";
 import type { OpenAPIHono } from "@hono/zod-openapi";
 import { runHandler } from "@atlas/api/lib/effect/hono";
+import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
+import type { AuthResult } from "@atlas/api/lib/auth/types";
 import { ErrorSchema, AuthErrorSchema, createParamSchema } from "./shared-schemas";
 
 const log = createLogger("admin-semantic-editor");
@@ -171,6 +173,10 @@ export const putStructuredEntityRoute = createRoute({
       description: "Authentication required",
       content: { "application/json": { schema: AuthErrorSchema } },
     },
+    501: {
+      description: "Internal database not available",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
     500: {
       description: "Internal server error",
       content: { "application/json": { schema: ErrorSchema } },
@@ -204,12 +210,25 @@ export const deleteStructuredEntityRoute = createRoute({
       description: "Entity not found",
       content: { "application/json": { schema: ErrorSchema } },
     },
+    501: {
+      description: "Internal database not available",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
     500: {
       description: "Internal server error",
       content: { "application/json": { schema: ErrorSchema } },
     },
   },
 });
+
+// ---------------------------------------------------------------------------
+// Auth function type
+// ---------------------------------------------------------------------------
+
+type AdminAuthFn = (c: { req: { raw: Request }; get(key: string): unknown }) => Promise<{
+  authResult: AuthResult & { authenticated: true };
+  requestId: string;
+}>;
 
 // ---------------------------------------------------------------------------
 // Registration function
@@ -229,11 +248,7 @@ export const deleteStructuredEntityRoute = createRoute({
 export function registerSemanticEditorRoutes(
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- admin.ts uses untyped OpenAPIHono; typed generics would require matching the exact Env
   admin: OpenAPIHono<any>,
-  authFn: (c: { req: { raw: Request }; get(key: string): unknown }) => Promise<{
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- authResult shape varies by auth mode; we only need user.activeOrganizationId
-    authResult: any;
-    requestId: string;
-  }>,
+  authFn: AdminAuthFn,
 ): void {
   // PUT /semantic/entities/edit/{name} — structured entity create/update
   admin.openapi(putStructuredEntityRoute, async (c) =>
@@ -247,6 +262,10 @@ export function registerSemanticEditorRoutes(
         return c.json({ error: "org_not_found", message: "No active organization. Select an organization and try again." }, 400);
       }
 
+      if (!hasInternalDB()) {
+        return c.json({ error: "not_available", message: "Semantic entity editor requires an internal database (DATABASE_URL).", requestId }, 501);
+      }
+
       // Convert structured data to YAML
       const yamlContent = await entityToYaml(body);
 
@@ -254,13 +273,20 @@ export function registerSemanticEditorRoutes(
       const { upsertEntity } = await import("@atlas/api/lib/semantic/entities");
       await upsertEntity(orgId, "entity", name, yamlContent, body.connectionId);
 
-      // Sync to disk + invalidate caches
-      const { invalidateOrgWhitelist, invalidateOrgSemanticIndex } = await import("@atlas/api/lib/semantic");
-      const { syncEntityToDisk } = await import("@atlas/api/lib/semantic/sync");
-
+      // Invalidate caches
+      const { invalidateOrgWhitelist } = await import("@atlas/api/lib/semantic");
       invalidateOrgWhitelist(orgId);
-      invalidateOrgSemanticIndex(orgId);
-      await syncEntityToDisk(orgId, name, "entity", yamlContent);
+
+      // Sync to disk — non-fatal; DB is authoritative
+      try {
+        const { syncEntityToDisk } = await import("@atlas/api/lib/semantic/sync");
+        await syncEntityToDisk(orgId, name, "entity", yamlContent);
+      } catch (syncErr) {
+        log.warn(
+          { err: syncErr instanceof Error ? syncErr.message : String(syncErr), requestId, orgId, name },
+          "Entity saved to DB but disk sync failed — will be synced on next restart",
+        );
+      }
 
       log.info({ requestId, orgId, name }, "Semantic entity upserted via editor");
       return c.json({ ok: true, name, entityType: "entity" }, 200);
@@ -278,6 +304,10 @@ export function registerSemanticEditorRoutes(
         return c.json({ error: "org_not_found", message: "No active organization. Select an organization and try again." }, 400);
       }
 
+      if (!hasInternalDB()) {
+        return c.json({ error: "not_available", message: "Semantic entity editor requires an internal database (DATABASE_URL).", requestId }, 501);
+      }
+
       const { deleteEntity } = await import("@atlas/api/lib/semantic/entities");
       const deleted = await deleteEntity(orgId, "entity", name);
 
@@ -285,13 +315,20 @@ export function registerSemanticEditorRoutes(
         return c.json({ error: "not_found", message: `Entity "${name}" not found.` }, 404);
       }
 
-      // Sync deletion to disk + invalidate caches
-      const { invalidateOrgWhitelist, invalidateOrgSemanticIndex } = await import("@atlas/api/lib/semantic");
-      const { syncEntityDeleteFromDisk } = await import("@atlas/api/lib/semantic/sync");
-
+      // Invalidate caches
+      const { invalidateOrgWhitelist } = await import("@atlas/api/lib/semantic");
       invalidateOrgWhitelist(orgId);
-      invalidateOrgSemanticIndex(orgId);
-      await syncEntityDeleteFromDisk(orgId, name, "entity");
+
+      // Sync deletion to disk — non-fatal; DB is authoritative
+      try {
+        const { syncEntityDeleteFromDisk } = await import("@atlas/api/lib/semantic/sync");
+        await syncEntityDeleteFromDisk(orgId, name, "entity");
+      } catch (syncErr) {
+        log.warn(
+          { err: syncErr instanceof Error ? syncErr.message : String(syncErr), requestId, orgId, name },
+          "Entity deleted from DB but disk sync failed — will be cleaned on next restart",
+        );
+      }
 
       log.info({ requestId, orgId, name }, "Semantic entity deleted via editor");
       return c.json({ ok: true, name, entityType: "entity" }, 200);

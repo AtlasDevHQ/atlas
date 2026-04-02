@@ -41,7 +41,7 @@ import {
 } from "@/components/ui/table";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
-import { cn } from "@/lib/utils";
+
 
 // ── Schema ────────────────────────────────────────────────────────
 
@@ -667,7 +667,7 @@ export function EntityEditorDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className={cn("max-w-4xl max-h-[90vh] flex flex-col")}>
+      <DialogContent className="max-w-4xl max-h-[90vh] flex flex-col">
         <DialogHeader>
           <DialogTitle>{isEditing ? `Edit ${entityName}` : "Add Entity"}</DialogTitle>
           <DialogDescription>

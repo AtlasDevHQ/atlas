@@ -49,7 +49,7 @@ const SECTIONS: Section[] = [
             <strong>Self-hosted</strong> — free under the{" "}
             <a
               href="https://github.com/AtlasDevHQ/atlas/blob/main/LICENSE"
-              className="text-brand/80 underline decoration-brand/30 underline-offset-2 hover:text-brand"
+  
             >
               AGPL-3.0 license
             </a>
@@ -60,7 +60,7 @@ const SECTIONS: Section[] = [
             <strong>Atlas Cloud</strong> — hosted at{" "}
             <a
               href="https://app.useatlas.dev"
-              className="text-brand/80 underline decoration-brand/30 underline-offset-2 hover:text-brand"
+  
             >
               app.useatlas.dev
             </a>
@@ -68,7 +68,7 @@ const SECTIONS: Section[] = [
             available under a separate{" "}
             <a
               href="https://github.com/AtlasDevHQ/atlas/blob/main/ee/LICENSE"
-              className="text-brand/80 underline decoration-brand/30 underline-offset-2 hover:text-brand"
+  
             >
               commercial license
             </a>
@@ -136,7 +136,7 @@ const SECTIONS: Section[] = [
             Use Atlas Cloud to build a competing hosted service using our{" "}
             <a
               href="https://github.com/AtlasDevHQ/atlas/blob/main/ee/LICENSE"
-              className="text-brand/80 underline decoration-brand/30 underline-offset-2 hover:text-brand"
+  
             >
               enterprise features
             </a>
@@ -239,14 +239,14 @@ const SECTIONS: Section[] = [
           For full details, see our{" "}
           <a
             href="/privacy"
-            className="text-brand/80 underline decoration-brand/30 underline-offset-2 hover:text-brand"
+
           >
             Privacy Policy
           </a>{" "}
           and{" "}
           <a
             href="/dpa"
-            className="text-brand/80 underline decoration-brand/30 underline-offset-2 hover:text-brand"
+
           >
             Data Processing Agreement
           </a>
@@ -289,9 +289,9 @@ const SECTIONS: Section[] = [
           status is available at{" "}
           <a
             href="/status"
-            className="text-brand/80 underline decoration-brand/30 underline-offset-2 hover:text-brand"
+
           >
-            useatlas.dev/status
+            www.useatlas.dev/status
           </a>
           .
         </p>
@@ -397,7 +397,7 @@ const SECTIONS: Section[] = [
           Questions about these Terms? Contact us at{" "}
           <a
             href="mailto:legal@useatlas.dev"
-            className="text-brand/80 underline decoration-brand/30 underline-offset-2 hover:text-brand"
+
           >
             legal@useatlas.dev
           </a>

@@ -126,7 +126,7 @@
   background-size: 256px 256px;
 }
 
-/* Legal prose — list styling for terms/privacy/dpa pages */
+/* Legal prose — used by app/terms/, app/privacy/, app/dpa/ pages */
 .legal-prose ul {
   list-style-type: disc;
   padding-left: 1.25rem;
@@ -134,6 +134,17 @@
 
 .legal-prose li {
   padding-left: 0.25rem;
+}
+
+.legal-prose a {
+  color: color-mix(in oklch, var(--atlas-brand) 80%, white);
+  text-decoration: underline;
+  text-decoration-color: color-mix(in oklch, var(--atlas-brand) 30%, transparent);
+  text-underline-offset: 2px;
+}
+
+.legal-prose a:hover {
+  color: var(--atlas-brand);
 }
 
 .legal-prose code {

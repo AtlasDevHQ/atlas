@@ -40,7 +40,7 @@ const SECTIONS: Section[] = [
           This Data Processing Agreement (&quot;DPA&quot;) forms part of the{" "}
           <a
             href="/terms"
-            className="text-brand/80 underline decoration-brand/30 underline-offset-2 hover:text-brand"
+
           >
             Terms of Service
           </a>{" "}
@@ -54,7 +54,7 @@ const SECTIONS: Section[] = [
           contact{" "}
           <a
             href="mailto:sales@useatlas.dev"
-            className="text-brand/80 underline decoration-brand/30 underline-offset-2 hover:text-brand"
+
           >
             sales@useatlas.dev
           </a>
@@ -105,7 +105,7 @@ const SECTIONS: Section[] = [
             the data retention period described in our{" "}
             <a
               href="/privacy"
-              className="text-brand/80 underline decoration-brand/30 underline-offset-2 hover:text-brand"
+  
             >
               Privacy Policy
             </a>
@@ -374,7 +374,7 @@ const SECTIONS: Section[] = [
           Audit requests should be directed to{" "}
           <a
             href="mailto:security@useatlas.dev"
-            className="text-brand/80 underline decoration-brand/30 underline-offset-2 hover:text-brand"
+
           >
             security@useatlas.dev
           </a>{" "}
@@ -443,7 +443,7 @@ const SECTIONS: Section[] = [
           contact{" "}
           <a
             href="mailto:sales@useatlas.dev"
-            className="text-brand/80 underline decoration-brand/30 underline-offset-2 hover:text-brand"
+
           >
             sales@useatlas.dev
           </a>
@@ -453,7 +453,7 @@ const SECTIONS: Section[] = [
           For security inquiries, contact{" "}
           <a
             href="mailto:security@useatlas.dev"
-            className="text-brand/80 underline decoration-brand/30 underline-offset-2 hover:text-brand"
+
           >
             security@useatlas.dev
           </a>
@@ -506,7 +506,7 @@ export default function DpaPage() {
             For a signed copy of this DPA, contact{" "}
             <a
               href="mailto:sales@useatlas.dev"
-              className="text-brand/80 underline decoration-brand/30 underline-offset-2 hover:text-brand"
+  
             >
               sales@useatlas.dev
             </a>

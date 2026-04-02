@@ -42,7 +42,7 @@ const SECTIONS: Section[] = [
           protects your information when you use Atlas Cloud at{" "}
           <a
             href="https://app.useatlas.dev"
-            className="text-brand/80 underline decoration-brand/30 underline-offset-2 hover:text-brand"
+
           >
             app.useatlas.dev
           </a>
@@ -132,10 +132,11 @@ const SECTIONS: Section[] = [
     content: (
       <>
         <p>
-          Atlas sends your natural-language questions and relevant semantic
-          context to the configured LLM provider (Anthropic, OpenAI, or another
-          provider you select) for query generation. Query result data is not
-          sent to the LLM.
+          Atlas sends your natural-language questions, relevant semantic
+          context, and query results to the configured LLM provider (Anthropic,
+          OpenAI, or another provider you select) so the agent can generate SQL,
+          interpret results, and respond. Result data is not stored by Atlas
+          beyond what is retained in your conversation history.
         </p>
         <p>
           Each LLM provider has its own data handling policies. When using BYOT
@@ -175,7 +176,7 @@ const SECTIONS: Section[] = [
           contacting{" "}
           <a
             href="mailto:privacy@useatlas.dev"
-            className="text-brand/80 underline decoration-brand/30 underline-offset-2 hover:text-brand"
+
           >
             privacy@useatlas.dev
           </a>
@@ -221,15 +222,10 @@ const SECTIONS: Section[] = [
                 <td className="py-2 pr-6">Uptime monitoring</td>
                 <td className="py-2">EU</td>
               </tr>
-              <tr className="border-b border-zinc-800/40">
+              <tr>
                 <td className="py-2 pr-6">Anthropic</td>
                 <td className="py-2 pr-6">Default LLM provider</td>
                 <td className="py-2">US</td>
-              </tr>
-              <tr>
-                <td className="py-2 pr-6">Better Auth</td>
-                <td className="py-2 pr-6">Authentication framework</td>
-                <td className="py-2">Self-hosted</td>
               </tr>
             </tbody>
           </table>
@@ -281,7 +277,7 @@ const SECTIONS: Section[] = [
           To exercise these rights, contact{" "}
           <a
             href="mailto:privacy@useatlas.dev"
-            className="text-brand/80 underline decoration-brand/30 underline-offset-2 hover:text-brand"
+
           >
             privacy@useatlas.dev
           </a>
@@ -353,7 +349,7 @@ const SECTIONS: Section[] = [
           For details on our security practices, see our{" "}
           <a
             href="/dpa"
-            className="text-brand/80 underline decoration-brand/30 underline-offset-2 hover:text-brand"
+
           >
             Data Processing Agreement
           </a>
@@ -395,7 +391,7 @@ const SECTIONS: Section[] = [
           For privacy-related questions or requests, contact us at{" "}
           <a
             href="mailto:privacy@useatlas.dev"
-            className="text-brand/80 underline decoration-brand/30 underline-offset-2 hover:text-brand"
+
           >
             privacy@useatlas.dev
           </a>
@@ -405,7 +401,7 @@ const SECTIONS: Section[] = [
           For general inquiries, contact{" "}
           <a
             href="mailto:support@useatlas.dev"
-            className="text-brand/80 underline decoration-brand/30 underline-offset-2 hover:text-brand"
+
           >
             support@useatlas.dev
           </a>

@@ -70,6 +70,7 @@ cp "$NEXTJS_EXAMPLE/src/app/api/[...route]/route.ts" \
 for tpl in docker nextjs-standalone; do
   # Copy web-only directories (delete+replace — these don't conflict with API source)
   echo ":: Syncing web source → $tpl"
+  mkdir -p "$TEMPLATES/$tpl/src/lib"
   for subdir in ui components config hooks types; do
     rm -rf "$TEMPLATES/$tpl/src/$subdir"
     if [ -d "$WEB_SRC/$subdir" ]; then

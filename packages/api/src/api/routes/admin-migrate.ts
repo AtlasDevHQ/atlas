@@ -10,7 +10,11 @@
 import { createRoute, z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
 import { getInternalDB, type InternalPoolClient } from "@atlas/api/lib/db/internal";
-import { EXPORT_BUNDLE_VERSION, type ExportBundle, type ImportResult } from "@useatlas/types";
+import type { ExportBundle, ImportResult } from "@useatlas/types";
+
+// Inline constant — the published @useatlas/types doesn't include migration.ts
+// yet. After the next publish, switch back to importing from @useatlas/types.
+const EXPORT_BUNDLE_VERSION = 1;
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 

@@ -164,7 +164,7 @@ export function entityToFormValues(entity: EntityData): EntityFormValues {
     description: entity.description ?? "",
     dimensions: dims.map((d) => ({
       name: d.name,
-      sql: d.sql ?? d.name,
+      sql: (d.sql as string | undefined) ?? d.name,
       type: (DIMENSION_TYPES as readonly string[]).includes(d.type ?? "")
         ? (d.type as (typeof DIMENSION_TYPES)[number])
         : "string",
@@ -180,8 +180,8 @@ export function entityToFormValues(entity: EntityData): EntityFormValues {
       description: m.description ?? "",
     })),
     joins: joins.map((j) => ({
-      name: j.name ?? (j as { to?: string }).to ?? "",
-      sql: j.sql ?? (j as { on?: string }).on ?? "",
+      name: (j.name as string | undefined) ?? (j as { to?: string }).to ?? "",
+      sql: (j.sql as string | undefined) ?? (j as { on?: string }).on ?? "",
       description: j.description ?? "",
     })),
     query_patterns: patterns.map((p) => ({

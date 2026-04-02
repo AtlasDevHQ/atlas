@@ -411,6 +411,15 @@ function CatalogFormDialog({
 
 export default function PlatformPluginCatalogPage() {
   const { blocked } = usePlatformAdminGuard();
+  if (blocked) return <LoadingState message="Checking permissions..." />;
+  return (
+    <ErrorBoundary>
+      <PlatformPluginCatalogPageContent />
+    </ErrorBoundary>
+  );
+}
+
+function PlatformPluginCatalogPageContent() {
   const [editEntry, setEditEntry] = useState<CatalogEntry | null>(null);
   const [formOpen, setFormOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<CatalogEntry | null>(null);
@@ -425,8 +434,6 @@ export default function PlatformPluginCatalogPage() {
   );
 
   const entries = data?.entries ?? [];
-
-  if (blocked) return <LoadingState message="Checking permissions..." />;
 
   function handleAdd() {
     setEditEntry(null);
@@ -457,7 +464,6 @@ export default function PlatformPluginCatalogPage() {
     setMutationError(null);
     const result = await deleteMutation.mutate({
       path: `/api/v1/platform/plugins/catalog/${encodeURIComponent(deleteTarget.id)}`,
-      method: "DELETE",
     });
     if (result.ok) {
       refetch();
@@ -482,7 +488,7 @@ export default function PlatformPluginCatalogPage() {
         </Button>
       </div>
 
-      <ErrorBoundary>
+      <>
         {mutationError && (
           <div className="mb-4">
             <ErrorBanner message={mutationError} onRetry={refetch} />
@@ -611,7 +617,7 @@ export default function PlatformPluginCatalogPage() {
             </AlertDialogFooter>
           </AlertDialogContent>
         </AlertDialog>
-      </ErrorBoundary>
+      </>
     </div>
   );
 }

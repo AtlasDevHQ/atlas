@@ -1,10 +1,10 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useForm, useFieldArray, type UseFormReturn } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { Loader2, Plus, Trash2 } from "lucide-react";
+import { AlertTriangle, Loader2, Plus, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -41,6 +41,8 @@ import {
 } from "@/components/ui/table";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
+import { useAtlasConfig } from "@/ui/context";
+import { cn } from "@/lib/utils";
 
 
 // ── Schema ────────────────────────────────────────────────────────
@@ -85,6 +87,30 @@ export const entityFormSchema = z.object({
 });
 
 export type EntityFormValues = z.infer<typeof entityFormSchema>;
+
+// ── Column metadata types + DB type mapping ─────────────────────
+
+interface ColumnInfo {
+  name: string;
+  type: string;
+  nullable: boolean;
+}
+
+type DimensionType = (typeof DIMENSION_TYPES)[number];
+
+/**
+ * Map a DB column type (from information_schema) to a semantic dimension type.
+ * Returns undefined if the type doesn't have a clear mapping.
+ */
+function dbTypeToDimensionType(dbType: string): DimensionType | undefined {
+  const t = dbType.toLowerCase();
+  if (/^(varchar|text|char|character varying|character|citext|name|uuid|bpchar)/.test(t)) return "string";
+  if (/^(int|bigint|smallint|tinyint|numeric|decimal|float|double|real|serial|bigserial|money)/.test(t)) return "number";
+  if (/^(date)$/.test(t)) return "date";
+  if (/^(timestamp|timestamptz|datetime)/.test(t)) return "timestamp";
+  if (/^(bool|boolean|bit)$/.test(t)) return "boolean";
+  return undefined;
+}
 
 // ── Convert from API entity data to form values ──────────────────
 
@@ -222,8 +248,32 @@ function ArraySectionHeader({
 
 // ── Dimensions section ───────────────────────────────────────────
 
-function DimensionsSection({ form }: { form: UseFormReturn<EntityFormValues> }) {
+function DimensionsSection({
+  form,
+  columns,
+  columnNames,
+}: {
+  form: UseFormReturn<EntityFormValues>;
+  columns: ColumnInfo[];
+  columnNames: Set<string>;
+}) {
   const { fields, append, remove } = useFieldArray({ control: form.control, name: "dimensions" });
+  const columnMap = new Map(columns.map((c) => [c.name, c]));
+
+  const handleSqlBlur = (index: number) => {
+    const sqlVal = form.getValues(`dimensions.${index}.sql`);
+    const col = columnMap.get(sqlVal);
+    if (col) {
+      const suggested = dbTypeToDimensionType(col.type);
+      if (suggested) {
+        const current = form.getValues(`dimensions.${index}.type`);
+        // Only auto-fill if current type is the default
+        if (current === "string") {
+          form.setValue(`dimensions.${index}.type`, suggested);
+        }
+      }
+    }
+  };
 
   return (
     <div className="space-y-3">
@@ -242,7 +292,10 @@ function DimensionsSection({ form }: { form: UseFormReturn<EntityFormValues> }) 
               </TableRow>
             </TableHeader>
             <TableBody>
-              {fields.map((field, index) => (
+              {fields.map((field, index) => {
+                const sqlVal = form.watch(`dimensions.${index}.sql`);
+                const hasColumnWarning = columnNames.size > 0 && sqlVal && !columnNames.has(sqlVal);
+                return (
                 <TableRow key={field.id}>
                   <TableCell className="p-1.5">
                     <FormField
@@ -251,7 +304,7 @@ function DimensionsSection({ form }: { form: UseFormReturn<EntityFormValues> }) 
                       render={({ field: f }) => (
                         <FormItem>
                           <FormControl>
-                            <Input {...f} placeholder="column" className="h-8 text-xs" />
+                            <Input {...f} placeholder="column" className="h-8 text-xs" list="col-suggestions" />
                           </FormControl>
                           <FormMessage className="text-[10px]" />
                         </FormItem>
@@ -265,8 +318,20 @@ function DimensionsSection({ form }: { form: UseFormReturn<EntityFormValues> }) 
                       render={({ field: f }) => (
                         <FormItem>
                           <FormControl>
-                            <Input {...f} placeholder="column_name" className="h-8 font-mono text-xs" />
+                            <Input
+                              {...f}
+                              placeholder="column_name"
+                              className={cn("h-8 font-mono text-xs", hasColumnWarning && "border-amber-400")}
+                              list="col-suggestions"
+                              onBlur={() => { f.onBlur(); handleSqlBlur(index); }}
+                            />
                           </FormControl>
+                          {hasColumnWarning && (
+                            <p className="flex items-center gap-1 text-[10px] text-amber-600 dark:text-amber-400">
+                              <AlertTriangle className="size-2.5" />
+                              Column not found in table
+                            </p>
+                          )}
                           <FormMessage className="text-[10px]" />
                         </FormItem>
                       )}
@@ -332,7 +397,8 @@ function DimensionsSection({ form }: { form: UseFormReturn<EntityFormValues> }) 
                     </Button>
                   </TableCell>
                 </TableRow>
-              ))}
+                );
+              })}
             </TableBody>
           </Table>
         </div>
@@ -343,7 +409,11 @@ function DimensionsSection({ form }: { form: UseFormReturn<EntityFormValues> }) 
 
 // ── Measures section ─────────────────────────────────────────────
 
-function MeasuresSection({ form }: { form: UseFormReturn<EntityFormValues> }) {
+function MeasuresSection({
+  form,
+}: {
+  form: UseFormReturn<EntityFormValues>;
+}) {
   const { fields, append, remove } = useFieldArray({ control: form.control, name: "measures" });
 
   return (
@@ -385,7 +455,12 @@ function MeasuresSection({ form }: { form: UseFormReturn<EntityFormValues> }) {
                       render={({ field: f }) => (
                         <FormItem>
                           <FormControl>
-                            <Input {...f} placeholder="COUNT(*)" className="h-8 font-mono text-xs" />
+                            <Input
+                              {...f}
+                              placeholder="COUNT(*)"
+                              className="h-8 font-mono text-xs"
+                              list="col-suggestions"
+                            />
                           </FormControl>
                           <FormMessage className="text-[10px]" />
                         </FormItem>
@@ -628,6 +703,83 @@ interface EntityEditorDialogProps {
   saving: boolean;
   serverError: string | null;
   onSave: (name: string, body: ReturnType<typeof formValuesToEntityBody>) => Promise<void>;
+  /** Deploy mode — column autocomplete only available in SaaS mode */
+  isSaas?: boolean;
+}
+
+/**
+ * Fetch column metadata for a table from the analytics datasource.
+ * Returns empty array on error or when not in SaaS mode.
+ */
+function useColumnMetadata(tableName: string, isSaas: boolean, dialogOpen: boolean) {
+  const { apiUrl, isCrossOrigin } = useAtlasConfig();
+  const [columns, setColumns] = useState<ColumnInfo[]>([]);
+  const [tableNotFound, setTableNotFound] = useState(false);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!dialogOpen || !tableName || !isSaas) {
+      setColumns([]);
+      setTableNotFound(false);
+      return;
+    }
+
+    // Only fetch for valid SQL identifiers
+    if (!/^[a-zA-Z_][a-zA-Z0-9_.]*$/.test(tableName)) {
+      setColumns([]);
+      setTableNotFound(false);
+      return;
+    }
+
+    const controller = new AbortController();
+    const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
+
+    // Debounce column fetches
+    const timer = setTimeout(async () => {
+      setLoading(true);
+      try {
+        const res = await fetch(
+          `${apiUrl}/api/v1/admin/semantic/columns/${encodeURIComponent(tableName)}`,
+          { credentials, signal: controller.signal },
+        );
+        if (controller.signal.aborted) return;
+        if (res.status === 404) {
+          setColumns([]);
+          setTableNotFound(true);
+          return;
+        }
+        if (!res.ok) {
+          const body = await res.json().catch(() => null);
+          const msg = (body as Record<string, unknown> | null)?.message ?? `HTTP ${res.status}`;
+          console.debug("Column metadata fetch failed:", msg);
+          setColumns([]);
+          setTableNotFound(false);
+          return;
+        }
+        const data = await res.json();
+        if (!controller.signal.aborted) {
+          setColumns(Array.isArray(data?.columns) ? data.columns : []);
+          setTableNotFound(false);
+        }
+      } catch (err) {
+        if (err instanceof DOMException && err.name === "AbortError") return;
+        console.debug("Column metadata fetch failed:", err instanceof Error ? err.message : String(err));
+        if (!controller.signal.aborted) {
+          setColumns([]);
+          setTableNotFound(false);
+        }
+      } finally {
+        if (!controller.signal.aborted) setLoading(false);
+      }
+    }, 300);
+
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [tableName, dialogOpen, apiUrl, isCrossOrigin, isSaas]);
+
+  return { columns, tableNotFound, loading };
 }
 
 export function EntityEditorDialog({
@@ -638,6 +790,7 @@ export function EntityEditorDialog({
   saving,
   serverError,
   onSave,
+  isSaas = false,
 }: EntityEditorDialogProps) {
   const isEditing = entity !== null;
   const defaultValues: EntityFormValues = entity
@@ -657,6 +810,11 @@ export function EntityEditorDialog({
       });
     }
   }, [open]); // intentionally depends only on `open`
+
+  // Watch table name for column metadata fetching
+  const tableName = form.watch("table");
+  const { columns, tableNotFound } = useColumnMetadata(tableName, isSaas, open);
+  const columnNames = new Set(columns.map((c) => c.name));
 
   const handleSubmit = form.handleSubmit(async (values) => {
     // Use the table name as the entity name for new entities,
@@ -681,6 +839,16 @@ export function EntityEditorDialog({
           <form onSubmit={handleSubmit} className="flex flex-1 flex-col overflow-hidden">
             <ScrollArea className="flex-1 pr-3">
               <div className="space-y-6 py-2">
+                {/* Table not found warning */}
+                {isSaas && tableNotFound && tableName && (
+                  <div className="flex items-center gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-700 dark:bg-amber-950/30 dark:text-amber-300">
+                    <AlertTriangle className="size-4 shrink-0" />
+                    <span>
+                      Table <code className="rounded bg-amber-100 px-1 py-0.5 font-mono text-xs dark:bg-amber-900/50">{tableName}</code> was not found in the connected datasource. You can still save this entity.
+                    </span>
+                  </div>
+                )}
+
                 {/* Core fields */}
                 <div className="grid gap-4 sm:grid-cols-2">
                   <FormField
@@ -713,7 +881,7 @@ export function EntityEditorDialog({
                 />
 
                 <Separator />
-                <DimensionsSection form={form} />
+                <DimensionsSection form={form} columns={columns} columnNames={columnNames} />
 
                 <Separator />
                 <MeasuresSection form={form} />
@@ -725,6 +893,15 @@ export function EntityEditorDialog({
                 <QueryPatternsSection form={form} />
               </div>
             </ScrollArea>
+
+            {/* Shared datalist for column name autocomplete */}
+            {columns.length > 0 && (
+              <datalist id="col-suggestions">
+                {columns.map((c) => (
+                  <option key={c.name} value={c.name} />
+                ))}
+              </datalist>
+            )}
 
             {(serverError || form.formState.errors.root?.message) && (
               <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive mt-2">

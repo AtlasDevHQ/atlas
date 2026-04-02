@@ -686,6 +686,7 @@ export default function SemanticPage() {
         saving={savingEntity}
         serverError={saveError}
         onSave={handleSaveEntity}
+        isSaas={isSaas}
       />
 
       {/* Delete confirmation */}

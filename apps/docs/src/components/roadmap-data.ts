@@ -271,9 +271,9 @@ export const milestones: Milestone[] = [
   {
     version: "0.9.8",
     title: "Docs & Polish",
-    status: "planned",
+    status: "shipped",
     summary:
-      "Documentation, reference pages, and guide coverage for 0.9.7 features. Integration type refactors, data residency signup/migration flows, and follow-up fixes for hot-reload settings and useAdminFetch.",
+      "Documentation for 0.9.7 features, integration type safety refactors, data residency region selection during signup and automated migration orchestration, periodic settings refresh for multi-instance SaaS, and deploy-validation CI for scaffold templates.",
     githubMilestone: 30,
   },
   {

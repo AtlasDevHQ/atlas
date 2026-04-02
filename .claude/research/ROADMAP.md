@@ -578,7 +578,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 
 ### Integration
 - [x] Browser e2e — tour dismissal fix (PR #996), 44/47 fast tests pass (#951). Filed #995 (axe violation)
-- [ ] SDK, MCP, and widget integration — external integration points (#952) — deferred to 1.0.0
+- [x] SDK, MCP, and widget integration — external integration points (#952)
 
 ### Follow-ups (bugs found during validation)
 - [x] Better Auth platform_admin role missing from roles config (#955, PR #956)

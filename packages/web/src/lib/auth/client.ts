@@ -30,6 +30,11 @@ function getBaseURL(): string {
   return "http://localhost:3000/api/auth";
 }
 
+// Auth always authenticates against the global API (not the regional endpoint).
+// The client is a module-level singleton created at import time, before
+// setRegionalApiUrl() is called. This is intentional: session cookies and
+// auth operations stay on the global endpoint; only data-plane calls (chat,
+// admin fetches) switch to the regional API after settings load.
 const _authClient = createAuthClient({
   baseURL: getBaseURL(),
   plugins: [

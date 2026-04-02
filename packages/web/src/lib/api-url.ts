@@ -21,7 +21,7 @@ export function getApiUrl(): string {
   return regionalApiUrl ?? DEFAULT_API_URL;
 }
 
-/** Whether the current API URL points to a cross-origin server. */
+/** Whether an explicit API URL is configured (implying cross-origin deployment). */
 export function isCrossOrigin(): boolean {
   return !!getApiUrl();
 }
@@ -32,7 +32,23 @@ export function isCrossOrigin(): boolean {
  * Pass `null` to clear the override.
  */
 export function setRegionalApiUrl(url: string | null): void {
-  regionalApiUrl = url ? url.replace(/\/+$/, "") : null;
+  if (url === null) {
+    regionalApiUrl = null;
+    return;
+  }
+  const cleaned = url.replace(/\/+$/, "").trim();
+  if (!cleaned) {
+    regionalApiUrl = null;
+    return;
+  }
+  try {
+    new URL(cleaned);
+    regionalApiUrl = cleaned;
+  } catch {
+    console.error(
+      `setRegionalApiUrl: rejected invalid URL "${url}". Continuing with default API URL.`,
+    );
+  }
 }
 
 /** Reset to default (for testing). */

@@ -30,9 +30,11 @@ export function useDeployMode(): {
 } {
   const { data, loading, error } = useAdminFetch<SettingsResponse>("/api/v1/admin/settings");
 
-  if (error) {
-    console.warn("useDeployMode: failed to fetch deploy mode, defaulting to self-hosted:", error);
-  }
+  useEffect(() => {
+    if (error) {
+      console.warn("useDeployMode: failed to fetch deploy mode, defaulting to self-hosted:", error);
+    }
+  }, [error]);
 
   // Apply or clear regional API URL override based on settings response
   useEffect(() => {

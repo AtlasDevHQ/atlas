@@ -20,6 +20,9 @@ export const metadata: Metadata = {
 
 // ---------------------------------------------------------------------------
 // SLA data — structured for easy updates
+// Keep in sync with:
+//   - apps/www/src/app/pricing/page.tsx (TIERS + COMPARISON)
+//   - docs/guides/sla-runbook.md (Published SLA targets table)
 // ---------------------------------------------------------------------------
 
 interface UptimeTier {
@@ -33,13 +36,13 @@ const UPTIME_TIERS: UptimeTier[] = [
   {
     plan: "Team",
     target: "99.9%",
-    measurement: "5-minute intervals, excluding scheduled maintenance",
+    measurement: "Regular intervals, excluding scheduled maintenance",
     credit: "10x credit for downtime exceeding SLA",
   },
   {
     plan: "Enterprise",
     target: "99.95%",
-    measurement: "5-minute intervals, excluding scheduled maintenance",
+    measurement: "Regular intervals, excluding scheduled maintenance",
     credit: "10x credit for downtime exceeding SLA",
   },
 ];
@@ -204,7 +207,7 @@ export default function SLAPage() {
                 >
                   OpenStatus
                 </a>{" "}
-                with 5-minute health check intervals
+                with automated health check intervals
               </span>
             </li>
             <li className="flex items-start gap-2.5">

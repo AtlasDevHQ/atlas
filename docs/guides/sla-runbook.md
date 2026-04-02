@@ -19,10 +19,10 @@
 
 **Source:** OpenStatus external monitoring (atlas.openstatus.dev)
 
-- API health endpoint monitored at 5-minute intervals from US East
+- API health endpoint monitored at 10-minute intervals from US East (free tier; upgrade to Starter for 1-min)
 - A "down" event is any check that returns non-2xx or times out (10s)
 - Monthly uptime = `(total_checks - failed_checks) / total_checks`
-- Breach threshold: Team < 99.9% (≈43 min/month), Enterprise < 99.95% (≈22 min/month)
+- Breach threshold: Team < 99.9% (43.2 min/month), Enterprise < 99.95% (21.6 min/month)
 
 **What triggers an alert:**
 - OpenStatus marks a monitor as "degraded" or "down"
@@ -39,12 +39,13 @@
 
 - Each agent query records `latency_ms` in `sla_metrics`
 - `sla_thresholds` table stores per-workspace thresholds (defaults: p99 < 5000ms, error rate < 5%)
-- Configurable via `ATLAS_SLA_LATENCY_P99_MS` and `ATLAS_SLA_ERROR_RATE_PCT` env vars
+- Configurable via `ATLAS_SLA_LATENCY_P99_MS`, `ATLAS_SLA_ERROR_RATE_PCT`, and `ATLAS_SLA_WEBHOOK_URL` env vars
 
 **What triggers an alert:**
-- Currently: thresholds are stored but no active alerting daemon polls them
-- Future: implement a periodic check that queries `sla_metrics` and fires `sla_alerts`
-- For now: monitor via Railway metrics dashboard and manual SQL queries
+- `evaluateAlerts()` in `ee/src/sla/alerting.ts` checks all workspaces, creates/resolves alerts in `sla_alerts`, and delivers webhooks (if `ATLAS_SLA_WEBHOOK_URL` is set)
+- Callable on-demand via `POST /api/v1/platform/sla/evaluate`
+- Currently: no scheduler invokes it periodically — operators must trigger manually or set up an external cron (e.g., Railway cron job hitting the endpoint)
+- Future: add an internal scheduler to call `evaluateAlerts()` on a recurring interval
 
 ### Error rate
 

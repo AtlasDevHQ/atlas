@@ -3,7 +3,7 @@
 import dynamic from "next/dynamic";
 import { AtlasChat } from "@useatlas/react";
 import { authClient } from "@/lib/auth/client";
-import { API_URL, IS_CROSS_ORIGIN } from "@/lib/api-url";
+import { getApiUrl, isCrossOrigin } from "@/lib/api-url";
 import { NavBar } from "@/ui/components/tour/nav-bar";
 import { IncidentBanner } from "@/ui/components/incident-banner";
 
@@ -30,8 +30,8 @@ export default function Home() {
 
   return (
     <GuidedTour
-      apiUrl={API_URL}
-      isCrossOrigin={IS_CROSS_ORIGIN}
+      apiUrl={getApiUrl()}
+      isCrossOrigin={isCrossOrigin()}
       isAdmin={isAdmin}
       serverTrackingEnabled={serverTrackingEnabled}
     >
@@ -41,7 +41,7 @@ export default function Home() {
         {/* Override AtlasChat's h-dvh so it fills remaining space below the NavBar */}
         <div className="flex-1 overflow-hidden [&_.atlas-root]:h-full">
           <AtlasChat
-            apiUrl={API_URL}
+            apiUrl={getApiUrl()}
             sidebar
             schemaExplorer
             authClient={authClient}

@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { API_URL, IS_CROSS_ORIGIN } from "@/lib/api-url";
+import { getApiUrl, isCrossOrigin } from "@/lib/api-url";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -16,13 +16,14 @@ import {
 import { Database, CheckCircle2, XCircle, Loader2, Shield, ShoppingCart, Users } from "lucide-react";
 
 function getApiBase(): string {
-  if (API_URL) return API_URL;
+  const url = getApiUrl();
+  if (url) return url;
   if (typeof window !== "undefined") return window.location.origin;
   return "http://localhost:3000";
 }
 
 function getCredentials(): RequestCredentials {
-  return IS_CROSS_ORIGIN ? "include" : "same-origin";
+  return isCrossOrigin() ? "include" : "same-origin";
 }
 
 type ConnectionStatus = "idle" | "testing" | "success" | "error";

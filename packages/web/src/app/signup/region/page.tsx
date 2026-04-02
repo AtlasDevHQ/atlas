@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { z } from "zod";
-import { API_URL, IS_CROSS_ORIGIN } from "@/lib/api-url";
+import { getApiUrl, isCrossOrigin } from "@/lib/api-url";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -18,13 +18,14 @@ import type { RegionPickerItem } from "@/ui/lib/types";
 import { Loader2, MapPin } from "lucide-react";
 
 function getApiBase(): string {
-  if (API_URL) return API_URL;
+  const url = getApiUrl();
+  if (url) return url;
   if (typeof window !== "undefined") return window.location.origin;
   return "http://localhost:3000";
 }
 
 function getCredentials(): RequestCredentials {
-  return IS_CROSS_ORIGIN ? "include" : "same-origin";
+  return isCrossOrigin() ? "include" : "same-origin";
 }
 
 const RegionsResponseSchema = z.object({

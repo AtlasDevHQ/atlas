@@ -19,12 +19,13 @@ import { createAuthClient } from "better-auth/react";
 import { apiKeyClient } from "@better-auth/api-key/client";
 import { stripeClient } from "@better-auth/stripe/client";
 import { adminClient, organizationClient } from "better-auth/client/plugins";
-import { API_URL } from "@/lib/api-url";
+import { getApiUrl, isCrossOrigin } from "@/lib/api-url";
 import { ac, owner, admin, member } from "./org-permissions";
 import { adminAccessControl, adminRole, platformAdminRole } from "./admin-permissions";
 
 function getBaseURL(): string {
-  if (API_URL) return API_URL + "/api/auth";
+  const url = getApiUrl();
+  if (url) return url + "/api/auth";
   if (typeof window !== "undefined") return window.location.origin + "/api/auth";
   return "http://localhost:3000/api/auth";
 }
@@ -49,7 +50,7 @@ const _authClient = createAuthClient({
   ],
   // Cross-origin deployments (app.useatlas.dev → api.useatlas.dev) require
   // credentials: "include" so the browser stores and sends session cookies.
-  fetchOptions: API_URL ? { credentials: "include" as RequestCredentials } : {},
+  fetchOptions: isCrossOrigin() ? { credentials: "include" as RequestCredentials } : {},
 });
 
 // TS6 fails to infer organizationClient plugin types through createAuthClient.

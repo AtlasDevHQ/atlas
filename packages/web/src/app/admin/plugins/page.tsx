@@ -162,8 +162,8 @@ function SchemaConfigFields({
                 }
               />
             )}
-            {prop.description && (
-              <p className="text-xs text-muted-foreground">{String(prop.description)}</p>
+            {typeof prop.description === "string" && (
+              <p className="text-xs text-muted-foreground">{prop.description}</p>
             )}
           </div>
         );

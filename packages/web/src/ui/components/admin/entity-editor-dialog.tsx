@@ -114,7 +114,15 @@ function dbTypeToDimensionType(dbType: string): DimensionType | undefined {
 
 // ── Convert from API entity data to form values ──────────────────
 
-interface EntityData {
+// Use the shared EntityData type from @useatlas/types (via @/ui/lib/types)
+// so the dialog accepts the same type used by the semantic page.
+import type { EntityData } from "@/ui/lib/types";
+import { normalizeList } from "@/ui/lib/helpers";
+
+// Local alias kept for the converter below — the shared type has
+// dimensions as `Dimension[] | Record<string, Dimension>`, which
+// normalizeList() converts to an array.
+interface _EntityDataLegacy {
   table: string;
   name: string;
   description?: string;
@@ -146,19 +154,24 @@ interface EntityData {
 }
 
 export function entityToFormValues(entity: EntityData): EntityFormValues {
+  // normalizeList handles both Array and Record<string, T> shapes from @useatlas/types
+  const dims = normalizeList(entity.dimensions);
+  const measures = normalizeList(entity.measures);
+  const joins = normalizeList(entity.joins);
+  const patterns = normalizeList(entity.query_patterns);
   return {
     table: entity.table,
     description: entity.description ?? "",
-    dimensions: (entity.dimensions ?? []).map((d) => ({
+    dimensions: dims.map((d) => ({
       name: d.name,
       sql: d.sql ?? d.name,
       type: (DIMENSION_TYPES as readonly string[]).includes(d.type ?? "")
         ? (d.type as (typeof DIMENSION_TYPES)[number])
         : "string",
       description: d.description ?? "",
-      sample_values_csv: d.sample_values?.join(", ") ?? "",
+      sample_values_csv: (d as { sample_values?: string[] }).sample_values?.join(", ") ?? "",
     })),
-    measures: (entity.measures ?? []).map((m) => ({
+    measures: measures.map((m) => ({
       name: m.name,
       sql: m.sql ?? "",
       type: (MEASURE_TYPES as readonly string[]).includes(m.type ?? "")
@@ -166,12 +179,12 @@ export function entityToFormValues(entity: EntityData): EntityFormValues {
         : "count",
       description: m.description ?? "",
     })),
-    joins: (entity.joins ?? []).map((j) => ({
-      name: j.name ?? j.to ?? "",
-      sql: j.sql ?? j.on ?? "",
+    joins: joins.map((j) => ({
+      name: j.name ?? (j as { to?: string }).to ?? "",
+      sql: j.sql ?? (j as { on?: string }).on ?? "",
       description: j.description ?? "",
     })),
-    query_patterns: (entity.query_patterns ?? []).map((p) => ({
+    query_patterns: patterns.map((p) => ({
       name: p.name,
       sql: p.sql ?? "",
       description: p.description ?? "",

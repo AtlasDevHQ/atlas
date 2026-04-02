@@ -443,6 +443,7 @@ const listAvailableRoute = createRoute({
             plugins: z.array(CatalogEntrySchema.extend({
               installed: z.boolean(),
               installationId: z.string().nullable(),
+              installedConfig: z.unknown().nullable(),
             })),
             total: z.number(),
           }),
@@ -544,22 +545,26 @@ workspaceMarketplace.openapi(listAvailableRoute, async (c) => {
         Promise.all([
           getWorkspacePlan(orgId),
           internalQuery<CatalogRow>("SELECT * FROM plugin_catalog WHERE enabled = true ORDER BY name ASC"),
-          internalQuery<{ catalog_id: string; id: string; [key: string]: unknown }>(
-            "SELECT catalog_id, id FROM workspace_plugins WHERE workspace_id = $1",
+          internalQuery<{ catalog_id: string; id: string; config: unknown }>(
+            "SELECT catalog_id, id, config FROM workspace_plugins WHERE workspace_id = $1",
             [orgId],
           ),
         ]),
       );
-      const installedMap = new Map(installations.map((i) => [i.catalog_id, i.id]));
+      const installedMap = new Map(installations.map((i) => [i.catalog_id, { id: i.id, config: i.config }]));
 
       // Filter by plan eligibility
       const available = catalog
         .filter((entry) => isPlanEligible(plan, entry.min_plan))
-        .map((entry) => ({
-          ...catalogRowToJson(entry),
-          installed: installedMap.has(entry.id),
-          installationId: installedMap.get(entry.id) ?? null,
-        }));
+        .map((entry) => {
+          const inst = installedMap.get(entry.id);
+          return {
+            ...catalogRowToJson(entry),
+            installed: !!inst,
+            installationId: inst?.id ?? null,
+            installedConfig: inst?.config ?? null,
+          };
+        });
 
       return c.json({ plugins: available, total: available.length }, 200);
     }),

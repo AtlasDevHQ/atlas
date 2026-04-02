@@ -762,6 +762,7 @@ export const CatalogEntrySchema = z.object({
   updatedAt: z.string(),
   installed: z.boolean().optional(),
   installationId: z.string().nullable().optional(),
+  installedConfig: z.unknown().nullable().optional(),
 });
 
 export type CatalogEntry = z.infer<typeof CatalogEntrySchema>;

@@ -363,7 +363,7 @@ describe("Workspace Plugin Marketplace", () => {
         sampleCatalogRow,
         { ...sampleCatalogRow, id: "cat-2", slug: "enterprise-only", min_plan: "enterprise" },
       ]);
-      setQueryResult("SELECT catalog_id, id FROM workspace_plugins", []);
+      setQueryResult("SELECT catalog_id, id, config FROM workspace_plugins", []);
 
       const app = buildWorkspaceApp();
       const res = await app.request("/marketplace/available");
@@ -378,8 +378,8 @@ describe("Workspace Plugin Marketplace", () => {
     it("marks installed plugins", async () => {
       setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "team" }]);
       setQueryResult("SELECT * FROM plugin_catalog WHERE enabled", [sampleCatalogRow]);
-      setQueryResult("SELECT catalog_id, id FROM workspace_plugins", [
-        { catalog_id: "cat-1", id: "inst-1" },
+      setQueryResult("SELECT catalog_id, id, config FROM workspace_plugins", [
+        { catalog_id: "cat-1", id: "inst-1", config: { host: "localhost" } },
       ]);
 
       const app = buildWorkspaceApp();
@@ -388,6 +388,7 @@ describe("Workspace Plugin Marketplace", () => {
       const body = await json(res);
       expect(body.plugins[0].installed).toBe(true);
       expect(body.plugins[0].installationId).toBe("inst-1");
+      expect(body.plugins[0].installedConfig).toEqual({ host: "localhost" });
     });
   });
 

@@ -848,7 +848,7 @@ function InstalledTab({
                       setMktConfigTarget({
                         installationId: plugin.installationId,
                         name: plugin.name,
-                        config: {},
+                        config: (plugin.installedConfig as Record<string, unknown>) ?? {},
                         configSchema: plugin.configSchema,
                       })
                     }

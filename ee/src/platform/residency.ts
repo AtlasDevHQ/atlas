@@ -255,6 +255,16 @@ export async function listWorkspaceRegions(): Promise<WorkspaceRegion[]> {
 }
 
 /**
+ * Get the public API URL for a region, if configured.
+ * Returns null when residency is not configured or the region has no apiUrl.
+ */
+export function getRegionApiUrl(region: string): string | null {
+  const config = getConfig();
+  if (!config?.residency) return null;
+  return config.residency.regions[region]?.apiUrl ?? null;
+}
+
+/**
  * Validate that a region string is in the configured regions.
  * Does NOT require enterprise — used at workspace creation time for validation.
  */

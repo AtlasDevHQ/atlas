@@ -52,6 +52,7 @@ const {
   resolveRegionDatabaseUrl,
   listWorkspaceRegions,
   isConfiguredRegion,
+  getRegionApiUrl,
   ResidencyError,
 } = await import("./residency");
 
@@ -211,6 +212,34 @@ describe("residency", () => {
     it("returns false when residency is not configured", () => {
       mockConfig = {};
       expect(isConfiguredRegion("us-east")).toBe(false);
+    });
+  });
+
+  describe("getRegionApiUrl", () => {
+    it("returns apiUrl for region that has one configured", () => {
+      mockConfig = {
+        residency: {
+          regions: {
+            "us-east": { label: "US East", databaseUrl: "postgresql://us-east/atlas" },
+            "eu-west": { label: "EU West", databaseUrl: "postgresql://eu-west/atlas", apiUrl: "https://api-eu.useatlas.dev" },
+          },
+          defaultRegion: "us-east",
+        },
+      };
+      expect(getRegionApiUrl("eu-west")).toBe("https://api-eu.useatlas.dev");
+    });
+
+    it("returns null for region without apiUrl", () => {
+      expect(getRegionApiUrl("us-east")).toBeNull();
+    });
+
+    it("returns null for unknown region", () => {
+      expect(getRegionApiUrl("ap-south")).toBeNull();
+    });
+
+    it("returns null when residency is not configured", () => {
+      mockConfig = {};
+      expect(getRegionApiUrl("us-east")).toBeNull();
     });
   });
 

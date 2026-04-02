@@ -19,6 +19,8 @@ import {
   MOCK_SCHEDULED_TASK,
   MOCK_SCHEDULED_TASKS,
   MOCK_SCHEDULED_TASK_RUNS,
+  MOCK_TABLES_RESPONSE,
+  MOCK_VALIDATE_SQL_VALID,
   type MockServer,
 } from "./mock-server";
 
@@ -449,6 +451,71 @@ describe("error handling", () => {
       const e = err as AtlasError;
       expect(e.code).toBe("invalid_response");
       expect(e.status).toBe(200);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// listTables()
+// ---------------------------------------------------------------------------
+
+describe("listTables()", () => {
+  test("returns tables with columns", async () => {
+    const result = await client().listTables();
+
+    expect(result.tables).toHaveLength(2);
+    expect(result.tables[0].table).toBe(MOCK_TABLES_RESPONSE.tables[0].table);
+    expect(result.tables[0].columns).toHaveLength(2);
+    expect(result.tables[1].table).toBe("orders");
+    expect(result.tables[1].columns).toHaveLength(3);
+  });
+
+  test("401 unauthorized → AtlasError", async () => {
+    try {
+      await badClient().listTables();
+      expect.unreachable("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(AtlasError);
+      expect((err as AtlasError).status).toBe(401);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// validateSQL()
+// ---------------------------------------------------------------------------
+
+describe("validateSQL()", () => {
+  test("valid SELECT returns valid: true with tables", async () => {
+    const result = await client().validateSQL("SELECT count(*) FROM users");
+
+    expect(result.valid).toBe(true);
+    expect(result.tables).toEqual(MOCK_VALIDATE_SQL_VALID.tables);
+    expect(result.errors).toHaveLength(0);
+  });
+
+  test("mutation query returns valid: false with errors", async () => {
+    const result = await client().validateSQL("DROP TABLE users");
+
+    expect(result.valid).toBe(false);
+    expect(result.errors.length).toBeGreaterThan(0);
+    expect(result.errors[0].layer).toBe("regex_guard");
+  });
+
+  test("empty query returns validation error", async () => {
+    const result = await client().validateSQL("");
+
+    expect(result.valid).toBe(false);
+    expect(result.errors[0].layer).toBe("empty_check");
+  });
+
+  test("401 unauthorized → AtlasError", async () => {
+    try {
+      await badClient().validateSQL("SELECT 1");
+      expect.unreachable("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(AtlasError);
+      expect((err as AtlasError).status).toBe(401);
     }
   });
 });

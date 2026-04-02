@@ -196,6 +196,42 @@ export const MOCK_SCHEDULED_TASK_RUNS = {
   ],
 };
 
+export const MOCK_TABLES_RESPONSE = {
+  tables: [
+    {
+      table: "users",
+      description: "User accounts",
+      columns: [
+        { name: "id", type: "integer", description: "Primary key" },
+        { name: "email", type: "text", description: "Email address" },
+      ],
+    },
+    {
+      table: "orders",
+      description: "Customer orders",
+      columns: [
+        { name: "id", type: "integer", description: "Primary key" },
+        { name: "user_id", type: "integer", description: "Foreign key to users" },
+        { name: "total", type: "numeric", description: "Order total" },
+      ],
+    },
+  ],
+};
+
+export const MOCK_VALIDATE_SQL_VALID = {
+  valid: true,
+  errors: [],
+  tables: ["users"],
+};
+
+export const MOCK_VALIDATE_SQL_INVALID = {
+  valid: false,
+  errors: [
+    { layer: "regex_guard", message: "DROP statements are not allowed" },
+  ],
+  tables: [],
+};
+
 const VALID_API_KEY = "test-api-key-123";
 
 // ---------------------------------------------------------------------------
@@ -626,6 +662,30 @@ async function handleRequest(req: Request): Promise<Response> {
       totalMeasures: 20,
       coverageGaps: { noDescription: 2, noColumns: 0, noJoins: 5 },
     });
+  }
+
+  // ---- GET /api/v1/tables ----
+  if (method === "GET" && pathname === "/api/v1/tables") {
+    const authErr = checkAuth(req);
+    if (authErr) return authErr;
+    return json(MOCK_TABLES_RESPONSE);
+  }
+
+  // ---- POST /api/v1/validate-sql ----
+  if (method === "POST" && pathname === "/api/v1/validate-sql") {
+    const authErr = checkAuth(req);
+    if (authErr) return authErr;
+    const bodyOrErr = await parseJsonBody(req);
+    if (bodyOrErr instanceof Response) return bodyOrErr;
+    const sql = (bodyOrErr.sql as string) ?? "";
+
+    if (!sql.trim()) {
+      return json({ valid: false, errors: [{ layer: "empty_check", message: "Query is empty" }], tables: [] });
+    }
+    if (/\b(DROP|DELETE|INSERT|UPDATE|TRUNCATE|ALTER)\b/i.test(sql)) {
+      return json(MOCK_VALIDATE_SQL_INVALID);
+    }
+    return json(MOCK_VALIDATE_SQL_VALID);
   }
 
   return json({ error: "not_found", message: "Not found" }, 404);

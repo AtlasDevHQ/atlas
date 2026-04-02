@@ -3,7 +3,7 @@ import type { SemanticSelection } from "@/ui/components/admin/semantic-file-tree
 
 export const semanticSearchParams = {
   file: parseAsString,
-  view: parseAsStringLiteral(["pretty", "yaml"] as const).withDefault("pretty"),
+  view: parseAsStringLiteral(["pretty", "yaml", "history"] as const).withDefault("pretty"),
 }
 
 /**

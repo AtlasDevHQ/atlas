@@ -262,6 +262,10 @@ const mockListEntitiesAdmin: Mock<(orgId: string, type?: string) => Promise<unkn
 const mockGetEntityAdmin: Mock<(orgId: string, type: string, name: string) => Promise<unknown>> = mock(() => Promise.resolve(null));
 const mockUpsertEntityAdmin: Mock<(...args: unknown[]) => Promise<void>> = mock(() => Promise.resolve());
 const mockDeleteEntityAdmin: Mock<(orgId: string, type: string, name: string) => Promise<boolean>> = mock(() => Promise.resolve(false));
+const mockCreateVersion: Mock<(...args: unknown[]) => Promise<string>> = mock(() => Promise.resolve("version-1"));
+const mockListVersions: Mock<(...args: unknown[]) => Promise<{ versions: unknown[]; total: number }>> = mock(() => Promise.resolve({ versions: [], total: 0 }));
+const mockGetVersion: Mock<(...args: unknown[]) => Promise<unknown>> = mock(() => Promise.resolve(null));
+const mockGenerateChangeSummary: Mock<(oldYaml: string | null, newYaml: string) => Promise<string | null>> = mock(() => Promise.resolve("Initial version"));
 
 mock.module("@atlas/api/lib/semantic/entities", () => ({
   listEntities: mockListEntitiesAdmin,
@@ -270,6 +274,10 @@ mock.module("@atlas/api/lib/semantic/entities", () => ({
   deleteEntity: mockDeleteEntityAdmin,
   countEntities: mock(() => Promise.resolve(0)),
   bulkUpsertEntities: mock(() => Promise.resolve(0)),
+  createVersion: mockCreateVersion,
+  listVersions: mockListVersions,
+  getVersion: mockGetVersion,
+  generateChangeSummary: mockGenerateChangeSummary,
 }));
 
 const mockSyncEntityToDisk: Mock<(...args: unknown[]) => Promise<void>> = mock(() => Promise.resolve());
@@ -1911,6 +1919,259 @@ describe("GET /api/v1/admin/semantic/columns/:tableName", () => {
     // Verify schema and table were split correctly in the SQL
     expect(capturedSql).toContain("table_name = 'users'");
     expect(capturedSql).toContain("table_schema = 'public'");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Entity version history (#1126)
+// ---------------------------------------------------------------------------
+
+describe("GET /api/v1/admin/semantic/entities/:name/versions", () => {
+  beforeEach(() => {
+    mockHasInternalDB = true;
+    mockListVersions.mockReset();
+    mockListVersions.mockResolvedValue({ versions: [], total: 0 });
+  });
+
+  it("returns 400 when no active organization", async () => {
+    setAdmin();
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/entities/users/versions"));
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 501 when no internal DB", async () => {
+    setOrgAdmin("org-1");
+    mockHasInternalDB = false;
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/entities/users/versions"));
+    expect(res.status).toBe(501);
+  });
+
+  it("returns empty version list for entity with no history", async () => {
+    setOrgAdmin("org-1");
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/entities/users/versions"));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { versions: unknown[]; total: number };
+    expect(body.versions).toEqual([]);
+    expect(body.total).toBe(0);
+  });
+
+  it("returns version list with correct shape", async () => {
+    setOrgAdmin("org-1");
+    mockListVersions.mockResolvedValue({
+      versions: [
+        { id: "v-2", entity_id: "e-1", org_id: "org-1", entity_type: "entity", name: "users", change_summary: "+1 dimension", author_id: "admin-1", author_label: "admin@test.com", version_number: 2, created_at: "2026-04-01T12:00:00Z" },
+        { id: "v-1", entity_id: "e-1", org_id: "org-1", entity_type: "entity", name: "users", change_summary: "Initial version", author_id: "admin-1", author_label: "admin@test.com", version_number: 1, created_at: "2026-04-01T10:00:00Z" },
+      ],
+      total: 2,
+    });
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/entities/users/versions"));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { versions: Array<{ id: string; versionNumber: number; changeSummary: string }>; total: number };
+    expect(body.total).toBe(2);
+    expect(body.versions).toHaveLength(2);
+    expect(body.versions[0].versionNumber).toBe(2);
+    expect(body.versions[0].changeSummary).toBe("+1 dimension");
+    expect(body.versions[1].versionNumber).toBe(1);
+  });
+
+  it("passes limit and offset query params", async () => {
+    setOrgAdmin("org-1");
+    await app.fetch(adminRequest("/api/v1/admin/semantic/entities/users/versions?limit=5&offset=10"));
+    expect(mockListVersions).toHaveBeenCalledWith("org-1", "entity", "users", 5, 10);
+  });
+});
+
+describe("GET /api/v1/admin/semantic/entities/versions/:versionId", () => {
+  beforeEach(() => {
+    mockHasInternalDB = true;
+    mockGetVersion.mockReset();
+    mockGetVersion.mockResolvedValue(null);
+  });
+
+  it("returns 404 when version not found", async () => {
+    setOrgAdmin("org-1");
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/entities/versions/550e8400-e29b-41d4-a716-446655440000"));
+    expect(res.status).toBe(404);
+  });
+
+  it("returns version detail with full YAML content", async () => {
+    setOrgAdmin("org-1");
+    mockGetVersion.mockResolvedValue({
+      id: "v-1",
+      entity_id: "e-1",
+      org_id: "org-1",
+      entity_type: "entity",
+      name: "users",
+      yaml_content: "table: users\ndescription: User accounts\n",
+      change_summary: "Initial version",
+      author_id: "admin-1",
+      author_label: "admin@test.com",
+      version_number: 1,
+      created_at: "2026-04-01T10:00:00Z",
+    });
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/entities/versions/v-1"));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { version: { id: string; versionNumber: number; yamlContent: string; name: string } };
+    expect(body.version.id).toBe("v-1");
+    expect(body.version.versionNumber).toBe(1);
+    expect(body.version.yamlContent).toContain("table: users");
+    expect(body.version.name).toBe("users");
+  });
+});
+
+describe("POST /api/v1/admin/semantic/entities/:name/rollback", () => {
+  beforeEach(() => {
+    mockHasInternalDB = true;
+    mockGetVersion.mockReset();
+    mockGetEntityAdmin.mockReset();
+    mockUpsertEntityAdmin.mockReset();
+    mockUpsertEntityAdmin.mockResolvedValue(undefined);
+    mockCreateVersion.mockReset();
+    mockCreateVersion.mockResolvedValue("new-version-id");
+    mockGenerateChangeSummary.mockReset();
+    mockGenerateChangeSummary.mockResolvedValue(null);
+    mockSyncEntityToDisk.mockReset();
+    mockSyncEntityToDisk.mockResolvedValue(undefined);
+  });
+
+  it("returns 400 when no active organization", async () => {
+    setAdmin();
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/entities/users/rollback", "POST", {
+      versionId: "550e8400-e29b-41d4-a716-446655440000",
+    }));
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 404 when version not found", async () => {
+    setOrgAdmin("org-1");
+    mockGetVersion.mockResolvedValue(null);
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/entities/users/rollback", "POST", {
+      versionId: "550e8400-e29b-41d4-a716-446655440000",
+    }));
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 404 when version name does not match entity name", async () => {
+    setOrgAdmin("org-1");
+    mockGetVersion.mockResolvedValue({
+      id: "550e8400-e29b-41d4-a716-446655440001", entity_id: "e-1", org_id: "org-1", entity_type: "entity",
+      name: "orders", yaml_content: "table: orders\n", change_summary: null,
+      author_id: null, author_label: null, version_number: 1, created_at: "2026-04-01T10:00:00Z",
+    });
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/entities/users/rollback", "POST", {
+      versionId: "550e8400-e29b-41d4-a716-446655440001",
+    }));
+    expect(res.status).toBe(404);
+  });
+
+  it("rolls back entity to target version", async () => {
+    setOrgAdmin("org-1");
+    const targetYaml = "table: users\ndescription: Rolled back version\n";
+    const versionUuid = "550e8400-e29b-41d4-a716-446655440001";
+    const newVersionUuid = "550e8400-e29b-41d4-a716-446655440003";
+    mockGetVersion
+      .mockResolvedValueOnce({
+        id: versionUuid, entity_id: "e-1", org_id: "org-1", entity_type: "entity",
+        name: "users", yaml_content: targetYaml, change_summary: "Initial version",
+        author_id: "admin-1", author_label: "admin@test.com", version_number: 1,
+        created_at: "2026-04-01T10:00:00Z",
+      })
+      // Second call: getVersion for newly created rollback version
+      .mockResolvedValueOnce({
+        id: newVersionUuid, entity_id: "e-1", org_id: "org-1", entity_type: "entity",
+        name: "users", yaml_content: targetYaml, change_summary: "Rolled back to v1",
+        author_id: "admin-1", author_label: "admin@test.com", version_number: 3,
+        created_at: "2026-04-01T14:00:00Z",
+      });
+
+    // Current entity for change summary + post-upsert entity
+    mockGetEntityAdmin
+      .mockResolvedValueOnce({
+        id: "e-1", org_id: "org-1", entity_type: "entity", name: "users",
+        yaml_content: "table: users\ndescription: Current\n", connection_id: "default",
+        created_at: "2026-04-01T10:00:00Z", updated_at: "2026-04-01T12:00:00Z",
+      })
+      .mockResolvedValueOnce({
+        id: "e-1", org_id: "org-1", entity_type: "entity", name: "users",
+        yaml_content: targetYaml, connection_id: "default",
+        created_at: "2026-04-01T10:00:00Z", updated_at: "2026-04-01T14:00:00Z",
+      });
+
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/entities/users/rollback", "POST", {
+      versionId: versionUuid,
+    }));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok: boolean; name: string; versionNumber: number };
+    expect(body.ok).toBe(true);
+    expect(body.name).toBe("users");
+    expect(body.versionNumber).toBe(3);
+
+    // Verify upsert was called with target version's YAML
+    expect(mockUpsertEntityAdmin).toHaveBeenCalledTimes(1);
+    const upsertCall = (mockUpsertEntityAdmin.mock.calls as unknown[][])[0];
+    expect(upsertCall?.[3]).toBe(targetYaml);
+
+    // Verify a new version was created for the rollback
+    expect(mockCreateVersion).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("PUT /api/v1/admin/semantic/entities/edit/:name — version creation", () => {
+  beforeEach(() => {
+    mockHasInternalDB = true;
+    mockUpsertEntityAdmin.mockReset();
+    mockUpsertEntityAdmin.mockResolvedValue(undefined);
+    mockGetEntityAdmin.mockReset();
+    mockCreateVersion.mockReset();
+    mockCreateVersion.mockResolvedValue("version-1");
+    mockGenerateChangeSummary.mockReset();
+    mockGenerateChangeSummary.mockResolvedValue("Initial version");
+    mockSyncEntityToDisk.mockReset();
+    mockSyncEntityToDisk.mockResolvedValue(undefined);
+  });
+
+  it("creates a version snapshot on entity save", async () => {
+    setOrgAdmin("org-1");
+    // First call: getEntity for previous version (null = new entity)
+    // Second call: getEntity after upsert to get entity ID
+    mockGetEntityAdmin
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({
+        id: "e-1", org_id: "org-1", entity_type: "entity", name: "users",
+        yaml_content: "table: users\n", connection_id: null,
+        created_at: "2026-04-01T10:00:00Z", updated_at: "2026-04-01T10:00:00Z",
+      });
+
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/entities/edit/users", "PUT", {
+      table: "users",
+      description: "User accounts",
+    }));
+    expect(res.status).toBe(200);
+    expect(mockCreateVersion).toHaveBeenCalledTimes(1);
+    const versionCall = (mockCreateVersion.mock.calls as unknown[][])[0];
+    expect(versionCall?.[0]).toBe("e-1"); // entityId
+    expect(versionCall?.[1]).toBe("org-1"); // orgId
+    expect(versionCall?.[2]).toBe("entity"); // entityType
+    expect(versionCall?.[3]).toBe("users"); // name
+  });
+
+  it("continues successfully even if version creation fails", async () => {
+    setOrgAdmin("org-1");
+    mockGetEntityAdmin
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({
+        id: "e-1", org_id: "org-1", entity_type: "entity", name: "users",
+        yaml_content: "table: users\n", connection_id: null,
+        created_at: "2026-04-01T10:00:00Z", updated_at: "2026-04-01T10:00:00Z",
+      });
+    mockCreateVersion.mockRejectedValue(new Error("Version creation failed"));
+
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/entities/edit/users", "PUT", {
+      table: "users",
+    }));
+    // Save still succeeds
+    expect(res.status).toBe(200);
+    expect(mockUpsertEntityAdmin).toHaveBeenCalledTimes(1);
   });
 });
 

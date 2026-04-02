@@ -3,6 +3,11 @@
   "version": "0.0.2",
   "description": "Embeddable Atlas chat UI for React applications",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AtlasDevHQ/atlas",
+    "directory": "packages/react"
+  },
   "type": "module",
   "main": "./src/index.ts",
   "module": "./src/index.ts",

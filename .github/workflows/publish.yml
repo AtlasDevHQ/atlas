@@ -10,6 +10,7 @@ on:
       - 'plugin-sdk-v*'
       - 'react-v*'
       # Plugins — datasource
+      - 'bigquery-v*'
       - 'clickhouse-v*'
       - 'snowflake-v*'
       - 'duckdb-v*'
@@ -22,6 +23,7 @@ on:
       - 'sidecar-v*'
       - 'vercel-sandbox-v*'
       # Plugins — interaction
+      - 'chat-v*'
       - 'slack-v*'
       - 'webhook-v*'
       - 'teams-v*'
@@ -32,6 +34,8 @@ on:
       - 'jira-v*'
       # Plugins — context
       - 'yaml-context-v*'
+      # Community
+      - 'obsidian-v*'
 
 permissions:
   id-token: write
@@ -86,6 +90,10 @@ jobs:
       # Plugins — ship raw TypeScript, no build step needed
       # Tests are already run by CI on every push to main; tags are always cut from main
       # Datasource
+      - name: Publish @useatlas/bigquery
+        if: startsWith(github.ref, 'refs/tags/bigquery-v')
+        run: cd plugins/bigquery && npm publish --access public
+
       - name: Publish @useatlas/clickhouse
         if: startsWith(github.ref, 'refs/tags/clickhouse-v')
         run: cd plugins/clickhouse && npm publish --access public
@@ -128,6 +136,10 @@ jobs:
         run: cd plugins/vercel-sandbox && npm publish --access public
 
       # Interaction
+      - name: Publish @useatlas/chat
+        if: startsWith(github.ref, 'refs/tags/chat-v')
+        run: cd plugins/chat && npm publish --access public
+
       - name: Publish @useatlas/slack
         if: startsWith(github.ref, 'refs/tags/slack-v')
         run: cd plugins/slack && npm publish --access public
@@ -159,3 +171,8 @@ jobs:
       - name: Publish @useatlas/yaml-context
         if: startsWith(github.ref, 'refs/tags/yaml-context-v')
         run: cd plugins/yaml-context && npm publish --access public
+
+      # Community
+      - name: Publish obsidian-atlas
+        if: startsWith(github.ref, 'refs/tags/obsidian-v')
+        run: cd plugins/obsidian && npm publish --access public

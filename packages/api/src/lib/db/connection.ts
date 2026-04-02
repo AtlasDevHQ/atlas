@@ -391,6 +391,8 @@ interface RegistryEntry {
   lastDrainAt: number | null;
   /** Consecutive query failures — separate from consecutiveFailures (which includes health checks). Used for auto-drain threshold. */
   consecutiveQueryFailures: number;
+  /** Data residency region for org-scoped pools, if assigned. */
+  region?: string;
 }
 
 /** Configuration for per-org pool isolation. */
@@ -512,18 +514,28 @@ export class ConnectionRegistry {
     return warnings;
   }
 
-  private _orgKey(orgId: string, connectionId: string): string {
-    if (process.env.NODE_ENV !== "production") {
-      if (orgId.includes(":") || connectionId.includes(":")) {
-        throw new Error(`orgId/connectionId must not contain ':' — got orgId="${orgId}", connectionId="${connectionId}"`);
-      }
+  private _orgKey(orgId: string, connectionId: string, region?: string): string {
+    // orgId and region must not contain ':' (they are the first/last segments).
+    // connectionId CAN contain ':' (e.g. "region:us-east-1") because _parseOrgKey
+    // uses indexOf/lastIndexOf to extract it from the middle segment.
+    const regionStr = region ?? "default";
+    if (orgId.includes(":")) {
+      throw new Error(`orgId must not contain ':' — got orgId="${orgId}"`);
     }
-    return `${orgId}:${connectionId}`;
+    if (regionStr.includes(":")) {
+      throw new Error(`region must not contain ':' — got region="${regionStr}"`);
+    }
+    return `${orgId}:${connectionId}:${regionStr}`;
   }
 
-  private _parseOrgKey(key: string): { orgId: string; connectionId: string } {
-    const sepIdx = key.indexOf(":");
-    return { orgId: key.slice(0, sepIdx), connectionId: key.slice(sepIdx + 1) };
+  private _parseOrgKey(key: string): { orgId: string; connectionId: string; region: string } {
+    const firstSep = key.indexOf(":");
+    const lastSep = key.lastIndexOf(":");
+    return {
+      orgId: key.slice(0, firstSep),
+      connectionId: key.slice(firstSep + 1, lastSep),
+      region: key.slice(lastSep + 1),
+    };
   }
 
   /**
@@ -537,8 +549,8 @@ export class ConnectionRegistry {
    * Warmup probes fire asynchronously in the background after pool creation.
    * LRU eviction removes the least recently used org's pools when maxOrgs is exceeded.
    */
-  getForOrg(orgId: string, connectionId: string = "default"): DBConnection {
-    const key = this._orgKey(orgId, connectionId);
+  getForOrg(orgId: string, connectionId: string = "default", region?: string): DBConnection {
+    const key = this._orgKey(orgId, connectionId, region);
     const existing = this.orgEntries.get(key);
     if (existing) {
       existing.lastQueryAt = Date.now();
@@ -613,11 +625,12 @@ export class ConnectionRegistry {
       totalQueryTimeMs: 0,
       lastDrainAt: null,
       consecutiveQueryFailures: 0,
+      region,
     };
 
     this.orgEntries.set(key, entry);
     this.orgAccessSeq.set(orgId, ++this._orgSeq);
-    log.info({ orgId, connectionId }, "Created org-scoped connection pool");
+    log.info({ orgId, connectionId, region: region ?? "default" }, "Created org-scoped connection pool");
 
     // Fire warmup probes in background (don't block the first request)
     if (this.orgPoolSettings.warmupProbes > 0) {
@@ -628,8 +641,8 @@ export class ConnectionRegistry {
   }
 
   /** Check if an org-scoped pool exists for the given org + connection. */
-  hasOrgPool(orgId: string, connectionId: string = "default"): boolean {
-    return this.orgEntries.has(this._orgKey(orgId, connectionId));
+  hasOrgPool(orgId: string, connectionId: string = "default", region?: string): boolean {
+    return this.orgEntries.has(this._orgKey(orgId, connectionId, region));
   }
 
   /** Return all org IDs that have active pools. */
@@ -640,13 +653,14 @@ export class ConnectionRegistry {
   /** Return connection IDs with active pools for a specific org. */
   listOrgConnections(orgId: string): string[] {
     const prefix = `${orgId}:`;
-    const connections: string[] = [];
+    const seen = new Set<string>();
     for (const key of this.orgEntries.keys()) {
       if (key.startsWith(prefix)) {
-        connections.push(key.slice(prefix.length));
+        const { connectionId } = this._parseOrgKey(key);
+        seen.add(connectionId);
       }
     }
-    return connections;
+    return Array.from(seen);
   }
 
   /** Evict the least recently used org's pools when maxOrgs is exceeded. */
@@ -835,10 +849,52 @@ export class ConnectionRegistry {
     return entry.conn;
   }
 
+  /**
+   * Find an org pool entry. Tries exact key first, then falls back to prefix scan.
+   * The prefix fallback handles region-aware pools where the caller only knows
+   * the original connectionId (e.g. "default") but the pool was created under
+   * "region:<region>" by getRegionAwareConnection().
+   *
+   * Prefix scan priority:
+   * 1. Exact key match (orgId + connectionId + default region)
+   * 2. Same org + same connectionId in a different region
+   * 3. Same org + any connectionId (only if the org has exactly one pool)
+   */
+  private _findOrgEntry(orgId: string, connectionId: string): { key: string; entry: RegistryEntry } | undefined {
+    // Exact match (covers non-regional pools and callers that know the region)
+    const exactKey = this._orgKey(orgId, connectionId);
+    const exact = this.orgEntries.get(exactKey);
+    if (exact) return { key: exactKey, entry: exact };
+
+    // Prefix scan: prefer entries with matching connectionId, fall back to
+    // single-pool orgs only (never silently pick from multiple pools).
+    const prefix = `${orgId}:`;
+    let fallback: { key: string; entry: RegistryEntry } | undefined;
+    let orgPoolCount = 0;
+    for (const [key, entry] of this.orgEntries) {
+      if (key.startsWith(prefix)) {
+        orgPoolCount++;
+        const parsed = this._parseOrgKey(key);
+        // Match by connectionId across regions
+        if (parsed.connectionId === connectionId) {
+          return { key, entry };
+        }
+        fallback = { key, entry };
+      }
+    }
+
+    // Only return the fallback if the org has exactly one pool — avoids
+    // silently picking the wrong pool when multiple pools exist.
+    if (orgPoolCount === 1 && fallback) {
+      return fallback;
+    }
+    return undefined;
+  }
+
   /** Record a query execution (success or failure) for metrics tracking. When orgId is provided, records against the org pool entry. */
   recordQuery(id: string, durationMs: number, orgId?: string): void {
     const entry = orgId
-      ? this.orgEntries.get(this._orgKey(orgId, id))
+      ? this._findOrgEntry(orgId, id)?.entry
       : this.entries.get(id);
     if (!entry) return;
     entry.totalQueries++;
@@ -847,9 +903,10 @@ export class ConnectionRegistry {
 
   /** Record a query error for metrics tracking and auto-drain evaluation. When orgId is provided, operates on the org pool entry. */
   recordError(id: string, orgId?: string): void {
-    const entry = orgId
-      ? this.orgEntries.get(this._orgKey(orgId, id))
-      : this.entries.get(id);
+    const found = orgId
+      ? this._findOrgEntry(orgId, id)
+      : undefined;
+    const entry = orgId ? found?.entry : this.entries.get(id);
     if (!entry) return;
     entry.totalErrors++;
     entry.consecutiveQueryFailures++;
@@ -857,7 +914,7 @@ export class ConnectionRegistry {
     // Auto-drain when consecutive query failures exceed threshold
     const threshold = orgId ? this.orgPoolSettings.drainThreshold : getPoolDrainThreshold();
     if (entry.consecutiveQueryFailures >= threshold && entry.config) {
-      const drainKey = orgId ? this._orgKey(orgId, id) : id;
+      const drainKey = orgId ? (found?.key ?? this._orgKey(orgId, id)) : id;
       if (this.drainCooldownSet.has(drainKey)) {
         log.debug({ connectionId: id, orgId }, "Pool drain skipped — cooldown active");
         return;
@@ -871,7 +928,7 @@ export class ConnectionRegistry {
   /** Reset consecutive failure counters (called on successful query). When orgId is provided, operates on the org pool entry. */
   recordSuccess(id: string, orgId?: string): void {
     const entry = orgId
-      ? this.orgEntries.get(this._orgKey(orgId, id))
+      ? this._findOrgEntry(orgId, id)?.entry
       : this.entries.get(id);
     if (entry) {
       entry.consecutiveFailures = 0;
@@ -1191,6 +1248,7 @@ export class ConnectionRegistry {
         avgQueryTimeMs: entry.totalQueries > 0 ? Math.round(entry.totalQueryTimeMs / entry.totalQueries) : 0,
         consecutiveFailures: entry.consecutiveQueryFailures,
         lastDrainAt: entry.lastDrainAt ? new Date(entry.lastDrainAt).toISOString() : null,
+        ...(entry.region ? { region: entry.region } : {}),
       });
     }
     return results;
@@ -1284,6 +1342,13 @@ export function getDB(): DBConnection {
   return connections.getDefault();
 }
 
+/** Result from region-aware connection resolution. */
+export interface RegionAwareResult {
+  db: DBConnection;
+  /** The actual connection ID used (may differ from requested if region-routed). */
+  resolvedConnId: string;
+}
+
 /**
  * Resolve a region-aware connection for a workspace.
  *
@@ -1299,20 +1364,32 @@ export function getDB(): DBConnection {
 export async function getRegionAwareConnection(
   orgId: string,
   connectionId: string = "default",
-): Promise<DBConnection> {
+): Promise<RegionAwareResult> {
   let resolveRegionDatabaseUrl: Awaited<typeof import("@atlas/ee/platform/residency")>["resolveRegionDatabaseUrl"];
   try {
     ({ resolveRegionDatabaseUrl } = await import("@atlas/ee/platform/residency"));
   } catch (err) {
     // ee module not installed — non-enterprise deployment, use default
     if (err instanceof Error && "code" in err && (err as NodeJS.ErrnoException).code === "MODULE_NOT_FOUND") {
-      return connections.getForOrg(orgId, connectionId);
+      return { db: connections.getForOrg(orgId, connectionId), resolvedConnId: connectionId };
     }
-    log.warn({ err: err instanceof Error ? err.message : String(err), orgId }, "Failed to load residency module");
-    return connections.getForOrg(orgId, connectionId);
+    // EE module exists but failed to load — this is a real error.
+    // Data residency cannot be guaranteed; refuse to silently downgrade.
+    log.error({ err: err instanceof Error ? err.message : String(err), orgId }, "Residency module failed to load — cannot guarantee data residency");
+    throw err instanceof Error ? err : new Error(String(err));
   }
 
-  const regionInfo = await resolveRegionDatabaseUrl(orgId);
+  let regionInfo: Awaited<ReturnType<typeof resolveRegionDatabaseUrl>>;
+  try {
+    regionInfo = await resolveRegionDatabaseUrl(orgId);
+  } catch (err) {
+    log.warn(
+      { err: err instanceof Error ? err.message : String(err), orgId },
+      "Region resolution failed — falling back to default datasource",
+    );
+    return { db: connections.getForOrg(orgId, connectionId), resolvedConnId: connectionId };
+  }
+
   if (regionInfo?.datasourceUrl) {
     const regionConnId = `region:${regionInfo.region}`;
     if (!connections.has(regionConnId)) {
@@ -1322,8 +1399,11 @@ export async function getRegionAwareConnection(
       });
       log.info({ connectionId: regionConnId, region: regionInfo.region }, "Registered region datasource");
     }
-    return connections.getForOrg(orgId, regionConnId);
+    return {
+      db: connections.getForOrg(orgId, regionConnId, regionInfo.region),
+      resolvedConnId: regionConnId,
+    };
   }
 
-  return connections.getForOrg(orgId, connectionId);
+  return { db: connections.getForOrg(orgId, connectionId), resolvedConnId: connectionId };
 }

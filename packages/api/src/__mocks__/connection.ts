@@ -78,25 +78,33 @@ export function createConnectionMock(overrides?: ConnectionMockOverrides) {
 
   const dbConn = getDBOverride ? undefined : mockDBConnection;
 
+  const connections = {
+    get: () => dbConn,
+    getDefault: () => dbConn,
+    getDBType: () => "postgres" as const,
+    getTargetHost: () => "localhost",
+    getValidator: () => undefined,
+    getParserDialect: () => undefined,
+    getForbiddenPatterns: () => [] as RegExp[],
+    list: () => ["default"],
+    has: () => true,
+    isOrgPoolingEnabled: () => false,
+    getForOrg: () => dbConn,
+    recordQuery: () => {},
+    recordSuccess: () => {},
+    recordError: () => {},
+    ...connectionsOverrides,
+  };
+
   return {
     getDB: getDBOverride ?? (() => dbConn),
-    connections: {
-      get: () => dbConn,
-      getDefault: () => dbConn,
-      getDBType: () => "postgres" as const,
-      getTargetHost: () => "localhost",
-      getValidator: () => undefined,
-      getParserDialect: () => undefined,
-      getForbiddenPatterns: () => [] as RegExp[],
-      list: () => ["default"],
-      has: () => true,
-      isOrgPoolingEnabled: () => false,
-      getForOrg: () => dbConn,
-      recordQuery: () => {},
-      recordSuccess: () => {},
-      recordError: () => {},
-      ...connectionsOverrides,
-    },
+    connections,
+    // getRegionAwareConnection delegates to connections.getForOrg so tests
+    // that mock getForOrg still see their mock called through the async path.
+    getRegionAwareConnection: async (orgId: string, connId?: string) => ({
+      db: connections.getForOrg(orgId, connId ?? "default"),
+      resolvedConnId: connId ?? "default",
+    }),
     resolveDatasourceUrl: () => process.env.ATLAS_DATASOURCE_URL || undefined,
     detectDBType: () => "postgres" as const,
     extractTargetHost: () => "localhost",

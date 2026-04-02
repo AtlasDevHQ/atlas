@@ -48,7 +48,7 @@ export interface ConnectionRegistryShape {
   // --- Query operations ---
   get(id: string): DBConnection;
   getDefault(): DBConnection;
-  getForOrg(orgId: string, connectionId?: string): DBConnection;
+  getForOrg(orgId: string, connectionId?: string, region?: string): DBConnection;
 
   // --- Registration ---
   register(id: string, config: ConnectionConfig): void;
@@ -95,7 +95,7 @@ export interface ConnectionRegistryShape {
   getPoolWarnings(): string[];
   listOrgs(): string[];
   listOrgConnections(orgId: string): string[];
-  hasOrgPool(orgId: string, connectionId?: string): boolean;
+  hasOrgPool(orgId: string, connectionId?: string, region?: string): boolean;
 
   // --- Config ---
   setMaxTotalConnections(n: number): void;
@@ -191,7 +191,7 @@ export function makeConnectionRegistryLive(
         // Query operations — delegate directly
         get: (id) => impl.get(id),
         getDefault: () => impl.getDefault(),
-        getForOrg: (orgId, connectionId) => impl.getForOrg(orgId, connectionId),
+        getForOrg: (orgId, connectionId, region) => impl.getForOrg(orgId, connectionId, region),
 
         // Registration
         register: (id, config) => impl.register(id, config),
@@ -232,7 +232,7 @@ export function makeConnectionRegistryLive(
         getPoolWarnings: () => impl.getPoolWarnings(),
         listOrgs: () => impl.listOrgs(),
         listOrgConnections: (orgId) => impl.listOrgConnections(orgId),
-        hasOrgPool: (orgId, connectionId) => impl.hasOrgPool(orgId, connectionId),
+        hasOrgPool: (orgId, connectionId, region) => impl.hasOrgPool(orgId, connectionId, region),
 
         // Config
         setMaxTotalConnections: (n) => impl.setMaxTotalConnections(n),

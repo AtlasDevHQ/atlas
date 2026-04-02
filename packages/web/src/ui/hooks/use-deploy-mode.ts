@@ -34,10 +34,15 @@ export function useDeployMode(): {
     console.warn("useDeployMode: failed to fetch deploy mode, defaulting to self-hosted:", error);
   }
 
-  // Apply regional API URL override when settings include one
+  // Apply or clear regional API URL override based on settings response
   useEffect(() => {
-    if (data?.regionApiUrl && data.regionApiUrl !== getApiUrl()) {
-      setRegionalApiUrl(data.regionApiUrl);
+    if (!data) return;
+    if (data.regionApiUrl) {
+      if (data.regionApiUrl !== getApiUrl()) {
+        setRegionalApiUrl(data.regionApiUrl);
+      }
+    } else {
+      setRegionalApiUrl(null);
     }
   }, [data?.regionApiUrl]);
 

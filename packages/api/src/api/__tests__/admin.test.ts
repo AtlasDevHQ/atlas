@@ -1819,6 +1819,90 @@ describe("DELETE /api/v1/admin/semantic/entities/edit/:name", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Column metadata endpoint (#1125)
+// ---------------------------------------------------------------------------
+
+describe("GET /api/v1/admin/semantic/columns/:tableName", () => {
+  const originalQuery = mockDBConnection.query;
+
+  beforeEach(() => {
+    // Default: return column metadata for a "users" table
+    (mockDBConnection as { query: (...args: unknown[]) => Promise<unknown> }).query = async (sql: unknown) => {
+      if (typeof sql === "string" && sql.includes("information_schema")) {
+        return {
+          columns: ["name", "type", "nullable"],
+          rows: [
+            { name: "id", type: "integer", nullable: "NO" },
+            { name: "email", type: "character varying", nullable: "NO" },
+            { name: "created_at", type: "timestamp with time zone", nullable: "YES" },
+          ],
+        };
+      }
+      return originalQuery();
+    };
+  });
+
+  afterAll(() => {
+    mockDBConnection.query = originalQuery;
+  });
+
+  it("returns 400 when no active organization", async () => {
+    setAdmin();
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/columns/users"));
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 400 for invalid table names", async () => {
+    setOrgAdmin("org-1");
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/columns/'; DROP TABLE users;--"));
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.error).toBe("invalid_table_name");
+  });
+
+  it("returns column metadata for a valid table", async () => {
+    setOrgAdmin("org-1");
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/columns/users"));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { columns: Array<{ name: string; type: string; nullable: boolean }> };
+    expect(body.columns).toHaveLength(3);
+    expect(body.columns[0]).toEqual({ name: "id", type: "integer", nullable: false });
+    expect(body.columns[1]).toEqual({ name: "email", type: "character varying", nullable: false });
+    expect(body.columns[2]).toEqual({ name: "created_at", type: "timestamp with time zone", nullable: true });
+  });
+
+  it("returns 404 when table has no columns (not found)", async () => {
+    setOrgAdmin("org-1");
+    (mockDBConnection as { query: (...args: unknown[]) => Promise<unknown> }).query = async () => ({
+      columns: ["name", "type", "nullable"],
+      rows: [],
+    });
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/columns/nonexistent_table"));
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.error).toBe("not_found");
+  });
+
+  it("returns 500 when datasource query fails", async () => {
+    setOrgAdmin("org-1");
+    (mockDBConnection as { query: (...args: unknown[]) => Promise<unknown> }).query = async () => {
+      throw new Error("Connection refused");
+    };
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/columns/users"));
+    expect(res.status).toBe(500);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.error).toBe("query_failed");
+    expect(body.requestId).toBeDefined();
+  });
+
+  it("accepts schema-qualified table names", async () => {
+    setOrgAdmin("org-1");
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/columns/public.users"));
+    expect(res.status).toBe(200);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Org pool admin endpoints (#531)
 // ---------------------------------------------------------------------------
 

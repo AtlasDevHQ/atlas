@@ -17,9 +17,24 @@ import { runHandler } from "@atlas/api/lib/effect/hono";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 import type { AuthResult } from "@atlas/api/lib/auth/types";
+import { connections } from "@atlas/api/lib/db/connection";
 import { ErrorSchema, AuthErrorSchema, createParamSchema } from "./shared-schemas";
 
 const log = createLogger("admin-semantic-editor");
+
+// ---------------------------------------------------------------------------
+// Zod schemas — column metadata
+// ---------------------------------------------------------------------------
+
+const ColumnInfoSchema = z.object({
+  name: z.string(),
+  type: z.string(),
+  nullable: z.boolean(),
+});
+
+const ColumnsResponseSchema = z.object({
+  columns: z.array(ColumnInfoSchema),
+});
 
 // ---------------------------------------------------------------------------
 // Zod schemas — structured entity data
@@ -221,6 +236,41 @@ export const deleteStructuredEntityRoute = createRoute({
   },
 });
 
+export const getColumnsRoute = createRoute({
+  method: "get",
+  path: "/semantic/columns/{tableName}",
+  tags: ["Admin — Semantic"],
+  summary: "Get column metadata for a datasource table",
+  description:
+    "Queries the connected analytics datasource's information_schema to return " +
+    "column names, types, and nullability for the given table. Org-scoped.",
+  request: {
+    params: createParamSchema("tableName", "users"),
+  },
+  responses: {
+    200: {
+      description: "Column metadata",
+      content: { "application/json": { schema: ColumnsResponseSchema } },
+    },
+    400: {
+      description: "Invalid table name",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Table not found in datasource",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
 // ---------------------------------------------------------------------------
 // Auth function type
 // ---------------------------------------------------------------------------
@@ -332,6 +382,71 @@ export function registerSemanticEditorRoutes(
 
       log.info({ requestId, orgId, name }, "Semantic entity deleted via editor");
       return c.json({ ok: true, name, entityType: "entity" }, 200);
+    }),
+  );
+
+  // GET /semantic/columns/{tableName} — column metadata from analytics datasource
+  admin.openapi(getColumnsRoute, async (c) =>
+    runHandler(c, "get table columns", async () => {
+      const { tableName } = c.req.valid("param");
+      const { authResult, requestId } = await authFn(c);
+
+      const orgId = authResult.user?.activeOrganizationId;
+      if (!orgId) {
+        return c.json({ error: "org_not_found", message: "No active organization. Select an organization and try again." }, 400);
+      }
+
+      // Validate table name as a SQL identifier to prevent injection.
+      // Only letters, digits, underscores, and dots (for schema.table) are allowed.
+      if (!/^[a-zA-Z_][a-zA-Z0-9_.]*$/.test(tableName)) {
+        return c.json({ error: "invalid_table_name", message: "Table name must be a valid SQL identifier (letters, digits, underscores)." }, 400);
+      }
+
+      // Get the org-scoped connection from the singleton registry
+      let conn;
+      let dbType;
+      try {
+        conn = connections.getForOrg(orgId, "default");
+        dbType = connections.getDBType("default");
+      } catch (err) {
+        log.warn(
+          { err: err instanceof Error ? err.message : String(err), requestId, orgId },
+          "Failed to get datasource connection for column metadata",
+        );
+        return c.json({ error: "datasource_unavailable", message: "No analytics datasource is connected. Configure a datasource to enable column autocomplete.", requestId }, 500);
+      }
+
+      // Escape single quotes for the string literal in the WHERE clause
+      const escapedName = tableName.replace(/'/g, "''");
+      try {
+        const { rows } = dbType === "mysql"
+          ? await conn.query(
+              `SELECT COLUMN_NAME AS name, DATA_TYPE AS type, IS_NULLABLE AS nullable FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = '${escapedName}' ORDER BY ORDINAL_POSITION`,
+              10000,
+            )
+          : await conn.query(
+              `SELECT column_name AS name, data_type AS type, is_nullable AS nullable FROM information_schema.columns WHERE table_name = '${escapedName}' AND table_schema = current_schema() ORDER BY ordinal_position`,
+              10000,
+            );
+
+        if (rows.length === 0) {
+          return c.json({ error: "not_found", message: `Table "${tableName}" not found in the connected datasource.` }, 404);
+        }
+
+        const columns = rows.map((row) => ({
+          name: String(row.name ?? ""),
+          type: String(row.type ?? ""),
+          nullable: String(row.nullable ?? "YES").toUpperCase() === "YES",
+        }));
+
+        return c.json({ columns }, 200);
+      } catch (err) {
+        log.warn(
+          { err: err instanceof Error ? err.message : String(err), requestId, orgId, tableName },
+          "Failed to query column metadata",
+        );
+        return c.json({ error: "query_failed", message: `Failed to query column metadata for "${tableName}". The table may not exist or the datasource may be unavailable.`, requestId }, 500);
+      }
     }),
   );
 }

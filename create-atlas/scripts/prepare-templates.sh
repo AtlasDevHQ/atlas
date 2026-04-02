@@ -46,6 +46,12 @@ for tpl in docker; do
   echo ":: Syncing API source → $tpl"
   rm -rf "$TEMPLATES/$tpl/src"
   cp -r "$API_SRC" "$TEMPLATES/$tpl/src"
+  # Remove test files — not needed in scaffolded projects
+  find "$TEMPLATES/$tpl/src" -name '__tests__' -type d -exec rm -rf {} + 2>/dev/null || true
+  find "$TEMPLATES/$tpl/src" -name '__mocks__' -type d -exec rm -rf {} + 2>/dev/null || true
+  find "$TEMPLATES/$tpl/src" -name '__test-utils__' -type d -exec rm -rf {} + 2>/dev/null || true
+  find "$TEMPLATES/$tpl/src" -name '*.test.ts' -delete 2>/dev/null || true
+  find "$TEMPLATES/$tpl/src" -name 'test-setup.ts' -delete 2>/dev/null || true
 done
 
 # ── Step 2b: Copy Next.js app pages + catch-all route into docker template ──
@@ -80,6 +86,11 @@ for tpl in docker nextjs-standalone; do
   cp -r "$WEB_SRC/hooks" "$TEMPLATES/$tpl/src/hooks"
 done
 
+# Brand CSS — globals.css imports ../../brand.css (project root)
+for tpl in docker nextjs-standalone; do
+  cp "$MONOREPO/packages/web/brand.css" "$TEMPLATES/$tpl/brand.css"
+done
+
 # Docker template gets web helpers directly from packages/web
 echo ":: Syncing web helpers → docker"
 cp "$WEB_SRC/lib/api-url.ts" "$TEMPLATES/docker/src/lib/"
@@ -100,7 +111,13 @@ rm -f  "$TEMPLATES/nextjs-standalone/src/test-setup.ts"
 
 cp -r "$API_SRC/api"          "$TEMPLATES/nextjs-standalone/src/api"
 cp -r "$API_SRC/lib"          "$TEMPLATES/nextjs-standalone/src/lib"
-cp    "$API_SRC/test-setup.ts" "$TEMPLATES/nextjs-standalone/src/test-setup.ts"
+
+# Remove test files from nextjs-standalone API source
+find "$TEMPLATES/nextjs-standalone/src" -name '__tests__' -type d -exec rm -rf {} + 2>/dev/null || true
+find "$TEMPLATES/nextjs-standalone/src" -name '__mocks__' -type d -exec rm -rf {} + 2>/dev/null || true
+find "$TEMPLATES/nextjs-standalone/src" -name '__test-utils__' -type d -exec rm -rf {} + 2>/dev/null || true
+find "$TEMPLATES/nextjs-standalone/src" -name '*.test.ts' -delete 2>/dev/null || true
+find "$TEMPLATES/nextjs-standalone/src" -name 'test-setup.ts' -delete 2>/dev/null || true
 
 # Apply nextjs-standalone-specific overrides from examples/ (canonical, tracked in git)
 cp "$NEXTJS_EXAMPLE/src/lib/api-url.ts"      "$TEMPLATES/nextjs-standalone/src/lib/"
@@ -140,7 +157,19 @@ done
 mkdir -p "$TEMPLATES/docker/public"
 touch    "$TEMPLATES/docker/public/.gitkeep"
 
-# ── Step 5c: Copy CLI source files referenced by bin/atlas.ts ────────
+# ── Step 5c: Copy enterprise source into ALL templates ───────────────
+# API routes import @atlas/ee/* — tsconfig paths resolve to ./ee/src/*
+EE_SRC="$MONOREPO/ee/src"
+for tpl in docker nextjs-standalone; do
+  rm -rf "$TEMPLATES/$tpl/ee"
+  mkdir -p "$TEMPLATES/$tpl/ee"
+  cp -r "$EE_SRC" "$TEMPLATES/$tpl/ee/src"
+  # Remove test files
+  find "$TEMPLATES/$tpl/ee" -name '__tests__' -type d -exec rm -rf {} + 2>/dev/null || true
+  find "$TEMPLATES/$tpl/ee" -name '*.test.ts' -delete 2>/dev/null || true
+done
+
+# ── Step 5d: Copy CLI source files referenced by bin/atlas.ts ────────
 # bin/atlas.ts imports ../src/env-check and ../src/progress.
 # Must happen AFTER src/ is populated (Steps 2-4 wipe and rebuild src/).
 CLI_SRC="$MONOREPO/packages/cli/src"

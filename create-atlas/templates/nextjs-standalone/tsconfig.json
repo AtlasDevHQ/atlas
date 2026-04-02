@@ -17,7 +17,8 @@
     "paths": {
       "@/*": ["./src/*"],
       "@atlas/api/app": ["./src/api/index.ts"],
-      "@atlas/api/*": ["./src/*"]
+      "@atlas/api/*": ["./src/*"],
+      "@atlas/ee/*": ["./ee/src/*"]
     }
   },
   "include": [

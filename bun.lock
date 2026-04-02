@@ -214,7 +214,7 @@
     },
     "packages/react": {
       "name": "@useatlas/react",
-      "version": "0.0.4",
+      "version": "0.0.5",
       "dependencies": {
         "@radix-ui/react-slot": "^1.2.4",
         "@useatlas/types": "workspace:*",

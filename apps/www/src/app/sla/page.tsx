@@ -152,6 +152,8 @@ export default function SLAPage() {
         <p className="animate-fade-in-up delay-300 mx-auto mt-4 max-w-xl text-lg text-zinc-400">
           Atlas Cloud is built for production workloads. These are the targets
           we hold ourselves to — and the credits we offer when we fall short.
+          SLA commitments apply to paid plans only. Free trials are provided
+          without SLA or support guarantees.
         </p>
         <div className="animate-fade-in-up delay-400 mt-6">
           <a

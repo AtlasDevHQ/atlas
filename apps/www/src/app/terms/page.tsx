@@ -166,7 +166,9 @@ const SECTIONS: Section[] = [
         <ul>
           <li>
             <strong>Trial.</strong> The Team plan includes a 14-day free trial. No
-            credit card is required to start.
+            credit card is required to start. Free trial accounts are provided
+            without any service level commitment, support obligation, or
+            liability on our part — see Sections 8 and 9.
           </li>
           <li>
             <strong>Billing cycle.</strong> Subscriptions are billed monthly or
@@ -350,15 +352,25 @@ const SECTIONS: Section[] = [
           TERMS OR YOUR USE OF ATLAS CLOUD.
         </p>
         <p>
-          Our total aggregate liability for any claim arising from these Terms or
-          your use of Atlas Cloud shall not exceed the greater of (a) the amount
-          you paid us in the 12 months preceding the claim, or (b) one hundred
-          US dollars ($100).
+          <strong>Free and trial accounts.</strong> IF YOU ARE USING ATLAS CLOUD
+          ON A FREE TRIAL OR OTHERWISE WITHOUT A PAID SUBSCRIPTION, THE SERVICE
+          IS PROVIDED AT YOUR SOLE RISK. OUR TOTAL LIABILITY TO YOU IS ZERO
+          DOLLARS ($0). YOU EXPRESSLY ACKNOWLEDGE THAT FREE AND TRIAL ACCESS
+          CARRIES NO WARRANTY, NO SLA, NO SUPPORT OBLIGATION, AND NO LIABILITY
+          OF ANY KIND ON THE PART OF ATLAS DEVHQ.
+        </p>
+        <p>
+          <strong>Paid accounts.</strong> For active paid subscriptions, our
+          total aggregate liability for any claim arising from these Terms or
+          your use of Atlas Cloud shall not exceed the amount you actually paid
+          us in the 12 months preceding the claim.
         </p>
         <p>
           Atlas executes read-only queries against your databases. While we
           enforce strict validation, you are responsible for ensuring your
-          datasource credentials have appropriate permissions.
+          datasource credentials have appropriate permissions. You are solely
+          responsible for the data you connect to Atlas and for verifying the
+          accuracy of AI-generated queries and results before acting on them.
         </p>
       </>
     ),
@@ -377,13 +389,15 @@ const SECTIONS: Section[] = [
           violation of any third-party rights.
         </p>
         <p>
-          <strong>By us.</strong> Atlas DevHQ will indemnify you from third-party
-          claims alleging that Atlas Cloud infringes the intellectual property
-          rights of a third party, provided that: (a) you promptly notify us of
-          the claim; (b) you give us sole control over the defense; and (c) you
-          provide reasonable cooperation. This indemnification does not apply to
-          claims arising from your data, your modifications to the self-hosted
-          version, or use in combination with non-Atlas products.
+          <strong>By us (paid accounts only).</strong> For customers with an
+          active paid subscription, Atlas DevHQ will indemnify you from
+          third-party claims alleging that Atlas Cloud infringes the intellectual
+          property rights of a third party, provided that: (a) you promptly
+          notify us of the claim; (b) you give us sole control over the defense;
+          and (c) you provide reasonable cooperation. This indemnification does
+          not apply to claims arising from your data, your modifications to the
+          self-hosted version, use in combination with non-Atlas products, or
+          free or trial usage.
         </p>
       </>
     ),

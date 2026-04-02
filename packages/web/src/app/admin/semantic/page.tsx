@@ -6,10 +6,25 @@ import { semanticSearchParams, fileParamToSelection, selectionToFileParam } from
 import { useAtlasConfig } from "@/ui/context";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
-import { BookOpen, BarChart3, FileText, FolderOpen, Code, LayoutDashboard, Terminal } from "lucide-react";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { BookOpen, BarChart3, FileText, FolderOpen, Code, LayoutDashboard, Terminal, Plus, Pencil, Trash2 } from "lucide-react";
 import { EntityDetail, type EntityData } from "@/ui/components/admin/entity-detail";
+import {
+  EntityEditorDialog,
+  formValuesToEntityBody,
+} from "@/ui/components/admin/entity-editor-dialog";
 import { EmptyState } from "@/ui/components/admin/empty-state";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { LoadingState } from "@/ui/components/admin/loading-state";
@@ -19,6 +34,8 @@ import {
   type SemanticSelection,
 } from "@/ui/components/admin/semantic-file-tree";
 import { type FetchError } from "@/ui/hooks/use-admin-fetch";
+import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { useDeployMode } from "@/ui/hooks/use-deploy-mode";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 
 // ── Types ─────────────────────────────────────────────────────────
@@ -308,6 +325,9 @@ function RawYamlViewer({ content }: { content: string }) {
 
 export default function SemanticPage() {
   const { apiUrl, isCrossOrigin } = useAtlasConfig();
+  const { deployMode } = useDeployMode();
+  const isSaas = deployMode === "saas";
+
   const [entities, setEntities] = useState<EntitySummary[]>([]);
   const [selectedEntity, setSelectedEntity] = useState<EntityData | null>(null);
   const [glossary, setGlossary] = useState<GlossaryTerm[]>([]);
@@ -323,9 +343,25 @@ export default function SemanticPage() {
   const [rawYaml, setRawYaml] = useState<string | null>(null);
   const [rawYamlLoading, setRawYamlLoading] = useState(false);
 
+  // Editor state
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [editingEntity, setEditingEntity] = useState<EntityData | null>(null);
+  const [editingEntityName, setEditingEntityName] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+
   const fetchOpts: RequestInit = {
     credentials: isCrossOrigin ? "include" : "same-origin",
   };
+
+  // Mutations for entity CRUD
+  const { mutate: mutateSave, saving: savingEntity, error: saveError, reset: resetSave } = useAdminMutation({
+    method: "PUT",
+  });
+  const { mutate: mutateDelete, saving: deletingEntity, error: deleteError } = useAdminMutation({
+    method: "DELETE",
+  });
+
+  const refetchAll = () => setFetchKey((k) => k + 1);
 
   // Fetch all semantic data
   useEffect(() => {
@@ -450,6 +486,60 @@ export default function SemanticPage() {
     return () => { cancelled = true; };
   }, [viewMode, selection, rawYaml, apiUrl]);
 
+  // ── Editor handlers ──────────────────────────────────────────
+
+  const handleAddEntity = () => {
+    setEditingEntity(null);
+    setEditingEntityName(null);
+    resetSave();
+    setEditorOpen(true);
+  };
+
+  const handleEditEntity = () => {
+    if (!selectedEntity || selection?.type !== "entity") return;
+    setEditingEntity(selectedEntity);
+    setEditingEntityName(selection.name);
+    resetSave();
+    setEditorOpen(true);
+  };
+
+  const handleSaveEntity = async (
+    name: string,
+    body: ReturnType<typeof formValuesToEntityBody>,
+  ) => {
+    const result = await mutateSave({
+      path: `/api/v1/admin/semantic/entities/edit/${encodeURIComponent(name)}`,
+      method: "PUT",
+      body: body as unknown as Record<string, unknown>,
+    });
+    if (result.ok) {
+      setEditorOpen(false);
+      refetchAll();
+      // Navigate to the new/updated entity
+      startTransition(() => {
+        setParams({ file: `entities/${name}`, view: "pretty" });
+      });
+    }
+  };
+
+  const handleDeleteEntity = async () => {
+    if (!deleteTarget) return;
+    const result = await mutateDelete({
+      path: `/api/v1/admin/semantic/entities/edit/${encodeURIComponent(deleteTarget)}`,
+      method: "DELETE",
+    });
+    if (result.ok) {
+      setDeleteTarget(null);
+      refetchAll();
+      // Clear selection if deleted entity was selected
+      if (selection?.type === "entity" && selection.name === deleteTarget) {
+        startTransition(() => {
+          setParams({ file: null, view: "pretty" });
+        });
+      }
+    }
+  };
+
   const entityNames = entities.map((e) => e.table).toSorted();
   const metricFileNames = (() => {
     const files = new Set<string>();
@@ -462,8 +552,20 @@ export default function SemanticPage() {
   return (
     <div className="flex h-full flex-col">
       <div className="px-6 pt-6 pb-4">
-        <h1 className="text-2xl font-bold tracking-tight">Semantic Layer</h1>
-        <p className="text-sm text-muted-foreground">Browse entities, glossary, metrics, and catalog</p>
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-bold tracking-tight">Semantic Layer</h1>
+            <p className="text-sm text-muted-foreground">
+              {isSaas ? "Manage entities, glossary, metrics, and catalog" : "Browse entities, glossary, metrics, and catalog"}
+            </p>
+          </div>
+          {isSaas && (
+            <Button onClick={handleAddEntity} className="gap-1.5">
+              <Plus className="size-4" />
+              Add Entity
+            </Button>
+          )}
+        </div>
       </div>
 
       <AdminContentWrapper
@@ -473,14 +575,16 @@ export default function SemanticPage() {
         onRetry={() => setFetchKey((k) => k + 1)}
         loadingMessage="Loading semantic layer..."
       >
-      <div className="flex items-center gap-2 border-b bg-muted/30 px-6 py-2.5 text-xs text-muted-foreground">
-        <Terminal className="size-3.5 shrink-0" />
-        <span>
-          The semantic layer is managed through code.
-          Use <code className="rounded bg-muted px-1 py-0.5 font-mono">atlas init</code> to generate from your database
-          or edit YAML files directly in <code className="rounded bg-muted px-1 py-0.5 font-mono">semantic/</code>.
-        </span>
-      </div>
+      {!isSaas && (
+        <div className="flex items-center gap-2 border-b bg-muted/30 px-6 py-2.5 text-xs text-muted-foreground">
+          <Terminal className="size-3.5 shrink-0" />
+          <span>
+            The semantic layer is managed through code.
+            Use <code className="rounded bg-muted px-1 py-0.5 font-mono">atlas init</code> to generate from your database
+            or edit YAML files directly in <code className="rounded bg-muted px-1 py-0.5 font-mono">semantic/</code>.
+          </span>
+        </div>
+      )}
 
       <ErrorBoundary>
       <div className="flex flex-1 overflow-hidden">
@@ -499,7 +603,27 @@ export default function SemanticPage() {
         <div className="flex flex-1 flex-col overflow-hidden">
           {/* View toggle bar — only shown when a file is selected */}
           {selection && !detailError && (
-            <div className="flex items-center justify-end border-b px-4 py-2">
+            <div className="flex items-center justify-between border-b px-4 py-2">
+              {/* Edit/delete actions (SaaS mode, entity selected) */}
+              <div className="flex items-center gap-1.5">
+                {isSaas && selection.type === "entity" && selectedEntity && (
+                  <>
+                    <Button variant="outline" size="sm" onClick={handleEditEntity} className="gap-1 text-xs">
+                      <Pencil className="size-3" />
+                      Edit
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setDeleteTarget(selection.name)}
+                      className="gap-1 text-xs text-destructive hover:text-destructive"
+                    >
+                      <Trash2 className="size-3" />
+                      Delete
+                    </Button>
+                  </>
+                )}
+              </div>
               <ViewToggle mode={viewMode} onChange={(m) => { startTransition(() => { setParams({ view: m }); }); }} />
             </div>
           )}
@@ -548,6 +672,48 @@ export default function SemanticPage() {
       </div>
       </ErrorBoundary>
       </AdminContentWrapper>
+
+      {/* Entity editor dialog */}
+      <EntityEditorDialog
+        open={editorOpen}
+        onOpenChange={setEditorOpen}
+        entity={editingEntity}
+        entityName={editingEntityName}
+        saving={savingEntity}
+        serverError={saveError}
+        onSave={handleSaveEntity}
+      />
+
+      {/* Delete confirmation */}
+      <AlertDialog open={deleteTarget !== null} onOpenChange={(open) => { if (!open) setDeleteTarget(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete entity &ldquo;{deleteTarget}&rdquo;?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will permanently remove the entity definition from your workspace.
+              The agent will no longer be able to query this table. This action cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          {deleteError && (
+            <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+              {deleteError}
+            </div>
+          )}
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deletingEntity}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault(); // prevent auto-close, we close on success
+                handleDeleteEntity();
+              }}
+              disabled={deletingEntity}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {deletingEntity ? "Deleting..." : "Delete"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

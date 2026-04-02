@@ -671,7 +671,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 ### SaaS Management
 
 - [ ] SaaS-native semantic layer management — web editor + version control (#1033)
-  - [ ] Phase 1: entity CRUD editor (#1124)
+  - [x] Phase 1: entity CRUD editor (#1124)
   - [ ] Phase 2: schema-aware autocomplete (#1125)
   - [ ] Phase 3: version history + rollback (#1126)
 

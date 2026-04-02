@@ -1617,6 +1617,131 @@ describe("DELETE /api/v1/admin/semantic/org/entities/:name", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Structured semantic entity editor (#1124)
+// ---------------------------------------------------------------------------
+
+describe("PUT /api/v1/admin/semantic/entities/edit/:name", () => {
+  beforeEach(() => {
+    mockHasInternalDB = true;
+    mockUpsertEntityAdmin.mockReset();
+    mockUpsertEntityAdmin.mockResolvedValue(undefined);
+  });
+
+  it("returns 400 when no active organization", async () => {
+    setAdmin();
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/entities/edit/users", "PUT", {
+      table: "users",
+      description: "User accounts",
+    }));
+    expect(res.status).toBe(400);
+  });
+
+  it("creates entity from structured data", async () => {
+    setOrgAdmin("org-1");
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/entities/edit/users", "PUT", {
+      table: "users",
+      description: "User accounts",
+      dimensions: [
+        { name: "id", sql: "id", type: "number", description: "Primary key" },
+        { name: "email", sql: "email", type: "string", description: "Email address", sample_values: ["a@b.com"] },
+      ],
+      measures: [
+        { name: "total_users", sql: "COUNT(*)", type: "count", description: "Total user count" },
+      ],
+      joins: [
+        { name: "to_orders", sql: "users.id = orders.user_id", description: "User orders" },
+      ],
+      query_patterns: [
+        { name: "user_count", sql: "SELECT COUNT(*) FROM users", description: "Count all users" },
+      ],
+    }));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.ok).toBe(true);
+    expect(body.name).toBe("users");
+    expect(body.entityType).toBe("entity");
+    expect(mockUpsertEntityAdmin).toHaveBeenCalledTimes(1);
+    // Verify YAML content was generated
+    const call = (mockUpsertEntityAdmin.mock.calls as unknown[][])[0];
+    expect(call?.[0]).toBe("org-1");
+    expect(call?.[1]).toBe("entity");
+    expect(call?.[2]).toBe("users");
+    const yamlContent = call?.[3] as string;
+    expect(yamlContent).toContain("table: users");
+    expect(yamlContent).toContain("email");
+    expect(yamlContent).toContain("COUNT(*)");
+  });
+
+  it("creates minimal entity with only required fields", async () => {
+    setOrgAdmin("org-1");
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/entities/edit/orders", "PUT", {
+      table: "orders",
+    }));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.ok).toBe(true);
+    expect(mockUpsertEntityAdmin).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns 422 when table name is missing", async () => {
+    setOrgAdmin("org-1");
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/entities/edit/users", "PUT", {
+      description: "No table",
+    }));
+    expect(res.status).toBe(422);
+  });
+
+  it("returns 422 when dimension type is invalid", async () => {
+    setOrgAdmin("org-1");
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/entities/edit/users", "PUT", {
+      table: "users",
+      dimensions: [{ name: "id", sql: "id", type: "invalid_type" }],
+    }));
+    expect(res.status).toBe(422);
+  });
+
+  it("returns 422 when measure type is invalid", async () => {
+    setOrgAdmin("org-1");
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/entities/edit/users", "PUT", {
+      table: "users",
+      measures: [{ name: "total", sql: "COUNT(*)", type: "bad" }],
+    }));
+    expect(res.status).toBe(422);
+  });
+});
+
+describe("DELETE /api/v1/admin/semantic/entities/edit/:name", () => {
+  beforeEach(() => {
+    mockHasInternalDB = true;
+    mockDeleteEntityAdmin.mockReset();
+  });
+
+  it("returns 400 when no active organization", async () => {
+    setAdmin();
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/entities/edit/users", "DELETE"));
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 404 when entity not found", async () => {
+    setOrgAdmin("org-1");
+    mockDeleteEntityAdmin.mockResolvedValue(false);
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/entities/edit/nonexistent", "DELETE"));
+    expect(res.status).toBe(404);
+  });
+
+  it("deletes existing entity", async () => {
+    setOrgAdmin("org-1");
+    mockDeleteEntityAdmin.mockResolvedValue(true);
+    const res = await app.fetch(adminRequest("/api/v1/admin/semantic/entities/edit/users", "DELETE"));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.ok).toBe(true);
+    expect(body.name).toBe("users");
+    expect(body.entityType).toBe("entity");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Org pool admin endpoints (#531)
 // ---------------------------------------------------------------------------
 

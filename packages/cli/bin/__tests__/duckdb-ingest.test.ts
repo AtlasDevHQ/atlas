@@ -7,7 +7,10 @@
  * Previously skipped due to @duckdb/node-api segfault in Bun 1.3.10.
  * Fixed in Bun 1.3.11 — re-enabled.
  */
-import { describe, it, expect, afterEach } from "bun:test";
+import { describe, it, expect, afterEach, setDefaultTimeout } from "bun:test";
+
+// DuckDB native module init is slow — default 5s times out in CI
+setDefaultTimeout(30_000);
 import * as fs from "fs";
 import * as path from "path";
 import * as os from "os";

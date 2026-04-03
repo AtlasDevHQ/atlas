@@ -768,6 +768,8 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
   - [x] Region-aware ConnectionRegistry (#1151)
   - [x] Dynamic frontend API URL — runtime resolution from regionApiUrl (#1150)
   - [x] Multi-region Railway deployment — 3 regions live: api (us-west), api-eu (europe-west4), api-apac (asia-southeast1) (#1152)
+  - [ ] Cross-region request misrouting detection (#1153)
+  - [ ] Region migration — actual cross-region data movement (#1154)
 - [x] Docs — semantic editor, plugin marketplace, platform plugin catalog guides (#1141, PR #1142)
 - [x] Fix flaky DuckDB ingest test — timeout bump (#1145, 71246b7c)
 

@@ -15,253 +15,20 @@ import {
   expect,
   beforeEach,
   afterAll,
-  mock,
-  type Mock,
 } from "bun:test";
-import { createConnectionMock } from "@atlas/api/testing/connection";
-import * as fs from "fs";
-import * as path from "path";
+import { createApiTestMocks } from "@atlas/api/testing/api-test-mocks";
 
-// --- Temp semantic fixtures ---
+// --- Unified mocks ---
 
-const tmpRoot = path.join(process.env.TMPDIR ?? "/tmp", `atlas-lp-test-${Date.now()}`);
-fs.mkdirSync(path.join(tmpRoot, "entities"), { recursive: true });
-fs.writeFileSync(
-  path.join(tmpRoot, "entities", "stub.yml"),
-  "table: stub\ndescription: stub\ndimensions:\n  id:\n    type: integer\n",
-);
-fs.writeFileSync(path.join(tmpRoot, "catalog.yml"), "name: Test\n");
-process.env.ATLAS_SEMANTIC_ROOT = tmpRoot;
-
-// --- Mocks (before any import that touches the modules) ---
-
-const mockAuthenticateRequest: Mock<(req: Request) => Promise<unknown>> = mock(
-  () =>
-    Promise.resolve({
-      authenticated: true,
-      mode: "simple-key",
-      user: { id: "admin-1", mode: "simple-key", label: "Admin", role: "admin", activeOrganizationId: "org-1" },
-    }),
-);
-
-const mockCheckRateLimit: Mock<() => { allowed: boolean; retryAfterMs?: number }> = mock(
-  () => ({ allowed: true }),
-);
-
-mock.module("@atlas/api/lib/auth/middleware", () => ({
-  authenticateRequest: mockAuthenticateRequest,
-  checkRateLimit: mockCheckRateLimit,
-  getClientIP: mock(() => null),
-  resetRateLimits: mock(() => {}),
-  _stopCleanup: mock(() => {}),
-  _setValidatorOverrides: mock(() => {}),
-}));
-
-mock.module("@atlas/api/lib/auth/detect", () => ({
-  detectAuthMode: () => "simple-key",
-  resetAuthModeCache: () => {},
-}));
-
-mock.module("@atlas/api/lib/startup", () => ({
-  validateEnvironment: mock(() => Promise.resolve([])),
-  getStartupWarnings: mock(() => []),
-}));
-
-mock.module("@atlas/api/lib/db/connection", () =>
-  createConnectionMock({
-    connections: {
-      get: () => null,
-      getDefault: () => null,
-      describe: () => [{ id: "default", dbType: "postgres" }],
-      healthCheck: mock(() => Promise.resolve({ status: "healthy" })),
-      register: mock(() => {}),
-      unregister: mock(() => {}),
-      has: mock(() => false),
-      getForOrg: () => null,
-    },
-    resolveDatasourceUrl: () => "postgresql://stub",
-  }),
-);
-
-mock.module("@atlas/api/lib/semantic", () => ({
-  getOrgWhitelistedTables: () => new Set(),
-  loadOrgWhitelist: async () => new Map(),
-  invalidateOrgWhitelist: () => {},
-  getOrgSemanticIndex: async () => "",
-  invalidateOrgSemanticIndex: () => {},
-  _resetOrgWhitelists: () => {},
-  _resetOrgSemanticIndexes: () => {},
-  getWhitelistedTables: () => new Set(["stub"]),
-  getCrossSourceJoins: () => [],
-  _resetWhitelists: () => {},
-  registerPluginEntities: () => {},
-  _resetPluginEntities: () => {},
-}));
-
-let mockHasInternalDB = true;
-
-const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<Record<string, unknown>[]>> = mock(
-  () => Promise.resolve([]),
-);
-
-mock.module("@atlas/api/lib/db/internal", () => ({
-  hasInternalDB: () => mockHasInternalDB,
-  internalQuery: mockInternalQuery,
-  internalExecute: mock(() => {}),
-  getInternalDB: mock(() => ({})),
-  closeInternalDB: mock(async () => {}),
-  migrateInternalDB: mock(async () => {}),
-  loadSavedConnections: mock(async () => 0),
-  _resetPool: mock(() => {}),
-  _resetCircuitBreaker: mock(() => {}),
-  encryptUrl: (url: string) => url,
-  decryptUrl: (url: string) => url,
-  getEncryptionKey: () => null,
-  isPlaintextUrl: (value: string) => /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(value),
-  _resetEncryptionKeyCache: mock(() => {}),
-  findPatternBySQL: async () => null,
-  insertLearnedPattern: () => {},
-  incrementPatternCount: () => {},
-  getApprovedPatterns: mock(async () => []),
-  upsertSuggestion: mock(() => Promise.resolve("created")),
-  getSuggestionsByTables: mock(() => Promise.resolve([])),
-  getPopularSuggestions: mock(() => Promise.resolve([])),
-  incrementSuggestionClick: mock(),
-  deleteSuggestion: mock(() => Promise.resolve(false)),
-  getAuditLogQueries: mock(() => Promise.resolve([])),
-  getWorkspaceStatus: mock(async () => "active"),
-  getWorkspaceDetails: mock(async () => null),
-  updateWorkspaceStatus: mock(async () => true),
-  updateWorkspacePlanTier: mock(async () => true),
-  cascadeWorkspaceDelete: mock(async () => ({ conversations: 0, semanticEntities: 0, learnedPatterns: 0, suggestions: 0, scheduledTasks: 0, settings: 0 })),
-  getWorkspaceHealthSummary: mock(async () => null),
-  getWorkspaceRegion: mock(async () => null),
-}));
-
-mock.module("@atlas/api/lib/cache", () => ({
-  getCache: mock(() => ({ get: () => null, set: () => {}, delete: () => false, flush: () => {}, stats: () => ({}) })),
-  cacheEnabled: mock(() => true),
-  setCacheBackend: mock(() => {}),
-  flushCache: mock(() => {}),
-  getDefaultTtl: mock(() => 300000),
-  _resetCache: mock(() => {}),
-  buildCacheKey: mock(() => "mock-key"),
-}));
-
-mock.module("@atlas/api/lib/workspace", () => ({
-  checkWorkspaceStatus: mock(async () => ({ allowed: true })),
-}));
-
-mock.module("@atlas/api/lib/learn/pattern-cache", () => ({
-  buildLearnedPatternsSection: async () => "",
-  getRelevantPatterns: async () => [],
-  invalidatePatternCache: () => {},
-  extractKeywords: () => new Set(),
-  _resetPatternCache: () => {},
-}));
-
-mock.module("@atlas/api/lib/plugins/registry", () => ({
-  plugins: {
-    describe: () => [],
-    get: () => undefined,
-    getStatus: () => undefined,
-    enable: () => false,
-    disable: () => false,
-    isEnabled: () => false,
-    getAllHealthy: () => [],
-    getByType: () => [],
-    size: 0,
+const mocks = createApiTestMocks({
+  authUser: {
+    id: "admin-1",
+    mode: "simple-key",
+    label: "Admin",
+    role: "admin",
+    activeOrganizationId: "org-1",
   },
-  PluginRegistry: class {},
-}));
-
-mock.module("@atlas/api/lib/plugins/settings", () => ({
-  loadPluginSettings: mock(async () => 0),
-  savePluginEnabled: mock(async () => {}),
-  savePluginConfig: mock(async () => {}),
-  getPluginConfig: mock(async () => null),
-  getAllPluginSettings: mock(async () => []),
-}));
-
-mock.module("@atlas/api/lib/plugins/hooks", () => ({
-  dispatchHook: mock(async () => {}),
-}));
-
-mock.module("@atlas/api/lib/tools/explore", () => ({
-  getExploreBackendType: () => "just-bash",
-  getActiveSandboxPluginId: () => null,
-  explore: { type: "function" },
-}));
-
-mock.module("@atlas/api/lib/agent", () => ({
-  runAgent: mock(() =>
-    Promise.resolve({
-      toUIMessageStreamResponse: () => new Response("stream", { status: 200 }),
-      text: Promise.resolve("answer"),
-    }),
-  ),
-}));
-
-mock.module("@atlas/api/lib/tools/actions", () => ({}));
-
-// Skip EE IP allowlist check — no real DB in tests
-mock.module("@atlas/ee/auth/ip-allowlist", () => ({
-  checkIPAllowlist: mock(async () => ({ allowed: true })),
-  listIPAllowlistEntries: mock(async () => []),
-  addIPAllowlistEntry: mock(async () => ({})),
-  removeIPAllowlistEntry: mock(async () => false),
-  IPAllowlistError: class extends Error { constructor(message: string, public readonly code: string) { super(message); this.name = "IPAllowlistError"; } },
-  invalidateCache: mock(() => {}),
-  _clearCache: mock(() => {}),
-  parseCIDR: mock(() => null),
-  isIPInRange: mock(() => false),
-  isIPAllowed: mock(() => true),
-}));
-
-mock.module("@atlas/api/lib/conversations", () => ({
-  createConversation: mock(() => Promise.resolve(null)),
-  addMessage: mock(() => {}),
-  getConversation: mock(() => Promise.resolve(null)),
-  generateTitle: mock((q: string) => q.slice(0, 80)),
-  listConversations: mock(() => Promise.resolve({ conversations: [], total: 0 })),
-  deleteConversation: mock(() => Promise.resolve(false)),
-  starConversation: mock(() => Promise.resolve(false)),
-  shareConversation: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
-  unshareConversation: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
-  getShareStatus: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
-  cleanupExpiredShares: mock(() => Promise.resolve(0)),
-  getSharedConversation: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
-  updateNotebookState: mock(() => Promise.resolve({ ok: true })),
-  forkConversation: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
-}));
-
-mock.module("@atlas/api/lib/auth/server", () => ({
-  getAuthInstance: () => null,
-  listAllUsers: mock(() => Promise.resolve([])),
-  setUserRole: mock(async () => {}),
-  setBanStatus: mock(async () => {}),
-  setPasswordChangeRequired: mock(async () => {}),
-  deleteUser: mock(async () => {}),
-}));
-
-mock.module("@atlas/api/lib/scheduled-tasks", () => ({
-  listScheduledTasks: mock(async () => []),
-  getScheduledTask: mock(async () => null),
-  createScheduledTask: mock(async () => ({})),
-  updateScheduledTask: mock(async () => null),
-  deleteScheduledTask: mock(async () => false),
-  listScheduledTaskRuns: mock(async () => []),
-  getRecentRuns: mock(async () => []),
-  scheduledTaskBelongsToUser: mock(async () => false),
-}));
-
-mock.module("@atlas/api/lib/scheduler", () => ({
-  getSchedulerEngine: mock(() => null),
-}));
-
-mock.module("@atlas/api/lib/scheduler/preview", () => ({
-  previewSchedule: () => [],
-}));
+});
 
 // --- Import the app AFTER mocks ---
 
@@ -302,24 +69,23 @@ function mockRow(overrides: Partial<Record<string, unknown>> = {}) {
 // --- Cleanup ---
 
 afterAll(() => {
-  fs.rmSync(tmpRoot, { recursive: true, force: true });
-  delete process.env.ATLAS_SEMANTIC_ROOT;
+  mocks.cleanup();
 });
 
 // --- Reset mocks between tests ---
 
 beforeEach(() => {
-  mockAuthenticateRequest.mockImplementation(() =>
+  mocks.mockAuthenticateRequest.mockImplementation(() =>
     Promise.resolve({
       authenticated: true,
       mode: "simple-key",
       user: { id: "admin-1", mode: "simple-key", label: "Admin", role: "admin", activeOrganizationId: "org-1" },
     }),
   );
-  mockHasInternalDB = true;
-  mockInternalQuery.mockReset();
-  mockInternalQuery.mockImplementation(() => Promise.resolve([]));
-  mockCheckRateLimit.mockImplementation(() => ({ allowed: true }));
+  mocks.hasInternalDB = true;
+  mocks.mockInternalQuery.mockReset();
+  mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([]));
+  mocks.mockCheckRateLimit.mockImplementation(() => ({ allowed: true }));
 });
 
 // ---------------------------------------------------------------------------
@@ -331,7 +97,7 @@ describe("admin learned-patterns routes", () => {
 
   describe("auth gating", () => {
     it("returns 403 for non-admin user", async () => {
-      mockAuthenticateRequest.mockImplementation(() =>
+      mocks.mockAuthenticateRequest.mockImplementation(() =>
         Promise.resolve({
           authenticated: true,
           mode: "simple-key",
@@ -343,7 +109,7 @@ describe("admin learned-patterns routes", () => {
     });
 
     it("returns 401 for unauthenticated", async () => {
-      mockAuthenticateRequest.mockImplementation(() =>
+      mocks.mockAuthenticateRequest.mockImplementation(() =>
         Promise.resolve({
           authenticated: false,
           error: "Invalid token",
@@ -359,7 +125,7 @@ describe("admin learned-patterns routes", () => {
 
   describe("rate limiting", () => {
     it("returns 429 when rate limited", async () => {
-      mockCheckRateLimit.mockImplementation(() => ({ allowed: false, retryAfterMs: 60000 }));
+      mocks.mockCheckRateLimit.mockImplementation(() => ({ allowed: false, retryAfterMs: 60000 }));
       const res = await req("GET", "/");
       expect(res.status).toBe(429);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
@@ -372,7 +138,7 @@ describe("admin learned-patterns routes", () => {
 
   describe("no internal DB", () => {
     it("returns 404 when no internal DB", async () => {
-      mockHasInternalDB = false;
+      mocks.hasInternalDB = false;
       const res = await req("GET", "/");
       expect(res.status).toBe(404);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
@@ -386,7 +152,7 @@ describe("admin learned-patterns routes", () => {
   describe("GET /", () => {
     it("returns patterns with pagination", async () => {
       let callCount = 0;
-      mockInternalQuery.mockImplementation(() => {
+      mocks.mockInternalQuery.mockImplementation(() => {
         callCount++;
         if (callCount === 1) {
           return Promise.resolve([{ count: "2" }]);
@@ -417,10 +183,10 @@ describe("admin learned-patterns routes", () => {
     });
 
     it("defaults limit to 50 and offset to 0", async () => {
-      mockInternalQuery.mockImplementation(() => Promise.resolve([{ count: "0" }]));
+      mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([{ count: "0" }]));
       await req("GET", "/");
       // Check that the query was called with limit=50 and offset=0
-      const calls = mockInternalQuery.mock.calls;
+      const calls = mocks.mockInternalQuery.mock.calls;
       expect(calls.length).toBeGreaterThanOrEqual(1);
       // The SELECT query (second call) should have LIMIT and OFFSET params of 50 and 0
       const lastCall = calls[calls.length - 1];
@@ -430,9 +196,9 @@ describe("admin learned-patterns routes", () => {
     });
 
     it("caps limit at 200", async () => {
-      mockInternalQuery.mockImplementation(() => Promise.resolve([{ count: "0" }]));
+      mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([{ count: "0" }]));
       await req("GET", "/?limit=500");
-      const calls = mockInternalQuery.mock.calls;
+      const calls = mocks.mockInternalQuery.mock.calls;
       expect(calls.length).toBeGreaterThanOrEqual(1);
       // The limit param should be capped at 200
       const lastCall = calls[calls.length - 1];
@@ -441,9 +207,9 @@ describe("admin learned-patterns routes", () => {
     });
 
     it("applies status filter", async () => {
-      mockInternalQuery.mockImplementation(() => Promise.resolve([{ count: "0" }]));
+      mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([{ count: "0" }]));
       await req("GET", "/?status=approved");
-      const calls = mockInternalQuery.mock.calls;
+      const calls = mocks.mockInternalQuery.mock.calls;
       expect(calls.length).toBeGreaterThanOrEqual(1);
       // Verify that SQL contains status filter and params include "approved"
       const firstCall = calls[0];
@@ -454,9 +220,9 @@ describe("admin learned-patterns routes", () => {
     });
 
     it("applies source_entity filter", async () => {
-      mockInternalQuery.mockImplementation(() => Promise.resolve([{ count: "0" }]));
+      mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([{ count: "0" }]));
       await req("GET", "/?source_entity=orders");
-      const calls = mockInternalQuery.mock.calls;
+      const calls = mocks.mockInternalQuery.mock.calls;
       expect(calls.length).toBeGreaterThanOrEqual(1);
       const firstCall = calls[0];
       const sql = firstCall[0] as string;
@@ -466,9 +232,9 @@ describe("admin learned-patterns routes", () => {
     });
 
     it("applies confidence range", async () => {
-      mockInternalQuery.mockImplementation(() => Promise.resolve([{ count: "0" }]));
+      mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([{ count: "0" }]));
       await req("GET", "/?min_confidence=0.5&max_confidence=0.9");
-      const calls = mockInternalQuery.mock.calls;
+      const calls = mocks.mockInternalQuery.mock.calls;
       expect(calls.length).toBeGreaterThanOrEqual(1);
       const firstCall = calls[0];
       const sql = firstCall[0] as string;
@@ -479,9 +245,9 @@ describe("admin learned-patterns routes", () => {
     });
 
     it("applies combined filters", async () => {
-      mockInternalQuery.mockImplementation(() => Promise.resolve([{ count: "0" }]));
+      mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([{ count: "0" }]));
       await req("GET", "/?status=pending&source_entity=orders&min_confidence=0.5");
-      const calls = mockInternalQuery.mock.calls;
+      const calls = mocks.mockInternalQuery.mock.calls;
       expect(calls.length).toBeGreaterThanOrEqual(1);
       const firstCall = calls[0];
       const sql = firstCall[0] as string;
@@ -499,7 +265,7 @@ describe("admin learned-patterns routes", () => {
 
   describe("GET /:id", () => {
     it("returns single pattern", async () => {
-      mockInternalQuery.mockImplementation(() => Promise.resolve([mockRow()]));
+      mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([mockRow()]));
       const res = await req("GET", "/pat-1");
       expect(res.status).toBe(200);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
@@ -513,7 +279,7 @@ describe("admin learned-patterns routes", () => {
     });
 
     it("returns 404 for missing pattern", async () => {
-      mockInternalQuery.mockImplementation(() => Promise.resolve([]));
+      mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([]));
       const res = await req("GET", "/nonexistent");
       expect(res.status).toBe(404);
     });
@@ -524,7 +290,7 @@ describe("admin learned-patterns routes", () => {
   describe("PATCH /:id", () => {
     it("updates description", async () => {
       let callCount = 0;
-      mockInternalQuery.mockImplementation(() => {
+      mocks.mockInternalQuery.mockImplementation(() => {
         callCount++;
         if (callCount === 1) {
           // SELECT to verify existence
@@ -543,7 +309,7 @@ describe("admin learned-patterns routes", () => {
 
     it("updates status with reviewed_by and reviewed_at", async () => {
       let callCount = 0;
-      mockInternalQuery.mockImplementation(() => {
+      mocks.mockInternalQuery.mockImplementation(() => {
         callCount++;
         if (callCount === 1) {
           return Promise.resolve([mockRow()]);
@@ -555,7 +321,7 @@ describe("admin learned-patterns routes", () => {
       expect(res.status).toBe(200);
 
       // Verify the UPDATE SQL includes reviewed_by and reviewed_at params
-      const calls = mockInternalQuery.mock.calls;
+      const calls = mocks.mockInternalQuery.mock.calls;
       expect(calls.length).toBeGreaterThanOrEqual(2);
       const updateCall = calls[1];
       const sql = updateCall[0] as string;
@@ -564,13 +330,13 @@ describe("admin learned-patterns routes", () => {
     });
 
     it("returns 400 for invalid status", async () => {
-      mockInternalQuery.mockImplementation(() => Promise.resolve([mockRow()]));
+      mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([mockRow()]));
       const res = await req("PATCH", "/pat-1", { status: "invalid" });
       expect(res.status).toBe(422);
     });
 
     it("returns 404 for missing pattern", async () => {
-      mockInternalQuery.mockImplementation(() => Promise.resolve([]));
+      mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([]));
       const res = await req("PATCH", "/pat-1", { description: "Updated" });
       expect(res.status).toBe(404);
     });
@@ -581,7 +347,7 @@ describe("admin learned-patterns routes", () => {
   describe("DELETE /:id", () => {
     it("deletes pattern", async () => {
       let callCount = 0;
-      mockInternalQuery.mockImplementation(() => {
+      mocks.mockInternalQuery.mockImplementation(() => {
         callCount++;
         if (callCount === 1) {
           return Promise.resolve([mockRow()]);
@@ -594,7 +360,7 @@ describe("admin learned-patterns routes", () => {
     });
 
     it("returns 404 for missing pattern", async () => {
-      mockInternalQuery.mockImplementation(() => Promise.resolve([]));
+      mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([]));
       const res = await req("DELETE", "/nonexistent");
       expect(res.status).toBe(404);
     });
@@ -604,7 +370,7 @@ describe("admin learned-patterns routes", () => {
 
   describe("POST /bulk", () => {
     it("bulk approves patterns", async () => {
-      mockInternalQuery.mockImplementation((sql: string) => {
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
         if (sql.includes("SELECT")) {
           return Promise.resolve([{ id: "pat-1" }]);
         }
@@ -621,7 +387,7 @@ describe("admin learned-patterns routes", () => {
 
     it("returns partial results for mixed ids", async () => {
       let selectCallCount = 0;
-      mockInternalQuery.mockImplementation((sql: string) => {
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
         if (sql.includes("SELECT")) {
           selectCallCount++;
           if (selectCallCount === 1) {
@@ -660,9 +426,9 @@ describe("admin learned-patterns routes", () => {
 
   describe("org-scoping", () => {
     it("filters by org_id from session", async () => {
-      mockInternalQuery.mockImplementation(() => Promise.resolve([{ count: "0" }]));
+      mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([{ count: "0" }]));
       await req("GET", "/");
-      const calls = mockInternalQuery.mock.calls;
+      const calls = mocks.mockInternalQuery.mock.calls;
       expect(calls.length).toBeGreaterThanOrEqual(1);
       const firstCall = calls[0];
       const sql = firstCall[0] as string;
@@ -672,7 +438,7 @@ describe("admin learned-patterns routes", () => {
     });
 
     it("returns 400 when no active org (requireOrgContext)", async () => {
-      mockAuthenticateRequest.mockImplementation(() =>
+      mocks.mockAuthenticateRequest.mockImplementation(() =>
         Promise.resolve({
           authenticated: true,
           mode: "simple-key",
@@ -692,7 +458,7 @@ describe("admin learned-patterns routes", () => {
 
   describe("error handling", () => {
     it("returns 500 with requestId on DB error", async () => {
-      mockInternalQuery.mockImplementation(() => Promise.reject(new Error("DB connection failed")));
+      mocks.mockInternalQuery.mockImplementation(() => Promise.reject(new Error("DB connection failed")));
       const res = await req("GET", "/");
       expect(res.status).toBe(500);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience

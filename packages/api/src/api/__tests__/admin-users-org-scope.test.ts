@@ -7,191 +7,32 @@
  * not in the caller's org to avoid revealing existence across tenants.
  */
 
-import { createConnectionMock } from "@atlas/api/testing/connection";
 import {
   describe,
   it,
   expect,
   beforeEach,
+  afterAll,
   mock,
   type Mock,
 } from "bun:test";
+import { createApiTestMocks } from "@atlas/api/testing/api-test-mocks";
 
-// --- Mocks (before any import that touches the modules) ---
+// --- Unified mocks ---
 
-const mockAuthenticateRequest: Mock<(req: Request) => Promise<unknown>> = mock(
-  () =>
-    Promise.resolve({
-      authenticated: true,
-      mode: "managed",
-      user: { id: "admin-1", mode: "managed", label: "Admin", role: "admin", activeOrganizationId: "org-1" },
-    }),
-);
-
-mock.module("@atlas/api/lib/auth/middleware", () => ({
-  authenticateRequest: mockAuthenticateRequest,
-  checkRateLimit: mock(() => ({ allowed: true })),
-  getClientIP: mock(() => null),
-  resetRateLimits: mock(() => {}),
-  _stopCleanup: mock(() => {}),
-  _setValidatorOverrides: mock(() => {}),
-}));
-
-mock.module("@atlas/api/lib/auth/detect", () => ({
-  detectAuthMode: () => "managed",
-  resetAuthModeCache: () => {},
-}));
-
-mock.module("@atlas/api/lib/startup", () => ({
-  validateEnvironment: mock(() => Promise.resolve([])),
-  getStartupWarnings: mock(() => []),
-}));
-
-mock.module("@atlas/api/lib/db/connection", () =>
-  createConnectionMock(),
-);
-
-mock.module("@atlas/api/lib/cache", () => ({
-  getCache: mock(() => ({ get: () => null, set: () => {}, delete: () => false, flush: () => {}, stats: () => ({}) })),
-  cacheEnabled: mock(() => true),
-  setCacheBackend: mock(() => {}),
-  flushCache: mock(() => {}),
-  getDefaultTtl: mock(() => 300000),
-  _resetCache: mock(() => {}),
-  buildCacheKey: mock(() => "mock-key"),
-}));
-
-mock.module("@atlas/api/lib/workspace", () => ({
-  checkWorkspaceStatus: mock(async () => ({ allowed: true })),
-}));
-
-// --- Internal DB mock ---
-
-let mockHasInternalDB = true;
-const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unknown[]>> = mock(
-  () => Promise.resolve([]),
-);
-
-mock.module("@atlas/api/lib/db/internal", () => ({
-  hasInternalDB: () => mockHasInternalDB,
-  internalQuery: mockInternalQuery,
-  internalExecute: mock(() => {}),
-  getInternalDB: mock(() => ({})),
-  closeInternalDB: mock(async () => {}),
-  migrateInternalDB: mock(async () => {}),
-  loadSavedConnections: mock(async () => 0),
-  _resetPool: mock(() => {}),
-  _resetCircuitBreaker: mock(() => {}),
-  encryptUrl: (url: string) => url,
-  decryptUrl: (url: string) => url,
-  getEncryptionKey: () => null,
-  isPlaintextUrl: (value: string) => /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(value),
-  _resetEncryptionKeyCache: mock(() => {}),
-  findPatternBySQL: async () => null,
-  insertLearnedPattern: () => {},
-  incrementPatternCount: () => {},
-  getApprovedPatterns: mock(async () => []),
-  upsertSuggestion: mock(() => Promise.resolve("created")),
-  getSuggestionsByTables: mock(() => Promise.resolve([])),
-  getPopularSuggestions: mock(() => Promise.resolve([])),
-  incrementSuggestionClick: mock(),
-  deleteSuggestion: mock(() => Promise.resolve(false)),
-  getAuditLogQueries: mock(() => Promise.resolve([])),
-  getWorkspaceStatus: mock(async () => "active"),
-  getWorkspaceDetails: mock(async () => null),
-  updateWorkspaceStatus: mock(async () => true),
-  updateWorkspacePlanTier: mock(async () => true),
-  cascadeWorkspaceDelete: mock(async () => ({ conversations: 0, semanticEntities: 0, learnedPatterns: 0, suggestions: 0, scheduledTasks: 0, settings: 0 })),
-  getWorkspaceHealthSummary: mock(async () => null),
-  getWorkspaceRegion: mock(async () => null),
-}));
-
-mock.module("@atlas/api/lib/learn/pattern-cache", () => ({
-  buildLearnedPatternsSection: async () => "",
-  getRelevantPatterns: async () => [],
-  invalidatePatternCache: () => {},
-  extractKeywords: () => new Set(),
-  _resetPatternCache: () => {},
-}));
-
-mock.module("@atlas/api/lib/semantic", () => ({
-  getOrgWhitelistedTables: () => new Set(),
-  loadOrgWhitelist: async () => new Map(),
-  invalidateOrgWhitelist: () => {},
-  getOrgSemanticIndex: async () => "",
-  invalidateOrgSemanticIndex: () => {},
-  _resetOrgWhitelists: () => {},
-  _resetOrgSemanticIndexes: () => {},
-  getWhitelistedTables: () => new Set(),
-  getCrossSourceJoins: () => [],
-  _resetWhitelists: () => {},
-  registerPluginEntities: () => {},
-  _resetPluginEntities: () => {},
-}));
-
-mock.module("@atlas/api/lib/semantic/entities", () => ({
-  listEntities: mock(() => Promise.resolve([])),
-  getEntity: mock(() => Promise.resolve(null)),
-  upsertEntity: mock(() => Promise.resolve()),
-  deleteEntity: mock(() => Promise.resolve(false)),
-  countEntities: mock(() => Promise.resolve(0)),
-  bulkUpsertEntities: mock(() => Promise.resolve(0)),
-}));
-
-mock.module("@atlas/api/lib/plugins/registry", () => ({
-  plugins: {
-    describe: () => [],
-    get: () => undefined,
-    getStatus: () => undefined,
-    getAllHealthy: () => [],
-    getByType: () => [],
-    size: 0,
+const mocks = createApiTestMocks({
+  authUser: {
+    id: "admin-1",
+    mode: "managed",
+    label: "Admin",
+    role: "admin",
+    activeOrganizationId: "org-1",
   },
-  PluginRegistry: class {},
-}));
+  authMode: "managed",
+});
 
-mock.module("@atlas/api/lib/tools/explore", () => ({
-  getExploreBackendType: () => "just-bash",
-  getActiveSandboxPluginId: () => null,
-  explore: { type: "function" },
-}));
+// --- Test-specific overrides: Better Auth admin API ---
 
-mock.module("@atlas/api/lib/agent", () => ({
-  runAgent: mock(() => Promise.resolve({ text: "answer" })),
-}));
-
-mock.module("@atlas/api/lib/tools/actions", () => ({}));
-
-mock.module("@atlas/api/lib/security", () => ({
-  maskConnectionUrl: (_url: string) => "***masked***",
-  SENSITIVE_PATTERNS: [],
-}));
-
-mock.module("@atlas/api/lib/settings", () => ({
-  getSettingsForAdmin: mock(() => []),
-  getSettingsRegistry: mock(() => []),
-  getSettingDefinition: mock(() => undefined),
-  setSetting: mock(async () => {}),
-  deleteSetting: mock(async () => {}),
-  getSetting: mock(() => undefined),
-  getSettingAuto: mock(() => undefined),
-  getSettingLive: mock(async () => undefined),
-  loadSettings: mock(async () => 0),
-  getAllSettingOverrides: mock(async () => []),
-  _resetSettingsCache: mock(() => {}),
-}));
-
-mock.module("@atlas/api/lib/plugins/settings", () => ({
-  savePluginEnabled: mock(async () => {}),
-  savePluginConfig: mock(async () => {}),
-  getPluginConfig: mock(async () => null),
-}));
-
-mock.module("@atlas/api/lib/semantic/diff", () => ({
-  runDiff: mock(async () => ({ connection: "default", newTables: [], removedTables: [], tableDiffs: [] })),
-}));
-
-// Mock Better Auth admin API
 const mockSetRole: Mock<(opts: unknown) => Promise<unknown>> = mock(() => Promise.resolve({}));
 const mockBanUser: Mock<(opts: unknown) => Promise<unknown>> = mock(() => Promise.resolve({}));
 const mockUnbanUser: Mock<(opts: unknown) => Promise<unknown>> = mock(() => Promise.resolve({}));
@@ -215,6 +56,8 @@ mock.module("@atlas/api/lib/auth/server", () => ({
 
 const { app } = await import("../index");
 
+afterAll(() => mocks.cleanup());
+
 // --- Helpers ---
 
 function adminRequest(method: string, path: string, body?: unknown): Request {
@@ -228,7 +71,7 @@ function adminRequest(method: string, path: string, body?: unknown): Request {
 
 /** Set auth to a workspace admin in org-1 (non-platform). */
 function setWorkspaceAdmin(orgId = "org-1"): void {
-  mockAuthenticateRequest.mockResolvedValue({
+  mocks.mockAuthenticateRequest.mockResolvedValue({
     authenticated: true,
     mode: "managed",
     user: { id: "admin-1", mode: "managed", label: "Admin", role: "admin", activeOrganizationId: orgId },
@@ -237,7 +80,7 @@ function setWorkspaceAdmin(orgId = "org-1"): void {
 
 /** Set auth to a platform admin (no org boundary). */
 function setPlatformAdmin(): void {
-  mockAuthenticateRequest.mockResolvedValue({
+  mocks.mockAuthenticateRequest.mockResolvedValue({
     authenticated: true,
     mode: "managed",
     user: { id: "platform-1", mode: "managed", label: "Platform Admin", role: "platform_admin" },
@@ -250,7 +93,7 @@ function setPlatformAdmin(): void {
  * All other member lookups return empty (user not in org).
  */
 function mockMembershipFor(allowedUserId: string): void {
-  mockInternalQuery.mockImplementation(async (sql: string, params?: unknown[]) => {
+  mocks.mockInternalQuery.mockImplementation(async (sql: string, params?: unknown[]) => {
     // Match the verifyOrgMembership query
     if (sql.includes("member") && sql.includes("userId") && sql.includes("organizationId")) {
       const targetId = params?.[0];
@@ -268,15 +111,15 @@ function mockMembershipFor(allowedUserId: string): void {
 
 describe("Org-scoped user write operations (#983)", () => {
   beforeEach(() => {
-    mockAuthenticateRequest.mockReset();
-    mockInternalQuery.mockReset();
-    mockInternalQuery.mockResolvedValue([]);
+    mocks.mockAuthenticateRequest.mockReset();
+    mocks.mockInternalQuery.mockReset();
+    mocks.mockInternalQuery.mockResolvedValue([]);
     mockSetRole.mockClear();
     mockBanUser.mockClear();
     mockUnbanUser.mockClear();
     mockRemoveUser.mockClear();
     mockRevokeSessions.mockClear();
-    mockHasInternalDB = true;
+    mocks.hasInternalDB = true;
   });
 
   describe("PATCH /api/v1/admin/users/:id/role", () => {
@@ -487,7 +330,7 @@ describe("Org-scoped user write operations (#983)", () => {
   describe("self-hosted (no org context)", () => {
     it("allows role change without org scoping when no activeOrganizationId", async () => {
       // Self-hosted: no org context
-      mockAuthenticateRequest.mockResolvedValue({
+      mocks.mockAuthenticateRequest.mockResolvedValue({
         authenticated: true,
         mode: "managed",
         user: { id: "admin-1", mode: "managed", label: "Admin", role: "admin" },
@@ -504,7 +347,7 @@ describe("Org-scoped user write operations (#983)", () => {
   describe("DB error in membership check", () => {
     it("returns 500 when internalQuery throws during org membership check", async () => {
       setWorkspaceAdmin("org-1");
-      mockInternalQuery.mockImplementation(async (sql: string) => {
+      mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
         if (sql.includes("member") && sql.includes("userId") && sql.includes("organizationId")) {
           throw new Error("DB connection timeout");
         }
@@ -523,7 +366,7 @@ describe("Org-scoped user write operations (#983)", () => {
   describe("hasInternalDB = false bypass", () => {
     it("bypasses membership check when no internal DB is available", async () => {
       setWorkspaceAdmin("org-1");
-      mockHasInternalDB = false;
+      mocks.hasInternalDB = false;
 
       const res = await app.fetch(
         adminRequest("PATCH", "/api/v1/admin/users/any-user/role", { role: "member" }),

@@ -19,72 +19,25 @@ import {
   beforeEach,
   afterAll,
   mock,
-  type Mock,
 } from "bun:test";
-import { createConnectionMock } from "@atlas/api/testing/connection";
-import * as fs from "fs";
-import * as path from "path";
+import { createApiTestMocks } from "@atlas/api/testing/api-test-mocks";
 
-// --- Temp semantic fixtures ---
-
-const tmpRoot = path.join(process.env.TMPDIR ?? "/tmp", `atlas-conn-org-test-${Date.now()}`);
-fs.mkdirSync(path.join(tmpRoot, "entities"), { recursive: true });
-fs.writeFileSync(
-  path.join(tmpRoot, "entities", "stub.yml"),
-  "table: stub\ndescription: stub\ndimensions:\n  id:\n    type: integer\n",
-);
-fs.writeFileSync(path.join(tmpRoot, "catalog.yml"), "name: Test\n");
-process.env.ATLAS_SEMANTIC_ROOT = tmpRoot;
-
-// --- Mocks (before any import that touches the modules) ---
-
-const mockAuthenticateRequest: Mock<(req: Request) => Promise<unknown>> = mock(
-  () =>
-    Promise.resolve({
-      authenticated: true,
-      mode: "managed",
-      user: { id: "admin-1", mode: "managed", label: "admin@test.com", role: "admin", activeOrganizationId: "org-alpha" },
-    }),
-);
-
-mock.module("@atlas/api/lib/auth/middleware", () => ({
-  authenticateRequest: mockAuthenticateRequest,
-  checkRateLimit: mock(() => ({ allowed: true })),
-  getClientIP: mock(() => null),
-  resetRateLimits: mock(() => {}),
-  _stopCleanup: mock(() => {}),
-  _setValidatorOverrides: mock(() => {}),
-}));
-
-mock.module("@atlas/api/lib/auth/detect", () => ({
-  detectAuthMode: () => "managed",
-  resetAuthModeCache: () => {},
-}));
-
-mock.module("@atlas/api/lib/residency/misrouting", () => ({
-  detectMisrouting: mock(async () => null),
-  isStrictRoutingEnabled: mock(() => false),
-  getMisroutedCount: mock(() => 0),
-  _resetMisroutedCount: mock(() => {}),
-  _resetRegionCache: mock(() => {}),
-  getApiRegion: mock(() => null),
-}));
-
-mock.module("@atlas/api/lib/residency/readonly", () => ({
-  isWorkspaceMigrating: mock(async () => false),
-}));
-
-mock.module("@atlas/api/lib/startup", () => ({
-  validateEnvironment: mock(() => Promise.resolve([])),
-  getStartupWarnings: mock(() => []),
-}));
+// --- Unified mocks ---
 
 const mockHealthCheck = mock(() =>
   Promise.resolve({ status: "healthy", latencyMs: 3, checkedAt: new Date() }),
 );
 
-mock.module("@atlas/api/lib/db/connection", () =>
-  createConnectionMock({
+const mocks = createApiTestMocks({
+  authUser: {
+    id: "admin-1",
+    mode: "managed",
+    label: "admin@test.com",
+    role: "admin",
+    activeOrganizationId: "org-alpha",
+  },
+  authMode: "managed",
+  connection: {
     connections: {
       get: () => null,
       getDefault: () => null,
@@ -107,146 +60,12 @@ mock.module("@atlas/api/lib/db/connection", () =>
       listOrgs: () => [],
     },
     resolveDatasourceUrl: () => "postgresql://stub",
-  }),
-);
-
-mock.module("@atlas/api/lib/semantic", () => ({
-  getOrgWhitelistedTables: () => new Set(),
-  loadOrgWhitelist: async () => new Map(),
-  invalidateOrgWhitelist: () => {},
-  getOrgSemanticIndex: async () => "",
-  invalidateOrgSemanticIndex: () => {},
-  _resetOrgWhitelists: () => {},
-  _resetOrgSemanticIndexes: () => {},
-  getWhitelistedTables: () => new Set(["stub"]),
-  getCrossSourceJoins: () => [],
-  _resetWhitelists: () => {},
-  registerPluginEntities: () => {},
-  _resetPluginEntities: () => {},
-}));
-
-let mockHasInternalDB = true;
-const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unknown[]>> = mock(
-  () => Promise.resolve([]),
-);
-
-mock.module("@atlas/api/lib/db/internal", () => ({
-  hasInternalDB: () => mockHasInternalDB,
-  internalQuery: mockInternalQuery,
-  internalExecute: mock(() => {}),
-  getInternalDB: mock(() => ({})),
-  closeInternalDB: mock(async () => {}),
-  migrateInternalDB: mock(async () => {}),
-  loadSavedConnections: mock(async () => 0),
-  _resetPool: mock(() => {}),
-  _resetCircuitBreaker: mock(() => {}),
-  encryptUrl: (url: string) => `encrypted:${url}`,
-  decryptUrl: (url: string) => url.replace(/^encrypted:/, ""),
-  getEncryptionKey: () => null,
-  isPlaintextUrl: (value: string) => /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(value),
-  _resetEncryptionKeyCache: mock(() => {}),
-  findPatternBySQL: async () => null,
-  insertLearnedPattern: () => {},
-  incrementPatternCount: () => {},
-  getApprovedPatterns: mock(async () => []),
-  upsertSuggestion: mock(() => Promise.resolve("created")),
-  getSuggestionsByTables: mock(() => Promise.resolve([])),
-  getPopularSuggestions: mock(() => Promise.resolve([])),
-  incrementSuggestionClick: mock(),
-  deleteSuggestion: mock(() => Promise.resolve(false)),
-  getAuditLogQueries: mock(() => Promise.resolve([])),
-  getWorkspaceStatus: mock(async () => "active"),
-  getWorkspaceDetails: mock(async () => null),
-  updateWorkspaceStatus: mock(async () => true),
-  updateWorkspacePlanTier: mock(async () => true),
-  cascadeWorkspaceDelete: mock(async () => ({ conversations: 0, semanticEntities: 0, learnedPatterns: 0, suggestions: 0, scheduledTasks: 0, settings: 0 })),
-  getWorkspaceHealthSummary: mock(async () => null),
-  getWorkspaceRegion: mock(async () => null),
-}));
-
-mock.module("@atlas/api/lib/cache", () => ({
-  getCache: mock(() => ({ get: () => null, set: () => {}, delete: () => false, flush: () => {}, stats: () => ({}) })),
-  cacheEnabled: mock(() => true),
-  setCacheBackend: mock(() => {}),
-  flushCache: mock(() => {}),
-  getDefaultTtl: mock(() => 300000),
-  _resetCache: mock(() => {}),
-  buildCacheKey: mock(() => "mock-key"),
-}));
-
-mock.module("@atlas/api/lib/workspace", () => ({
-  checkWorkspaceStatus: mock(async () => ({ allowed: true })),
-}));
-
-mock.module("@atlas/api/lib/learn/pattern-cache", () => ({
-  buildLearnedPatternsSection: async () => "",
-  getRelevantPatterns: async () => [],
-  invalidatePatternCache: () => {},
-  extractKeywords: () => new Set(),
-  _resetPatternCache: () => {},
-}));
-
-mock.module("@atlas/api/lib/plugins/registry", () => ({
-  plugins: {
-    describe: () => [],
-    get: () => undefined,
-    getStatus: () => undefined,
-    getAllHealthy: () => [],
-    getByType: () => [],
-    size: 0,
   },
-  PluginRegistry: class {},
-}));
-
-mock.module("@atlas/api/lib/plugins/hooks", () => ({
-  dispatchHook: mock(async () => {}),
-}));
-
-mock.module("@atlas/api/lib/tools/explore", () => ({
-  getExploreBackendType: () => "just-bash",
-  getActiveSandboxPluginId: () => null,
-  explore: { type: "function" },
-}));
-
-mock.module("@atlas/api/lib/agent", () => ({
-  runAgent: mock(() =>
-    Promise.resolve({
-      toUIMessageStreamResponse: () => new Response("stream", { status: 200 }),
-      text: Promise.resolve("answer"),
-    }),
-  ),
-}));
-
-mock.module("@atlas/api/lib/tools/actions", () => ({}));
-
-mock.module("@atlas/api/lib/conversations", () => ({
-  createConversation: mock(() => Promise.resolve(null)),
-  addMessage: mock(() => {}),
-  getConversation: mock(() => Promise.resolve(null)),
-  generateTitle: mock((q: string) => q.slice(0, 80)),
-  listConversations: mock(() => Promise.resolve({ conversations: [], total: 0 })),
-  deleteConversation: mock(() => Promise.resolve(false)),
-  starConversation: async () => false,
-  shareConversation: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
-  unshareConversation: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
-  getShareStatus: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
-  cleanupExpiredShares: mock(() => Promise.resolve(0)),
-  getSharedConversation: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
-  updateNotebookState: mock(() => Promise.resolve({ ok: true })),
-  forkConversation: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
-}));
-
-mock.module("@atlas/api/lib/auth/types", () => ({
-  AUTH_MODES: ["none", "simple-key", "byot", "managed"],
-  ATLAS_ROLES: ["member", "admin", "owner"],
-  createAtlasUser: (id: string, mode: string, label: string, opts?: Record<string, unknown>) =>
-    Object.freeze({ id, mode, label, ...opts }),
-}));
-
-mock.module("@atlas/api/lib/security", () => ({
-  maskConnectionUrl: (url: string) => url.replace(/\/\/.*@/, "//***@"),
-  SENSITIVE_PATTERNS: [],
-}));
+  internal: {
+    encryptUrl: (url: string) => `encrypted:${url}`,
+    decryptUrl: (url: string) => (url as string).replace(/^encrypted:/, ""),
+  },
+});
 
 // --- Import app after mocks ---
 
@@ -255,23 +74,11 @@ const { app } = await import("../index");
 // --- Helpers ---
 
 function setOrgAdmin(orgId: string): void {
-  mockAuthenticateRequest.mockImplementation(() =>
-    Promise.resolve({
-      authenticated: true,
-      mode: "managed",
-      user: { id: "admin-1", mode: "managed", label: "admin@test.com", role: "admin", activeOrganizationId: orgId },
-    }),
-  );
+  mocks.setOrgAdmin(orgId);
 }
 
 function setPlatformAdmin(orgId: string): void {
-  mockAuthenticateRequest.mockImplementation(() =>
-    Promise.resolve({
-      authenticated: true,
-      mode: "managed",
-      user: { id: "platform-admin-1", mode: "managed", label: "platform@test.com", role: "platform_admin", activeOrganizationId: orgId },
-    }),
-  );
+  mocks.setPlatformAdmin(orgId);
 }
 
 function adminRequest(urlPath: string, method = "GET", body?: unknown): Request {
@@ -289,17 +96,16 @@ function adminRequest(urlPath: string, method = "GET", body?: unknown): Request 
 // --- Cleanup ---
 
 afterAll(() => {
-  fs.rmSync(tmpRoot, { recursive: true, force: true });
-  delete process.env.ATLAS_SEMANTIC_ROOT;
+  mocks.cleanup();
 });
 
 // --- Tests ---
 
 describe("admin connections — org scoping", () => {
   beforeEach(() => {
-    mockHasInternalDB = true;
-    mockInternalQuery.mockReset();
-    mockInternalQuery.mockResolvedValue([]);
+    mocks.hasInternalDB = true;
+    mocks.mockInternalQuery.mockReset();
+    mocks.mockInternalQuery.mockResolvedValue([]);
     mockHealthCheck.mockClear();
     setOrgAdmin("org-alpha");
   });
@@ -309,7 +115,7 @@ describe("admin connections — org scoping", () => {
   describe("POST /connections — create stores org_id", () => {
     it("passes orgId to the INSERT query", async () => {
       // register + healthCheck succeed via mock, then encrypt + INSERT
-      mockInternalQuery.mockResolvedValue([]);
+      mocks.mockInternalQuery.mockResolvedValue([]);
 
       const res = await app.fetch(
         adminRequest("/api/v1/admin/connections", "POST", {
@@ -324,7 +130,7 @@ describe("admin connections — org scoping", () => {
       expect(body.id).toBe("analytics");
 
       // Find the INSERT call among internalQuery calls
-      const insertCall = mockInternalQuery.mock.calls.find(
+      const insertCall = mocks.mockInternalQuery.mock.calls.find(
         ([sql]) => typeof sql === "string" && sql.includes("INSERT INTO connections"),
       );
       expect(insertCall).toBeDefined();
@@ -335,7 +141,7 @@ describe("admin connections — org scoping", () => {
 
     it("stores a different org_id for a different workspace admin", async () => {
       setOrgAdmin("org-beta");
-      mockInternalQuery.mockResolvedValue([]);
+      mocks.mockInternalQuery.mockResolvedValue([]);
 
       const res = await app.fetch(
         adminRequest("/api/v1/admin/connections", "POST", {
@@ -346,7 +152,7 @@ describe("admin connections — org scoping", () => {
 
       expect(res.status).toBe(201);
 
-      const insertCall = mockInternalQuery.mock.calls.find(
+      const insertCall = mocks.mockInternalQuery.mock.calls.find(
         ([sql]) => typeof sql === "string" && sql.includes("INSERT INTO connections"),
       );
       expect(insertCall).toBeDefined();
@@ -359,7 +165,7 @@ describe("admin connections — org scoping", () => {
   describe("GET /connections — list filters by org", () => {
     it("workspace admin only sees connections belonging to their org", async () => {
       // getVisibleConnectionIds queries internal DB for org's connections
-      mockInternalQuery.mockImplementation((sql: string) => {
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
         if (sql.includes("SELECT id FROM connections WHERE org_id")) {
           // org-alpha owns "warehouse" only
           return Promise.resolve([{ id: "warehouse" }]);
@@ -384,7 +190,7 @@ describe("admin connections — org scoping", () => {
 
     it("workspace admin with no DB connections only sees default", async () => {
       // No connections in internal DB for this org
-      mockInternalQuery.mockResolvedValue([]);
+      mocks.mockInternalQuery.mockResolvedValue([]);
 
       const res = await app.fetch(
         adminRequest("/api/v1/admin/connections"),
@@ -404,7 +210,7 @@ describe("admin connections — org scoping", () => {
     it("returns 404 when connection belongs to another org", async () => {
       setOrgAdmin("org-alpha");
       // SELECT ... WHERE id = $1 AND org_id = $2 → empty (wrong org)
-      mockInternalQuery.mockResolvedValue([]);
+      mocks.mockInternalQuery.mockResolvedValue([]);
 
       const res = await app.fetch(
         adminRequest("/api/v1/admin/connections/other-org-conn", "PUT", {
@@ -418,7 +224,7 @@ describe("admin connections — org scoping", () => {
       expect(body.error).toBe("not_found");
 
       // Verify the SQL included org_id filter
-      const selectCall = mockInternalQuery.mock.calls.find(
+      const selectCall = mocks.mockInternalQuery.mock.calls.find(
         ([sql]) => typeof sql === "string" && sql.includes("SELECT") && sql.includes("connections"),
       );
       expect(selectCall).toBeDefined();
@@ -429,7 +235,7 @@ describe("admin connections — org scoping", () => {
     it("succeeds when connection belongs to the admin's org", async () => {
       setOrgAdmin("org-alpha");
       // SELECT returns existing connection
-      mockInternalQuery.mockImplementation((sql: string) => {
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
         if (sql.includes("SELECT") && sql.includes("connections")) {
           return Promise.resolve([{
             id: "warehouse",
@@ -460,7 +266,7 @@ describe("admin connections — org scoping", () => {
     it("returns 404 when connection belongs to another org", async () => {
       setOrgAdmin("org-alpha");
       // SELECT ... WHERE id = $1 AND org_id = $2 → empty
-      mockInternalQuery.mockResolvedValue([]);
+      mocks.mockInternalQuery.mockResolvedValue([]);
 
       const res = await app.fetch(
         adminRequest("/api/v1/admin/connections/other-org-conn", "DELETE"),
@@ -474,7 +280,7 @@ describe("admin connections — org scoping", () => {
 
     it("succeeds when connection belongs to the admin's org", async () => {
       setOrgAdmin("org-alpha");
-      mockInternalQuery.mockImplementation((sql: string) => {
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
         if (sql.includes("SELECT") && sql.includes("connections")) {
           return Promise.resolve([{ id: "warehouse" }]);
         }
@@ -510,7 +316,7 @@ describe("admin connections — org scoping", () => {
     it("returns 404 when health-checking a connection not visible to org", async () => {
       setOrgAdmin("org-alpha");
       // org-alpha does not own other-org-conn
-      mockInternalQuery.mockResolvedValue([]);
+      mocks.mockInternalQuery.mockResolvedValue([]);
 
       const res = await app.fetch(
         adminRequest("/api/v1/admin/connections/other-org-conn/test", "POST"),
@@ -521,7 +327,7 @@ describe("admin connections — org scoping", () => {
 
     it("succeeds when health-checking a connection visible to org", async () => {
       setOrgAdmin("org-alpha");
-      mockInternalQuery.mockImplementation((sql: string) => {
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
         if (sql.includes("SELECT id FROM connections WHERE org_id")) {
           return Promise.resolve([{ id: "warehouse" }]);
         }
@@ -552,7 +358,7 @@ describe("admin connections — org scoping", () => {
     it("returns 404 when draining a connection not visible to org", async () => {
       setOrgAdmin("org-alpha");
       // org-alpha does not own other-org-conn
-      mockInternalQuery.mockResolvedValue([]);
+      mocks.mockInternalQuery.mockResolvedValue([]);
 
       const res = await app.fetch(
         adminRequest("/api/v1/admin/connections/other-org-conn/drain", "POST"),
@@ -629,7 +435,7 @@ describe("admin connections — org scoping", () => {
       expect(ids).toContain("other-org-conn");
 
       // getVisibleConnectionIds returns null for platform admins (no DB query), so no org filter applied
-      const orgFilterCall = mockInternalQuery.mock.calls.find(
+      const orgFilterCall = mocks.mockInternalQuery.mock.calls.find(
         ([sql]) => typeof sql === "string" && sql.includes("SELECT id FROM connections WHERE org_id"),
       );
       expect(orgFilterCall).toBeUndefined();
@@ -638,7 +444,7 @@ describe("admin connections — org scoping", () => {
     it("update succeeds for connection from any org", async () => {
       setPlatformAdmin("org-alpha");
       // Platform admin SELECT omits org_id filter
-      mockInternalQuery.mockImplementation((sql: string) => {
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
         if (sql.includes("SELECT") && sql.includes("connections")) {
           return Promise.resolve([{
             id: "other-org-conn",
@@ -660,7 +466,7 @@ describe("admin connections — org scoping", () => {
       expect(res.status).toBe(200);
 
       // Verify the SELECT did NOT include org_id filter
-      const selectCall = mockInternalQuery.mock.calls.find(
+      const selectCall = mocks.mockInternalQuery.mock.calls.find(
         ([sql]) => typeof sql === "string" && sql.includes("SELECT") && sql.includes("connections"),
       );
       expect(selectCall).toBeDefined();
@@ -669,7 +475,7 @@ describe("admin connections — org scoping", () => {
 
     it("delete succeeds for connection from any org", async () => {
       setPlatformAdmin("org-alpha");
-      mockInternalQuery.mockImplementation((sql: string) => {
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
         if (sql.includes("SELECT") && sql.includes("connections")) {
           return Promise.resolve([{ id: "other-org-conn" }]);
         }
@@ -692,7 +498,7 @@ describe("admin connections — org scoping", () => {
   describe("getVisibleConnectionIds — via list endpoint behavior", () => {
     it("always includes 'default' for workspace admins", async () => {
       // Even if internal DB returns no connections for this org
-      mockInternalQuery.mockResolvedValue([]);
+      mocks.mockInternalQuery.mockResolvedValue([]);
 
       const res = await app.fetch(
         adminRequest("/api/v1/admin/connections"),
@@ -706,7 +512,7 @@ describe("admin connections — org scoping", () => {
     });
 
     it("includes org-owned connections from internal DB", async () => {
-      mockInternalQuery.mockImplementation((sql: string) => {
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
         if (sql.includes("SELECT id FROM connections WHERE org_id")) {
           return Promise.resolve([{ id: "warehouse" }]);
         }
@@ -743,7 +549,7 @@ describe("admin connections — org scoping", () => {
     it("get-by-id returns 404 for connection not visible to org", async () => {
       setOrgAdmin("org-alpha");
       // org-alpha does not own other-org-conn
-      mockInternalQuery.mockResolvedValue([]);
+      mocks.mockInternalQuery.mockResolvedValue([]);
 
       const res = await app.fetch(
         adminRequest("/api/v1/admin/connections/other-org-conn"),
@@ -754,7 +560,7 @@ describe("admin connections — org scoping", () => {
 
     it("get-by-id succeeds for connection visible to org", async () => {
       setOrgAdmin("org-alpha");
-      mockInternalQuery.mockImplementation((sql: string) => {
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
         if (sql.includes("SELECT id FROM connections WHERE org_id")) {
           return Promise.resolve([{ id: "warehouse" }]);
         }

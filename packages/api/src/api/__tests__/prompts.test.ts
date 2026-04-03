@@ -14,242 +14,20 @@ import {
   beforeEach,
   afterAll,
   mock,
-  type Mock,
 } from "bun:test";
-import { createConnectionMock } from "@atlas/api/testing/connection";
-import * as fs from "fs";
-import * as path from "path";
+import { createApiTestMocks } from "@atlas/api/testing/api-test-mocks";
 
-// --- Temp semantic fixtures ---
-
-const tmpRoot = path.join(process.env.TMPDIR ?? "/tmp", `atlas-prompts-test-${Date.now()}`);
-fs.mkdirSync(path.join(tmpRoot, "entities"), { recursive: true });
-fs.writeFileSync(
-  path.join(tmpRoot, "entities", "stub.yml"),
-  "table: stub\ndescription: stub\ndimensions:\n  id:\n    type: integer\n",
-);
-fs.writeFileSync(path.join(tmpRoot, "catalog.yml"), "name: Test\n");
-process.env.ATLAS_SEMANTIC_ROOT = tmpRoot;
-
-// --- Mocks (before any import that touches the modules) ---
-
-const mockAuthenticateRequest: Mock<(req: Request) => Promise<unknown>> = mock(
-  () =>
-    Promise.resolve({
-      authenticated: true,
-      mode: "simple-key",
-      user: { id: "admin-1", mode: "simple-key", label: "Admin", role: "admin", activeOrganizationId: "org-1" },
-    }),
-);
-
-const mockCheckRateLimit: Mock<() => { allowed: boolean; retryAfterMs?: number }> = mock(
-  () => ({ allowed: true }),
-);
-
-mock.module("@atlas/api/lib/auth/middleware", () => ({
-  authenticateRequest: mockAuthenticateRequest,
-  checkRateLimit: mockCheckRateLimit,
-  getClientIP: mock(() => null),
-  resetRateLimits: mock(() => {}),
-  _stopCleanup: mock(() => {}),
-  _setValidatorOverrides: mock(() => {}),
-}));
-
-mock.module("@atlas/api/lib/auth/detect", () => ({
-  detectAuthMode: () => "simple-key",
-  resetAuthModeCache: () => {},
-}));
-
-mock.module("@atlas/api/lib/startup", () => ({
-  validateEnvironment: mock(() => Promise.resolve([])),
-  getStartupWarnings: mock(() => []),
-}));
-
-mock.module("@atlas/api/lib/db/connection", () =>
-  createConnectionMock({
-    connections: {
-      get: () => null,
-      getDefault: () => null,
-      describe: () => [{ id: "default", dbType: "postgres" }],
-      healthCheck: mock(() => Promise.resolve({ status: "healthy" })),
-      register: mock(() => {}),
-      unregister: mock(() => {}),
-      has: mock(() => false),
-      getForOrg: () => null,
-    },
-    resolveDatasourceUrl: () => "postgresql://stub",
-  }),
-);
-
-mock.module("@atlas/api/lib/semantic", () => ({
-  getOrgWhitelistedTables: () => new Set(),
-  loadOrgWhitelist: async () => new Map(),
-  invalidateOrgWhitelist: () => {},
-  getOrgSemanticIndex: async () => "",
-  invalidateOrgSemanticIndex: () => {},
-  _resetOrgWhitelists: () => {},
-  _resetOrgSemanticIndexes: () => {},
-  getWhitelistedTables: () => new Set(["stub"]),
-  getCrossSourceJoins: () => [],
-  _resetWhitelists: () => {},
-  registerPluginEntities: () => {},
-  _resetPluginEntities: () => {},
-}));
-
-let mockHasInternalDB = true;
-
-const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<Record<string, unknown>[]>> = mock(
-  () => Promise.resolve([]),
-);
+// --- Unified mocks ---
 
 const mockGetInternalDB = mock(() => ({
   query: mock(async () => ({ rows: [] })),
 }));
 
-mock.module("@atlas/api/lib/db/internal", () => ({
-  hasInternalDB: () => mockHasInternalDB,
-  internalQuery: mockInternalQuery,
-  internalExecute: mock(() => {}),
-  getInternalDB: mockGetInternalDB,
-  closeInternalDB: mock(async () => {}),
-  migrateInternalDB: mock(async () => {}),
-  loadSavedConnections: mock(async () => 0),
-  _resetPool: mock(() => {}),
-  _resetCircuitBreaker: mock(() => {}),
-  encryptUrl: (url: string) => url,
-  decryptUrl: (url: string) => url,
-  getEncryptionKey: () => null,
-  isPlaintextUrl: (value: string) => /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(value),
-  _resetEncryptionKeyCache: mock(() => {}),
-  findPatternBySQL: async () => null,
-  insertLearnedPattern: () => {},
-  incrementPatternCount: () => {},
-  getApprovedPatterns: mock(async () => []),
-  upsertSuggestion: mock(async () => "created"),
-  getSuggestionsByTables: mock(async () => []),
-  getPopularSuggestions: mock(async () => []),
-  incrementSuggestionClick: mock(),
-  deleteSuggestion: mock(async () => false),
-  getAuditLogQueries: mock(async () => []),
-  getWorkspaceStatus: mock(async () => "active"),
-  getWorkspaceDetails: mock(async () => null),
-  updateWorkspaceStatus: mock(async () => true),
-  updateWorkspacePlanTier: mock(async () => true),
-  cascadeWorkspaceDelete: mock(async () => ({ conversations: 0, semanticEntities: 0, learnedPatterns: 0, suggestions: 0, scheduledTasks: 0, settings: 0 })),
-  getWorkspaceHealthSummary: mock(async () => null),
-  getWorkspaceRegion: mock(async () => null),
-}));
-
-mock.module("@atlas/api/lib/cache", () => ({
-  getCache: mock(() => ({ get: () => null, set: () => {}, delete: () => false, flush: () => {}, stats: () => ({}) })),
-  cacheEnabled: mock(() => true),
-  setCacheBackend: mock(() => {}),
-  flushCache: mock(() => {}),
-  getDefaultTtl: mock(() => 300000),
-  _resetCache: mock(() => {}),
-  buildCacheKey: mock(() => "mock-key"),
-}));
-
-mock.module("@atlas/api/lib/workspace", () => ({
-  checkWorkspaceStatus: mock(async () => ({ allowed: true })),
-}));
-
-mock.module("@atlas/api/lib/learn/pattern-cache", () => ({
-  buildLearnedPatternsSection: async () => "",
-  getRelevantPatterns: async () => [],
-  invalidatePatternCache: () => {},
-  extractKeywords: () => new Set(),
-  _resetPatternCache: () => {},
-}));
-
-mock.module("@atlas/api/lib/plugins/registry", () => ({
-  plugins: {
-    describe: () => [],
-    get: () => undefined,
-    getStatus: () => undefined,
-    enable: () => false,
-    disable: () => false,
-    isEnabled: () => false,
-    getAllHealthy: () => [],
-    getByType: () => [],
-    size: 0,
+const mocks = createApiTestMocks({
+  internal: {
+    getInternalDB: mockGetInternalDB,
   },
-  PluginRegistry: class {},
-}));
-
-mock.module("@atlas/api/lib/plugins/settings", () => ({
-  loadPluginSettings: mock(async () => 0),
-  savePluginEnabled: mock(async () => {}),
-  savePluginConfig: mock(async () => {}),
-  getPluginConfig: mock(async () => null),
-  getAllPluginSettings: mock(async () => []),
-}));
-
-mock.module("@atlas/api/lib/plugins/hooks", () => ({
-  dispatchHook: mock(async () => {}),
-}));
-
-mock.module("@atlas/api/lib/tools/explore", () => ({
-  getExploreBackendType: () => "just-bash",
-  getActiveSandboxPluginId: () => null,
-  explore: { type: "function" },
-}));
-
-mock.module("@atlas/api/lib/agent", () => ({
-  runAgent: mock(() =>
-    Promise.resolve({
-      toUIMessageStreamResponse: () => new Response("stream", { status: 200 }),
-      text: Promise.resolve("answer"),
-    }),
-  ),
-}));
-
-mock.module("@atlas/api/lib/tools/actions", () => ({}));
-
-mock.module("@atlas/api/lib/conversations", () => ({
-  createConversation: mock(() => Promise.resolve(null)),
-  addMessage: mock(() => {}),
-  getConversation: mock(() => Promise.resolve(null)),
-  generateTitle: mock((q: string) => q.slice(0, 80)),
-  listConversations: mock(() => Promise.resolve({ conversations: [], total: 0 })),
-  deleteConversation: mock(() => Promise.resolve(false)),
-  starConversation: mock(() => Promise.resolve(false)),
-  shareConversation: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
-  unshareConversation: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
-  getShareStatus: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
-  cleanupExpiredShares: mock(() => Promise.resolve(0)),
-  getSharedConversation: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
-  updateNotebookState: mock(() => Promise.resolve({ ok: true })),
-  forkConversation: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
-}));
-
-mock.module("@atlas/api/lib/auth/server", () => ({
-  getAuthInstance: () => null,
-  listAllUsers: mock(() => Promise.resolve([])),
-  setUserRole: mock(async () => {}),
-  setBanStatus: mock(async () => {}),
-  setPasswordChangeRequired: mock(async () => {}),
-  deleteUser: mock(async () => {}),
-}));
-
-mock.module("@atlas/api/lib/scheduled-tasks", () => ({
-  listScheduledTasks: mock(async () => []),
-  getScheduledTask: mock(async () => null),
-  createScheduledTask: mock(async () => ({})),
-  updateScheduledTask: mock(async () => null),
-  deleteScheduledTask: mock(async () => false),
-  listScheduledTaskRuns: mock(async () => []),
-  getRecentRuns: mock(async () => []),
-  scheduledTaskBelongsToUser: mock(async () => false),
-}));
-
-mock.module("@atlas/api/lib/scheduler", () => ({
-  getSchedulerEngine: mock(() => null),
-}));
-
-mock.module("@atlas/api/lib/scheduler/preview", () => ({
-  previewSchedule: () => [],
-}));
+});
 
 // --- Import the app AFTER mocks ---
 
@@ -311,24 +89,23 @@ function mockItemRow(overrides: Partial<Record<string, unknown>> = {}) {
 // --- Cleanup ---
 
 afterAll(() => {
-  fs.rmSync(tmpRoot, { recursive: true, force: true });
-  delete process.env.ATLAS_SEMANTIC_ROOT;
+  mocks.cleanup();
 });
 
 // --- Reset mocks between tests ---
 
 beforeEach(() => {
-  mockAuthenticateRequest.mockImplementation(() =>
+  mocks.mockAuthenticateRequest.mockImplementation(() =>
     Promise.resolve({
       authenticated: true,
       mode: "simple-key",
       user: { id: "admin-1", mode: "simple-key", label: "Admin", role: "admin", activeOrganizationId: "org-1" },
     }),
   );
-  mockHasInternalDB = true;
-  mockInternalQuery.mockReset();
-  mockInternalQuery.mockImplementation(() => Promise.resolve([]));
-  mockCheckRateLimit.mockImplementation(() => ({ allowed: true }));
+  mocks.hasInternalDB = true;
+  mocks.mockInternalQuery.mockReset();
+  mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([]));
+  mocks.mockCheckRateLimit.mockImplementation(() => ({ allowed: true }));
   mockGetInternalDB.mockImplementation(() => ({
     query: mock(async () => ({ rows: [] })),
   }));
@@ -343,7 +120,7 @@ describe("user-facing prompt routes", () => {
 
   describe("GET /api/v1/prompts", () => {
     it("returns collections for authenticated user", async () => {
-      mockInternalQuery.mockImplementation(() =>
+      mocks.mockInternalQuery.mockImplementation(() =>
         Promise.resolve([mockCollectionRow(), mockCollectionRow({ id: "col-2", is_builtin: true, org_id: null })]),
       );
       const res = await userReq("GET", "/");
@@ -362,7 +139,7 @@ describe("user-facing prompt routes", () => {
     });
 
     it("returns empty array when no internal DB", async () => {
-      mockHasInternalDB = false;
+      mocks.hasInternalDB = false;
       const res = await userReq("GET", "/");
       expect(res.status).toBe(200);
       const body = (await res.json()) as Record<string, unknown>;
@@ -370,7 +147,7 @@ describe("user-facing prompt routes", () => {
     });
 
     it("returns 401 for unauthenticated", async () => {
-      mockAuthenticateRequest.mockImplementation(() =>
+      mocks.mockAuthenticateRequest.mockImplementation(() =>
         Promise.resolve({ authenticated: false, error: "Invalid token", status: 401 }),
       );
       const res = await userReq("GET", "/");
@@ -378,7 +155,7 @@ describe("user-facing prompt routes", () => {
     });
 
     it("returns 429 when rate limited", async () => {
-      mockCheckRateLimit.mockImplementation(() => ({ allowed: false, retryAfterMs: 60000 }));
+      mocks.mockCheckRateLimit.mockImplementation(() => ({ allowed: false, retryAfterMs: 60000 }));
       const res = await userReq("GET", "/");
       expect(res.status).toBe(429);
       const body = (await res.json()) as Record<string, unknown>;
@@ -386,17 +163,17 @@ describe("user-facing prompt routes", () => {
     });
 
     it("queries without org_id filter in single-tenant mode", async () => {
-      mockAuthenticateRequest.mockImplementation(() =>
+      mocks.mockAuthenticateRequest.mockImplementation(() =>
         Promise.resolve({
           authenticated: true,
           mode: "simple-key",
           user: { id: "admin-1", mode: "simple-key", label: "Admin", role: "admin" },
         }),
       );
-      mockInternalQuery.mockImplementation(() => Promise.resolve([]));
+      mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([]));
       const res = await userReq("GET", "/");
       expect(res.status).toBe(200);
-      const calls = mockInternalQuery.mock.calls;
+      const calls = mocks.mockInternalQuery.mock.calls;
       expect(calls.length).toBeGreaterThanOrEqual(1);
       const sql = calls[0][0] as string;
       expect(sql).toContain("org_id IS NULL");
@@ -408,7 +185,7 @@ describe("user-facing prompt routes", () => {
   describe("GET /api/v1/prompts/:id", () => {
     it("returns collection with items", async () => {
       let callCount = 0;
-      mockInternalQuery.mockImplementation(() => {
+      mocks.mockInternalQuery.mockImplementation(() => {
         callCount++;
         if (callCount === 1) return Promise.resolve([mockCollectionRow()]);
         return Promise.resolve([mockItemRow(), mockItemRow({ id: "item-2", sort_order: 1 })]);
@@ -427,19 +204,19 @@ describe("user-facing prompt routes", () => {
     });
 
     it("returns 404 for missing collection", async () => {
-      mockInternalQuery.mockImplementation(() => Promise.resolve([]));
+      mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([]));
       const res = await userReq("GET", "/nonexistent");
       expect(res.status).toBe(404);
     });
 
     it("returns 404 when no internal DB", async () => {
-      mockHasInternalDB = false;
+      mocks.hasInternalDB = false;
       const res = await userReq("GET", "/col-1");
       expect(res.status).toBe(404);
     });
 
     it("returns 401 for unauthenticated", async () => {
-      mockAuthenticateRequest.mockImplementation(() =>
+      mocks.mockAuthenticateRequest.mockImplementation(() =>
         Promise.resolve({ authenticated: false, error: "Invalid token", status: 401 }),
       );
       const res = await userReq("GET", "/col-1");
@@ -453,7 +230,7 @@ describe("admin prompt routes", () => {
 
   describe("auth gating", () => {
     it("returns 403 for non-admin user", async () => {
-      mockAuthenticateRequest.mockImplementation(() =>
+      mocks.mockAuthenticateRequest.mockImplementation(() =>
         Promise.resolve({
           authenticated: true,
           mode: "simple-key",
@@ -465,7 +242,7 @@ describe("admin prompt routes", () => {
     });
 
     it("returns 401 for unauthenticated", async () => {
-      mockAuthenticateRequest.mockImplementation(() =>
+      mocks.mockAuthenticateRequest.mockImplementation(() =>
         Promise.resolve({
           authenticated: false,
           error: "Invalid token",
@@ -477,7 +254,7 @@ describe("admin prompt routes", () => {
     });
 
     it("returns 404 when no internal DB", async () => {
-      mockHasInternalDB = false;
+      mocks.hasInternalDB = false;
       const res = await adminReq("GET", "/");
       expect(res.status).toBe(404);
       const body = (await res.json()) as Record<string, unknown>;
@@ -485,7 +262,7 @@ describe("admin prompt routes", () => {
     });
 
     it("returns 429 when rate limited", async () => {
-      mockCheckRateLimit.mockImplementation(() => ({ allowed: false, retryAfterMs: 60000 }));
+      mocks.mockCheckRateLimit.mockImplementation(() => ({ allowed: false, retryAfterMs: 60000 }));
       const res = await adminReq("GET", "/");
       expect(res.status).toBe(429);
     });
@@ -495,7 +272,7 @@ describe("admin prompt routes", () => {
 
   describe("GET /admin/prompts", () => {
     it("returns collections with total count", async () => {
-      mockInternalQuery.mockImplementation(() =>
+      mocks.mockInternalQuery.mockImplementation(() =>
         Promise.resolve([mockCollectionRow(), mockCollectionRow({ id: "col-2", is_builtin: true })]),
       );
       const res = await adminReq("GET", "/");
@@ -510,7 +287,7 @@ describe("admin prompt routes", () => {
 
   describe("POST /admin/prompts (create)", () => {
     it("creates collection with org_id from session", async () => {
-      mockInternalQuery.mockImplementation(() =>
+      mocks.mockInternalQuery.mockImplementation(() =>
         Promise.resolve([mockCollectionRow()]),
       );
       const res = await adminReq("POST", "/", { name: "Test", industry: "saas", description: "A test" });
@@ -518,7 +295,7 @@ describe("admin prompt routes", () => {
       const body = (await res.json()) as Record<string, unknown>;
       expect(body.name).toBe("My Collection");
       // Verify org_id was passed from session
-      const calls = mockInternalQuery.mock.calls;
+      const calls = mocks.mockInternalQuery.mock.calls;
       expect(calls.length).toBeGreaterThanOrEqual(1);
       const params = calls[0][1] as unknown[];
       expect(params[0]).toBe("org-1"); // org_id from session
@@ -544,7 +321,7 @@ describe("admin prompt routes", () => {
   describe("PATCH /admin/prompts/:id (update)", () => {
     it("updates collection", async () => {
       let callCount = 0;
-      mockInternalQuery.mockImplementation(() => {
+      mocks.mockInternalQuery.mockImplementation(() => {
         callCount++;
         if (callCount === 1) return Promise.resolve([mockCollectionRow()]);
         return Promise.resolve([mockCollectionRow({ name: "Updated" })]);
@@ -556,7 +333,7 @@ describe("admin prompt routes", () => {
     });
 
     it("returns 403 for built-in collection", async () => {
-      mockInternalQuery.mockImplementation(() =>
+      mocks.mockInternalQuery.mockImplementation(() =>
         Promise.resolve([mockCollectionRow({ is_builtin: true })]),
       );
       const res = await adminReq("PATCH", "/col-1", { name: "Updated" });
@@ -566,13 +343,13 @@ describe("admin prompt routes", () => {
     });
 
     it("returns 404 for missing collection", async () => {
-      mockInternalQuery.mockImplementation(() => Promise.resolve([]));
+      mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([]));
       const res = await adminReq("PATCH", "/col-1", { name: "Updated" });
       expect(res.status).toBe(404);
     });
 
     it("returns 400 when no recognized fields provided", async () => {
-      mockInternalQuery.mockImplementation(() =>
+      mocks.mockInternalQuery.mockImplementation(() =>
         Promise.resolve([mockCollectionRow()]),
       );
       const res = await adminReq("PATCH", "/col-1", { foo: "bar" });
@@ -585,7 +362,7 @@ describe("admin prompt routes", () => {
   describe("DELETE /admin/prompts/:id", () => {
     it("deletes custom collection", async () => {
       let callCount = 0;
-      mockInternalQuery.mockImplementation(() => {
+      mocks.mockInternalQuery.mockImplementation(() => {
         callCount++;
         if (callCount === 1) return Promise.resolve([mockCollectionRow()]);
         return Promise.resolve([]);
@@ -597,7 +374,7 @@ describe("admin prompt routes", () => {
     });
 
     it("returns 403 for built-in collection", async () => {
-      mockInternalQuery.mockImplementation(() =>
+      mocks.mockInternalQuery.mockImplementation(() =>
         Promise.resolve([mockCollectionRow({ is_builtin: true })]),
       );
       const res = await adminReq("DELETE", "/col-1");
@@ -605,7 +382,7 @@ describe("admin prompt routes", () => {
     });
 
     it("returns 404 for missing collection", async () => {
-      mockInternalQuery.mockImplementation(() => Promise.resolve([]));
+      mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([]));
       const res = await adminReq("DELETE", "/col-1");
       expect(res.status).toBe(404);
     });
@@ -616,7 +393,7 @@ describe("admin prompt routes", () => {
   describe("POST /admin/prompts/:id/items (add item)", () => {
     it("adds item to collection", async () => {
       let callCount = 0;
-      mockInternalQuery.mockImplementation((sql: string) => {
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
         callCount++;
         if (callCount === 1) return Promise.resolve([mockCollectionRow()]);
         if (sql.includes("MAX")) return Promise.resolve([{ max: 2 }]);
@@ -630,7 +407,7 @@ describe("admin prompt routes", () => {
     });
 
     it("returns 403 for built-in collection", async () => {
-      mockInternalQuery.mockImplementation(() =>
+      mocks.mockInternalQuery.mockImplementation(() =>
         Promise.resolve([mockCollectionRow({ is_builtin: true })]),
       );
       const res = await adminReq("POST", "/col-1/items", { question: "Test?" });
@@ -638,7 +415,7 @@ describe("admin prompt routes", () => {
     });
 
     it("returns 400 for missing question", async () => {
-      mockInternalQuery.mockImplementation(() =>
+      mocks.mockInternalQuery.mockImplementation(() =>
         Promise.resolve([mockCollectionRow()]),
       );
       const res = await adminReq("POST", "/col-1/items", { description: "No question" });
@@ -646,7 +423,7 @@ describe("admin prompt routes", () => {
     });
 
     it("returns 404 for missing collection", async () => {
-      mockInternalQuery.mockImplementation(() => Promise.resolve([]));
+      mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([]));
       const res = await adminReq("POST", "/col-1/items", { question: "Test?" });
       expect(res.status).toBe(404);
     });
@@ -657,7 +434,7 @@ describe("admin prompt routes", () => {
   describe("PATCH /admin/prompts/:collectionId/items/:itemId (update item)", () => {
     it("updates item", async () => {
       let callCount = 0;
-      mockInternalQuery.mockImplementation(() => {
+      mocks.mockInternalQuery.mockImplementation(() => {
         callCount++;
         // 1st call: collection lookup
         if (callCount === 1) return Promise.resolve([mockCollectionRow()]);
@@ -673,7 +450,7 @@ describe("admin prompt routes", () => {
     });
 
     it("returns 403 for built-in collection", async () => {
-      mockInternalQuery.mockImplementation(() =>
+      mocks.mockInternalQuery.mockImplementation(() =>
         Promise.resolve([mockCollectionRow({ is_builtin: true })]),
       );
       const res = await adminReq("PATCH", "/col-1/items/item-1", { question: "New?" });
@@ -682,7 +459,7 @@ describe("admin prompt routes", () => {
 
     it("returns 404 for missing item", async () => {
       let callCount = 0;
-      mockInternalQuery.mockImplementation(() => {
+      mocks.mockInternalQuery.mockImplementation(() => {
         callCount++;
         if (callCount === 1) return Promise.resolve([mockCollectionRow()]);
         return Promise.resolve([]);
@@ -693,7 +470,7 @@ describe("admin prompt routes", () => {
 
     it("returns 400 when no recognized fields provided", async () => {
       let callCount = 0;
-      mockInternalQuery.mockImplementation(() => {
+      mocks.mockInternalQuery.mockImplementation(() => {
         callCount++;
         if (callCount === 1) return Promise.resolve([mockCollectionRow()]);
         return Promise.resolve([mockItemRow()]);
@@ -708,7 +485,7 @@ describe("admin prompt routes", () => {
   describe("DELETE /admin/prompts/:collectionId/items/:itemId", () => {
     it("deletes item", async () => {
       let callCount = 0;
-      mockInternalQuery.mockImplementation(() => {
+      mocks.mockInternalQuery.mockImplementation(() => {
         callCount++;
         // 1st call: collection lookup
         if (callCount === 1) return Promise.resolve([mockCollectionRow()]);
@@ -724,7 +501,7 @@ describe("admin prompt routes", () => {
     });
 
     it("returns 403 for built-in collection", async () => {
-      mockInternalQuery.mockImplementation(() =>
+      mocks.mockInternalQuery.mockImplementation(() =>
         Promise.resolve([mockCollectionRow({ is_builtin: true })]),
       );
       const res = await adminReq("DELETE", "/col-1/items/item-1");
@@ -733,7 +510,7 @@ describe("admin prompt routes", () => {
 
     it("returns 404 for missing item", async () => {
       let callCount = 0;
-      mockInternalQuery.mockImplementation(() => {
+      mocks.mockInternalQuery.mockImplementation(() => {
         callCount++;
         if (callCount === 1) return Promise.resolve([mockCollectionRow()]);
         return Promise.resolve([]);
@@ -748,7 +525,7 @@ describe("admin prompt routes", () => {
   describe("PUT /admin/prompts/:id/reorder", () => {
     it("returns 400 when itemIds don't match existing items", async () => {
       let callCount = 0;
-      mockInternalQuery.mockImplementation(() => {
+      mocks.mockInternalQuery.mockImplementation(() => {
         callCount++;
         if (callCount === 1) return Promise.resolve([mockCollectionRow()]);
         return Promise.resolve([{ id: "item-1" }, { id: "item-2" }]);
@@ -761,7 +538,7 @@ describe("admin prompt routes", () => {
 
     it("returns 400 when itemIds count differs from existing", async () => {
       let callCount = 0;
-      mockInternalQuery.mockImplementation(() => {
+      mocks.mockInternalQuery.mockImplementation(() => {
         callCount++;
         if (callCount === 1) return Promise.resolve([mockCollectionRow()]);
         return Promise.resolve([{ id: "item-1" }, { id: "item-2" }]);
@@ -771,7 +548,7 @@ describe("admin prompt routes", () => {
     });
 
     it("returns 400 for empty itemIds", async () => {
-      mockInternalQuery.mockImplementation(() =>
+      mocks.mockInternalQuery.mockImplementation(() =>
         Promise.resolve([mockCollectionRow()]),
       );
       const res = await adminReq("PUT", "/col-1/reorder", { itemIds: [] });
@@ -779,7 +556,7 @@ describe("admin prompt routes", () => {
     });
 
     it("returns 403 for built-in collection", async () => {
-      mockInternalQuery.mockImplementation(() =>
+      mocks.mockInternalQuery.mockImplementation(() =>
         Promise.resolve([mockCollectionRow({ is_builtin: true })]),
       );
       const res = await adminReq("PUT", "/col-1/reorder", { itemIds: ["item-1"] });
@@ -787,14 +564,14 @@ describe("admin prompt routes", () => {
     });
 
     it("returns 404 for missing collection", async () => {
-      mockInternalQuery.mockImplementation(() => Promise.resolve([]));
+      mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([]));
       const res = await adminReq("PUT", "/col-1/reorder", { itemIds: ["item-1"] });
       expect(res.status).toBe(404);
     });
 
     it("reorders items when getInternalDB supports transactions", async () => {
       let callCount = 0;
-      mockInternalQuery.mockImplementation(() => {
+      mocks.mockInternalQuery.mockImplementation(() => {
         callCount++;
         if (callCount === 1) return Promise.resolve([mockCollectionRow()]);
         return Promise.resolve([{ id: "item-1" }, { id: "item-2" }]);
@@ -815,7 +592,7 @@ describe("admin prompt routes", () => {
 
   describe("error handling", () => {
     it("returns 500 with requestId on DB error (admin list)", async () => {
-      mockInternalQuery.mockImplementation(() => Promise.reject(new Error("DB failed")));
+      mocks.mockInternalQuery.mockImplementation(() => Promise.reject(new Error("DB failed")));
       const res = await adminReq("GET", "/");
       expect(res.status).toBe(500);
       const body = (await res.json()) as Record<string, unknown>;
@@ -824,7 +601,7 @@ describe("admin prompt routes", () => {
     });
 
     it("returns 500 with requestId on DB error (user list)", async () => {
-      mockInternalQuery.mockImplementation(() => Promise.reject(new Error("DB failed")));
+      mocks.mockInternalQuery.mockImplementation(() => Promise.reject(new Error("DB failed")));
       const res = await userReq("GET", "/");
       expect(res.status).toBe(500);
       const body = (await res.json()) as Record<string, unknown>;
@@ -833,7 +610,7 @@ describe("admin prompt routes", () => {
     });
 
     it("returns 500 with requestId on DB error (user detail)", async () => {
-      mockInternalQuery.mockImplementation(() => Promise.reject(new Error("DB failed")));
+      mocks.mockInternalQuery.mockImplementation(() => Promise.reject(new Error("DB failed")));
       const res = await userReq("GET", "/col-1");
       expect(res.status).toBe(500);
       const body = (await res.json()) as Record<string, unknown>;
@@ -842,7 +619,7 @@ describe("admin prompt routes", () => {
     });
 
     it("returns 500 with requestId on DB error (admin create)", async () => {
-      mockInternalQuery.mockImplementation(() => Promise.reject(new Error("DB failed")));
+      mocks.mockInternalQuery.mockImplementation(() => Promise.reject(new Error("DB failed")));
       const res = await adminReq("POST", "/", { name: "Test", industry: "saas" });
       expect(res.status).toBe(500);
       const body = (await res.json()) as Record<string, unknown>;

@@ -19,7 +19,9 @@ import { hasInternalDB, internalQuery, getInternalDB } from "@atlas/api/lib/db/i
 import { getConfig } from "@atlas/api/lib/config";
 import { exportWorkspaceBundle } from "./export";
 import type { MigrationStatus, MigrationPhase, ExportBundle } from "@useatlas/types";
-import { CLEANUP_GRACE_PERIOD_DAYS } from "@useatlas/types";
+
+/** Days to wait before cleaning up source region data after migration. */
+const CLEANUP_GRACE_PERIOD_DAYS = 7;
 
 const log = createLogger("region-migration");
 

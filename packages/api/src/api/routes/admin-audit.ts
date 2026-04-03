@@ -304,7 +304,7 @@ adminAudit.openapi(listAuditRoute, async (c) => {
 
     const filters = buildAuditFilters(orgId!, (k) => c.req.query(k));
     if (!filters.ok) {
-      return c.json({ error: filters.error, message: filters.message }, filters.status);
+      return c.json({ error: filters.error, message: filters.message, requestId: c.get("requestId") as string }, filters.status);
     }
     const { conditions, params, paramIdx } = filters;
     const whereClause = `WHERE ${conditions.join(" AND ")}`;
@@ -346,7 +346,7 @@ adminAudit.openapi(exportAuditRoute, async (c) => {
 
     const filters = buildAuditFilters(orgId!, (k) => c.req.query(k));
     if (!filters.ok) {
-      return c.json({ error: filters.error, message: filters.message }, filters.status);
+      return c.json({ error: filters.error, message: filters.message, requestId: c.get("requestId") as string }, filters.status);
     }
     const { conditions, params, paramIdx } = filters;
     const whereClause = `WHERE ${conditions.join(" AND ")}`;
@@ -408,11 +408,11 @@ adminAudit.openapi(getAuditStatsRoute, async (c) => {
     const [totalResult, dailyResult] = yield* Effect.promise(() => Promise.all([
       internalQuery<{ total: string; errors: string }>(
         `SELECT COUNT(*) as total, COUNT(*) FILTER (WHERE NOT success) as errors FROM audit_log WHERE deleted_at IS NULL AND org_id = $1`,
-        [orgId],
+        [orgId!],
       ),
       internalQuery<{ day: string; count: string }>(
         `SELECT DATE(timestamp) as day, COUNT(*) as count FROM audit_log WHERE deleted_at IS NULL AND org_id = $1 AND timestamp >= NOW() - INTERVAL '7 days' GROUP BY DATE(timestamp) ORDER BY day DESC`,
-        [orgId],
+        [orgId!],
       ),
     ]));
 
@@ -439,11 +439,11 @@ adminAudit.openapi(getAuditFacetsRoute, async (c) => {
     const [tableResult, columnResult] = yield* Effect.promise(() => Promise.allSettled([
       internalQuery<{ val: string }>(
         `SELECT DISTINCT jsonb_array_elements_text(tables_accessed) AS val FROM audit_log WHERE deleted_at IS NULL AND org_id = $1 AND tables_accessed IS NOT NULL AND jsonb_typeof(tables_accessed) = 'array' ORDER BY val LIMIT 200`,
-        [orgId],
+        [orgId!],
       ),
       internalQuery<{ val: string }>(
         `SELECT DISTINCT jsonb_array_elements_text(columns_accessed) AS val FROM audit_log WHERE deleted_at IS NULL AND org_id = $1 AND columns_accessed IS NOT NULL AND jsonb_typeof(columns_accessed) = 'array' ORDER BY val LIMIT 200`,
-        [orgId],
+        [orgId!],
       ),
     ]));
 
@@ -454,9 +454,14 @@ adminAudit.openapi(getAuditFacetsRoute, async (c) => {
       log.warn({ err: columnResult.reason instanceof Error ? columnResult.reason : new Error(String(columnResult.reason)) }, "Failed to load column facets");
     }
 
+    const warnings: string[] = [];
+    if (tableResult.status === "rejected") warnings.push("Failed to load table filter values");
+    if (columnResult.status === "rejected") warnings.push("Failed to load column filter values");
+
     return c.json({
       tables: tableResult.status === "fulfilled" ? tableResult.value.map((r) => r.val) : [],
       columns: columnResult.status === "fulfilled" ? columnResult.value.map((r) => r.val) : [],
+      ...(warnings.length > 0 && { warnings }),
     }, 200);
   }), { label: "query audit facets" });
 });
@@ -467,7 +472,7 @@ adminAudit.openapi(auditVolumeRoute, async (c) => {
     const { orgId } = yield* AuthContext;
     const range = analyticsDateRange(orgId!, (k) => c.req.query(k));
     if ("error" in range) {
-      throw new HTTPException(400, { res: Response.json({ error: "invalid_request", message: range.error }, { status: 400 }) });
+      throw new HTTPException(400, { res: Response.json({ error: "invalid_request", message: range.error, requestId: c.get("requestId") as string }, { status: 400 }) });
     }
 
     const rows = yield* Effect.promise(() => internalQuery<{ day: string; count: string; errors: string }>(
@@ -493,7 +498,7 @@ adminAudit.openapi(auditSlowRoute, async (c) => {
     const { orgId } = yield* AuthContext;
     const range = analyticsDateRange(orgId!, (k) => c.req.query(k));
     if ("error" in range) {
-      throw new HTTPException(400, { res: Response.json({ error: "invalid_request", message: range.error }, { status: 400 }) });
+      throw new HTTPException(400, { res: Response.json({ error: "invalid_request", message: range.error, requestId: c.get("requestId") as string }, { status: 400 }) });
     }
 
     const rows = yield* Effect.promise(() => internalQuery<{
@@ -523,7 +528,7 @@ adminAudit.openapi(auditFrequentRoute, async (c) => {
     const { orgId } = yield* AuthContext;
     const range = analyticsDateRange(orgId!, (k) => c.req.query(k));
     if ("error" in range) {
-      throw new HTTPException(400, { res: Response.json({ error: "invalid_request", message: range.error }, { status: 400 }) });
+      throw new HTTPException(400, { res: Response.json({ error: "invalid_request", message: range.error, requestId: c.get("requestId") as string }, { status: 400 }) });
     }
 
     const rows = yield* Effect.promise(() => internalQuery<{
@@ -554,7 +559,7 @@ adminAudit.openapi(auditErrorsRoute, async (c) => {
     const { orgId } = yield* AuthContext;
     const range = analyticsDateRange(orgId!, (k) => c.req.query(k));
     if ("error" in range) {
-      throw new HTTPException(400, { res: Response.json({ error: "invalid_request", message: range.error }, { status: 400 }) });
+      throw new HTTPException(400, { res: Response.json({ error: "invalid_request", message: range.error, requestId: c.get("requestId") as string }, { status: 400 }) });
     }
 
     const errorCondition = `${range.where} AND NOT success`;
@@ -581,7 +586,7 @@ adminAudit.openapi(auditUsersRoute, async (c) => {
     const { orgId } = yield* AuthContext;
     const range = analyticsDateRange(orgId!, (k) => c.req.query(k));
     if ("error" in range) {
-      throw new HTTPException(400, { res: Response.json({ error: "invalid_request", message: range.error }, { status: 400 }) });
+      throw new HTTPException(400, { res: Response.json({ error: "invalid_request", message: range.error, requestId: c.get("requestId") as string }, { status: 400 }) });
     }
 
     const rows = yield* Effect.promise(() => internalQuery<{

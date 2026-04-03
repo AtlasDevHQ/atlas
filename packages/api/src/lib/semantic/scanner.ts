@@ -140,7 +140,12 @@ export function scanEntities(root: string): ScanResult {
   const entities: ScannedEntity[] = [];
   const warnings: string[] = [];
 
-  for (const { dir, sourceName } of getEntityDirs(root).dirs) {
+  const { dirs, rootScanFailed } = getEntityDirs(root);
+  if (rootScanFailed) {
+    warnings.push("Failed to read semantic root directory");
+  }
+
+  for (const { dir, sourceName } of dirs) {
     let files: string[];
     try {
       files = fs.readdirSync(dir).filter((f) => f.endsWith(".yml"));

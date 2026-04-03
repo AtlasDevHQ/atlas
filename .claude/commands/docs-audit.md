@@ -332,9 +332,9 @@ find packages/web/src/app -maxdepth 1 -type d
 
 Check if new top-level features (ee/, signup flow, demo mode) have corresponding docs pages.
 
-### J4. Recently shipped features from ROADMAP
+### J4. Recently shipped features
 
-Read `.claude/research/ROADMAP.md` and find all `[x]` items in the current milestone. For each shipped feature, verify there's a corresponding docs page or section. This catches features that were built but never documented.
+Read `.claude/research/ROADMAP.md` and find all `[x]` items in the most recent milestone(s). For each shipped feature, verify there's a corresponding docs page or section. This catches features that were built but never documented.
 
 ---
 

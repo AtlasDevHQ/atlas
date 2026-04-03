@@ -5,7 +5,7 @@ You are helping decide what to work on next in Atlas.
 Run these in parallel:
 - `gh issue list -R AtlasDevHQ/atlas --state open --limit 30 --json number,title,labels,milestone` — all open issues
 - `git log --oneline -15` — what shipped recently
-- Read `.claude/research/ROADMAP.md` — current milestones and roadmap
+- Read `.claude/research/ROADMAP.md` — shipped history and Ideas/Backlog
 
 **Step 2: Assess priorities**
 
@@ -13,7 +13,7 @@ Work from the open issues. Priority order:
 1. **Bugs and security** — fix before building new things
 2. **Current milestone items** — highest priority within the active milestone
 3. **Next milestone** — only if current milestone is nearly done
-4. **Only if zero open issues** — consult ROADMAP.md for the next milestone to plan
+4. **Only if zero open issues** — consult the Ideas/Backlog section of ROADMAP.md and suggest what to plan next
 
 Read the top 2-3 candidate issues in detail: `gh issue view <N> -R AtlasDevHQ/atlas`
 
@@ -35,12 +35,12 @@ For each suggestion:
 - **Architecture refactors** (label: `architecture`) are good candidates when bugs are clear and features are on track. These are module-deepening refactors from `/improve-codebase-architecture` — they reduce duplication and improve testability. When suggesting one, note the expected line-count impact from the issue body. After an architecture refactor ships, remind the session to record the win in `.claude/research/architecture-wins.md`
 
 **Docs check:**
-After reviewing recent commits, check if docs are stale — especially after renames, config changes, or new features. Grep for old names/paths in `apps/docs/`, `docs/`, plugin READMEs, and ROADMAP.md. Include doc fixes in your suggestions or fix them directly if trivial (< 5 lines).
+After reviewing recent commits, check if docs are stale — especially after renames, config changes, or new features. Grep for old names/paths in `apps/docs/`. Include doc fixes in your suggestions or fix them directly if trivial (< 5 lines).
 
 **File issues for incidental findings:**
 During assessment, if you notice bugs, tech debt, stale references, or pre-existing errors that aren't tracked, file GH issues for them immediately — don't just mention them in chat. Use the standard format:
 ```
-gh issue create -R AtlasDevHQ/atlas --title "fix: <description>" --body "<details>" --label "bug,area: <area>" --milestone "0.x.0 — <name>"
+gh issue create -R AtlasDevHQ/atlas --title "fix: <description>" --body "<details>" --label "bug,area: <area>"
 ```
 This prevents findings from being lost between sessions.
 
@@ -52,7 +52,7 @@ The user runs up to 3 Claude Code sessions in parallel (separate checkouts).
 ```
 ### Prompt [N]: [short title]
 **Issue:** #N
-**Milestone:** 0.x.0
+**Milestone:** X.Y.Z
 **Files:** [key files to create/modify]
 **Branch:** [suggested branch name]
 
@@ -84,14 +84,13 @@ IMPORTANT — Labels:
 
 IMPORTANT — Incidental findings:
 - When you discover bugs, tech debt, stale references, or pre-existing errors during your work that are NOT part of your current task, file a GH issue immediately — do not fix them inline or just mention them in chat
-- Use: `gh issue create -R AtlasDevHQ/atlas --title "fix: <description>" --body "<details>" --label "bug,area: <area>" --milestone "0.x.0 — <name>"`
+- Use: `gh issue create -R AtlasDevHQ/atlas --title "fix: <description>" --body "<details>" --label "bug,area: <area>"`
 - Keep your current work focused — the issue ensures the finding isn't lost
 
 IMPORTANT — Docs impact:
 - When your change affects user-facing behavior, configuration, APIs, or plugin interfaces, update the relevant docs:
   - Docs site pages: `apps/docs/content/docs/` (MDX files)
   - Design docs: `docs/design/` and `docs/guides/`
-  - ROADMAP: `.claude/research/ROADMAP.md` — mark completed items with `[x]` and add PR numbers
   - READMEs: plugin READMEs in `plugins/*/README.md`, SDK README in `packages/plugin-sdk/README.md`
 - Include docs updates in the same PR as the code change — don't leave them for a follow-up
 - If a code change has large docs impact (new feature page, restructured sections), note it in the PR description
@@ -107,7 +106,7 @@ IMPORTANT — Docs impact:
 
 **Issue hygiene:**
 - Always use `-R AtlasDevHQ/atlas` with all `gh` commands (no default repo set)
-- When creating new issues, always include: type label, area label(s), milestone
+- When creating new issues, always include: type label, area label(s), milestone (if one exists)
 - If a parent issue has all sub-issues closed and the core work is done, suggest closing it or note what remains
 
 **Label reference:**
@@ -115,13 +114,4 @@ IMPORTANT — Docs impact:
 - Area: `area: api`, `area: web`, `area: cli`, `area: plugins`, `area: sandbox`, `area: deploy`, `area: ci`, `area: sdk`, `area: mcp`, `area: starter`, `area: docs`, `area: testing`
 - Community: `good first issue`, `help wanted`
 
-**Milestone reference:**
-- 0.1.0–0.5.4 — All CLOSED (docs, plugins, admin, chat, launch, polish)
-- 0.6.0 — Governance & Operational Hardening (CLOSED)
-- 0.7.0 — Performance & Scale (CLOSED)
-- 0.7.1–0.7.4 — Refinement arc (CLOSED: cleanup, type safety, error handling, test hardening)
-- 0.7.5 — Docs Completeness (active)
-- 0.8.0 — Intelligence & Learning
-- Check live state: `gh api repos/AtlasDevHQ/atlas/milestones --jq '.[] | "\(.title) (\(.state))"'`
-
-**Strategic context:** `.claude/research/design/competitive-landscape.md` has competitive analysis and rationale for milestone ordering.
+**Strategic context:** `.claude/research/design/competitive-landscape.md` has competitive analysis and rationale for feature prioritization.

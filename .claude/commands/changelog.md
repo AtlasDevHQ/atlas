@@ -25,8 +25,6 @@ Figure out what period to cover:
    gh pr list -R AtlasDevHQ/atlas --state merged --limit 50 --json number,title,mergedAt,labels --jq '.[] | select(.mergedAt > "<last_entry_date>") | "#\(.number) \(.title)"'
    ```
 
-4. Read `.claude/research/ROADMAP.md` — identify which milestone this work belongs to
-
 **Step 2: Categorize changes**
 
 Group all commits/PRs into Keep a Changelog categories:
@@ -56,7 +54,7 @@ Group all commits/PRs into Keep a Changelog categories:
 Write the changelog entry following the existing format in `CHANGELOG.md`:
 
 ```markdown
-## X.Y.0 — Theme Name (YYYY-MM-DD)
+## X.Y.Z — Theme Name (YYYY-MM-DD)
 
 ### Added
 
@@ -97,10 +95,11 @@ Wait for approval before writing.
 After approval:
 
 1. Insert the new entry into `CHANGELOG.md` — below `## [Unreleased]` and above the previous entry
-2. Commit:
+2. If this is a customer-meaningful release, also add an entry to `apps/docs/src/components/changelog-data.ts` (the public changelog)
+3. Commit:
    ```
    git add CHANGELOG.md
-   git commit -m "docs: changelog for X.Y.0"
+   git commit -m "docs: changelog for X.Y.Z"
    git push
    ```
 
@@ -111,7 +110,6 @@ After approval:
 - Follow the existing format exactly — consistency matters
 - Don't inflate the changelog — skip trivial internal changes
 - Each bullet should make sense to someone who uses Atlas but doesn't read the source
-- Version numbers come from ROADMAP milestones, not package.json versions
 - If a PR fixed an issue, link the PR (it has the code diff). Link issues only for commit-only fixes
 - Date format: YYYY-MM-DD
 - The `## [Unreleased]` section always stays at the top (empty)

@@ -1,8 +1,8 @@
 You are researching the Atlas codebase to answer a question or plan a change.
 
 **Start with these for high-level context:**
-- `.claude/research/ROADMAP.md` — current milestones, shipped work, what's next. The active milestone (0.5.0 — Launch) is a 3-week sprint ending early April focused on embeddable widget, BigQuery, Python SDK, and launch prep
-- `.claude/research/design/competitive-landscape.md` — competitive analysis, positioning, licensing strategy, strategic rationale for roadmap ordering
+- `.claude/research/ROADMAP.md` — shipped milestones, Ideas/Backlog for future work
+- `.claude/research/design/competitive-landscape.md` — competitive analysis, positioning, licensing strategy
 
 **Module map:**
 
@@ -24,6 +24,7 @@ You are researching the Atlas codebase to answer a question or plan a change.
 | Config | `packages/api/src/lib/config.ts` — declarative config (atlas.config.ts) |
 | Startup | `packages/api/src/lib/startup.ts` — env validation, diagnostics |
 | Errors | `packages/api/src/lib/errors.ts` — ChatErrorCode, structured error handling |
+| Effect services | `packages/api/src/lib/effect/` — services, layers, errors, hono bridge |
 | Security | `packages/api/src/lib/security.ts` — secret scrubbing |
 | Logger | `packages/api/src/lib/logger.ts` — Pino-based, redaction, request context |
 | Tracing | `packages/api/src/lib/tracing.ts` — OpenTelemetry spans |
@@ -42,7 +43,7 @@ You are researching the Atlas codebase to answer a question or plan a change.
 | Chat UI | `packages/web/src/ui/components/atlas-chat.tsx` — top-level orchestrator |
 | UI context | `packages/web/src/ui/context.tsx` — AtlasUIProvider |
 | Chat components | `packages/web/src/ui/components/chat/` — 14 components |
-| Admin console | `packages/web/src/app/admin/` — read-only admin pages |
+| Admin console | `packages/web/src/app/admin/` — admin pages |
 | CLI | `packages/cli/bin/atlas.ts` — init, diff, query, mcp, plugin, migrate |
 | CLI enrichment | `packages/cli/bin/enrich.ts` — LLM enrichment |
 | MCP server | `packages/mcp/src/server.ts` — createAtlasMcpServer() |

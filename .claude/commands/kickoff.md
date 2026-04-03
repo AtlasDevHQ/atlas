@@ -1,61 +1,61 @@
 # Milestone Kickoff
 
-Spin up the next milestone: create GitHub issues from ROADMAP line items, label them, and assign milestones.
+Spin up a new milestone: create GitHub issues from planned work, label them, and assign milestones.
 
-**Run when starting a new milestone** — all previous milestones should be shipped and tidied first.
+**Run when starting a new milestone** — previous milestones should be shipped and tidied first.
 
 ---
 
-**Step 1: Identify the next milestone**
+**Step 1: Identify the milestone**
 
 Run these in parallel:
 
-1. Read `.claude/research/ROADMAP.md` — find the first milestone section where NOT all items are `[x]`
+1. Read `.claude/research/ROADMAP.md` — find the next planned milestone or the Ideas/Backlog section
 2. Current open issues (should be zero or near-zero if tidy was run):
    ```
    gh issue list -R AtlasDevHQ/atlas --state open --limit 30 --json number,title,labels,milestone
    ```
 3. Available milestones:
    ```
-   gh api repos/AtlasDevHQ/atlas/milestones --jq '.[] | "\(.number)\t\(.title)\t\(.state)\t\(.open_issues)/\(.closed_issues)"'
+   gh api repos/AtlasDevHQ/atlas/milestones?state=all --jq '.[] | "\(.number)\t\(.title)\t\(.state)\t\(.open_issues)/\(.closed_issues)"'
    ```
 
 **Step 2: Validate readiness**
 
 Before creating issues:
-- Confirm the previous milestone is fully shipped (all ROADMAP items checked, all issues closed)
+- Confirm the previous milestone is fully shipped (all issues closed)
 - If there are straggler open issues from a previous milestone, flag them and ask the user whether to close, move forward, or defer
-- Identify the target milestone name and number (e.g., `0.3.0 — Admin & Operations`, milestone #3)
+- Identify the target milestone name and number — create one if needed:
+  ```
+  gh api repos/AtlasDevHQ/atlas/milestones -f title="X.Y.Z — Theme Name" -f description="Brief description"
+  ```
 
 **Step 3: Plan the issues**
 
-For each unchecked `- [ ]` item in the target milestone section of ROADMAP.md:
+For each planned item in the target milestone:
 
 1. **Parse the line item** — extract the title and any parenthetical notes
 2. **Determine issue type and areas:**
    - Type label: `feature` (new capability), `refactor` (restructuring), `chore` (maintenance), `docs` (documentation), `bug` (fix)
    - Area labels: infer from the item description — `area: api`, `area: web`, `area: cli`, `area: plugins`, `area: sandbox`, `area: deploy`, `area: ci`, `area: sdk`, `area: mcp`, `area: starter`, `area: docs`, `area: testing`
-3. **Estimate priority and size:**
-   - Priority: P0 (blocking/foundational), P1 (important), P2 (nice-to-have)
-   - Size: XS (< 1 hour), S (1-4 hours), M (half day), L (1-2 days), XL (3+ days)
-4. **Draft the issue body** — Include:
+3. **Draft the issue body** — Include:
    - One-paragraph description of what needs to be built/changed
-   - Key files likely involved (use the module map from `/research` command)
+   - Key files likely involved
    - Acceptance criteria (3-5 bullet points)
    - Any dependencies on other issues in this milestone
 
 **Before creating anything, present the full plan to the user:**
 
 ```
-## Milestone Kickoff: 0.X.0 — [Name]
+## Milestone Kickoff: X.Y.Z — [Name]
 
-| # | Title | Type | Area(s) | Priority | Size | Dependencies |
-|---|-------|------|---------|----------|------|-------------|
-| 1 | ... | feature | area: api, area: web | P0 | M | — |
-| 2 | ... | feature | area: web | P1 | L | #1 |
-| ... | ... | ... | ... | ... | ... | ... |
+| # | Title | Type | Area(s) | Dependencies |
+|---|-------|------|---------|-------------|
+| 1 | ... | feature | area: api, area: web | — |
+| 2 | ... | feature | area: web | #1 |
+| ... | ... | ... | ... | ... |
 
-Total: N issues (X P0, Y P1, Z P2)
+Total: N issues
 
 Proceed? (y/n)
 ```
@@ -67,11 +67,10 @@ Wait for user confirmation before creating issues.
 For each approved issue, run sequentially (to get issue numbers for cross-references):
 
 ```bash
-# Create the issue
 ISSUE_URL=$(gh issue create -R AtlasDevHQ/atlas \
   --title "<title>" \
   --label "<type>,<area1>,<area2>" \
-  --milestone "0.X.0 — <Name>" \
+  --milestone "X.Y.Z — <Name>" \
   --body "$(cat <<'EOF'
 <description>
 
@@ -95,31 +94,14 @@ echo "Created: $ISSUE_URL"
 **Step 5: Update ROADMAP**
 
 After all issues are created, update `.claude/research/ROADMAP.md`:
-- Add issue numbers to each line item: `- [ ] Action approval UI (#N)`
+- Add issue numbers to each line item: `- [ ] Feature description (#N)`
 - If any items were split into multiple issues, update the line items to reflect the split
-
-**Step 6: Create the docs refinement milestone**
-
-Every major milestone (0.X.0) gets a companion docs refinement milestone (0.X.1) created at the same time. This ensures documentation coverage is tracked as a first-class deliverable, not an afterthought.
-
-```bash
-# Create the docs refinement milestone alongside the main one
-gh api repos/AtlasDevHQ/atlas/milestones -X POST \
-  -f title="0.X.1 — Docs & Polish" \
-  -f state=open \
-  -f description="Documentation, reference pages, and guide coverage for 0.X.0 features. Run /docs-audit after the main milestone ships to populate."
-```
-
-The docs milestone stays empty until the main milestone ships features. Then `/docs-audit` identifies gaps, and issues are filed into the 0.X.1 milestone. This pattern is established: 0.5.1 (Agent-Friendly Docs), 0.7.5 (Docs Completeness), 0.8.1 (included docs work).
-
-**Don't pre-populate the docs milestone with issues** — wait until features ship, then audit. Pre-creating docs issues for unbuilt features creates churn.
 
 ---
 
-**Step 7: Suggest first picks**
+**Step 6: Suggest first picks**
 
 After creating all issues, recommend 2-3 issues to start with (same format as `/next`):
-- Prefer P0 items with no dependencies
 - Prefer foundational work that unblocks other items
 - Consider parallelizability (can multiple sessions work on different items?)
 
@@ -135,13 +117,4 @@ Output session prompts in the same format as `/next` — detailed enough for a f
 - Dependencies should reference issue numbers (use `Depends on #N`)
 - If a ROADMAP line item is vague, flesh it out based on codebase analysis before creating the issue
 - Keep issue titles concise (< 80 chars) and action-oriented ("Add X", "Implement Y", not "X feature")
-- Group related sub-tasks under a parent issue when a line item is too large for a single issue (L or XL)
-
-**Milestone reference:**
-- 0.1.0–0.5.4 — All CLOSED (docs, plugins, admin, chat, launch, polish)
-- 0.6.0 — Governance & Operational Hardening (milestone #7, CLOSED)
-- 0.7.0 — Performance & Scale (milestone #8, CLOSED)
-- 0.7.1–0.7.4 — Refinement arc (CLOSED: cleanup, type safety, error handling, test hardening)
-- 0.7.5 — Docs Completeness (milestone #19)
-- 0.8.0 — Intelligence & Learning (milestone #9)
-- Check live state: `gh api repos/AtlasDevHQ/atlas/milestones --jq '.[] | "\(.title) (\(.state))"'`
+- Group related sub-tasks under a parent issue when a line item is too large for a single issue

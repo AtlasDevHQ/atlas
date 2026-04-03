@@ -1,8 +1,8 @@
 # Roadmap Extension
 
-Research and propose new milestones beyond what's currently planned. Analyze the codebase, competitive landscape, and user needs to draft the next phase of Atlas's roadmap.
+Research and propose the next milestone. Analyze the codebase, competitive landscape, and user needs to draft what comes next.
 
-**Run when the existing roadmap is mostly shipped** and you need to plan what comes after 0.5.0 (or fill gaps in existing milestones).
+**Run when there are zero open issues** and you need to plan the next body of work.
 
 ---
 
@@ -10,18 +10,17 @@ Research and propose new milestones beyond what's currently planned. Analyze the
 
 Run these in parallel:
 
-1. Read `.claude/research/ROADMAP.md` — full roadmap including Ideas/Backlog
-2. Read `apps/docs/content/docs/roadmap.mdx` — public-facing roadmap
-3. Read `CLAUDE.md` — architecture overview, key patterns, config surface
-4. Scan the codebase for TODOs and FIXMEs:
+1. Read `.claude/research/ROADMAP.md` — shipped history and Ideas/Backlog
+2. Read `CLAUDE.md` — architecture overview, key patterns, config surface
+3. Scan the codebase for TODOs and FIXMEs:
    ```
    Grep for: TODO|FIXME|HACK|XXX in packages/ and apps/ (type: ts, output_mode: count)
    ```
-5. Check open issues for themes:
+4. Check open issues for themes:
    ```
    gh issue list -R AtlasDevHQ/atlas --state open --limit 100 --json number,title,labels
    ```
-6. Check GitHub Discussions or community feedback (if any):
+5. Check GitHub Discussions or community feedback (if any):
    ```
    gh api repos/AtlasDevHQ/atlas/issues?labels=help+wanted,good+first+issue --jq '.[].title'
    ```
@@ -36,35 +35,26 @@ Research these areas by reading relevant source files:
 - Look for plugin types defined in the SDK but without reference implementations
 
 ### 2b. Competitive landscape
-- Read `.claude/research/design/competitive-landscape.md` for the full analysis (competitors, positioning, licensing strategy, RAG vs semantic learning, action items)
+- Read `.claude/research/design/competitive-landscape.md` for the full analysis
 - Focus on differentiators Atlas could pursue vs. table-stakes features it's missing
-- Key competitors: WrenAI (AGPL, Docker-only), Vanna (Python library, RAG), Cube D3 (enterprise semantic layer), nao (YC-backed, early)
-- The unmentioned threat: general-purpose AI tools (Cursor, Claude Desktop) with raw database MCP connections
 
 ### 2c. Developer platform potential
 - What would make Atlas attractive as a platform others build on?
 - Plugin ecosystem gaps (what types of plugins are missing?)
 - SDK/API surface area — what can't external developers do today?
-- Integration opportunities (Slack is done — what about Teams, Discord, email digests?)
 
-### 2d. Operational maturity
-- What's needed for production use at scale?
-- Monitoring, alerting, backup/restore, migration tooling
-- Performance: query caching, connection pooling, CDN for assets
-- Security: audit improvements, compliance features, pen-test readiness
-
-### 2e. User experience
+### 2d. User experience
 - Chat UX gaps (mobile, accessibility, theming, embedding)
 - Onboarding flow improvements
 - Semantic layer authoring experience
 - Visualization capabilities
 
-**Step 3: Draft new milestones**
+**Step 3: Draft the next milestone**
 
-Propose 2-4 new milestones beyond what's currently in ROADMAP.md. For each:
+Propose 1-2 milestones. For each:
 
 ```
-## 0.X.0 — [Theme Name]
+## X.Y.Z — [Theme Name]
 
 [2-3 sentence description of why this milestone matters and what it enables.]
 
@@ -80,27 +70,17 @@ Propose 2-4 new milestones beyond what's currently in ROADMAP.md. For each:
 **Guidelines for milestone design:**
 - Each milestone should have a clear theme (not a grab bag)
 - 8-15 items per milestone (shippable in 2-4 weeks of focused work)
-- Order milestones by dependency — foundational before aspirational
-- Mark items that could be community contributions with `(good first issue)`
-- Include a mix of user-facing features and infrastructure/DX work
 - Items from the existing Ideas/Backlog section should be incorporated where they fit
-- **Every 0.X.0 milestone gets a companion 0.X.1 — Docs & Polish milestone.** Don't pre-populate it — it gets filled after features ship via `/docs-audit`. This pattern ensures docs coverage is tracked as a first-class deliverable (established: 0.5.1, 0.7.5, 0.8.1)
-
-**Also propose updates to existing milestones if:**
-- Items should be re-prioritized based on codebase analysis
-- Items should be moved between milestones
-- Items are missing that the codebase analysis revealed as necessary
-- Items are no longer relevant or were already addressed
+- Only propose milestones that have clear customer impact — skip internal-only refactors unless they unblock user-facing work
 
 **Step 4: Present for review**
 
-Output the full proposed roadmap extension. Include:
+Output the full proposed milestone(s). Include:
 
 1. **Summary of findings** — What gaps did the analysis reveal? What themes emerged?
 2. **Proposed milestones** — Full text in ROADMAP format
-3. **Existing milestone updates** — Any changes to 0.3.0-0.5.0
-4. **Ideas/Backlog updates** — New items to add, items to promote to milestones
-5. **Competitive positioning** — 2-3 sentences on how this roadmap differentiates Atlas
+3. **Ideas/Backlog updates** — New items to add, items to promote to milestones
+4. **Competitive positioning** — 2-3 sentences on how this differentiates Atlas
 
 Wait for user feedback before writing changes.
 
@@ -108,13 +88,13 @@ Wait for user feedback before writing changes.
 
 After user approval (with any requested modifications):
 
-1. Update `.claude/research/ROADMAP.md` with new/modified milestones
-2. Update `apps/docs/content/docs/roadmap.mdx` with user-facing summaries for new milestones
-3. Create new GitHub milestones if needed:
+1. Update `.claude/research/ROADMAP.md` with new milestone section
+2. Add a `"planned"` entry to `apps/docs/src/components/changelog-data.ts` if it's a significant release customers should know about
+3. Create the GitHub milestone:
    ```
-   gh api repos/AtlasDevHQ/atlas/milestones -f title="0.X.0 — Theme Name" -f description="Brief description"
+   gh api repos/AtlasDevHQ/atlas/milestones -f title="X.Y.Z — Theme Name" -f description="Brief description"
    ```
-4. Commit and push docs roadmap changes
+4. Commit and push
 
 ---
 

@@ -15,6 +15,7 @@ import * as path from "path";
 import * as yaml from "js-yaml";
 import { createLogger } from "@atlas/api/lib/logger";
 import { getSemanticRoot as getDefaultSemanticRoot } from "./files";
+import { RESERVED_DIRS, scanEntities } from "./scanner";
 
 const log = createLogger("semantic-index");
 
@@ -388,71 +389,22 @@ function formatGlossaryTerm(term: GlossaryTerm): string {
 // --- Loaders ---
 
 function loadEntities(semanticRoot: string): ParsedEntity[] {
-  const entities: ParsedEntity[] = [];
+  const { entities: scanned } = scanEntities(semanticRoot);
 
-  // Default entities
-  loadEntitiesFromDir(path.join(semanticRoot, "entities"), entities);
-
-  // Per-source subdirectories
-  if (fs.existsSync(semanticRoot)) {
-    let entries: fs.Dirent[];
-    try {
-      entries = fs.readdirSync(semanticRoot, { withFileTypes: true });
-    } catch (err) {
-      log.warn({ semanticRoot, err: err instanceof Error ? err.message : String(err) }, "Failed to scan semantic root for per-source entity directories");
-      return entities;
-    }
-    const reserved = new Set(["entities", "metrics"]);
-    for (const entry of entries) {
-      if (!entry.isDirectory() || reserved.has(entry.name)) continue;
-      const subEntities = path.join(semanticRoot, entry.name, "entities");
-      if (fs.existsSync(subEntities)) {
-        loadEntitiesFromDir(subEntities, entities, entry.name);
-      }
-    }
-  }
-
-  return entities;
-}
-
-function loadEntitiesFromDir(
-  dir: string,
-  out: ParsedEntity[],
-  connectionId?: string,
-): void {
-  if (!fs.existsSync(dir)) return;
-
-  let files: string[];
-  try {
-    files = fs.readdirSync(dir).filter((f) => f.endsWith(".yml"));
-  } catch (err) {
-    log.warn({ dir, err: err instanceof Error ? err.message : String(err) }, "Failed to read entities directory for semantic index");
-    return;
-  }
-
-  for (const file of files) {
-    try {
-      const content = fs.readFileSync(path.join(dir, file), "utf-8");
-      const raw = yaml.load(content) as Record<string, unknown> | null;
-      if (!raw || typeof raw !== "object" || !raw.table) continue;
-
-      const entity: ParsedEntity = {
-        name: raw.name as string | undefined,
-        table: raw.table as string,
-        type: raw.type as string | undefined,
-        connection: (raw.connection as string | undefined) ?? connectionId,
-        grain: raw.grain as string | undefined,
-        description: raw.description as string | undefined,
-        dimensions: Array.isArray(raw.dimensions) ? (raw.dimensions as EntityDimension[]) : undefined,
-        measures: Array.isArray(raw.measures) ? (raw.measures as EntityMeasure[]) : undefined,
-        joins: Array.isArray(raw.joins) ? (raw.joins as EntityJoin[]) : undefined,
-        query_patterns: Array.isArray(raw.query_patterns) ? (raw.query_patterns as EntityQueryPattern[]) : undefined,
-      };
-      out.push(entity);
-    } catch (err) {
-      log.warn({ file, dir, err: err instanceof Error ? err.message : String(err) }, "Skipping entity file in semantic index — failed to read or parse");
-    }
-  }
+  return scanned
+    .filter(({ raw }) => raw.table)
+    .map(({ sourceName, raw }) => ({
+      name: raw.name as string | undefined,
+      table: raw.table as string,
+      type: raw.type as string | undefined,
+      connection: (raw.connection as string | undefined) ?? (sourceName !== "default" ? sourceName : undefined),
+      grain: raw.grain as string | undefined,
+      description: raw.description as string | undefined,
+      dimensions: Array.isArray(raw.dimensions) ? (raw.dimensions as EntityDimension[]) : undefined,
+      measures: Array.isArray(raw.measures) ? (raw.measures as EntityMeasure[]) : undefined,
+      joins: Array.isArray(raw.joins) ? (raw.joins as EntityJoin[]) : undefined,
+      query_patterns: Array.isArray(raw.query_patterns) ? (raw.query_patterns as EntityQueryPattern[]) : undefined,
+    }));
 }
 
 function loadMetrics(semanticRoot: string): ParsedMetric[] {
@@ -470,9 +422,8 @@ function loadMetrics(semanticRoot: string): ParsedMetric[] {
       log.warn({ semanticRoot, err: err instanceof Error ? err.message : String(err) }, "Failed to scan semantic root for per-source metric directories");
       return metrics;
     }
-    const reserved = new Set(["entities", "metrics"]);
     for (const entry of entries) {
-      if (!entry.isDirectory() || reserved.has(entry.name)) continue;
+      if (!entry.isDirectory() || RESERVED_DIRS.has(entry.name)) continue;
       const subMetrics = path.join(semanticRoot, entry.name, "metrics");
       if (fs.existsSync(subMetrics)) {
         loadMetricsFromDir(subMetrics, metrics);
@@ -529,9 +480,8 @@ function loadGlossary(semanticRoot: string): GlossaryTerm[] {
       log.warn({ semanticRoot, err: err instanceof Error ? err.message : String(err) }, "Failed to scan semantic root for per-source glossary files");
       return terms;
     }
-    const reserved = new Set(["entities", "metrics"]);
     for (const entry of entries) {
-      if (!entry.isDirectory() || reserved.has(entry.name)) continue;
+      if (!entry.isDirectory() || RESERVED_DIRS.has(entry.name)) continue;
       loadGlossaryFile(
         path.join(semanticRoot, entry.name, "glossary.yml"),
         terms,

@@ -8,9 +8,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import * as yaml from "js-yaml";
-import { createLogger } from "@atlas/api/lib/logger";
-
-const log = createLogger("semantic-files");
+import { scanEntities, getEntityDirs } from "./scanner";
 
 // ---------------------------------------------------------------------------
 // Semantic layer root
@@ -82,75 +80,34 @@ interface DiscoverEntitiesResult {
 }
 
 export function discoverEntities(root: string): DiscoverEntitiesResult {
+  const { entities: scanned, warnings } = scanEntities(root);
   const entities: EntitySummary[] = [];
-  const warnings: string[] = [];
 
-  const defaultDir = path.join(root, "entities");
-  if (fs.existsSync(defaultDir)) {
-    loadEntitiesFromDir(defaultDir, "default", root, entities, warnings);
-  }
-
-  // Per-source subdirectories (e.g. semantic/warehouse/entities/)
-  const RESERVED_DIRS = new Set(["entities", "metrics"]);
-  if (fs.existsSync(root)) {
-    try {
-      const entries = fs.readdirSync(root, { withFileTypes: true });
-      for (const entry of entries) {
-        if (!entry.isDirectory() || RESERVED_DIRS.has(entry.name)) continue;
-        const subEntities = path.join(root, entry.name, "entities");
-        if (fs.existsSync(subEntities)) {
-          loadEntitiesFromDir(subEntities, entry.name, root, entities, warnings);
-        }
-      }
-    } catch (err) {
-      log.warn({ err: err instanceof Error ? err : new Error(String(err)), root }, "Failed to scan semantic root for per-source directories");
-      warnings.push("Failed to read semantic root directory");
+  for (const { sourceName, raw, filePath } of scanned) {
+    if (!raw.table) {
+      warnings.push(`Entity file missing required 'table' field: ${path.relative(root, filePath)}`);
+      continue;
     }
+
+    const dimensions = raw.dimensions && typeof raw.dimensions === "object"
+      ? Object.keys(raw.dimensions)
+      : [];
+    const joins = Array.isArray(raw.joins) ? raw.joins : (raw.joins && typeof raw.joins === "object" ? Object.keys(raw.joins) : []);
+    const measures = Array.isArray(raw.measures) ? raw.measures : (raw.measures && typeof raw.measures === "object" ? Object.keys(raw.measures) : []);
+
+    entities.push({
+      table: String(raw.table),
+      description: typeof raw.description === "string" ? raw.description : "",
+      columnCount: dimensions.length,
+      joinCount: Array.isArray(joins) ? joins.length : 0,
+      measureCount: Array.isArray(measures) ? measures.length : 0,
+      connection: typeof raw.connection === "string" ? raw.connection : null,
+      type: typeof raw.type === "string" ? raw.type : null,
+      source: sourceName,
+    });
   }
 
   return { entities, warnings };
-}
-
-function loadEntitiesFromDir(dir: string, source: string, root: string, out: EntitySummary[], warnings: string[]): void {
-  let files: string[];
-  try {
-    files = fs.readdirSync(dir).filter((f) => f.endsWith(".yml"));
-  } catch (err) {
-    log.warn({ err: err instanceof Error ? err : new Error(String(err)), dir, source }, "Failed to read entities directory");
-    warnings.push(`Failed to read directory: ${path.relative(root, dir)}`);
-    return;
-  }
-
-  for (const file of files) {
-    try {
-      const raw = readYamlFile(path.join(dir, file)) as Record<string, unknown>;
-      if (!raw || typeof raw !== "object") continue;
-      if (!raw.table) {
-        warnings.push(`Entity file missing required 'table' field: ${path.relative(root, path.join(dir, file))}`);
-        continue;
-      }
-
-      const dimensions = raw.dimensions && typeof raw.dimensions === "object"
-        ? Object.keys(raw.dimensions)
-        : [];
-      const joins = Array.isArray(raw.joins) ? raw.joins : (raw.joins && typeof raw.joins === "object" ? Object.keys(raw.joins) : []);
-      const measures = Array.isArray(raw.measures) ? raw.measures : (raw.measures && typeof raw.measures === "object" ? Object.keys(raw.measures) : []);
-
-      out.push({
-        table: String(raw.table),
-        description: typeof raw.description === "string" ? raw.description : "",
-        columnCount: dimensions.length,
-        joinCount: Array.isArray(joins) ? joins.length : 0,
-        measureCount: Array.isArray(measures) ? measures.length : 0,
-        connection: typeof raw.connection === "string" ? raw.connection : null,
-        type: typeof raw.type === "string" ? raw.type : null,
-        source,
-      });
-    } catch (err) {
-      log.warn({ err: err instanceof Error ? err : new Error(String(err)), file, dir, source }, "Failed to parse entity YAML file");
-      warnings.push(`Failed to parse entity: ${path.relative(root, path.join(dir, file))}`);
-    }
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -170,88 +127,48 @@ interface DiscoverTablesResult {
 }
 
 export function discoverTables(root: string): DiscoverTablesResult {
+  const { entities: scanned, warnings } = scanEntities(root);
   const tables: TableInfo[] = [];
-  const warnings: string[] = [];
 
-  const defaultDir = path.join(root, "entities");
-  if (fs.existsSync(defaultDir)) {
-    loadTablesFromDir(defaultDir, root, tables, warnings);
-  }
-
-  const RESERVED_DIRS = new Set(["entities", "metrics"]);
-  if (fs.existsSync(root)) {
-    try {
-      const entries = fs.readdirSync(root, { withFileTypes: true });
-      for (const entry of entries) {
-        if (!entry.isDirectory() || RESERVED_DIRS.has(entry.name)) continue;
-        const subEntities = path.join(root, entry.name, "entities");
-        if (fs.existsSync(subEntities)) {
-          loadTablesFromDir(subEntities, root, tables, warnings);
-        }
-      }
-    } catch (err) {
-      log.warn({ err: err instanceof Error ? err : new Error(String(err)), root }, "Failed to scan semantic root for tables");
-      warnings.push("Failed to read semantic root directory");
+  for (const { raw, filePath } of scanned) {
+    if (!raw.table) {
+      warnings.push(`Entity file missing required 'table' field: ${path.relative(root, filePath)}`);
+      continue;
     }
-  }
 
-  return { tables, warnings };
-}
-
-function loadTablesFromDir(dir: string, root: string, out: TableInfo[], warnings: string[]): void {
-  let files: string[];
-  try {
-    files = fs.readdirSync(dir).filter((f) => f.endsWith(".yml"));
-  } catch (err) {
-    log.warn({ err: err instanceof Error ? err : new Error(String(err)), dir }, "Failed to read entities directory for tables");
-    warnings.push(`Failed to read directory: ${path.relative(root, dir)}`);
-    return;
-  }
-
-  for (const file of files) {
-    try {
-      const raw = readYamlFile(path.join(dir, file)) as Record<string, unknown>;
-      if (!raw || typeof raw !== "object") continue;
-      if (!raw.table) {
-        warnings.push(`Entity file missing required 'table' field: ${path.relative(root, path.join(dir, file))}`);
-        continue;
-      }
-
-      const columns: TableColumn[] = [];
-      const dims = raw.dimensions;
-      if (dims && typeof dims === "object") {
-        if (Array.isArray(dims)) {
-          for (const d of dims) {
-            if (d && typeof d === "object" && typeof d.name === "string") {
-              columns.push({
-                name: d.name,
-                type: typeof d.type === "string" ? d.type : "string",
-                description: typeof d.description === "string" ? d.description : "",
-              });
-            }
-          }
-        } else {
-          for (const [key, val] of Object.entries(dims)) {
-            const dim = val as Record<string, unknown> | undefined;
+    const columns: TableColumn[] = [];
+    const dims = raw.dimensions;
+    if (dims && typeof dims === "object") {
+      if (Array.isArray(dims)) {
+        for (const d of dims) {
+          if (d && typeof d === "object" && typeof d.name === "string") {
             columns.push({
-              name: key,
-              type: typeof dim?.type === "string" ? dim.type : "string",
-              description: typeof dim?.description === "string" ? dim.description : "",
+              name: d.name,
+              type: typeof d.type === "string" ? d.type : "string",
+              description: typeof d.description === "string" ? d.description : "",
             });
           }
         }
+      } else {
+        for (const [key, val] of Object.entries(dims)) {
+          const dim = val as Record<string, unknown> | undefined;
+          columns.push({
+            name: key,
+            type: typeof dim?.type === "string" ? dim.type : "string",
+            description: typeof dim?.description === "string" ? dim.description : "",
+          });
+        }
       }
-
-      out.push({
-        table: String(raw.table),
-        description: typeof raw.description === "string" ? raw.description : "",
-        columns,
-      });
-    } catch (err) {
-      log.warn({ err: err instanceof Error ? err : new Error(String(err)), file, dir }, "Failed to parse entity YAML for tables");
-      warnings.push(`Failed to parse entity: ${path.relative(root, path.join(dir, file))}`);
     }
+
+    tables.push({
+      table: String(raw.table),
+      description: typeof raw.description === "string" ? raw.description : "",
+      columns,
+    });
   }
+
+  return { tables, warnings };
 }
 
 /**
@@ -260,24 +177,9 @@ function loadTablesFromDir(dir: string, root: string, out: TableInfo[], warnings
  * Caller must validate `name` with isValidEntityName() first.
  */
 export function findEntityFile(root: string, name: string): string | null {
-  const defaultDir = path.join(root, "entities");
-  const defaultFile = path.join(defaultDir, `${name}.yml`);
-  if (fs.existsSync(defaultFile)) return defaultFile;
-
-  // Search per-source subdirectories
-  const RESERVED_DIRS = new Set(["entities", "metrics"]);
-  if (fs.existsSync(root)) {
-    try {
-      const entries = fs.readdirSync(root, { withFileTypes: true });
-      for (const entry of entries) {
-        if (!entry.isDirectory() || RESERVED_DIRS.has(entry.name)) continue;
-        const subFile = path.join(root, entry.name, "entities", `${name}.yml`);
-        if (fs.existsSync(subFile)) return subFile;
-      }
-    } catch (err) {
-      log.warn({ err: err instanceof Error ? err : new Error(String(err)), root, name }, "Failed to scan subdirectories for entity file");
-    }
+  for (const { dir } of getEntityDirs(root).dirs) {
+    const file = path.join(dir, `${name}.yml`);
+    if (fs.existsSync(file)) return file;
   }
-
   return null;
 }

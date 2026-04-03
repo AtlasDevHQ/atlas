@@ -26,6 +26,7 @@ import { z } from "zod";
 import { getSemanticRoot as getDefaultSemanticRoot } from "./files";
 import { createLogger } from "@atlas/api/lib/logger";
 import { invalidateSemanticIndex } from "./search";
+import { getEntityDirs } from "./scanner";
 
 const log = createLogger("semantic");
 
@@ -151,13 +152,6 @@ function loadEntitiesFromDir(
 }
 
 /**
- * Directory names at the semantic root that are part of the default connection's
- * structure, not per-source subdirectories. These are skipped when scanning for
- * source-specific directories.
- */
-const RESERVED_DIRS = new Set(["entities", "metrics", ".orgs"]);
-
-/**
  * Load entity YAMLs and partition tables by connection ID.
  *
  * Supports two directory layouts:
@@ -184,27 +178,16 @@ function loadTablesByConnection(
 
   const root = semanticRoot ?? getDefaultSemanticRoot();
 
-  // 1. Default entities (backward compat — semantic/entities/*.yml)
-  loadEntitiesFromDir(path.join(root, "entities"), "default", byConnection, crossJoins);
+  const { dirs, rootScanFailed } = getEntityDirs(root);
+  if (rootScanFailed) {
+    log.error({ root }, "Failed to scan semantic root — per-source whitelist entries may be missing");
+  }
 
-  // 2. Per-source subdirectories (e.g. semantic/warehouse/entities/*.yml)
-  if (fs.existsSync(root)) {
-    let entries: fs.Dirent[];
-    try {
-      entries = fs.readdirSync(root, { withFileTypes: true });
-    } catch (err) {
-      log.error({ root, err: err instanceof Error ? err.message : String(err) }, "Failed to scan semantic root — skipping per-source discovery");
-      return byConnection;
+  for (const { dir, sourceName } of dirs) {
+    if (sourceName !== "default") {
+      log.info({ source: sourceName, dir }, "Discovered per-source entities directory");
     }
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-      if (RESERVED_DIRS.has(entry.name)) continue;
-      const subEntities = path.join(root, entry.name, "entities");
-      if (fs.existsSync(subEntities)) {
-        log.info({ source: entry.name, dir: subEntities }, "Discovered per-source entities directory");
-        loadEntitiesFromDir(subEntities, entry.name, byConnection, crossJoins);
-      }
-    }
+    loadEntitiesFromDir(dir, sourceName, byConnection, crossJoins);
   }
 
   const hasPartitioned = Array.from(byConnection.keys()).some((k) => k !== "default");

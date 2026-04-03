@@ -369,3 +369,23 @@ Tracking module-deepening refactors discovered by the `improve-codebase-architec
 - Unblocks P6 (server startup → Effect Layer DAG)
 
 **Category:** Plugin lifecycle with implicit ordering replaced by Effect Layer composition with type-safe dependencies.
+
+---
+
+## 17. Extract shared semantic entity scanner
+
+**Date:** 2026-04-03
+**Issue:** #1207
+**PR:** #1211
+
+**Problem:** Three modules in `packages/api/src/lib/semantic/` (files.ts, whitelist.ts, search.ts) each independently implemented directory traversal and YAML parsing to load entity files. `RESERVED_DIRS` was defined 5 times (3× in files.ts, 1× in whitelist.ts, 1× inline in search.ts). The scanning pattern — discover `entities/` dir, iterate per-source subdirectories, list `.yml` files, parse YAML — was duplicated in 5 functions.
+
+**Solution:** Extracted `scanner.ts` with four shared primitives: `RESERVED_DIRS` constant, `getEntityDirs(root)` for directory discovery, `readEntityYaml(filePath)` for consistent YAML parsing, and `scanEntities(root)` for full scan returning `{ filePath, sourceName, raw }[]`. Each consumer was migrated to use the scanner and project what it needs from the raw YAML. Whitelist's Zod validation and cross-source join parsing remain in whitelist.ts since they're specific to that module.
+
+**Impact:**
+- **-170 net lines** (248 added in scanner.ts + simplified consumers, 251 removed)
+- Single `RESERVED_DIRS` definition (includes `.orgs` — previously missing from files.ts copies)
+- All 50+ semantic/whitelist tests pass unchanged
+- `findEntityFile()` reduced from 20 lines to 5
+
+**Category:** Three parallel implementations consolidated into a shared scanner with caller-specific projection.

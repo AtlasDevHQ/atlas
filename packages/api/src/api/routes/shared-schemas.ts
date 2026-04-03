@@ -137,3 +137,8 @@ export function createErrorResponseSchema() {
     requestId: z.string().optional(),
   });
 }
+
+/** Escape ILIKE special characters so they are matched literally. */
+export function escapeIlike(s: string): string {
+  return s.replace(/[%_\\]/g, "\\$&");
+}

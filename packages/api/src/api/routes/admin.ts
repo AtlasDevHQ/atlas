@@ -46,6 +46,7 @@ import {
 import { runDiff } from "@atlas/api/lib/semantic/diff";
 import { adminOrgs } from "./admin-orgs";
 import { adminLearnedPatterns } from "./admin-learned-patterns";
+import { adminSessions } from "./admin-sessions";
 import { adminPrompts } from "./admin-prompts";
 import { adminSuggestions } from "./admin-suggestions";
 import { adminSso } from "./admin-sso";
@@ -67,7 +68,7 @@ import { adminSandbox } from "./admin-sandbox";
 import { adminResidency } from "./admin-residency";
 import { adminMigrate } from "./admin-migrate";
 import { registerSemanticEditorRoutes } from "./admin-semantic";
-import { ErrorSchema, AuthErrorSchema, parsePagination } from "./shared-schemas";
+import { ErrorSchema, AuthErrorSchema, parsePagination, escapeIlike } from "./shared-schemas";
 import { runHandler } from "@atlas/api/lib/effect/hono";
 
 const log = createLogger("admin-routes");
@@ -155,6 +156,8 @@ admin.use(withRequestId);
 admin.route("/organizations", adminOrgs);
 admin.route("/learned-patterns", adminLearnedPatterns);
 admin.route("/learned-patterns/", adminLearnedPatterns);
+admin.route("/sessions", adminSessions);
+admin.route("/sessions/", adminSessions);
 admin.route("/prompts", adminPrompts);
 admin.route("/prompts/", adminPrompts);
 admin.route("/suggestions", adminSuggestions);
@@ -345,11 +348,6 @@ function serveRawYaml(_c: Context, requestId: string, filePath: string): never {
       res: Response.json({ error: "internal_error", message: "Failed to read file.", requestId }, { status: 500 }),
     });
   }
-}
-
-/** Escape ILIKE special characters so they are matched literally. */
-function escapeIlike(s: string): string {
-  return s.replace(/[%_\\]/g, "\\$&");
 }
 
 /** Quote a value for safe CSV output (RFC 4180). */
@@ -1522,94 +1520,6 @@ const changePasswordRoute = createRoute({
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     403: { description: "Forbidden — SSO enforcement active", content: { "application/json": { schema: AuthErrorSchema } } },
     404: { description: "Not available — requires managed auth", content: { "application/json": { schema: ErrorSchema } } },
-    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
-    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
-  },
-});
-
-// -- Sessions ---------------------------------------------------------------
-
-const listSessionsRoute = createRoute({
-  method: "get",
-  path: "/sessions",
-  tags: ["Admin — Sessions"],
-  summary: "List sessions",
-  description: "Returns paginated active sessions with user info. Supports search by email or IP.",
-  responses: {
-    200: {
-      description: "Session list",
-      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
-    },
-    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
-    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
-    404: { description: "Not available — requires managed auth", content: { "application/json": { schema: ErrorSchema } } },
-    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
-    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
-  },
-});
-
-const getSessionStatsRoute = createRoute({
-  method: "get",
-  path: "/sessions/stats",
-  tags: ["Admin — Sessions"],
-  summary: "Session statistics",
-  description: "Returns total, active, and unique user session counts.",
-  responses: {
-    200: {
-      description: "Session stats",
-      content: { "application/json": { schema: z.object({ total: z.number(), active: z.number(), uniqueUsers: z.number() }) } },
-    },
-    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
-    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
-    404: { description: "Not available — requires managed auth", content: { "application/json": { schema: ErrorSchema } } },
-    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
-    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
-  },
-});
-
-const deleteSessionRoute = createRoute({
-  method: "delete",
-  path: "/sessions/{id}",
-  tags: ["Admin — Sessions"],
-  summary: "Revoke session",
-  description: "Revokes a single session by ID.",
-  request: {
-    params: z.object({
-      id: z.string().min(1).openapi({ param: { name: "id", in: "path" }, example: "sess_abc123" }),
-    }),
-  },
-  responses: {
-    200: {
-      description: "Session revoked",
-      content: { "application/json": { schema: z.object({ success: z.boolean() }) } },
-    },
-    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
-    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
-    404: { description: "Session not found or not available", content: { "application/json": { schema: ErrorSchema } } },
-    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
-    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
-  },
-});
-
-const deleteUserSessionsRoute = createRoute({
-  method: "delete",
-  path: "/sessions/user/{userId}",
-  tags: ["Admin — Sessions"],
-  summary: "Revoke all user sessions",
-  description: "Revokes all sessions for a specific user.",
-  request: {
-    params: z.object({
-      userId: z.string().min(1).openapi({ param: { name: "userId", in: "path" }, example: "user_abc123" }),
-    }),
-  },
-  responses: {
-    200: {
-      description: "Sessions revoked",
-      content: { "application/json": { schema: z.object({ success: z.boolean(), count: z.number() }) } },
-    },
-    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
-    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
-    404: { description: "No sessions found or not available", content: { "application/json": { schema: ErrorSchema } } },
     429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
@@ -3587,143 +3497,6 @@ admin.openapi(changePasswordRoute, async (c) => {
     }
   });
 });
-
-// -- Sessions ---------------------------------------------------------------
-
-admin.openapi(listSessionsRoute, async (c) => runHandler(c, "list sessions", async () => {
-  await adminAuthAndContext(c);
-  if (!hasInternalDB() || detectAuthMode() !== "managed") {
-    return c.json({ error: "not_available", message: "Session management requires managed auth mode." }, 404);
-  }
-
-  const { limit, offset } = parsePagination(c);
-  const search = c.req.query("search");
-
-  const conditions: string[] = [];
-  const params: unknown[] = [];
-  let paramIdx = 1;
-
-  if (search) {
-    conditions.push(`(u.email ILIKE $${paramIdx} OR s."ipAddress" ILIKE $${paramIdx})`);
-    params.push(`%${escapeIlike(search)}%`);
-    paramIdx++;
-  }
-
-  const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
-
-  const [rows, countResult] = await Promise.all([
-    internalQuery<{
-      id: string;
-      userId: string;
-      userEmail: string | null;
-      createdAt: string;
-      updatedAt: string;
-      expiresAt: string;
-      ipAddress: string | null;
-      userAgent: string | null;
-    }>(
-      `SELECT s.id, s."userId" AS "userId", u.email AS "userEmail",
-              s."createdAt" AS "createdAt", s."updatedAt" AS "updatedAt",
-              s."expiresAt" AS "expiresAt",
-              s."ipAddress" AS "ipAddress", s."userAgent" AS "userAgent"
-       FROM session s
-       LEFT JOIN "user" u ON s."userId" = u.id
-       ${where}
-       ORDER BY s."updatedAt" DESC
-       LIMIT $${paramIdx} OFFSET $${paramIdx + 1}`,
-      [...params, limit, offset],
-    ),
-    internalQuery<{ count: string }>(
-      `SELECT COUNT(*) AS count FROM session s LEFT JOIN "user" u ON s."userId" = u.id ${where}`,
-      params,
-    ),
-  ]);
-
-  return c.json({
-    sessions: rows.map((r) => ({
-      id: r.id,
-      userId: r.userId,
-      userEmail: r.userEmail,
-      createdAt: r.createdAt,
-      updatedAt: r.updatedAt,
-      expiresAt: r.expiresAt,
-      ipAddress: r.ipAddress,
-      userAgent: r.userAgent,
-    })),
-    total: parseInt(String(countResult[0]?.count ?? "0"), 10),
-    limit,
-    offset,
-  }, 200);
-}));
-
-admin.openapi(getSessionStatsRoute, async (c) => runHandler(c, "get session stats", async () => {
-  await adminAuthAndContext(c);
-  if (!hasInternalDB() || detectAuthMode() !== "managed") {
-    return c.json({ error: "not_available", message: "Session management requires managed auth mode." }, 404);
-  }
-
-  const [totalResult, activeResult, uniqueUsersResult] = await Promise.all([
-    internalQuery<{ count: string }>(`SELECT COUNT(*) AS count FROM session`),
-    internalQuery<{ count: string }>(`SELECT COUNT(*) AS count FROM session WHERE "expiresAt" > NOW()`),
-    internalQuery<{ count: string }>(`SELECT COUNT(DISTINCT "userId") AS count FROM session WHERE "expiresAt" > NOW()`),
-  ]);
-
-  return c.json({
-    total: parseInt(String(totalResult[0]?.count ?? "0"), 10),
-    active: parseInt(String(activeResult[0]?.count ?? "0"), 10),
-    uniqueUsers: parseInt(String(uniqueUsersResult[0]?.count ?? "0"), 10),
-  }, 200);
-}));
-
-admin.openapi(deleteSessionRoute, async (c) => runHandler(c, "revoke session", async () => {
-
-  const { id: sessionId } = c.req.valid("param");
-
-  const { authResult, requestId } = await adminAuthAndContext(c);
-
-  if (!hasInternalDB() || detectAuthMode() !== "managed") {
-    return c.json({ error: "not_available", message: "Session management requires managed auth mode." }, 404);
-  }
-
-  const deleted = await internalQuery<{ id: string }>(
-    `DELETE FROM session WHERE id = $1 RETURNING id`,
-    [sessionId],
-  );
-  if (deleted.length === 0) {
-    return c.json({ error: "not_found", message: "Session not found." }, 404);
-  }
-
-  log.info({ requestId, sessionId, actorId: authResult.user?.id }, "Session revoked");
-  return c.json({ success: true }, 200);
-}));
-
-admin.openapi(deleteUserSessionsRoute, async (c) => runHandler(c, "revoke user sessions", async () => {
-
-  const { userId } = c.req.valid("param");
-
-  const { authResult, requestId } = await adminAuthAndContext(c);
-
-  if (!hasInternalDB() || detectAuthMode() !== "managed") {
-    return c.json({ error: "not_available", message: "Session management requires managed auth mode." }, 404);
-  }
-
-  // Org-scoping: workspace admins can only revoke sessions for users in their own org
-  if (!(await verifyOrgMembership(authResult, userId))) {
-    return c.json({ error: "not_found", message: "User not found.", requestId }, 404);
-  }
-
-  const deleted = await internalQuery<{ id: string }>(
-    `DELETE FROM session WHERE "userId" = $1 RETURNING id`,
-    [userId],
-  );
-  if (deleted.length === 0) {
-    return c.json({ error: "not_found", message: "No sessions found for this user." }, 404);
-  }
-
-  const count = deleted.length;
-  log.info({ requestId, targetUserId: userId, count, actorId: authResult.user?.id }, "All user sessions revoked");
-  return c.json({ success: true, count }, 200);
-}));
 
 // -- Users ------------------------------------------------------------------
 

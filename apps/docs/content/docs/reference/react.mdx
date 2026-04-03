@@ -405,6 +405,51 @@ function CustomWidget() {
 
 ## Utilities
 
+### setTheme
+
+Sets the theme mode globally without needing a hook. Useful for server-side rendering or setting the theme before React hydrates.
+
+```typescript
+import { setTheme } from "@useatlas/react";
+
+// Set theme before React renders (e.g. in a layout component)
+setTheme("dark");
+```
+
+#### Signature
+
+```typescript
+function setTheme(mode: ThemeMode): void
+```
+
+### buildThemeInitScript / THEME_STORAGE_KEY
+
+Server-side utilities for flicker-free theme initialization. `buildThemeInitScript` returns a `<script>` string that reads the user's stored preference from `localStorage` and applies it before the first paint. `THEME_STORAGE_KEY` is the localStorage key used for persistence.
+
+```typescript
+import { buildThemeInitScript, THEME_STORAGE_KEY } from "@useatlas/react";
+
+// In a server-rendered HTML template or Next.js layout:
+const script = buildThemeInitScript();
+// Inject `script` into <head> to prevent theme flash on page load
+
+// Read the stored theme preference directly:
+const stored = localStorage.getItem(THEME_STORAGE_KEY); // "light" | "dark" | "system" | null
+```
+
+### AtlasUIConfig
+
+The configuration object type accepted by `AtlasUIProvider`. Exported for type-safe wrapper components.
+
+```typescript
+import type { AtlasUIConfig } from "@useatlas/react";
+
+const config: AtlasUIConfig = {
+  apiUrl: "https://api.example.com",
+  authClient: myAuthClient,
+};
+```
+
 ### parseChatError
 
 Parses an AI SDK chat error into a user-friendly `ChatErrorInfo` object. Expects `error.message` to contain a JSON string with `{ error, message, retryAfterSeconds? }`. Falls back to a generic title when the body is not valid JSON (network failures, HTML error pages, etc.), preserving the original message as `detail` (truncated to 200 characters). Also classifies client-side errors (network failures, offline, HTTP status) via the `clientCode` field.

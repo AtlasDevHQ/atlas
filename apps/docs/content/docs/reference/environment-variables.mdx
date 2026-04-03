@@ -459,6 +459,7 @@ Settings for multi-region deployments with per-workspace region routing. See als
 |----------|---------|-------------|
 | `ATLAS_API_REGION` | — | Region identity of this API instance (e.g. `us-west`, `eu-west`, `ap-southeast`). Used for misrouting detection. Falls back to `residency.defaultRegion` from config if unset |
 | `ATLAS_STRICT_ROUTING` | `false` | When `true`, misrouted requests receive `421 Misdirected Request` with a `correctApiUrl` hint instead of being served with a warning log |
+| `ATLAS_INTERNAL_SECRET` | — | Shared secret for cross-region service-to-service auth. Required for region migration operations. Both the source and target API instances must share the same secret |
 
 ---
 
@@ -689,6 +690,23 @@ Requires `BETTER_AUTH_SECRET` for demo token signing.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | `3001` | HTTP port for the standalone Hono API server. Most platforms (Railway, Vercel) set this automatically |
+
+---
+
+## Settings
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ATLAS_SETTINGS_REFRESH_INTERVAL` | `30000` | Hot-reload interval for settings in milliseconds (default: 30s). Controls how often the API re-reads workspace-level settings from the database. Set to `0` to disable periodic refresh |
+
+---
+
+## Status Page
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `NEXT_PUBLIC_STATUS_URL` | — | External status page URL. When set, the built-in status page redirects here and the app shows incident banners from the feed |
+| `NEXT_PUBLIC_OPENSTATUS_SLUG` | — | OpenStatus status page slug for JSON feed. Used to fetch and display incident banners in the web frontend |
 
 ---
 

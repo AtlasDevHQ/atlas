@@ -580,7 +580,7 @@ if (result.warning) {
 ```typescript
 interface RollbackActionResponse {
   id: string;
-  status: string;
+  status: ActionStatus;
   action_type: string;
   target: string;
   summary: string;
@@ -830,6 +830,7 @@ import type {
   EntitySummary,
   SemanticStats,
   ConnectionHealth,
+  ConnectionHealthCheck, // @deprecated — alias for ConnectionHealth
   ConnectionInfo,
   ConnectionDetail,
   AuditLogEntry,
@@ -844,6 +845,7 @@ import type {
   ValidationLayer,
 
   // Actions
+  ActionStatus,
   RollbackActionResponse,
 } from "@useatlas/sdk";
 ```

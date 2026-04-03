@@ -418,7 +418,7 @@ app.get("/api/v1/openapi.json", (c) => {
       openapi: "3.1.0",
       info: {
         title: "Atlas API",
-        version: "0.9.7",
+        version: "1.0.0",
         description:
           "Text-to-SQL data analyst agent. Ask natural-language questions about your data and receive structured answers.",
       },

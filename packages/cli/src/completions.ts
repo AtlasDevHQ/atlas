@@ -133,6 +133,22 @@ export const COMMANDS: Record<string, CommandSpec> = {
       "--resume": "Resume from existing JSONL results file",
     },
   },
+  export: {
+    description: "Export workspace data to a migration bundle",
+    flags: {
+      "--output": "Output file path (default: ./atlas-export-{date}.json)",
+      "-o": "Alias for --output",
+      "--org": "Export data for a specific org",
+    },
+  },
+  "migrate-import": {
+    description: "Import an export bundle into a hosted Atlas instance",
+    flags: {
+      "--bundle": "Path to the export bundle JSON file (required)",
+      "--target": "Target Atlas API URL (default: https://app.useatlas.dev)",
+      "--api-key": "API key for the target workspace",
+    },
+  },
   completions: {
     description: "Output shell completion script",
     flags: {},

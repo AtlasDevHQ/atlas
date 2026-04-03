@@ -145,8 +145,9 @@ POST /api/v1/chat → authenticateRequest → checkRateLimit → withRequestCont
     → streamText (AI SDK, ToolRegistry, stopWhen: stepCountIs(getAgentMaxSteps()))
         ├── explore → read semantic/*.yml (path-traversal protected)
         └── executeSQL → validate (4 layers) → query via ConnectionRegistry → { columns, rows }
-    → runHandler(c, ...) → RequestContext + AuthContext provided via Effect bridge
     → Data Stream Response → Chat UI
+
+Other routes use: runHandler(c, ...) → RequestContext + AuthContext provided via Effect bridge
 ```
 
 `runAgentEffect` yields `AtlasAiModel` from Effect Context — testable with mock LLM via `createAiModelTestLayer()`.

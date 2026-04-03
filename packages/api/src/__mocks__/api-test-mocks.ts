@@ -1,7 +1,7 @@
 /**
  * Unified API test mock factory.
  *
- * 40+ test files independently mock the same ~20 modules before importing
+ * 40+ test files independently mock the same ~30 modules before importing
  * the Hono app.  This factory centralises all default mocks so that module
  * API changes only need updating here and per-test customisation is done
  * via overrides.
@@ -16,6 +16,8 @@
  *   mock.module("@atlas/api/lib/plugins/registry", () => ({ ... }));
  *
  * IMPORTANT: call at module level (top of file), NOT inside describe/beforeEach.
+ * Bun's mock.module() must run before the mocked modules are first imported,
+ * which happens when the app is imported at module scope.
  *
  * @module
  */
@@ -33,6 +35,7 @@ import * as path from "path";
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- intentionally generic mock function type for test overrides
 type AnyFn = (...args: any[]) => any;
 
+/** Shape of the user object returned inside the authenticateRequest response. */
 export interface AuthUser {
   id: string;
   mode: string;
@@ -59,7 +62,7 @@ export interface ApiTestMockOverrides {
 }
 
 export interface ApiTestMocks {
-  /** The authenticateRequest mock — call .mockImplementation() to change user. */
+  /** The authenticateRequest mock — override per test via .mockImplementation(), .mockImplementationOnce(), or .mockResolvedValue(). */
   mockAuthenticateRequest: Mock<(req: Request) => Promise<unknown>>;
   /** The checkRateLimit mock. */
   mockCheckRateLimit: Mock<AnyFn>;
@@ -67,7 +70,11 @@ export interface ApiTestMocks {
   mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unknown[]>>;
   /** The internalExecute mock. */
   mockInternalExecute: Mock<AnyFn>;
-  /** Controls `hasInternalDB()` return value. */
+  /**
+   * Controls `hasInternalDB()` return value.
+   * Note: if you override `hasInternalDB` via the `internal` option, the getter/setter
+   * here will be disconnected from the mock module. Use this property instead.
+   */
   hasInternalDB: boolean;
   /** Path to the temp semantic dir (undefined if semanticDir: false). */
   tmpRoot: string | undefined;
@@ -248,6 +255,9 @@ export function createApiTestMocks(
     getWorkspaceHealthSummary: mock(async () => null),
     getWorkspaceRegion: mock(async () => null),
     setWorkspaceRegion: mock(async () => ({ assigned: true })),
+    updateWorkspaceByot: mock(async () => true),
+    setWorkspaceStripeCustomerId: mock(async () => true),
+    setWorkspaceTrialEndsAt: mock(async () => true),
   };
 
   mock.module("@atlas/api/lib/db/internal", () => ({
@@ -310,6 +320,7 @@ export function createApiTestMocks(
     ...overrides?.cache,
   });
 
+  // Both paths needed: route handlers use dynamic import("@atlas/api/lib/cache/index")
   mock.module("@atlas/api/lib/cache", cacheMock);
   mock.module("@atlas/api/lib/cache/index", cacheMock);
 
@@ -477,7 +488,7 @@ export function createApiTestMocks(
     previewSchedule: () => [],
   }));
 
-  // ── EE: IP allowlist ──────────────────────────────────────────
+  // ── EE: IP allowlist (queries internal DB, which doesn't exist in tests) ──
 
   mock.module("@atlas/ee/auth/ip-allowlist", () => ({
     checkIPAllowlist: mock(async () => ({ allowed: true })),

@@ -122,8 +122,8 @@ adminTokens.openapi(getTokenSummaryRoute, async (c) => {
     }
     const { fromDate, toDate } = range;
 
-    const rows = yield* Effect.promise(() =>
-      internalQuery<{
+    const rows = yield* Effect.tryPromise({
+      try: () => internalQuery<{
         total_prompt: string;
         total_completion: string;
         total_requests: string;
@@ -136,7 +136,8 @@ adminTokens.openapi(getTokenSummaryRoute, async (c) => {
          WHERE created_at >= $1 AND created_at <= $2 AND org_id = $3`,
         [fromDate, toDate, orgId!],
       ),
-    );
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    });
 
     const row = rows[0];
     return c.json({
@@ -163,8 +164,8 @@ adminTokens.openapi(getTokensByUserRoute, async (c) => {
     const { fromDate, toDate } = range;
     const { limit } = parsePagination(c, { limit: 20, maxLimit: 100 });
 
-    const rows = yield* Effect.promise(() =>
-      internalQuery<{
+    const rows = yield* Effect.tryPromise({
+      try: () => internalQuery<{
         user_id: string;
         user_email: string | null;
         total_prompt: string;
@@ -187,7 +188,8 @@ adminTokens.openapi(getTokensByUserRoute, async (c) => {
          LIMIT $4`,
         [fromDate, toDate, orgId!, limit],
       ),
-    );
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    });
 
     return c.json({
       users: rows.map((r) => ({
@@ -216,8 +218,8 @@ adminTokens.openapi(getTokenTrendsRoute, async (c) => {
     }
     const { fromDate, toDate } = range;
 
-    const rows = yield* Effect.promise(() =>
-      internalQuery<{
+    const rows = yield* Effect.tryPromise({
+      try: () => internalQuery<{
         day: string;
         prompt_tokens: string;
         completion_tokens: string;
@@ -234,7 +236,8 @@ adminTokens.openapi(getTokenTrendsRoute, async (c) => {
          ORDER BY day ASC`,
         [fromDate, toDate, orgId!],
       ),
-    );
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    });
 
     return c.json({
       trends: rows.map((r) => ({

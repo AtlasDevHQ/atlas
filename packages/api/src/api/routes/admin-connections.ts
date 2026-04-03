@@ -626,13 +626,19 @@ adminConnections.openapi(updateConnectionRoute, async (c) => {
       connections.register(id, { url: newUrl, description: newDescription ?? undefined, schema: newSchema ?? undefined });
       await connections.healthCheck(id);
     } catch (err) {
+      let rollbackFailed = false;
       try {
         connections.register(id, { url: currentUrl, description: current.description ?? undefined, schema: current.schema_name ?? undefined });
       } catch (restoreErr) {
-        log.error({ connectionId: id, err: restoreErr instanceof Error ? restoreErr.message : String(restoreErr) }, "Failed to restore previous connection after update failure — connection unregistered");
+        rollbackFailed = true;
+        log.error({ connectionId: id, requestId, err: restoreErr instanceof Error ? restoreErr.message : String(restoreErr) }, "Failed to restore previous connection after update failure — connection unregistered");
         connections.unregister(id);
       }
-      return c.json({ error: "connection_failed", message: `Connection test failed: ${err instanceof Error ? err.message : "Unknown error"}. Fix the URL and try again.`, requestId }, 400);
+      const baseMsg = `Connection test failed: ${err instanceof Error ? err.message : "Unknown error"}. Fix the URL and try again.`;
+      if (rollbackFailed) {
+        return c.json({ error: "internal_error", message: `${baseMsg} The connection may need a server restart to restore.`, requestId }, 500);
+      }
+      return c.json({ error: "connection_failed", message: baseMsg, requestId }, 400);
     }
   } else {
     try {
@@ -648,14 +654,19 @@ adminConnections.openapi(updateConnectionRoute, async (c) => {
   try {
     encryptedNewUrl = encryptUrl(newUrl);
   } catch (err) {
+    let rollbackFailed = false;
     try {
       connections.register(id, { url: currentUrl, description: current.description ?? undefined, schema: current.schema_name ?? undefined });
     } catch (restoreErr) {
+      rollbackFailed = true;
       log.error({ connectionId: id, requestId, err: restoreErr instanceof Error ? restoreErr.message : String(restoreErr) }, "Failed to restore previous connection after encryption failure — connection unregistered");
       connections.unregister(id);
     }
     log.error({ err: err instanceof Error ? err.message : String(err), connectionId: id }, "Failed to encrypt connection URL");
-    return c.json({ error: "encryption_failed", message: "Failed to encrypt connection URL. Check ATLAS_ENCRYPTION_KEY or BETTER_AUTH_SECRET.", requestId }, 500);
+    const encMsg = rollbackFailed
+      ? "Failed to encrypt connection URL. Check ATLAS_ENCRYPTION_KEY or BETTER_AUTH_SECRET. The connection may need a server restart to restore."
+      : "Failed to encrypt connection URL. Check ATLAS_ENCRYPTION_KEY or BETTER_AUTH_SECRET.";
+    return c.json({ error: "encryption_failed", message: encMsg, requestId }, 500);
   }
 
   const updateOrgFilter = isPlatformAdmin ? "" : " AND org_id = $6";
@@ -669,14 +680,19 @@ adminConnections.openapi(updateConnectionRoute, async (c) => {
       updateParams,
     );
   } catch (err) {
+    let rollbackFailed = false;
     try {
       connections.register(id, { url: currentUrl, description: current.description ?? undefined, schema: current.schema_name ?? undefined });
     } catch (restoreErr) {
+      rollbackFailed = true;
       log.error({ connectionId: id, requestId, err: restoreErr instanceof Error ? restoreErr.message : String(restoreErr) }, "Failed to restore previous connection after DB update failure — connection unregistered");
       connections.unregister(id);
     }
     log.error({ err: err instanceof Error ? err : new Error(String(err)), connectionId: id }, "Failed to update connection in DB");
-    return c.json({ error: "internal_error", message: "Failed to update connection.", requestId }, 500);
+    const updateMsg = rollbackFailed
+      ? "Failed to update connection. The connection may need a server restart to restore."
+      : "Failed to update connection.";
+    return c.json({ error: "internal_error", message: updateMsg, requestId }, 500);
   }
 
   _resetWhitelists();
@@ -788,7 +804,8 @@ adminConnections.openapi(getConnectionRoute, async (c) => runHandler(c, "get con
         }
       }
     } catch (err) {
-      log.warn({ err: err instanceof Error ? err.message : String(err), connectionId: id }, "Failed to fetch connection details from internal DB");
+      log.error({ err: err instanceof Error ? err.message : String(err), connectionId: id, requestId }, "Failed to fetch connection details from internal DB");
+      return c.json({ error: "internal_error", message: "Failed to fetch connection details from internal database.", requestId }, 500);
     }
   }
 

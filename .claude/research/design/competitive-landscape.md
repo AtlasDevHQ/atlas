@@ -2,7 +2,7 @@
 
 > Last updated: April 2026 (1.0.0 SaaS launch)
 >
-> Previous versions: March 2026 (post-0.4.0 ship), February 2026 (pre-public). This revision incorporates 15 shipped milestones (0.1–1.0.0), updated competitor data, and strategic analysis for the hosted SaaS launch at app.useatlas.dev.
+> Previous versions: March 2026 (post-0.4.0 ship), February 2026 (pre-public). This revision incorporates 28 shipped milestones (0.1.0–1.0.0), updated competitor data, and strategic analysis for the hosted SaaS launch at app.useatlas.dev.
 
 ---
 
@@ -339,7 +339,7 @@ Hono + Next.js + Effect.ts + bun. The Python-dominated space can't match the dep
 
 ### Critical gaps
 
-- **No adoption proof** — 15+ milestones shipped (~500+ issues), hosted SaaS launching, but zero documented public users yet. WrenAI and Vanna won on community (9K and 15K stars), not features. The SaaS launch is the adoption inflection point.
+- **No adoption proof** — 28 milestones shipped (~700+ issues closed), hosted SaaS launching, but zero documented public users yet. WrenAI and Vanna won on community (~9K and ~15K stars), not features. The SaaS launch is the adoption inflection point.
 
 - **No chart/dashboard builder** — WrenAI has built-in visualization + dashboard embedding. Atlas has chart detection and rendering but no dashboard persistence or embedded BI features. The notebook interface partially addresses this (multi-step analysis with charts), but it's not a dashboard tool.
 

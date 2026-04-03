@@ -5,23 +5,17 @@
  * Org-scoped: all queries are filtered to members of the caller's active organization.
  */
 
+import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
+import { runEffect } from "@atlas/api/lib/effect/hono";
+import { AuthContext } from "@atlas/api/lib/effect/services";
 import { internalQuery } from "@atlas/api/lib/db/internal";
 import { detectAuthMode } from "@atlas/api/lib/auth/detect";
-import { ErrorSchema, AuthErrorSchema, parsePagination } from "./shared-schemas";
+import { ErrorSchema, AuthErrorSchema, parsePagination, escapeIlike } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 
 const log = createLogger("admin-sessions");
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/** Escape ILIKE special characters so they are matched literally. */
-function escapeIlike(s: string): string {
-  return s.replace(/[%_\\]/g, "\\$&");
-}
 
 // ---------------------------------------------------------------------------
 // Route definitions
@@ -128,171 +122,181 @@ adminSessions.use(requireOrgContext());
 
 // GET / — list sessions scoped to active org
 adminSessions.openapi(listSessionsRoute, async (c) => {
-  const { requestId, orgId } = c.get("orgContext");
+  return runEffect(c, Effect.gen(function* () {
+    const { orgId } = yield* AuthContext;
+    const { requestId } = c.get("orgContext");
 
-  if (detectAuthMode() !== "managed") {
-    return c.json({ error: "not_available", message: "Session management requires managed auth mode.", requestId }, 404);
-  }
+    if (detectAuthMode() !== "managed") {
+      return c.json({ error: "not_available", message: "Session management requires managed auth mode.", requestId }, 404);
+    }
 
-  const { limit, offset } = parsePagination(c);
-  const search = c.req.query("search");
+    const { limit, offset } = parsePagination(c);
+    const search = c.req.query("search");
 
-  const conditions: string[] = [`m."organizationId" = $1`];
-  const params: unknown[] = [orgId];
-  let paramIdx = 2;
+    const conditions: string[] = [`m."organizationId" = $1`];
+    const params: unknown[] = [orgId];
+    let paramIdx = 2;
 
-  if (search) {
-    conditions.push(`(u.email ILIKE $${paramIdx} OR s."ipAddress" ILIKE $${paramIdx})`);
-    params.push(`%${escapeIlike(search)}%`);
-    paramIdx++;
-  }
+    if (search) {
+      conditions.push(`(u.email ILIKE $${paramIdx} OR s."ipAddress" ILIKE $${paramIdx})`);
+      params.push(`%${escapeIlike(search)}%`);
+      paramIdx++;
+    }
 
-  const where = `WHERE ${conditions.join(" AND ")}`;
+    const where = `WHERE ${conditions.join(" AND ")}`;
 
-  const [rows, countResult] = await Promise.all([
-    internalQuery<{
-      id: string;
-      userId: string;
-      userEmail: string | null;
-      createdAt: string;
-      updatedAt: string;
-      expiresAt: string;
-      ipAddress: string | null;
-      userAgent: string | null;
-    }>(
-      `SELECT s.id, s."userId" AS "userId", u.email AS "userEmail",
-              s."createdAt" AS "createdAt", s."updatedAt" AS "updatedAt",
-              s."expiresAt" AS "expiresAt",
-              s."ipAddress" AS "ipAddress", s."userAgent" AS "userAgent"
-       FROM session s
-       LEFT JOIN "user" u ON s."userId" = u.id
-       JOIN member m ON m."userId" = s."userId"
-       ${where}
-       ORDER BY s."updatedAt" DESC
-       LIMIT $${paramIdx} OFFSET $${paramIdx + 1}`,
-      [...params, limit, offset],
-    ),
-    internalQuery<{ count: string }>(
-      `SELECT COUNT(*) AS count
-       FROM session s
-       LEFT JOIN "user" u ON s."userId" = u.id
-       JOIN member m ON m."userId" = s."userId"
-       ${where}`,
-      params,
-    ),
-  ]);
+    const [rows, countResult] = yield* Effect.promise(() => Promise.all([
+      internalQuery<{
+        id: string;
+        userId: string;
+        userEmail: string | null;
+        createdAt: string;
+        updatedAt: string;
+        expiresAt: string;
+        ipAddress: string | null;
+        userAgent: string | null;
+      }>(
+        `SELECT s.id, s."userId" AS "userId", u.email AS "userEmail",
+                s."createdAt" AS "createdAt", s."updatedAt" AS "updatedAt",
+                s."expiresAt" AS "expiresAt",
+                s."ipAddress" AS "ipAddress", s."userAgent" AS "userAgent"
+         FROM session s
+         LEFT JOIN "user" u ON s."userId" = u.id
+         JOIN member m ON m."userId" = s."userId"
+         ${where}
+         ORDER BY s."updatedAt" DESC
+         LIMIT $${paramIdx} OFFSET $${paramIdx + 1}`,
+        [...params, limit, offset],
+      ),
+      internalQuery<{ count: string }>(
+        `SELECT COUNT(*) AS count
+         FROM session s
+         LEFT JOIN "user" u ON s."userId" = u.id
+         JOIN member m ON m."userId" = s."userId"
+         ${where}`,
+        params,
+      ),
+    ]));
 
-  return c.json({
-    sessions: rows.map((r) => ({
-      id: r.id,
-      userId: r.userId,
-      userEmail: r.userEmail,
-      createdAt: r.createdAt,
-      updatedAt: r.updatedAt,
-      expiresAt: r.expiresAt,
-      ipAddress: r.ipAddress,
-      userAgent: r.userAgent,
-    })),
-    total: parseInt(String(countResult[0]?.count ?? "0"), 10),
-    limit,
-    offset,
-  }, 200);
+    return c.json({
+      sessions: rows.map((r) => ({
+        id: r.id,
+        userId: r.userId,
+        userEmail: r.userEmail,
+        createdAt: r.createdAt,
+        updatedAt: r.updatedAt,
+        expiresAt: r.expiresAt,
+        ipAddress: r.ipAddress,
+        userAgent: r.userAgent,
+      })),
+      total: parseInt(String(countResult[0]?.count ?? "0"), 10),
+      limit,
+      offset,
+    }, 200);
+  }), { label: "list sessions" });
 });
 
 // GET /stats — session statistics scoped to active org
 adminSessions.openapi(getSessionStatsRoute, async (c) => {
-  const { requestId, orgId } = c.get("orgContext");
+  return runEffect(c, Effect.gen(function* () {
+    const { orgId } = yield* AuthContext;
+    const { requestId } = c.get("orgContext");
 
-  if (detectAuthMode() !== "managed") {
-    return c.json({ error: "not_available", message: "Session management requires managed auth mode.", requestId }, 404);
-  }
+    if (detectAuthMode() !== "managed") {
+      return c.json({ error: "not_available", message: "Session management requires managed auth mode.", requestId }, 404);
+    }
 
-  const [totalResult, activeResult, uniqueUsersResult] = await Promise.all([
-    internalQuery<{ count: string }>(
-      `SELECT COUNT(*) AS count
-       FROM session s
-       JOIN member m ON m."userId" = s."userId"
-       WHERE m."organizationId" = $1`,
-      [orgId],
-    ),
-    internalQuery<{ count: string }>(
-      `SELECT COUNT(*) AS count
-       FROM session s
-       JOIN member m ON m."userId" = s."userId"
-       WHERE s."expiresAt" > NOW() AND m."organizationId" = $1`,
-      [orgId],
-    ),
-    internalQuery<{ count: string }>(
-      `SELECT COUNT(DISTINCT s."userId") AS count
-       FROM session s
-       JOIN member m ON m."userId" = s."userId"
-       WHERE s."expiresAt" > NOW() AND m."organizationId" = $1`,
-      [orgId],
-    ),
-  ]);
+    const [totalResult, activeResult, uniqueUsersResult] = yield* Effect.promise(() => Promise.all([
+      internalQuery<{ count: string }>(
+        `SELECT COUNT(*) AS count
+         FROM session s
+         JOIN member m ON m."userId" = s."userId"
+         WHERE m."organizationId" = $1`,
+        [orgId],
+      ),
+      internalQuery<{ count: string }>(
+        `SELECT COUNT(*) AS count
+         FROM session s
+         JOIN member m ON m."userId" = s."userId"
+         WHERE s."expiresAt" > NOW() AND m."organizationId" = $1`,
+        [orgId],
+      ),
+      internalQuery<{ count: string }>(
+        `SELECT COUNT(DISTINCT s."userId") AS count
+         FROM session s
+         JOIN member m ON m."userId" = s."userId"
+         WHERE s."expiresAt" > NOW() AND m."organizationId" = $1`,
+        [orgId],
+      ),
+    ]));
 
-  return c.json({
-    total: parseInt(String(totalResult[0]?.count ?? "0"), 10),
-    active: parseInt(String(activeResult[0]?.count ?? "0"), 10),
-    uniqueUsers: parseInt(String(uniqueUsersResult[0]?.count ?? "0"), 10),
-  }, 200);
+    return c.json({
+      total: parseInt(String(totalResult[0]?.count ?? "0"), 10),
+      active: parseInt(String(activeResult[0]?.count ?? "0"), 10),
+      uniqueUsers: parseInt(String(uniqueUsersResult[0]?.count ?? "0"), 10),
+    }, 200);
+  }), { label: "get session stats" });
 });
 
 // DELETE /:id — revoke a single session (must belong to org member)
 adminSessions.openapi(deleteSessionRoute, async (c) => {
-  const { requestId, orgId } = c.get("orgContext");
-  const { id: sessionId } = c.req.valid("param");
-  const authResult = c.get("authResult");
+  return runEffect(c, Effect.gen(function* () {
+    const { orgId, user } = yield* AuthContext;
+    const { requestId } = c.get("orgContext");
+    const { id: sessionId } = c.req.valid("param");
 
-  if (detectAuthMode() !== "managed") {
-    return c.json({ error: "not_available", message: "Session management requires managed auth mode.", requestId }, 404);
-  }
+    if (detectAuthMode() !== "managed") {
+      return c.json({ error: "not_available", message: "Session management requires managed auth mode.", requestId }, 404);
+    }
 
-  // Only delete if the session belongs to a member of the active org
-  const deleted = await internalQuery<{ id: string }>(
-    `DELETE FROM session s
-     USING member m
-     WHERE s.id = $1
-       AND m."userId" = s."userId"
-       AND m."organizationId" = $2
-     RETURNING s.id`,
-    [sessionId, orgId],
-  );
-  if (deleted.length === 0) {
-    return c.json({ error: "not_found", message: "Session not found.", requestId }, 404);
-  }
+    // Only delete if the session belongs to a member of the active org
+    const deleted = yield* Effect.promise(() => internalQuery<{ id: string }>(
+      `DELETE FROM session s
+       USING member m
+       WHERE s.id = $1
+         AND m."userId" = s."userId"
+         AND m."organizationId" = $2
+       RETURNING s.id`,
+      [sessionId, orgId],
+    ));
+    if (deleted.length === 0) {
+      return c.json({ error: "not_found", message: "Session not found.", requestId }, 404);
+    }
 
-  log.info({ requestId, sessionId, actorId: authResult.user?.id }, "Session revoked");
-  return c.json({ success: true }, 200);
+    log.info({ requestId, sessionId, actorId: user?.id }, "Session revoked");
+    return c.json({ success: true }, 200);
+  }), { label: "revoke session" });
 });
 
 // DELETE /user/:userId — revoke all sessions for a user (must be org member)
 adminSessions.openapi(deleteUserSessionsRoute, async (c) => {
-  const { requestId, orgId } = c.get("orgContext");
-  const { userId } = c.req.valid("param");
-  const authResult = c.get("authResult");
+  return runEffect(c, Effect.gen(function* () {
+    const { orgId, user } = yield* AuthContext;
+    const { requestId } = c.get("orgContext");
+    const { userId } = c.req.valid("param");
 
-  if (detectAuthMode() !== "managed") {
-    return c.json({ error: "not_available", message: "Session management requires managed auth mode.", requestId }, 404);
-  }
+    if (detectAuthMode() !== "managed") {
+      return c.json({ error: "not_available", message: "Session management requires managed auth mode.", requestId }, 404);
+    }
 
-  // Only delete sessions where the user is a member of the active org
-  const deleted = await internalQuery<{ id: string }>(
-    `DELETE FROM session s
-     USING member m
-     WHERE s."userId" = $1
-       AND m."userId" = s."userId"
-       AND m."organizationId" = $2
-     RETURNING s.id`,
-    [userId, orgId],
-  );
-  if (deleted.length === 0) {
-    return c.json({ error: "not_found", message: "No sessions found for this user.", requestId }, 404);
-  }
+    // Only delete sessions where the user is a member of the active org
+    const deleted = yield* Effect.promise(() => internalQuery<{ id: string }>(
+      `DELETE FROM session s
+       USING member m
+       WHERE s."userId" = $1
+         AND m."userId" = s."userId"
+         AND m."organizationId" = $2
+       RETURNING s.id`,
+      [userId, orgId],
+    ));
+    if (deleted.length === 0) {
+      return c.json({ error: "not_found", message: "No sessions found for this user.", requestId }, 404);
+    }
 
-  const count = deleted.length;
-  log.info({ requestId, targetUserId: userId, count, actorId: authResult.user?.id }, "All user sessions revoked");
-  return c.json({ success: true, count }, 200);
+    const count = deleted.length;
+    log.info({ requestId, targetUserId: userId, count, actorId: user?.id }, "All user sessions revoked");
+    return c.json({ success: true, count }, 200);
+  }), { label: "revoke user sessions" });
 });
 
 export { adminSessions };

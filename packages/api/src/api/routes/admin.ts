@@ -68,7 +68,7 @@ import { adminSandbox } from "./admin-sandbox";
 import { adminResidency } from "./admin-residency";
 import { adminMigrate } from "./admin-migrate";
 import { registerSemanticEditorRoutes } from "./admin-semantic";
-import { ErrorSchema, AuthErrorSchema, parsePagination } from "./shared-schemas";
+import { ErrorSchema, AuthErrorSchema, parsePagination, escapeIlike } from "./shared-schemas";
 import { runHandler } from "@atlas/api/lib/effect/hono";
 
 const log = createLogger("admin-routes");
@@ -348,11 +348,6 @@ function serveRawYaml(_c: Context, requestId: string, filePath: string): never {
       res: Response.json({ error: "internal_error", message: "Failed to read file.", requestId }, { status: 500 }),
     });
   }
-}
-
-/** Escape ILIKE special characters so they are matched literally. */
-function escapeIlike(s: string): string {
-  return s.replace(/[%_\\]/g, "\\$&");
 }
 
 /** Quote a value for safe CSV output (RFC 4180). */

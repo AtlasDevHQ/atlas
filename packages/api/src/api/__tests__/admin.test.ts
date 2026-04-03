@@ -1143,7 +1143,7 @@ describe("GET /api/v1/admin/audit/export", () => {
 
     await app.fetch(adminRequest("/api/v1/admin/audit/export"));
 
-    const auditCalls = mockInternalQuery.mock.calls.filter(([sql]: [string]) => sql.includes("audit_log"));
+    const auditCalls = mockInternalQuery.mock.calls.filter(([sql]) => typeof sql === "string" && sql.includes("audit_log"));
     expect(auditCalls.length).toBeGreaterThan(0);
     for (const [sql, params] of auditCalls) {
       expect(sql).toContain("org_id = $1");
@@ -1204,7 +1204,7 @@ describe("GET /api/v1/admin/audit/stats", () => {
 
     await app.fetch(adminRequest("/api/v1/admin/audit/stats"));
 
-    const auditCalls = mockInternalQuery.mock.calls.filter(([sql]: [string]) => sql.includes("audit_log"));
+    const auditCalls = mockInternalQuery.mock.calls.filter(([sql]) => typeof sql === "string" && sql.includes("audit_log"));
     expect(auditCalls.length).toBeGreaterThan(0);
     for (const [sql, params] of auditCalls) {
       expect(sql).toContain("org_id = $1");
@@ -1245,7 +1245,7 @@ describe("GET /api/v1/admin/audit/facets", () => {
 
     await app.fetch(adminRequest("/api/v1/admin/audit/facets"));
 
-    const auditCalls = mockInternalQuery.mock.calls.filter(([sql]: [string]) => sql.includes("audit_log"));
+    const auditCalls = mockInternalQuery.mock.calls.filter(([sql]) => typeof sql === "string" && sql.includes("audit_log"));
     expect(auditCalls.length).toBe(2);
     for (const [sql, params] of auditCalls) {
       expect(sql).toContain("org_id = $1");

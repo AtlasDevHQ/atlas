@@ -16,7 +16,7 @@ describe("completions", () => {
       const expected = [
         "init", "diff", "query", "doctor", "validate",
         "mcp", "learn", "migrate", "plugin", "eval", "smoke",
-        "benchmark", "completions",
+        "benchmark", "export", "migrate-import", "completions",
       ];
       for (const cmd of expected) {
         expect(allCommands).toContain(cmd);

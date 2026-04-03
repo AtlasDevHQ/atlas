@@ -1133,6 +1133,23 @@ describe("GET /api/v1/admin/audit/export", () => {
     const res = await app.fetch(adminRequest("/api/v1/admin/audit/export"));
     expect(res.status).toBe(500);
   });
+
+  it("scopes export queries to active org", async () => {
+    mockInternalQuery.mockImplementation((sql: string) => {
+      if (sql.includes("ip_allowlist")) return Promise.resolve([]);
+      if (sql.includes("COUNT(*)")) return Promise.resolve([{ count: "0" }]);
+      return Promise.resolve([]);
+    });
+
+    await app.fetch(adminRequest("/api/v1/admin/audit/export"));
+
+    const auditCalls = mockInternalQuery.mock.calls.filter(([sql]: [string]) => sql.includes("audit_log"));
+    expect(auditCalls.length).toBeGreaterThan(0);
+    for (const [sql, params] of auditCalls) {
+      expect(sql).toContain("org_id = $1");
+      expect(params).toContain("org-test");
+    }
+  });
 });
 
 describe("GET /api/v1/admin/audit/stats", () => {
@@ -1177,6 +1194,86 @@ describe("GET /api/v1/admin/audit/stats", () => {
 
     const res = await app.fetch(adminRequest("/api/v1/admin/audit/stats"));
     expect(res.status).toBe(500);
+  });
+
+  it("scopes queries to active org", async () => {
+    mockInternalQuery.mockImplementation((sql: string) => {
+      if (sql.includes("ip_allowlist")) return Promise.resolve([]);
+      return Promise.resolve([{ total: "0", errors: "0", day: "2026-01-01", count: "0" }]);
+    });
+
+    await app.fetch(adminRequest("/api/v1/admin/audit/stats"));
+
+    const auditCalls = mockInternalQuery.mock.calls.filter(([sql]: [string]) => sql.includes("audit_log"));
+    expect(auditCalls.length).toBeGreaterThan(0);
+    for (const [sql, params] of auditCalls) {
+      expect(sql).toContain("org_id = $1");
+      expect(params).toContain("org-test");
+    }
+  });
+});
+
+describe("GET /api/v1/admin/audit/facets", () => {
+  beforeEach(() => {
+    mockAuthenticateRequest.mockReset();
+    setOrgAdmin("org-test");
+    mockHasInternalDB = true;
+    mockInternalQuery.mockReset();
+  });
+
+  it("returns tables and columns arrays", async () => {
+    mockInternalQuery.mockImplementation((sql: string) => {
+      if (sql.includes("ip_allowlist")) return Promise.resolve([]);
+      if (sql.includes("tables_accessed")) return Promise.resolve([{ val: "users" }, { val: "orders" }]);
+      if (sql.includes("columns_accessed")) return Promise.resolve([{ val: "email" }]);
+      return Promise.resolve([]);
+    });
+
+    const res = await app.fetch(adminRequest("/api/v1/admin/audit/facets"));
+    expect(res.status).toBe(200);
+
+    const body = (await res.json()) as { tables: string[]; columns: string[] };
+    expect(body.tables).toEqual(["users", "orders"]);
+    expect(body.columns).toEqual(["email"]);
+  });
+
+  it("scopes queries to active org", async () => {
+    mockInternalQuery.mockImplementation((sql: string) => {
+      if (sql.includes("ip_allowlist")) return Promise.resolve([]);
+      return Promise.resolve([]);
+    });
+
+    await app.fetch(adminRequest("/api/v1/admin/audit/facets"));
+
+    const auditCalls = mockInternalQuery.mock.calls.filter(([sql]: [string]) => sql.includes("audit_log"));
+    expect(auditCalls.length).toBe(2);
+    for (const [sql, params] of auditCalls) {
+      expect(sql).toContain("org_id = $1");
+      expect(params).toContain("org-test");
+    }
+  });
+
+  it("returns empty arrays with warnings on partial failure", async () => {
+    mockInternalQuery.mockImplementation((sql: string) => {
+      if (sql.includes("ip_allowlist")) return Promise.resolve([]);
+      if (sql.includes("tables_accessed")) return Promise.reject(new Error("JSONB parse error"));
+      if (sql.includes("columns_accessed")) return Promise.resolve([{ val: "email" }]);
+      return Promise.resolve([]);
+    });
+
+    const res = await app.fetch(adminRequest("/api/v1/admin/audit/facets"));
+    expect(res.status).toBe(200);
+
+    const body = (await res.json()) as { tables: string[]; columns: string[]; warnings?: string[] };
+    expect(body.tables).toEqual([]);
+    expect(body.columns).toEqual(["email"]);
+    expect(body.warnings).toEqual(["Failed to load table filter values"]);
+  });
+
+  it("returns 404 when no internal DB", async () => {
+    mockHasInternalDB = false;
+    const res = await app.fetch(adminRequest("/api/v1/admin/audit/facets"));
+    expect(res.status).toBe(404);
   });
 });
 

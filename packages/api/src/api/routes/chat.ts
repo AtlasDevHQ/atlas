@@ -225,7 +225,35 @@ chat.openapi(chatRoute, async (c) => {
         wsCheck.httpStatus ?? 403,
       );
     }
-  
+
+    // Migration write-lock — block new conversations while workspace is migrating
+    const chatOrgId = authResult.user?.activeOrganizationId;
+    if (chatOrgId) {
+      const migrationCheck = yield* Effect.tryPromise({
+        try: async () => {
+          const { isWorkspaceMigrating } = await import("@atlas/api/lib/residency/readonly");
+          return isWorkspaceMigrating(chatOrgId);
+        },
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      }).pipe(Effect.either);
+
+      if (migrationCheck._tag === "Right" && migrationCheck.right) {
+        log.warn({ requestId, orgId: chatOrgId }, "Chat rejected — workspace is migrating");
+        return c.json(
+          { error: "workspace_migrating", message: "This workspace is currently being migrated to a new region. Please try again shortly.", retryable: true, requestId },
+          409,
+        );
+      }
+      if (migrationCheck._tag === "Left") {
+        // Fail closed — block writes when migration status is uncertain
+        log.warn({ err: migrationCheck.left.message, requestId, orgId: chatOrgId }, "Migration write-lock check failed — rejecting chat as a precaution");
+        return c.json(
+          { error: "migration_check_failed", message: "Unable to verify workspace migration status. Please try again in a moment.", retryable: true, requestId },
+          503,
+        );
+      }
+    }
+
     // Abuse check — block suspended workspaces, reject throttled ones with 429
     const abuseOrgId = authResult.user?.activeOrganizationId;
     if (abuseOrgId) {

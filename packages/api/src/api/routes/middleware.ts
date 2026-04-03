@@ -27,6 +27,7 @@ import {
   detectMisrouting,
   isStrictRoutingEnabled,
 } from "@atlas/api/lib/residency/misrouting";
+import { isWorkspaceMigrating } from "@atlas/api/lib/residency/readonly";
 
 const log = createLogger("middleware");
 
@@ -167,6 +168,54 @@ async function checkMisrouting(
 }
 
 // ---------------------------------------------------------------------------
+// Migration write-lock — reject writes during active region migration
+// ---------------------------------------------------------------------------
+
+const WRITE_METHODS = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+
+async function checkMigrationWriteLock(
+  method: string,
+  authResult: AuthResult & { authenticated: true },
+  requestId: string,
+): Promise<{ body: Record<string, unknown>; status: number } | null> {
+  if (!WRITE_METHODS.has(method)) return null;
+
+  const orgId = authResult.user?.activeOrganizationId;
+  if (!orgId) return null;
+
+  try {
+    const migrating = await isWorkspaceMigrating(orgId);
+    if (migrating) {
+      log.warn({ requestId, orgId, method }, "Write rejected — workspace is migrating");
+      return {
+        body: {
+          error: "workspace_migrating",
+          message: "This workspace is currently being migrated to a new region. Write operations are temporarily disabled.",
+          requestId,
+        },
+        status: 409,
+      };
+    }
+  } catch (err) {
+    // Fail closed — if we can't verify migration status, block writes to prevent data loss
+    log.error(
+      { err: err instanceof Error ? err.message : String(err), requestId, orgId },
+      "Migration write-lock check failed — rejecting write as a precaution",
+    );
+    return {
+      body: {
+        error: "migration_check_failed",
+        message: "Unable to verify workspace migration status. Write operations are temporarily unavailable.",
+        requestId,
+      },
+      status: 503,
+    };
+  }
+
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // adminAuth — authenticate + enforce admin role + rate limit + IP allowlist
 // ---------------------------------------------------------------------------
 
@@ -201,6 +250,9 @@ export const adminAuth = createMiddleware<AuthEnv>(async (c, next) => {
   if (misrouted) {
     return c.json(misrouted.body, misrouted.status as 421);
   }
+
+  // No migration write-lock for admin routes — admins need to manage
+  // the workspace during migration (retry, cancel, configure).
 
   c.set("authResult", authResult);
   await next();
@@ -265,6 +317,30 @@ export const standardAuth = createMiddleware<AuthEnv>(async (c, next) => {
   }
 
   c.set("authResult", authResult);
+  await next();
+});
+
+// ---------------------------------------------------------------------------
+// migrationWriteLock — rejects writes during active region migration
+// ---------------------------------------------------------------------------
+
+/**
+ * Opt-in middleware that rejects write operations (POST, PUT, PATCH, DELETE)
+ * when the workspace is actively being migrated between regions.
+ *
+ * Apply to routes where writes would cause data loss during migration
+ * (chat, conversations). Don't apply to admin routes — admins need to
+ * manage the workspace during migration (retry, cancel, configure).
+ */
+export const migrationWriteLock = createMiddleware<AuthEnv>(async (c, next) => {
+  const authResult = c.get("authResult");
+  const requestId = c.get("requestId");
+
+  const locked = await checkMigrationWriteLock(c.req.method, authResult, requestId);
+  if (locked) {
+    return c.json(locked.body, locked.status as 409);
+  }
+
   await next();
 });
 

@@ -101,3 +101,23 @@ export interface ImportResult {
   learnedPatterns: { imported: number; skipped: number };
   settings: { imported: number; skipped: number };
 }
+
+// ---------------------------------------------------------------------------
+// Cross-region migration phases
+// ---------------------------------------------------------------------------
+
+/** Phases of the cross-region data migration lifecycle. */
+export const MIGRATION_PHASES = [
+  "validating",
+  "exporting",
+  "transferring",
+  "cutting_over",
+  "scheduling_cleanup",
+  "completed",
+  "failed",
+] as const;
+
+export type MigrationPhase = (typeof MIGRATION_PHASES)[number];
+
+/** Grace period (in days) before source data is eligible for cleanup. */
+export const CLEANUP_GRACE_PERIOD_DAYS = 7;

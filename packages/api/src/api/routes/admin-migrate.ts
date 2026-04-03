@@ -162,7 +162,7 @@ const importRoute = createRoute({
 // Import logic (runs inside a transaction)
 // ---------------------------------------------------------------------------
 
-async function importBundle(
+export async function importBundle(
   client: InternalPoolClient,
   bundle: ExportBundle,
   orgId: string,
@@ -286,7 +286,7 @@ adminMigrate.use(requireOrgContext());
 
 adminMigrate.openapi(importRoute, async (c) => {
   const { orgId } = c.get("orgContext");
-  const requestId = c.get("requestId");
+  const requestId = c.get("requestId") as string;
 
   // Validate bundle structure
   const body = c.req.valid("json");
@@ -322,6 +322,85 @@ adminMigrate.openapi(importRoute, async (c) => {
     });
     const detail = err instanceof Error ? err.message : String(err);
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Migration import failed, rolled back");
+    return c.json({ error: "import_failed", message: `Import failed — all changes rolled back. ${detail}`, requestId }, 500);
+  } finally {
+    client.release();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Internal import endpoint — for cross-region migration (service-to-service)
+// ---------------------------------------------------------------------------
+
+import { Hono } from "hono";
+import { createHash, timingSafeEqual } from "crypto";
+
+/** Timing-safe string comparison — prevents timing attacks on secret values. */
+function timingSafeCompare(a: string, b: string): boolean {
+  const aHash = createHash("sha256").update(a).digest();
+  const bHash = createHash("sha256").update(b).digest();
+  return timingSafeEqual(aHash, bHash);
+}
+
+/**
+ * Internal import router — accepts ATLAS_INTERNAL_SECRET for auth instead of
+ * admin session auth. Used by the migration executor to transfer workspace
+ * data between regional API instances.
+ *
+ * POST /api/v1/internal/migrate/import
+ *   Headers: X-Atlas-Internal-Token: <ATLAS_INTERNAL_SECRET>
+ *   Body: { orgId: string, ...ExportBundle }
+ */
+export const internalMigrate = new Hono();
+
+internalMigrate.post("/import", async (c) => {
+  const requestId = crypto.randomUUID();
+  const token = c.req.header("X-Atlas-Internal-Token");
+  const secret = process.env.ATLAS_INTERNAL_SECRET;
+
+  if (!secret) {
+    log.error({ requestId }, "ATLAS_INTERNAL_SECRET not configured — internal import unavailable");
+    return c.json({ error: "not_configured", message: "Internal import is not configured.", requestId }, 503);
+  }
+
+  if (!token || !timingSafeCompare(token, secret)) {
+    log.warn({ requestId }, "Invalid internal token on cross-region import attempt");
+    return c.json({ error: "unauthorized", message: "Invalid internal token.", requestId }, 401);
+  }
+
+  const body = await c.req.json() as Record<string, unknown>;
+  const orgId = body.orgId;
+  if (!orgId || typeof orgId !== "string") {
+    return c.json({ error: "bad_request", message: "Missing 'orgId' in request body.", requestId }, 400);
+  }
+
+  // Validate the bundle (orgId is separate from bundle payload)
+  const validation = validateBundle(body);
+  if (!validation.ok) {
+    return c.json({ error: "bad_request", message: validation.error, requestId }, 400);
+  }
+
+  const { bundle } = validation;
+  log.info(
+    { requestId, orgId, source: bundle.manifest.source.label, counts: bundle.manifest.counts },
+    "Starting internal cross-region import",
+  );
+
+  const pool = getInternalDB();
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const result = await importBundle(client, bundle, orgId);
+    await client.query("COMMIT");
+
+    log.info({ requestId, orgId, result }, "Internal cross-region import complete");
+    return c.json(result, 200);
+  } catch (err) {
+    await client.query("ROLLBACK").catch((rollbackErr) => {
+      log.warn({ err: rollbackErr instanceof Error ? rollbackErr : new Error(String(rollbackErr)), requestId }, "Rollback failed");
+    });
+    const detail = err instanceof Error ? err.message : String(err);
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId, orgId }, "Internal import failed, rolled back");
     return c.json({ error: "import_failed", message: `Import failed — all changes rolled back. ${detail}`, requestId }, 500);
   } finally {
     client.release();

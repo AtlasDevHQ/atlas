@@ -441,6 +441,26 @@ function setAdmin(): void {
   mockCheckRateLimit.mockReturnValue({ allowed: true });
 }
 
+/** Admin with org context — required for org-scoped sub-routers (connections, invitations, etc.). */
+function setOrgScopedAdmin(orgId = "org-test-1"): void {
+  mockAuthenticateRequest.mockResolvedValue({
+    authenticated: true,
+    mode: "simple-key",
+    user: { id: "admin-1", mode: "simple-key", label: "Admin", role: "admin", activeOrganizationId: orgId },
+  });
+  mockCheckRateLimit.mockReturnValue({ allowed: true });
+}
+
+/** Platform admin — required for platform-only sub-routers (plugins, cache). */
+function setPlatformAdmin(): void {
+  mockAuthenticateRequest.mockResolvedValue({
+    authenticated: true,
+    mode: "simple-key",
+    user: { id: "admin-1", mode: "simple-key", label: "Admin", role: "platform_admin" },
+  });
+  mockCheckRateLimit.mockReturnValue({ allowed: true });
+}
+
 // --- Cleanup ---
 
 afterAll(() => {
@@ -753,7 +773,7 @@ describe("GET /api/v1/admin/semantic/stats", () => {
 describe("GET /api/v1/admin/connections", () => {
   beforeEach(() => {
     mockAuthenticateRequest.mockReset();
-    setAdmin();
+    setOrgScopedAdmin();
   });
 
   it("lists connections", async () => {
@@ -768,7 +788,7 @@ describe("GET /api/v1/admin/connections", () => {
 describe("POST /api/v1/admin/connections/:id/test", () => {
   beforeEach(() => {
     mockAuthenticateRequest.mockReset();
-    setAdmin();
+    setOrgScopedAdmin();
     mockHealthCheck.mockReset();
     mockHealthCheck.mockResolvedValue({
       status: "healthy",
@@ -1280,7 +1300,7 @@ describe("GET /api/v1/admin/audit/facets", () => {
 describe("GET /api/v1/admin/plugins", () => {
   beforeEach(() => {
     mockAuthenticateRequest.mockReset();
-    setAdmin();
+    setPlatformAdmin();
   });
 
   it("lists plugins", async () => {
@@ -1295,7 +1315,7 @@ describe("GET /api/v1/admin/plugins", () => {
 describe("POST /api/v1/admin/plugins/:id/health", () => {
   beforeEach(() => {
     mockAuthenticateRequest.mockReset();
-    setAdmin();
+    setPlatformAdmin();
     mockPluginHealthCheck.mockReset();
     mockPluginHealthCheck.mockResolvedValue({ healthy: true, message: "OK" });
   });
@@ -2352,7 +2372,7 @@ describe("PUT /api/v1/admin/semantic/entities/edit/:name — version creation", 
 
 describe("GET /api/v1/admin/connections/pool/orgs", () => {
   beforeEach(() => {
-    setAdmin();
+    setOrgScopedAdmin();
     mockGetOrgPoolMetrics.mockReset();
     mockGetOrgPoolConfig.mockReset();
     mockListOrgs.mockReset();
@@ -2403,24 +2423,31 @@ describe("GET /api/v1/admin/connections/pool/orgs", () => {
     expect((body.metrics as unknown[]).length).toBe(1);
   });
 
-  it("passes orgId query parameter to getOrgPoolMetrics", async () => {
+  it("passes orgId query parameter to getOrgPoolMetrics (platform admin)", async () => {
+    // Platform admins can specify an orgId query param to view any org's metrics
+    mockAuthenticateRequest.mockResolvedValue({
+      authenticated: true,
+      mode: "simple-key",
+      user: { id: "admin-1", mode: "simple-key", label: "Admin", role: "platform_admin", activeOrganizationId: "org-test-1" },
+    });
     const res = await app.fetch(adminRequest("/api/v1/admin/connections/pool/orgs?orgId=org-42"));
     expect(res.status).toBe(200);
     expect((mockGetOrgPoolMetrics.mock.calls as unknown[][])[0]?.[0]).toBe("org-42");
   });
 
-  it("returns empty metrics when no orgs", async () => {
+  it("workspace admin sees own org metrics only", async () => {
     const res = await app.fetch(adminRequest("/api/v1/admin/connections/pool/orgs"));
     expect(res.status).toBe(200);
+    // Workspace admin gets their own orgId passed to getOrgPoolMetrics
+    expect((mockGetOrgPoolMetrics.mock.calls as unknown[][])[0]?.[0]).toBe("org-test-1");
     const body = (await res.json()) as Record<string, unknown>;
-    expect(body.orgCount).toBe(0);
-    expect((body.metrics as unknown[]).length).toBe(0);
+    expect(body.orgCount).toBe(1);
   });
 });
 
 describe("POST /api/v1/admin/connections/pool/orgs/:orgId/drain", () => {
   beforeEach(() => {
-    setAdmin();
+    setOrgScopedAdmin();
     mockDrainOrg.mockReset();
     mockDrainOrg.mockResolvedValue({ drained: 2 });
   });
@@ -2435,17 +2462,22 @@ describe("POST /api/v1/admin/connections/pool/orgs/:orgId/drain", () => {
     expect(res.status).toBe(403);
   });
 
-  it("drains org pools and returns count", async () => {
-    const res = await app.fetch(adminRequest("/api/v1/admin/connections/pool/orgs/org-1/drain", "POST"));
+  it("drains own org pools and returns count", async () => {
+    const res = await app.fetch(adminRequest("/api/v1/admin/connections/pool/orgs/org-test-1/drain", "POST"));
     expect(res.status).toBe(200);
     const body = (await res.json()) as Record<string, unknown>;
     expect(body.drained).toBe(2);
-    expect((mockDrainOrg.mock.calls as unknown[][])[0]?.[0]).toBe("org-1");
+    expect((mockDrainOrg.mock.calls as unknown[][])[0]?.[0]).toBe("org-test-1");
+  });
+
+  it("returns 403 when workspace admin tries to drain another org", async () => {
+    const res = await app.fetch(adminRequest("/api/v1/admin/connections/pool/orgs/org-other/drain", "POST"));
+    expect(res.status).toBe(403);
   });
 
   it("returns 500 when drainOrg throws", async () => {
     mockDrainOrg.mockRejectedValue(new Error("Pool close failed"));
-    const res = await app.fetch(adminRequest("/api/v1/admin/connections/pool/orgs/org-1/drain", "POST"));
+    const res = await app.fetch(adminRequest("/api/v1/admin/connections/pool/orgs/org-test-1/drain", "POST"));
     expect(res.status).toBe(500);
     const body = (await res.json()) as Record<string, unknown>;
     expect(body.error).toBe("drain_failed");

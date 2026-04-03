@@ -77,6 +77,7 @@ export function createPlatformRouter() {
   const router = new OpenAPIHono<AuthEnv>({ defaultHook: validationHook });
   router.use(platformAdminAuth);
   router.use(requestContext);
+  router.onError(eeOnError);
   return router;
 }
 

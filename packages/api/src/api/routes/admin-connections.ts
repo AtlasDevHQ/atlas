@@ -1,0 +1,806 @@
+/**
+ * Admin connection management routes.
+ *
+ * Mounted under /api/v1/admin/connections via admin.route().
+ * Org-scoped: workspace admins see only connections belonging to their org
+ * (plus the "default" config-managed connection). Platform admins see all.
+ */
+
+import { createRoute, z } from "@hono/zod-openapi";
+import { createLogger } from "@atlas/api/lib/logger";
+import { connections, detectDBType } from "@atlas/api/lib/db/connection";
+import { hasInternalDB, internalQuery, encryptUrl, decryptUrl } from "@atlas/api/lib/db/internal";
+import { maskConnectionUrl } from "@atlas/api/lib/security";
+import { _resetWhitelists } from "@atlas/api/lib/semantic";
+import { runHandler } from "@atlas/api/lib/effect/hono";
+import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
+import { createAdminRouter, requireOrgContext } from "./admin-router";
+
+const log = createLogger("admin-connections");
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Get the set of connection IDs visible to a workspace admin.
+ * Returns null for platform admins (they see all connections).
+ */
+async function getVisibleConnectionIds(
+  orgId: string,
+  isPlatformAdmin: boolean,
+): Promise<Set<string> | null> {
+  if (isPlatformAdmin) return null; // null = no filter
+
+  // "default" connection from config is always visible
+  const visible = new Set<string>(["default"]);
+
+  if (hasInternalDB()) {
+    const rows = await internalQuery<{ id: string }>(
+      "SELECT id FROM connections WHERE org_id = $1",
+      [orgId],
+    );
+    for (const row of rows) {
+      visible.add(row.id);
+    }
+  }
+
+  return visible;
+}
+
+// ---------------------------------------------------------------------------
+// Route definitions
+// ---------------------------------------------------------------------------
+
+const listConnectionsRoute = createRoute({
+  method: "get",
+  path: "/",
+  tags: ["Admin — Connections"],
+  summary: "List connections",
+  description: "Returns registered database connections. Scoped to active organization.",
+  responses: {
+    200: {
+      description: "Connection list",
+      content: { "application/json": { schema: z.object({ connections: z.array(z.unknown()) }) } },
+    },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const getPoolMetricsRoute = createRoute({
+  method: "get",
+  path: "/pool",
+  tags: ["Admin — Connections"],
+  summary: "Pool metrics",
+  description: "Returns connection pool metrics. Scoped to active organization.",
+  responses: {
+    200: {
+      description: "Pool metrics",
+      content: { "application/json": { schema: z.object({ metrics: z.unknown() }) } },
+    },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const getOrgPoolMetricsRoute = createRoute({
+  method: "get",
+  path: "/pool/orgs",
+  tags: ["Admin — Connections"],
+  summary: "Org-scoped pool metrics",
+  description: "Returns connection pool metrics scoped by organization.",
+  responses: {
+    200: {
+      description: "Org pool metrics",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const drainOrgPoolRoute = createRoute({
+  method: "post",
+  path: "/pool/orgs/{orgId}/drain",
+  tags: ["Admin — Connections"],
+  summary: "Drain org pools",
+  description: "Drains all connection pools for a specific organization.",
+  request: {
+    params: z.object({
+      orgId: z.string().min(1).openapi({ param: { name: "orgId", in: "path" }, example: "org_abc123" }),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Drain result",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const drainConnectionPoolRoute = createRoute({
+  method: "post",
+  path: "/{id}/drain",
+  tags: ["Admin — Connections"],
+  summary: "Drain connection pool",
+  description: "Drains and recreates the pool for a specific connection.",
+  request: {
+    params: z.object({
+      id: z.string().min(1).openapi({ param: { name: "id", in: "path" }, example: "warehouse" }),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Pool drained",
+      content: { "application/json": { schema: z.object({ drained: z.boolean(), message: z.string() }) } },
+    },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Connection not found", content: { "application/json": { schema: ErrorSchema } } },
+    409: { description: "Pool drain conflict", content: { "application/json": { schema: z.object({ drained: z.boolean(), message: z.string() }) } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const testConnectionRoute = createRoute({
+  method: "post",
+  path: "/test",
+  tags: ["Admin — Connections"],
+  summary: "Test connection URL",
+  description: "Tests a database connection URL without persisting it.",
+  responses: {
+    200: {
+      description: "Connection test result",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    400: { description: "Invalid request or connection failed", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const testExistingConnectionRoute = createRoute({
+  method: "post",
+  path: "/{id}/test",
+  tags: ["Admin — Connections"],
+  summary: "Health check connection",
+  description: "Runs a health check on an existing connection.",
+  request: {
+    params: z.object({
+      id: z.string().min(1).openapi({ param: { name: "id", in: "path" }, example: "warehouse" }),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Health check result",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Connection not found", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const createConnectionRoute = createRoute({
+  method: "post",
+  path: "/",
+  tags: ["Admin — Connections"],
+  summary: "Create connection",
+  description: "Creates a new database connection. Tests it before saving. Scoped to active organization.",
+  responses: {
+    201: {
+      description: "Connection created",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    400: { description: "Invalid request or connection failed", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
+    409: { description: "Connection already exists", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const updateConnectionRoute = createRoute({
+  method: "put",
+  path: "/{id}",
+  tags: ["Admin — Connections"],
+  summary: "Update connection",
+  description: "Updates an existing connection's URL, description, or schema. Scoped to active organization.",
+  request: {
+    params: z.object({
+      id: z.string().min(1).openapi({ param: { name: "id", in: "path" }, example: "warehouse" }),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Connection updated",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    400: { description: "Invalid request or connection failed", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden", content: { "application/json": { schema: ErrorSchema } } },
+    404: { description: "Connection not found", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const deleteConnectionRoute = createRoute({
+  method: "delete",
+  path: "/{id}",
+  tags: ["Admin — Connections"],
+  summary: "Delete connection",
+  description: "Removes a connection from the registry and internal database. Scoped to active organization.",
+  request: {
+    params: z.object({
+      id: z.string().min(1).openapi({ param: { name: "id", in: "path" }, example: "warehouse" }),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Connection deleted",
+      content: { "application/json": { schema: z.object({ success: z.boolean() }) } },
+    },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden", content: { "application/json": { schema: ErrorSchema } } },
+    404: { description: "Connection not found", content: { "application/json": { schema: ErrorSchema } } },
+    409: { description: "Connection has references", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const getConnectionRoute = createRoute({
+  method: "get",
+  path: "/{id}",
+  tags: ["Admin — Connections"],
+  summary: "Get connection detail",
+  description: "Returns connection detail including masked URL and schema. Scoped to active organization.",
+  request: {
+    params: z.object({
+      id: z.string().min(1).openapi({ param: { name: "id", in: "path" }, example: "warehouse" }),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Connection detail",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Connection not found", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Router
+// ---------------------------------------------------------------------------
+
+const adminConnections = createAdminRouter();
+adminConnections.use(requireOrgContext());
+
+// GET / — list connections scoped to active org
+adminConnections.openapi(listConnectionsRoute, async (c) => runHandler(c, "list connections", async () => {
+  const { orgId } = c.get("orgContext");
+  const authResult = c.get("authResult");
+  const isPlatformAdmin = authResult.user?.role === "platform_admin";
+
+  const connList = connections.describe();
+  const visible = await getVisibleConnectionIds(orgId, isPlatformAdmin);
+  const filtered = visible ? connList.filter((conn) => visible.has(conn.id)) : connList;
+
+  return c.json({ connections: filtered }, 200);
+}));
+
+// GET /pool — pool metrics scoped to active org
+adminConnections.openapi(getPoolMetricsRoute, async (c) => runHandler(c, "get pool metrics", async () => {
+  const { orgId } = c.get("orgContext");
+  const authResult = c.get("authResult");
+  const isPlatformAdmin = authResult.user?.role === "platform_admin";
+
+  if (isPlatformAdmin) {
+    const metrics = connections.getAllPoolMetrics();
+    return c.json({ metrics }, 200);
+  }
+
+  const metrics = connections.getOrgPoolMetrics(orgId);
+  return c.json({ metrics }, 200);
+}));
+
+// GET /pool/orgs — org pool metrics (workspace admins restricted to own org)
+adminConnections.openapi(getOrgPoolMetricsRoute, async (c) => {
+  const { requestId, orgId } = c.get("orgContext");
+  const authResult = c.get("authResult");
+  const isPlatformAdmin = authResult.user?.role === "platform_admin";
+
+  try {
+    // Workspace admins can only see their own org's metrics
+    const targetOrgId = isPlatformAdmin ? (c.req.query("orgId") || undefined) : orgId;
+    const metrics = connections.getOrgPoolMetrics(targetOrgId);
+    const config = connections.getOrgPoolConfig();
+    return c.json({
+      metrics,
+      config,
+      orgCount: isPlatformAdmin ? connections.listOrgs().length : 1,
+    }, 200);
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to retrieve org pool metrics");
+    return c.json({ error: "metrics_failed", message: err instanceof Error ? err.message : "Failed to retrieve metrics", requestId }, 500);
+  }
+});
+
+// POST /pool/orgs/:orgId/drain — drain org pools (restricted to own org for workspace admins)
+adminConnections.openapi(drainOrgPoolRoute, async (c) => {
+  const { requestId, orgId } = c.get("orgContext");
+  const authResult = c.get("authResult");
+  const isPlatformAdmin = authResult.user?.role === "platform_admin";
+  const targetOrgId = c.req.valid("param").orgId;
+
+  // Workspace admins can only drain their own org's pools
+  if (!isPlatformAdmin && targetOrgId !== orgId) {
+    return c.json({ error: "forbidden", message: "Cannot drain pools for another organization.", requestId }, 403);
+  }
+
+  try {
+    const result = await connections.drainOrg(targetOrgId);
+    log.info({ orgId: targetOrgId, drained: result.drained, requestId, userId: authResult.user?.id }, "Org pools drained via admin API");
+    return c.json(result, 200);
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), orgId: targetOrgId, requestId }, "Org pool drain failed");
+    return c.json({ error: "drain_failed", message: err instanceof Error ? err.message : "Org drain failed", requestId }, 500);
+  }
+});
+
+// POST /:id/drain — drain a specific connection pool (must be visible to org)
+adminConnections.openapi(drainConnectionPoolRoute, async (c) => {
+  const { requestId, orgId } = c.get("orgContext");
+  const authResult = c.get("authResult");
+  const isPlatformAdmin = authResult.user?.role === "platform_admin";
+  const { id } = c.req.valid("param");
+
+  if (!connections.has(id)) {
+    return c.json({ error: "not_found", message: `Connection "${id}" not found`, requestId }, 404);
+  }
+
+  // Workspace admins can only drain connections visible to their org
+  const visible = await getVisibleConnectionIds(orgId, isPlatformAdmin);
+  if (visible && !visible.has(id)) {
+    return c.json({ error: "not_found", message: `Connection "${id}" not found`, requestId }, 404);
+  }
+
+  try {
+    const result = await connections.drain(id);
+    if (!result.drained) {
+      return c.json({ drained: false, message: result.message }, 409);
+    }
+    log.info({ connectionId: id, requestId, userId: authResult.user?.id }, "Pool drained via admin API");
+    return c.json({ drained: true, message: result.message }, 200);
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), connectionId: id, requestId }, "Pool drain failed");
+    return c.json({ error: "drain_failed", message: err instanceof Error ? err.message : "Drain failed", requestId }, 500);
+  }
+});
+
+// POST /test — test a connection URL (transient, no org scoping needed)
+adminConnections.openapi(testConnectionRoute, async (c) => {
+  const { requestId } = c.get("orgContext");
+
+  const body = await c.req.json().catch((err: unknown) => {
+    log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse JSON body in test connection request");
+    return null;
+  });
+  if (!body || typeof body !== "object") {
+    return c.json({ error: "invalid_request", message: "Request body is required.", requestId }, 400);
+  }
+
+  const { url, schema } = body as Record<string, unknown>;
+  if (!url || typeof url !== "string") {
+    return c.json({ error: "invalid_request", message: "Connection URL is required.", requestId }, 400);
+  }
+
+  let dbType: string;
+  try {
+    dbType = detectDBType(url);
+  } catch (err) {
+    return c.json({ error: "invalid_request", message: err instanceof Error ? err.message : "Unsupported database URL scheme.", requestId }, 400);
+  }
+
+  const tempId = `_test_${Date.now()}`;
+  try {
+    connections.register(tempId, {
+      url,
+      description: undefined,
+      schema: typeof schema === "string" ? schema : undefined,
+    });
+    const result = await connections.healthCheck(tempId);
+    return c.json({ status: result.status, latencyMs: result.latencyMs, dbType }, 200);
+  } catch (err) {
+    log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Connection test failed");
+    return c.json({
+      error: "connection_failed",
+      message: `Connection test failed: ${err instanceof Error ? err.message : "Unknown error"}`,
+      requestId,
+    }, 400);
+  } finally {
+    if (connections.has(tempId)) {
+      connections.unregister(tempId);
+    }
+  }
+});
+
+// POST /:id/test — health check existing connection (must be visible to org)
+adminConnections.openapi(testExistingConnectionRoute, async (c) => runHandler(c, "health check connection", async () => {
+  const { requestId, orgId } = c.get("orgContext");
+  const authResult = c.get("authResult");
+  const isPlatformAdmin = authResult.user?.role === "platform_admin";
+  const { id } = c.req.valid("param");
+
+  const registered = connections.list();
+  if (!registered.includes(id)) {
+    return c.json({ error: "not_found", message: `Connection "${id}" not found.`, requestId }, 404);
+  }
+
+  const visible = await getVisibleConnectionIds(orgId, isPlatformAdmin);
+  if (visible && !visible.has(id)) {
+    return c.json({ error: "not_found", message: `Connection "${id}" not found.`, requestId }, 404);
+  }
+
+  const result = await connections.healthCheck(id);
+  return c.json(result, 200);
+}));
+
+// POST / — create connection scoped to active org
+adminConnections.openapi(createConnectionRoute, async (c) => {
+  const { requestId, orgId } = c.get("orgContext");
+  const authResult = c.get("authResult");
+
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "Connection management requires an internal database (DATABASE_URL).", requestId }, 404);
+  }
+
+  const body = await c.req.json().catch((err: unknown) => {
+    log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse JSON body in create connection request");
+    return null;
+  });
+
+  if (!body || typeof body !== "object") {
+    return c.json({ error: "invalid_request", message: "Request body is required.", requestId }, 400);
+  }
+
+  const { id, url, description, schema } = body as Record<string, unknown>;
+
+  if (!id || typeof id !== "string" || !/^[a-z][a-z0-9_-]*$/.test(id)) {
+    return c.json({ error: "invalid_request", message: "Connection ID must be lowercase alphanumeric with hyphens/underscores (e.g. 'warehouse').", requestId }, 400);
+  }
+  if (id === "default") {
+    return c.json({ error: "invalid_request", message: "Cannot create a connection with ID 'default'. The default connection is managed via ATLAS_DATASOURCE_URL.", requestId }, 400);
+  }
+  if (!url || typeof url !== "string") {
+    return c.json({ error: "invalid_request", message: "Connection URL is required.", requestId }, 400);
+  }
+
+  let dbType: string;
+  try {
+    dbType = detectDBType(url);
+  } catch (err) {
+    return c.json({ error: "invalid_request", message: err instanceof Error ? err.message : "Unsupported database URL scheme.", requestId }, 400);
+  }
+
+  if (connections.has(id)) {
+    return c.json({ error: "conflict", message: `Connection "${id}" already exists.`, requestId }, 409);
+  }
+
+  // Test the connection before saving
+  try {
+    connections.register(id, {
+      url,
+      description: typeof description === "string" ? description : undefined,
+      schema: typeof schema === "string" ? schema : undefined,
+    });
+    await connections.healthCheck(id);
+  } catch (err) {
+    connections.unregister(id);
+    return c.json({
+      error: "connection_failed",
+      message: `Connection test failed: ${err instanceof Error ? err.message : "Unknown error"}. Fix the URL and try again.`,
+      requestId,
+    }, 400);
+  }
+
+  // Encrypt and persist to internal DB with org_id
+  let encryptedUrl: string;
+  try {
+    encryptedUrl = encryptUrl(url);
+  } catch (err) {
+    connections.unregister(id);
+    log.error({ err: err instanceof Error ? err.message : String(err), connectionId: id }, "Failed to encrypt connection URL");
+    return c.json({ error: "encryption_failed", message: "Failed to encrypt connection URL. Check ATLAS_ENCRYPTION_KEY or BETTER_AUTH_SECRET.", requestId }, 500);
+  }
+
+  try {
+    await internalQuery(
+      `INSERT INTO connections (id, url, type, description, schema_name, org_id) VALUES ($1, $2, $3, $4, $5, $6)`,
+      [id, encryptedUrl, dbType, typeof description === "string" ? description : null, typeof schema === "string" ? schema : null, orgId],
+    );
+  } catch (err) {
+    connections.unregister(id);
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), connectionId: id }, "Failed to persist connection");
+    return c.json({ error: "internal_error", message: "Failed to save connection.", requestId }, 500);
+  }
+
+  _resetWhitelists();
+
+  log.info({ requestId, connectionId: id, dbType, orgId, actorId: authResult.user?.id }, "Connection created");
+  return c.json({
+    id,
+    dbType,
+    description: typeof description === "string" ? description : null,
+    maskedUrl: maskConnectionUrl(url),
+  }, 201);
+});
+
+// PUT /:id — update connection (must belong to org)
+adminConnections.openapi(updateConnectionRoute, async (c) => {
+  const { requestId, orgId } = c.get("orgContext");
+  const authResult = c.get("authResult");
+  const isPlatformAdmin = authResult.user?.role === "platform_admin";
+  const { id } = c.req.valid("param");
+
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "Connection management requires an internal database (DATABASE_URL).", requestId }, 404);
+  }
+
+  if (id === "default") {
+    return c.json({ error: "forbidden", message: "Cannot modify the default connection. Update ATLAS_DATASOURCE_URL instead.", requestId }, 403);
+  }
+
+  // Check it exists in the DB and belongs to this org
+  const orgFilter = isPlatformAdmin ? "" : " AND org_id = $2";
+  const orgParams = isPlatformAdmin ? [id] : [id, orgId];
+  const existing = await internalQuery<{ id: string; url: string; type: string; description: string | null; schema_name: string | null }>(
+    `SELECT id, url, type, description, schema_name FROM connections WHERE id = $1${orgFilter}`,
+    orgParams,
+  );
+
+  if (existing.length === 0) {
+    return c.json({ error: "not_found", message: `Connection "${id}" not found or is not admin-managed.`, requestId }, 404);
+  }
+
+  const body = await c.req.json().catch((err: unknown) => {
+    log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to parse JSON body in update connection request");
+    return null;
+  });
+
+  if (!body || typeof body !== "object") {
+    return c.json({ error: "invalid_request", message: "Request body is required.", requestId }, 400);
+  }
+
+  const { url, description, schema } = body as Record<string, unknown>;
+  const current = existing[0];
+
+  let currentUrl: string;
+  try {
+    currentUrl = decryptUrl(current.url);
+  } catch (err) {
+    log.error({ connectionId: id, err: err instanceof Error ? err.message : String(err) }, "Failed to decrypt stored connection URL");
+    return c.json({ error: "decryption_failed", message: "Stored connection URL could not be decrypted. The encryption key may have changed.", requestId }, 500);
+  }
+
+  const newUrl = typeof url === "string" ? url : currentUrl;
+  const newDescription = typeof description === "string" ? description : current.description;
+  const newSchema = typeof schema === "string" ? (schema || null) : current.schema_name;
+  const urlChanged = typeof url === "string" && url !== currentUrl;
+
+  let dbType = current.type;
+  if (urlChanged) {
+    try {
+      dbType = detectDBType(newUrl);
+    } catch (err) {
+      return c.json({ error: "invalid_request", message: err instanceof Error ? err.message : "Unsupported database URL scheme.", requestId }, 400);
+    }
+  }
+
+  // Re-test if URL changed
+  if (urlChanged) {
+    try {
+      connections.register(id, { url: newUrl, description: newDescription ?? undefined, schema: newSchema ?? undefined });
+      await connections.healthCheck(id);
+    } catch (err) {
+      try {
+        connections.register(id, { url: currentUrl, description: current.description ?? undefined, schema: current.schema_name ?? undefined });
+      } catch (restoreErr) {
+        log.error({ connectionId: id, err: restoreErr instanceof Error ? restoreErr.message : String(restoreErr) }, "Failed to restore previous connection after update failure — connection unregistered");
+        connections.unregister(id);
+      }
+      return c.json({ error: "connection_failed", message: `Connection test failed: ${err instanceof Error ? err.message : "Unknown error"}. Fix the URL and try again.`, requestId }, 400);
+    }
+  } else {
+    try {
+      connections.register(id, { url: newUrl, description: newDescription ?? undefined, schema: newSchema ?? undefined });
+    } catch (err) {
+      log.error({ err: err instanceof Error ? err : new Error(String(err)), connectionId: id }, "Failed to re-register connection with updated metadata");
+      return c.json({ error: "internal_error", message: "Failed to update connection.", requestId }, 500);
+    }
+  }
+
+  // Encrypt and update in DB — rollback registry on failure
+  let encryptedNewUrl: string;
+  try {
+    encryptedNewUrl = encryptUrl(newUrl);
+  } catch (err) {
+    try {
+      connections.register(id, { url: currentUrl, description: current.description ?? undefined, schema: current.schema_name ?? undefined });
+    } catch (restoreErr) {
+      log.error({ connectionId: id, requestId, err: restoreErr instanceof Error ? restoreErr.message : String(restoreErr) }, "Failed to restore previous connection after encryption failure — connection unregistered");
+      connections.unregister(id);
+    }
+    log.error({ err: err instanceof Error ? err.message : String(err), connectionId: id }, "Failed to encrypt connection URL");
+    return c.json({ error: "encryption_failed", message: "Failed to encrypt connection URL. Check ATLAS_ENCRYPTION_KEY or BETTER_AUTH_SECRET.", requestId }, 500);
+  }
+
+  const updateOrgFilter = isPlatformAdmin ? "" : " AND org_id = $6";
+  const updateParams = isPlatformAdmin
+    ? [encryptedNewUrl, dbType, newDescription, newSchema, id]
+    : [encryptedNewUrl, dbType, newDescription, newSchema, id, orgId];
+
+  try {
+    await internalQuery(
+      `UPDATE connections SET url = $1, type = $2, description = $3, schema_name = $4, updated_at = NOW() WHERE id = $5${updateOrgFilter}`,
+      updateParams,
+    );
+  } catch (err) {
+    try {
+      connections.register(id, { url: currentUrl, description: current.description ?? undefined, schema: current.schema_name ?? undefined });
+    } catch (restoreErr) {
+      log.error({ connectionId: id, requestId, err: restoreErr instanceof Error ? restoreErr.message : String(restoreErr) }, "Failed to restore previous connection after DB update failure — connection unregistered");
+      connections.unregister(id);
+    }
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), connectionId: id }, "Failed to update connection in DB");
+    return c.json({ error: "internal_error", message: "Failed to update connection.", requestId }, 500);
+  }
+
+  _resetWhitelists();
+
+  log.info({ requestId, connectionId: id, urlChanged, actorId: authResult.user?.id }, "Connection updated");
+  return c.json({ id, dbType, description: newDescription, maskedUrl: maskConnectionUrl(newUrl) }, 200);
+});
+
+// DELETE /:id — delete connection (must belong to org)
+adminConnections.openapi(deleteConnectionRoute, async (c) => {
+  const { requestId, orgId } = c.get("orgContext");
+  const authResult = c.get("authResult");
+  const isPlatformAdmin = authResult.user?.role === "platform_admin";
+  const { id } = c.req.valid("param");
+
+  if (!hasInternalDB()) {
+    return c.json({ error: "not_available", message: "Connection management requires an internal database (DATABASE_URL).", requestId }, 404);
+  }
+
+  if (id === "default") {
+    return c.json({ error: "forbidden", message: "Cannot delete the default connection.", requestId }, 403);
+  }
+
+  // Must exist in the DB and belong to the org
+  const orgFilter = isPlatformAdmin ? "" : " AND org_id = $2";
+  const orgParams = isPlatformAdmin ? [id] : [id, orgId];
+  const existing = await internalQuery<{ id: string }>(
+    `SELECT id FROM connections WHERE id = $1${orgFilter}`,
+    orgParams,
+  );
+
+  if (existing.length === 0) {
+    return c.json({ error: "not_found", message: `Connection "${id}" not found or is not admin-managed.`, requestId }, 404);
+  }
+
+  // Check for scheduled tasks referencing this connection
+  try {
+    const refs = await internalQuery<{ count: string }>(
+      "SELECT COUNT(*) as count FROM scheduled_tasks WHERE connection_id = $1",
+      [id],
+    );
+    const refCount = parseInt(String(refs[0]?.count ?? "0"), 10);
+    if (refCount > 0) {
+      return c.json({
+        error: "conflict",
+        message: `Cannot delete connection "${id}" — it is referenced by ${refCount} scheduled task(s). Remove or update those tasks first.`,
+        requestId,
+      }, 409);
+    }
+  } catch (err) {
+    // scheduled_tasks table might not exist — not a blocker for delete
+    log.warn({ err: err instanceof Error ? err.message : String(err), connectionId: id }, "Could not check scheduled task references (table may not exist)");
+  }
+
+  // Remove from DB and registry
+  try {
+    await internalQuery(
+      `DELETE FROM connections WHERE id = $1${orgFilter}`,
+      orgParams,
+    );
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err : new Error(String(err)), connectionId: id }, "Failed to delete connection from DB");
+    return c.json({ error: "internal_error", message: "Failed to delete connection.", requestId }, 500);
+  }
+
+  connections.unregister(id);
+
+  log.info({ requestId, connectionId: id, actorId: authResult.user?.id }, "Connection deleted");
+  return c.json({ success: true }, 200);
+});
+
+// GET /:id — get connection detail (must be visible to org)
+adminConnections.openapi(getConnectionRoute, async (c) => runHandler(c, "get connection detail", async () => {
+  const { requestId, orgId } = c.get("orgContext");
+  const authResult = c.get("authResult");
+  const isPlatformAdmin = authResult.user?.role === "platform_admin";
+  const { id } = c.req.valid("param");
+
+  if (!connections.has(id)) {
+    return c.json({ error: "not_found", message: `Connection "${id}" not found.`, requestId }, 404);
+  }
+
+  // Verify visibility for workspace admins
+  const visible = await getVisibleConnectionIds(orgId, isPlatformAdmin);
+  if (visible && !visible.has(id)) {
+    return c.json({ error: "not_found", message: `Connection "${id}" not found.`, requestId }, 404);
+  }
+
+  const meta = connections.describe().find((m) => m.id === id);
+
+  // If admin-managed, include masked URL and schema from DB
+  let maskedUrl: string | null = null;
+  let schema: string | null = null;
+  let managed = false;
+  if (hasInternalDB()) {
+    try {
+      const rows = await internalQuery<{ url: string; schema_name: string | null }>(
+        "SELECT url, schema_name FROM connections WHERE id = $1",
+        [id],
+      );
+      if (rows.length > 0) {
+        managed = true;
+        schema = rows[0].schema_name;
+        try {
+          maskedUrl = maskConnectionUrl(decryptUrl(rows[0].url));
+        } catch (decryptErr) {
+          log.error({ connectionId: id, err: decryptErr instanceof Error ? decryptErr.message : String(decryptErr) }, "Failed to decrypt stored connection URL");
+          maskedUrl = "[encrypted — decryption failed]";
+        }
+      }
+    } catch (err) {
+      log.warn({ err: err instanceof Error ? err.message : String(err), connectionId: id }, "Failed to fetch connection details from internal DB");
+    }
+  }
+
+  return c.json({
+    id,
+    dbType: meta?.dbType ?? "unknown",
+    description: meta?.description ?? null,
+    health: meta?.health ?? null,
+    maskedUrl,
+    schema,
+    managed,
+  }, 200);
+}));
+
+export { adminConnections };

@@ -35,7 +35,7 @@ const mockAuthenticateRequest: Mock<(req: Request) => Promise<unknown>> = mock(
     Promise.resolve({
       authenticated: true,
       mode: "simple-key",
-      user: { id: "admin-1", mode: "simple-key", label: "Admin", role: "admin" },
+      user: { id: "admin-1", mode: "simple-key", label: "Admin", role: "platform_admin" },
     }),
 );
 
@@ -51,6 +51,19 @@ mock.module("@atlas/api/lib/auth/middleware", () => ({
 mock.module("@atlas/api/lib/auth/detect", () => ({
   detectAuthMode: () => "simple-key",
   resetAuthModeCache: () => {},
+}));
+
+mock.module("@atlas/api/lib/residency/misrouting", () => ({
+  detectMisrouting: mock(async () => null),
+  isStrictRoutingEnabled: mock(() => false),
+  getMisroutedCount: mock(() => 0),
+  _resetMisroutedCount: mock(() => {}),
+  _resetRegionCache: mock(() => {}),
+  getApiRegion: mock(() => null),
+}));
+
+mock.module("@atlas/api/lib/residency/readonly", () => ({
+  isWorkspaceMigrating: mock(async () => false),
 }));
 
 mock.module("@atlas/api/lib/startup", () => ({
@@ -317,7 +330,7 @@ beforeEach(() => {
     Promise.resolve({
       authenticated: true,
       mode: "simple-key",
-      user: { id: "admin-1", mode: "simple-key", label: "Admin", role: "admin" },
+      user: { id: "admin-1", mode: "simple-key", label: "Admin", role: "platform_admin" },
     }),
   );
   mockHasInternalDB = true;

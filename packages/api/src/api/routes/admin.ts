@@ -3591,7 +3591,7 @@ admin.openapi(changePasswordRoute, async (c) => {
 // -- Sessions ---------------------------------------------------------------
 
 admin.openapi(listSessionsRoute, async (c) => runHandler(c, "list sessions", async () => {
-  await adminAuthAndContext(c);
+  const { authResult } = await adminAuthAndContext(c);
   if (!hasInternalDB() || detectAuthMode() !== "managed") {
     return c.json({ error: "not_available", message: "Session management requires managed auth mode." }, 404);
   }
@@ -3599,9 +3599,21 @@ admin.openapi(listSessionsRoute, async (c) => runHandler(c, "list sessions", asy
   const { limit, offset } = parsePagination(c);
   const search = c.req.query("search");
 
+  // Org-scoping: non-platform_admin users with an activeOrganizationId see
+  // only sessions for members of their org. Platform admins and self-hosted see all.
+  const orgId = authResult.user?.activeOrganizationId;
+  const isPlatformAdmin = authResult.user?.role === "platform_admin";
+  const needsOrgScope = !!(orgId && !isPlatformAdmin);
+
   const conditions: string[] = [];
   const params: unknown[] = [];
   let paramIdx = 1;
+
+  if (needsOrgScope) {
+    conditions.push(`m."organizationId" = $${paramIdx}`);
+    params.push(orgId);
+    paramIdx++;
+  }
 
   if (search) {
     conditions.push(`(u.email ILIKE $${paramIdx} OR s."ipAddress" ILIKE $${paramIdx})`);
@@ -3610,6 +3622,7 @@ admin.openapi(listSessionsRoute, async (c) => runHandler(c, "list sessions", asy
   }
 
   const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+  const memberJoin = needsOrgScope ? `JOIN member m ON m."userId" = s."userId"` : "";
 
   const [rows, countResult] = await Promise.all([
     internalQuery<{
@@ -3628,13 +3641,14 @@ admin.openapi(listSessionsRoute, async (c) => runHandler(c, "list sessions", asy
               s."ipAddress" AS "ipAddress", s."userAgent" AS "userAgent"
        FROM session s
        LEFT JOIN "user" u ON s."userId" = u.id
+       ${memberJoin}
        ${where}
        ORDER BY s."updatedAt" DESC
        LIMIT $${paramIdx} OFFSET $${paramIdx + 1}`,
       [...params, limit, offset],
     ),
     internalQuery<{ count: string }>(
-      `SELECT COUNT(*) AS count FROM session s LEFT JOIN "user" u ON s."userId" = u.id ${where}`,
+      `SELECT COUNT(*) AS count FROM session s LEFT JOIN "user" u ON s."userId" = u.id ${memberJoin} ${where}`,
       params,
     ),
   ]);
@@ -3657,15 +3671,34 @@ admin.openapi(listSessionsRoute, async (c) => runHandler(c, "list sessions", asy
 }));
 
 admin.openapi(getSessionStatsRoute, async (c) => runHandler(c, "get session stats", async () => {
-  await adminAuthAndContext(c);
+  const { authResult } = await adminAuthAndContext(c);
   if (!hasInternalDB() || detectAuthMode() !== "managed") {
     return c.json({ error: "not_available", message: "Session management requires managed auth mode." }, 404);
   }
 
+  // Org-scoping: same pattern as list sessions
+  const orgId = authResult.user?.activeOrganizationId;
+  const isPlatformAdmin = authResult.user?.role === "platform_admin";
+  const needsOrgScope = !!(orgId && !isPlatformAdmin);
+
+  const memberJoin = needsOrgScope ? `JOIN member m ON m."userId" = s."userId"` : "";
+  const orgWhere = needsOrgScope ? `WHERE m."organizationId" = $1` : "";
+  const orgWhereAnd = needsOrgScope ? `AND m."organizationId" = $1` : "";
+  const params = needsOrgScope ? [orgId] : [];
+
   const [totalResult, activeResult, uniqueUsersResult] = await Promise.all([
-    internalQuery<{ count: string }>(`SELECT COUNT(*) AS count FROM session`),
-    internalQuery<{ count: string }>(`SELECT COUNT(*) AS count FROM session WHERE "expiresAt" > NOW()`),
-    internalQuery<{ count: string }>(`SELECT COUNT(DISTINCT "userId") AS count FROM session WHERE "expiresAt" > NOW()`),
+    internalQuery<{ count: string }>(
+      `SELECT COUNT(*) AS count FROM session s ${memberJoin} ${orgWhere}`,
+      params,
+    ),
+    internalQuery<{ count: string }>(
+      `SELECT COUNT(*) AS count FROM session s ${memberJoin} WHERE "expiresAt" > NOW() ${orgWhereAnd}`,
+      params,
+    ),
+    internalQuery<{ count: string }>(
+      `SELECT COUNT(DISTINCT s."userId") AS count FROM session s ${memberJoin} WHERE "expiresAt" > NOW() ${orgWhereAnd}`,
+      params,
+    ),
   ]);
 
   return c.json({

@@ -64,13 +64,18 @@ export default function ConnectPage() {
   // Check if a default datasource is available (for "Try demo data" option)
   useEffect(() => {
     fetch(`${getApiBase()}/api/health`, { credentials: getCredentials() })
-      .then((res) => res.json())
+      .then((res) => {
+        if (!res.ok) throw new Error(`Health check returned ${res.status}`);
+        return res.json();
+      })
       .then((data) => {
         if (data?.checks?.datasource?.status === "ok") {
           setDemoAvailable(true);
         }
       })
-      .catch(() => { /* health check failed — demo option won't show */ });
+      .catch((err) => {
+        console.debug("[signup/connect] health check failed:", err instanceof Error ? err.message : String(err));
+      });
   }, []);
 
   async function handleTest() {

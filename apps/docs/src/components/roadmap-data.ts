@@ -266,11 +266,11 @@ export const milestones: Milestone[] = [
       "Documentation for 0.9.7 features, integration type safety refactors, data residency region selection during signup and automated migration orchestration, periodic settings refresh for multi-instance SaaS, and deploy-validation CI for scaffold templates.",
     githubMilestone: 30,
   },
-  // ── Current ──────────────────────────────────────────────
+  // ── Shipped (latest) ─────────────────────────────────────
   {
     version: "1.0.0",
     title: "SaaS Launch",
-    status: "current",
+    status: "shipped",
     summary:
       "Public launch of hosted Atlas at app.useatlas.dev. All launch infrastructure shipped — pricing, SLA commitments, legal pages, migration tooling, hosted user docs, 3-region deployment with cross-region data migration, pre-launch smoke testing, and competitive positioning refresh.",
     highlights: [

@@ -192,6 +192,7 @@ adminPlugins.openapi(listPluginsRoute, async (c) => {
 // POST /:id/health — plugin health check
 adminPlugins.openapi(pluginHealthRoute, async (c) => {
   const { id } = c.req.valid("param");
+  const requestId = c.get("requestId") as string;
 
   const plugin = plugins.get(id);
   if (!plugin) {
@@ -221,6 +222,7 @@ adminPlugins.openapi(pluginHealthRoute, async (c) => {
       healthy: false,
       message: "Plugin health check failed unexpectedly.",
       status: plugins.getStatus(id) ?? null,
+      requestId,
     }, 500);
   }
 });

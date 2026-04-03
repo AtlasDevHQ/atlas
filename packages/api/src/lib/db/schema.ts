@@ -306,7 +306,7 @@ export const invitations = pgTable(
     index("idx_invitations_email").on(t.email),
     index("idx_invitations_token").on(t.token),
     index("idx_invitations_status").on(t.status),
-    uniqueIndex("idx_invitations_pending_email").on(t.email).where(sql`status = 'pending'`),
+    uniqueIndex("idx_invitations_pending_email").on(t.email, t.orgId).where(sql`status = 'pending'`),
     index("idx_invitations_org").on(t.orgId),
   ],
 );

@@ -31,7 +31,9 @@ export async function listSalesforceObjects(
       type: "table" as const,
     }));
   } finally {
-    await source.close();
+    await source.close().catch((closeErr: unknown) => {
+      console.warn(`[atlas] Salesforce client cleanup warning: ${closeErr instanceof Error ? closeErr.message : String(closeErr)}`);
+    });
   }
 }
 
@@ -183,7 +185,9 @@ export async function profileSalesforce(
       }
     }
   } finally {
-    await source.close();
+    await source.close().catch((closeErr: unknown) => {
+      console.warn(`[atlas] Salesforce client cleanup warning: ${closeErr instanceof Error ? closeErr.message : String(closeErr)}`);
+    });
   }
 
   return { profiles, errors };

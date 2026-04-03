@@ -1,5 +1,5 @@
 /**
- * DuckDB profiler (CSV/Parquet files).
+ * DuckDB profiler — profiles tables in DuckDB databases, with CSV/Parquet ingestion support.
  *
  * Extracted from atlas.ts to reduce monolith size.
  */

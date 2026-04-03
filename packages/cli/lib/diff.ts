@@ -301,7 +301,7 @@ export function computeDiff(
 /**
  * Format a DiffResult as a human-readable string.
  * @param dbSnapshots — when provided, new-table summaries include column counts
- *   and foreign key details from the live DB profile.
+ *   from the live DB profile.
  */
 export function formatDiff(
   diff: DiffResult,

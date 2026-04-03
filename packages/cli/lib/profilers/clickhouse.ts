@@ -47,7 +47,9 @@ export async function listClickHouseObjects(
       type: r.engine === "View" ? ("view" as const) : ("table" as const),
     }));
   } finally {
-    await client.close();
+    await client.close().catch((closeErr: unknown) => {
+      console.warn(`[atlas] ClickHouse client cleanup warning: ${closeErr instanceof Error ? closeErr.message : String(closeErr)}`);
+    });
   }
 }
 

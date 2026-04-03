@@ -3,6 +3,9 @@
  *
  * Mocks everything needed by the Hono app to test the three token endpoints:
  * /tokens/summary, /tokens/by-user, /tokens/trends.
+ *
+ * All endpoints are org-scoped: queries filter on token_usage.org_id matching
+ * the caller's active organization.
  */
 
 import {
@@ -35,8 +38,8 @@ const mockAuthenticateRequest: Mock<(req: Request) => Promise<unknown>> = mock(
   () =>
     Promise.resolve({
       authenticated: true,
-      mode: "simple-key",
-      user: { id: "admin-1", mode: "simple-key", label: "Admin", role: "admin" },
+      mode: "managed",
+      user: { id: "admin-1", mode: "managed", label: "admin@test.com", role: "admin", activeOrganizationId: "org-test" },
     }),
 );
 
@@ -50,7 +53,7 @@ mock.module("@atlas/api/lib/auth/middleware", () => ({
 }));
 
 mock.module("@atlas/api/lib/auth/detect", () => ({
-  detectAuthMode: () => "simple-key",
+  detectAuthMode: () => "managed",
   resetAuthModeCache: () => {},
 }));
 
@@ -217,6 +220,16 @@ const { app } = await import("../index");
 
 // --- Helpers ---
 
+function setOrgAdmin(orgId: string): void {
+  mockAuthenticateRequest.mockImplementation(() =>
+    Promise.resolve({
+      authenticated: true,
+      mode: "managed",
+      user: { id: "admin-1", mode: "managed", label: "admin@test.com", role: "admin", activeOrganizationId: orgId },
+    }),
+  );
+}
+
 function adminRequest(urlPath: string): Request {
   return new Request(`http://localhost${urlPath}`, {
     method: "GET",
@@ -237,22 +250,17 @@ describe("admin token usage routes", () => {
   beforeEach(() => {
     mockHasInternalDB = true;
     mockInternalQuery.mockReset();
-    mockAuthenticateRequest.mockImplementation(() =>
-      Promise.resolve({
-        authenticated: true,
-        mode: "simple-key",
-        user: { id: "admin-1", mode: "simple-key", label: "Admin", role: "admin" },
-      }),
-    );
+    setOrgAdmin("org-test");
   });
 
   describe("GET /tokens/summary", () => {
-    it("returns token summary", async () => {
-      mockInternalQuery.mockImplementation(() =>
-        Promise.resolve([
+    it("returns token summary with org_id filter", async () => {
+      mockInternalQuery.mockImplementation((sql: string) => {
+        if (sql.includes("ip_allowlist")) return Promise.resolve([]);
+        return Promise.resolve([
           { total_prompt: "15000", total_completion: "5000", total_requests: "10" },
-        ]),
-      );
+        ]);
+      });
 
       const res = await app.fetch(adminRequest("/api/v1/admin/tokens/summary"));
       expect(res.status).toBe(200);
@@ -262,6 +270,13 @@ describe("admin token usage routes", () => {
       expect(body.totalCompletionTokens).toBe(5000);
       expect(body.totalTokens).toBe(20000);
       expect(body.totalRequests).toBe(10);
+
+      // Verify org-scoping: SQL must include org_id filter and pass orgId as param
+      const lastCall = mockInternalQuery.mock.calls.at(-1);
+      expect(lastCall).toBeDefined();
+      const [sql, params] = lastCall!;
+      expect(sql).toContain("org_id");
+      expect(params).toContain("org-test");
     });
 
     it("returns 404 when no internal DB", async () => {
@@ -274,8 +289,8 @@ describe("admin token usage routes", () => {
       mockAuthenticateRequest.mockImplementation(() =>
         Promise.resolve({
           authenticated: true,
-          mode: "simple-key",
-          user: { id: "user-1", mode: "simple-key", label: "User", role: "member" },
+          mode: "managed",
+          user: { id: "user-1", mode: "managed", label: "User", role: "member", activeOrganizationId: "org-test" },
         }),
       );
       const res = await app.fetch(adminRequest("/api/v1/admin/tokens/summary"));
@@ -283,9 +298,10 @@ describe("admin token usage routes", () => {
     });
 
     it("accepts date range parameters", async () => {
-      mockInternalQuery.mockImplementation(() =>
-        Promise.resolve([{ total_prompt: "0", total_completion: "0", total_requests: "0" }]),
-      );
+      mockInternalQuery.mockImplementation((sql: string) => {
+        if (sql.includes("ip_allowlist")) return Promise.resolve([]);
+        return Promise.resolve([{ total_prompt: "0", total_completion: "0", total_requests: "0" }]);
+      });
       const res = await app.fetch(adminRequest("/api/v1/admin/tokens/summary?from=2026-01-01&to=2026-03-01"));
       expect(res.status).toBe(200);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience for JSON response body
@@ -295,27 +311,52 @@ describe("admin token usage routes", () => {
     });
 
     it("returns 400 for invalid date format", async () => {
+      mockInternalQuery.mockImplementation((sql: string) => {
+        if (sql.includes("ip_allowlist")) return Promise.resolve([]);
+        return Promise.resolve([]);
+      });
       const res = await app.fetch(adminRequest("/api/v1/admin/tokens/summary?from=not-a-date"));
       expect(res.status).toBe(400);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience for JSON response body
       const body = await res.json() as any;
       expect(body.error).toBe("invalid_request");
+      expect(body.requestId).toBeDefined();
     });
 
     it("returns 500 when DB query fails", async () => {
-      mockInternalQuery.mockImplementation(() => Promise.reject(new Error("connection refused")));
+      mockInternalQuery.mockImplementation((sql: string) => {
+        if (sql.includes("ip_allowlist")) return Promise.resolve([]);
+        return Promise.reject(new Error("connection refused"));
+      });
       const res = await app.fetch(adminRequest("/api/v1/admin/tokens/summary"));
       expect(res.status).toBe(500);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience for JSON response body
       const body = await res.json() as any;
       expect(body.error).toBe("internal_error");
+      expect(body.requestId).toBeDefined();
+    });
+
+    it("returns 400 when no active organization", async () => {
+      mockAuthenticateRequest.mockImplementation(() =>
+        Promise.resolve({
+          authenticated: true,
+          mode: "managed",
+          user: { id: "admin-1", mode: "managed", label: "Admin", role: "admin" },
+        }),
+      );
+      const res = await app.fetch(adminRequest("/api/v1/admin/tokens/summary"));
+      expect(res.status).toBe(400);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience for JSON response body
+      const body = await res.json() as any;
+      expect(body.error).toBe("bad_request");
     });
   });
 
   describe("GET /tokens/by-user", () => {
-    it("returns user token breakdown", async () => {
-      mockInternalQuery.mockImplementation(() =>
-        Promise.resolve([
+    it("returns user token breakdown with org_id filter", async () => {
+      mockInternalQuery.mockImplementation((sql: string) => {
+        if (sql.includes("ip_allowlist")) return Promise.resolve([]);
+        return Promise.resolve([
           {
             user_id: "user-1",
             total_prompt: "8000",
@@ -330,8 +371,8 @@ describe("admin token usage routes", () => {
             total_tokens: "5500",
             request_count: "3",
           },
-        ]),
-      );
+        ]);
+      });
 
       const res = await app.fetch(adminRequest("/api/v1/admin/tokens/by-user"));
       expect(res.status).toBe(200);
@@ -341,6 +382,13 @@ describe("admin token usage routes", () => {
       expect(body.users[0].userId).toBe("user-1");
       expect(body.users[0].totalTokens).toBe(11000);
       expect(body.users[1].requestCount).toBe(3);
+
+      // Verify org-scoping
+      const lastCall = mockInternalQuery.mock.calls.at(-1);
+      expect(lastCall).toBeDefined();
+      const [sql, params] = lastCall!;
+      expect(sql).toContain("org_id");
+      expect(params).toContain("org-test");
     });
 
     it("returns 404 when no internal DB", async () => {
@@ -351,13 +399,14 @@ describe("admin token usage routes", () => {
   });
 
   describe("GET /tokens/trends", () => {
-    it("returns daily trends", async () => {
-      mockInternalQuery.mockImplementation(() =>
-        Promise.resolve([
+    it("returns daily trends with org_id filter", async () => {
+      mockInternalQuery.mockImplementation((sql: string) => {
+        if (sql.includes("ip_allowlist")) return Promise.resolve([]);
+        return Promise.resolve([
           { day: "2026-03-08", prompt_tokens: "5000", completion_tokens: "2000", request_count: "3" },
           { day: "2026-03-09", prompt_tokens: "7000", completion_tokens: "3000", request_count: "5" },
-        ]),
-      );
+        ]);
+      });
 
       const res = await app.fetch(adminRequest("/api/v1/admin/tokens/trends"));
       expect(res.status).toBe(200);
@@ -368,6 +417,13 @@ describe("admin token usage routes", () => {
       expect(body.trends[0].promptTokens).toBe(5000);
       expect(body.trends[0].totalTokens).toBe(7000);
       expect(body.trends[1].requestCount).toBe(5);
+
+      // Verify org-scoping
+      const lastCall = mockInternalQuery.mock.calls.at(-1);
+      expect(lastCall).toBeDefined();
+      const [sql, params] = lastCall!;
+      expect(sql).toContain("org_id");
+      expect(params).toContain("org-test");
     });
 
     it("returns 404 when no internal DB", async () => {
@@ -377,7 +433,10 @@ describe("admin token usage routes", () => {
     });
 
     it("returns empty array when no data", async () => {
-      mockInternalQuery.mockImplementation(() => Promise.resolve([]));
+      mockInternalQuery.mockImplementation((sql: string) => {
+        if (sql.includes("ip_allowlist")) return Promise.resolve([]);
+        return Promise.resolve([]);
+      });
       const res = await app.fetch(adminRequest("/api/v1/admin/tokens/trends"));
       expect(res.status).toBe(200);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience for JSON response body

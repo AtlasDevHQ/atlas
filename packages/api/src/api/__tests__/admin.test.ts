@@ -161,6 +161,8 @@ const mockDrainOrg: Mock<(orgId: string) => Promise<unknown>> = mock(() =>
   Promise.resolve({ drained: 2 }),
 );
 const mockGetPoolWarnings: Mock<() => string[]> = mock(() => []);
+const mockRegister: Mock<(id: string, opts: unknown) => void> = mock(() => {});
+const mockUnregister: Mock<(id: string) => void> = mock(() => {});
 
 mock.module("@atlas/api/lib/db/connection", () =>
   createConnectionMock({
@@ -172,6 +174,8 @@ mock.module("@atlas/api/lib/db/connection", () =>
         { id: "default", dbType: "postgres", description: "Test DB" },
       ],
       healthCheck: mockHealthCheck,
+      register: mockRegister,
+      unregister: mockUnregister,
       getOrgPoolMetrics: mockGetOrgPoolMetrics,
       getOrgPoolConfig: mockGetOrgPoolConfig,
       listOrgs: mockListOrgs,
@@ -782,6 +786,88 @@ describe("GET /api/v1/admin/connections", () => {
 
     const body = (await res.json()) as { connections: unknown[] };
     expect(body.connections.length).toBe(1);
+  });
+});
+
+describe("GET /api/v1/admin/connections/:id", () => {
+  beforeEach(() => {
+    mockAuthenticateRequest.mockReset();
+    setOrgScopedAdmin();
+    mockInternalQuery.mockReset();
+    mockInternalQuery.mockResolvedValue([]);
+  });
+
+  it("returns connection detail for registered connection", async () => {
+    mockInternalQuery.mockResolvedValue([{ url: "postgresql://localhost/db", schema_name: "public" }]);
+    const res = await app.fetch(adminRequest("/api/v1/admin/connections/default"));
+    expect(res.status).toBe(200);
+
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.id).toBe("default");
+    expect(body.managed).toBe(true);
+  });
+
+  it("returns 404 for non-existent connection", async () => {
+    const res = await app.fetch(adminRequest("/api/v1/admin/connections/nonexistent"));
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 500 when internal DB query fails", async () => {
+    mockHasInternalDB = true;
+    mockInternalQuery.mockRejectedValue(new Error("DB connection lost"));
+
+    const res = await app.fetch(adminRequest("/api/v1/admin/connections/default"));
+    expect(res.status).toBe(500);
+
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.error).toBe("internal_error");
+    expect(body.requestId).toBeTruthy();
+  });
+});
+
+describe("PUT /api/v1/admin/connections/:id — rollback escalation", () => {
+  beforeEach(() => {
+    mockAuthenticateRequest.mockReset();
+    setOrgScopedAdmin();
+    mockInternalQuery.mockReset();
+    mockInternalQuery.mockResolvedValue([]);
+    mockHealthCheck.mockReset();
+    mockRegister.mockReset();
+    mockRegister.mockImplementation(() => {});
+  });
+
+  it("returns 400 when URL test fails but rollback succeeds", async () => {
+    // Existing connection in DB
+    mockInternalQuery.mockResolvedValueOnce([{ id: "warehouse", url: "postgresql://old/db", type: "postgres", description: null, schema_name: null }]);
+    mockHealthCheck.mockRejectedValue(new Error("Connection refused"));
+
+    const res = await app.fetch(adminRequest("/api/v1/admin/connections/warehouse", "PUT", { url: "postgresql://bad/url" }));
+    expect(res.status).toBe(400);
+
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.error).toBe("connection_failed");
+    expect(typeof body.message === "string" && !body.message.includes("restart")).toBe(true);
+  });
+
+  it("escalates to 500 with restart guidance when rollback fails", async () => {
+    // Existing connection in DB
+    mockInternalQuery.mockResolvedValueOnce([{ id: "warehouse", url: "postgresql://old/db", type: "postgres", description: null, schema_name: null }]);
+    // Health check fails
+    mockHealthCheck.mockRejectedValue(new Error("Connection refused"));
+    // First call (register new URL) succeeds, second call (rollback) throws
+    let callCount = 0;
+    mockRegister.mockImplementation(() => {
+      callCount++;
+      if (callCount >= 2) throw new Error("rollback failed");
+    });
+
+    const res = await app.fetch(adminRequest("/api/v1/admin/connections/warehouse", "PUT", { url: "postgresql://bad/url" }));
+    expect(res.status).toBe(500);
+
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.error).toBe("internal_error");
+    expect(typeof body.message === "string" && body.message.includes("server restart")).toBe(true);
+    expect(body.requestId).toBeTruthy();
   });
 });
 

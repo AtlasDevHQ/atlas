@@ -533,7 +533,7 @@ adminConnections.openapi(createConnectionRoute, async (c) => {
     encryptedUrl = encryptUrl(url);
   } catch (err) {
     connections.unregister(id);
-    log.error({ err: err instanceof Error ? err.message : String(err), connectionId: id }, "Failed to encrypt connection URL");
+    log.error({ err: err instanceof Error ? err.message : String(err), connectionId: id, requestId }, "Failed to encrypt connection URL");
     return c.json({ error: "encryption_failed", message: "Failed to encrypt connection URL. Check ATLAS_ENCRYPTION_KEY or BETTER_AUTH_SECRET.", requestId }, 500);
   }
 
@@ -544,11 +544,15 @@ adminConnections.openapi(createConnectionRoute, async (c) => {
     );
   } catch (err) {
     connections.unregister(id);
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), connectionId: id }, "Failed to persist connection");
+    log.error({ err: err instanceof Error ? err.message : String(err), connectionId: id, requestId }, "Failed to persist connection");
     return c.json({ error: "internal_error", message: "Failed to save connection.", requestId }, 500);
   }
 
-  _resetWhitelists();
+  try {
+    _resetWhitelists();
+  } catch (err) {
+    log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to reset whitelists after connection create");
+  }
 
   log.info({ requestId, connectionId: id, dbType, orgId, actorId: authResult.user?.id }, "Connection created");
   return c.json({
@@ -602,7 +606,7 @@ adminConnections.openapi(updateConnectionRoute, async (c) => {
   try {
     currentUrl = decryptUrl(current.url);
   } catch (err) {
-    log.error({ connectionId: id, err: err instanceof Error ? err.message : String(err) }, "Failed to decrypt stored connection URL");
+    log.error({ connectionId: id, requestId, err: err instanceof Error ? err.message : String(err) }, "Failed to decrypt stored connection URL");
     return c.json({ error: "decryption_failed", message: "Stored connection URL could not be decrypted. The encryption key may have changed.", requestId }, 500);
   }
 
@@ -644,7 +648,7 @@ adminConnections.openapi(updateConnectionRoute, async (c) => {
     try {
       connections.register(id, { url: newUrl, description: newDescription ?? undefined, schema: newSchema ?? undefined });
     } catch (err) {
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), connectionId: id }, "Failed to re-register connection with updated metadata");
+      log.error({ err: err instanceof Error ? err.message : String(err), connectionId: id, requestId }, "Failed to re-register connection with updated metadata");
       return c.json({ error: "internal_error", message: "Failed to update connection.", requestId }, 500);
     }
   }
@@ -662,7 +666,7 @@ adminConnections.openapi(updateConnectionRoute, async (c) => {
       log.error({ connectionId: id, requestId, err: restoreErr instanceof Error ? restoreErr.message : String(restoreErr) }, "Failed to restore previous connection after encryption failure — connection unregistered");
       connections.unregister(id);
     }
-    log.error({ err: err instanceof Error ? err.message : String(err), connectionId: id }, "Failed to encrypt connection URL");
+    log.error({ err: err instanceof Error ? err.message : String(err), connectionId: id, requestId }, "Failed to encrypt connection URL");
     const encMsg = rollbackFailed
       ? "Failed to encrypt connection URL. Check ATLAS_ENCRYPTION_KEY or BETTER_AUTH_SECRET. The connection may need a server restart to restore."
       : "Failed to encrypt connection URL. Check ATLAS_ENCRYPTION_KEY or BETTER_AUTH_SECRET.";
@@ -688,14 +692,18 @@ adminConnections.openapi(updateConnectionRoute, async (c) => {
       log.error({ connectionId: id, requestId, err: restoreErr instanceof Error ? restoreErr.message : String(restoreErr) }, "Failed to restore previous connection after DB update failure — connection unregistered");
       connections.unregister(id);
     }
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), connectionId: id }, "Failed to update connection in DB");
+    log.error({ err: err instanceof Error ? err.message : String(err), connectionId: id, requestId }, "Failed to update connection in DB");
     const updateMsg = rollbackFailed
       ? "Failed to update connection. The connection may need a server restart to restore."
       : "Failed to update connection.";
     return c.json({ error: "internal_error", message: updateMsg, requestId }, 500);
   }
 
-  _resetWhitelists();
+  try {
+    _resetWhitelists();
+  } catch (err) {
+    log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Failed to reset whitelists after connection update");
+  }
 
   log.info({ requestId, connectionId: id, urlChanged, actorId: authResult.user?.id }, "Connection updated");
   return c.json({ id, dbType, description: newDescription, maskedUrl: maskConnectionUrl(newUrl) }, 200);
@@ -743,8 +751,13 @@ adminConnections.openapi(deleteConnectionRoute, async (c) => {
       }, 409);
     }
   } catch (err) {
-    // scheduled_tasks table might not exist — not a blocker for delete
-    log.warn({ err: err instanceof Error ? err.message : String(err), connectionId: id }, "Could not check scheduled task references (table may not exist)");
+    // Only ignore "relation does not exist" (42P01) — scheduled_tasks table may not exist yet
+    const isTableMissing = err instanceof Error && "code" in err && (err as { code: string }).code === "42P01";
+    if (!isTableMissing) {
+      log.error({ err: err instanceof Error ? err.message : String(err), connectionId: id, requestId }, "Failed to check scheduled task references");
+      return c.json({ error: "internal_error", message: "Failed to verify scheduled task references before deletion. Try again or contact your administrator.", requestId }, 500);
+    }
+    log.warn({ connectionId: id, requestId }, "Scheduled tasks table does not exist — skipping reference check");
   }
 
   // Remove from DB and registry
@@ -754,11 +767,15 @@ adminConnections.openapi(deleteConnectionRoute, async (c) => {
       orgParams,
     );
   } catch (err) {
-    log.error({ err: err instanceof Error ? err : new Error(String(err)), connectionId: id }, "Failed to delete connection from DB");
+    log.error({ err: err instanceof Error ? err.message : String(err), connectionId: id, requestId }, "Failed to delete connection from DB");
     return c.json({ error: "internal_error", message: "Failed to delete connection.", requestId }, 500);
   }
 
-  connections.unregister(id);
+  try {
+    connections.unregister(id);
+  } catch (err) {
+    log.warn({ err: err instanceof Error ? err.message : String(err), connectionId: id, requestId }, "Failed to unregister connection from in-memory registry — will reconcile on restart");
+  }
 
   log.info({ requestId, connectionId: id, actorId: authResult.user?.id }, "Connection deleted");
   return c.json({ success: true }, 200);
@@ -799,7 +816,7 @@ adminConnections.openapi(getConnectionRoute, async (c) => runHandler(c, "get con
         try {
           maskedUrl = maskConnectionUrl(decryptUrl(rows[0].url));
         } catch (decryptErr) {
-          log.error({ connectionId: id, err: decryptErr instanceof Error ? decryptErr.message : String(decryptErr) }, "Failed to decrypt stored connection URL");
+          log.error({ connectionId: id, requestId, err: decryptErr instanceof Error ? decryptErr.message : String(decryptErr) }, "Failed to decrypt stored connection URL");
           maskedUrl = "[encrypted — decryption failed]";
         }
       }

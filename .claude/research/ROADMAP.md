@@ -777,23 +777,6 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 
 ---
 
-## 1.0.1 — Post-Launch Polish
-
-**Stabilization pass after 1.0.0 SaaS launch.** Fix stale docs, remove outdated TODOs, and address any bugs reported by early users of app.useatlas.dev.
-
-### Stale Docs
-
-- [x] Update data-residency.mdx — remove "planned for a future release" and "not yet implemented" language (PR #1175)
-- [x] Update plugins/overview.mdx — remove "coming soon" from Community Plugins section (PR #1175)
-- [x] Update white-labeling.mdx — remove "planned" from chat UI/widget branding callout (PR #1175)
-- [x] Update obsidian.mdx — remove "coming soon" from community plugin install section (PR #1175)
-
-### Code Cleanup
-
-- [x] Remove stale TODO(#509) in org-isolation.test.ts — pool isolation tests already exist in tenant-pool.test.ts (PR #1175)
-
----
-
 ## Ideas / Backlog
 
 _Untracked ideas. Create issues when committing to work._

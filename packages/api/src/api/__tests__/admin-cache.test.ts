@@ -335,7 +335,7 @@ describe("admin cache routes", () => {
         set: () => {},
         delete: () => false,
         flush: () => {},
-        stats: () => { throw new Error("Redis connection refused"); },
+        stats: (() => { throw new Error("Redis connection refused"); }) as unknown as typeof mockCacheStats,
       }));
       const res = await app.fetch(cacheRequest("/api/v1/admin/cache/stats"));
       expect(res.status).toBe(500);

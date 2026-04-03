@@ -777,6 +777,36 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 
 ---
 
+## Post-Launch Cleanup
+
+**Hardening pass after 1.0.0 launch.** Org-scoping gaps, error handling bugs, and test coverage from admin route extraction.
+
+### Security — Admin Org Scoping
+
+- [x] Scope admin sessions page to active organization (#1190, PR #1190)
+- [x] Scope admin audit log to active organization (#1192, PR #1192)
+- [x] Scope admin token usage to active organization (#1193, PR #1193)
+- [x] Scope remaining admin handlers (connections, cache, plugins, semantic) to active organization (#1194, PR #1194)
+- [x] Migrate remaining admin.ts handlers to createAdminRouter + requireOrgContext (#1191, PR #1194)
+
+### Bug Fixes
+
+- [x] getConnectionRoute silently degrades to 200 on DB failure (#1197, PR #1202)
+- [x] Connection update rollback failure message lacks recovery guidance (#1198, PR #1202)
+- [x] Completions test out of sync — expects 13 commands, registry has 15 (#1200, PR #1204)
+- [x] setWorkspaceRegion export missing from db/internal mock (#1201, PR #1203)
+
+### Test Coverage
+
+- [x] Connection CRUD org-scoping tests (#1195, PR #1204)
+- [x] Cache endpoint tests (#1196, PR #1203)
+
+### Open
+
+- [ ] Wrap all admin-connections routes in runHandler (#1205)
+
+---
+
 ## Ideas / Backlog
 
 _Untracked ideas. Create issues when committing to work._

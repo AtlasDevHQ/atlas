@@ -625,7 +625,3 @@ describe("conversation isolation", () => {
     expect(betaParams).not.toContain(ORG_ALPHA);
   });
 });
-
-// ---------------------------------------------------------------------------
-// TODO(#509): Add connection pool isolation tests after tenant-scoped pooling ships
-// ---------------------------------------------------------------------------

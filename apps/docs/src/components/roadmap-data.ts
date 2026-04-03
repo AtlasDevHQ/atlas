@@ -284,4 +284,11 @@ export const milestones: Milestone[] = [
     ],
     githubMilestone: 24,
   },
+  {
+    version: "1.0.1",
+    title: "Post-Launch Polish",
+    status: "shipped",
+    summary:
+      "Stabilization pass after the 1.0.0 SaaS launch. Fixed stale docs language ('coming soon', 'planned', 'not yet implemented') across 4 pages, removed outdated code TODOs, and prepared a landing zone for early user feedback.",
+  },
 ];

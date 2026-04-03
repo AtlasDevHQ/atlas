@@ -560,6 +560,125 @@ See [Sandbox Configuration](/guides/sandbox) for the full guide.
 
 ---
 
+## Data Residency
+
+**Route:** `/admin/residency`
+
+<Callout type="info" title="SaaS Feature">
+Data residency is available on [app.useatlas.dev](https://app.useatlas.dev). Self-hosted deployments can configure regions via the platform admin API, but the admin UI is optimized for the SaaS experience.
+</Callout>
+
+Control where your workspace data is stored and request region migrations.
+
+### Viewing Your Region
+
+When a region is assigned, the page displays:
+
+- **Current region** — Name, region ID, and compliance badge (e.g. "GDPR compliant" for EU regions, "SOC 2 compliant" for US regions)
+- **Assignment date** — When the region was first assigned
+- **Status** — Active badge confirming the region is serving traffic
+
+### Requesting a Region Migration
+
+<Callout type="warn">
+Migration moves all workspace data between regions. Some features may be temporarily unavailable during the process.
+</Callout>
+
+To migrate to a different region:
+
+1. Click **Change Region** on the Data Region card
+2. Select the target region from the available options — your current region is shown for reference
+3. Review the migration summary (current region → target region with compliance badges)
+4. Click **Request Migration**, then confirm in the confirmation dialog
+
+### Migration Phases
+
+Once submitted, a migration progresses through these phases:
+
+| Phase | Status | What Happens |
+|-------|--------|-------------|
+| **Pending** | Queued | Migration request is queued for processing. You can cancel at this stage |
+| **In Progress** | Migrating | Data is being replicated from the source to the target region. Some features may be temporarily unavailable |
+| **Completed** | Done | All data has been moved to the target region. The workspace is now serving from the new region |
+| **Failed** | Error | The migration could not be completed. You can retry or contact support |
+| **Cancelled** | Stopped | The migration was cancelled before processing began |
+
+### What to Expect During Migration
+
+- A status banner at the top of the page shows real-time migration progress
+- **Pending migrations** can be cancelled before processing begins
+- **Failed migrations** can be retried with a single click
+- Only one migration can be active at a time — the "Change Region" button is disabled while a migration is pending or in progress
+- After completion, the Data Region card updates to reflect the new region
+
+### Residency Admin API
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/v1/admin/residency` | Current region status and available regions |
+| `PUT` | `/api/v1/admin/residency` | Assign initial region (body: `{ region }`) |
+| `GET` | `/api/v1/admin/residency/migration` | Current migration status |
+| `POST` | `/api/v1/admin/residency/migrate` | Request region migration (body: `{ targetRegion }`) |
+| `POST` | `/api/v1/admin/residency/migrate/:id/retry` | Retry a failed migration |
+| `POST` | `/api/v1/admin/residency/migrate/:id/cancel` | Cancel a pending migration |
+
+---
+
+## Custom Domain
+
+**Route:** `/admin/custom-domain`
+
+<Callout type="info" title="Enterprise Feature">
+Custom domains require an Enterprise plan on [app.useatlas.dev](https://app.useatlas.dev). The page shows an upgrade prompt if your workspace is on a lower plan.
+</Callout>
+
+Serve Atlas from your own domain (e.g. `data.acme.com`) with automatic TLS certificate provisioning.
+
+### Adding a Custom Domain
+
+1. Navigate to **Admin Console → Custom Domain**
+2. Enter your desired subdomain (e.g. `data.acme.com`) — use a subdomain, not a root domain
+3. Click **Add Domain**
+
+Atlas generates a CNAME target that you need to configure in your DNS provider.
+
+### DNS Verification
+
+After adding a domain, a DNS configuration card appears with the required CNAME record:
+
+| Field | Value |
+|-------|-------|
+| **Type** | `CNAME` |
+| **Name** | Your domain (e.g. `data.acme.com`) |
+| **Value** | The generated CNAME target (copy with the clipboard button) |
+
+Add this record to your DNS provider (Cloudflare, Route 53, Google Cloud DNS, etc.). DNS propagation may take up to 48 hours.
+
+### Checking Verification Status
+
+Click **Check Status** to trigger a verification check. The domain progresses through these statuses:
+
+| Status | Badge | Meaning |
+|--------|-------|---------|
+| **Pending** | Pending Verification | CNAME record not yet detected — DNS may still be propagating |
+| **Verified** | Active | CNAME verified and TLS certificate issued — domain is serving traffic |
+| **Failed** | Failed | Verification failed — check that your CNAME record is correctly configured |
+
+### Removing a Domain
+
+Click **Remove Domain** and confirm in the dialog. This immediately stops serving traffic on the custom domain. The action cannot be undone — you would need to add and verify the domain again.
+
+### Domain Admin API
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/v1/admin/domain` | Get current domain configuration |
+| `POST` | `/api/v1/admin/domain` | Add a custom domain (body: `{ domain }`) |
+| `POST` | `/api/v1/admin/domain/verify` | Trigger DNS verification check |
+| `DELETE` | `/api/v1/admin/domain` | Remove custom domain |
+
+---
+
 ## API Endpoints
 
 All admin endpoints are at `/api/v1/admin/` and require the `admin` role. See the [SDK](/reference/sdk) for typed client methods.
@@ -671,6 +790,16 @@ All admin endpoints are at `/api/v1/admin/` and require the `admin` role. See th
 | `GET` | `/sandbox/status` | Get sandbox configuration, backends, and connected providers |
 | `POST` | `/sandbox/connect/{provider}` | Validate and save BYOC sandbox credentials |
 | `DELETE` | `/sandbox/disconnect/{provider}` | Remove BYOC sandbox credentials |
+| `GET` | `/residency` | Current region status and available regions |
+| `PUT` | `/residency` | Assign initial region |
+| `GET` | `/residency/migration` | Current migration status |
+| `POST` | `/residency/migrate` | Request region migration |
+| `POST` | `/residency/migrate/:id/retry` | Retry a failed migration |
+| `POST` | `/residency/migrate/:id/cancel` | Cancel a pending migration |
+| `GET` | `/domain` | Get custom domain configuration |
+| `POST` | `/domain` | Add a custom domain |
+| `POST` | `/domain/verify` | Trigger DNS verification |
+| `DELETE` | `/domain` | Remove custom domain |
 
 ---
 
@@ -710,3 +839,5 @@ For more, see [Troubleshooting](/guides/troubleshooting).
 - [Sandbox Configuration](/guides/sandbox) — Configure sandbox backends
 - [Semantic Editor](/guides/semantic-editor) — Create and edit entities from the UI
 - [Plugin Marketplace](/guides/plugin-marketplace) — Browse and install plugins
+- [Self-Serve Signup](/guides/signup#region-selection) — Region selection during onboarding
+- [White-Labeling](/guides/white-labeling) — Custom branding for your workspace

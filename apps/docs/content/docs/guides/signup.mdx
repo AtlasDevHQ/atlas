@@ -21,16 +21,53 @@ On [app.useatlas.dev](https://app.useatlas.dev), signup is available immediately
 
 ## How It Works
 
-The signup wizard is a four-step flow at `/signup`:
+The signup wizard is a five-step flow at `/signup`:
 
 | Step | Route | What happens |
 |------|-------|-------------|
 | 1. **Create account** | `/signup` | Email/password or OAuth (Google, GitHub, Microsoft) |
 | 2. **Name workspace** | `/signup/workspace` | Workspace name + auto-generated slug (max 48 chars) |
-| 3. **Connect database** | `/signup/connect` | Paste a PostgreSQL or MySQL URL, test it, save |
-| 4. **Done** | `/signup/success` | Confirmation with next steps |
+| 3. **Choose region** | `/signup/region` | Select where workspace data is stored (SaaS only) |
+| 4. **Connect database** | `/signup/connect` | Paste a PostgreSQL or MySQL URL, test it, save |
+| 5. **Done** | `/signup/success` | Confirmation with next steps |
 
 Each step validates before allowing the user to proceed. The database URL is tested against the live server before being saved.
+
+---
+
+## Region Selection
+
+<Callout type="info" title="SaaS only">
+Region selection appears only when data residency is configured on the platform. Self-hosted deployments and platforms without residency configured skip this step automatically.
+</Callout>
+
+In step 3, new users choose a data region for their workspace. This determines where all workspace data (conversations, audit logs, cached results) is physically stored.
+
+### Available Regions
+
+Atlas supports three regions at launch:
+
+| Region | ID | Compliance |
+|--------|-----|-----------|
+| **US East** | `us-east` | SOC 2 compliant |
+| **EU West** | `eu-west` | GDPR compliant |
+| **Asia Pacific** | `ap-southeast` | Regional data sovereignty |
+
+The platform's default region is pre-selected. Users can choose a different region based on their compliance requirements.
+
+### Why It Matters
+
+- **Data residency** — All workspace data stays in the selected region. This is critical for organizations subject to GDPR, CCPA, or other data sovereignty regulations
+- **Latency** — Choosing a region close to your users and database reduces round-trip time
+- **Permanence** — Region assignment is permanent at signup. To change regions later, workspace admins can request a migration from the [Data Residency](/guides/admin-console#data-residency) page in the admin console
+
+### How It Works
+
+1. The page loads available regions from `GET /api/v1/onboarding/regions`
+2. If residency is not configured (`configured: false`), the step is skipped and the user proceeds directly to database connection
+3. The user selects a region and clicks **Continue**
+4. The selection is saved via `POST /api/v1/onboarding/assign-region`
+5. The user proceeds to the database connection step
 
 ---
 
@@ -64,7 +101,7 @@ See [Social Providers](/guides/social-providers) for detailed OAuth setup instru
 
 ## Database Connection
 
-In step 3, the user pastes a database URL (`postgresql://` or `mysql://`). The wizard:
+In step 4, the user pastes a database URL (`postgresql://` or `mysql://`). The wizard:
 
 1. **Validates the URL scheme** — only PostgreSQL and MySQL are supported
 2. **Tests connectivity** — creates a temporary connection, runs a health check, reports latency
@@ -93,6 +130,8 @@ The onboarding API is mounted at `/api/v1/onboarding`. All endpoints require man
 | Method | Path | Auth | Description |
 |--------|------|------|-------------|
 | `GET` | `/social-providers` | None | List enabled OAuth providers |
+| `GET` | `/regions` | Session | List available data regions (returns `configured`, `defaultRegion`, `availableRegions`) |
+| `POST` | `/assign-region` | Session | Assign workspace to a data region (body: `{ region }`) |
 | `POST` | `/test-connection` | Session | Test a database URL without saving |
 | `POST` | `/complete` | Session | Save connection and finalize workspace setup |
 
@@ -174,4 +213,5 @@ For semantic layer setup, see [Semantic Layer](/getting-started/semantic-layer).
 - [Authentication](/deployment/authentication) — Auth mode setup and configuration
 - [Social Providers](/guides/social-providers) — Detailed OAuth setup per provider
 - [Admin Console](/guides/admin-console) — Manage connections and users after signup
+- [Data Residency](/guides/admin-console#data-residency) — Manage region assignment and migration after signup
 - [Environment Variables](/reference/environment-variables) — Full variable reference

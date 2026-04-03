@@ -136,7 +136,7 @@ Deploy-anywhere, open-source text-to-SQL data analyst agent. AGPL-3.0 core with 
 - Wren Cloud managed offering
 - MCP server for AI client integration
 - 12+ database connectors
-- ~8K GitHub stars
+- ~9K GitHub stars
 - Built-in dashboard and chart embedding
 
 **Atlas advantages:**
@@ -170,7 +170,7 @@ Deploy-anywhere, open-source text-to-SQL data analyst agent. AGPL-3.0 core with 
 - Python RAG-based system — trains on historical queries, DDL, and documentation
 - v2.0 introduced agent framework with RLS, audit logs, rate limiting
 - Embeddable Plotly Dash component
-- ~13K GitHub stars (largest community in the space)
+- ~15K GitHub stars (largest community in the space)
 
 **Atlas advantages:**
 - Deterministic semantic layer vs probabilistic RAG (explicit YAML > opaque embeddings)
@@ -278,7 +278,7 @@ catalog.yml                    ├── confidence: float
 
 | Project | Validation Approach | Depth |
 |---|---|---|
-| **Atlas** | Regex → AST parse → table whitelist → RLS injection → auto-LIMIT → statement timeout → read-only. Unparseable queries **rejected**. ~103 unit tests | **7 layers** |
+| **Atlas** | Regex → AST parse → table whitelist → RLS injection → auto-LIMIT → statement timeout → read-only. Unparseable queries **rejected**. ~250+ unit tests | **7 layers** |
 | **Wren AI** | Semantic governance via MDL definitions. No AST validation documented | 1-2 layers |
 | **Vanna AI** | Parameterized queries, row-level security (v2.0), audit logs | 2-3 layers |
 | **DBHub** | `--readonly` mode, `--max-rows` flag | 1 layer |
@@ -539,7 +539,7 @@ atlas/
 
 ---
 
-## 13. Sources & References
+## 14. Sources & References
 
 ### Projects
 - [Wren AI](https://github.com/Canner/WrenAI) — OSS text-to-SQL with MDL semantic layer

@@ -196,7 +196,7 @@ adminPlugins.openapi(pluginHealthRoute, async (c) => {
 
   const plugin = plugins.get(id);
   if (!plugin) {
-    return c.json({ error: "not_found", message: `Plugin "${id}" not found.` }, 404);
+    return c.json({ error: "not_found", message: `Plugin "${id}" not found.`, requestId }, 404);
   }
 
   if (!plugin.healthCheck) {
@@ -230,10 +230,11 @@ adminPlugins.openapi(pluginHealthRoute, async (c) => {
 // POST /:id/enable — enable plugin
 adminPlugins.openapi(enablePluginRoute, async (c) => {
   const { id } = c.req.valid("param");
+  const requestId = c.get("requestId") as string;
 
   const plugin = plugins.get(id);
   if (!plugin) {
-    return c.json({ error: "not_found", message: `Plugin "${id}" not found.` }, 404);
+    return c.json({ error: "not_found", message: `Plugin "${id}" not found.`, requestId }, 404);
   }
 
   plugins.enable(id);
@@ -258,10 +259,11 @@ adminPlugins.openapi(enablePluginRoute, async (c) => {
 // POST /:id/disable — disable plugin
 adminPlugins.openapi(disablePluginRoute, async (c) => {
   const { id } = c.req.valid("param");
+  const requestId = c.get("requestId") as string;
 
   const plugin = plugins.get(id);
   if (!plugin) {
-    return c.json({ error: "not_found", message: `Plugin "${id}" not found.` }, 404);
+    return c.json({ error: "not_found", message: `Plugin "${id}" not found.`, requestId }, 404);
   }
 
   plugins.disable(id);
@@ -286,10 +288,11 @@ adminPlugins.openapi(disablePluginRoute, async (c) => {
 // GET /:id/schema — plugin config schema
 adminPlugins.openapi(getPluginSchemaRoute, async (c) => {
   const { id } = c.req.valid("param");
+  const requestId = c.get("requestId") as string;
 
   const plugin = plugins.get(id);
   if (!plugin) {
-    return c.json({ error: "not_found", message: `Plugin "${id}" not found.` }, 404);
+    return c.json({ error: "not_found", message: `Plugin "${id}" not found.`, requestId }, 404);
   }
 
   const schema: ConfigSchemaField[] = typeof plugin.getConfigSchema === "function"
@@ -331,7 +334,7 @@ adminPlugins.openapi(updatePluginConfigRoute, async (c) => runHandler(c, "save p
 
   const plugin = plugins.get(id);
   if (!plugin) {
-    return c.json({ error: "not_found", message: `Plugin "${id}" not found.` }, 404);
+    return c.json({ error: "not_found", message: `Plugin "${id}" not found.`, requestId }, 404);
   }
 
   if (!hasInternalDB()) {

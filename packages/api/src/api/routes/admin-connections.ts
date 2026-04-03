@@ -12,6 +12,7 @@ import { connections, detectDBType } from "@atlas/api/lib/db/connection";
 import { hasInternalDB, internalQuery, encryptUrl, decryptUrl } from "@atlas/api/lib/db/internal";
 import { maskConnectionUrl } from "@atlas/api/lib/security";
 import { _resetWhitelists } from "@atlas/api/lib/semantic";
+import { runHandler } from "@atlas/api/lib/effect/hono";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 
@@ -299,7 +300,7 @@ const adminConnections = createAdminRouter();
 adminConnections.use(requireOrgContext());
 
 // GET / — list connections scoped to active org
-adminConnections.openapi(listConnectionsRoute, async (c) => {
+adminConnections.openapi(listConnectionsRoute, async (c) => runHandler(c, "list connections", async () => {
   const { orgId } = c.get("orgContext");
   const authResult = c.get("authResult");
   const isPlatformAdmin = authResult.user?.role === "platform_admin";
@@ -309,10 +310,10 @@ adminConnections.openapi(listConnectionsRoute, async (c) => {
   const filtered = visible ? connList.filter((conn) => visible.has(conn.id)) : connList;
 
   return c.json({ connections: filtered }, 200);
-});
+}));
 
 // GET /pool — pool metrics scoped to active org
-adminConnections.openapi(getPoolMetricsRoute, async (c) => {
+adminConnections.openapi(getPoolMetricsRoute, async (c) => runHandler(c, "get pool metrics", async () => {
   const { orgId } = c.get("orgContext");
   const authResult = c.get("authResult");
   const isPlatformAdmin = authResult.user?.role === "platform_admin";
@@ -324,7 +325,7 @@ adminConnections.openapi(getPoolMetricsRoute, async (c) => {
 
   const metrics = connections.getOrgPoolMetrics(orgId);
   return c.json({ metrics }, 200);
-});
+}));
 
 // GET /pool/orgs — org pool metrics (workspace admins restricted to own org)
 adminConnections.openapi(getOrgPoolMetricsRoute, async (c) => {
@@ -434,6 +435,7 @@ adminConnections.openapi(testConnectionRoute, async (c) => {
     const result = await connections.healthCheck(tempId);
     return c.json({ status: result.status, latencyMs: result.latencyMs, dbType }, 200);
   } catch (err) {
+    log.warn({ err: err instanceof Error ? err.message : String(err), requestId }, "Connection test failed");
     return c.json({
       error: "connection_failed",
       message: `Connection test failed: ${err instanceof Error ? err.message : "Unknown error"}`,
@@ -447,7 +449,7 @@ adminConnections.openapi(testConnectionRoute, async (c) => {
 });
 
 // POST /:id/test — health check existing connection (must be visible to org)
-adminConnections.openapi(testExistingConnectionRoute, async (c) => {
+adminConnections.openapi(testExistingConnectionRoute, async (c) => runHandler(c, "health check connection", async () => {
   const { requestId, orgId } = c.get("orgContext");
   const authResult = c.get("authResult");
   const isPlatformAdmin = authResult.user?.role === "platform_admin";
@@ -465,7 +467,7 @@ adminConnections.openapi(testExistingConnectionRoute, async (c) => {
 
   const result = await connections.healthCheck(id);
   return c.json(result, 200);
-});
+}));
 
 // POST / — create connection scoped to active org
 adminConnections.openapi(createConnectionRoute, async (c) => {
@@ -726,7 +728,7 @@ adminConnections.openapi(deleteConnectionRoute, async (c) => {
     }
   } catch (err) {
     // scheduled_tasks table might not exist — not a blocker for delete
-    log.debug({ err: err instanceof Error ? err.message : String(err), connectionId: id }, "Could not check scheduled task references (table may not exist)");
+    log.warn({ err: err instanceof Error ? err.message : String(err), connectionId: id }, "Could not check scheduled task references (table may not exist)");
   }
 
   // Remove from DB and registry
@@ -747,7 +749,7 @@ adminConnections.openapi(deleteConnectionRoute, async (c) => {
 });
 
 // GET /:id — get connection detail (must be visible to org)
-adminConnections.openapi(getConnectionRoute, async (c) => {
+adminConnections.openapi(getConnectionRoute, async (c) => runHandler(c, "get connection detail", async () => {
   const { requestId, orgId } = c.get("orgContext");
   const authResult = c.get("authResult");
   const isPlatformAdmin = authResult.user?.role === "platform_admin";
@@ -799,6 +801,6 @@ adminConnections.openapi(getConnectionRoute, async (c) => {
     schema,
     managed,
   }, 200);
-});
+}));
 
 export { adminConnections };

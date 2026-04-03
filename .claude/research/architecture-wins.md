@@ -389,3 +389,23 @@ Tracking module-deepening refactors discovered by the `improve-codebase-architec
 - `findEntityFile()` reduced from 20 lines to 5
 
 **Category:** Three parallel implementations consolidated into a shared scanner with caller-specific projection.
+
+---
+
+## 18. Unified API test mock factory
+
+**Date:** 2026-04-03
+**Issue:** #1206
+**PR:** #1226
+
+**Problem:** Every API route test file (~41 files) copy-pastes 150–300 lines of identical `mock.module()` calls for ~30 modules (auth middleware, auth detect, startup, db/connection, db/internal, semantic, cache, plugins, conversations, etc.) before importing the Hono app. The existing `createConnectionMock()` proved the factory pattern works but only covered one module.
+
+**Solution:** Created `createApiTestMocks()` in `packages/api/src/__mocks__/api-test-mocks.ts` that calls `mock.module()` for all ~30 standard modules with sensible defaults. Returns typed handles to commonly customized mocks (`mockAuthenticateRequest`, `mockInternalQuery`, `hasInternalDB` getter/setter, role helpers). Tests pass overrides for custom behavior; can also call `mock.module()` after the factory for fully custom modules.
+
+**Impact:**
+- **-1,338 net lines** (2,250 removed, 912 added including 596-line factory) across 10 migrated test files
+- ~31 more test files can be migrated in follow-up work
+- Module API changes (e.g. adding a new export to `db/internal`) now update in one place instead of 41
+- Factory handles temp semantic directory setup/cleanup, reducing boilerplate further
+
+**Category:** Duplicated test infrastructure consolidated into a shared factory with override API.

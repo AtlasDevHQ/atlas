@@ -271,7 +271,7 @@ export const SUBCOMMAND_HELP: Record<string, SubcommandHelp> = {
       {
         flag: "--suggestions",
         description:
-          "Generate query suggestions from the audit log",
+          "Generate query suggestions from the audit log (stored in the query_suggestions table). Can be combined with --apply, --since, --limit, and --source",
       },
       {
         flag: "--limit <n>",

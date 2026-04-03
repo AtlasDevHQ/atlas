@@ -688,8 +688,15 @@ Module matching operates on **top-level package names** only (the first componen
 | `blockedModules` | `string[]` | No | `[]` | Additional modules to add to the default blocked list |
 | `allowModules` | `string[]` | No | `[]` | Modules to remove from the default blocked list |
 
-<Callout type="warn">
-Critical modules (`os`, `subprocess`, `sys`, `shutil`) **cannot be unblocked** — Atlas rejects the config at startup if they appear in `allowModules`. These provide direct OS/process access that no configuration should override.
+<Callout type="error" title="Critical modules are always blocked">
+The following modules are **always blocked** regardless of `blockedModules` or `allowModules` configuration — Atlas rejects the config at startup if any appear in `allowModules`:
+
+- `os` — filesystem and environment access
+- `subprocess` — arbitrary process execution
+- `sys` — interpreter internals and `sys.modules` manipulation
+- `shutil` — high-level file operations (copy, move, delete trees)
+
+These are enforced by the `PYTHON_CRITICAL_MODULES` list in `packages/api/src/lib/config.ts` and the runtime `CRITICAL_MODULES` set in `packages/api/src/lib/tools/python.ts`. No configuration — including `allowModules` — can override this.
 </Callout>
 
 ### Default blocked modules

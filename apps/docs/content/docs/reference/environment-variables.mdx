@@ -40,6 +40,12 @@ LLM provider and model configuration.
 | `OLLAMA_BASE_URL` | `http://localhost:11434/v1` | Ollama server URL. Only used when `ATLAS_PROVIDER=ollama` |
 | `OPENAI_COMPATIBLE_BASE_URL` | — | Base URL for OpenAI-compatible servers (vLLM, TGI, LiteLLM). **Required** when `ATLAS_PROVIDER=openai-compatible` |
 | `OPENAI_COMPATIBLE_API_KEY` | `not-needed` | API key for OpenAI-compatible servers. Most local servers don't require one |
+| `ANTHROPIC_API_KEY` | — | API key for `anthropic` provider |
+| `OPENAI_API_KEY` | — | API key for `openai` provider |
+| `AWS_ACCESS_KEY_ID` | — | AWS access key ID for `bedrock` provider |
+| `AWS_SECRET_ACCESS_KEY` | — | AWS secret access key for `bedrock` provider |
+| `AWS_REGION` | — | AWS region for `bedrock` provider (e.g. `us-east-1`) |
+| `AI_GATEWAY_API_KEY` | — | API key for `gateway` provider (Vercel AI Gateway) |
 
 When `ATLAS_PROVIDER` is not set, the default depends on the runtime environment. On Vercel (detected via the platform-set `VERCEL` env var), the default is `gateway`. Everywhere else, the default is `anthropic`.
 

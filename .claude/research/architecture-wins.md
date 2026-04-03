@@ -409,3 +409,50 @@ Tracking module-deepening refactors discovered by the `improve-codebase-architec
 - Factory handles temp semantic directory setup/cleanup, reducing boilerplate further
 
 **Category:** Duplicated test infrastructure consolidated into a shared factory with override API.
+
+---
+
+## 19. CLI command extraction Phase 1
+
+**Date:** 2026-04-03
+**Issue:** #1208
+**PR:** #1225
+
+**Problem:** `packages/cli/bin/atlas.ts` was a 4,583-line monolith containing 13 command handlers, 50+ helper functions, and duplicated DB connection testing between `init` and `diff` (~230 lines of parallel try/catch chains for MySQL, ClickHouse, Snowflake, Salesforce, PostgreSQL). Command handlers were untestable in isolation.
+
+**Solution:** Extracted the 6 largest handlers into `packages/cli/src/commands/` (query, diff, export, learn, import, migrate-import). Created 3 shared modules in `packages/cli/lib/`: `cli-utils.ts` (getFlag, detectDBType, validateSchemaName, etc.), `output.ts` (renderTable, CSV formatting), and `test-connection.ts` (consolidated DB connection testing for all 6 DB types). Main router uses dynamic imports for code-splitting.
+
+**Impact:**
+- **-1,231 lines** from atlas.ts (4,583 → 3,352)
+- Duplicated connection testing (~230 lines) consolidated into single `testDatabaseConnection()` function
+- 6 command handlers independently importable and testable
+- Re-exports preserve backward compatibility for all existing tests
+
+**Category:** Monolithic CLI entry point decomposed into focused command handlers with shared utilities.
+
+---
+
+## 20. CLI command extraction Phase 2
+
+**Date:** 2026-04-03
+**Issue:** #1227
+**PR:** #1228
+
+**Problem:** After Phase 1, `atlas.ts` was still 3,352 lines with DB profilers (~1,000 lines), diff logic (~200 lines), plugin commands (~400 lines), init handler (~400 lines), migrate handler (~120 lines), and help system (~300 lines) all inline. `commands/diff.ts` had a circular dynamic import back to `atlas.ts` for profiler functions.
+
+**Solution:** Extracted all remaining code into focused modules:
+- `lib/profilers/` — ClickHouse, Snowflake, Salesforce, DuckDB profilers (one file per DB type + barrel export)
+- `lib/diff.ts` — EntitySnapshot, parseEntityYAML, computeDiff, formatDiff
+- `lib/help.ts` — SUBCOMMAND_HELP, printOverviewHelp, wantsHelp
+- `src/commands/plugin.ts` — handlePlugin, scaffold templates
+- `src/commands/init.ts` — handleInit, profileDatasource, demo seeding
+- `src/commands/migrate.ts` — handleMigrate
+
+**Impact:**
+- **-2,970 lines** from atlas.ts (3,352 → 382)
+- Combined with Phase 1: **4,583 → 382 lines (92% reduction)**
+- Circular dependency (diff.ts → atlas.ts) fully eliminated
+- 10 new focused modules, each independently navigable
+- All re-exports for test backward compatibility preserved
+
+**Category:** Monolithic CLI entry point fully decomposed — atlas.ts is now a thin router + re-export shim.

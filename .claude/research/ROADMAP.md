@@ -801,9 +801,14 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] Connection CRUD org-scoping tests (#1195, PR #1204)
 - [x] Cache endpoint tests (#1196, PR #1203)
 
-### Open
+### Architecture
 
 - [x] Wrap all admin-connections routes in runHandler (#1205)
+- [x] Unified API test mock factory — eliminate ~1,200 lines of duplicated mock setup (#1206, PR #1226)
+- [x] Extract shared semantic entity scanner — eliminate 3x directory traversal duplication (#1207, PR #1211)
+- [x] CLI command extraction Phase 1 — 6 handlers + shared connection testing (#1208, PR #1225)
+- [x] CLI command extraction Phase 2 — profilers, plugin, init, migrate, help (#1227, PR #1228)
+- [x] Consolidate useBranding into useAdminFetch (#1209)
 
 ---
 

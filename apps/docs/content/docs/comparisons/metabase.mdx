@@ -12,27 +12,30 @@ import { Callout } from "fumadocs-ui/components/callout";
 | | Atlas | Metabase |
 |---|---|---|
 | **License** | AGPL-3.0 core, MIT client libs | AGPL-3.0 (Pro/Enterprise is proprietary) |
-| **Category** | Embeddable text-to-SQL agent | Full BI platform |
-| **Embeddable** | Script tag, React component, API | Embedding SDK + public links (SDK requires Pro/Enterprise) |
-| **AI querying** | Core feature (agent-based) | Metabot AI (cloud-only add-on, $100/mo for 500 requests; open-source gets single-shot SQL only) |
-| **Visual query builder** | No (natural language only) | Yes |
-| **Dashboards** | No | Yes (core feature) |
-| **Semantic layer** | YAML files | Data model UI + Data Studio (analyst workbench for glossary, measures, segments) |
+| **Category** | Embeddable text-to-SQL agent + hosted SaaS | Full BI platform |
+| **Embeddable** | Script tag, React component, SDK with streaming | Embedding SDK + public links (SDK requires Pro/Enterprise) |
+| **AI querying** | Core feature (multi-step agent with tool use) | Metabot AI (cloud-only add-on, $100/mo for 500 requests; open-source gets single-shot SQL only) |
+| **Visual query builder** | No (natural language + notebook) | Yes |
+| **Dashboards** | No (notebook interface for exploratory analysis) | Yes (core feature) |
+| **Semantic layer** | YAML files + web editor + dynamic learning | Data model UI + Data Studio (analyst workbench for glossary, measures, segments) |
 | **Databases** | Postgres, MySQL + plugins for BigQuery, ClickHouse, DuckDB, Salesforce, Snowflake | 20+ databases |
-| **Plugin system** | Plugin SDK + 20 official plugins | Database drivers + community |
-| **Auth model** | Managed, BYOT, API key | Managed, SSO, LDAP (Pro) |
+| **Plugin system** | Plugin SDK + 21+ plugins + marketplace | Database drivers + community |
+| **Auth model** | Managed, BYOT, API key, SSO/SCIM | Managed, SSO, LDAP (Pro) |
+| **Chat integrations** | 8 platforms (Slack, Teams, Discord, Telegram, Google Chat, GitHub, Linear, WhatsApp) | Slack (paid) |
 | **Scheduled reports** | Yes (built-in) | Yes (built-in) |
-| **Admin console** | Yes | Yes (comprehensive) |
-| **MCP server** | Yes | No |
-| **Python tool** | Sandboxed execution | No |
+| **Admin console** | Yes (connections, users, plugins, semantic editor, analytics, billing) | Yes (comprehensive) |
+| **MCP server** | Yes (stdio + SSE) | No |
+| **Python tool** | Sandboxed execution with streaming + charts | No |
+| **Enterprise features** | SSO/SCIM, custom roles, IP allowlists, approval workflows, PII masking, data residency | SSO, LDAP, sandboxing (Pro/Enterprise) |
+| **Data residency** | 3-region deployment (US, EU, APAC) | Cloud regions |
 
 ## Different Tools for Different Problems
 
 **Metabase** is a BI platform. It replaces Excel, Tableau, and Looker for teams that need dashboards, scheduled reports, and visual exploration. AI querying via Metabot is a growing feature — it handles natural language queries, SQL generation, SQL debugging, and smart content reuse — but it's currently a cloud-only add-on ($100/mo for 500 requests). Self-hosted Metabot is on the roadmap.
 
-**Atlas** is an AI agent you embed in other applications. It does one thing -- lets users query data in natural language -- and does it as a composable component, not a standalone product.
+**Atlas** is an AI agent you embed in other applications or use via [Atlas Cloud](https://app.useatlas.dev). It does one thing -- lets users query data in natural language -- and does it as a composable component, not a standalone product. Atlas includes a notebook interface for multi-step exploratory analysis, but it's not a dashboard builder. It also provides 8 chat platform integrations, a plugin marketplace, and enterprise features (SSO/SCIM, PII masking, data residency).
 
-These aren't really competitors. If you need dashboards, use Metabase (or Looker, or Tableau). If you need to embed natural-language data querying inside your own product, use Atlas.
+These aren't really competitors. If you need dashboards, use Metabase (or Looker, or Tableau). If you need to embed natural-language data querying inside your own product, use Atlas. If you need a multi-step AI agent that reasons through complex analytical questions, Atlas's agent loop (explore semantic layer → write SQL → validate → execute → explain results) is purpose-built for that — Metabot handles single-shot queries.
 
 ## Embedding
 
@@ -52,7 +55,7 @@ Both tools use a semantic layer to add business context to raw database schemas,
 
 ## Licensing
 
-Atlas uses a split license: the server core (`@atlas/api`, `@atlas/cli`, `@atlas/web`) is **AGPL-3.0**, while the client libraries (`@useatlas/sdk`, `@useatlas/react`, `@useatlas/types`) and all plugins are **MIT**. The open-source core is fully functional for self-hosted deployments. Enterprise features (SSO, SCIM, SLA monitoring, backups, data residency) are available under `@atlas/ee` for SaaS and enterprise customers.
+Atlas uses a split license: the server core (`@atlas/api`, `@atlas/cli`, `@atlas/web`) is **AGPL-3.0**, while the client libraries (`@useatlas/sdk`, `@useatlas/react`, `@useatlas/types`) and all plugins are **MIT**. The open-source core is fully functional for self-hosted deployments. Enterprise features (SSO, SCIM, custom roles, IP allowlists, approval workflows, PII masking, SLA monitoring, backups, data residency, custom domains) are available under `@atlas/ee` for SaaS and enterprise customers.
 
 Metabase's open-source edition is **AGPL-3.0**. Interactive embedding, SSO, row-level permissions, and other enterprise features require the proprietary Pro or Enterprise license.
 

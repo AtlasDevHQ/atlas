@@ -12,18 +12,23 @@ import { Callout } from "fumadocs-ui/components/callout";
 | | Atlas | WrenAI |
 |---|---|---|
 | **License** | AGPL-3.0 core, MIT client libs | AGPL-3.0 |
-| **Semantic layer** | YAML files (code-first, git-versioned) | UI-based MDL (Modeling Definition Language) |
-| **Embeddable** | Script tag, React component, API | API only (no pre-built widget) |
-| **Deployment** | Self-hosted, embedded, Vercel, Railway, Docker | Self-hosted, Docker, cloud SaaS, air-gapped enterprise |
-| **Plugin system** | Plugin SDK + 20 official plugins | Limited extensibility |
+| **Semantic layer** | YAML files (code-first, git-versioned) + web editor + dynamic learning | UI-based MDL (Modeling Definition Language) |
+| **Embeddable** | Script tag, React component, SDK with streaming | API only (no pre-built widget) |
+| **Deployment** | Self-hosted, embedded, Vercel, Railway, Docker, Atlas Cloud (3 regions) | Self-hosted, Docker, cloud SaaS, air-gapped enterprise |
+| **Plugin system** | Plugin SDK + 21+ official plugins + marketplace | Limited extensibility |
 | **Databases** | Postgres, MySQL + plugins for BigQuery, ClickHouse, DuckDB, Salesforce, Snowflake | Postgres, MySQL, BigQuery, ClickHouse, DuckDB, Snowflake, MS SQL Server, Redshift, Databricks, Oracle, Trino, Athena |
-| **Python sandbox** | Yes (sandboxed execution with chart rendering) | No |
-| **MCP server** | Yes | Yes (Wren Engine MCP server, Apache 2.0) |
-| **Primary stack** | TypeScript (Hono + Next.js + Bun) | TypeScript + Rust (Wren Engine, Apache DataFusion) |
+| **Python sandbox** | Yes (sandboxed execution with streaming + charts) | No |
+| **MCP server** | Yes (stdio + SSE) | Yes (Wren Engine MCP server, Apache 2.0) |
+| **Chat integrations** | 8 platforms (Slack, Teams, Discord, Telegram, Google Chat, GitHub, Linear, WhatsApp) | No |
+| **Notebook** | Built-in (cells, fork/branch, export) | No |
+| **Enterprise features** | SSO/SCIM, custom roles, IP allowlists, approval workflows, PII masking, data residency, SLA monitoring | No |
+| **Data residency** | 3-region deployment (US, EU, APAC) with misrouting detection | No |
+| **Backend architecture** | Effect.ts (typed errors, composable Layers, @effect/ai agent loop) | TypeScript + Rust (Wren Engine, Apache DataFusion) |
+| **Primary stack** | TypeScript + Effect.ts (Hono + Next.js + Bun) | TypeScript + Rust (Wren Engine, Apache DataFusion) |
 
 ## Semantic Layer
 
-**Atlas** uses a code-first YAML semantic layer. Entity files, metrics, glossary terms, and query patterns live in your repository alongside your application code. Changes go through pull requests, are reviewed by your team, and deploy with your app.
+**Atlas** uses a code-first YAML semantic layer. Entity files, metrics, glossary terms, and query patterns live in your repository alongside your application code. Changes go through pull requests, are reviewed by your team, and deploy with your app. Atlas also provides a web-based semantic editor with schema-aware autocomplete and version history for teams that prefer a UI. The dynamic learning layer (`atlas learn` CLI + runtime learned_patterns with admin review) enriches the semantic layer from actual query patterns.
 
 ```yaml
 # semantic/entities/orders.yml
@@ -37,19 +42,19 @@ dimensions:
 
 **WrenAI** uses a visual modeling interface where you define tables, relationships, and calculated fields through a UI. The modeling language (MDL) captures these definitions. This is easier for non-developers to get started with but harder to version control or review in code.
 
-**Trade-off:** YAML-in-repo works better when your data model is managed by engineers and deployed as part of an application. UI-based modeling works better when analysts or business users own the semantic definitions.
+**Trade-off:** Atlas now offers both code-first YAML (git-versioned) and web editor (UI-based with version history) — covering both the engineer and analyst personas. Atlas's learning approach produces auditable YAML diffs, while WrenAI's modeling is more tightly integrated with its DataFusion query engine. WrenAI has more database connectors (12+ vs 7).
 
 ## Embedding
 
-Atlas is designed to be embedded in other applications. You can add a chat widget to any page with a script tag, use the `@useatlas/react` component for tighter React integration, or call the API directly from any client.
+Atlas is designed to be embedded in other applications. You can add a chat widget to any page with a script tag, use the `@useatlas/react` component for tighter React integration, or call the `@useatlas/sdk` API directly with streaming support. Atlas also provides 8 chat platform integrations (Slack, Teams, Discord, Telegram, Google Chat, GitHub, Linear, WhatsApp) via Chat SDK, a notebook interface for exploratory analysis, and a plugin marketplace for extensibility. For teams that don't want to self-host, [Atlas Cloud](https://app.useatlas.dev) provides a managed SaaS with 3-region deployment.
 
-WrenAI offers API access for embedding text-to-SQL capabilities into other applications, but does not provide a pre-built widget or React component for drop-in integration. You would need to build your own UI layer on top of WrenAI's API.
+WrenAI offers API access for embedding text-to-SQL capabilities into other applications, but does not provide a pre-built widget or React component for drop-in integration. You would need to build your own UI layer on top of WrenAI's API. WrenAI does not offer chat platform integrations or a plugin marketplace.
 
 ## Licensing
 
 Both Atlas and WrenAI use **AGPL-3.0** for the server. The difference is that Atlas's client libraries (`@useatlas/sdk`, `@useatlas/react`, `@useatlas/types`) and all plugins are **MIT** — you can embed them in commercial products without copyleft concerns.
 
-WrenAI is fully AGPL-3.0, which requires that any modified version of the software — and in some interpretations, any software that interacts with it over a network — must also be released under AGPL-3.0.
+WrenAI is fully AGPL-3.0, which requires that modified versions of the software must also be released under AGPL-3.0, and that users interacting with it over a network must be offered access to the corresponding source code.
 
 <Callout type="info">
   Atlas's split license means you can embed the MIT client libraries in a proprietary app while self-hosting the AGPL server as-is. Modifications to the server must be shared, but your application code stays private.

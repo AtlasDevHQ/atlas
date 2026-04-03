@@ -11,24 +11,27 @@ import { Callout } from "fumadocs-ui/components/callout";
 
 | | Atlas | Cube |
 |---|---|---|
-| **Category** | Embeddable text-to-SQL agent | Semantic layer platform with AI add-on |
+| **Category** | Embeddable text-to-SQL agent + hosted SaaS | Semantic layer platform with AI add-on |
 | **License** | AGPL-3.0 core, MIT client libs | Apache 2.0 core, proprietary Cloud |
-| **Semantic layer** | YAML files (auto-generated, git-versioned) | YAML/JavaScript data model with caching engine |
-| **AI querying** | Core feature (agent-based) | D3 platform add-on |
-| **Embeddable** | Script tag, React component, API, SDK | GraphQL/REST/SQL APIs |
-| **Deployment** | Docker, Railway, Vercel, embedded | Docker, Cube Cloud |
-| **Caching** | None (queries hit the database directly) | Pre-aggregation engine (materialized rollups) |
-| **Plugin system** | Plugin SDK + 20 official plugins | Database drivers |
+| **Semantic layer** | YAML files (auto-generated, git-versioned) + web editor + dynamic learning | YAML/JavaScript data model with caching engine |
+| **AI querying** | Core feature (agent-based, Effect.ts + @effect/ai) | D3 platform add-on |
+| **Embeddable** | Script tag, React component, SDK with streaming | GraphQL/REST/SQL APIs |
+| **Deployment** | Docker, Railway, Vercel, Atlas Cloud (3 regions) | Docker, Cube Cloud |
+| **Caching** | LRU query cache (org-scoped, configurable TTL) | Pre-aggregation engine (materialized rollups) |
+| **Plugin system** | Plugin SDK + 21+ official plugins + marketplace | Database drivers |
 | **SQL validation** | 7-layer pipeline | Semantic layer governs query generation |
-| **MCP server** | Yes | Yes |
+| **MCP server** | Yes (stdio + SSE) | Yes |
 | **Chat integrations** | Slack, Teams, Discord, Telegram, Google Chat, GitHub, Linear, WhatsApp | None built-in |
-| **Admin console** | Built-in | Cube Cloud dashboard |
+| **Admin console** | Built-in (connections, users, plugins, semantic editor, analytics, billing) | Cube Cloud dashboard |
+| **Notebook** | Built-in (cells, fork/branch, export) | No |
+| **Enterprise features** | SSO/SCIM, custom roles, IP allowlists, approval workflows, PII masking, data residency | Enterprise tier |
+| **Data residency** | 3-region deployment (US, EU, APAC) with misrouting detection | Cube Cloud regions |
 
 ## Different Layers of the Stack
 
 **Cube** is infrastructure. It sits between your database and your application, providing a semantic layer with a powerful caching engine (pre-aggregations that materialize rollups). Applications query Cube via GraphQL, REST, or SQL APIs. The D3 platform adds AI agents that generate queries against the Cube semantic layer.
 
-**Atlas** is product. It's an end-to-end agent that reads a semantic layer, writes SQL, validates it, runs it, and returns results with charts and narrative. It deploys as a standalone application or embeds in yours.
+**Atlas** is product. It's an end-to-end agent that reads a semantic layer, writes SQL, validates it, runs it, and returns results with charts and narrative. It deploys as a standalone application, embeds in yours, or runs as a hosted SaaS at [app.useatlas.dev](https://app.useatlas.dev) with 3-region deployment (US, EU, APAC).
 
 **Trade-off:** If you need a universal semantic layer that multiple tools query (BI dashboards, notebooks, AI agents), Cube is the right choice. If you need an AI agent that users interact with directly — embedded in your app or as a standalone tool — Atlas is purpose-built for that.
 
@@ -38,7 +41,7 @@ Both tools use YAML-based semantic definitions, but the scope differs.
 
 **Cube** data models support complex transforms: pre-aggregations (materialized views for performance), multi-tenancy via security contexts, joins with fan-out control, and calculated measures with rolling windows. The Cube engine compiles these into optimized SQL.
 
-**Atlas** entity files describe tables, columns, business terms, metrics, and query patterns. They're simpler — no compilation step, no caching engine — but they're auto-generated from your database via `atlas init` and enrichable with LLM-powered descriptions. Changes deploy as static files, no runtime dependency.
+**Atlas** entity files describe tables, columns, business terms, metrics, and query patterns. They're simpler — no compilation step — but they're auto-generated from your database via `atlas init`, editable through a web UI with schema-aware autocomplete and version history, and enrichable with LLM-powered descriptions. Atlas also has a dynamic learning layer: `atlas learn` proposes YAML improvements from query history, and runtime learned patterns are captured with admin review. Atlas includes its own LRU query cache (org-scoped, configurable TTL), though it's not a materialized rollup engine like Cube's.
 
 **Trade-off:** Cube's semantic layer is more powerful for complex analytics workloads. Atlas's is simpler to bootstrap and maintain, especially when the primary consumer is an AI agent rather than a BI tool.
 
@@ -46,7 +49,7 @@ Both tools use YAML-based semantic definitions, but the scope differs.
 
 Cube D3 (launched June 2025) adds agentic analytics to the Cube platform with two specialized agents: the **AI Data Analyst** for self-serve natural language querying with visualizations and interactive data apps, and the **AI Data Engineer** for automating semantic model development from cloud data sources. Queries go through the semantic layer runtime rather than hitting the data warehouse directly — a trusted proxy architecture. Cube was recognized in the 2026 Gartner Market Guide for Agentic Analytics.
 
-Atlas is agent-native from day one. The entire product is an agent loop: multi-step reasoning, tool use (SQL execution, Python analysis, semantic layer exploration), 7-layer SQL validation, and structured output. The agent doesn't just generate a query — it reads context, writes SQL, validates it, runs it, and explains the results.
+Atlas is agent-native from day one. The entire product is an agent loop: multi-step reasoning, tool use (SQL execution, Python analysis, semantic layer exploration), 7-layer SQL validation, and structured output. The agent doesn't just generate a query — it reads context, writes SQL, validates it, runs it, and explains the results. The backend uses Effect.ts with @effect/ai for typed, composable agent orchestration. Atlas also provides a notebook interface for multi-step exploratory analysis, a plugin marketplace with 21+ plugins, and 8 chat platform integrations via Chat SDK.
 
 ## When to Choose Cube
 

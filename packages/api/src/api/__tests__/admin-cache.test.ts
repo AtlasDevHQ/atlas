@@ -124,6 +124,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   cascadeWorkspaceDelete: mock(async () => ({ conversations: 0, semanticEntities: 0, learnedPatterns: 0, suggestions: 0, scheduledTasks: 0, settings: 0 })),
   getWorkspaceHealthSummary: mock(async () => null),
   getWorkspaceRegion: mock(async () => null),
+  setWorkspaceRegion: mock(async () => ({ assigned: true })),
 }));
 
 let mockCacheEnabled = true;
@@ -272,6 +273,13 @@ describe("admin cache routes", () => {
     mockCacheEnabled = true;
     mockCacheStats.mockClear();
     mockFlushCache.mockClear();
+    mockGetCache.mockImplementation(() => ({
+      get: () => null,
+      set: () => {},
+      delete: () => false,
+      flush: () => {},
+      stats: mockCacheStats,
+    }));
     setPlatformAdmin();
   });
 
@@ -291,13 +299,21 @@ describe("admin cache routes", () => {
       expect(body.enabled).toBe(true);
       expect(body.hits).toBe(42);
       expect(body.misses).toBe(8);
-      expect(typeof body.hitRate).toBe("number");
-      expect(typeof body.missRate).toBe("number");
       // hitRate should be 42/(42+8) = 0.84
       expect(body.hitRate).toBeCloseTo(0.84, 2);
       // missRate should be 8/(42+8) = 0.16
       expect(body.missRate).toBeCloseTo(0.16, 2);
       expect(body.entryCount).toBe(15);
+    });
+
+    it("returns hitRate/missRate of 0 when cache is enabled but empty", async () => {
+      mockCacheStats.mockReturnValueOnce({ hits: 0, misses: 0, entryCount: 0, maxSize: 1000, ttl: 300000 });
+      const res = await app.fetch(cacheRequest("/api/v1/admin/cache/stats"));
+      expect(res.status).toBe(200);
+      const body = await res.json() as Record<string, unknown>;
+      expect(body.enabled).toBe(true);
+      expect(body.hitRate).toBe(0);
+      expect(body.missRate).toBe(0);
     });
 
     it("returns fallback response when cache is disabled", async () => {
@@ -311,6 +327,21 @@ describe("admin cache routes", () => {
       expect(body.hitRate).toBe(0);
       expect(body.missRate).toBe(0);
       expect(body.entryCount).toBe(0);
+    });
+
+    it("returns 500 with requestId when stats() throws", async () => {
+      mockGetCache.mockImplementation(() => ({
+        get: () => null,
+        set: () => {},
+        delete: () => false,
+        flush: () => {},
+        stats: () => { throw new Error("Redis connection refused"); },
+      }));
+      const res = await app.fetch(cacheRequest("/api/v1/admin/cache/stats"));
+      expect(res.status).toBe(500);
+      const body = await res.json() as Record<string, unknown>;
+      expect(body.error).toBe("internal_error");
+      expect(body.requestId).toBeDefined();
     });
   });
 
@@ -330,6 +361,7 @@ describe("admin cache routes", () => {
       expect(body.ok).toBe(true);
       expect(body.flushed).toBe(15);
       expect(body.message).toBe("Cache flushed");
+      expect(mockFlushCache).toHaveBeenCalledTimes(1);
     });
 
     it("returns disabled response when cache is off", async () => {
@@ -340,6 +372,16 @@ describe("admin cache routes", () => {
       expect(body.ok).toBe(false);
       expect(body.flushed).toBe(0);
       expect(body.message).toBe("Cache is disabled");
+      expect(mockFlushCache).not.toHaveBeenCalled();
+    });
+
+    it("returns 500 with requestId when flush throws", async () => {
+      mockFlushCache.mockImplementation(() => { throw new Error("Redis flush failed"); });
+      const res = await app.fetch(cacheRequest("/api/v1/admin/cache/flush", "POST"));
+      expect(res.status).toBe(500);
+      const body = await res.json() as Record<string, unknown>;
+      expect(body.error).toBe("internal_error");
+      expect(body.requestId).toBeDefined();
     });
   });
 });

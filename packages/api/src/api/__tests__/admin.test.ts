@@ -803,7 +803,7 @@ describe("POST /api/v1/admin/connections/:id/test", () => {
 describe("GET /api/v1/admin/audit", () => {
   beforeEach(() => {
     mockAuthenticateRequest.mockReset();
-    setAdmin();
+    setOrgAdmin("org-test");
     mockHasInternalDB = true;
     mockInternalQuery.mockReset();
   });
@@ -829,10 +829,9 @@ describe("GET /api/v1/admin/audit", () => {
   });
 
   it("returns paginated audit log", async () => {
-    let callCount = 0;
-    mockInternalQuery.mockImplementation(() => {
-      callCount++;
-      if (callCount === 1) return Promise.resolve([{ count: "5" }]);
+    mockInternalQuery.mockImplementation((sql: string) => {
+      if (sql.includes("ip_allowlist")) return Promise.resolve([]);
+      if (sql.includes("COUNT(*)")) return Promise.resolve([{ count: "5" }]);
       return Promise.resolve([
         { id: "1", timestamp: "2026-01-01", user_id: "u1", success: true, sql: "SELECT 1" },
       ]);
@@ -851,23 +850,24 @@ describe("GET /api/v1/admin/audit", () => {
   it("supports all filter query params including dates", async () => {
     let capturedSql = "";
     let capturedParams: unknown[] = [];
-    let callCount = 0;
     mockInternalQuery.mockImplementation((sql: string, params?: unknown[]) => {
-      callCount++;
-      if (callCount === 1) {
+      if (sql.includes("ip_allowlist")) return Promise.resolve([]);
+      if (!capturedSql && sql.includes("audit_log")) {
         capturedSql = sql;
         capturedParams = params ?? [];
-        return Promise.resolve([{ count: "0" }]);
       }
+      if (sql.includes("COUNT(*)")) return Promise.resolve([{ count: "0" }]);
       return Promise.resolve([]);
     });
 
     await app.fetch(adminRequest("/api/v1/admin/audit?user=test-user&success=true&from=2026-01-01&to=2026-03-01"));
 
-    expect(capturedSql).toContain("user_id = $1");
-    expect(capturedSql).toContain("success = $2");
-    expect(capturedSql).toContain("timestamp >= $3");
-    expect(capturedSql).toContain("timestamp <= $4");
+    expect(capturedSql).toContain("org_id = $1");
+    expect(capturedSql).toContain("user_id = $2");
+    expect(capturedSql).toContain("success = $3");
+    expect(capturedSql).toContain("timestamp >= $4");
+    expect(capturedSql).toContain("timestamp <= $5");
+    expect(capturedParams).toContain("org-test");
     expect(capturedParams).toContain("test-user");
     expect(capturedParams).toContain(true);
     expect(capturedParams).toContain("2026-01-01");
@@ -876,13 +876,12 @@ describe("GET /api/v1/admin/audit", () => {
 
   it("supports search filter across SQL, email, and error", async () => {
     let capturedSql = "";
-    let callCount = 0;
     mockInternalQuery.mockImplementation((sql: string) => {
-      callCount++;
-      if (callCount === 1) {
+      if (sql.includes("ip_allowlist")) return Promise.resolve([]);
+      if (!capturedSql && sql.includes("audit_log")) {
         capturedSql = sql;
-        return Promise.resolve([{ count: "0" }]);
       }
+      if (sql.includes("COUNT(*)")) return Promise.resolve([{ count: "0" }]);
       return Promise.resolve([]);
     });
 
@@ -896,14 +895,13 @@ describe("GET /api/v1/admin/audit", () => {
   it("supports connection filter", async () => {
     let capturedSql = "";
     let capturedParams: unknown[] = [];
-    let callCount = 0;
     mockInternalQuery.mockImplementation((sql: string, params?: unknown[]) => {
-      callCount++;
-      if (callCount === 1) {
+      if (sql.includes("ip_allowlist")) return Promise.resolve([]);
+      if (!capturedSql && sql.includes("audit_log")) {
         capturedSql = sql;
         capturedParams = params ?? [];
-        return Promise.resolve([{ count: "0" }]);
       }
+      if (sql.includes("COUNT(*)")) return Promise.resolve([{ count: "0" }]);
       return Promise.resolve([]);
     });
 
@@ -916,14 +914,13 @@ describe("GET /api/v1/admin/audit", () => {
   it("supports table filter via JSONB contains", async () => {
     let capturedSql = "";
     let capturedParams: unknown[] = [];
-    let callCount = 0;
     mockInternalQuery.mockImplementation((sql: string, params?: unknown[]) => {
-      callCount++;
-      if (callCount === 1) {
+      if (sql.includes("ip_allowlist")) return Promise.resolve([]);
+      if (!capturedSql && sql.includes("audit_log")) {
         capturedSql = sql;
         capturedParams = params ?? [];
-        return Promise.resolve([{ count: "0" }]);
       }
+      if (sql.includes("COUNT(*)")) return Promise.resolve([{ count: "0" }]);
       return Promise.resolve([]);
     });
 
@@ -936,14 +933,13 @@ describe("GET /api/v1/admin/audit", () => {
   it("supports column filter via JSONB contains", async () => {
     let capturedSql = "";
     let capturedParams: unknown[] = [];
-    let callCount = 0;
     mockInternalQuery.mockImplementation((sql: string, params?: unknown[]) => {
-      callCount++;
-      if (callCount === 1) {
+      if (sql.includes("ip_allowlist")) return Promise.resolve([]);
+      if (!capturedSql && sql.includes("audit_log")) {
         capturedSql = sql;
         capturedParams = params ?? [];
-        return Promise.resolve([{ count: "0" }]);
       }
+      if (sql.includes("COUNT(*)")) return Promise.resolve([{ count: "0" }]);
       return Promise.resolve([]);
     });
 
@@ -955,13 +951,12 @@ describe("GET /api/v1/admin/audit", () => {
 
   it("lowercases table and column filter values", async () => {
     let capturedParams: unknown[] = [];
-    let callCount = 0;
-    mockInternalQuery.mockImplementation((_sql: string, params?: unknown[]) => {
-      callCount++;
-      if (callCount === 1) {
+    mockInternalQuery.mockImplementation((sql: string, params?: unknown[]) => {
+      if (sql.includes("ip_allowlist")) return Promise.resolve([]);
+      if (!capturedParams.length && sql.includes("audit_log")) {
         capturedParams = params ?? [];
-        return Promise.resolve([{ count: "0" }]);
       }
+      if (sql.includes("COUNT(*)")) return Promise.resolve([{ count: "0" }]);
       return Promise.resolve([]);
     });
 
@@ -974,14 +969,13 @@ describe("GET /api/v1/admin/audit", () => {
   it("correctly parameterizes combined new filters (search + connection + table + column)", async () => {
     let capturedSql = "";
     let capturedParams: unknown[] = [];
-    let callCount = 0;
     mockInternalQuery.mockImplementation((sql: string, params?: unknown[]) => {
-      callCount++;
-      if (callCount === 1) {
+      if (sql.includes("ip_allowlist")) return Promise.resolve([]);
+      if (!capturedSql && sql.includes("audit_log")) {
         capturedSql = sql;
         capturedParams = params ?? [];
-        return Promise.resolve([{ count: "0" }]);
       }
+      if (sql.includes("COUNT(*)")) return Promise.resolve([{ count: "0" }]);
       return Promise.resolve([]);
     });
 
@@ -989,11 +983,12 @@ describe("GET /api/v1/admin/audit", () => {
       "/api/v1/admin/audit?connection=warehouse&table=orders&column=revenue&search=test",
     ));
 
-    expect(capturedSql).toContain("source_id = $1");
-    expect(capturedSql).toContain("tables_accessed ? $2");
-    expect(capturedSql).toContain("columns_accessed ? $3");
-    expect(capturedSql).toContain("a.sql ILIKE $4 OR u.email ILIKE $4 OR a.error ILIKE $4");
-    expect(capturedParams).toEqual(["warehouse", "orders", "revenue", "%test%"]);
+    expect(capturedSql).toContain("org_id = $1");
+    expect(capturedSql).toContain("source_id = $2");
+    expect(capturedSql).toContain("tables_accessed ? $3");
+    expect(capturedSql).toContain("columns_accessed ? $4");
+    expect(capturedSql).toContain("a.sql ILIKE $5 OR u.email ILIKE $5 OR a.error ILIKE $5");
+    expect(capturedParams).toEqual(["org-test", "warehouse", "orders", "revenue", "%test%"]);
   });
 
   it("returns 400 for invalid date format", async () => {
@@ -1016,16 +1011,15 @@ describe("GET /api/v1/admin/audit", () => {
 describe("GET /api/v1/admin/audit/export", () => {
   beforeEach(() => {
     mockAuthenticateRequest.mockReset();
-    setAdmin();
+    setOrgAdmin("org-test");
     mockHasInternalDB = true;
     mockInternalQuery.mockReset();
   });
 
   it("returns CSV with correct headers", async () => {
-    let callCount = 0;
-    mockInternalQuery.mockImplementation(() => {
-      callCount++;
-      if (callCount === 1) return Promise.resolve([{ count: "1" }]);
+    mockInternalQuery.mockImplementation((sql: string) => {
+      if (sql.includes("ip_allowlist")) return Promise.resolve([]);
+      if (sql.includes("COUNT(*)")) return Promise.resolve([{ count: "1" }]);
       return Promise.resolve([
         {
           id: "abc-123",
@@ -1055,10 +1049,9 @@ describe("GET /api/v1/admin/audit/export", () => {
   });
 
   it("escapes CSV fields with quotes", async () => {
-    let callCount = 0;
-    mockInternalQuery.mockImplementation(() => {
-      callCount++;
-      if (callCount === 1) return Promise.resolve([{ count: "1" }]);
+    mockInternalQuery.mockImplementation((sql: string) => {
+      if (sql.includes("ip_allowlist")) return Promise.resolve([]);
+      if (sql.includes("COUNT(*)")) return Promise.resolve([{ count: "1" }]);
       return Promise.resolve([
         {
           id: "abc-456",
@@ -1084,12 +1077,13 @@ describe("GET /api/v1/admin/audit/export", () => {
   it("respects filters on export", async () => {
     let capturedSql = "";
     let capturedParams: unknown[] = [];
-    let callCount = 0;
     mockInternalQuery.mockImplementation((sql: string, params?: unknown[]) => {
-      callCount++;
-      if (callCount === 1) return Promise.resolve([{ count: "0" }]);
-      capturedSql = sql;
-      capturedParams = params ?? [];
+      if (sql.includes("ip_allowlist")) return Promise.resolve([]);
+      if (sql.includes("COUNT(*)")) return Promise.resolve([{ count: "0" }]);
+      if (sql.includes("audit_log")) {
+        capturedSql = sql;
+        capturedParams = params ?? [];
+      }
       return Promise.resolve([]);
     });
 
@@ -1112,10 +1106,9 @@ describe("GET /api/v1/admin/audit/export", () => {
   });
 
   it("returns CSV with only headers when no rows match", async () => {
-    let callCount = 0;
-    mockInternalQuery.mockImplementation(() => {
-      callCount++;
-      if (callCount === 1) return Promise.resolve([{ count: "0" }]);
+    mockInternalQuery.mockImplementation((sql: string) => {
+      if (sql.includes("ip_allowlist")) return Promise.resolve([]);
+      if (sql.includes("COUNT(*)")) return Promise.resolve([{ count: "0" }]);
       return Promise.resolve([]);
     });
     const res = await app.fetch(adminRequest("/api/v1/admin/audit/export"));
@@ -1145,7 +1138,7 @@ describe("GET /api/v1/admin/audit/export", () => {
 describe("GET /api/v1/admin/audit/stats", () => {
   beforeEach(() => {
     mockAuthenticateRequest.mockReset();
-    setAdmin();
+    setOrgAdmin("org-test");
     mockHasInternalDB = true;
     mockInternalQuery.mockReset();
   });
@@ -1158,10 +1151,11 @@ describe("GET /api/v1/admin/audit/stats", () => {
   });
 
   it("returns audit stats", async () => {
-    let callCount = 0;
-    mockInternalQuery.mockImplementation(() => {
-      callCount++;
-      if (callCount === 1) return Promise.resolve([{ total: "100", errors: "5" }]);
+    let statsCallCount = 0;
+    mockInternalQuery.mockImplementation((sql: string) => {
+      if (sql.includes("ip_allowlist")) return Promise.resolve([]);
+      statsCallCount++;
+      if (statsCallCount === 1) return Promise.resolve([{ total: "100", errors: "5" }]);
       return Promise.resolve([
         { day: "2026-03-01", count: "20" },
         { day: "2026-02-28", count: "15" },
@@ -1250,7 +1244,7 @@ describe("POST /api/v1/admin/plugins/:id/health", () => {
 
 describe("Admin routes — audit analytics", () => {
   beforeEach(() => {
-    setAdmin();
+    setOrgAdmin("org-test");
     mockHasInternalDB = true;
     mockInternalQuery.mockReset();
   });
@@ -1258,10 +1252,13 @@ describe("Admin routes — audit analytics", () => {
   // Volume
   describe("GET /audit/analytics/volume", () => {
     it("returns daily volume data", async () => {
-      mockInternalQuery.mockResolvedValue([
-        { day: "2026-03-01", count: "10", errors: "2" },
-        { day: "2026-03-02", count: "15", errors: "0" },
-      ]);
+      mockInternalQuery.mockImplementation((sql: string) => {
+        if (sql.includes("ip_allowlist")) return Promise.resolve([]);
+        return Promise.resolve([
+          { day: "2026-03-01", count: "10", errors: "2" },
+          { day: "2026-03-02", count: "15", errors: "0" },
+        ]);
+      });
 
       const res = await app.fetch(adminRequest("/api/v1/admin/audit/analytics/volume"));
       expect(res.status).toBe(200);
@@ -1273,15 +1270,19 @@ describe("Admin routes — audit analytics", () => {
     });
 
     it("passes date range params to query", async () => {
-      mockInternalQuery.mockResolvedValue([]);
+      mockInternalQuery.mockImplementation((sql: string) => {
+        if (sql.includes("ip_allowlist")) return Promise.resolve([]);
+        return Promise.resolve([]);
+      });
 
       const res = await app.fetch(adminRequest("/api/v1/admin/audit/analytics/volume?from=2026-03-01&to=2026-03-07"));
       expect(res.status).toBe(200);
-      expect(mockInternalQuery).toHaveBeenCalledTimes(1);
-      const [sql, params] = mockInternalQuery.mock.calls[0];
+      const auditCall = mockInternalQuery.mock.calls.find(([sql]) => sql.includes("audit_log"));
+      expect(auditCall).toBeDefined();
+      const [sql, params] = auditCall!;
       expect(sql).toContain("timestamp >=");
       expect(sql).toContain("timestamp <=");
-      expect(params).toEqual(["2026-03-01", "2026-03-07"]);
+      expect(params).toEqual(["org-test", "2026-03-01", "2026-03-07"]);
     });
 
     it("returns 400 for invalid date", async () => {
@@ -1299,9 +1300,12 @@ describe("Admin routes — audit analytics", () => {
   // Slow queries
   describe("GET /audit/analytics/slow", () => {
     it("returns top slow queries", async () => {
-      mockInternalQuery.mockResolvedValue([
-        { query: "SELECT * FROM big_table", avg_duration: "1500", max_duration: "3000", count: "5" },
-      ]);
+      mockInternalQuery.mockImplementation((sql: string) => {
+        if (sql.includes("ip_allowlist")) return Promise.resolve([]);
+        return Promise.resolve([
+          { query: "SELECT * FROM big_table", avg_duration: "1500", max_duration: "3000", count: "5" },
+        ]);
+      });
 
       const res = await app.fetch(adminRequest("/api/v1/admin/audit/analytics/slow"));
       expect(res.status).toBe(200);
@@ -1316,9 +1320,12 @@ describe("Admin routes — audit analytics", () => {
   // Frequent queries
   describe("GET /audit/analytics/frequent", () => {
     it("returns top frequent queries", async () => {
-      mockInternalQuery.mockResolvedValue([
-        { query: "SELECT 1", count: "100", avg_duration: "5", error_count: "3" },
-      ]);
+      mockInternalQuery.mockImplementation((sql: string) => {
+        if (sql.includes("ip_allowlist")) return Promise.resolve([]);
+        return Promise.resolve([
+          { query: "SELECT 1", count: "100", avg_duration: "5", error_count: "3" },
+        ]);
+      });
 
       const res = await app.fetch(adminRequest("/api/v1/admin/audit/analytics/frequent"));
       expect(res.status).toBe(200);
@@ -1332,10 +1339,13 @@ describe("Admin routes — audit analytics", () => {
   // Errors
   describe("GET /audit/analytics/errors", () => {
     it("returns error breakdown", async () => {
-      mockInternalQuery.mockResolvedValue([
-        { error: "relation does not exist", count: "8" },
-        { error: "permission denied", count: "3" },
-      ]);
+      mockInternalQuery.mockImplementation((sql: string) => {
+        if (sql.includes("ip_allowlist")) return Promise.resolve([]);
+        return Promise.resolve([
+          { error: "relation does not exist", count: "8" },
+          { error: "permission denied", count: "3" },
+        ]);
+      });
 
       const res = await app.fetch(adminRequest("/api/v1/admin/audit/analytics/errors"));
       expect(res.status).toBe(200);
@@ -1346,12 +1356,16 @@ describe("Admin routes — audit analytics", () => {
     });
 
     it("combines date range with error filter", async () => {
-      mockInternalQuery.mockResolvedValue([]);
+      mockInternalQuery.mockImplementation((sql: string) => {
+        if (sql.includes("ip_allowlist")) return Promise.resolve([]);
+        return Promise.resolve([]);
+      });
 
       const res = await app.fetch(adminRequest("/api/v1/admin/audit/analytics/errors?from=2026-03-01"));
       expect(res.status).toBe(200);
-      expect(mockInternalQuery).toHaveBeenCalledTimes(1);
-      const [sql] = mockInternalQuery.mock.calls[0];
+      const auditCall = mockInternalQuery.mock.calls.find(([sql]) => sql.includes("audit_log"));
+      expect(auditCall).toBeDefined();
+      const [sql] = auditCall!;
       expect(sql).toContain("timestamp >=");
       expect(sql).toContain("NOT success");
     });
@@ -1360,10 +1374,13 @@ describe("Admin routes — audit analytics", () => {
   // Users
   describe("GET /audit/analytics/users", () => {
     it("returns per-user stats with error rate", async () => {
-      mockInternalQuery.mockResolvedValue([
-        { user_id: "user-1", count: "50", avg_duration: "120", error_count: "5" },
-        { user_id: "user-2", count: "20", avg_duration: "80", error_count: "0" },
-      ]);
+      mockInternalQuery.mockImplementation((sql: string) => {
+        if (sql.includes("ip_allowlist")) return Promise.resolve([]);
+        return Promise.resolve([
+          { user_id: "user-1", count: "50", avg_duration: "120", error_count: "5" },
+          { user_id: "user-2", count: "20", avg_duration: "80", error_count: "0" },
+        ]);
+      });
 
       const res = await app.fetch(adminRequest("/api/v1/admin/audit/analytics/users"));
       expect(res.status).toBe(200);
@@ -1426,15 +1443,19 @@ describe("Admin routes — audit analytics", () => {
     });
 
     it("handles 'to'-only date range", async () => {
-      mockInternalQuery.mockResolvedValue([]);
+      mockInternalQuery.mockImplementation((sql: string) => {
+        if (sql.includes("ip_allowlist")) return Promise.resolve([]);
+        return Promise.resolve([]);
+      });
 
       const res = await app.fetch(adminRequest("/api/v1/admin/audit/analytics/volume?to=2026-03-07"));
       expect(res.status).toBe(200);
-      expect(mockInternalQuery).toHaveBeenCalledTimes(1);
-      const [sql, params] = mockInternalQuery.mock.calls[0];
+      const auditCall = mockInternalQuery.mock.calls.find(([sql]) => sql.includes("audit_log"));
+      expect(auditCall).toBeDefined();
+      const [sql, params] = auditCall!;
       expect(sql).toContain("timestamp <=");
       expect(sql).not.toContain("timestamp >=");
-      expect(params).toEqual(["2026-03-07"]);
+      expect(params).toEqual(["org-test", "2026-03-07"]);
     });
   });
 });

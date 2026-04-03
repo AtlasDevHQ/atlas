@@ -24,6 +24,7 @@ const log = createLogger("region-export");
 function toISO(value: unknown): string {
   if (value instanceof Date) return value.toISOString();
   if (typeof value === "string" && value.length > 0) return value;
+  log.warn({ valueType: typeof value }, "Unexpected timestamp value in export — defaulting to current time");
   return new Date().toISOString();
 }
 
@@ -40,31 +41,46 @@ export async function exportWorkspaceBundle(
 ): Promise<ExportBundle> {
   const pool = getInternalDB();
 
-  // --- 1. Conversations ---
-  const convResult = await pool.query(
-    `SELECT id, user_id, title, surface, connection_id, starred, created_at, updated_at
-     FROM conversations WHERE org_id = $1 AND deleted_at IS NULL
-     ORDER BY created_at ASC`,
-    [orgId],
-  );
+  // --- 1. Conversations + Messages (2 queries, no N+1) ---
+  const [convResult, allMsgResult] = await Promise.all([
+    pool.query(
+      `SELECT id, user_id, title, surface, connection_id, starred, created_at, updated_at
+       FROM conversations WHERE org_id = $1 AND deleted_at IS NULL
+       ORDER BY created_at ASC`,
+      [orgId],
+    ),
+    pool.query(
+      `SELECT m.id, m.conversation_id, m.role, m.content, m.created_at
+       FROM messages m
+       JOIN conversations c ON c.id = m.conversation_id
+       WHERE c.org_id = $1 AND c.deleted_at IS NULL
+       ORDER BY m.conversation_id, m.created_at ASC`,
+      [orgId],
+    ),
+  ]);
+
+  // Group messages by conversation_id
+  const messagesByConv = new Map<string, ExportedMessage[]>();
+  for (const m of allMsgResult.rows) {
+    const convId = m.conversation_id as string;
+    let msgs = messagesByConv.get(convId);
+    if (!msgs) {
+      msgs = [];
+      messagesByConv.set(convId, msgs);
+    }
+    msgs.push({
+      id: m.id as string,
+      role: m.role as ExportedMessage["role"],
+      content: m.content,
+      createdAt: toISO(m.created_at),
+    });
+  }
 
   const conversations: ExportedConversation[] = [];
   let totalMessages = 0;
 
   for (const conv of convResult.rows) {
-    const msgResult = await pool.query(
-      `SELECT id, role, content, created_at
-       FROM messages WHERE conversation_id = $1
-       ORDER BY created_at ASC`,
-      [conv.id as string],
-    );
-
-    const messages: ExportedMessage[] = msgResult.rows.map((m) => ({
-      id: m.id as string,
-      role: m.role as ExportedMessage["role"],
-      content: m.content,
-      createdAt: toISO(m.created_at),
-    }));
+    const messages = messagesByConv.get(conv.id as string) ?? [];
     totalMessages += messages.length;
 
     conversations.push({

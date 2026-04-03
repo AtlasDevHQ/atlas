@@ -44,7 +44,6 @@ const { exportWorkspaceBundle } = await import("../export");
 // ── Helpers ─────────────────────────────────────────────────────────
 
 function resetMocks() {
-  // Clear all mock results
   for (const key of Object.keys(mockPoolQueryResults)) {
     delete mockPoolQueryResults[key];
   }
@@ -73,7 +72,8 @@ describe("exportWorkspaceBundle", () => {
   });
 
   it("exports conversations with messages", async () => {
-    mockPoolQueryResults["FROM conversations"] = {
+    // Conversations query — key on unique column list
+    mockPoolQueryResults["SELECT id, user_id"] = {
       rows: [
         {
           id: "conv-1",
@@ -87,10 +87,11 @@ describe("exportWorkspaceBundle", () => {
         },
       ],
     };
-    mockPoolQueryResults["FROM messages"] = {
+    // Messages JOIN query — key on unique column alias
+    mockPoolQueryResults["m.conversation_id"] = {
       rows: [
-        { id: "msg-1", role: "user", content: "Hello", created_at: "2026-04-01T00:00:00Z" },
-        { id: "msg-2", role: "assistant", content: "Hi!", created_at: "2026-04-01T00:00:01Z" },
+        { id: "msg-1", conversation_id: "conv-1", role: "user", content: "Hello", created_at: "2026-04-01T00:00:00Z" },
+        { id: "msg-2", conversation_id: "conv-1", role: "assistant", content: "Hi!", created_at: "2026-04-01T00:00:01Z" },
       ],
     };
 
@@ -102,6 +103,31 @@ describe("exportWorkspaceBundle", () => {
     expect(bundle.conversations[0].messages).toHaveLength(2);
     expect(bundle.manifest.counts.conversations).toBe(1);
     expect(bundle.manifest.counts.messages).toBe(2);
+  });
+
+  it("groups messages by conversation correctly", async () => {
+    mockPoolQueryResults["SELECT id, user_id"] = {
+      rows: [
+        { id: "conv-1", user_id: "user-1", title: "First", surface: "web", connection_id: null, starred: false, created_at: "2026-04-01T00:00:00Z", updated_at: "2026-04-01T00:00:00Z" },
+        { id: "conv-2", user_id: "user-1", title: "Second", surface: "web", connection_id: null, starred: false, created_at: "2026-04-01T01:00:00Z", updated_at: "2026-04-01T01:00:00Z" },
+      ],
+    };
+    mockPoolQueryResults["m.conversation_id"] = {
+      rows: [
+        { id: "msg-1", conversation_id: "conv-1", role: "user", content: "Hello", created_at: "2026-04-01T00:00:00Z" },
+        { id: "msg-2", conversation_id: "conv-2", role: "user", content: "World", created_at: "2026-04-01T01:00:00Z" },
+        { id: "msg-3", conversation_id: "conv-2", role: "assistant", content: "Reply", created_at: "2026-04-01T01:00:01Z" },
+      ],
+    };
+
+    const bundle = await exportWorkspaceBundle("org-1");
+
+    expect(bundle.conversations).toHaveLength(2);
+    expect(bundle.conversations[0].messages).toHaveLength(1);
+    expect(bundle.conversations[0].messages[0].id).toBe("msg-1");
+    expect(bundle.conversations[1].messages).toHaveLength(2);
+    expect(bundle.conversations[1].messages[0].id).toBe("msg-2");
+    expect(bundle.manifest.counts.messages).toBe(3);
   });
 
   it("exports semantic entities", async () => {

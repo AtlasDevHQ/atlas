@@ -245,7 +245,12 @@ chat.openapi(chatRoute, async (c) => {
         );
       }
       if (migrationCheck._tag === "Left") {
-        log.debug({ err: migrationCheck.left.message, requestId }, "Migration check skipped");
+        // Fail closed — block writes when migration status is uncertain
+        log.warn({ err: migrationCheck.left.message, requestId, orgId: chatOrgId }, "Migration write-lock check failed — rejecting chat as a precaution");
+        return c.json(
+          { error: "migration_check_failed", message: "Unable to verify workspace migration status. Please try again in a moment.", retryable: true, requestId },
+          503,
+        );
       }
     }
 

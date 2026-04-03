@@ -197,11 +197,19 @@ async function checkMigrationWriteLock(
       };
     }
   } catch (err) {
-    // Migration check failure should not block requests — log and continue
-    log.warn(
+    // Fail closed — if we can't verify migration status, block writes to prevent data loss
+    log.error(
       { err: err instanceof Error ? err.message : String(err), requestId, orgId },
-      "Migration write-lock check failed — allowing request to proceed",
+      "Migration write-lock check failed — rejecting write as a precaution",
     );
+    return {
+      body: {
+        error: "migration_check_failed",
+        message: "Unable to verify workspace migration status. Write operations are temporarily unavailable.",
+        requestId,
+      },
+      status: 503,
+    };
   }
 
   return null;

@@ -64,7 +64,7 @@ mock.module("@atlas/api/lib/cache/index", () => ({
 }));
 
 // Mock config with target region apiUrl
-let mockConfig: Record<string, unknown> | null = {
+const DEFAULT_MOCK_CONFIG = {
   residency: {
     regions: {
       "us-east": { label: "US East", databaseUrl: "postgres://us", apiUrl: "https://api-us.example.com" },
@@ -73,6 +73,8 @@ let mockConfig: Record<string, unknown> | null = {
     defaultRegion: "us-east",
   },
 };
+
+let mockConfig: Record<string, unknown> | null = { ...DEFAULT_MOCK_CONFIG };
 
 mock.module("@atlas/api/lib/config", () => ({
   getConfig: () => mockConfig,
@@ -118,6 +120,7 @@ function resetMocks() {
   mockFetchResponse = { ok: true, status: 200, body: {} };
   mockFetchError = null;
   capturedFetchCalls = [];
+  mockConfig = { ...DEFAULT_MOCK_CONFIG };
   process.env.ATLAS_INTERNAL_SECRET = "test-secret";
 }
 
@@ -239,17 +242,7 @@ describe("executeRegionMigration", () => {
     const result = await executeRegionMigration("mig-1");
     expect(result.success).toBe(false);
     if (!result.success) expect(result.error).toContain("apiUrl");
-
-    // Restore config
-    mockConfig = {
-      residency: {
-        regions: {
-          "us-east": { label: "US East", databaseUrl: "postgres://us", apiUrl: "https://api-us.example.com" },
-          "eu-west": { label: "EU West", databaseUrl: "postgres://eu", apiUrl: "https://api-eu.example.com" },
-        },
-        defaultRegion: "us-east",
-      },
-    };
+    // mockConfig is auto-restored by resetMocks in beforeEach
   });
 
   it("fails when transfer HTTP call returns error", async () => {

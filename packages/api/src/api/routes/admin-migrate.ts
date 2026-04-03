@@ -333,6 +333,14 @@ adminMigrate.openapi(importRoute, async (c) => {
 // ---------------------------------------------------------------------------
 
 import { Hono } from "hono";
+import { createHash, timingSafeEqual } from "crypto";
+
+/** Timing-safe string comparison — prevents timing attacks on secret values. */
+function timingSafeCompare(a: string, b: string): boolean {
+  const aHash = createHash("sha256").update(a).digest();
+  const bHash = createHash("sha256").update(b).digest();
+  return timingSafeEqual(aHash, bHash);
+}
 
 /**
  * Internal import router — accepts ATLAS_INTERNAL_SECRET for auth instead of
@@ -355,7 +363,7 @@ internalMigrate.post("/import", async (c) => {
     return c.json({ error: "not_configured", message: "Internal import is not configured.", requestId }, 503);
   }
 
-  if (!token || token !== secret) {
+  if (!token || !timingSafeCompare(token, secret)) {
     log.warn({ requestId }, "Invalid internal token on cross-region import attempt");
     return c.json({ error: "unauthorized", message: "Invalid internal token.", requestId }, 401);
   }

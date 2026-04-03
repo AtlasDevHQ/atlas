@@ -147,6 +147,7 @@ async function transferBundleToTarget(
       const body = await response.json() as { message?: string; error?: string };
       detail = body.message ?? body.error ?? `HTTP ${response.status}`;
     } catch {
+      // intentionally ignored: response body may not be JSON (e.g. reverse proxy HTML error)
       detail = `HTTP ${response.status} ${response.statusText}`;
     }
     return { ok: false, error: `Target region import failed: ${detail}` };
@@ -219,6 +220,9 @@ export async function executeRegionMigration(
     targetRegion,
   });
 
+  // Track whether region was updated — declared outside try so the catch block can access it
+  let regionUpdated = false;
+
   try {
     // ── Phase 1: Export ──────────────────────────────────────────────
     log.info({ migrationId, step: MIGRATION_STEPS.exporting }, "Phase 1: Exporting workspace data");
@@ -264,6 +268,7 @@ export async function executeRegionMigration(
     if (updateResult.rows.length === 0) {
       throw new Error(`Workspace "${workspaceId}" not found in organization table`);
     }
+    regionUpdated = true;
 
     // Flush cached data
     try {
@@ -310,18 +315,25 @@ export async function executeRegionMigration(
 
     return { success: true, migrationId };
   } catch (err) {
-    const errorMessage = err instanceof Error ? err.message : String(err);
-    log.error({ err: errorMessage, migrationId, workspaceId }, "Migration failed");
+    const rawMessage = err instanceof Error ? err.message : String(err);
+
+    // If the region was already updated, retry is dangerous — data exists in both regions
+    const errorMessage = regionUpdated
+      ? `${rawMessage} (WARNING: region was already updated to "${targetRegion}" — do NOT retry without investigation)`
+      : rawMessage;
+
+    log.error({ err: rawMessage, migrationId, workspaceId, regionUpdated }, "Migration failed");
 
     logMigrationEvent("region_migration_failed", migrationId, {
       workspaceId,
       sourceRegion,
       targetRegion,
       error: errorMessage,
+      regionUpdated,
     });
 
-    // Mark as failed — leave region unchanged (the update may have already happened,
-    // but the migration record shows "failed" so admins can investigate)
+    // Mark as failed — the region update may have already happened.
+    // The error message includes a warning if retry would be unsafe.
     try {
       await updateMigrationStatus(migrationId, "failed", {
         errorMessage,

@@ -1,6 +1,6 @@
 ---
 title: CLI Reference
-description: Complete reference for the Atlas CLI — init, diff, import, index, learn, query, doctor, validate, mcp, completions, and more.
+description: Complete reference for the Atlas CLI — init, diff, import, export, migrate-import, index, learn, query, doctor, validate, mcp, completions, and more.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
@@ -470,6 +470,62 @@ bun run atlas -- benchmark [options]
 | `--db <name>` | Filter to a single database |
 | `--csv` | CSV output |
 | `--resume <file>` | Resume from existing JSONL results file |
+
+## export
+
+Export workspace data to a portable migration bundle (JSON). Reads from the internal database. Used as the first step in a self-hosted → SaaS migration workflow. See [Migration guide](/guides/migration) for the full workflow.
+
+```bash
+bun run atlas -- export [options]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--output <path>` | Output file path (default: `./atlas-export-{date}.json`) |
+| `-o <path>` | Alias for `--output` |
+| `--org <orgId>` | Export data for a specific org (default: global/unscoped) |
+
+**Requires** `DATABASE_URL` to be set (reads from the internal database).
+
+**Examples:**
+
+```bash
+# Export all workspace data to a timestamped file
+bun run atlas -- export
+
+# Export to a specific file
+bun run atlas -- export --output backup.json
+
+# Export a specific organization's data
+bun run atlas -- export --org org_abc123
+```
+
+## migrate-import
+
+Import an export bundle into a hosted Atlas instance. Used for self-hosted → SaaS migration. Calls the target instance's internal migration API endpoint.
+
+```bash
+bun run atlas -- migrate-import --bundle <path> [options]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--bundle <path>` | Path to the export bundle JSON file (required) |
+| `--target <url>` | Target Atlas API URL (default: `https://app.useatlas.dev`) |
+| `--api-key <key>` | API key for the target workspace (or set `ATLAS_API_KEY`) |
+
+**Examples:**
+
+```bash
+# Import into the hosted SaaS (default target)
+bun run atlas -- migrate-import --bundle atlas-export-2026-04-02.json
+
+# Import into a self-hosted instance
+bun run atlas -- migrate-import --bundle backup.json --target https://atlas.internal.company.com
+
+# Use env var for the API key
+ATLAS_API_KEY=sk-... bun run atlas -- migrate-import --bundle backup.json
+```
 
 ## completions
 

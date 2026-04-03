@@ -14,6 +14,7 @@
  */
 
 import type { Env } from "hono";
+import type { Context } from "hono";
 import { createMiddleware } from "hono/factory";
 import { createLogger, withRequestContext } from "@atlas/api/lib/logger";
 import type { AuthResult } from "@atlas/api/lib/auth/types";
@@ -22,6 +23,10 @@ import {
   checkRateLimit,
   getClientIP,
 } from "@atlas/api/lib/auth/middleware";
+import {
+  detectMisrouting,
+  isStrictRoutingEnabled,
+} from "@atlas/api/lib/residency/misrouting";
 
 const log = createLogger("middleware");
 
@@ -131,6 +136,37 @@ async function rateLimitAndIPCheck(
 }
 
 // ---------------------------------------------------------------------------
+// Misrouting detection — checks if the request reached the correct regional API
+// ---------------------------------------------------------------------------
+
+async function checkMisrouting(
+  c: Context,
+  authResult: AuthResult & { authenticated: true },
+  requestId: string,
+): Promise<{ body: Record<string, unknown>; status: number } | null> {
+  const orgId = authResult.user?.activeOrganizationId;
+  const result = await detectMisrouting(orgId, requestId);
+  if (!result) return null;
+
+  if (isStrictRoutingEnabled()) {
+    return {
+      body: {
+        error: "misdirected_request",
+        message: `This request should be directed to the ${result.expectedRegion} region API.`,
+        correctApiUrl: result.correctApiUrl,
+        expectedRegion: result.expectedRegion,
+        actualRegion: result.actualRegion,
+        requestId,
+      },
+      status: 421,
+    };
+  }
+
+  // Graceful mode — log already happened in detectMisrouting, serve normally
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // adminAuth — authenticate + enforce admin role + rate limit + IP allowlist
 // ---------------------------------------------------------------------------
 
@@ -159,6 +195,11 @@ export const adminAuth = createMiddleware<AuthEnv>(async (c, next) => {
   const blocked = await rateLimitAndIPCheck(c.req.raw, authResult, requestId);
   if (blocked) {
     return c.json(blocked.body, blocked.status as 429, blocked.headers);
+  }
+
+  const misrouted = await checkMisrouting(c, authResult, requestId);
+  if (misrouted) {
+    return c.json(misrouted.body, misrouted.status as 421);
   }
 
   c.set("authResult", authResult);
@@ -190,6 +231,11 @@ export const platformAdminAuth = createMiddleware<AuthEnv>(async (c, next) => {
     return c.json(blocked.body, blocked.status as 429, blocked.headers);
   }
 
+  const misrouted = await checkMisrouting(c, authResult, requestId);
+  if (misrouted) {
+    return c.json(misrouted.body, misrouted.status as 421);
+  }
+
   c.set("authResult", authResult);
   await next();
 });
@@ -211,6 +257,11 @@ export const standardAuth = createMiddleware<AuthEnv>(async (c, next) => {
   const blocked = await rateLimitAndIPCheck(c.req.raw, authResult, requestId);
   if (blocked) {
     return c.json(blocked.body, blocked.status as 429, blocked.headers);
+  }
+
+  const misrouted = await checkMisrouting(c, authResult, requestId);
+  if (misrouted) {
+    return c.json(misrouted.body, misrouted.status as 421);
   }
 
   c.set("authResult", authResult);

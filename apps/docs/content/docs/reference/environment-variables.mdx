@@ -451,6 +451,17 @@ ATLAS_PUBLIC_URL=https://api.example.com
 
 ---
 
+## Data Residency
+
+Settings for multi-region deployments with per-workspace region routing. See also [`residency` in atlas.config.ts](/reference/config#residency) and the [Data Residency guide](/platform-ops/data-residency).
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ATLAS_API_REGION` | — | Region identity of this API instance (e.g. `us-west`, `eu-west`, `ap-southeast`). Used for misrouting detection. Falls back to `residency.defaultRegion` from config if unset |
+| `ATLAS_STRICT_ROUTING` | `false` | When `true`, misrouted requests receive `421 Misdirected Request` with a `correctApiUrl` hint instead of being served with a warning log |
+
+---
+
 ## Appearance
 
 | Variable | Default | Description |

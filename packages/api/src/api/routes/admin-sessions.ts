@@ -2,8 +2,7 @@
  * Admin session management routes.
  *
  * Mounted under /api/v1/admin/sessions via admin.route().
- * Org-scoped: workspace admins see only sessions for members of their org.
- * Platform admins see all sessions.
+ * Org-scoped: all queries are filtered to members of the caller's active organization.
  */
 
 import { createRoute, z } from "@hono/zod-openapi";
@@ -34,7 +33,7 @@ const listSessionsRoute = createRoute({
   tags: ["Admin — Sessions"],
   summary: "List sessions",
   description:
-    "Returns paginated active sessions with user info. Supports search by email or IP. Scoped to active organization.",
+    "Returns paginated sessions with user info. Supports search by email or IP. Scoped to active organization.",
   responses: {
     200: {
       description: "Session list",
@@ -277,18 +276,15 @@ adminSessions.openapi(deleteUserSessionsRoute, async (c) => {
     return c.json({ error: "not_available", message: "Session management requires managed auth mode.", requestId }, 404);
   }
 
-  // Verify the target user is a member of the active org
-  const membership = await internalQuery<{ userId: string }>(
-    `SELECT "userId" FROM member WHERE "userId" = $1 AND "organizationId" = $2 LIMIT 1`,
-    [userId, orgId],
-  );
-  if (membership.length === 0) {
-    return c.json({ error: "not_found", message: "User not found.", requestId }, 404);
-  }
-
+  // Only delete sessions where the user is a member of the active org
   const deleted = await internalQuery<{ id: string }>(
-    `DELETE FROM session WHERE "userId" = $1 RETURNING id`,
-    [userId],
+    `DELETE FROM session s
+     USING member m
+     WHERE s."userId" = $1
+       AND m."userId" = s."userId"
+       AND m."organizationId" = $2
+     RETURNING s.id`,
+    [userId, orgId],
   );
   if (deleted.length === 0) {
     return c.json({ error: "not_found", message: "No sessions found for this user.", requestId }, 404);

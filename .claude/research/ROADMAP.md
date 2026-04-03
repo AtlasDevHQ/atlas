@@ -769,11 +769,11 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
   - [x] Dynamic frontend API URL — runtime resolution from regionApiUrl (#1150, PR #1157)
   - [x] Multi-region Railway deployment — 3 regions live: api (us-west), api-eu (europe-west4), api-apac (asia-southeast1) (#1152)
   - [x] Cross-region request misrouting detection (#1153, PR #1159)
-  - [x] Region migration — cross-region data movement with export/import bundle (#1154)
+  - [x] Region migration — cross-region data movement with export/import bundle (#1154, PR #1168)
 - [x] Docs — semantic editor, plugin marketplace, platform plugin catalog guides (#1141, PR #1142)
 - [x] Fix flaky DuckDB ingest test — timeout bump (#1145, 71246b7c)
-- [x] Pre-launch SaaS smoke test — health endpoints, admin review, signup flow, regional tests (#1161). Filed #1163, #1164, #1165
-- [x] Competitive landscape + comparison pages refresh for 1.0 launch (#1162)
+- [x] Pre-launch SaaS smoke test — health endpoints, admin review, signup flow, regional tests (#1161, PR #1166). Filed #1163, #1164, #1165 (fixed in PR #1169)
+- [x] Competitive landscape + comparison pages refresh for 1.0 launch (#1162, PR #1167)
 
 ---
 

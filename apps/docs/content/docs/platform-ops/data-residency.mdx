@@ -26,7 +26,7 @@ When a workspace is created or assigned a region, Atlas routes its analytics dat
 |---------|-------------|
 | **Region** | A geographic identifier (e.g. `us-east`, `eu-west`) mapped to database URLs |
 | **Assignment** | A workspace is assigned to a region at creation time |
-| **Immutability** | Region cannot be changed after assignment (data migration is a separate process) |
+| **Migration** | Region can be changed via a cross-region data migration (see below) |
 | **Default region** | New workspaces get the configured default region if none is specified |
 
 ## Configuration
@@ -119,7 +119,7 @@ curl -X POST http://localhost:3001/api/v1/platform/residency/workspaces/$WORKSPA
 ```
 
 <Callout type="warn">
-Region assignment is **immutable**. Once a workspace is assigned to a region, it cannot be changed. Plan region assignments carefully. Changing a workspace's region requires a data migration (not yet supported).
+Changing a workspace's region triggers a cross-region data migration. See [Region Migration](#region-migration) below.
 </Callout>
 
 ### Get Workspace Region
@@ -165,9 +165,92 @@ Set `ATLAS_STRICT_ROUTING=true` (or `residency.strictRouting: true` in config) t
 }
 ```
 
+## Region Migration
+
+When a workspace needs to move to a different region, Atlas performs a cross-region data migration. The migration moves conversations, semantic entities, learned patterns, and org-scoped settings from the source region to the target.
+
+### How it works
+
+The migration runs in 4 phases:
+
+1. **Export** — workspace data is extracted from the source region's internal database into an export bundle
+2. **Transfer** — the bundle is sent to the target region's API via an internal service-to-service endpoint
+3. **Cutover** — the workspace's region assignment is updated and caches are flushed
+4. **Cleanup** — source data is marked for removal after a 7-day grace period
+
+During migration, the workspace is **read-only** — write operations (new conversations, settings changes) return `409 Workspace Migrating` until the migration completes.
+
+### Request a migration
+
+```bash
+curl -X POST http://localhost:3001/api/v1/admin/residency/migrate \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"targetRegion": "eu-west"}'
+```
+
+Rate limited to one migration per 30 days per workspace. The migration runs in the background — poll `GET /api/v1/admin/residency/migration` for status.
+
+### Check migration status
+
+```bash
+curl http://localhost:3001/api/v1/admin/residency/migration \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+### What moves
+
+| Data | Strategy |
+|------|----------|
+| Conversations + messages | Exported and imported via bundle |
+| Semantic entities (DB-backed) | Exported and imported via bundle |
+| Learned patterns | Exported and imported via bundle |
+| Org-scoped settings | Exported and imported via bundle |
+| Analytics datasource | Customer-managed (not migrated) |
+| Auth data (users, sessions) | Global — stays in place |
+
+### Configuration
+
+Cross-region transfer requires:
+
+- `ATLAS_INTERNAL_SECRET` — shared secret across all regional API instances for service-to-service auth
+- `apiUrl` on each region config — the target region's public API endpoint
+
+```typescript
+residency: {
+  regions: {
+    "us-east": {
+      label: "US East",
+      databaseUrl: "postgresql://...",
+      apiUrl: "https://api-us.useatlas.dev",  // required for migration
+    },
+    "eu-west": {
+      label: "EU West",
+      databaseUrl: "postgresql://...",
+      apiUrl: "https://api-eu.useatlas.dev",
+    },
+  },
+  defaultRegion: "us-east",
+}
+```
+
+### Retry and cancel
+
+Failed migrations can be retried. Pending migrations can be cancelled:
+
+```bash
+# Retry a failed migration
+curl -X POST http://localhost:3001/api/v1/admin/residency/migrate/$MIGRATION_ID/retry \
+  -H "Authorization: Bearer $TOKEN"
+
+# Cancel a pending migration
+curl -X POST http://localhost:3001/api/v1/admin/residency/migrate/$MIGRATION_ID/cancel \
+  -H "Authorization: Bearer $TOKEN"
+```
+
 ## Limitations
 
-- Region assignment is immutable (no cross-region migration yet)
 - Region health checks are not yet implemented (all regions report as healthy)
 - Requires enterprise license
 - Region configuration changes require server restart
+- One migration per workspace per 30 days

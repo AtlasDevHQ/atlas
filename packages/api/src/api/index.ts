@@ -255,6 +255,18 @@ try {
   );
 }
 
+// Internal cross-region migration import — service-to-service auth via ATLAS_INTERNAL_SECRET.
+try {
+  const { internalMigrate } = await import("./routes/admin-migrate");
+  app.route("/api/v1/internal/migrate", internalMigrate);
+  log.info("Internal migration routes enabled");
+} catch (err) {
+  log.error(
+    { err: err instanceof Error ? err : new Error(String(err)) },
+    "Failed to load internal migration routes",
+  );
+}
+
 // Platform admin routes — cross-tenant management (gated to platform_admin role).
 try {
   const { platformAdmin } = await import("./routes/platform-admin");

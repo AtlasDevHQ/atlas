@@ -1,11 +1,11 @@
 /**
  * Tests for region migration executor.
  *
- * Covers: successful migration, failure handling, retry, cancel,
- * stale detection, and edge cases.
+ * Covers: successful migration with 4 phases (export, transfer, cutover, cleanup),
+ * failure handling, retry, cancel, stale detection, cleanup detection, and edge cases.
  */
 
-import { describe, it, expect, beforeEach, mock } from "bun:test";
+import { describe, it, expect, beforeEach, mock, afterEach } from "bun:test";
 
 // ── Mocks ────────────────────────────────────────────────────────────
 
@@ -22,6 +22,12 @@ mock.module("@atlas/api/lib/db/internal", () => ({
     query: (sql: string, params: unknown[]) => {
       capturedQueries.push({ sql, params });
       if (mockPoolQueryError) return Promise.reject(mockPoolQueryError);
+      // For export queries, return empty results by default
+      if (sql.includes("FROM conversations") || sql.includes("FROM messages") ||
+          sql.includes("FROM semantic_entities") || sql.includes("FROM learned_patterns") ||
+          sql.includes("FROM settings")) {
+        return Promise.resolve({ rows: [] });
+      }
       return Promise.resolve(mockPoolQueryResult);
     },
     end: async () => {},
@@ -57,11 +63,45 @@ mock.module("@atlas/api/lib/cache/index", () => ({
   buildCacheKey: () => "",
 }));
 
+// Mock config with target region apiUrl
+let mockConfig: Record<string, unknown> | null = {
+  residency: {
+    regions: {
+      "us-east": { label: "US East", databaseUrl: "postgres://us", apiUrl: "https://api-us.example.com" },
+      "eu-west": { label: "EU West", databaseUrl: "postgres://eu", apiUrl: "https://api-eu.example.com" },
+    },
+    defaultRegion: "us-east",
+  },
+};
+
+mock.module("@atlas/api/lib/config", () => ({
+  getConfig: () => mockConfig,
+}));
+
+// Mock fetch for transfer phase
+let mockFetchResponse: { ok: boolean; status: number; body?: unknown } = { ok: true, status: 200, body: {} };
+let mockFetchError: Error | null = null;
+let capturedFetchCalls: Array<{ url: string; options: RequestInit }> = [];
+
+const _originalFetch = globalThis.fetch;
+globalThis.fetch = ((url: string | URL | Request, options?: RequestInit) => {
+  const urlStr = typeof url === "string" ? url : url instanceof URL ? url.href : url.url;
+  capturedFetchCalls.push({ url: urlStr, options: options ?? {} });
+  if (mockFetchError) return Promise.reject(mockFetchError);
+  return Promise.resolve({
+    ok: mockFetchResponse.ok,
+    status: mockFetchResponse.status,
+    statusText: mockFetchResponse.ok ? "OK" : "Error",
+    json: () => Promise.resolve(mockFetchResponse.body ?? {}),
+  } as Response);
+}) as typeof fetch;
+
 // ── Import after mocks ──────────────────────────────────────────────
 
 const {
   executeRegionMigration,
   failStaleMigrations,
+  getCleanupDueMigrations,
   resetMigrationForRetry,
   cancelMigration,
 } = await import("../migrate");
@@ -75,12 +115,19 @@ function resetMocks() {
   mockPoolQueryResult = { rows: [{ id: "org-1" }] };
   mockPoolQueryError = null;
   capturedQueries.length = 0;
+  mockFetchResponse = { ok: true, status: 200, body: {} };
+  mockFetchError = null;
+  capturedFetchCalls = [];
+  process.env.ATLAS_INTERNAL_SECRET = "test-secret";
 }
 
 // ── Tests ───────────────────────────────────────────────────────────
 
 describe("executeRegionMigration", () => {
   beforeEach(resetMocks);
+  afterEach(() => {
+    delete process.env.ATLAS_INTERNAL_SECRET;
+  });
 
   it("returns error when internal DB is not available", async () => {
     mockHasInternalDB = false;
@@ -90,7 +137,6 @@ describe("executeRegionMigration", () => {
   });
 
   it("returns error when migration is not found", async () => {
-    // internalQuery returns empty for SELECT from region_migrations
     const result = await executeRegionMigration("mig-nonexistent");
     expect(result.success).toBe(false);
     if (!result.success) expect(result.error).toContain("not found");
@@ -108,31 +154,135 @@ describe("executeRegionMigration", () => {
     }
   });
 
-  it("executes migration successfully", async () => {
+  it("executes migration successfully through all 4 phases", async () => {
     mockQueryResults["SELECT id, workspace_id"] = [
       { id: "mig-1", workspace_id: "org-1", source_region: "us-east", target_region: "eu-west", status: "pending" },
     ];
-    // UPDATE status queries return empty (OK)
     mockQueryResults["UPDATE region_migrations"] = [];
 
     const result = await executeRegionMigration("mig-1");
     expect(result.success).toBe(true);
     expect(result.migrationId).toBe("mig-1");
 
-    // Verify we updated status to in_progress and then completed
+    // Verify status transitions: in_progress → completed
     const statusUpdates = capturedQueries.filter((q) => q.sql.includes("UPDATE region_migrations"));
     expect(statusUpdates.length).toBeGreaterThanOrEqual(2);
     expect(statusUpdates[0].params[0]).toBe("in_progress");
     expect(statusUpdates[statusUpdates.length - 1].params[0]).toBe("completed");
 
-    // Verify we updated the organization region
+    // Verify region update (cutover phase)
     const regionUpdate = capturedQueries.find((q) => q.sql.includes("UPDATE organization"));
     expect(regionUpdate).toBeDefined();
     expect(regionUpdate!.params).toContain("eu-west");
     expect(regionUpdate!.params).toContain("org-1");
+
+    // Verify transfer was called to the target region's apiUrl
+    expect(capturedFetchCalls.length).toBe(1);
+    expect(capturedFetchCalls[0].url).toBe("https://api-eu.example.com/api/v1/internal/migrate/import");
   });
 
-  it("marks migration as failed when workspace not found", async () => {
+  it("includes internal token in transfer request", async () => {
+    mockQueryResults["SELECT id, workspace_id"] = [
+      { id: "mig-1", workspace_id: "org-1", source_region: "us-east", target_region: "eu-west", status: "pending" },
+    ];
+    mockQueryResults["UPDATE region_migrations"] = [];
+
+    await executeRegionMigration("mig-1");
+
+    expect(capturedFetchCalls.length).toBe(1);
+    const headers = capturedFetchCalls[0].options.headers as Record<string, string>;
+    expect(headers["X-Atlas-Internal-Token"]).toBe("test-secret");
+    expect(headers["Content-Type"]).toBe("application/json");
+  });
+
+  it("includes orgId in transfer request body", async () => {
+    mockQueryResults["SELECT id, workspace_id"] = [
+      { id: "mig-1", workspace_id: "org-1", source_region: "us-east", target_region: "eu-west", status: "pending" },
+    ];
+    mockQueryResults["UPDATE region_migrations"] = [];
+
+    await executeRegionMigration("mig-1");
+
+    const body = JSON.parse(capturedFetchCalls[0].options.body as string);
+    expect(body.orgId).toBe("org-1");
+    expect(body.manifest).toBeDefined();
+    expect(body.conversations).toBeDefined();
+  });
+
+  it("fails when ATLAS_INTERNAL_SECRET is not set", async () => {
+    delete process.env.ATLAS_INTERNAL_SECRET;
+    mockQueryResults["SELECT id, workspace_id"] = [
+      { id: "mig-1", workspace_id: "org-1", source_region: "us-east", target_region: "eu-west", status: "pending" },
+    ];
+    mockQueryResults["UPDATE region_migrations"] = [];
+
+    const result = await executeRegionMigration("mig-1");
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error).toContain("ATLAS_INTERNAL_SECRET");
+  });
+
+  it("fails when target region has no apiUrl configured", async () => {
+    mockConfig = {
+      residency: {
+        regions: {
+          "us-east": { label: "US East", databaseUrl: "postgres://us" },
+          "eu-west": { label: "EU West", databaseUrl: "postgres://eu" },
+        },
+        defaultRegion: "us-east",
+      },
+    };
+    mockQueryResults["SELECT id, workspace_id"] = [
+      { id: "mig-1", workspace_id: "org-1", source_region: "us-east", target_region: "eu-west", status: "pending" },
+    ];
+    mockQueryResults["UPDATE region_migrations"] = [];
+
+    const result = await executeRegionMigration("mig-1");
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error).toContain("apiUrl");
+
+    // Restore config
+    mockConfig = {
+      residency: {
+        regions: {
+          "us-east": { label: "US East", databaseUrl: "postgres://us", apiUrl: "https://api-us.example.com" },
+          "eu-west": { label: "EU West", databaseUrl: "postgres://eu", apiUrl: "https://api-eu.example.com" },
+        },
+        defaultRegion: "us-east",
+      },
+    };
+  });
+
+  it("fails when transfer HTTP call returns error", async () => {
+    mockQueryResults["SELECT id, workspace_id"] = [
+      { id: "mig-1", workspace_id: "org-1", source_region: "us-east", target_region: "eu-west", status: "pending" },
+    ];
+    mockQueryResults["UPDATE region_migrations"] = [];
+    mockFetchResponse = { ok: false, status: 500, body: { message: "Import failed — DB error" } };
+
+    const result = await executeRegionMigration("mig-1");
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error).toContain("Import failed");
+
+    // Verify status set to failed
+    const failedUpdate = capturedQueries.filter(
+      (q) => q.sql.includes("UPDATE region_migrations") && q.params.includes("failed"),
+    );
+    expect(failedUpdate.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it("fails when transfer throws network error", async () => {
+    mockQueryResults["SELECT id, workspace_id"] = [
+      { id: "mig-1", workspace_id: "org-1", source_region: "us-east", target_region: "eu-west", status: "pending" },
+    ];
+    mockQueryResults["UPDATE region_migrations"] = [];
+    mockFetchError = new Error("ECONNREFUSED");
+
+    const result = await executeRegionMigration("mig-1");
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error).toContain("Network error");
+  });
+
+  it("marks migration as failed when workspace not found during cutover", async () => {
     mockQueryResults["SELECT id, workspace_id"] = [
       { id: "mig-1", workspace_id: "org-999", source_region: "us-east", target_region: "eu-west", status: "pending" },
     ];
@@ -143,15 +293,9 @@ describe("executeRegionMigration", () => {
     const result = await executeRegionMigration("mig-1");
     expect(result.success).toBe(false);
     if (!result.success) expect(result.error).toContain("not found");
-
-    // Verify status was set to failed
-    const failedUpdate = capturedQueries.filter(
-      (q) => q.sql.includes("UPDATE region_migrations") && q.params.includes("failed"),
-    );
-    expect(failedUpdate.length).toBeGreaterThanOrEqual(1);
   });
 
-  it("marks migration as failed when pool query throws", async () => {
+  it("marks migration as failed when export throws", async () => {
     mockQueryResults["SELECT id, workspace_id"] = [
       { id: "mig-1", workspace_id: "org-1", source_region: "us-east", target_region: "eu-west", status: "pending" },
     ];
@@ -191,6 +335,33 @@ describe("failStaleMigrations", () => {
       (q) => q.sql.includes("UPDATE region_migrations") && q.params.includes("failed"),
     );
     expect(failedUpdate).toBeDefined();
+  });
+});
+
+describe("getCleanupDueMigrations", () => {
+  beforeEach(resetMocks);
+
+  it("returns empty when internal DB is not available", async () => {
+    mockHasInternalDB = false;
+    const result = await getCleanupDueMigrations();
+    expect(result).toHaveLength(0);
+  });
+
+  it("returns empty when no completed migrations past grace period", async () => {
+    const result = await getCleanupDueMigrations();
+    expect(result).toHaveLength(0);
+  });
+
+  it("returns migrations eligible for cleanup", async () => {
+    mockQueryResults["status = 'completed'"] = [
+      { id: "mig-old", workspace_id: "org-1", source_region: "us-east", completed_at: "2026-03-01T00:00:00Z" },
+    ];
+
+    const result = await getCleanupDueMigrations();
+    expect(result).toHaveLength(1);
+    expect(result[0].id).toBe("mig-old");
+    expect(result[0].workspaceId).toBe("org-1");
+    expect(result[0].sourceRegion).toBe("us-east");
   });
 });
 

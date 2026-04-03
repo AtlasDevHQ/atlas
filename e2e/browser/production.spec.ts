@@ -45,8 +45,8 @@ test.describe("Production Smoke Tests", () => {
     expect(response).not.toBeNull();
     expect(response!.status()).toBeLessThan(400);
 
-    // Signup page should have an email input and a "Sign up" or "Create account" button
     await expect(page.locator('input[type="email"]')).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByRole("button", { name: /create account/i })).toBeVisible();
   });
 
   test("API health endpoint returns ok", async ({ request }) => {
@@ -84,6 +84,7 @@ test.describe("Regional Health", () => {
       expect(body.status).toBe("ok");
       expect(body.region).toBe(expectedRegion);
       expect(body.checks).toBeDefined();
+      expect(body.checks.auth.enabled).toBe(true);
       expect(body.components).toBeDefined();
     });
   }
@@ -104,7 +105,8 @@ test.describe("Regional Health", () => {
       return;
     }
 
-    // All reachable regions should have the same top-level keys
+    // All reachable regions should share the same top-level keys
+    // (excluding per-instance fields: region, misroutedRequests, warnings, brandColor)
     const keySet = reachable.map((r) => Object.keys(r).filter((k) => k !== "region" && k !== "misroutedRequests" && k !== "warnings" && k !== "brandColor").sort().join(","));
     const first = keySet[0];
     for (const keys of keySet.slice(1)) {

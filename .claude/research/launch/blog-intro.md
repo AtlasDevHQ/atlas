@@ -72,7 +72,7 @@ Build your own with `bun create @useatlas/plugin` and the Plugin SDK.
 
 ### Deploy Anywhere
 
-One-click deploy to Railway or Vercel. Docker image for self-hosted. Or scaffold a new project with `bun create atlas-agent` and customize everything.
+One-click deploy to Railway or Vercel. Docker image for self-hosted. Or scaffold a new project with `bun create @useatlas` and customize everything.
 
 Atlas is a Hono API server + Next.js frontend. It runs on Bun, deploys as two containers (API + optional sandbox sidecar), and connects to your existing Postgres, MySQL, or any supported datasource.
 
@@ -90,4 +90,4 @@ Atlas is open source under MIT. We think text-to-SQL is infrastructure -- it sho
 - Live demo: [demo.useatlas.dev](https://demo.useatlas.dev)
 - Docs: [docs.useatlas.dev](https://docs.useatlas.dev)
 - GitHub: [github.com/AtlasDevHQ/atlas](https://github.com/AtlasDevHQ/atlas)
-- Get started: `bun create atlas-agent`
+- Get started: `bun create @useatlas`

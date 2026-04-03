@@ -310,7 +310,7 @@ These are already partially implemented in the codebase — reserve status, DB s
 
 ### Tenant Provisioning
 
-- [x] Self-serve signup flow (#644, PR #674) — email/OAuth signup → workspace creation → connect database wizard. No CLI, no `atlas init`, no YAML editing. The web equivalent of `bun create atlas-agent` but for non-developers
+- [x] Self-serve signup flow (#644, PR #674) — email/OAuth signup → workspace creation → connect database wizard. No CLI, no `atlas init`, no YAML editing. The web equivalent of `bun create @useatlas` but for non-developers
 - [x] Workspace lifecycle (#645, PR #673) — create, suspend, delete. Cascading cleanup of connections, conversations, semantic layers, cached results
 - [x] Guided semantic layer setup wizard (#649, PR #681) — web UI replacement for `atlas init`. Profile database, review generated entities, edit descriptions, preview agent behavior. Shared profiler library extracted from CLI
 
@@ -758,7 +758,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] SLA commitments — uptime guarantee, query latency targets, support response times (#872, PR #1147)
 - [x] Terms of service, privacy policy, DPA for enterprise (#873, PR #1148)
 - [x] Launch content — blog post, Show HN, comparison pages updated (#874, PR #924)
-- [ ] Launch content follow-up — social media assets and demo video (#954)
+- [x] Launch content follow-up — social media assets and demo video (#954)
 - [x] Migration tooling — self-hosted to hosted (export/import conversations, semantic layers, settings) (#875, PR #1143)
 - [x] Documentation for hosted users — separate onboarding flow from self-hosted docs (#876, PR #1146)
 - [x] Status page — public health dashboard (#877, PR #921)

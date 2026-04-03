@@ -18,7 +18,7 @@ Docs: https://docs.useatlas.dev
 
 Quick start:
 
-    bun create atlas-agent my-app --demo
+    bun create @useatlas my-app --demo
     cd my-app && bun run dev
 
 Would love feedback on the semantic layer approach vs RAG-based training (like Vanna) — we think explicit YAML definitions are more auditable and predictable, but the trade-off is more upfront work (though atlas init automates the initial generation).

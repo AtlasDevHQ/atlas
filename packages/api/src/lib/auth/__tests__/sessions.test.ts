@@ -22,7 +22,7 @@ const mockAuthenticateRequest: Mock<(req: Request) => Promise<unknown>> = mock(
     Promise.resolve({
       authenticated: true,
       mode: "managed",
-      user: { id: "admin-1", mode: "managed", label: "admin@test.com", role: "admin" },
+      user: { id: "admin-1", mode: "managed", label: "admin@test.com", role: "admin", activeOrganizationId: "org-test-1" },
     }),
 );
 
@@ -37,6 +37,19 @@ mock.module("@atlas/api/lib/auth/middleware", () => ({
   resetRateLimits: mock(() => {}),
   _stopCleanup: mock(() => {}),
   _setValidatorOverrides: mock(() => {}),
+}));
+
+mock.module("@atlas/api/lib/residency/misrouting", () => ({
+  detectMisrouting: mock(async () => null),
+  isStrictRoutingEnabled: mock(() => false),
+  getMisroutedCount: mock(() => 0),
+  _resetMisroutedCount: mock(() => {}),
+  _resetRegionCache: mock(() => {}),
+  getApiRegion: mock(() => null),
+}));
+
+mock.module("@atlas/api/lib/residency/readonly", () => ({
+  isWorkspaceMigrating: mock(async () => false),
 }));
 
 mock.module("@atlas/api/lib/auth/detect", () => ({
@@ -235,7 +248,7 @@ describe("Admin session routes", () => {
       Promise.resolve({
         authenticated: true,
         mode: "managed",
-        user: { id: "admin-1", mode: "managed", label: "admin@test.com", role: "admin" },
+        user: { id: "admin-1", mode: "managed", label: "admin@test.com", role: "admin", activeOrganizationId: "org-test-1" },
       }),
     );
   });

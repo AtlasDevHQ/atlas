@@ -803,7 +803,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 
 ### Open
 
-- [ ] Wrap all admin-connections routes in runHandler (#1205)
+- [x] Wrap all admin-connections routes in runHandler (#1205)
 
 ---
 

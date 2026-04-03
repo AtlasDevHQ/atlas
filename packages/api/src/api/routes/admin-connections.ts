@@ -328,7 +328,7 @@ adminConnections.openapi(getPoolMetricsRoute, async (c) => runHandler(c, "get po
 }));
 
 // GET /pool/orgs — org pool metrics (workspace admins restricted to own org)
-adminConnections.openapi(getOrgPoolMetricsRoute, async (c) => {
+adminConnections.openapi(getOrgPoolMetricsRoute, async (c) => runHandler(c, "get org pool metrics", async () => {
   const { requestId, orgId } = c.get("orgContext");
   const authResult = c.get("authResult");
   const isPlatformAdmin = authResult.user?.role === "platform_admin";
@@ -347,10 +347,10 @@ adminConnections.openapi(getOrgPoolMetricsRoute, async (c) => {
     log.error({ err: err instanceof Error ? err : new Error(String(err)), requestId }, "Failed to retrieve org pool metrics");
     return c.json({ error: "metrics_failed", message: err instanceof Error ? err.message : "Failed to retrieve metrics", requestId }, 500);
   }
-});
+}));
 
 // POST /pool/orgs/:orgId/drain — drain org pools (restricted to own org for workspace admins)
-adminConnections.openapi(drainOrgPoolRoute, async (c) => {
+adminConnections.openapi(drainOrgPoolRoute, async (c) => runHandler(c, "drain org pools", async () => {
   const { requestId, orgId } = c.get("orgContext");
   const authResult = c.get("authResult");
   const isPlatformAdmin = authResult.user?.role === "platform_admin";
@@ -369,10 +369,10 @@ adminConnections.openapi(drainOrgPoolRoute, async (c) => {
     log.error({ err: err instanceof Error ? err : new Error(String(err)), orgId: targetOrgId, requestId }, "Org pool drain failed");
     return c.json({ error: "drain_failed", message: err instanceof Error ? err.message : "Org drain failed", requestId }, 500);
   }
-});
+}));
 
 // POST /:id/drain — drain a specific connection pool (must be visible to org)
-adminConnections.openapi(drainConnectionPoolRoute, async (c) => {
+adminConnections.openapi(drainConnectionPoolRoute, async (c) => runHandler(c, "drain connection pool", async () => {
   const { requestId, orgId } = c.get("orgContext");
   const authResult = c.get("authResult");
   const isPlatformAdmin = authResult.user?.role === "platform_admin";
@@ -399,10 +399,10 @@ adminConnections.openapi(drainConnectionPoolRoute, async (c) => {
     log.error({ err: err instanceof Error ? err : new Error(String(err)), connectionId: id, requestId }, "Pool drain failed");
     return c.json({ error: "drain_failed", message: err instanceof Error ? err.message : "Drain failed", requestId }, 500);
   }
-});
+}));
 
 // POST /test — test a connection URL (transient, no org scoping needed)
-adminConnections.openapi(testConnectionRoute, async (c) => {
+adminConnections.openapi(testConnectionRoute, async (c) => runHandler(c, "test connection", async () => {
   const { requestId } = c.get("orgContext");
 
   const body = await c.req.json().catch((err: unknown) => {
@@ -446,7 +446,7 @@ adminConnections.openapi(testConnectionRoute, async (c) => {
       connections.unregister(tempId);
     }
   }
-});
+}));
 
 // POST /:id/test — health check existing connection (must be visible to org)
 adminConnections.openapi(testExistingConnectionRoute, async (c) => runHandler(c, "health check connection", async () => {
@@ -470,7 +470,7 @@ adminConnections.openapi(testExistingConnectionRoute, async (c) => runHandler(c,
 }));
 
 // POST / — create connection scoped to active org
-adminConnections.openapi(createConnectionRoute, async (c) => {
+adminConnections.openapi(createConnectionRoute, async (c) => runHandler(c, "create connection", async () => {
   const { requestId, orgId } = c.get("orgContext");
   const authResult = c.get("authResult");
 
@@ -561,10 +561,10 @@ adminConnections.openapi(createConnectionRoute, async (c) => {
     description: typeof description === "string" ? description : null,
     maskedUrl: maskConnectionUrl(url),
   }, 201);
-});
+}));
 
 // PUT /:id — update connection (must belong to org)
-adminConnections.openapi(updateConnectionRoute, async (c) => {
+adminConnections.openapi(updateConnectionRoute, async (c) => runHandler(c, "update connection", async () => {
   const { requestId, orgId } = c.get("orgContext");
   const authResult = c.get("authResult");
   const isPlatformAdmin = authResult.user?.role === "platform_admin";
@@ -707,10 +707,10 @@ adminConnections.openapi(updateConnectionRoute, async (c) => {
 
   log.info({ requestId, connectionId: id, urlChanged, actorId: authResult.user?.id }, "Connection updated");
   return c.json({ id, dbType, description: newDescription, maskedUrl: maskConnectionUrl(newUrl) }, 200);
-});
+}));
 
 // DELETE /:id — delete connection (must belong to org)
-adminConnections.openapi(deleteConnectionRoute, async (c) => {
+adminConnections.openapi(deleteConnectionRoute, async (c) => runHandler(c, "delete connection", async () => {
   const { requestId, orgId } = c.get("orgContext");
   const authResult = c.get("authResult");
   const isPlatformAdmin = authResult.user?.role === "platform_admin";
@@ -779,7 +779,7 @@ adminConnections.openapi(deleteConnectionRoute, async (c) => {
 
   log.info({ requestId, connectionId: id, actorId: authResult.user?.id }, "Connection deleted");
   return c.json({ success: true }, 200);
-});
+}));
 
 // GET /:id — get connection detail (must be visible to org)
 adminConnections.openapi(getConnectionRoute, async (c) => runHandler(c, "get connection detail", async () => {

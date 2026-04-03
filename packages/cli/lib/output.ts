@@ -1,7 +1,7 @@
 /**
  * Output formatting utilities for CLI command handlers.
  *
- * Used by handleQuery for table, CSV, and cell formatting.
+ * Table rendering, CSV formatting, and cell value display.
  */
 
 /**

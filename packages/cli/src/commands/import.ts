@@ -1,5 +1,5 @@
 /**
- * atlas import -- Import semantic layer YAML files from disk into the internal DB.
+ * atlas import -- Request the Atlas API to sync semantic layer YAML from disk into the internal DB.
  *
  * Extracted from atlas.ts to reduce monolith size.
  */

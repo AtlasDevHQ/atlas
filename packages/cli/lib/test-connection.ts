@@ -176,8 +176,10 @@ export async function testDatabaseConnection(
     }
 
     case "snowflake": {
-      const { pool: testPool } = await createSnowflakePool(connStr, 1);
+      let testPool: SnowflakePool | undefined;
       try {
+        const created = await createSnowflakePool(connStr, 1);
+        testPool = created.pool;
         const result = await snowflakeQuery(
           testPool,
           "SELECT CURRENT_VERSION() as V",
@@ -189,17 +191,19 @@ export async function testDatabaseConnection(
           { cause: err },
         );
       } finally {
-        await testPool.drain().catch((drainErr: unknown) => {
-          console.warn(
-            `[atlas] Snowflake pool drain warning: ${drainErr instanceof Error ? drainErr.message : String(drainErr)}`,
-          );
-        });
-        try {
-          await testPool.clear();
-        } catch (clearErr: unknown) {
-          console.warn(
-            `[atlas] Snowflake pool clear warning: ${clearErr instanceof Error ? clearErr.message : String(clearErr)}`,
-          );
+        if (testPool) {
+          await testPool.drain().catch((drainErr: unknown) => {
+            console.warn(
+              `[atlas] Snowflake pool drain warning: ${drainErr instanceof Error ? drainErr.message : String(drainErr)}`,
+            );
+          });
+          try {
+            await testPool.clear();
+          } catch (clearErr: unknown) {
+            console.warn(
+              `[atlas] Snowflake pool clear warning: ${clearErr instanceof Error ? clearErr.message : String(clearErr)}`,
+            );
+          }
         }
       }
     }
@@ -210,11 +214,13 @@ export async function testDatabaseConnection(
       );
       const duckConfig = parseDuckDBUrl(connStr);
       const DuckDBInstance = await loadDuckDB();
-      const testInstance = await DuckDBInstance.create(duckConfig.path, {
-        access_mode: "READ_ONLY",
-      });
-      const testConn = await testInstance.connect();
+      let testInstance: Awaited<ReturnType<typeof DuckDBInstance.create>> | undefined;
+      let testConn: Awaited<ReturnType<Exclude<typeof testInstance, undefined>["connect"]>> | undefined;
       try {
+        testInstance = await DuckDBInstance.create(duckConfig.path, {
+          access_mode: "READ_ONLY",
+        });
+        testConn = await testInstance.connect();
         const reader = await testConn.runAndReadAll(
           "SELECT version() as v",
         );
@@ -227,8 +233,8 @@ export async function testDatabaseConnection(
           { cause: err },
         );
       } finally {
-        testConn.disconnectSync();
-        testInstance.closeSync();
+        if (testConn) testConn.disconnectSync();
+        if (testInstance) testInstance.closeSync();
       }
     }
 
@@ -246,7 +252,11 @@ export async function testDatabaseConnection(
           { cause: err },
         );
       } finally {
-        await source.close();
+        await source.close().catch((closeErr: unknown) => {
+          console.warn(
+            `[atlas] Salesforce client cleanup warning: ${closeErr instanceof Error ? closeErr.message : String(closeErr)}`,
+          );
+        });
       }
     }
 

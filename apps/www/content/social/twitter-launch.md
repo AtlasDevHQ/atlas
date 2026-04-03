@@ -27,7 +27,7 @@ Atlas gives the AI actual business context instead of column names.
 
 ## Tweet 3 (Semantic layer)
 
-How: a YAML semantic layer that describes what your tables and columns actually mean — business definitions, joins, metrics, sample values.
+How: a YAML semantic layer that describes what your tables and columns mean — business definitions, joins, metrics, sample values.
 
 `atlas init` auto-generates it from your database. You version it in git and review changes in PRs.
 
@@ -64,7 +64,7 @@ What ships in 1.0:
 
 Deploy anywhere:
 
-- `bun create atlas-agent my-app` for local dev
+- `bun create @useatlas my-app` for local dev
 - Docker, Railway, or Vercel for production
 - Atlas Cloud (app.useatlas.dev) if you don't want infrastructure
 

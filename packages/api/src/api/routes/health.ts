@@ -21,6 +21,7 @@ import { getExploreBackendType, getActiveSandboxPluginId } from "@atlas/api/lib/
 import { detectAuthMode } from "@atlas/api/lib/auth/detect";
 import { SENSITIVE_PATTERNS } from "@atlas/api/lib/security";
 import { getSetting } from "@atlas/api/lib/settings";
+import { getApiRegion, getMisroutedCount } from "@atlas/api/lib/residency/misrouting";
 
 const log = createLogger("health");
 
@@ -43,6 +44,8 @@ const ComponentHealthSchema = z.object({
 
 export const HealthResponseSchema = z.object({
   status: z.enum(["ok", "degraded", "error"]),
+  region: z.string().optional(),
+  misroutedRequests: z.number().int().nonnegative().optional(),
   warnings: z.array(z.string()).optional(),
   brandColor: z.string().optional(),
   components: z.object({
@@ -333,8 +336,14 @@ health.openapi(healthRoute, async (c) => {
     // Brand color for frontend theming (public, no auth required)
     const brandColor = getSetting("ATLAS_BRAND_COLOR");
 
+    // Region identity for monitoring / misrouting detection
+    const region = getApiRegion();
+    const misroutedRequests = getMisroutedCount();
+
     const response = {
       status,
+      ...(region && { region }),
+      ...(misroutedRequests > 0 && { misroutedRequests }),
       ...(warnings.length > 0 && { warnings }),
       ...(brandColor && { brandColor }),
       components,

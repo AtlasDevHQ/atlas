@@ -146,6 +146,25 @@ When a workspace has a region assigned:
 
 The routing is transparent to the agent and end users — the same API endpoints work regardless of region.
 
+## Misrouting Detection
+
+When running multiple regional API instances, each instance identifies itself via the `ATLAS_API_REGION` env var (or falls back to `residency.defaultRegion` from config). If a request arrives from a workspace assigned to a different region, Atlas logs a warning with the request ID, org ID, expected region, and actual region.
+
+The `/api/health` endpoint includes a `region` field showing the instance's identity, plus a `misroutedRequests` counter when any misrouted requests have been detected.
+
+### Strict mode
+
+Set `ATLAS_STRICT_ROUTING=true` (or `residency.strictRouting: true` in config) to reject misrouted requests with `421 Misdirected Request`. The response includes a `correctApiUrl` hint (from the region's `apiUrl` config) so the client can redirect:
+
+```json
+{
+  "error": "misdirected_request",
+  "correctApiUrl": "https://api-eu.useatlas.dev",
+  "expectedRegion": "eu-west",
+  "actualRegion": "us-west"
+}
+```
+
 ## Limitations
 
 - Region assignment is immutable (no cross-region migration yet)

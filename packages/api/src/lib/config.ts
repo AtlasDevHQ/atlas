@@ -241,6 +241,8 @@ const ResidencyConfigSchema = z.object({
   ),
   /** Default region for new workspaces. Must be a key in the regions map. */
   defaultRegion: z.string().min(1),
+  /** When true, misrouted requests receive 421 Misdirected Request instead of a warning log. */
+  strictRouting: z.boolean().default(false),
 }).refine(
   (cfg) => cfg.defaultRegion in cfg.regions,
   { message: "defaultRegion must be one of the configured regions", path: ["defaultRegion"] },

@@ -823,6 +823,7 @@ export default defineConfig({
 |-------|------|----------|---------|-------------|
 | `regions` | `Record<string, RegionConfig>` | Yes | — | Map of region identifiers to database configuration. At least one region required |
 | `defaultRegion` | `string` | Yes | — | Default region for new workspaces. Must be a key in the `regions` map |
+| `strictRouting` | `boolean` | No | `false` | When `true`, misrouted requests receive `421 Misdirected Request` instead of a warning log. Also configurable via `ATLAS_STRICT_ROUTING` env var |
 
 **RegionConfig fields:**
 
@@ -831,6 +832,7 @@ export default defineConfig({
 | `label` | `string` | Yes | — | Human-readable region name for the admin console |
 | `databaseUrl` | `string` | Yes | — | Connection string for the region's internal database |
 | `datasourceUrl` | `string` | No | — | Analytics datasource override for the region. When unset, uses the default datasource |
+| `apiUrl` | `string` | No | — | Public API endpoint for this region (e.g. `https://api-eu.useatlas.dev`). Used in `421 Misdirected Request` responses to redirect clients to the correct region |
 
 ---
 

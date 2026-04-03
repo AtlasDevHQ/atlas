@@ -4,7 +4,10 @@
  * Validates that:
  * 1. Creating a connection stores org_id in the DB
  * 2. Workspace admins only see connections belonging to their org
- * 3. Workspace admins cannot update/delete connections from another org (404)
+ * 3. Workspace admins cannot update/delete/health-check/drain connections from another org
+ * 3b. Health-check endpoint respects visibility filter
+ * 3c. Connection drain endpoint respects visibility filter
+ * 3d. Org drain endpoint restricts workspace admins to their own org
  * 4. Platform admins can see/modify all connections regardless of org
  * 5. getVisibleConnectionIds returns the correct set for a given org
  */
@@ -97,6 +100,7 @@ mock.module("@atlas/api/lib/db/connection", () =>
       list: () => ["default", "warehouse", "other-org-conn"],
       getForOrg: () => null,
       drain: mock(() => Promise.resolve({ drained: true, message: "Pool drained" })),
+      drainOrg: mock(() => Promise.resolve({ drained: 0 })),
       getAllPoolMetrics: () => [],
       getOrgPoolMetrics: () => [],
       getOrgPoolConfig: () => ({ enabled: false, maxConnections: 5, idleTimeoutMs: 30000, maxOrgs: 50, warmupProbes: 2, drainThreshold: 5 }),
@@ -304,7 +308,7 @@ describe("admin connections — org scoping", () => {
 
   describe("POST /connections — create stores org_id", () => {
     it("passes orgId to the INSERT query", async () => {
-      // healthCheck succeeds via mock, then INSERT
+      // register + healthCheck succeed via mock, then encrypt + INSERT
       mockInternalQuery.mockResolvedValue([]);
 
       const res = await app.fetch(
@@ -326,7 +330,6 @@ describe("admin connections — org scoping", () => {
       expect(insertCall).toBeDefined();
       const [sql, params] = insertCall!;
       expect(sql).toContain("org_id");
-      // org_id is the 6th parameter ($6)
       expect(params).toContain("org-alpha");
     });
 
@@ -501,6 +504,111 @@ describe("admin connections — org scoping", () => {
     });
   });
 
+  // ─── 3b. Health-check org isolation ───────────────────────────────
+
+  describe("POST /connections/:id/test — org isolation", () => {
+    it("returns 404 when health-checking a connection not visible to org", async () => {
+      setOrgAdmin("org-alpha");
+      // org-alpha does not own other-org-conn
+      mockInternalQuery.mockResolvedValue([]);
+
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/connections/other-org-conn/test", "POST"),
+      );
+
+      expect(res.status).toBe(404);
+    });
+
+    it("succeeds when health-checking a connection visible to org", async () => {
+      setOrgAdmin("org-alpha");
+      mockInternalQuery.mockImplementation((sql: string) => {
+        if (sql.includes("SELECT id FROM connections WHERE org_id")) {
+          return Promise.resolve([{ id: "warehouse" }]);
+        }
+        return Promise.resolve([]);
+      });
+
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/connections/warehouse/test", "POST"),
+      );
+
+      expect(res.status).toBe(200);
+    });
+
+    it("platform admin can health-check any connection", async () => {
+      setPlatformAdmin("org-alpha");
+
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/connections/other-org-conn/test", "POST"),
+      );
+
+      expect(res.status).toBe(200);
+    });
+  });
+
+  // ─── 3c. Drain endpoint org isolation ───────────────────────────────
+
+  describe("POST /connections/:id/drain — org isolation", () => {
+    it("returns 404 when draining a connection not visible to org", async () => {
+      setOrgAdmin("org-alpha");
+      // org-alpha does not own other-org-conn
+      mockInternalQuery.mockResolvedValue([]);
+
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/connections/other-org-conn/drain", "POST"),
+      );
+
+      expect(res.status).toBe(404);
+    });
+
+    it("platform admin can drain any connection", async () => {
+      setPlatformAdmin("org-alpha");
+
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/connections/warehouse/drain", "POST"),
+      );
+
+      expect(res.status).toBe(200);
+    });
+  });
+
+  // ─── 3d. Org drain cross-org restriction ────────────────────────────
+
+  describe("POST /connections/pool/orgs/:orgId/drain — cross-org guard", () => {
+    it("workspace admin gets 403 when draining another org's pools", async () => {
+      setOrgAdmin("org-alpha");
+
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/connections/pool/orgs/org-beta/drain", "POST"),
+      );
+
+      expect(res.status).toBe(403);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      const body = (await res.json()) as any;
+      expect(body.error).toBe("forbidden");
+    });
+
+    it("workspace admin can drain their own org's pools", async () => {
+      setOrgAdmin("org-alpha");
+
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/connections/pool/orgs/org-alpha/drain", "POST"),
+      );
+
+      expect(res.status).toBe(200);
+    });
+
+    it("platform admin can drain any org's pools", async () => {
+      setPlatformAdmin("org-alpha");
+
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/connections/pool/orgs/org-beta/drain", "POST"),
+      );
+
+      expect(res.status).toBe(200);
+    });
+  });
+
   // ─── 4. Platform admin bypasses org filter ──────────────────────────
 
   describe("platform admin — cross-org access", () => {
@@ -520,8 +628,7 @@ describe("admin connections — org scoping", () => {
       expect(ids).toContain("warehouse");
       expect(ids).toContain("other-org-conn");
 
-      // getVisibleConnectionIds should NOT have been called (returns null for platform admin)
-      // So no internalQuery call for "SELECT id FROM connections WHERE org_id"
+      // getVisibleConnectionIds returns null for platform admins (no DB query), so no org filter applied
       const orgFilterCall = mockInternalQuery.mock.calls.find(
         ([sql]) => typeof sql === "string" && sql.includes("SELECT id FROM connections WHERE org_id"),
       );

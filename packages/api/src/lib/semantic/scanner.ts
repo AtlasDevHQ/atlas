@@ -40,14 +40,22 @@ export interface EntityDir {
   sourceName: string;
 }
 
+export interface EntityDirResult {
+  dirs: EntityDir[];
+  /** True when the root directory scan failed (per-source dirs may be missing). */
+  rootScanFailed: boolean;
+}
+
 /**
  * Discover entity directories under a semantic root.
  *
  * Returns the default `entities/` dir (if it exists) and any per-source
- * `{source}/entities/` dirs found under the root.
+ * `{source}/entities/` dirs found under the root. Also reports whether
+ * the root scan failed so callers can escalate severity as appropriate.
  */
-export function getEntityDirs(root: string): EntityDir[] {
+export function getEntityDirs(root: string): EntityDirResult {
   const dirs: EntityDir[] = [];
+  let rootScanFailed = false;
 
   const defaultDir = path.join(root, "entities");
   if (fs.existsSync(defaultDir)) {
@@ -65,6 +73,7 @@ export function getEntityDirs(root: string): EntityDir[] {
         }
       }
     } catch (err) {
+      rootScanFailed = true;
       log.warn(
         { root, err: err instanceof Error ? err.message : String(err) },
         "Failed to scan semantic root for per-source directories",
@@ -72,7 +81,7 @@ export function getEntityDirs(root: string): EntityDir[] {
     }
   }
 
-  return dirs;
+  return { dirs, rootScanFailed };
 }
 
 // ---------------------------------------------------------------------------
@@ -121,21 +130,6 @@ export interface ScanResult {
 }
 
 /**
- * List `.yml` files in a directory. Returns empty array on read failure.
- */
-function listYmlFiles(dir: string): string[] {
-  try {
-    return fs.readdirSync(dir).filter((f) => f.endsWith(".yml"));
-  } catch (err) {
-    log.warn(
-      { dir, err: err instanceof Error ? err.message : String(err) },
-      "Failed to read entities directory",
-    );
-    return [];
-  }
-}
-
-/**
  * Discover and parse all entity YAML files under a semantic root.
  *
  * Handles both the default `entities/` directory and per-source
@@ -146,9 +140,18 @@ export function scanEntities(root: string): ScanResult {
   const entities: ScannedEntity[] = [];
   const warnings: string[] = [];
 
-  for (const { dir, sourceName } of getEntityDirs(root)) {
-    const files = listYmlFiles(dir);
-    if (files.length === 0) continue;
+  for (const { dir, sourceName } of getEntityDirs(root).dirs) {
+    let files: string[];
+    try {
+      files = fs.readdirSync(dir).filter((f) => f.endsWith(".yml"));
+    } catch (err) {
+      log.warn(
+        { dir, err: err instanceof Error ? err.message : String(err) },
+        "Failed to read entities directory",
+      );
+      warnings.push(`Failed to read directory: ${path.relative(root, dir)}`);
+      continue;
+    }
 
     for (const file of files) {
       const filePath = path.join(dir, file);

@@ -178,7 +178,12 @@ function loadTablesByConnection(
 
   const root = semanticRoot ?? getDefaultSemanticRoot();
 
-  for (const { dir, sourceName } of getEntityDirs(root)) {
+  const { dirs, rootScanFailed } = getEntityDirs(root);
+  if (rootScanFailed) {
+    log.error({ root }, "Failed to scan semantic root — per-source whitelist entries may be missing");
+  }
+
+  for (const { dir, sourceName } of dirs) {
     if (sourceName !== "default") {
       log.info({ source: sourceName, dir }, "Discovered per-source entities directory");
     }

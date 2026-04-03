@@ -177,7 +177,7 @@ export function discoverTables(root: string): DiscoverTablesResult {
  * Caller must validate `name` with isValidEntityName() first.
  */
 export function findEntityFile(root: string, name: string): string | null {
-  for (const { dir } of getEntityDirs(root)) {
+  for (const { dir } of getEntityDirs(root).dirs) {
     const file = path.join(dir, `${name}.yml`);
     if (fs.existsSync(file)) return file;
   }

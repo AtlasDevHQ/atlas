@@ -18,7 +18,7 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { hasInternalDB, internalQuery, getInternalDB } from "@atlas/api/lib/db/internal";
 import { getConfig } from "@atlas/api/lib/config";
 import { exportWorkspaceBundle } from "./export";
-import type { MigrationStatus, MigrationPhase } from "@useatlas/types";
+import type { MigrationStatus, MigrationPhase, ExportBundle } from "@useatlas/types";
 import { CLEANUP_GRACE_PERIOD_DAYS } from "@useatlas/types";
 
 const log = createLogger("region-migration");
@@ -112,7 +112,7 @@ export type OperationResult =
  * is derived from the region's apiUrl in the residency config.
  */
 async function transferBundleToTarget(
-  bundle: unknown,
+  bundle: ExportBundle,
   targetApiUrl: string,
   orgId: string,
   migrationId: string,
@@ -134,7 +134,7 @@ async function transferBundleToTarget(
         "Content-Type": "application/json",
         "X-Atlas-Internal-Token": secret,
       },
-      body: JSON.stringify({ ...(bundle as Record<string, unknown>), orgId }),
+      body: JSON.stringify({ ...bundle, orgId }),
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

@@ -6,7 +6,7 @@ description: Feature-by-feature comparison of Atlas, WrenAI, Vanna, Metabase, Cu
 import { Callout } from "fumadocs-ui/components/callout";
 
 <Callout type="info">
-  All comparisons are based on publicly available documentation and source code as of March 2026. If something is inaccurate, [open an issue](https://github.com/AtlasDevHQ/atlas/issues) and we'll fix it.
+  All comparisons are based on publicly available documentation and source code as of April 2026 (Atlas 1.0). If something is inaccurate, [open an issue](https://github.com/AtlasDevHQ/atlas/issues) and we'll fix it.
 </Callout>
 
 Atlas is an embeddable text-to-SQL agent. The tools below solve overlapping problems in different ways -- this page helps you decide which fits your use case.
@@ -15,10 +15,10 @@ Atlas is an embeddable text-to-SQL agent. The tools below solve overlapping prob
 
 | Feature | Atlas | WrenAI | Vanna | Metabase |
 |---|---|---|---|---|
-| **Deployment** | Self-hosted, cloud, embedded | Self-hosted, cloud SaaS, air-gapped enterprise | Self-hosted, cloud (SaaS) | Self-hosted, cloud |
-| **Embeddable widget** | Script tag, React component, API | API only (no widget) | Web component (`<vanna-chat>`) | Embedding SDK (paid), public links (free) |
-| **Semantic layer** | YAML files (code-first) | UI-based modeling (MDL) | Training via DDL/docs/SQL pairs | Data model UI + Data Studio |
-| **Plugin ecosystem** | 20+ official plugins, Plugin SDK | Limited | Python extensibility | Drivers + community plugins |
+| **Deployment** | Self-hosted, Atlas Cloud (3 regions), embedded | Self-hosted, cloud SaaS, air-gapped enterprise | Self-hosted, cloud (SaaS) | Self-hosted, cloud |
+| **Embeddable widget** | Script tag, React component, SDK with streaming | API only (no widget) | Web component (`<vanna-chat>`) | Embedding SDK (paid), public links (free) |
+| **Semantic layer** | YAML files (code-first) + web editor + dynamic learning | UI-based modeling (MDL) | Training via DDL/docs/SQL pairs | Data model UI + Data Studio |
+| **Plugin ecosystem** | 21+ official plugins, Plugin SDK, marketplace | Limited | Python extensibility | Drivers + community plugins |
 | **Databases** | | | | |
 | PostgreSQL | Built-in | Yes | Yes | Yes |
 | MySQL | Built-in | Yes | Yes | Yes |
@@ -33,21 +33,28 @@ Atlas is an embeddable text-to-SQL agent. The tools below solve overlapping prob
 | Databricks | No | Yes | No | No |
 | **Auth model** | Managed (Better Auth), BYOT, API key, SSO/SCIM | API key | BYOT (`UserResolver`) | Managed, SSO (paid) |
 | **License** | AGPL-3.0 core, MIT client libs | AGPL-3.0 | MIT | AGPL-3.0 (Pro is proprietary) |
-| **Python tool** | Sandboxed execution with charts | No | Python-native | No |
-| **Admin console** | Built-in | Basic UI | No | Full admin UI |
-| **MCP server** | Official plugin | Yes (Wren Engine) | No | No |
-| **Chat integrations** | Slack, Teams, Discord, Telegram, + 4 more (Chat SDK) | No | No | No |
-| **SDK** | TypeScript SDK (`@useatlas/sdk`) | No | Python package | Embedding SDK (React, paid) |
-| **Enterprise features** | SSO, SCIM, custom roles, IP allowlists, approval workflows | No | No | SSO, permissions (Pro) |
-| **Primary language** | TypeScript | TypeScript + Rust | Python | Clojure + JavaScript |
+| **Python tool** | Sandboxed execution with streaming + charts | No | Python-native | No |
+| **Admin console** | Built-in (connections, users, plugins, semantic editor, analytics, billing) | Basic UI | No | Full admin UI |
+| **MCP server** | Official plugin (stdio + SSE) | Yes (Wren Engine) | No | No |
+| **Chat integrations** | Slack, Teams, Discord, Telegram, Google Chat, GitHub, Linear, WhatsApp (Chat SDK) | No | No | No |
+| **SDK** | TypeScript SDK (`@useatlas/sdk`) with streaming | No | Python package | Embedding SDK (React, paid) |
+| **Notebook interface** | Built-in (cells, fork/branch, export) | No | No | No |
+| **Dynamic learning** | `atlas learn` CLI + runtime learned_patterns with admin review | No | RAG training (learns from usage) | No |
+| **Enterprise features** | SSO, SCIM, custom roles, IP allowlists, approval workflows, PII masking, data residency | No | No | SSO, permissions (Pro) |
+| **Data residency** | 3-region deployment (US, EU, APAC) with misrouting detection | No | No | No |
+| **Primary language** | TypeScript + Effect.ts | TypeScript + Rust | Python | Clojure + JavaScript |
 
 ## When to Choose What
 
 ### Choose Atlas if you need to...
 
 - **Embed data querying in your own product** -- Atlas is designed as a component, not a standalone tool. Script tag, React component, or raw API.
-- **Control the AI's reasoning with code** -- The YAML semantic layer lives in your repo, versioned with git, reviewed in PRs.
-- **Support multiple datasources with plugins** -- Connect Postgres, MySQL, BigQuery, Snowflake, ClickHouse, DuckDB, and Salesforce from a single deployment.
+- **Skip infrastructure** -- Sign up at [app.useatlas.dev](https://app.useatlas.dev), connect your database, and start querying. 3-region deployment (US, EU, APAC) with data residency.
+- **Control the AI's reasoning with code** -- The YAML semantic layer lives in your repo, versioned with git, reviewed in PRs. Or use the web editor with autocomplete and version history.
+- **An agent that learns** -- `atlas learn` proposes YAML improvements from your query history. The dynamic learning layer captures patterns at runtime with admin review.
+- **Support multiple datasources with plugins** -- Connect Postgres, MySQL, BigQuery, Snowflake, ClickHouse, DuckDB, and Salesforce. Browse and install plugins from the marketplace.
+- **Reach users where they are** -- 8 chat platform integrations (Slack, Teams, Discord, Telegram, Google Chat, GitHub, Linear, WhatsApp) via Chat SDK.
+- **Enterprise compliance** -- SSO/SCIM, custom roles, IP allowlists, approval workflows, PII masking, audit retention, data residency.
 - **Embed under MIT** -- The client libraries (`@useatlas/sdk`, `@useatlas/react`) are MIT. Embed them in commercial products with no copyleft concerns.
 
 ### Choose WrenAI if you need to...

@@ -14,17 +14,20 @@ import { Callout } from "fumadocs-ui/components/callout";
 | **License** | AGPL-3.0 core, MIT client libs | MIT |
 | **Language** | TypeScript | Python |
 | **Approach** | Semantic layer (YAML) | RAG training (DDL + docs + SQL pairs) |
-| **Embeddable** | Script tag, React component, API | Web component (`<vanna-chat>`), Flask UI, Streamlit |
-| **Deployment** | API server (Hono) + frontend (Next.js) | Python script or notebook |
-| **Plugin system** | Plugin SDK + 20 official plugins | Swappable LLM/vector store backends |
+| **Embeddable** | Script tag, React component, SDK with streaming | Web component (`<vanna-chat>`), Flask UI, Streamlit |
+| **Deployment** | Self-hosted (Docker, Railway, Vercel) or Atlas Cloud (3 regions) | Python script, notebook, or app.vanna.ai |
+| **Plugin system** | Plugin SDK + 21 plugins + marketplace | Swappable LLM/vector store backends |
 | **Databases** | Postgres, MySQL + plugins for BigQuery, ClickHouse, DuckDB, Salesforce, Snowflake | Postgres, MySQL, BigQuery, Snowflake, DuckDB, SQLite, Oracle, SQL Server, ClickHouse, Redshift |
 | **Auth model** | Managed (Better Auth), BYOT, API key, SSO/SCIM | BYOT (`UserResolver` class) |
-| **Admin console** | Built-in (connections, users, plugins, analytics) | No |
-| **MCP server** | Yes | No |
+| **Admin console** | Built-in (connections, users, plugins, semantic editor, analytics, billing) | No |
+| **MCP server** | Yes (stdio + SSE) | No |
 | **Chat integrations** | Slack, Teams, Discord, Telegram, Google Chat, GitHub, Linear, WhatsApp (via Chat SDK) | No |
+| **Notebook** | Built-in (cells, fork/branch, export to Markdown/HTML) | No (Jupyter integration) |
 | **SQL validation** | 7-layer pipeline (empty check, regex guard, AST parse, table whitelist, RLS, auto-LIMIT, timeout) | Basic (parameterized queries, RLS in v2.0) |
-| **Enterprise features** | SSO, SCIM, custom roles, IP allowlists, approval workflows, audit retention | None |
-| **Backend architecture** | Effect.ts for key subsystems (structured concurrency, typed errors, circuit breaking) | Standard Python |
+| **Learning approach** | `atlas learn` CLI (auditable YAML proposals) + dynamic learned_patterns DB with admin review | RAG training (DDL + docs + SQL pairs in vector DB) |
+| **Enterprise features** | SSO, SCIM, custom roles, IP allowlists, approval workflows, PII masking, audit retention, data residency | None |
+| **Data residency** | 3-region deployment (US, EU, APAC) with misrouting detection | No |
+| **Backend architecture** | Effect.ts (structured concurrency, typed errors, composable Layers, @effect/ai agent loop) | Standard Python |
 
 ## Context Approach
 
@@ -32,15 +35,17 @@ import { Callout } from "fumadocs-ui/components/callout";
 
 **Vanna** uses RAG training: you feed it DDL statements, documentation strings, and example SQL question/query pairs. Vanna stores these in a vector database and retrieves relevant context at query time. This is more flexible (you can train on anything) but less predictable (retrieval quality varies).
 
-**Trade-off:** A semantic layer gives you deterministic context -- you know exactly what the agent sees. RAG training is easier to bootstrap (just dump your DDL and a few example queries) but harder to audit and maintain as your schema evolves.
+Atlas also learns from usage, but through a different mechanism: `atlas learn` reviews your audit log and proposes YAML amendments (new query patterns, join discoveries, glossary refinements) that you review and commit. The dynamic learning layer captures patterns at runtime and presents them for admin review before they're injected into the agent's context.
+
+**Trade-off:** A semantic layer gives you deterministic context -- you know exactly what the agent sees. Atlas's learning approach produces auditable YAML diffs you can review in a PR. RAG training is easier to bootstrap (just dump your DDL and a few example queries) but harder to audit and maintain as your schema evolves -- you can't `git diff` a vector database.
 
 ## Deployment Model
 
-**Atlas** deploys as a standalone API server with a built-in frontend. It's designed for production: managed auth, rate limiting, audit logging, admin console, and embeddable widget. You deploy it alongside your application.
+**Atlas** deploys as a standalone API server with a built-in frontend, or as a hosted SaaS at [app.useatlas.dev](https://app.useatlas.dev). It's designed for production: managed auth (SSO/SCIM), rate limiting, audit logging, admin console with semantic editor, plugin marketplace, notebook interface, embeddable widget, and 8 chat platform integrations. Deploy on Docker, Railway, or Vercel, or skip infrastructure entirely with Atlas Cloud (3 regions: US, EU, APAC).
 
 **Vanna** is a Python package you import and call. The simplest deployment is a Jupyter notebook or Python script. Vanna also provides a `<vanna-chat>` web component for embedding, a Flask-based UI, and Streamlit integration. The cloud-hosted version (app.vanna.ai) adds observability, access control, and audit logs.
 
-**Trade-off:** Vanna gives you more flexibility if you're already running Python services and want to integrate text-to-SQL into an existing Python API. Atlas gives you a complete production stack out of the box.
+**Trade-off:** Vanna gives you more flexibility if you're already running Python services and want to integrate text-to-SQL into an existing Python API. Atlas gives you a complete production stack out of the box — including enterprise features, multi-region deployment, and a managed SaaS option.
 
 ## SQL Safety
 
@@ -54,13 +59,13 @@ Vanna v2.0 added parameterized queries and row-level security, but does not incl
 
 ## Ecosystem
 
-Atlas has a typed Plugin SDK with 20+ official plugins covering datasource adapters, sandbox backends, interaction channels (Slack, Teams, Discord, Telegram, Google Chat, GitHub, Linear, WhatsApp via Chat SDK, and MCP), and action triggers (email, JIRA, webhooks). You can build custom plugins with `bun create @useatlas/plugin`.
+Atlas has a typed Plugin SDK with 21+ official plugins covering datasource adapters, sandbox backends, interaction channels (Slack, Teams, Discord, Telegram, Google Chat, GitHub, Linear, WhatsApp via Chat SDK, and MCP), and action triggers (email, JIRA, webhooks). Plugins are discoverable through a built-in marketplace (browse, install, configure per workspace). You can build custom plugins with `bun create @useatlas/plugin`.
 
 Vanna has a modular architecture where you can swap the LLM backend (OpenAI, Mistral, Ollama, etc.) and vector store (ChromaDB, Pinecone, etc.). This is closer to a library with pluggable backends than a plugin ecosystem.
 
 ## Enterprise Readiness
 
-Atlas ships with enterprise features out of the box: SSO (SAML/OIDC) and SCIM provisioning, custom role definitions, IP allowlists, approval workflows for sensitive operations, configurable audit log retention with CSV export, and data residency controls. The backend uses Effect.ts for structured concurrency, typed errors, graceful shutdown, and circuit breaking.
+Atlas ships with enterprise features out of the box: SSO (SAML/OIDC) and SCIM provisioning, custom role definitions, IP allowlists, approval workflows for sensitive operations, configurable audit log retention with CSV export, PII detection and column masking, compliance reporting, data residency controls with 3-region deployment, custom domains, and SLA monitoring. The backend uses Effect.ts for structured concurrency, typed errors, graceful shutdown, and circuit breaking — with @effect/ai powering the agent loop and @effect/sql for native database clients.
 
 Vanna v2.0 added RLS, audit logs, and rate limiting, but enterprise identity management (SSO, SCIM), approval workflows, and structured error handling are not part of the library.
 

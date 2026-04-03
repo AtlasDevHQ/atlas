@@ -29,13 +29,18 @@ Atlas sits between the AI and the database, providing context before query gener
 
 | Capability | Raw MCP | Atlas |
 |---|---|---|
-| **Business context** | Column names only | Entity YAML with descriptions, sample values, joins, metrics, glossary |
+| **Business context** | Column names only | Entity YAML with descriptions, sample values, joins, metrics, glossary + dynamic learned patterns |
 | **SQL validation** | None | [7-layer pipeline](/security/sql-validation) (empty check, regex guard, AST parse, table whitelist, RLS, auto-LIMIT, timeout) |
 | **Table access control** | Full schema visible | Only tables defined in the semantic layer |
-| **Row-level security** | None | Automatic WHERE clause injection based on user identity |
+| **Row-level security** | None | Automatic WHERE clause injection based on user identity (multi-column, array, OR-logic) |
 | **Mutation protection** | Depends on DB user permissions | SELECT-only enforcement at the application layer, independent of DB permissions |
-| **Audit logging** | None | Every query logged with user attribution and timing |
-| **Sandboxed execution** | None | Explore tool isolated via nsjail or sidecar |
+| **Audit logging** | None | Every query logged with user attribution, timing, tables/columns accessed, data classification |
+| **PII protection** | None | PII detection and column masking with role-based strategies |
+| **Sandboxed execution** | None | Explore tool isolated via nsjail, sidecar, or BYOC backends |
+| **Auth & enterprise** | None | SSO/SCIM, custom roles, IP allowlists, approval workflows |
+| **Admin console** | None | Connections, users, plugins, semantic editor, analytics, notebooks, billing |
+| **Chat integrations** | None | 8 platforms via Chat SDK (Slack, Teams, Discord, Telegram, Google Chat, GitHub, Linear, WhatsApp) |
+| **Data residency** | None | 3-region deployment (US, EU, APAC) with misrouting detection |
 
 ## Side-by-side: the same question, two approaches
 
@@ -141,7 +146,7 @@ Raw MCP is a reasonable choice when:
 Once any of these change — multiple users, sensitive data, production workloads, compliance requirements — you need the semantic layer, validation, and audit trail that Atlas provides.
 
 <Callout type="info">
-Atlas has its own [MCP server](/guides/mcp) that gives Claude Desktop and Cursor the same validated, context-aware SQL execution as the API. You don't have to choose between MCP compatibility and safety.
+Atlas has its own [MCP server](/guides/mcp) (stdio + SSE transport) that gives Claude Desktop and Cursor the same validated, context-aware SQL execution as the API. You don't have to choose between MCP compatibility and safety.
 </Callout>
 
 ## The semantic layer advantage

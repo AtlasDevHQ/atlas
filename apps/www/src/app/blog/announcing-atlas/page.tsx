@@ -214,14 +214,14 @@ $ cd my-app && bun run dev
             approval workflows, audit log retention and export, data residency
           </FeatureBullet>
           <FeatureBullet title="Effect.ts architecture">
-            Key backend subsystems (SQL pipeline, rate limiting, scheduler,
-            connection management) use Effect for structured concurrency,
-            typed errors, graceful shutdown, and circuit breaking, with more
-            migrating
+            The entire backend uses Effect.ts for structured concurrency,
+            typed errors, composable Layers, and graceful shutdown. The agent
+            loop runs on @effect/ai, database connections on @effect/sql
           </FeatureBullet>
           <FeatureBullet title="Admin console">
-            Connections, users, plugins, semantic layer browser, query
-            analytics, learned patterns, and settings. All in one place
+            Connections, users, plugin marketplace, semantic layer editor
+            with autocomplete, query analytics, learned patterns, billing,
+            and settings. All in one place
           </FeatureBullet>
         </ul>
 

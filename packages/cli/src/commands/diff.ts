@@ -25,6 +25,12 @@ import {
   ENTITIES_DIR,
 } from "../../lib/cli-utils";
 import { testDatabaseConnection } from "../../lib/test-connection";
+import {
+  parseEntityYAML,
+  profileToSnapshot,
+  computeDiff,
+  formatDiff,
+} from "../../lib/diff";
 
 export async function handleDiff(args: string[]): Promise<void> {
   const connStr = process.env.ATLAS_DATASOURCE_URL;
@@ -132,13 +138,12 @@ export async function handleDiff(args: string[]): Promise<void> {
         );
         break;
       case "clickhouse": {
-        // Dynamic import to avoid circular dependency with atlas.ts
-        const { profileClickHouse } = await import("../../bin/atlas");
+        const { profileClickHouse } = await import("../../lib/profilers/clickhouse");
         result = await profileClickHouse(connStr, filterTables);
         break;
       }
       case "snowflake": {
-        const { profileSnowflake } = await import("../../bin/atlas");
+        const { profileSnowflake } = await import("../../lib/profilers/snowflake");
         result = await profileSnowflake(connStr, filterTables);
         break;
       }
@@ -146,13 +151,13 @@ export async function handleDiff(args: string[]): Promise<void> {
         const { parseDuckDBUrl } = await import(
           "../../../../plugins/duckdb/src/connection"
         );
-        const { profileDuckDB } = await import("../../bin/atlas");
+        const { profileDuckDB } = await import("../../lib/profilers/duckdb");
         const duckConfig = parseDuckDBUrl(connStr);
         result = await profileDuckDB(duckConfig.path, filterTables);
         break;
       }
       case "salesforce": {
-        const { profileSalesforce } = await import("../../bin/atlas");
+        const { profileSalesforce } = await import("../../lib/profilers/salesforce");
         result = await profileSalesforce(connStr, filterTables);
         break;
       }
@@ -181,10 +186,6 @@ export async function handleDiff(args: string[]): Promise<void> {
 
   // Run FK inference so inferred FKs are comparable
   profiles = analyzeTableProfiles(profiles);
-
-  // Dynamic import to avoid circular dependency with atlas.ts
-  const { parseEntityYAML, profileToSnapshot, computeDiff, formatDiff } =
-    await import("../../bin/atlas");
 
   // Build DB snapshots
   const dbSnapshots = new Map<

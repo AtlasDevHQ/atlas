@@ -8,6 +8,7 @@ import { Paintbrush, Loader2, RotateCcw, Eye } from "lucide-react";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
+import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
@@ -114,6 +115,7 @@ export default function BrandingPage() {
         </p>
       </div>
 
+      <ErrorBoundary>
       <AdminContentWrapper
         loading={loading}
         error={error}
@@ -295,6 +297,7 @@ export default function BrandingPage() {
           </Card>
         </>
       </AdminContentWrapper>
+      </ErrorBoundary>
     </div>
   );
 }

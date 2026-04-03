@@ -60,6 +60,7 @@ Each service points to its `railway.json` via the Railway dashboard. Key env var
 - `BETTER_AUTH_SECRET` — min 32 chars
 - `BETTER_AUTH_TRUSTED_ORIGINS=https://app.useatlas.dev`
 - `ATLAS_SANDBOX_URL` — Internal sidecar URL
+- `ATLAS_API_REGION` — Region identity for this instance (e.g. `us-east`). Required for multi-region deployments. Each regional API service (api, api-eu, api-apac) must set this so the health endpoint reports its region and misrouting detection works correctly
 
 ### Web service (`app.useatlas.dev`)
 

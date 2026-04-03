@@ -42,7 +42,6 @@
 import { Pool } from "pg";
 import * as fs from "fs";
 import * as path from "path";
-import * as yaml from "js-yaml";
 import * as p from "@clack/prompts";
 import pc from "picocolors";
 import { type DBType } from "@atlas/api/lib/db/connection";
@@ -57,7 +56,6 @@ import {
   type TableProfile,
   type ProfileError,
   type ProfilingResult,
-  type ProfileLogger,
   isFatalConnectionError,
   checkFailureThreshold,
   isView,
@@ -75,19 +73,30 @@ import {
   profilePostgres,
   profileMySQL,
 } from "@atlas/api/lib/profiler";
-
-/** Adapts the profiler's structured logger to CLI console output. */
-const cliProfileLogger: ProfileLogger = {
-  info(_obj, msg) { console.log(`  ${msg}`); },
-  warn(obj, msg) {
-    const ctx = [obj.table, obj.column].filter(Boolean).join(".");
-    console.warn(`  Warning: ${msg}${ctx ? ` (${ctx})` : ""}${obj.err ? `: ${obj.err}` : ""}`);
-  },
-  error(obj, msg) {
-    const ctx = [obj.table, obj.column].filter(Boolean).join(".");
-    console.error(`  ${msg}${ctx ? ` (${ctx})` : ""}${obj.err ? `: ${obj.err}` : ""}`);
-  },
-};
+// --- Shared utilities (extracted to reduce monolith) ---
+import {
+  cliProfileLogger,
+  detectDBType,
+  getFlag,
+  logProfilingErrors,
+  requireFlagIdentifier,
+  validateIdentifier,
+  validateSchemaName,
+  SEMANTIC_DIR,
+} from "../lib/cli-utils";
+// --- Output formatters (extracted to reduce monolith) ---
+import {
+  renderTable,
+} from "../lib/output";
+// --- Shared connection testing + DB helpers (extracted to reduce monolith) ---
+import {
+  testDatabaseConnection,
+  rewriteClickHouseUrl,
+  clickhouseQuery,
+  snowflakeQuery,
+  createSnowflakePool,
+  loadDuckDB,
+} from "../lib/test-connection";
 
 // Re-export from shared profiler for test backward compatibility
 export {
@@ -117,98 +126,36 @@ export {
   singularize,
 } from "@atlas/api/lib/profiler";
 
-/** CLI-local DB type detection — supports all URL schemes (core + plugin databases). */
-function detectDBType(url: string): DBType {
-  if (url.startsWith("postgresql://") || url.startsWith("postgres://")) return "postgres";
-  if (url.startsWith("mysql://") || url.startsWith("mysql2://")) return "mysql";
-  if (url.startsWith("clickhouse://") || url.startsWith("clickhouses://")) return "clickhouse";
-  if (url.startsWith("snowflake://")) return "snowflake";
-  if (url.startsWith("duckdb://")) return "duckdb";
-  if (url.startsWith("salesforce://")) return "salesforce";
-  const scheme = url.split("://")[0] || "(empty)";
-  throw new Error(
-    `Unsupported database URL scheme "${scheme}://". ` +
-    "Supported: postgresql://, mysql://, clickhouse://, snowflake://, duckdb://, salesforce://."
-  );
-}
-// Lazy-loaded to avoid requiring native bindings at type-check time
-async function loadDuckDB() {
-  const { DuckDBInstance } = await import("@duckdb/node-api");
-  return DuckDBInstance;
-}
+// Re-export extracted utilities for backward compatibility
+export {
+  cliProfileLogger,
+  detectDBType,
+  getFlag,
+  logProfilingErrors,
+  requireFlagIdentifier,
+  validateIdentifier,
+  validateSchemaName,
+  SEMANTIC_DIR,
+  ENTITIES_DIR,
+} from "../lib/cli-utils";
+export {
+  formatCellValue,
+  formatCsvValue,
+  quoteCsvField,
+  renderTable,
+} from "../lib/output";
+export { testDatabaseConnection } from "../lib/test-connection";
 
-const SEMANTIC_DIR = path.resolve("semantic");
-const ENTITIES_DIR = path.join(SEMANTIC_DIR, "entities");
-
-/** Log a warning summary for profiling errors (first 5 + overflow). CLI-specific: uses console.warn formatting rather than the profiler's structured logger. */
-export function logProfilingErrors(errors: ProfileError[], total: number): void {
-  const pct = Math.round((errors.length / total) * 100);
-  console.warn(
-    `\nWarning: ${errors.length}/${total} tables (${pct}%) failed to profile:`
-  );
-  const preview = errors.slice(0, 5);
-  for (const e of preview) {
-    console.warn(`  - ${e.table}: ${e.error}`);
-  }
-  if (errors.length > 5) {
-    console.warn(`  ... and ${errors.length - 5} more`);
-  }
-}
-
-// --- Shared helpers ---
-
-const VALID_SQL_IDENTIFIER = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
-
-function validateIdentifier(value: string, label: string): void {
-  if (!VALID_SQL_IDENTIFIER.test(value)) {
-    console.error(`Error: Invalid ${label} "${value}". Must contain only letters, digits, and underscores, and start with a letter or underscore.`);
-    process.exit(1);
-  }
-}
-
-function validateSchemaName(schema: string): void {
-  validateIdentifier(schema, "schema name");
-}
-
-/**
- * Parse a --flag that requires a value and validate it as a safe identifier.
- * Returns the value if present, undefined if the flag was not used at all.
- * Exits with an error if the flag was used without a value or with an invalid one.
- */
-function requireFlagIdentifier(args: string[], flag: string, label: string): string | undefined {
-  const value = getFlag(args, flag);
-  if (!value && args.includes(flag)) {
-    console.error(`Error: ${flag} requires a value (e.g., ${flag} warehouse).`);
-    process.exit(1);
-  }
-  if (value) validateIdentifier(value, label);
-  return value;
-}
-
-
+// Re-export DB helpers for backward compatibility
+export { rewriteClickHouseUrl, clickhouseQuery, snowflakeQuery, createSnowflakePool, loadDuckDB } from "../lib/test-connection";
 
 // --- ClickHouse profiler ---
 
 type ClickHouseClient = { query: (opts: { query: string; format: string }) => Promise<{ json: () => Promise<{ data: Record<string, unknown>[] }> }>; close: () => Promise<void> };
 
-/** Run a single query against ClickHouse and return rows. */
-async function clickhouseQuery<T = Record<string, unknown>>(
-  client: ClickHouseClient,
-  sql: string
-): Promise<T[]> {
-  const result = await client.query({ query: sql, format: "JSON" });
-  const json = await result.json();
-  return json.data as T[];
-}
-
 /** Escape a ClickHouse identifier with backticks (doubles any embedded backticks). */
 function chIdentifier(name: string): string {
   return `\`${name.replace(/`/g, "``")}\``;
-}
-
-/** Rewrite clickhouse:// or clickhouses:// URLs to http:// or https:// for the HTTP client. */
-function rewriteClickHouseUrl(url: string): string {
-  return url.replace(/^clickhouses:\/\//, "https://").replace(/^clickhouse:\/\//, "http://");
 }
 
 async function listClickHouseObjects(connectionString: string): Promise<DatabaseObject[]> {
@@ -257,7 +204,7 @@ function mapClickHouseType(chType: string): string {
   return "string";
 }
 
-async function profileClickHouse(
+export async function profileClickHouse(
   connectionString: string,
   filterTables?: string[],
   prefetchedObjects?: DatabaseObject[],
@@ -436,60 +383,7 @@ async function profileClickHouse(
 
 // --- Snowflake profiler ---
 
-/**
- * Promisified Snowflake query helper. The snowflake-sdk uses a callback-based
- * API, so we wrap execute() in a Promise.
- *
- * Pool type is `generic-pool.Pool<snowflake-sdk.Connection>` — we use `any` to
- * avoid requiring `@types/generic-pool` in the CLI package.
- */
 type SnowflakePool = ReturnType<typeof import("snowflake-sdk").createPool>;
-
-async function snowflakeQuery(
-  pool: SnowflakePool,
-  sql: string,
-  binds?: (string | number)[],
-): Promise<{ columns: string[]; rows: Record<string, unknown>[] }> {
-  return pool.use(async (conn) => {
-    return new Promise<{ columns: string[]; rows: Record<string, unknown>[] }>((resolve, reject) => {
-      conn.execute({
-        sqlText: sql,
-        binds: binds ?? [],
-        complete: (err, stmt, rows) => {
-          if (err) return reject(err);
-          const columns = (stmt?.getColumns() ?? []).map((c) => c.getName());
-          resolve({ columns, rows: (rows ?? []) as Record<string, unknown>[] });
-        },
-      });
-    });
-  });
-}
-
-/** Create a Snowflake connection pool from a URL string. Shared by listSnowflakeObjects, profileSnowflake, and handleDiff. */
-async function createSnowflakePool(connectionString: string, max = 1) {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const snowflake = require("snowflake-sdk") as typeof import("snowflake-sdk");
-  snowflake.configure({ logLevel: "ERROR" });
-
-  const { parseSnowflakeURL } = await import("../../../plugins/snowflake/src/connection");
-  const opts = parseSnowflakeURL(connectionString);
-
-  const pool = snowflake.createPool(
-    {
-      account: opts.account,
-      username: opts.username,
-      password: opts.password,
-      database: opts.database,
-      schema: opts.schema,
-      warehouse: opts.warehouse,
-      role: opts.role,
-      application: "Atlas",
-    },
-    { max, min: 0 },
-  );
-
-  return { pool, opts };
-}
 
 async function listSnowflakeObjects(connectionString: string): Promise<DatabaseObject[]> {
   const { pool } = await createSnowflakePool(connectionString, 1);
@@ -571,7 +465,7 @@ function mapSnowflakeType(sfType: string): string {
   return "text";
 }
 
-async function profileSnowflake(
+export async function profileSnowflake(
   connectionString: string,
   filterTables?: string[],
   prefetchedObjects?: DatabaseObject[],
@@ -799,7 +693,7 @@ async function listSalesforceObjects(connectionString: string): Promise<Database
   }
 }
 
-async function profileSalesforce(
+export async function profileSalesforce(
   connectionString: string,
   filterTables?: string[],
   prefetchedObjects?: DatabaseObject[],
@@ -1564,118 +1458,8 @@ export function formatDiff(
   return lines.join("\n");
 }
 
-// --- Query CLI handler ---
-
-/** Response shape from POST /api/v1/query */
-interface QueryAPIResponse {
-  answer: string;
-  sql: string[];
-  data: { columns: string[]; rows: Record<string, unknown>[] }[];
-  steps: number;
-  usage: { totalTokens: number };
-  pendingActions?: {
-    id: string;
-    type: string;
-    target: string;
-    summary: string;
-    approveUrl: string;
-    denyUrl: string;
-  }[];
-}
-
-/** Response shape for API errors */
-interface QueryAPIError {
-  error: string;
-  message: string;
-}
-
-/**
- * Format a value for display in table cells.
- * Numbers get locale formatting; nulls display as "(null)".
- */
-export function formatCellValue(value: unknown): string {
-  if (value === null || value === undefined) return "(null)";
-  if (typeof value === "number") return value.toLocaleString();
-  return String(value);
-}
-
-export function formatCsvValue(value: unknown): string {
-  if (value === null || value === undefined) return "";
-  return String(value);
-}
-
-/** Quote a CSV field value per RFC 4180: wrap in double-quotes if it contains commas, quotes, or newlines. */
-export function quoteCsvField(val: string): string {
-  if (/[,"\n]/.test(val)) return `"${val.replace(/"/g, '""')}"`;
-  return val;
-}
-
-/**
- * Render a data table with box-drawing characters.
- * Adapts column widths to content.
- */
-export function renderTable(columns: string[], rows: Record<string, unknown>[]): string {
-  // Compute display values
-  const displayRows = rows.map((row) =>
-    columns.map((col) => formatCellValue(row[col])),
-  );
-
-  // Column widths: max of header and all row values
-  const widths = columns.map((col, i) =>
-    Math.max(col.length, ...displayRows.map((r) => r[i].length)),
-  );
-
-  const top    = "┌" + widths.map((w) => "─".repeat(w + 2)).join("┬") + "┐";
-  const mid    = "├" + widths.map((w) => "─".repeat(w + 2)).join("┼") + "┤";
-  const bottom = "└" + widths.map((w) => "─".repeat(w + 2)).join("┴") + "┘";
-
-  const formatRow = (cells: string[]) =>
-    "│" + cells.map((cell, i) => " " + cell.padEnd(widths[i]) + " ").join("│") + "│";
-
-  const lines: string[] = [top, formatRow(columns), mid];
-  for (const row of displayRows) {
-    lines.push(formatRow(row));
-  }
-  lines.push(bottom);
-  return lines.join("\n");
-}
-
-/**
- * Call the approve or deny endpoint for a pending action.
- * Returns { ok: true, status } on success, { ok: false, error } on failure.
- */
-export async function handleActionApproval(
-  url: string,
-  apiKey?: string,
-): Promise<{ ok: boolean; status?: string; error?: string }> {
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
-
-  try {
-    const res = await fetch(url, {
-      method: "POST",
-      headers,
-      signal: AbortSignal.timeout(30_000),
-    });
-    if (!res.ok) {
-      const body = (await res.json().catch(() => {
-        // intentionally ignored: error response may not be JSON; fall back to status code
-        return {};
-      })) as Record<string, unknown>;
-      return { ok: false, error: (body.message as string) ?? `HTTP ${res.status}` };
-    }
-    const body = (await res.json()) as Record<string, unknown>;
-    return { ok: true, status: body.status as string };
-  } catch (err) {
-    if (err instanceof Error && (err.name === "TimeoutError" || err.name === "AbortError")) {
-      return {
-        ok: false,
-        error: "Request timed out after 30s. The action may still be processing — check its status.",
-      };
-    }
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
-  }
-}
+// Re-export handleActionApproval from extracted query module
+export { handleActionApproval } from "../src/commands/query";
 
 // ---------------------------------------------------------------------------
 // atlas plugin subcommands
@@ -2126,227 +1910,7 @@ async function handlePlugin(args: string[]): Promise<void> {
   process.exit(1);
 }
 
-async function handleQuery(args: string[]): Promise<void> {
-  // Parse the question — first positional arg after "query"
-  const question = args.find((a, i) => i > 0 && !a.startsWith("--") && (i === 1 || args[i - 1] !== "--connection"));
-
-  if (!question) {
-    console.error(
-      'Usage: atlas query "your question" [options]\n\n' +
-      "Options:\n" +
-      "  --json               Raw JSON output (pipe-friendly)\n" +
-      "  --csv                CSV output (headers + rows only)\n" +
-      "  --quiet              Data only — no narrative, SQL, or stats\n" +
-      "  --auto-approve       Auto-approve any pending actions\n" +
-      "  --connection <id>    Query a specific datasource\n\n" +
-      "Environment:\n" +
-      "  ATLAS_API_URL        API server URL (default: http://localhost:3001)\n" +
-      "  ATLAS_API_KEY        API key for authentication\n\n" +
-      "Examples:\n" +
-      '  atlas query "top 5 customers by revenue"\n' +
-      '  atlas query "active alerts" --json\n' +
-      '  atlas query "count of users" --csv\n' +
-      '  atlas query "alerts" --connection cybersec',
-    );
-    process.exit(1);
-  }
-
-  const jsonOutput = args.includes("--json");
-  const csvOutput = args.includes("--csv");
-  const quietOutput = args.includes("--quiet");
-  const autoApprove = args.includes("--auto-approve");
-  const connectionId = getFlag(args, "--connection");
-
-  if (jsonOutput && csvOutput) {
-    console.error("Error: --json and --csv are mutually exclusive.");
-    process.exit(1);
-  }
-
-  const apiUrl = (process.env.ATLAS_API_URL ?? "http://localhost:3001").replace(/\/$/, "");
-  const apiKey = process.env.ATLAS_API_KEY;
-
-  // Build request
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
-
-  const body = { question, ...(connectionId && { connectionId }) };
-
-  // Call the API
-  if (!jsonOutput && !csvOutput) process.stderr.write("Thinking...\n");
-
-  let res: Response;
-  try {
-    res = await fetch(`${apiUrl}/api/v1/query`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(120_000),
-    });
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    if (/abort|timeout/i.test(msg)) {
-      console.error("Error: Request timed out after 120 seconds.");
-      console.error("  The query may be too complex, or the server may be overloaded.");
-    } else if (/ECONNREFUSED|fetch failed/i.test(msg)) {
-      console.error(`Error: Cannot connect to Atlas API at ${apiUrl}`);
-      console.error("  Is the server running? Start it with: bun run dev:api");
-    } else {
-      console.error(`Error: ${msg}`);
-    }
-    process.exit(1);
-  }
-
-  // Handle HTTP errors
-  if (!res.ok) {
-    let message = `HTTP ${res.status}`;
-    let errorCode: string | undefined;
-    try {
-      const errorBody = (await res.json()) as QueryAPIError;
-      if (errorBody.message) message = errorBody.message;
-      errorCode = errorBody.error;
-    } catch {
-      try {
-        const text = await res.text();
-        if (text.length > 0 && text.length < 500) message = `HTTP ${res.status}: ${text.trim()}`;
-      } catch {
-        // Body unreadable — use HTTP status fallback
-      }
-    }
-
-    if (res.status === 401 || res.status === 403) {
-      console.error(`Error: Authentication failed — ${message}`);
-      console.error("  Set ATLAS_API_KEY to a valid API key.");
-    } else if (res.status === 429) {
-      console.error(`Error: Rate limit exceeded — ${message}`);
-    } else if (errorCode === "no_datasource") {
-      console.error(`Error: ${message}`);
-      console.error("  The API server has no datasource configured. Set ATLAS_DATASOURCE_URL on the server.");
-    } else if (errorCode === "configuration_error") {
-      console.error(`Error: Server configuration problem — ${message}`);
-    } else {
-      console.error(`Error: ${message}`);
-    }
-    process.exit(1);
-  }
-
-  let data: QueryAPIResponse;
-  try {
-    data = (await res.json()) as QueryAPIResponse;
-  } catch {
-    console.error("Error: Failed to parse API response as JSON.");
-    console.error(`  The server at ${apiUrl} returned a 200 status but the body was not valid JSON.`);
-    process.exit(1);
-  }
-
-  // Runtime validation of response shape
-  if (!Array.isArray(data.data)) {
-    console.error("Error: Unexpected API response — the server may be running a different version.");
-    if (data.answer) console.log(`\n${data.answer}`);
-    process.exit(1);
-  }
-  if (!Array.isArray(data.sql)) data.sql = [];
-  if (!data.usage || typeof data.usage.totalTokens !== "number") {
-    data.usage = { totalTokens: 0 };
-  }
-
-  // --- JSON output: print raw response and exit ---
-  if (jsonOutput) {
-    console.log(JSON.stringify(data, null, 2));
-    return;
-  }
-
-  // --- CSV output: headers + rows, no narrative ---
-  if (csvOutput) {
-    for (const dataset of data.data) {
-      console.log(dataset.columns.map(quoteCsvField).join(","));
-      for (const row of dataset.rows) {
-        const cells = dataset.columns.map((col) => quoteCsvField(formatCsvValue(row[col])));
-        console.log(cells.join(","));
-      }
-    }
-    return;
-  }
-
-  // --- Table output (default) ---
-
-  // Narrative answer
-  if (!quietOutput && data.answer) {
-    console.log(`\n${data.answer}\n`);
-  }
-
-  // Data tables
-  for (const dataset of data.data) {
-    if (dataset.columns.length > 0 && dataset.rows.length > 0) {
-      console.log(renderTable(dataset.columns, dataset.rows));
-      console.log();
-    }
-  }
-
-  // Footer: SQL + stats
-  if (!quietOutput) {
-    if (data.sql.length > 0) {
-      console.log(pc.dim(`SQL: ${data.sql[data.sql.length - 1]}`));
-    }
-    const tokens = typeof data.usage?.totalTokens === "number" ? data.usage.totalTokens.toLocaleString() : "n/a";
-    console.log(pc.dim(`Steps: ${data.steps ?? "?"} | Tokens: ${tokens}`));
-  }
-
-  // --- Handle pending actions ---
-  if (data.pendingActions?.length) {
-    console.log();
-    console.log(pc.yellow(`${data.pendingActions.length} action(s) require approval:`));
-
-    if (autoApprove) {
-      // Auto-approve all pending actions
-      for (const action of data.pendingActions) {
-        process.stderr.write(`  Approving: ${action.summary}... `);
-        const result = await handleActionApproval(action.approveUrl, apiKey);
-        if (result.ok) {
-          console.error(pc.green(`${result.status ?? "approved"}`));
-        } else {
-          console.error(pc.red(`failed: ${result.error}`));
-        }
-      }
-    } else if (process.stdout.isTTY) {
-      // Interactive TTY mode — prompt per action
-      for (const action of data.pendingActions) {
-        console.log(`\n  ${pc.bold(action.type)}: ${action.summary}`);
-        if (action.target) console.log(`  Target: ${action.target}`);
-
-        const choice = await p.select({
-          message: "What would you like to do?",
-          options: [
-            { value: "approve", label: "Approve" },
-            { value: "deny", label: "Deny" },
-            { value: "skip", label: "Skip (decide later)" },
-          ],
-        });
-
-        if (p.isCancel(choice) || choice === "skip") {
-          console.log(pc.dim(`  Skipped. Approve/deny later:`));
-          console.log(pc.dim(`    Approve: curl -X POST ${action.approveUrl}`));
-          console.log(pc.dim(`    Deny:    curl -X POST ${action.denyUrl}`));
-          continue;
-        }
-
-        const url = choice === "approve" ? action.approveUrl : action.denyUrl;
-        const result = await handleActionApproval(url, apiKey);
-        if (result.ok) {
-          console.log(pc.green(`  Action ${result.status ?? choice}d.`));
-        } else {
-          console.log(pc.red(`  Failed: ${result.error}`));
-        }
-      }
-    } else {
-      // Non-TTY, no --auto-approve — print URLs and exit
-      for (const action of data.pendingActions) {
-        console.log(`\n  ${action.type}: ${action.summary}`);
-        console.log(`    Approve: ${action.approveUrl}`);
-        console.log(`    Deny:    ${action.denyUrl}`);
-      }
-    }
-  }
-}
+// handleQuery — extracted to src/commands/query.ts
 
 // --- Index CLI handler ---
 
@@ -2398,360 +1962,9 @@ async function handleIndex(args: string[]): Promise<void> {
 
 // --- Learn CLI handler ---
 
-async function handleLearn(args: string[]): Promise<void> {
-  const applyMode = args.includes("--apply");
-  const runSuggestions = args.includes("--suggestions");
-  const limitArg = getFlag(args, "--limit");
-  const sinceArg = getFlag(args, "--since");
-  const sourceArg = requireFlagIdentifier(args, "--source", "source name");
+// handleLearn — extracted to src/commands/learn.ts
 
-  // Resolve semantic directories
-  const semanticRoot = sourceArg
-    ? path.join(SEMANTIC_DIR, sourceArg)
-    : SEMANTIC_DIR;
-  const entitiesDir = sourceArg
-    ? path.join(semanticRoot, "entities")
-    : ENTITIES_DIR;
-
-  // Validate semantic layer exists
-  if (!fs.existsSync(entitiesDir)) {
-    console.error(pc.red(`No entities found at ${entitiesDir}. Run 'atlas init' first.`));
-    process.exit(1);
-  }
-
-  // Validate internal DB is configured
-  if (!process.env.DATABASE_URL) {
-    console.error(pc.red("DATABASE_URL is required for atlas learn."));
-    console.error("  The audit log is stored in the internal database.");
-    console.error("  Set DATABASE_URL=postgresql://... to enable audit log analysis.");
-    process.exit(1);
-  }
-
-  // Validate --limit
-  const limit = limitArg ? parseInt(limitArg, 10) : 1000;
-  if (Number.isNaN(limit) || limit <= 0) {
-    console.error(pc.red(`Invalid value for --limit: "${limitArg}". Expected a positive integer.`));
-    process.exit(1);
-  }
-
-  // Validate --since
-  if (sinceArg) {
-    const sinceDate = new Date(sinceArg);
-    if (Number.isNaN(sinceDate.getTime())) {
-      console.error(pc.red(`Invalid value for --since: "${sinceArg}". Expected ISO 8601 format (e.g., 2026-03-01).`));
-      process.exit(1);
-    }
-  }
-
-  console.log(`\nAtlas Learn — analyzing audit log for YAML improvements...\n`);
-
-  const { getInternalDB, closeInternalDB } = await import("@atlas/api/lib/db/internal");
-  try {
-    const { fetchAuditLog, analyzeQueries } = await import("../lib/learn/analyze");
-    const { loadEntities, loadGlossary, generateProposals, applyProposals } = await import("../lib/learn/propose");
-    const { formatDiff, formatSummary } = await import("../lib/learn/diff");
-
-    // 1. Fetch audit log
-    const pool = getInternalDB();
-    const rows = await fetchAuditLog(pool, { limit, since: sinceArg });
-
-    if (rows.length === 0) {
-      console.log(pc.yellow("No successful queries found in the audit log."));
-      console.log("  Run some queries first, then try again.");
-      return;
-    }
-
-    console.log(`  Analyzed ${pc.bold(String(rows.length))} successful queries`);
-
-    // 2. Analyze patterns
-    const analysis = analyzeQueries(rows);
-    console.log(`  Found ${pc.bold(String(analysis.patterns.length))} recurring patterns, ` +
-      `${pc.bold(String(analysis.joins.size))} join pairs, ` +
-      `${pc.bold(String(analysis.aliases.length))} column aliases`);
-
-    // 3. Load existing YAML
-    const entities = loadEntities(entitiesDir);
-    const glossaryData = loadGlossary(semanticRoot);
-
-    if (entities.size === 0) {
-      console.error(pc.red(`No valid entity YAML files found in ${entitiesDir}.`));
-      process.exit(1);
-    }
-
-    console.log(`  Comparing against ${pc.bold(String(entities.size))} entities\n`);
-
-    // 4. Generate proposals
-    const proposalSet = generateProposals(analysis, entities, glossaryData);
-
-    // 5. Output results
-    console.log(formatSummary(proposalSet));
-
-    if (proposalSet.proposals.length > 0) {
-      console.log(formatDiff(proposalSet));
-
-      if (applyMode) {
-        const { written, failed } = applyProposals(proposalSet);
-        if (written.length > 0) {
-          console.log(pc.green(`\n✓ Applied changes to ${written.length} file(s):`));
-          for (const f of written) {
-            console.log(`  ${f.replace(process.cwd() + "/", "")}`);
-          }
-        }
-        if (failed.length > 0) {
-          console.error(pc.red(`\n✗ Failed to write ${failed.length} file(s):`));
-          for (const f of failed) {
-            console.error(`  ${f.path.replace(process.cwd() + "/", "")}: ${f.error}`);
-          }
-          process.exit(1);
-        }
-      } else {
-        console.log(pc.dim("\nDry run — no files modified. Use --apply to write changes."));
-      }
-    }
-
-    if (runSuggestions) {
-      console.log("\n📊 Generating query suggestions from audit log...");
-      const { generateSuggestions } = await import("@atlas/api/lib/learn/suggestions");
-      const result = await generateSuggestions(null); // CLI runs in single-org mode
-      console.log(`  Created: ${pc.bold(String(result.created))} suggestions`);
-      console.log(`  Updated: ${pc.bold(String(result.updated))} suggestions`);
-    }
-  } catch (err) {
-    console.error(pc.red("Failed to analyze audit log."));
-    console.error(`  ${err instanceof Error ? err.message : String(err)}`);
-    process.exit(1);
-  } finally {
-    await closeInternalDB();
-  }
-}
-
-// --- Diff CLI handler ---
-
-async function handleDiff(args: string[]): Promise<void> {
-  const connStr = process.env.ATLAS_DATASOURCE_URL;
-  if (!connStr) {
-    console.error("Error: ATLAS_DATASOURCE_URL is required for atlas diff.");
-    console.error("  PostgreSQL:  ATLAS_DATASOURCE_URL=postgresql://user:pass@host:5432/dbname");
-    console.error("  MySQL:       ATLAS_DATASOURCE_URL=mysql://user:pass@host:3306/dbname");
-    console.error("  Snowflake:   ATLAS_DATASOURCE_URL=snowflake://user:pass@account/database/schema?warehouse=WH");
-    console.error("  Salesforce:  ATLAS_DATASOURCE_URL=salesforce://user:pass@login.salesforce.com?token=TOKEN");
-    process.exit(1);
-  }
-
-  // Determine entities directory — per-source layout if --source is provided
-  const sourceArg = requireFlagIdentifier(args, "--source", "source name");
-  const entitiesDir = sourceArg
-    ? path.join(SEMANTIC_DIR, sourceArg, "entities")
-    : ENTITIES_DIR;
-
-  // Check semantic layer exists
-  if (!fs.existsSync(entitiesDir)) {
-    console.error(`Error: ${entitiesDir} not found. Run \`bun run atlas -- init${sourceArg ? ` --source ${sourceArg}` : ""}\` first.`);
-    process.exit(1);
-  }
-  const yamlFiles = fs.readdirSync(entitiesDir).filter((f) => f.endsWith(".yml"));
-  if (yamlFiles.length === 0) {
-    console.error(`Error: No entity YAMLs found in ${entitiesDir}. Run \`bun run atlas -- init${sourceArg ? ` --source ${sourceArg}` : ""}\` first.`);
-    process.exit(1);
-  }
-
-  let dbType: DBType;
-  try {
-    dbType = detectDBType(connStr);
-  } catch (err) {
-    console.error(`\nError: ${err instanceof Error ? err.message : String(err)}`);
-    process.exit(1);
-  }
-
-  // Test connection
-  console.log("Testing database connection...");
-  if (dbType === "mysql") {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const mysql = require("mysql2/promise");
-    const testPool = mysql.createPool({ uri: connStr, connectionLimit: 1, connectTimeout: 5000 });
-    try {
-      const [rows] = await testPool.execute("SELECT VERSION() as v");
-      console.log(`Connected: MySQL ${(rows as { v: string }[])[0].v}`);
-    } catch (err) {
-      console.error(`\nError: Cannot connect to database.`);
-      console.error(err instanceof Error ? err.message : String(err));
-      console.error(`\nCheck that ATLAS_DATASOURCE_URL is correct and the MySQL server is running.`);
-      process.exit(1);
-    } finally {
-      await testPool.end();
-    }
-  } else if (dbType === "clickhouse") {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { createClient } = require("@clickhouse/client");
-    const testClient = createClient({ url: rewriteClickHouseUrl(connStr) });
-    try {
-      const rows = await clickhouseQuery<{ v: string }>(testClient, "SELECT version() as v");
-      console.log(`Connected: ClickHouse ${rows[0].v}`);
-    } catch (err) {
-      console.error(`\nError: Cannot connect to database.`);
-      console.error(err instanceof Error ? err.message : String(err));
-      console.error(`\nCheck that ATLAS_DATASOURCE_URL is correct and the ClickHouse server is running.`);
-      process.exit(1);
-    } finally {
-      await testClient.close().catch((closeErr: unknown) => {
-        console.warn(`[atlas] ClickHouse client cleanup warning: ${closeErr instanceof Error ? closeErr.message : String(closeErr)}`);
-      });
-    }
-  } else if (dbType === "snowflake") {
-    const { pool: testPool } = await createSnowflakePool(connStr, 1);
-    try {
-      const result = await snowflakeQuery(testPool, "SELECT CURRENT_VERSION() as V");
-      console.log(`Connected: Snowflake ${result.rows[0]?.V ?? "unknown"}`);
-    } catch (err) {
-      console.error(`\nError: Cannot connect to database.`);
-      console.error(err instanceof Error ? err.message : String(err));
-      console.error(`\nCheck that ATLAS_DATASOURCE_URL is correct and the Snowflake account is accessible.`);
-      process.exit(1);
-    } finally {
-      await testPool.drain().catch((err: unknown) => {
-        console.warn(`[atlas] Snowflake pool drain warning: ${err instanceof Error ? err.message : String(err)}`);
-      });
-      try { await testPool.clear(); } catch (err: unknown) {
-        console.warn(`[atlas] Snowflake pool clear warning: ${err instanceof Error ? err.message : String(err)}`);
-      }
-    }
-  } else if (dbType === "salesforce") {
-    const { parseSalesforceURL, createSalesforceConnection } = await import("../../../plugins/salesforce/src/connection");
-    const config = parseSalesforceURL(connStr);
-    const source = createSalesforceConnection(config);
-    try {
-      const objects = await source.listObjects();
-      console.log(`Connected: Salesforce (${objects.length} queryable objects)`);
-    } catch (err) {
-      console.error(`\nError: Cannot connect to Salesforce.`);
-      console.error(err instanceof Error ? err.message : String(err));
-      console.error(`\nCheck that ATLAS_DATASOURCE_URL is correct and your Salesforce credentials are valid.`);
-      process.exit(1);
-    } finally {
-      await source.close();
-    }
-  } else {
-    const testPool = new Pool({ connectionString: connStr, max: 1, connectionTimeoutMillis: 5000 });
-    try {
-      const client = await testPool.connect();
-      const versionResult = await client.query("SELECT version()");
-      console.log(`Connected: ${versionResult.rows[0]?.version?.split(",")[0] ?? "unknown"}`);
-      client.release();
-    } catch (err) {
-      console.error(`\nError: Cannot connect to database.`);
-      console.error(err instanceof Error ? err.message : String(err));
-      console.error(`\nCheck that ATLAS_DATASOURCE_URL is correct and the server is running.`);
-      process.exit(1);
-    } finally {
-      await testPool.end();
-    }
-  }
-
-  const tablesArg = getFlag(args, "--tables");
-  const filterTables = tablesArg ? tablesArg.split(",") : undefined;
-  let schemaArg = getFlag(args, "--schema") ?? process.env.ATLAS_SCHEMA ?? "public";
-
-  validateSchemaName(schemaArg);
-  if (schemaArg !== "public" && dbType !== "postgres") {
-    console.warn(`Warning: --schema is only supported for PostgreSQL. Ignoring "${schemaArg}" for ${dbType}.`);
-    schemaArg = "public";
-  }
-
-  // Profile live DB
-  console.log(`\nProfiling ${dbType} database...\n`);
-  let profiles: TableProfile[];
-  try {
-    let result: ProfilingResult;
-    switch (dbType) {
-      case "mysql":
-        result = await profileMySQL(connStr, filterTables, undefined, undefined, cliProfileLogger);
-        break;
-      case "postgres":
-        result = await profilePostgres(connStr, filterTables, undefined, schemaArg, undefined, cliProfileLogger);
-        break;
-      case "clickhouse":
-        result = await profileClickHouse(connStr, filterTables);
-        break;
-      case "snowflake":
-        result = await profileSnowflake(connStr, filterTables);
-        break;
-      case "duckdb": {
-        const { parseDuckDBUrl } = await import("../../../plugins/duckdb/src/connection");
-        const duckConfig = parseDuckDBUrl(connStr);
-        result = await profileDuckDB(duckConfig.path, filterTables);
-        break;
-      }
-      case "salesforce":
-        result = await profileSalesforce(connStr, filterTables);
-        break;
-      default: {
-        throw new Error(`Unknown database type: ${dbType}`);
-      }
-    }
-    profiles = result.profiles;
-    if (result.errors.length > 0) {
-      const total = result.profiles.length + result.errors.length;
-      logProfilingErrors(result.errors, total);
-      console.warn(`Continuing diff with ${profiles.length} successfully profiled tables.\n`);
-    }
-  } catch (err) {
-    console.error(`\nError: Failed to profile database.`);
-    console.error(err instanceof Error ? err.message : String(err));
-    process.exit(1);
-  }
-
-  if (profiles.length === 0) {
-    console.error("Error: No tables were profiled from the database.");
-    process.exit(1);
-  }
-
-  // Run FK inference so inferred FKs are comparable
-  profiles = analyzeTableProfiles(profiles);
-
-  // Build DB snapshots
-  const dbSnapshots = new Map<string, EntitySnapshot>();
-  for (const profile of profiles) {
-    dbSnapshots.set(profile.table_name, profileToSnapshot(profile));
-  }
-
-  // Parse YAML snapshots
-  const yamlSnapshots = new Map<string, EntitySnapshot>();
-  const yamlErrors: string[] = [];
-  for (const file of yamlFiles) {
-    try {
-      const content = fs.readFileSync(path.join(entitiesDir, file), "utf-8");
-      const doc = yaml.load(content) as Record<string, unknown>;
-      if (!doc || typeof doc.table !== "string") {
-        console.warn(`[atlas diff] Skipping ${file}: missing or non-string 'table' field`);
-        continue;
-      }
-      const tableName = doc.table as string;
-      // If --tables filter is set, only include matching YAML entities
-      if (filterTables && !filterTables.includes(tableName)) continue;
-      yamlSnapshots.set(tableName, parseEntityYAML(doc));
-    } catch (err) {
-      yamlErrors.push(`${file}: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  }
-  if (yamlErrors.length > 0) {
-    console.warn(`\nWarning: Failed to parse ${yamlErrors.length} YAML file(s):`);
-    for (const e of yamlErrors) console.warn(`  - ${e}`);
-  }
-  if (yamlSnapshots.size === 0 && yamlFiles.length > 0) {
-    console.warn(`\nWarning: No valid entity YAML files found despite files existing in ${entitiesDir}.`);
-  }
-
-  // Compute and display diff
-  const diff = computeDiff(dbSnapshots, yamlSnapshots);
-  console.log(formatDiff(diff, dbSnapshots));
-
-  const hasDrift =
-    diff.newTables.length > 0 ||
-    diff.removedTables.length > 0 ||
-    diff.tableDiffs.length > 0;
-
-  process.exit(hasDrift ? 1 : 0);
-}
+// handleDiff — extracted to src/commands/diff.ts
 
 // --- Profile a single datasource ---
 
@@ -2805,108 +2018,13 @@ async function profileDatasource(opts: ProfileDatasourceOpts): Promise<void> {
 
   // Test connection before profiling
   console.log("Testing database connection...");
-  if (dbType === "mysql") {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const mysql = require("mysql2/promise");
-    const testPool = mysql.createPool({
-      uri: connStr,
-      connectionLimit: 1,
-      connectTimeout: 5000,
-    });
-    try {
-      const [rows] = await testPool.execute("SELECT VERSION() as v");
-      console.log(`Connected: MySQL ${(rows as { v: string }[])[0].v}`);
-    } catch (err) {
-      console.error(`\nError: Cannot connect to database.`);
-      console.error(err instanceof Error ? err.message : String(err));
-      console.error(`\nCheck that the datasource URL is correct and the MySQL server is running.`);
-      throw err;
-    } finally {
-      await testPool.end();
-    }
-  } else if (dbType === "clickhouse") {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { createClient } = require("@clickhouse/client");
-    const testClient = createClient({ url: rewriteClickHouseUrl(connStr) });
-    try {
-      const rows = await clickhouseQuery<{ v: string }>(testClient, "SELECT version() as v");
-      console.log(`Connected: ClickHouse ${rows[0].v}`);
-    } catch (err) {
-      console.error(`\nError: Cannot connect to database.`);
-      console.error(err instanceof Error ? err.message : String(err));
-      console.error(`\nCheck that the datasource URL is correct and the ClickHouse server is running.`);
-      throw err;
-    } finally {
-      await testClient.close().catch((closeErr: unknown) => {
-        console.warn(`[atlas] ClickHouse client cleanup warning: ${closeErr instanceof Error ? closeErr.message : String(closeErr)}`);
-      });
-    }
-  } else if (dbType === "snowflake") {
-    const { pool: testPool } = await createSnowflakePool(connStr, 1);
-    try {
-      const result = await snowflakeQuery(testPool, "SELECT CURRENT_VERSION() as V");
-      console.log(`Connected: Snowflake ${result.rows[0]?.V ?? "unknown"}`);
-    } catch (err) {
-      console.error(`\nError: Cannot connect to database.`);
-      console.error(err instanceof Error ? err.message : String(err));
-      console.error(`\nCheck that the datasource URL is correct and the Snowflake account is accessible.`);
-      throw err;
-    } finally {
-      await testPool.drain().catch((err: unknown) => {
-        console.warn(`[atlas] Snowflake pool drain warning: ${err instanceof Error ? err.message : String(err)}`);
-      });
-      try { await testPool.clear(); } catch (err: unknown) {
-        console.warn(`[atlas] Snowflake pool clear warning: ${err instanceof Error ? err.message : String(err)}`);
-      }
-    }
-  } else if (dbType === "duckdb") {
-    try {
-      const { parseDuckDBUrl } = await import("../../../plugins/duckdb/src/connection");
-      const duckConfig = parseDuckDBUrl(connStr);
-      const DuckDBInstance = await loadDuckDB();
-      const testInstance = await DuckDBInstance.create(duckConfig.path, { access_mode: "READ_ONLY" });
-      const testConn = await testInstance.connect();
-      const reader = await testConn.runAndReadAll("SELECT version() as v");
-      const version = reader.getRowObjects()[0]?.v ?? "unknown";
-      console.log(`Connected: DuckDB ${version}`);
-      testConn.disconnectSync();
-      testInstance.closeSync();
-    } catch (err) {
-      console.error(`\nError: Cannot open DuckDB database.`);
-      console.error(err instanceof Error ? err.message : String(err));
-      console.error(`\nCheck that ATLAS_DATASOURCE_URL points to a valid DuckDB file.`);
-      process.exit(1);
-    }
-  } else if (dbType === "salesforce") {
-    const { parseSalesforceURL, createSalesforceConnection } = await import("../../../plugins/salesforce/src/connection");
-    const config = parseSalesforceURL(connStr);
-    const source = createSalesforceConnection(config);
-    try {
-      const objects = await source.listObjects();
-      console.log(`Connected: Salesforce (${objects.length} queryable objects)`);
-    } catch (err) {
-      console.error(`\nError: Cannot connect to Salesforce.`);
-      console.error(err instanceof Error ? err.message : String(err));
-      console.error(`\nCheck that ATLAS_DATASOURCE_URL is correct and your Salesforce credentials are valid.`);
-      process.exit(1);
-    } finally {
-      await source.close();
-    }
-  } else {
-    const testPool = new Pool({ connectionString: connStr, max: 1, connectionTimeoutMillis: 5000 });
-    try {
-      const client = await testPool.connect();
-      const versionResult = await client.query("SELECT version()");
-      console.log(`Connected: ${versionResult.rows[0]?.version?.split(",")[0] ?? "unknown"}`);
-      client.release();
-    } catch (err) {
-      console.error(`\nError: Cannot connect to database.`);
-      console.error(err instanceof Error ? err.message : String(err));
-      console.error(`\nCheck that the datasource URL is correct and the server is running.`);
-      throw err;
-    } finally {
-      await testPool.end();
-    }
+  try {
+    const version = await testDatabaseConnection(connStr, dbType);
+    console.log(`Connected: ${version}`);
+  } catch (err) {
+    console.error(`\nError: ${err instanceof Error ? err.message : String(err)}`);
+    console.error(`\nCheck that the datasource URL is correct and the server is running.`);
+    throw err;
   }
 
   // Interactive table/view selection (TTY only, when --tables and --demo not provided)
@@ -3177,356 +2295,9 @@ Next steps:
 `);
 }
 
-// --- Export (migration bundle) ---
-
-async function handleExport(args: string[]): Promise<void> {
-  const outputArg = getFlag(args, "--output") ?? getFlag(args, "-o");
-  const orgArg = getFlag(args, "--org");
-
-  // Require DATABASE_URL
-  if (!process.env.DATABASE_URL) {
-    console.error(pc.red("DATABASE_URL is required for atlas export."));
-    console.error("  The export reads conversations, settings, and learned patterns from the internal database.");
-    console.error("  Set DATABASE_URL=postgresql://... to point to your Atlas internal database.");
-    process.exit(1);
-  }
-
-  const { getInternalDB, closeInternalDB } = await import("@atlas/api/lib/db/internal");
-  const pool = getInternalDB();
-
-  try {
-    console.log("\nAtlas Export — creating migration bundle...\n");
-
-    // Determine org filter
-    const orgFilter = orgArg ?? null;
-    const orgClause = orgFilter ? "org_id = $1" : "org_id IS NULL";
-    const orgParams = orgFilter ? [orgFilter] : [];
-
-    // 1. Conversations + messages
-    const convRows = await pool.query(
-      `SELECT id, user_id, title, surface, connection_id, starred, created_at, updated_at
-       FROM conversations
-       WHERE ${orgClause} AND deleted_at IS NULL
-       ORDER BY created_at`,
-      orgParams,
-    );
-    console.log(`  Conversations: ${convRows.rows.length}`);
-
-    let messageCount = 0;
-    const conversations = [];
-    for (const row of convRows.rows) {
-      const msgRows = await pool.query(
-        `SELECT id, role, content, created_at
-         FROM messages
-         WHERE conversation_id = $1
-         ORDER BY created_at`,
-        [row.id],
-      );
-      messageCount += msgRows.rows.length;
-      conversations.push({
-        id: row.id as string,
-        userId: (row.user_id as string) ?? null,
-        title: (row.title as string) ?? null,
-        surface: (row.surface as import("@useatlas/types").ExportedConversation["surface"]) ?? "web",
-        connectionId: (row.connection_id as string) ?? null,
-        starred: (row.starred as boolean) ?? false,
-        createdAt: String(row.created_at),
-        updatedAt: String(row.updated_at),
-        messages: msgRows.rows.map((m: Record<string, unknown>) => ({
-          id: m.id as string,
-          role: m.role as import("@useatlas/types").ExportedMessage["role"],
-          content: m.content,
-          createdAt: String(m.created_at),
-        })),
-      });
-    }
-    console.log(`  Messages:      ${messageCount}`);
-
-    // 2. Semantic entities (DB-backed)
-    const entRows = await pool.query(
-      `SELECT name, entity_type, yaml_content, connection_id
-       FROM semantic_entities
-       WHERE ${orgClause}
-       ORDER BY entity_type, name`,
-      orgParams,
-    );
-    const semanticEntities = entRows.rows.map((r: Record<string, unknown>) => ({
-      name: r.name as string,
-      entityType: r.entity_type as string,
-      yamlContent: r.yaml_content as string,
-      connectionId: (r.connection_id as string) ?? null,
-    }));
-    console.log(`  Entities:      ${semanticEntities.length}`);
-
-    // 3. Learned patterns
-    const patRows = await pool.query(
-      `SELECT pattern_sql, description, source_entity, confidence, status
-       FROM learned_patterns
-       WHERE ${orgClause}
-       ORDER BY created_at`,
-      orgParams,
-    );
-    const learnedPatterns = patRows.rows.map((r: Record<string, unknown>) => ({
-      patternSql: r.pattern_sql as string,
-      description: (r.description as string) ?? null,
-      sourceEntity: (r.source_entity as string) ?? null,
-      confidence: r.confidence as number,
-      status: r.status as import("@useatlas/types").LearnedPattern["status"],
-    }));
-    console.log(`  Patterns:      ${learnedPatterns.length}`);
-
-    // 4. Settings
-    const settRows = await pool.query(
-      `SELECT key, value
-       FROM settings
-       WHERE ${orgClause}
-       ORDER BY key`,
-      orgParams,
-    );
-    const settings = settRows.rows.map((r: Record<string, unknown>) => ({
-      key: r.key as string,
-      value: r.value as string,
-    }));
-    console.log(`  Settings:      ${settings.length}`);
-
-    // Build bundle
-    const { EXPORT_BUNDLE_VERSION } = await import("@useatlas/types");
-    const bundle: import("@useatlas/types").ExportBundle = {
-      manifest: {
-        version: EXPORT_BUNDLE_VERSION,
-        exportedAt: new Date().toISOString(),
-        source: {
-          label: orgFilter ? `org:${orgFilter}` : "self-hosted",
-          apiUrl: process.env.ATLAS_API_URL ?? "http://localhost:3001",
-        },
-        counts: {
-          conversations: conversations.length,
-          messages: messageCount,
-          semanticEntities: semanticEntities.length,
-          learnedPatterns: learnedPatterns.length,
-          settings: settings.length,
-        },
-      },
-      conversations,
-      semanticEntities,
-      learnedPatterns,
-      settings,
-    };
-
-    // Write output
-    const date = new Date().toISOString().slice(0, 10);
-    const outPath = outputArg ?? `./atlas-export-${date}.json`;
-    fs.writeFileSync(outPath, JSON.stringify(bundle, null, 2));
-    console.log(`\n${pc.green("✓")} Bundle written to ${pc.bold(outPath)}`);
-    console.log(`  Total size: ${(Buffer.byteLength(JSON.stringify(bundle)) / 1024).toFixed(1)} KB`);
-    console.log(`\nNext: ATLAS_API_KEY=sk-... atlas migrate-import --bundle ${outPath} --target https://app.useatlas.dev`);
-  } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
-    console.error(pc.red(`Export failed: ${detail}`));
-    process.exit(1);
-  } finally {
-    await closeInternalDB();
-  }
-}
-
-// --- Import ---
-
-async function handleImport(args: string[]): Promise<void> {
-  const connectionArg = getFlag(args, "--connection");
-
-  // Determine the API base URL
-  const apiUrl = process.env.ATLAS_API_URL ?? "http://localhost:3001";
-
-  // Build the import request
-  const importUrl = `${apiUrl}/api/v1/admin/semantic/org/import`;
-  const body: Record<string, string> = {};
-  if (connectionArg) body.connectionId = connectionArg;
-
-  // Determine auth header
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
-  if (process.env.ATLAS_API_KEY) headers.Authorization = `Bearer ${process.env.ATLAS_API_KEY}`;
-
-  console.log("Importing semantic layer from disk to DB...\n");
-
-  try {
-    const resp = await fetch(importUrl, {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(60_000),
-    });
-
-    if (!resp.ok) {
-      if (resp.status === 401 || resp.status === 403) {
-        console.error("Import failed: authentication required.");
-        console.error("  Set ATLAS_API_KEY environment variable.");
-      } else {
-        let errorMsg = `HTTP ${resp.status}`;
-        try {
-          const json = await resp.json() as { message?: string; error?: string };
-          errorMsg = json.message ?? json.error ?? errorMsg;
-        } catch {
-          // intentionally ignored: JSON parse failed, fall through to text() attempt
-          errorMsg = await resp.text().catch(() => errorMsg);
-        }
-        console.error(`Import failed: ${errorMsg}`);
-      }
-      process.exit(1);
-    }
-
-    const result = await resp.json() as { imported: number; skipped: number; errors: Array<{ file: string; reason: string }>; total: number };
-
-    console.log(`Imported: ${result.imported}`);
-    if (result.skipped > 0) {
-      console.log(`Skipped:  ${result.skipped}`);
-    }
-    console.log(`Total:    ${result.total}`);
-
-    if (result.errors.length > 0) {
-      console.log("\nErrors:");
-      for (const e of result.errors) {
-        console.log(`  ${e.file}: ${e.reason}`);
-      }
-    }
-
-    if (result.imported > 0) {
-      console.log("\nDone! Entities imported to DB. The explore tool and SQL validation will use the updated semantic layer.");
-    }
-  } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
-    if (detail.includes("ECONNREFUSED") || detail.includes("fetch failed")) {
-      console.error(`Cannot reach Atlas API at ${apiUrl}. Is the server running?`);
-      console.error("  Start it with: bun run dev:api");
-      console.error("  Set ATLAS_API_URL if the API is not on localhost:3001");
-    } else {
-      console.error(`Import failed: ${detail}`);
-    }
-    process.exit(1);
-  }
-}
-
-// --- Migrate-import (migration bundle → hosted instance) ---
-
-async function handleMigrateImport(args: string[]): Promise<void> {
-  const bundlePath = getFlag(args, "--bundle");
-  const targetUrl = getFlag(args, "--target") ?? "https://app.useatlas.dev";
-  const apiKey = getFlag(args, "--api-key") ?? process.env.ATLAS_API_KEY;
-
-  if (!bundlePath) {
-    console.error(pc.red("--bundle <path> is required."));
-    console.error("  Example: atlas migrate-import --bundle atlas-export-2026-04-02.json --target https://app.useatlas.dev");
-    process.exit(1);
-  }
-
-  if (!apiKey) {
-    console.error(pc.red("Authentication required."));
-    console.error("  Set ATLAS_API_KEY or pass --api-key <key>.");
-    process.exit(1);
-  }
-
-  // Read and validate the bundle file
-  if (!fs.existsSync(bundlePath)) {
-    console.error(pc.red(`Bundle file not found: ${bundlePath}`));
-    process.exit(1);
-  }
-
-  let bundle: unknown;
-  try {
-    const raw = fs.readFileSync(bundlePath, "utf-8");
-    bundle = JSON.parse(raw);
-  } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
-    console.error(pc.red(`Failed to parse bundle: ${detail}`));
-    process.exit(1);
-  }
-
-  // Basic validation — mirror server-side checks to fail fast before upload
-  const b = bundle as Record<string, unknown>;
-  if (!b || typeof b !== "object" || !b.manifest || !Array.isArray(b.conversations) ||
-      !Array.isArray(b.semanticEntities) || !Array.isArray(b.learnedPatterns) || !Array.isArray(b.settings)) {
-    console.error(pc.red("Invalid bundle format. Expected an Atlas export bundle with manifest and all data arrays."));
-    process.exit(1);
-  }
-
-  const { EXPORT_BUNDLE_VERSION } = await import("@useatlas/types");
-  const manifest = (b.manifest as { version: number; counts: Record<string, number> });
-  if (manifest.version !== EXPORT_BUNDLE_VERSION) {
-    console.error(pc.red(`Unsupported bundle version: ${manifest.version}. This CLI supports version ${EXPORT_BUNDLE_VERSION}.`));
-    process.exit(1);
-  }
-
-  console.log(`\nAtlas Migrate-Import — sending bundle to ${pc.bold(targetUrl)}\n`);
-  console.log(`  Bundle: ${bundlePath}`);
-  console.log(`  Conversations: ${manifest.counts.conversations}`);
-  console.log(`  Entities:      ${manifest.counts.semanticEntities}`);
-  console.log(`  Patterns:      ${manifest.counts.learnedPatterns}`);
-  console.log(`  Settings:      ${manifest.counts.settings}`);
-  console.log();
-
-  const importUrl = `${targetUrl.replace(/\/$/, "")}/api/v1/admin/migrate/import`;
-
-  try {
-    const resp = await fetch(importUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify(bundle),
-      signal: AbortSignal.timeout(120_000),
-    });
-
-    if (!resp.ok) {
-      if (resp.status === 401 || resp.status === 403) {
-        console.error(pc.red("Import failed: authentication or authorization error."));
-        console.error("  Ensure your API key has admin access to the target workspace.");
-      } else if (resp.status === 413) {
-        console.error(pc.red("Import failed: bundle too large. Try exporting a smaller dataset."));
-      } else {
-        let errorMsg = `HTTP ${resp.status}`;
-        try {
-          const json = await resp.json() as { message?: string; error?: string };
-          errorMsg = json.message ?? json.error ?? errorMsg;
-        } catch {
-          // intentionally ignored: JSON parse failed
-          errorMsg = await resp.text().catch(() => errorMsg);
-        }
-        console.error(pc.red(`Import failed: ${errorMsg}`));
-      }
-      process.exit(1);
-    }
-
-    let result: import("@useatlas/types").ImportResult;
-    try {
-      result = await resp.json() as import("@useatlas/types").ImportResult;
-      if (!result?.conversations || !result?.semanticEntities) {
-        throw new Error("Unexpected response shape");
-      }
-    } catch (parseErr) {
-      console.error(pc.red("Import appeared to succeed (HTTP 200) but the response was not in the expected format."));
-      console.error("  Check the target Atlas instance version compatibility.");
-      console.error(`  Detail: ${parseErr instanceof Error ? parseErr.message : String(parseErr)}`);
-      process.exit(1);
-    }
-
-    console.log(`${pc.green("✓")} Import complete!\n`);
-    console.log("  Entity            Imported  Skipped");
-    console.log("  ────────────────  ────────  ───────");
-    console.log(`  Conversations     ${String(result.conversations.imported).padStart(8)}  ${String(result.conversations.skipped).padStart(7)}`);
-    console.log(`  Semantic entities ${String(result.semanticEntities.imported).padStart(8)}  ${String(result.semanticEntities.skipped).padStart(7)}`);
-    console.log(`  Learned patterns  ${String(result.learnedPatterns.imported).padStart(8)}  ${String(result.learnedPatterns.skipped).padStart(7)}`);
-    console.log(`  Settings          ${String(result.settings.imported).padStart(8)}  ${String(result.settings.skipped).padStart(7)}`);
-  } catch (err) {
-    const detail = err instanceof Error ? err.message : String(err);
-    if (detail.includes("ECONNREFUSED") || detail.includes("fetch failed")) {
-      console.error(pc.red(`Cannot reach Atlas API at ${targetUrl}.`));
-      console.error("  Check the --target URL and ensure the Atlas API is running.");
-    } else {
-      console.error(pc.red(`Import failed: ${detail}`));
-    }
-    process.exit(1);
-  }
-}
+// handleExport — extracted to src/commands/export.ts
+// handleImport — extracted to src/commands/import.ts
+// handleMigrateImport — extracted to src/commands/migrate-import.ts
 
 // --- Migrate ---
 
@@ -3974,6 +2745,7 @@ async function main() {
   await checkEnvFile(command);
 
   if (command === "query") {
+    const { handleQuery } = await import("../src/commands/query");
     return handleQuery(args);
   }
 
@@ -4018,10 +2790,12 @@ async function main() {
   }
 
   if (command === "learn") {
+    const { handleLearn } = await import("../src/commands/learn");
     return handleLearn(args);
   }
 
   if (command === "diff") {
+    const { handleDiff } = await import("../src/commands/diff");
     return handleDiff(args);
   }
 
@@ -4086,14 +2860,17 @@ async function main() {
   }
 
   if (command === "export") {
+    const { handleExport } = await import("../src/commands/export");
     return handleExport(args);
   }
 
   if (command === "import") {
+    const { handleImport } = await import("../src/commands/import");
     return handleImport(args);
   }
 
   if (command === "migrate-import") {
+    const { handleMigrateImport } = await import("../src/commands/migrate-import");
     return handleMigrateImport(args);
   }
 
@@ -4546,14 +3323,6 @@ Next steps:
       }
     }
   }
-}
-
-export function getFlag(args: string[], flag: string): string | undefined {
-  const idx = args.indexOf(flag);
-  if (idx === -1 || idx + 1 >= args.length) return undefined;
-  const value = args[idx + 1];
-  if (value.startsWith("--")) return undefined;
-  return value;
 }
 
 function exitMissingDatasourceUrl(): never {

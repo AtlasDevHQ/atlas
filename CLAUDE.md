@@ -128,7 +128,7 @@ bun run atlas -- diff    # Compare DB schema vs semantic layer
 | `apps/docs` | `@atlas/docs` | Documentation site (Fumadocs) |
 | `examples/docker` | — | Self-hosted Docker deploy + optional nsjail |
 | `examples/nextjs-standalone` | — | Pure Next.js + embedded Hono API (Vercel) |
-| `create-atlas` | — | Scaffolding CLI (`bun create atlas-agent`) |
+| `create-atlas` | — | Scaffolding CLI (`bun create @useatlas`) |
 | `ee/` | `@atlas/ee` | Enterprise features — source-available, commercial license |
 | `plugins/` | — | Atlas plugins directory |
 

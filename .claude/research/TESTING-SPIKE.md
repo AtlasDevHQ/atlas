@@ -234,7 +234,7 @@
 - [ ] Admin console accessible — **needs real API key**
 
 ### 2.3 Scaffold — Defaults (non-interactive)
-- [x] `bun create atlas-agent test-defaults --defaults` ✓ (SQLite default, Anthropic, demo data loaded)
+- [x] `bun create @useatlas test-defaults --defaults` ✓ (SQLite default, Anthropic, demo data loaded)
 - [x] Completes without prompts ✓
 - [x] Produces a working project ✓ (3 entity files, .env, full src/ directory)
 

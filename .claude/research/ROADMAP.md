@@ -310,7 +310,7 @@ These are already partially implemented in the codebase — reserve status, DB s
 
 ### Tenant Provisioning
 
-- [x] Self-serve signup flow (#644, PR #674) — email/OAuth signup → workspace creation → connect database wizard. No CLI, no `atlas init`, no YAML editing. The web equivalent of `bun create atlas-agent` but for non-developers
+- [x] Self-serve signup flow (#644, PR #674) — email/OAuth signup → workspace creation → connect database wizard. No CLI, no `atlas init`, no YAML editing. The web equivalent of `bun create @useatlas` but for non-developers
 - [x] Workspace lifecycle (#645, PR #673) — create, suspend, delete. Cascading cleanup of connections, conversations, semantic layers, cached results
 - [x] Guided semantic layer setup wizard (#649, PR #681) — web UI replacement for `atlas init`. Profile database, review generated entities, edit descriptions, preview agent behavior. Shared profiler library extracted from CLI
 

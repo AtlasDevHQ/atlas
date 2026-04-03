@@ -8,7 +8,7 @@ Atlas is an open-source (MIT) text-to-SQL agent that deploys as an API server an
 - **Semantic layer** -- YAML files describe your schema, business terms, and metrics. The agent reads them before writing SQL, so it understands "churn rate" means what your team means, not what GPT guesses.
 - **Read-only by design** -- 4-layer SQL validation pipeline. Only SELECT, only whitelisted tables, auto LIMIT, statement timeout. No writes, ever.
 - **Plugin ecosystem** -- 15+ plugins for datasources (Postgres, MySQL, BigQuery, ClickHouse, Snowflake, DuckDB, Salesforce), sandboxed Python execution, Slack, MCP, email actions, and more.
-- **Deploy anywhere** -- One-click Railway/Vercel, Docker, or `bun create atlas-agent` to scaffold a new project.
+- **Deploy anywhere** -- One-click Railway/Vercel, Docker, or `bun create @useatlas` to scaffold a new project.
 
 We built Atlas because text-to-SQL is a feature every data-heavy app needs, but the existing tools are all standalone products. We wanted something you could ship inside your own product in an afternoon.
 

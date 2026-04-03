@@ -45,7 +45,7 @@ Deploy-anywhere, open-source text-to-SQL data analyst agent. MIT-licensed. TypeS
 | TypeScript SDK | `createAtlasClient()` for programmatic access |
 | Headless API | `POST /api/v1/query` for JSON responses (no UI needed) |
 | Embeddable UI | Pure HTTP client, works with React/Next/Nuxt/Svelte/etc. |
-| Scaffolding | `bun create atlas-agent my-app` |
+| Scaffolding | `bun create @useatlas my-app` |
 | Deploy templates | Docker, Railway, Vercel (full-stack or headless) |
 | Schema drift detection | `atlas diff` compares DB schema against semantic layer |
 | Audit logging | Every query logged with user, SQL, timing |
@@ -389,7 +389,7 @@ The reordered sequence would be roughly:
 
 ### One-liner
 
-Atlas is the only tool where you can `bun create atlas-agent my-app`, point it at a database, and have a production-ready, security-hardened, embeddable AI data analyst running on Docker/Railway/Vercel in minutes — with a plugin SDK for extensibility.
+Atlas is the only tool where you can `bun create @useatlas my-app`, point it at a database, and have a production-ready, security-hardened, embeddable AI data analyst running on Docker/Railway/Vercel in minutes — with a plugin SDK for extensibility.
 
 ### Competitive angle (vs specific competitors)
 

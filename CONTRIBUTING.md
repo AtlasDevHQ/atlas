@@ -40,7 +40,7 @@ atlas/
 ├── examples/             # Deploy templates (Docker, Next.js standalone)
 ├── semantic/             # Semantic layer (YAML entity/metric files)
 ├── docs/                 # Guides (docs/guides/) and design ADRs (docs/design/)
-└── create-atlas/         # Scaffolding CLI (bun create atlas-agent)
+└── create-atlas/         # Scaffolding CLI (bun create @useatlas)
 ```
 
 Cross-package imports use `@atlas/api/*`. The web package uses `@/*` for

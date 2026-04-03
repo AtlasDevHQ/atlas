@@ -114,7 +114,7 @@ export default function Home() {
           <pre className="font-mono text-sm leading-relaxed text-zinc-400">
             <code>
               <span className="text-zinc-600">$</span>{" "}
-              <span className="text-zinc-200">bun create atlas-agent my-app --demo</span>
+              <span className="text-zinc-200">bun create @useatlas my-app --demo</span>
               {"\n"}
               <span className="text-zinc-600">$</span>{" "}
               <span className="text-zinc-200">cd my-app && bun run dev</span>

@@ -4,49 +4,22 @@
  * Covers: GET /admin/abuse, POST /admin/abuse/:id/reinstate, GET /admin/abuse/config.
  */
 
-import { createConnectionMock } from "@atlas/api/testing/connection";
 import {
   describe,
   it,
   expect,
   beforeEach,
+  afterAll,
   mock,
   type Mock,
 } from "bun:test";
+import { createApiTestMocks } from "@atlas/api/testing/api-test-mocks";
 
-// --- Mocks (before any import that touches the modules) ---
+// --- Unified mocks ---
 
-const mockAuthenticateRequest: Mock<(req: Request) => Promise<unknown>> = mock(
-  () =>
-    Promise.resolve({
-      authenticated: true,
-      mode: "simple-key",
-      user: { id: "admin-1", mode: "simple-key", label: "Admin", role: "admin", activeOrganizationId: "org-1" },
-    }),
-);
+const mocks = createApiTestMocks();
 
-mock.module("@atlas/api/lib/auth/middleware", () => ({
-  authenticateRequest: mockAuthenticateRequest,
-  checkRateLimit: mock(() => ({ allowed: true })),
-  getClientIP: mock(() => null),
-  resetRateLimits: mock(() => {}),
-  _stopCleanup: mock(() => {}),
-  _setValidatorOverrides: mock(() => {}),
-}));
-
-mock.module("@atlas/api/lib/auth/detect", () => ({
-  detectAuthMode: () => "simple-key",
-  resetAuthModeCache: () => {},
-}));
-
-mock.module("@atlas/api/lib/startup", () => ({
-  validateEnvironment: mock(() => Promise.resolve([])),
-  getStartupWarnings: mock(() => []),
-}));
-
-mock.module("@atlas/api/lib/db/connection", () => createConnectionMock());
-
-// --- Abuse mock ---
+// --- Abuse mock overrides (test-specific) ---
 
 const mockListFlagged: Mock<() => unknown[]> = mock(() => []);
 const mockReinstateWorkspace: Mock<(wsId: string, actorId: string) => boolean> = mock(() => true);
@@ -71,130 +44,11 @@ mock.module("@atlas/api/lib/security/abuse", () => ({
   _stopCleanup: mock(() => {}),
 }));
 
-// --- Internal DB mock ---
-
-mock.module("@atlas/api/lib/db/internal", () => ({
-  hasInternalDB: () => true,
-  internalQuery: mock(() => Promise.resolve([])),
-  internalExecute: mock(() => {}),
-  getInternalDB: mock(() => ({})),
-  closeInternalDB: mock(() => Promise.resolve()),
-  migrateInternalDB: mock(() => Promise.resolve()),
-  loadSavedConnections: mock(() => Promise.resolve(0)),
-  _resetPool: mock(() => {}),
-  _resetCircuitBreaker: mock(() => {}),
-  encryptUrl: (url: string) => url,
-  decryptUrl: (url: string) => url,
-  getEncryptionKey: () => null,
-  isPlaintextUrl: (value: string) => /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(value),
-  _resetEncryptionKeyCache: mock(() => {}),
-  findPatternBySQL: async () => null,
-  insertLearnedPattern: () => {},
-  incrementPatternCount: () => {},
-  getApprovedPatterns: mock(async () => []),
-  upsertSuggestion: mock(() => Promise.resolve("created")),
-  getSuggestionsByTables: mock(() => Promise.resolve([])),
-  getPopularSuggestions: mock(() => Promise.resolve([])),
-  incrementSuggestionClick: mock(),
-  deleteSuggestion: mock(() => Promise.resolve(false)),
-  getAuditLogQueries: mock(() => Promise.resolve([])),
-  getWorkspaceStatus: mock(() => Promise.resolve(null)),
-  getWorkspaceDetails: mock(() => Promise.resolve(null)),
-  updateWorkspaceStatus: mock(() => Promise.resolve(false)),
-  updateWorkspacePlanTier: mock(() => Promise.resolve(false)),
-  cascadeWorkspaceDelete: mock(async () => ({ conversations: 0, semanticEntities: 0, learnedPatterns: 0, suggestions: 0, scheduledTasks: 0, settings: 0 })),
-  getWorkspaceHealthSummary: mock(() => Promise.resolve(null)),
-  getWorkspaceRegion: mock(async () => null),
-}));
-
-mock.module("@atlas/api/lib/learn/pattern-cache", () => ({
-  buildLearnedPatternsSection: async () => "",
-  getRelevantPatterns: async () => [],
-  invalidatePatternCache: () => {},
-  extractKeywords: () => new Set(),
-  _resetPatternCache: () => {},
-}));
-
-mock.module("@atlas/api/lib/semantic", () => ({
-  getOrgWhitelistedTables: () => new Set(),
-  loadOrgWhitelist: async () => new Map(),
-  invalidateOrgWhitelist: () => {},
-  getOrgSemanticIndex: async () => "",
-  invalidateOrgSemanticIndex: () => {},
-  _resetOrgWhitelists: () => {},
-  _resetOrgSemanticIndexes: () => {},
-  getWhitelistedTables: () => new Set(),
-  getCrossSourceJoins: () => [],
-  _resetWhitelists: () => {},
-  registerPluginEntities: () => {},
-  _resetPluginEntities: () => {},
-}));
-
-mock.module("@atlas/api/lib/semantic/entities", () => ({
-  listEntities: mock(() => Promise.resolve([])),
-  getEntity: mock(() => Promise.resolve(null)),
-  upsertEntity: mock(() => Promise.resolve()),
-  deleteEntity: mock(() => Promise.resolve(false)),
-  countEntities: mock(() => Promise.resolve(0)),
-  bulkUpsertEntities: mock(() => Promise.resolve(0)),
-}));
-
-mock.module("@atlas/api/lib/plugins/registry", () => ({
-  plugins: {
-    describe: () => [],
-    get: () => undefined,
-    getStatus: () => undefined,
-    getAllHealthy: () => [],
-    getByType: () => [],
-    size: 0,
-  },
-  PluginRegistry: class {},
-}));
-
-mock.module("@atlas/api/lib/tools/explore", () => ({
-  getExploreBackendType: () => "just-bash",
-  getActiveSandboxPluginId: () => null,
-  explore: { type: "function" },
-}));
-
-mock.module("@atlas/api/lib/agent", () => ({
-  runAgent: mock(() => Promise.resolve({ text: "answer" })),
-}));
-
-mock.module("@atlas/api/lib/tools/actions", () => ({}));
-
-mock.module("@atlas/api/lib/security", () => ({
-  maskConnectionUrl: (_url: string) => "***masked***",
-  SENSITIVE_PATTERNS: [],
-}));
-
-mock.module("@atlas/api/lib/settings", () => ({
-  getSettingsForAdmin: mock(() => []),
-  getSettingsRegistry: mock(() => []),
-  getSettingDefinition: mock(() => undefined),
-  setSetting: mock(async () => {}),
-  deleteSetting: mock(async () => {}),
-  getSetting: mock(() => undefined),
-  getSettingAuto: mock(() => undefined),
-  getSettingLive: mock(async () => undefined),
-  loadSettings: mock(async () => 0),
-  getAllSettingOverrides: mock(async () => []),
-  _resetSettingsCache: mock(() => {}),
-}));
-
-mock.module("@atlas/api/lib/plugins/settings", () => ({
-  savePluginEnabled: mock(async () => {}),
-  savePluginConfig: mock(async () => {}),
-  getPluginConfig: mock(async () => null),
-}));
-
-mock.module("@atlas/api/lib/semantic/diff", () => ({
-  runDiff: mock(async () => ({ connection: "default", newTables: [], removedTables: [], tableDiffs: [] })),
-}));
-
 // --- Import app after mocks ---
 
 const { app } = await import("../index");
+
+afterAll(() => mocks.cleanup());
 
 // --- Helper ---
 
@@ -211,7 +65,7 @@ function adminRequest(method: string, path: string, body?: unknown): Request {
 
 describe("Admin Abuse API", () => {
   beforeEach(() => {
-    mockAuthenticateRequest.mockImplementation(() =>
+    mocks.mockAuthenticateRequest.mockImplementation(() =>
       Promise.resolve({
         authenticated: true,
         mode: "simple-key",
@@ -254,7 +108,7 @@ describe("Admin Abuse API", () => {
     });
 
     it("returns 403 for non-admin", async () => {
-      mockAuthenticateRequest.mockImplementation(() =>
+      mocks.mockAuthenticateRequest.mockImplementation(() =>
         Promise.resolve({
           authenticated: true,
           mode: "simple-key",
@@ -288,7 +142,7 @@ describe("Admin Abuse API", () => {
     });
 
     it("returns 403 for non-admin", async () => {
-      mockAuthenticateRequest.mockImplementation(() =>
+      mocks.mockAuthenticateRequest.mockImplementation(() =>
         Promise.resolve({
           authenticated: true,
           mode: "simple-key",
@@ -317,7 +171,7 @@ describe("Admin Abuse API", () => {
     });
 
     it("returns 403 for non-admin", async () => {
-      mockAuthenticateRequest.mockImplementation(() =>
+      mocks.mockAuthenticateRequest.mockImplementation(() =>
         Promise.resolve({
           authenticated: true,
           mode: "simple-key",

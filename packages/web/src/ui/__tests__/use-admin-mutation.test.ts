@@ -3,6 +3,7 @@ import { renderHook, waitFor, cleanup, act } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useAdminMutation, type MutateResult } from "../hooks/use-admin-mutation";
+import { useAdminFetch } from "../hooks/use-admin-fetch";
 import { AtlasUIProvider } from "../context";
 
 /* ------------------------------------------------------------------ */
@@ -46,7 +47,10 @@ function jsonResponse(body: unknown, status = 200) {
 describe("useAdminMutation", () => {
   beforeEach(() => {
     testQueryClient = new QueryClient({
-      defaultOptions: { queries: { retry: false, gcTime: 0 } },
+      defaultOptions: {
+        queries: { retry: false, gcTime: 0 },
+        mutations: { retry: false },
+      },
     });
   });
 
@@ -361,6 +365,47 @@ describe("useAdminMutation", () => {
       await result.current.mutate();
     });
     expect(result.current.error).toBeNull();
+  });
+
+  /* ---------------------------------------------------------------- */
+  /*  TanStack cache integration                                       */
+  /* ---------------------------------------------------------------- */
+
+  test("successful mutation invalidates useAdminFetch queries", async () => {
+    let fetchCount = 0;
+    globalThis.fetch = mock((url: string, init?: RequestInit) => {
+      // GET = useAdminFetch, POST = useAdminMutation
+      if (!init?.method || init.method === "GET") {
+        fetchCount++;
+        return Promise.resolve(jsonResponse({ count: fetchCount }));
+      }
+      return Promise.resolve(jsonResponse({ ok: true }));
+    }) as unknown as typeof fetch;
+
+    const { result } = renderHook(
+      () => ({
+        query: useAdminFetch<{ count: number }>("/api/v1/admin/test-data"),
+        mutation: useAdminMutation({ path: "/api/v1/admin/test-action" }),
+      }),
+      { wrapper },
+    );
+
+    // Wait for initial fetch
+    await waitFor(() => {
+      expect(result.current.query.loading).toBe(false);
+    });
+    expect(result.current.query.data).toEqual({ count: 1 });
+
+    // Mutate — should trigger cache invalidation and refetch
+    await act(async () => {
+      await result.current.mutation.mutate({ method: "POST" });
+    });
+
+    // After invalidation, useAdminFetch should refetch and get new data
+    await waitFor(() => {
+      expect(result.current.query.data).toEqual({ count: 2 });
+    });
+    expect(fetchCount).toBeGreaterThanOrEqual(2);
   });
 
   test("reset() clears error state", async () => {

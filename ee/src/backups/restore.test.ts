@@ -44,6 +44,11 @@ mock.module("./engine", () => ({
     if (mockCreateBackupError) return Effect.fail(mockCreateBackupError);
     return Effect.succeed(mockCreateBackupResult);
   },
+  getBackupConfig: () => Effect.succeed({ schedule: "0 3 * * *", retention_days: 30, storage_path: "./backups" }),
+  updateBackupConfig: () => Effect.void,
+  listBackups: () => Effect.succeed([]),
+  purgeExpiredBackups: () => Effect.succeed(0),
+  listStorageFiles: () => Effect.succeed([]),
   _resetTableReady: () => {},
 }));
 

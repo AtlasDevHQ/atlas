@@ -72,6 +72,12 @@ mock.module("./engine", () => ({
     }
     return Effect.succeed(null);
   },
+  getBackupConfig: () => Effect.succeed({ schedule: "0 3 * * *", retention_days: 30, storage_path: "./backups" }),
+  updateBackupConfig: () => Effect.void,
+  createBackup: () => Effect.succeed({ id: "b1", storagePath: "/tmp/b1.sql.gz", sizeBytes: 1000, status: "completed" }),
+  listBackups: () => Effect.succeed([]),
+  purgeExpiredBackups: () => Effect.succeed(0),
+  listStorageFiles: () => Effect.succeed([]),
   _resetTableReady: () => {},
 }));
 

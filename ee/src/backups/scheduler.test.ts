@@ -19,6 +19,10 @@ mock.module("./engine", () => ({
   createBackup: () => Effect.succeed(mockBackupResult),
   purgeExpiredBackups: () => Effect.succeed(mockPurgeCount),
   getBackupConfig: () => Effect.succeed(mockConfig),
+  updateBackupConfig: () => Effect.void,
+  listBackups: () => Effect.succeed([]),
+  getBackupById: () => Effect.succeed(null),
+  listStorageFiles: () => Effect.succeed([]),
   _resetTableReady: () => {},
 }));
 

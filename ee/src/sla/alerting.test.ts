@@ -19,12 +19,6 @@ mock.module("../lib/db-guard", () => ({
 }));
 mock.module("@atlas/api/lib/logger", () => ee.loggerMock);
 
-// Mock metrics module (alerting imports ensureTable from metrics)
-mock.module("./metrics", () => ({
-  ensureTable: () => Effect.void,
-  _resetTableReady: () => {},
-}));
-
 const {
   getThresholds,
   updateThresholds,

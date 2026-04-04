@@ -8,6 +8,10 @@ const ee = createEEMock();
 mock.module("../index", () => ee.enterpriseMock);
 mock.module("@atlas/api/lib/db/internal", () => ee.internalDBMock);
 mock.module("../lib/db-guard", () => ({
+  requireInternalDB: (label: string, factory?: () => Error) => {
+    if (!(ee.internalDBMock.hasInternalDB as () => boolean)())
+      throw factory?.() ?? new Error(`Internal database required for ${label}.`);
+  },
   requireInternalDBEffect: (label: string, factory?: () => Error) =>
     (ee.internalDBMock.hasInternalDB as () => boolean)()
       ? Effect.void

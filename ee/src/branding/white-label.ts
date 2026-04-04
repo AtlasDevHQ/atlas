@@ -12,6 +12,7 @@
  */
 
 import { requireEnterprise } from "../index";
+import { requireInternalDB } from "../lib/db-guard";
 import {
   hasInternalDB,
   internalQuery,
@@ -171,9 +172,7 @@ export async function setWorkspaceBranding(
   input: SetWorkspaceBrandingInput,
 ): Promise<WorkspaceBranding> {
   requireEnterprise("branding");
-  if (!hasInternalDB()) {
-    throw new Error("Internal database required for workspace branding.");
-  }
+  requireInternalDB("workspace branding");
 
   validateBrandingInput(input);
 
@@ -210,9 +209,7 @@ export async function setWorkspaceBranding(
  */
 export async function deleteWorkspaceBranding(orgId: string): Promise<boolean> {
   requireEnterprise("branding");
-  if (!hasInternalDB()) {
-    throw new Error("Internal database required for workspace branding.");
-  }
+  requireInternalDB("workspace branding");
 
   const pool = getInternalDB();
   const result = await pool.query(

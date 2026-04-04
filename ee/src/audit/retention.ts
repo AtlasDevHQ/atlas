@@ -14,6 +14,7 @@
  */
 
 import { requireEnterprise } from "../index";
+import { requireInternalDB } from "../lib/db-guard";
 import {
   hasInternalDB,
   internalQuery,
@@ -160,9 +161,7 @@ export async function setRetentionPolicy(
   updatedBy: string | null,
 ): Promise<AuditRetentionPolicy> {
   requireEnterprise("audit-retention");
-  if (!hasInternalDB()) {
-    throw new Error("Internal database required for audit retention configuration.");
-  }
+  requireInternalDB("audit retention configuration");
 
   // Validate retention days
   if (input.retentionDays !== null) {
@@ -346,9 +345,7 @@ export async function exportAuditLog(options: ExportOptions): Promise<{
   truncated: boolean;
 }> {
   requireEnterprise("audit-retention");
-  if (!hasInternalDB()) {
-    throw new Error("Internal database required for audit log export.");
-  }
+  requireInternalDB("audit log export");
 
   const conditions: string[] = ["a.org_id = $1", "(a.deleted_at IS NULL)"];
   const params: unknown[] = [options.orgId];

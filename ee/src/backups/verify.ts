@@ -9,7 +9,8 @@
 import { createReadStream } from "fs";
 import { createGunzip } from "zlib";
 import { requireEnterprise } from "../index";
-import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
+import { requireInternalDB } from "../lib/db-guard";
+import { internalQuery } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 import { ensureTable, getBackupById } from "./engine";
 
@@ -28,9 +29,7 @@ export async function verifyBackup(backupId: string): Promise<{ verified: boolea
   requireEnterprise("backups");
   await ensureTable();
 
-  if (!hasInternalDB()) {
-    throw new Error("Internal database not configured — cannot verify backup");
-  }
+  requireInternalDB("backup verification");
 
   const backup = await getBackupById(backupId);
   if (!backup) {

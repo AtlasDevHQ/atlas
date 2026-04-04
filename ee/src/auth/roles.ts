@@ -11,6 +11,7 @@
  */
 
 import { requireEnterprise } from "../index";
+import { requireInternalDB } from "../lib/db-guard";
 import {
   hasInternalDB,
   internalQuery,
@@ -300,9 +301,7 @@ export async function createRole(
   input: { name: string; description?: string; permissions: string[] },
 ): Promise<CustomRole> {
   requireEnterprise("roles");
-  if (!hasInternalDB()) {
-    throw new Error("Internal database required for custom role management.");
-  }
+  requireInternalDB("custom role management");
 
   // Validate name
   const name = input.name.toLowerCase().trim();
@@ -360,9 +359,7 @@ export async function updateRole(
   input: { description?: string; permissions?: string[] },
 ): Promise<CustomRole> {
   requireEnterprise("roles");
-  if (!hasInternalDB()) {
-    throw new Error("Internal database required for custom role management.");
-  }
+  requireInternalDB("custom role management");
 
   // Fetch existing
   const existing = await getRole(orgId, roleId);
@@ -419,9 +416,7 @@ export async function updateRole(
  */
 export async function deleteRole(orgId: string, roleId: string): Promise<boolean> {
   requireEnterprise("roles");
-  if (!hasInternalDB()) {
-    throw new Error("Internal database required for role deletion.");
-  }
+  requireInternalDB("role deletion");
 
   // Check if it's a built-in role
   const role = await getRole(orgId, roleId);
@@ -499,9 +494,7 @@ export async function assignRole(
   roleName: string,
 ): Promise<{ userId: string; role: string }> {
   requireEnterprise("roles");
-  if (!hasInternalDB()) {
-    throw new Error("Internal database required for role assignment.");
-  }
+  requireInternalDB("role assignment");
 
   // Verify the role exists in this org
   const roleRows = await internalQuery<{ id: string }>(

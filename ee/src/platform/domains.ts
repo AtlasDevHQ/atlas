@@ -16,6 +16,7 @@
  * - RAILWAY_WEB_SERVICE_ID — Railway service ID for the web service
  */
 
+import { requireInternalDB } from "../lib/db-guard";
 import {
   hasInternalDB,
   internalQuery,
@@ -51,13 +52,8 @@ function isValidDomain(domain: string): boolean {
   return /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/i.test(domain);
 }
 
-function requireInternalDB(): void {
-  if (!hasInternalDB()) {
-    throw new DomainError(
-      "Internal database is required for custom domains.",
-      "no_internal_db",
-    );
-  }
+function requireDB(): void {
+  requireInternalDB("custom domains", () => new DomainError("Internal database is required for custom domains.", "no_internal_db"));
 }
 
 /** Coerce a DB value (Date or string) to an ISO 8601 string. Throws on null/undefined/unexpected types. */
@@ -298,7 +294,7 @@ export async function registerDomain(
   domain: string,
 ): Promise<CustomDomain> {
 
-  requireInternalDB();
+  requireDB();
 
   const normalized = domain.toLowerCase().trim();
   if (!isValidDomain(normalized)) {
@@ -371,7 +367,7 @@ export async function registerDomain(
  */
 export async function verifyDomain(domainId: string): Promise<CustomDomain> {
 
-  requireInternalDB();
+  requireDB();
 
   const rows = await internalQuery<Record<string, unknown>>(
     `SELECT * FROM custom_domains WHERE id = $1`,
@@ -445,7 +441,7 @@ export async function verifyDomain(domainId: string): Promise<CustomDomain> {
  */
 export async function listDomains(workspaceId: string): Promise<CustomDomain[]> {
 
-  requireInternalDB();
+  requireDB();
 
   const rows = await internalQuery<Record<string, unknown>>(
     `SELECT * FROM custom_domains WHERE workspace_id = $1 ORDER BY created_at DESC`,
@@ -460,7 +456,7 @@ export async function listDomains(workspaceId: string): Promise<CustomDomain[]> 
  */
 export async function listAllDomains(): Promise<CustomDomain[]> {
 
-  requireInternalDB();
+  requireDB();
 
   const rows = await internalQuery<Record<string, unknown>>(
     `SELECT * FROM custom_domains ORDER BY created_at DESC`,
@@ -475,7 +471,7 @@ export async function listAllDomains(): Promise<CustomDomain[]> {
  */
 export async function deleteDomain(domainId: string): Promise<void> {
 
-  requireInternalDB();
+  requireDB();
 
   const rows = await internalQuery<Record<string, unknown>>(
     `SELECT * FROM custom_domains WHERE id = $1`,

@@ -11,6 +11,7 @@
 
 import { getConfig } from "@atlas/api/lib/config";
 import type { ResidencyConfig } from "@atlas/api/lib/config";
+import { requireInternalDB } from "../lib/db-guard";
 import {
   hasInternalDB,
   internalQuery,
@@ -132,12 +133,7 @@ export async function assignWorkspaceRegion(
 
   const residency = getResidencyConfig();
 
-  if (!hasInternalDB()) {
-    throw new ResidencyError(
-      "Internal database is required for data residency.",
-      "no_internal_db",
-    );
-  }
+  requireInternalDB("data residency", () => new ResidencyError("Internal database is required for data residency.", "no_internal_db"));
 
   if (!isValidRegion(region, residency)) {
     const available = Object.keys(residency.regions).join(", ");
@@ -178,12 +174,7 @@ export async function getWorkspaceRegionAssignment(
 ): Promise<WorkspaceRegion | null> {
 
 
-  if (!hasInternalDB()) {
-    throw new ResidencyError(
-      "Internal database is required for data residency.",
-      "no_internal_db",
-    );
-  }
+  requireInternalDB("data residency", () => new ResidencyError("Internal database is required for data residency.", "no_internal_db"));
 
   const rows = await internalQuery<Record<string, unknown>>(
     `SELECT region, region_assigned_at FROM organization WHERE id = $1`,
@@ -239,12 +230,7 @@ export async function resolveRegionDatabaseUrl(
 export async function listWorkspaceRegions(): Promise<WorkspaceRegion[]> {
 
 
-  if (!hasInternalDB()) {
-    throw new ResidencyError(
-      "Internal database is required for data residency.",
-      "no_internal_db",
-    );
-  }
+  requireInternalDB("data residency", () => new ResidencyError("Internal database is required for data residency.", "no_internal_db"));
 
   const rows = await internalQuery<Record<string, unknown>>(
     `SELECT id, region, region_assigned_at FROM organization WHERE region IS NOT NULL ORDER BY region_assigned_at DESC`,

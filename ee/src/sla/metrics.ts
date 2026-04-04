@@ -12,6 +12,7 @@
  * Access-gated via platformAdminAuth middleware (platform_admin role required).
  */
 
+import { requireInternalDB } from "../lib/db-guard";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 import type { WorkspaceSLASummary, WorkspaceSLADetail, SLAMetricPoint } from "@useatlas/types";
@@ -26,9 +27,7 @@ let _tableReady = false;
 
 async function ensureTable(): Promise<void> {
   if (_tableReady) return;
-  if (!hasInternalDB()) {
-    throw new Error("Internal database not configured — SLA metrics require DATABASE_URL");
-  }
+  requireInternalDB("SLA metrics");
 
   await internalQuery(
     `CREATE TABLE IF NOT EXISTS sla_metrics (

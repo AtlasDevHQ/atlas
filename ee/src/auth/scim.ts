@@ -14,6 +14,7 @@
  */
 
 import { requireEnterprise } from "../index";
+import { requireInternalDB } from "../lib/db-guard";
 import {
   hasInternalDB,
   internalQuery,
@@ -245,9 +246,7 @@ export async function createGroupMapping(
   roleName: string,
 ): Promise<SCIMGroupMapping> {
   requireEnterprise("scim");
-  if (!hasInternalDB()) {
-    throw new Error("Internal database required for SCIM group mapping.");
-  }
+  requireInternalDB("SCIM group mapping");
   await ensureGroupMappingsTable();
 
   // Validate group name

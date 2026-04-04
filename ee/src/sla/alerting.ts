@@ -7,7 +7,8 @@
  * Access-gated via platformAdminAuth middleware (platform_admin role required).
  */
 
-import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
+import { requireInternalDB } from "../lib/db-guard";
+import { internalQuery } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 import type { SLAAlert, SLAAlertStatus, SLAAlertType, SLAThresholds } from "@useatlas/types";
 
@@ -26,9 +27,7 @@ const log = createLogger("ee:sla-alerting");
 export async function getThresholds(workspaceId?: string): Promise<SLAThresholds> {
 
 
-  if (!hasInternalDB()) {
-    throw new Error("Internal database not configured — SLA thresholds require DATABASE_URL");
-  }
+  requireInternalDB("SLA thresholds");
 
   if (workspaceId) {
     const rows = await internalQuery<{
@@ -77,9 +76,7 @@ function defaultThresholds(): SLAThresholds {
 export async function updateThresholds(thresholds: SLAThresholds): Promise<void> {
 
 
-  if (!hasInternalDB()) {
-    throw new Error("Internal database not configured");
-  }
+  requireInternalDB("SLA thresholds");
 
   await internalQuery(
     `INSERT INTO sla_thresholds (workspace_id, latency_p99_ms, error_rate_pct, updated_at)
@@ -105,9 +102,7 @@ export async function getAlerts(
 ): Promise<SLAAlert[]> {
 
 
-  if (!hasInternalDB()) {
-    throw new Error("Internal database not configured — SLA alerts require DATABASE_URL");
-  }
+  requireInternalDB("SLA alerts");
 
   const rows = await internalQuery<{
     id: string;
@@ -149,9 +144,7 @@ export async function getAlerts(
 export async function acknowledgeAlert(alertId: string, actorId: string): Promise<boolean> {
 
 
-  if (!hasInternalDB()) {
-    throw new Error("Internal database not configured — cannot acknowledge SLA alerts");
-  }
+  requireInternalDB("SLA alert acknowledgment");
 
   const rows = await internalQuery<{ id: string }>(
     `UPDATE sla_alerts
@@ -176,9 +169,7 @@ export async function acknowledgeAlert(alertId: string, actorId: string): Promis
 export async function evaluateAlerts(): Promise<SLAAlert[]> {
 
 
-  if (!hasInternalDB()) {
-    throw new Error("Internal database not configured — SLA evaluation requires DATABASE_URL");
-  }
+  requireInternalDB("SLA evaluation");
 
   const thresholds = await getThresholds();
   const newAlerts: SLAAlert[] = [];

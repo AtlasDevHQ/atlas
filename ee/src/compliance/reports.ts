@@ -10,7 +10,8 @@
  */
 
 import { requireEnterprise } from "../index";
-import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
+import { requireInternalDB } from "../lib/db-guard";
+import { internalQuery } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 import type {
   ComplianceReportFilters,
@@ -65,9 +66,7 @@ export async function generateDataAccessReport(
   filters: ComplianceReportFilters,
 ): Promise<DataAccessReport> {
   requireEnterprise("compliance");
-  if (!hasInternalDB()) {
-    throw new ReportError("Internal database not available", "not_available");
-  }
+  requireInternalDB("compliance reports", () => new ReportError("Internal database not available", "not_available"));
   validateFilters(filters);
 
   const conditions: string[] = ["a.org_id = $1", "a.success = true"];
@@ -226,9 +225,7 @@ export async function generateUserActivityReport(
   filters: ComplianceReportFilters,
 ): Promise<UserActivityReport> {
   requireEnterprise("compliance");
-  if (!hasInternalDB()) {
-    throw new ReportError("Internal database not available", "not_available");
-  }
+  requireInternalDB("compliance reports", () => new ReportError("Internal database not available", "not_available"));
   validateFilters(filters);
 
   const conditions: string[] = ["a.org_id = $1", "a.success = true"];

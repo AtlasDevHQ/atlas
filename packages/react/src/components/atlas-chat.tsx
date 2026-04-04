@@ -236,6 +236,12 @@ function AtlasChatInner({
   }, [propApiKey]);
 
   const managedSession = authClient.useSession();
+
+  // Shared health query — must be before authMode-dependent code below.
+  const healthQuery = useHealthQuery();
+  const authMode: AuthMode | null = healthQuery.isError ? "none" : (healthQuery.data?.authMode ?? null);
+  const healthFailed = healthQuery.isError;
+
   const authResolved = authMode !== null;
   const isManaged = authMode === "managed";
   const isSignedIn = isManaged && !!managedSession.data?.user;
@@ -276,13 +282,7 @@ function AtlasChatInner({
     }
   }, [propApiKey]);
 
-  // Shared health query — deduped with useAtlasAuth via ["atlas", "health"] key.
   const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
-  const healthQuery = useHealthQuery();
-
-  // Derive auth mode directly from query data — no useEffect sync delay.
-  const authMode: AuthMode | null = healthQuery.isError ? "none" : (healthQuery.data?.authMode ?? null);
-  const healthFailed = healthQuery.isError;
 
   // Sync health error + brand color as side effects.
   useEffect(() => {

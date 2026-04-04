@@ -54,8 +54,8 @@ function rowToCard(r: Record<string, unknown>): DashboardCard {
       chartConfig = typeof r.chart_config === "string"
         ? JSON.parse(r.chart_config)
         : (r.chart_config as DashboardChartConfig);
-    } catch {
-      log.warn({ cardId: r.id }, "Failed to parse chart_config JSONB");
+    } catch (err) {
+      log.warn({ cardId: r.id, err: err instanceof Error ? err.message : String(err) }, "Failed to parse chart_config JSONB");
     }
   }
 
@@ -65,8 +65,8 @@ function rowToCard(r: Record<string, unknown>): DashboardCard {
       cachedColumns = typeof r.cached_columns === "string"
         ? JSON.parse(r.cached_columns)
         : (r.cached_columns as string[]);
-    } catch {
-      log.warn({ cardId: r.id }, "Failed to parse cached_columns JSONB");
+    } catch (err) {
+      log.warn({ cardId: r.id, err: err instanceof Error ? err.message : String(err) }, "Failed to parse cached_columns JSONB");
     }
   }
 
@@ -76,8 +76,8 @@ function rowToCard(r: Record<string, unknown>): DashboardCard {
       cachedRows = typeof r.cached_rows === "string"
         ? JSON.parse(r.cached_rows)
         : (r.cached_rows as Record<string, unknown>[]);
-    } catch {
-      log.warn({ cardId: r.id }, "Failed to parse cached_rows JSONB");
+    } catch (err) {
+      log.warn({ cardId: r.id, err: err instanceof Error ? err.message : String(err) }, "Failed to parse cached_rows JSONB");
     }
   }
 
@@ -187,9 +187,8 @@ export async function listDashboards(opts?: {
   orgId?: string | null;
   limit?: number;
   offset?: number;
-}): Promise<{ dashboards: Dashboard[]; total: number }> {
-  const empty = { dashboards: [], total: 0 };
-  if (!hasInternalDB()) return empty;
+}): Promise<CrudDataResult<{ dashboards: Dashboard[]; total: number }>> {
+  if (!hasInternalDB()) return { ok: false, reason: "no_db" };
 
   const limit = opts?.limit ?? 20;
   const offset = opts?.offset ?? 0;
@@ -220,10 +219,10 @@ export async function listDashboards(opts?: {
     ]);
 
     const total = (countRows[0]?.total as number) ?? 0;
-    return { dashboards: dataRows.map(rowToDashboard), total };
+    return { ok: true, data: { dashboards: dataRows.map(rowToDashboard), total } };
   } catch (err) {
     log.error({ err: err instanceof Error ? err.message : String(err) }, "listDashboards failed");
-    return empty;
+    return { ok: false, reason: "error" };
   }
 }
 
@@ -544,12 +543,12 @@ export async function getShareStatus(
 // Public shared access
 // ---------------------------------------------------------------------------
 
-export type SharedDashboardFailReason = "no_db" | "not_found" | "expired";
+export type SharedDashboardFailReason = "no_db" | "not_found" | "expired" | "error";
 
 export async function getSharedDashboard(
   token: string,
 ): Promise<
-  | { ok: true; data: DashboardWithCards & { shareMode: ShareMode } }
+  | { ok: true; data: DashboardWithCards }
   | { ok: false; reason: SharedDashboardFailReason }
 > {
   if (!hasInternalDB()) return { ok: false, reason: "no_db" };
@@ -575,17 +574,18 @@ export async function getSharedDashboard(
     );
 
     const dashboard = rowToDashboard(dash);
-    const { cardCount: _, ...rest } = dashboard;
+    // Strip shareToken from public response — callers already know the token
+    const { cardCount: _, shareToken: _token, ...rest } = dashboard;
     return {
       ok: true,
       data: {
         ...rest,
+        shareToken: null,
         cards: cardRows.map(rowToCard),
-        shareMode: dashboard.shareMode,
       },
     };
   } catch (err) {
     log.error({ err: err instanceof Error ? err.message : String(err) }, "getSharedDashboard failed");
-    return { ok: false, reason: "not_found" };
+    return { ok: false, reason: "error" };
   }
 }

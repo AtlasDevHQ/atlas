@@ -110,6 +110,8 @@ function sharedDashboardFailResponse(reason: SharedDashboardFailReason) {
       return { body: { error: "not_available", message: "Sharing is not available." }, status: 404 as const };
     case "not_found":
       return { body: { error: "not_found", message: "Dashboard not found." }, status: 404 as const };
+    case "error":
+      return { body: { error: "internal_error", message: "A server error occurred. Please try again." }, status: 500 as const };
     default: {
       const _exhaustive: never = reason;
       return { body: { error: "internal_error", message: `Unexpected failure: ${_exhaustive}` }, status: 500 as const };
@@ -216,6 +218,7 @@ const updateDashboardRoute = createRoute({
   },
   responses: {
     200: { description: "Updated dashboard", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+    204: { description: "Update succeeded (re-fetch failed)" },
     400: { description: "Invalid request", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     403: { description: "Forbidden", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
@@ -278,6 +281,7 @@ const updateCardRoute = createRoute({
   },
   responses: {
     200: { description: "Card updated", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+    204: { description: "Update succeeded (re-fetch failed)" },
     400: { description: "Invalid request", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     403: { description: "Forbidden", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
@@ -323,7 +327,8 @@ const refreshCardRoute = createRoute({
   },
   responses: {
     200: { description: "Card refreshed with new data", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
-    400: { description: "Invalid ID", content: { "application/json": { schema: ErrorSchema } } },
+    204: { description: "Refresh succeeded (re-fetch failed)" },
+    400: { description: "Invalid ID or SQL validation failure", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     403: { description: "Forbidden", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
     404: { description: "Card not found", content: { "application/json": { schema: ErrorSchema } } },
@@ -442,10 +447,15 @@ const publicDashboards = new OpenAPIHono({ defaultHook: validationHook });
 
 authed.openapi(listDashboardsRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
     const { orgId } = yield* AuthContext;
     const { limit, offset } = parsePagination(c, { limit: 20, maxLimit: 100 });
     const result = yield* Effect.promise(() => listDashboards({ orgId, limit, offset }));
-    return c.json(result, 200);
+    if (!result.ok) {
+      const fail = crudFailResponse(result.reason, requestId);
+      return c.json(fail.body, fail.status);
+    }
+    return c.json(result.data, 200);
   }), { label: "list dashboards" });
 });
 
@@ -528,7 +538,7 @@ authed.openapi(
 
       // Return updated dashboard
       const updated = yield* Effect.promise(() => getDashboard(id, { orgId }));
-      if (!updated.ok) return c.json({ ok: true }, 200);
+      if (!updated.ok) return c.body(null, 204);
       return c.json(updated.data, 200);
     }), { label: "update dashboard" });
   },
@@ -638,7 +648,7 @@ authed.openapi(
       }
 
       const updated = yield* Effect.promise(() => getCard(cardId, id));
-      if (!updated.ok) return c.json({ ok: true }, 200);
+      if (!updated.ok) return c.body(null, 204);
       return c.json(updated.data, 200);
     }), { label: "update card" });
   },
@@ -702,6 +712,13 @@ authed.openapi(refreshCardRoute, async (c) => {
       return c.json({ error: "not_found", message: "Card not found." }, 404);
     }
 
+    // Validate SQL before execution — card SQL could have been stored before whitelist changes
+    const { validateSQL } = yield* Effect.promise(() => import("@atlas/api/lib/tools/sql"));
+    const validation = validateSQL(cardResult.data.sql, cardResult.data.connectionId ?? undefined);
+    if (!validation.valid) {
+      return c.json({ error: "invalid_sql", message: `Card SQL failed validation: ${validation.error}`, requestId }, 400);
+    }
+
     // Execute the card's SQL against the analytics datasource
     const { connections } = yield* Effect.promise(() => import("@atlas/api/lib/db/connection"));
     let db: import("@atlas/api/lib/db/connection").DBConnection;
@@ -709,7 +726,8 @@ authed.openapi(refreshCardRoute, async (c) => {
       db = cardResult.data.connectionId
         ? connections.get(cardResult.data.connectionId)
         : connections.getDefault();
-    } catch {
+    } catch (err) {
+      log.warn({ err: err instanceof Error ? err.message : String(err), cardId, dashboardId: id, connectionId: cardResult.data.connectionId }, "Connection not available for card refresh");
       return c.json({ error: "not_available", message: "No database connection available.", requestId }, 500);
     }
 
@@ -737,7 +755,7 @@ authed.openapi(refreshCardRoute, async (c) => {
 
     // Return updated card
     const updated = yield* Effect.promise(() => getCard(cardId, id));
-    if (!updated.ok) return c.json({ ok: true, refreshed: true }, 200);
+    if (!updated.ok) return c.body(null, 204);
     return c.json(updated.data, 200);
   }), { label: "refresh card" });
 });
@@ -762,6 +780,7 @@ authed.openapi(refreshAllCardsRoute, async (c) => {
     }
 
     const { connections } = yield* Effect.promise(() => import("@atlas/api/lib/db/connection"));
+    const { validateSQL } = yield* Effect.promise(() => import("@atlas/api/lib/tools/sql"));
     const cards = dashResult.data.cards;
     let refreshed = 0;
     let failed = 0;
@@ -770,6 +789,13 @@ authed.openapi(refreshAllCardsRoute, async (c) => {
     for (const card of cards) {
       yield* Effect.tryPromise({
         try: async () => {
+          // Validate SQL before execution
+          const validation = validateSQL(card.sql, card.connectionId ?? undefined);
+          if (!validation.valid) {
+            log.warn({ cardId: card.id, error: validation.error }, "Bulk refresh: card SQL failed validation");
+            failed++;
+            return;
+          }
           const db = card.connectionId
             ? connections.get(card.connectionId)
             : connections.getDefault();
@@ -810,10 +836,13 @@ authed.openapi(
 
       let parsed: { expiresIn?: string | null; shareMode?: string } = {};
       try {
-        const body = yield* Effect.promise(() => c.req.json().catch(() => ({})));
-        parsed = ShareSchema.parse(body);
-      } catch {
-        // Body is optional — default values are fine
+        const body = yield* Effect.promise(() => c.req.json().catch(() => null));
+        if (body) {
+          parsed = ShareSchema.parse(body);
+        }
+      } catch (err) {
+        // intentionally ignored: body is optional, invalid values fall back to defaults
+        log.debug({ err: err instanceof Error ? err.message : String(err) }, "Share body parse/validation failed, using defaults");
       }
 
       const result = yield* Effect.promise(() => shareDashboard(id, { orgId }, {
@@ -923,6 +952,10 @@ publicDashboards.openapi(getSharedDashboardRoute, async (c) => {
     }
     if (!authResult.authenticated) {
       return c.json({ error: "auth_required", message: "This shared dashboard requires authentication.", requestId }, 403);
+    }
+    // Verify authenticated user belongs to the dashboard's org
+    if (result.data.orgId && authResult.user?.activeOrganizationId !== result.data.orgId) {
+      return c.json({ error: "forbidden", message: "You do not have access to this dashboard.", requestId }, 403);
     }
   }
 

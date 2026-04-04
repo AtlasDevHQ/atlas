@@ -21,6 +21,13 @@ async function loadEE() {
   return import("@atlas/ee/auth/ip-allowlist");
 }
 
+/** Map IPAllowlistError codes to HTTP responses. */
+const IP_ALLOWLIST_STATUS_MAP: Record<string, number> = {
+  validation: 400,
+  conflict: 409,
+  not_found: 404,
+};
+
 // ---------------------------------------------------------------------------
 // Schemas
 // ---------------------------------------------------------------------------
@@ -71,30 +78,12 @@ const listEntriesRoute = createRoute({
         },
       },
     },
-    400: {
-      description: "No active organization",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    401: {
-      description: "Authentication required",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    403: {
-      description: "Forbidden — admin role or enterprise license required",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    404: {
-      description: "Internal database not configured",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    429: {
-      description: "Rate limit exceeded",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    500: {
-      description: "Internal server error",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
+    400: { description: "No active organization", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role or enterprise license required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
 
@@ -108,48 +97,18 @@ const addEntryRoute = createRoute({
   request: {
     body: {
       required: true,
-      content: {
-        "application/json": { schema: CreateIPAllowlistBodySchema },
-      },
+      content: { "application/json": { schema: CreateIPAllowlistBodySchema } },
     },
   },
   responses: {
-    201: {
-      description: "IP allowlist entry created",
-      content: {
-        "application/json": {
-          schema: z.object({ entry: IPAllowlistEntrySchema }),
-        },
-      },
-    },
-    400: {
-      description: "Invalid CIDR format or no active organization",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    401: {
-      description: "Authentication required",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    403: {
-      description: "Forbidden — admin role or enterprise license required",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    404: {
-      description: "Internal database not configured",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    409: {
-      description: "CIDR range already in allowlist",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    429: {
-      description: "Rate limit exceeded",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    500: {
-      description: "Internal server error",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
+    201: { description: "IP allowlist entry created", content: { "application/json": { schema: z.object({ entry: IPAllowlistEntrySchema }) } } },
+    400: { description: "Invalid CIDR format or no active organization", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role or enterprise license required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
+    409: { description: "CIDR range already in allowlist", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
 
@@ -160,42 +119,15 @@ const deleteEntryRoute = createRoute({
   summary: "Remove IP allowlist entry",
   description:
     "Removes an IP allowlist entry by ID. Changes take effect immediately.",
-  request: {
-    params: EntryIdParamSchema,
-  },
+  request: { params: EntryIdParamSchema },
   responses: {
-    200: {
-      description: "IP allowlist entry removed",
-      content: {
-        "application/json": {
-          schema: z.object({ message: z.string() }),
-        },
-      },
-    },
-    400: {
-      description: "Invalid entry ID or no active organization",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    401: {
-      description: "Authentication required",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    403: {
-      description: "Forbidden — admin role or enterprise license required",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    404: {
-      description: "Entry not found or internal database not configured",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    429: {
-      description: "Rate limit exceeded",
-      content: { "application/json": { schema: AuthErrorSchema } },
-    },
-    500: {
-      description: "Internal server error",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
+    200: { description: "IP allowlist entry removed", content: { "application/json": { schema: z.object({ message: z.string() }) } } },
+    400: { description: "Invalid entry ID or no active organization", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Forbidden — admin role or enterprise license required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Entry not found or internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
+    429: { description: "Rate limit exceeded", content: { "application/json": { schema: AuthErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
 
@@ -204,19 +136,31 @@ const deleteEntryRoute = createRoute({
 // ---------------------------------------------------------------------------
 
 const adminIPAllowlist = createAdminRouter();
-
 adminIPAllowlist.use(requireOrgContext());
 
 // GET / — list IP allowlist entries for the active org
 adminIPAllowlist.openapi(listEntriesRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
-
     const callerIP = getClientIP(c.req.raw);
 
     const ee = yield* Effect.promise(loadEE);
-    const entries = yield* ee.listIPAllowlistEntries(orgId!);
-    return c.json({ entries, total: entries.length, callerIP }, 200);
+
+    const entries = yield* Effect.tryPromise({
+      try: () => Effect.runPromise(ee.listIPAllowlistEntries(orgId!)),
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    }).pipe(Effect.catchAll((err) => {
+      const code = "code" in err ? (err as Record<string, unknown>).code : undefined;
+      const status = (typeof code === "string" && IP_ALLOWLIST_STATUS_MAP[code]) || 500;
+      return Effect.succeed(c.json(
+        { error: "ip_allowlist_error", message: err.message },
+        status as 400,
+      ));
+    }));
+
+    // If catchAll produced an early response, return it
+    if (entries instanceof Response) return entries;
+    return c.json({ entries, total: (entries as unknown[]).length, callerIP }, 200);
   }), { label: "list IP allowlist entries" });
 });
 
@@ -224,7 +168,6 @@ adminIPAllowlist.openapi(listEntriesRoute, async (c) => {
 adminIPAllowlist.openapi(addEntryRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId, user } = yield* AuthContext;
-
     const body = c.req.valid("json");
 
     if (!body.cidr) {
@@ -232,12 +175,20 @@ adminIPAllowlist.openapi(addEntryRoute, async (c) => {
     }
 
     const ee = yield* Effect.promise(loadEE);
-    const entry = yield* ee.addIPAllowlistEntry(
-      orgId!,
-      body.cidr,
-      body.description ?? null,
-      user?.id ?? null,
-    );
+
+    const entry = yield* Effect.tryPromise({
+      try: () => Effect.runPromise(ee.addIPAllowlistEntry(orgId!, body.cidr, body.description ?? null, user?.id ?? null)),
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    }).pipe(Effect.catchAll((err) => {
+      const code = "code" in err ? (err as Record<string, unknown>).code : undefined;
+      const status = (typeof code === "string" && IP_ALLOWLIST_STATUS_MAP[code]) || 500;
+      return Effect.succeed(c.json(
+        { error: "ip_allowlist_error", message: err.message },
+        status as 400,
+      ));
+    }));
+
+    if (entry instanceof Response) return entry;
     return c.json({ entry }, 201);
   }), { label: "add IP allowlist entry" });
 });
@@ -253,7 +204,20 @@ adminIPAllowlist.openapi(deleteEntryRoute, async (c) => {
     }
 
     const ee = yield* Effect.promise(loadEE);
-    const deleted = yield* ee.removeIPAllowlistEntry(orgId!, entryId);
+
+    const deleted = yield* Effect.tryPromise({
+      try: () => Effect.runPromise(ee.removeIPAllowlistEntry(orgId!, entryId)),
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    }).pipe(Effect.catchAll((err) => {
+      const code = "code" in err ? (err as Record<string, unknown>).code : undefined;
+      const status = (typeof code === "string" && IP_ALLOWLIST_STATUS_MAP[code]) || 500;
+      return Effect.succeed(c.json(
+        { error: "ip_allowlist_error", message: err.message },
+        status as 400,
+      ));
+    }));
+
+    if (deleted instanceof Response) return deleted;
     if (!deleted) {
       return c.json({ error: "not_found", message: "IP allowlist entry not found." }, 404);
     }

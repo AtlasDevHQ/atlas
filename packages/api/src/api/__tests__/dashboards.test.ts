@@ -89,7 +89,7 @@ const mockGetDashboard = mock((): Promise<unknown> =>
   Promise.resolve({ ok: true, data: { ...mockDashboardData, cards: [] } }),
 );
 const mockListDashboards = mock((): Promise<unknown> =>
-  Promise.resolve({ dashboards: [], total: 0 }),
+  Promise.resolve({ ok: true, data: { dashboards: [], total: 0 } }),
 );
 const mockUpdateDashboard = mock((): Promise<unknown> =>
   Promise.resolve({ ok: true }),
@@ -189,6 +189,13 @@ mock.module("@atlas/api/lib/tools/explore", () => ({
   getActiveSandboxPluginId: () => null,
 }));
 
+mock.module("@atlas/api/lib/tools/sql", () => ({
+  validateSQL: mock(() => ({ valid: true, classification: { type: "select" } })),
+  extractClassification: mock(() => ({ type: "select" })),
+  parserDatabase: mock(() => "PostgreSQL"),
+  executeSQL: {},
+}));
+
 mock.module("@atlas/api/lib/auth/detect", () => ({
   detectAuthMode: () => "none",
   resetAuthModeCache: () => {},
@@ -242,7 +249,7 @@ describe("dashboard routes", () => {
     mockGetDashboard.mockReset();
     mockGetDashboard.mockResolvedValue({ ok: true, data: { ...mockDashboardData, cards: [] } });
     mockListDashboards.mockReset();
-    mockListDashboards.mockResolvedValue({ dashboards: [], total: 0 });
+    mockListDashboards.mockResolvedValue({ ok: true, data: { dashboards: [], total: 0 } });
     mockUpdateDashboard.mockReset();
     mockUpdateDashboard.mockResolvedValue({ ok: true });
     mockDeleteDashboard.mockReset();

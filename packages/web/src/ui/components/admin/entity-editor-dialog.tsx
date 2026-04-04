@@ -754,7 +754,8 @@ function useColumnMetadata(tableName: string, isSaas: boolean, dialogOpen: boole
       if (res.status === 404) throw new TableNotFoundError(debouncedTable);
       if (!res.ok) {
         const body = await res.json().catch(() => null);
-        const msg = (body as Record<string, unknown> | null)?.message ?? `HTTP ${res.status}`;
+        const rawMsg = (body as Record<string, unknown> | null)?.message;
+        const msg = typeof rawMsg === "string" ? rawMsg : `HTTP ${res.status}`;
         console.debug("Column metadata fetch failed:", msg);
         throw new Error(msg);
       }

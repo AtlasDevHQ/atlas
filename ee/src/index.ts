@@ -41,6 +41,7 @@ export function getEnterpriseLicenseKey(): string | undefined {
 
 /**
  * Typed error thrown when enterprise features are required but not available.
+ * Extends `EEError<"enterprise_required">` — see `ee/src/lib/errors.ts`.
  * Use `err instanceof EnterpriseError` instead of string matching on messages.
  */
 export class EnterpriseError extends EEError<"enterprise_required"> {

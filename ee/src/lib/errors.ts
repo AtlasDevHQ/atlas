@@ -1,6 +1,7 @@
 /**
- * Base class for all EE module errors.
- * Provides typed error codes and consistent name/message/instanceof behavior.
+ * Abstract base class for all EE module errors.
+ * Provides typed error codes and consistent instanceof behavior.
+ * Subclasses must set `readonly name` to their class name.
  *
  * Usage:
  *   export type FooErrorCode = "not_found" | "conflict";
@@ -8,7 +9,8 @@
  *     readonly name = "FooError";
  *   }
  */
-export class EEError<TCode extends string> extends Error {
+export abstract class EEError<TCode extends string> extends Error {
+  abstract readonly name: string;
   constructor(
     message: string,
     public readonly code: TCode,

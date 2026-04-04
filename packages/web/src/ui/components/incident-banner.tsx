@@ -76,7 +76,10 @@ export function IncidentBanner({
           cache: "no-store",
           signal: AbortSignal.any([signal, AbortSignal.timeout(FETCH_TIMEOUT_MS)]),
         });
-        if (!res.ok) return [];
+        if (!res.ok) {
+          console.debug(`[incident-banner] Feed returned ${res.status}`);
+          return [];
+        }
         const feed: StatusFeed = await res.json();
         return feed.statusReports.filter((r) => ACTIVE_STATUSES.has(r.status));
       } catch (err) {

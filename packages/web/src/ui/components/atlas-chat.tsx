@@ -3,7 +3,6 @@
 import { useChat } from "@ai-sdk/react";
 import { isToolUIPart, getToolName } from "ai";
 import { useState, useRef, useEffect, useCallback } from "react";
-import { useQuery } from "@tanstack/react-query";
 import type { PythonProgressData } from "./chat/python-result-card";
 import { useAtlasConfig, ActionAuthProvider } from "../context";
 import { DarkModeContext, useDarkMode, useThemeMode, setTheme, type ThemeMode } from "../hooks/use-dark-mode";
@@ -21,6 +20,7 @@ import type { QuerySuggestion } from "@/ui/lib/types";
 import { ShareDialog } from "./chat/share-dialog";
 import { ConversationSidebar } from "./conversations/conversation-sidebar";
 import { ChangePasswordDialog } from "./admin/change-password-dialog";
+import { usePasswordStatus } from "@/ui/hooks/use-password-status";
 import { Sun, Moon, Monitor, Star, TableProperties, BookOpen } from "lucide-react";
 import { SchemaExplorer } from "./schema-explorer/schema-explorer";
 import { PromptLibrary } from "./chat/prompt-library";
@@ -134,7 +134,7 @@ export function AtlasChat() {
   const [transientWarning, setTransientWarning] = useState("");
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [loadingConversation, setLoadingConversation] = useState(false);
-  const [passwordChangeRequired, setPasswordChangeRequired] = useState(false);
+  const [passwordDialogDismissed, setPasswordDialogDismissed] = useState(false);
   const [schemaExplorerOpen, setSchemaExplorerOpen] = useState(false);
   const [promptLibraryOpen, setPromptLibraryOpen] = useState(false);
   const [popularSuggestions, setPopularSuggestions] = useState<QuerySuggestion[]>([]);
@@ -188,26 +188,9 @@ export function AtlasChat() {
   }, [authMode, convos.fetchList]);
 
   // Check if managed auth user needs to change their default password.
-  // Shares query key with AdminLayout — TanStack deduplicates the request.
+  // Shared with AdminLayout — TanStack deduplicates to a single request.
   const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
-  useQuery({
-    queryKey: ["admin", "me", "password-status"],
-    queryFn: async ({ signal }) => {
-      const res = await fetch(`${apiUrl}/api/v1/admin/me/password-status`, {
-        credentials,
-        signal,
-      });
-      if (!res.ok) {
-        console.warn("Password status check failed:", res.status, res.statusText);
-        return null;
-      }
-      const data = await res.json();
-      if (data.passwordChangeRequired) setPasswordChangeRequired(true);
-      return data;
-    },
-    enabled: isManaged && !!managedSession.data?.user,
-    retry: false,
-  });
+  const { data: passwordData } = usePasswordStatus(isManaged && !!managedSession.data?.user);
 
   // Python streaming progress — keyed by tool invocation ID
   const [pythonProgress, setPythonProgress] = useState<Map<string, PythonProgressData[]>>(new Map());
@@ -310,7 +293,7 @@ export function AtlasChat() {
         // intentionally ignored: suggestions are non-critical
       });
     return () => { cancelled = true; };
-  }, [messages.length, isLoading, apiUrl, isCrossOrigin, getHeaders]);
+  }, [messages.length, isLoading, apiUrl, credentials, getHeaders]);
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -698,8 +681,8 @@ export function AtlasChat() {
         getCredentials={getCredentials}
       />
       <ChangePasswordDialog
-        open={passwordChangeRequired}
-        onComplete={() => setPasswordChangeRequired(false)}
+        open={!passwordDialogDismissed && (passwordData?.passwordChangeRequired ?? false)}
+        onComplete={() => setPasswordDialogDismissed(true)}
       />
     </DarkModeContext.Provider>
   );

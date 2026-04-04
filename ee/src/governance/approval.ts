@@ -18,6 +18,7 @@
  */
 
 import { requireEnterprise, EnterpriseError } from "../index";
+import { requireInternalDB } from "../lib/db-guard";
 import {
   hasInternalDB,
   internalQuery,
@@ -239,9 +240,7 @@ export async function createApprovalRule(
   input: CreateApprovalRuleRequest,
 ): Promise<ApprovalRule> {
   requireEnterprise("approval-workflows");
-  if (!hasInternalDB()) {
-    throw new ApprovalError("Internal database required for approval rules.", "validation");
-  }
+  requireInternalDB("approval rules", () => new ApprovalError("Internal database required for approval rules.", "validation"));
 
   validateRuleInput(input);
 
@@ -276,9 +275,7 @@ export async function updateApprovalRule(
   input: UpdateApprovalRuleRequest,
 ): Promise<ApprovalRule> {
   requireEnterprise("approval-workflows");
-  if (!hasInternalDB()) {
-    throw new ApprovalError("Internal database required for approval rules.", "validation");
-  }
+  requireInternalDB("approval rules", () => new ApprovalError("Internal database required for approval rules.", "validation"));
 
   // Check the rule exists
   const existing = await getApprovalRule(orgId, ruleId);
@@ -441,9 +438,7 @@ export async function createApprovalRequest(opts: {
   columnsAccessed: string[];
 }): Promise<ApprovalRequest> {
   requireEnterprise("approval-workflows");
-  if (!hasInternalDB()) {
-    throw new ApprovalError("Internal database required for approval queue.", "validation");
-  }
+  requireInternalDB("approval queue", () => new ApprovalError("Internal database required for approval queue.", "validation"));
 
   const expiryHours = getExpiryHours();
 
@@ -551,9 +546,7 @@ export async function reviewApprovalRequest(
   comment?: string,
 ): Promise<ApprovalRequest> {
   requireEnterprise("approval-workflows");
-  if (!hasInternalDB()) {
-    throw new ApprovalError("Internal database required for approval queue.", "validation");
-  }
+  requireInternalDB("approval queue", () => new ApprovalError("Internal database required for approval queue.", "validation"));
 
   // Fetch the current request
   const existing = await getApprovalRequest(orgId, requestId);

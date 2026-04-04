@@ -11,6 +11,7 @@
 
 import ipaddr from "ipaddr.js";
 import { requireEnterprise } from "../index";
+import { requireInternalDB } from "../lib/db-guard";
 import {
   hasInternalDB,
   internalQuery,
@@ -237,9 +238,7 @@ export async function addIPAllowlistEntry(
   createdBy: string | null,
 ): Promise<IPAllowlistEntry> {
   requireEnterprise("ip-allowlist");
-  if (!hasInternalDB()) {
-    throw new Error("Internal database required for IP allowlist management.");
-  }
+  requireInternalDB("IP allowlist management");
 
   // Validate CIDR format
   const parsed = parseCIDR(cidr);

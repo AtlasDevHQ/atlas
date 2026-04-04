@@ -8,6 +8,7 @@
  */
 
 import { requireEnterprise } from "../index";
+import { requireInternalDB } from "../lib/db-guard";
 import {
   hasInternalDB,
   internalQuery,
@@ -224,9 +225,7 @@ export async function setWorkspaceModelConfig(
   config: SetWorkspaceModelConfigRequest,
 ): Promise<WorkspaceModelConfig> {
   requireEnterprise("model-routing");
-  if (!hasInternalDB()) {
-    throw new Error("Internal database required for workspace model configuration.");
-  }
+  requireInternalDB("workspace model configuration");
 
   validateConfig(config);
 

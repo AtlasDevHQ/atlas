@@ -12,7 +12,7 @@ import { createReadStream } from "fs";
 import { createGunzip } from "zlib";
 import { pipeline } from "stream/promises";
 import { requireEnterprise } from "../index";
-import { hasInternalDB } from "@atlas/api/lib/db/internal";
+import { requireInternalDB } from "../lib/db-guard";
 import { createLogger } from "@atlas/api/lib/logger";
 import { createBackup, getBackupById, ensureTable } from "./engine";
 
@@ -31,9 +31,7 @@ export async function requestRestore(backupId: string): Promise<{ confirmationTo
   requireEnterprise("backups");
   await ensureTable();
 
-  if (!hasInternalDB()) {
-    throw new Error("Internal database not configured — cannot restore backup");
-  }
+  requireInternalDB("backup restoration");
 
   const backup = await getBackupById(backupId);
   if (!backup) {

@@ -8,6 +8,7 @@
  */
 
 import { requireEnterprise } from "../index";
+import { requireInternalDB } from "../lib/db-guard";
 import {
   hasInternalDB,
   internalQuery,
@@ -229,9 +230,7 @@ export async function createSSOProvider(
   input: CreateSSOProviderRequest,
 ): Promise<SSOProvider> {
   requireEnterprise("sso");
-  if (!hasInternalDB()) {
-    throw new Error("Internal database required for SSO provider management.");
-  }
+  requireInternalDB("SSO provider management");
 
   // Validate type
   if (!isValidSSOProviderType(input.type)) {
@@ -281,9 +280,7 @@ export async function updateSSOProvider(
   input: UpdateSSOProviderRequest,
 ): Promise<SSOProvider> {
   requireEnterprise("sso");
-  if (!hasInternalDB()) {
-    throw new Error("Internal database required for SSO provider management.");
-  }
+  requireInternalDB("SSO provider management");
 
   // Fetch existing
   const existing = await getSSOProvider(orgId, providerId);
@@ -502,9 +499,7 @@ export async function isSSOEnforcedForDomain(emailDomain: string): Promise<{
  */
 export async function setSSOEnforcement(orgId: string, enforced: boolean): Promise<{ enforced: boolean; orgId: string }> {
   requireEnterprise("sso");
-  if (!hasInternalDB()) {
-    throw new Error("Internal database required for SSO enforcement.");
-  }
+  requireInternalDB("SSO enforcement");
 
   if (enforced) {
     // Verify at least one active SSO provider exists for this org

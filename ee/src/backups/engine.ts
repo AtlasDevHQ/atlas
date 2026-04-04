@@ -14,7 +14,8 @@ import { join, dirname } from "path";
 import { createGzip } from "zlib";
 import { pipeline } from "stream/promises";
 import { requireEnterprise } from "../index";
-import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
+import { requireInternalDB } from "../lib/db-guard";
+import { internalQuery } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 import type { BackupStatus } from "@useatlas/types";
 
@@ -28,9 +29,7 @@ let _tableReady = false;
 
 export async function ensureTable(): Promise<void> {
   if (_tableReady) return;
-  if (!hasInternalDB()) {
-    throw new Error("Internal database not configured — backups require DATABASE_URL");
-  }
+  requireInternalDB("backup operations");
 
   await internalQuery(
     `CREATE TABLE IF NOT EXISTS backups (

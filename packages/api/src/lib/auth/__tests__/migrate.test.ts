@@ -255,6 +255,7 @@ describe("migrateAuthTables", () => {
             { name: "0014_plugin_marketplace.sql" },
             { name: "0015_semantic_versions.sql" },
             { name: "0016_invitations_org_id.sql" },
+            { name: "0017_dashboards.sql" },
           ],
         };
       }

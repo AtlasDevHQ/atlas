@@ -1,0 +1,591 @@
+/**
+ * Dashboard persistence — CRUD operations for dashboards and cards.
+ *
+ * Pattern follows scheduled-tasks.ts: hasInternalDB() guard, CrudResult/CrudDataResult
+ * discriminated unions, org_id scoping.
+ */
+
+import * as crypto from "crypto";
+import { createLogger } from "@atlas/api/lib/logger";
+import {
+  hasInternalDB,
+  internalQuery,
+  internalExecute,
+} from "@atlas/api/lib/db/internal";
+import type {
+  Dashboard,
+  DashboardCard,
+  DashboardWithCards,
+  DashboardChartConfig,
+} from "@atlas/api/lib/dashboard-types";
+import type { ShareMode, ShareExpiryKey } from "@useatlas/types/share";
+import { SHARE_EXPIRY_OPTIONS } from "@useatlas/types/share";
+import type { CrudResult, CrudDataResult, CrudFailReason } from "@atlas/api/lib/conversations";
+
+export type { CrudResult, CrudDataResult, CrudFailReason };
+
+const log = createLogger("dashboards");
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function rowToDashboard(r: Record<string, unknown>): Dashboard {
+  return {
+    id: r.id as string,
+    orgId: (r.org_id as string) ?? null,
+    ownerId: r.owner_id as string,
+    title: r.title as string,
+    description: (r.description as string) ?? null,
+    shareToken: (r.share_token as string) ?? null,
+    shareExpiresAt: r.share_expires_at ? String(r.share_expires_at) : null,
+    shareMode: (r.share_mode as ShareMode) ?? "public",
+    refreshSchedule: (r.refresh_schedule as string) ?? null,
+    cardCount: typeof r.card_count === "number" ? r.card_count : (typeof r.card_count === "string" ? parseInt(r.card_count, 10) : 0),
+    createdAt: String(r.created_at),
+    updatedAt: String(r.updated_at),
+  };
+}
+
+function rowToCard(r: Record<string, unknown>): DashboardCard {
+  let chartConfig: DashboardChartConfig | null = null;
+  if (r.chart_config) {
+    try {
+      chartConfig = typeof r.chart_config === "string"
+        ? JSON.parse(r.chart_config)
+        : (r.chart_config as DashboardChartConfig);
+    } catch (err) {
+      log.warn({ cardId: r.id, err: err instanceof Error ? err.message : String(err) }, "Failed to parse chart_config JSONB");
+    }
+  }
+
+  let cachedColumns: string[] | null = null;
+  if (r.cached_columns) {
+    try {
+      cachedColumns = typeof r.cached_columns === "string"
+        ? JSON.parse(r.cached_columns)
+        : (r.cached_columns as string[]);
+    } catch (err) {
+      log.warn({ cardId: r.id, err: err instanceof Error ? err.message : String(err) }, "Failed to parse cached_columns JSONB");
+    }
+  }
+
+  let cachedRows: Record<string, unknown>[] | null = null;
+  if (r.cached_rows) {
+    try {
+      cachedRows = typeof r.cached_rows === "string"
+        ? JSON.parse(r.cached_rows)
+        : (r.cached_rows as Record<string, unknown>[]);
+    } catch (err) {
+      log.warn({ cardId: r.id, err: err instanceof Error ? err.message : String(err) }, "Failed to parse cached_rows JSONB");
+    }
+  }
+
+  return {
+    id: r.id as string,
+    dashboardId: r.dashboard_id as string,
+    position: typeof r.position === "number" ? r.position : 0,
+    title: r.title as string,
+    sql: r.sql as string,
+    chartConfig,
+    cachedColumns,
+    cachedRows,
+    cachedAt: r.cached_at ? String(r.cached_at) : null,
+    connectionId: (r.connection_id as string) ?? null,
+    createdAt: String(r.created_at),
+    updatedAt: String(r.updated_at),
+  };
+}
+
+function orgScopeClause(
+  orgId: string | null | undefined,
+  params: unknown[],
+  paramIdx: number,
+  tableAlias?: string,
+): { clause: string; nextIdx: number } {
+  const col = tableAlias ? `${tableAlias}.org_id` : "org_id";
+  if (orgId) {
+    params.push(orgId);
+    return { clause: `${col} = $${paramIdx}`, nextIdx: paramIdx + 1 };
+  }
+  return { clause: `${col} IS NULL`, nextIdx: paramIdx };
+}
+
+function generateShareToken(): string {
+  return crypto.randomBytes(21).toString("base64url");
+}
+
+function computeExpiresAt(expiresIn?: ShareExpiryKey | null): string | null {
+  if (!expiresIn || expiresIn === "never") return null;
+  const seconds = SHARE_EXPIRY_OPTIONS[expiresIn];
+  if (seconds === null) return null;
+  return new Date(Date.now() + seconds * 1000).toISOString();
+}
+
+// ---------------------------------------------------------------------------
+// CRUD — Dashboards
+// ---------------------------------------------------------------------------
+
+export async function createDashboard(opts: {
+  ownerId: string;
+  orgId?: string | null;
+  title: string;
+  description?: string | null;
+}): Promise<CrudDataResult<Dashboard>> {
+  if (!hasInternalDB()) return { ok: false, reason: "no_db" };
+  try {
+    const rows = await internalQuery<Record<string, unknown>>(
+      `INSERT INTO dashboards (owner_id, org_id, title, description)
+       VALUES ($1, $2, $3, $4)
+       RETURNING *, 0 AS card_count`,
+      [opts.ownerId, opts.orgId ?? null, opts.title, opts.description ?? null],
+    );
+    if (rows.length === 0) return { ok: false, reason: "error" };
+    return { ok: true, data: rowToDashboard(rows[0]) };
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err.message : String(err) }, "createDashboard failed");
+    return { ok: false, reason: "error" };
+  }
+}
+
+export async function getDashboard(
+  id: string,
+  scope: { orgId?: string | null },
+): Promise<CrudDataResult<DashboardWithCards>> {
+  if (!hasInternalDB()) return { ok: false, reason: "no_db" };
+  try {
+    const params: unknown[] = [id];
+    const org = orgScopeClause(scope.orgId, params, 2, "d");
+    const dashRows = await internalQuery<Record<string, unknown>>(
+      `SELECT d.*, COALESCE(cc.cnt, 0)::int AS card_count
+       FROM dashboards d
+       LEFT JOIN (SELECT dashboard_id, COUNT(*)::int AS cnt FROM dashboard_cards GROUP BY dashboard_id) cc
+         ON cc.dashboard_id = d.id
+       WHERE d.id = $1 AND ${org.clause} AND d.deleted_at IS NULL`,
+      params,
+    );
+    if (dashRows.length === 0) return { ok: false, reason: "not_found" };
+
+    const cardRows = await internalQuery<Record<string, unknown>>(
+      `SELECT * FROM dashboard_cards WHERE dashboard_id = $1 ORDER BY position ASC, created_at ASC`,
+      [id],
+    );
+
+    const dash = rowToDashboard(dashRows[0]);
+    const { cardCount: _, ...rest } = dash;
+    return {
+      ok: true,
+      data: { ...rest, cards: cardRows.map(rowToCard) },
+    };
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err.message : String(err) }, "getDashboard failed");
+    return { ok: false, reason: "error" };
+  }
+}
+
+export async function listDashboards(opts?: {
+  orgId?: string | null;
+  limit?: number;
+  offset?: number;
+}): Promise<CrudDataResult<{ dashboards: Dashboard[]; total: number }>> {
+  if (!hasInternalDB()) return { ok: false, reason: "no_db" };
+
+  const limit = opts?.limit ?? 20;
+  const offset = opts?.offset ?? 0;
+
+  try {
+    const params: unknown[] = [];
+    let paramIdx = 1;
+    const org = orgScopeClause(opts?.orgId, params, paramIdx, "d");
+    paramIdx = org.nextIdx;
+
+    const where = `WHERE ${org.clause} AND d.deleted_at IS NULL`;
+
+    const [countRows, dataRows] = await Promise.all([
+      internalQuery<Record<string, unknown>>(
+        `SELECT COUNT(*)::int AS total FROM dashboards d ${where}`,
+        params,
+      ),
+      internalQuery<Record<string, unknown>>(
+        `SELECT d.*, COALESCE(cc.cnt, 0)::int AS card_count
+         FROM dashboards d
+         LEFT JOIN (SELECT dashboard_id, COUNT(*)::int AS cnt FROM dashboard_cards GROUP BY dashboard_id) cc
+           ON cc.dashboard_id = d.id
+         ${where}
+         ORDER BY d.updated_at DESC
+         LIMIT $${paramIdx++} OFFSET $${paramIdx++}`,
+        [...params, limit, offset],
+      ),
+    ]);
+
+    const total = (countRows[0]?.total as number) ?? 0;
+    return { ok: true, data: { dashboards: dataRows.map(rowToDashboard), total } };
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err.message : String(err) }, "listDashboards failed");
+    return { ok: false, reason: "error" };
+  }
+}
+
+export async function updateDashboard(
+  id: string,
+  scope: { orgId?: string | null },
+  updates: {
+    title?: string;
+    description?: string | null;
+    refreshSchedule?: string | null;
+  },
+): Promise<CrudResult> {
+  if (!hasInternalDB()) return { ok: false, reason: "no_db" };
+
+  const setClauses: string[] = [];
+  const params: unknown[] = [];
+  let paramIdx = 1;
+
+  if (updates.title !== undefined) {
+    setClauses.push(`title = $${paramIdx++}`);
+    params.push(updates.title);
+  }
+  if (updates.description !== undefined) {
+    setClauses.push(`description = $${paramIdx++}`);
+    params.push(updates.description);
+  }
+  if (updates.refreshSchedule !== undefined) {
+    setClauses.push(`refresh_schedule = $${paramIdx++}`);
+    params.push(updates.refreshSchedule);
+  }
+
+  if (setClauses.length === 0) return { ok: true };
+  setClauses.push(`updated_at = now()`);
+
+  const org = orgScopeClause(scope.orgId, params, paramIdx);
+  paramIdx = org.nextIdx;
+
+  try {
+    const rows = await internalQuery<{ id: string }>(
+      `UPDATE dashboards SET ${setClauses.join(", ")}
+       WHERE id = $${paramIdx} AND ${org.clause} AND deleted_at IS NULL
+       RETURNING id`,
+      [...params, id],
+    );
+    return rows.length > 0 ? { ok: true } : { ok: false, reason: "not_found" };
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err.message : String(err) }, "updateDashboard failed");
+    return { ok: false, reason: "error" };
+  }
+}
+
+export async function deleteDashboard(
+  id: string,
+  scope: { orgId?: string | null },
+): Promise<CrudResult> {
+  if (!hasInternalDB()) return { ok: false, reason: "no_db" };
+  try {
+    const params: unknown[] = [id];
+    const org = orgScopeClause(scope.orgId, params, 2);
+    const rows = await internalQuery<{ id: string }>(
+      `UPDATE dashboards SET deleted_at = now(), updated_at = now()
+       WHERE id = $1 AND ${org.clause} AND deleted_at IS NULL
+       RETURNING id`,
+      params,
+    );
+    return rows.length > 0 ? { ok: true } : { ok: false, reason: "not_found" };
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err.message : String(err) }, "deleteDashboard failed");
+    return { ok: false, reason: "error" };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// CRUD — Cards
+// ---------------------------------------------------------------------------
+
+export async function addCard(opts: {
+  dashboardId: string;
+  title: string;
+  sql: string;
+  chartConfig?: DashboardChartConfig | null;
+  cachedColumns?: string[] | null;
+  cachedRows?: Record<string, unknown>[] | null;
+  connectionId?: string | null;
+}): Promise<CrudDataResult<DashboardCard>> {
+  if (!hasInternalDB()) return { ok: false, reason: "no_db" };
+  try {
+    // Get next position
+    const posRows = await internalQuery<Record<string, unknown>>(
+      `SELECT COALESCE(MAX(position), -1)::int + 1 AS next_pos FROM dashboard_cards WHERE dashboard_id = $1`,
+      [opts.dashboardId],
+    );
+    const nextPos = (posRows[0]?.next_pos as number) ?? 0;
+
+    const rows = await internalQuery<Record<string, unknown>>(
+      `INSERT INTO dashboard_cards (dashboard_id, position, title, sql, chart_config, cached_columns, cached_rows, cached_at, connection_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       RETURNING *`,
+      [
+        opts.dashboardId,
+        nextPos,
+        opts.title,
+        opts.sql,
+        opts.chartConfig ? JSON.stringify(opts.chartConfig) : null,
+        opts.cachedColumns ? JSON.stringify(opts.cachedColumns) : null,
+        opts.cachedRows ? JSON.stringify(opts.cachedRows) : null,
+        opts.cachedRows ? new Date().toISOString() : null,
+        opts.connectionId ?? null,
+      ],
+    );
+    if (rows.length === 0) return { ok: false, reason: "error" };
+
+    // Touch parent dashboard
+    internalExecute(`UPDATE dashboards SET updated_at = now() WHERE id = $1`, [opts.dashboardId]);
+
+    return { ok: true, data: rowToCard(rows[0]) };
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err.message : String(err) }, "addCard failed");
+    return { ok: false, reason: "error" };
+  }
+}
+
+export async function updateCard(
+  cardId: string,
+  dashboardId: string,
+  updates: {
+    title?: string;
+    chartConfig?: DashboardChartConfig | null;
+    position?: number;
+  },
+): Promise<CrudResult> {
+  if (!hasInternalDB()) return { ok: false, reason: "no_db" };
+
+  const setClauses: string[] = [];
+  const params: unknown[] = [];
+  let paramIdx = 1;
+
+  if (updates.title !== undefined) {
+    setClauses.push(`title = $${paramIdx++}`);
+    params.push(updates.title);
+  }
+  if (updates.chartConfig !== undefined) {
+    setClauses.push(`chart_config = $${paramIdx++}`);
+    params.push(updates.chartConfig ? JSON.stringify(updates.chartConfig) : null);
+  }
+  if (updates.position !== undefined) {
+    setClauses.push(`position = $${paramIdx++}`);
+    params.push(updates.position);
+  }
+
+  if (setClauses.length === 0) return { ok: true };
+  setClauses.push(`updated_at = now()`);
+
+  try {
+    const rows = await internalQuery<{ id: string }>(
+      `UPDATE dashboard_cards SET ${setClauses.join(", ")}
+       WHERE id = $${paramIdx} AND dashboard_id = $${paramIdx + 1}
+       RETURNING id`,
+      [...params, cardId, dashboardId],
+    );
+    if (rows.length === 0) return { ok: false, reason: "not_found" };
+
+    internalExecute(`UPDATE dashboards SET updated_at = now() WHERE id = $1`, [dashboardId]);
+    return { ok: true };
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err.message : String(err) }, "updateCard failed");
+    return { ok: false, reason: "error" };
+  }
+}
+
+export async function removeCard(
+  cardId: string,
+  dashboardId: string,
+): Promise<CrudResult> {
+  if (!hasInternalDB()) return { ok: false, reason: "no_db" };
+  try {
+    const rows = await internalQuery<{ id: string }>(
+      `DELETE FROM dashboard_cards WHERE id = $1 AND dashboard_id = $2 RETURNING id`,
+      [cardId, dashboardId],
+    );
+    if (rows.length === 0) return { ok: false, reason: "not_found" };
+
+    internalExecute(`UPDATE dashboards SET updated_at = now() WHERE id = $1`, [dashboardId]);
+    return { ok: true };
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err.message : String(err) }, "removeCard failed");
+    return { ok: false, reason: "error" };
+  }
+}
+
+export async function refreshCard(
+  cardId: string,
+  dashboardId: string,
+  result: { columns: string[]; rows: Record<string, unknown>[] },
+): Promise<CrudResult> {
+  if (!hasInternalDB()) return { ok: false, reason: "no_db" };
+  try {
+    const rows = await internalQuery<{ id: string }>(
+      `UPDATE dashboard_cards
+       SET cached_columns = $1, cached_rows = $2, cached_at = now(), updated_at = now()
+       WHERE id = $3 AND dashboard_id = $4
+       RETURNING id`,
+      [JSON.stringify(result.columns), JSON.stringify(result.rows), cardId, dashboardId],
+    );
+    if (rows.length === 0) return { ok: false, reason: "not_found" };
+
+    internalExecute(`UPDATE dashboards SET updated_at = now() WHERE id = $1`, [dashboardId]);
+    return { ok: true };
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err.message : String(err) }, "refreshCard failed");
+    return { ok: false, reason: "error" };
+  }
+}
+
+export async function getCard(
+  cardId: string,
+  dashboardId: string,
+): Promise<CrudDataResult<DashboardCard>> {
+  if (!hasInternalDB()) return { ok: false, reason: "no_db" };
+  try {
+    const rows = await internalQuery<Record<string, unknown>>(
+      `SELECT * FROM dashboard_cards WHERE id = $1 AND dashboard_id = $2`,
+      [cardId, dashboardId],
+    );
+    if (rows.length === 0) return { ok: false, reason: "not_found" };
+    return { ok: true, data: rowToCard(rows[0]) };
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err.message : String(err) }, "getCard failed");
+    return { ok: false, reason: "error" };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Sharing
+// ---------------------------------------------------------------------------
+
+export async function shareDashboard(
+  id: string,
+  scope: { orgId?: string | null },
+  opts?: { expiresIn?: ShareExpiryKey | null; shareMode?: ShareMode },
+): Promise<CrudDataResult<{ token: string; expiresAt: string | null; shareMode: ShareMode }>> {
+  if (!hasInternalDB()) return { ok: false, reason: "no_db" };
+  try {
+    const token = generateShareToken();
+    const expiresAt = computeExpiresAt(opts?.expiresIn);
+    const shareMode: ShareMode = opts?.shareMode ?? "public";
+
+    const params: unknown[] = [token, expiresAt, shareMode, id];
+    const org = orgScopeClause(scope.orgId, params, 5);
+
+    const rows = await internalQuery<{ share_token: string }>(
+      `UPDATE dashboards SET share_token = $1, share_expires_at = $2, share_mode = $3, updated_at = now()
+       WHERE id = $4 AND ${org.clause} AND deleted_at IS NULL
+       RETURNING share_token`,
+      params,
+    );
+    if (rows.length === 0) return { ok: false, reason: "not_found" };
+    return { ok: true, data: { token: rows[0].share_token, expiresAt, shareMode } };
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err.message : String(err) }, "shareDashboard failed");
+    return { ok: false, reason: "error" };
+  }
+}
+
+export async function unshareDashboard(
+  id: string,
+  scope: { orgId?: string | null },
+): Promise<CrudResult> {
+  if (!hasInternalDB()) return { ok: false, reason: "no_db" };
+  try {
+    const params: unknown[] = [id];
+    const org = orgScopeClause(scope.orgId, params, 2);
+    const rows = await internalQuery<{ id: string }>(
+      `UPDATE dashboards SET share_token = NULL, share_expires_at = NULL, updated_at = now()
+       WHERE id = $1 AND ${org.clause} AND deleted_at IS NULL
+       RETURNING id`,
+      params,
+    );
+    return rows.length > 0 ? { ok: true } : { ok: false, reason: "not_found" };
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err.message : String(err) }, "unshareDashboard failed");
+    return { ok: false, reason: "error" };
+  }
+}
+
+export async function getShareStatus(
+  id: string,
+  scope: { orgId?: string | null },
+): Promise<CrudDataResult<{ shared: boolean; token: string | null; expiresAt: string | null; shareMode: ShareMode }>> {
+  if (!hasInternalDB()) return { ok: false, reason: "no_db" };
+  try {
+    const params: unknown[] = [id];
+    const org = orgScopeClause(scope.orgId, params, 2);
+    const rows = await internalQuery<Record<string, unknown>>(
+      `SELECT share_token, share_expires_at, share_mode FROM dashboards
+       WHERE id = $1 AND ${org.clause} AND deleted_at IS NULL`,
+      params,
+    );
+    if (rows.length === 0) return { ok: false, reason: "not_found" };
+    const row = rows[0];
+    const token = (row.share_token as string) ?? null;
+    return {
+      ok: true,
+      data: {
+        shared: token !== null,
+        token,
+        expiresAt: row.share_expires_at ? String(row.share_expires_at) : null,
+        shareMode: (row.share_mode as ShareMode) ?? "public",
+      },
+    };
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err.message : String(err) }, "getShareStatus failed");
+    return { ok: false, reason: "error" };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Public shared access
+// ---------------------------------------------------------------------------
+
+export type SharedDashboardFailReason = "no_db" | "not_found" | "expired" | "error";
+
+export async function getSharedDashboard(
+  token: string,
+): Promise<
+  | { ok: true; data: DashboardWithCards }
+  | { ok: false; reason: SharedDashboardFailReason }
+> {
+  if (!hasInternalDB()) return { ok: false, reason: "no_db" };
+  try {
+    const dashRows = await internalQuery<Record<string, unknown>>(
+      `SELECT * FROM dashboards
+       WHERE share_token = $1 AND deleted_at IS NULL`,
+      [token],
+    );
+    if (dashRows.length === 0) return { ok: false, reason: "not_found" };
+
+    const dash = dashRows[0];
+
+    // Check expiry
+    if (dash.share_expires_at) {
+      const expiresAt = new Date(String(dash.share_expires_at));
+      if (expiresAt < new Date()) return { ok: false, reason: "expired" };
+    }
+
+    const cardRows = await internalQuery<Record<string, unknown>>(
+      `SELECT * FROM dashboard_cards WHERE dashboard_id = $1 ORDER BY position ASC, created_at ASC`,
+      [dash.id],
+    );
+
+    const dashboard = rowToDashboard(dash);
+    // Strip shareToken from public response — callers already know the token
+    const { cardCount: _, shareToken: _token, ...rest } = dashboard;
+    return {
+      ok: true,
+      data: {
+        ...rest,
+        shareToken: null,
+        cards: cardRows.map(rowToCard),
+      },
+    };
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err.message : String(err) }, "getSharedDashboard failed");
+    return { ok: false, reason: "error" };
+  }
+}

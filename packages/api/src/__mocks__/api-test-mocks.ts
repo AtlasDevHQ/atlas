@@ -23,6 +23,7 @@
  */
 
 import { mock, type Mock } from "bun:test";
+import { Effect } from "effect";
 import {
   createConnectionMock,
   type ConnectionMockOverrides,
@@ -491,7 +492,7 @@ export function createApiTestMocks(
   // ── EE: IP allowlist (queries internal DB, which doesn't exist in tests) ──
 
   mock.module("@atlas/ee/auth/ip-allowlist", () => ({
-    checkIPAllowlist: mock(async () => ({ allowed: true })),
+    checkIPAllowlist: mock(() => Effect.succeed({ allowed: true })),
     listIPAllowlistEntries: mock(async () => []),
     addIPAllowlistEntry: mock(async () => ({})),
     removeIPAllowlistEntry: mock(async () => false),

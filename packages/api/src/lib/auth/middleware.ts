@@ -15,6 +15,7 @@ import { validateManaged } from "@atlas/api/lib/auth/managed";
 import { validateBYOT } from "@atlas/api/lib/auth/byot";
 import { createLogger } from "@atlas/api/lib/logger";
 import { getSetting } from "@atlas/api/lib/settings";
+import { Effect } from "effect";
 import { isSSOEnforcedForDomain, extractEmailDomain } from "@atlas/ee/auth/sso";
 
 const log = createLogger("auth");
@@ -190,7 +191,7 @@ async function checkSSOEnforcement(userLabel: string): Promise<AuthResult | null
     const domain = extractEmailDomain(userLabel);
     if (!domain) return null;
 
-    const enforcement = await isSSOEnforcedForDomain(domain);
+    const enforcement = await Effect.runPromise(isSSOEnforcedForDomain(domain));
     if (!enforcement || !enforcement.enforced) return null;
 
     log.warn({ domain, userId: userLabel }, "Password login blocked — SSO enforcement active for domain");

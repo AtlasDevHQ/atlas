@@ -171,150 +171,155 @@ export const evaluateAlerts = (): Effect.Effect<SLAAlert[], Error> =>
 
     const thresholds = yield* getThresholds();
 
-    return yield* Effect.promise(async () => {
-      const newAlerts: SLAAlert[] = [];
+    // Get recent metrics per workspace (last hour)
+    const wsMetrics = yield* Effect.promise(() => internalQuery<{
+      workspace_id: string;
+      workspace_name: string;
+      latency_p99: number | null;
+      error_rate: number;
+      total_queries: string;
+    }>(
+      `SELECT
+         m.workspace_id,
+         COALESCE(o.name, m.workspace_id) AS workspace_name,
+         PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY m.latency_ms) AS latency_p99,
+         CASE WHEN COUNT(*) > 0
+              THEN (COUNT(*) FILTER (WHERE m.is_error)::float / COUNT(*)::float) * 100
+              ELSE 0
+         END AS error_rate,
+         COUNT(*)::text AS total_queries
+       FROM sla_metrics m
+       LEFT JOIN organization o ON o.id = m.workspace_id
+       WHERE m.recorded_at > now() - interval '1 hour'
+       GROUP BY m.workspace_id, o.name`,
+    ));
 
-      // Get recent metrics per workspace (last hour)
-      const wsMetrics = await internalQuery<{
-        workspace_id: string;
-        workspace_name: string;
-        latency_p99: number | null;
-        error_rate: number;
-        total_queries: string;
-      }>(
-        `SELECT
-           m.workspace_id,
-           COALESCE(o.name, m.workspace_id) AS workspace_name,
-           PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY m.latency_ms) AS latency_p99,
-           CASE WHEN COUNT(*) > 0
-                THEN (COUNT(*) FILTER (WHERE m.is_error)::float / COUNT(*)::float) * 100
-                ELSE 0
-           END AS error_rate,
-           COUNT(*)::text AS total_queries
-         FROM sla_metrics m
-         LEFT JOIN organization o ON o.id = m.workspace_id
-         WHERE m.recorded_at > now() - interval '1 hour'
-         GROUP BY m.workspace_id, o.name`,
-      );
+    const newAlerts: SLAAlert[] = [];
 
-      for (const ws of wsMetrics) {
-        try {
+    for (const ws of wsMetrics) {
+      yield* Effect.tryPromise({
+        try: async () => {
           const totalQueries = parseInt(ws.total_queries, 10);
-          if (totalQueries === 0) continue;
+          if (totalQueries === 0) return;
 
           // Check latency P99
           if (ws.latency_p99 !== null && ws.latency_p99 > thresholds.latencyP99Ms) {
-            const alert = await createAlertIfNotFiring(
+            const alert = await Effect.runPromise(createAlertIfNotFiring(
               ws.workspace_id,
               ws.workspace_name,
               "latency_p99",
               ws.latency_p99,
               thresholds.latencyP99Ms,
               `Workspace "${ws.workspace_name}" p99 latency ${Math.round(ws.latency_p99)}ms exceeds threshold ${thresholds.latencyP99Ms}ms`,
-            );
+            ));
             if (alert) newAlerts.push(alert);
           } else {
-            await resolveAlertsForType(ws.workspace_id, "latency_p99");
+            await Effect.runPromise(resolveAlertsForType(ws.workspace_id, "latency_p99"));
           }
 
           // Check error rate
           if (ws.error_rate > thresholds.errorRatePct) {
-            const alert = await createAlertIfNotFiring(
+            const alert = await Effect.runPromise(createAlertIfNotFiring(
               ws.workspace_id,
               ws.workspace_name,
               "error_rate",
               ws.error_rate,
               thresholds.errorRatePct,
               `Workspace "${ws.workspace_name}" error rate ${ws.error_rate.toFixed(1)}% exceeds threshold ${thresholds.errorRatePct}%`,
-            );
+            ));
             if (alert) newAlerts.push(alert);
           } else {
-            await resolveAlertsForType(ws.workspace_id, "error_rate");
+            await Effect.runPromise(resolveAlertsForType(ws.workspace_id, "error_rate"));
           }
-        } catch (err) {
+        },
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      }).pipe(
+        Effect.catchAll((err) => {
           log.error(
-            { err: err instanceof Error ? err.message : String(err), workspaceId: ws.workspace_id },
+            { err: err.message, workspaceId: ws.workspace_id },
             "Failed to evaluate SLA for workspace — skipping",
           );
-        }
-      }
+          return Effect.void;
+        }),
+      );
+    }
 
-      if (newAlerts.length > 0) {
-        log.info({ count: newAlerts.length }, "New SLA alerts fired");
-        // Attempt webhook delivery (non-critical)
-        for (const alert of newAlerts) {
-          try {
-            await deliverAlert(alert);
-          } catch (err) {
+    if (newAlerts.length > 0) {
+      log.info({ count: newAlerts.length }, "New SLA alerts fired");
+      // Attempt webhook delivery (non-critical)
+      for (const alert of newAlerts) {
+        yield* deliverAlert(alert).pipe(
+          Effect.catchAll((err) => {
             log.error(
               { err: err instanceof Error ? err.message : String(err), alertId: alert.id },
               "Failed to deliver SLA alert notification — alert was created but notification was not sent",
             );
-          }
-        }
+            return Effect.void;
+          }),
+        );
       }
+    }
 
-      return newAlerts;
-    });
+    return newAlerts;
   });
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-async function createAlertIfNotFiring(
+const createAlertIfNotFiring = (
   workspaceId: string,
   workspaceName: string,
   alertType: SLAAlertType,
   currentValue: number,
   threshold: number,
   message: string,
-): Promise<SLAAlert | null> {
-  // Check if there's already a firing alert for this workspace + type
-  const existing = await internalQuery<{ id: string }>(
-    `SELECT id FROM sla_alerts
-     WHERE workspace_id = $1 AND alert_type = $2 AND status = 'firing'
-     LIMIT 1`,
-    [workspaceId, alertType],
-  );
+): Effect.Effect<SLAAlert | null> =>
+  Effect.gen(function* () {
+    // Check if there's already a firing alert for this workspace + type
+    const existing = yield* Effect.promise(() => internalQuery<{ id: string }>(
+      `SELECT id FROM sla_alerts
+       WHERE workspace_id = $1 AND alert_type = $2 AND status = 'firing'
+       LIMIT 1`,
+      [workspaceId, alertType],
+    ));
 
-  if (existing.length > 0) return null;
+    if (existing.length > 0) return null;
 
-  const rows = await internalQuery<{
-    id: string;
-    fired_at: string;
-  }>(
-    `INSERT INTO sla_alerts (workspace_id, alert_type, status, current_value, threshold, message)
-     VALUES ($1, $2, 'firing', $3, $4, $5)
-     RETURNING id, fired_at::text`,
-    [workspaceId, alertType, currentValue, threshold, message],
-  );
+    const rows = yield* Effect.promise(() => internalQuery<{
+      id: string;
+      fired_at: string;
+    }>(
+      `INSERT INTO sla_alerts (workspace_id, alert_type, status, current_value, threshold, message)
+       VALUES ($1, $2, 'firing', $3, $4, $5)
+       RETURNING id, fired_at::text`,
+      [workspaceId, alertType, currentValue, threshold, message],
+    ));
 
-  if (rows.length === 0) return null;
+    if (rows.length === 0) return null;
 
-  return {
-    id: rows[0].id,
-    workspaceId,
-    workspaceName,
-    type: alertType,
-    status: "firing",
-    currentValue,
-    threshold,
-    message,
-    firedAt: rows[0].fired_at,
-    resolvedAt: null,
-    acknowledgedAt: null,
-    acknowledgedBy: null,
-  };
-}
+    return {
+      id: rows[0].id,
+      workspaceId,
+      workspaceName,
+      type: alertType,
+      status: "firing" as const,
+      currentValue,
+      threshold,
+      message,
+      firedAt: rows[0].fired_at,
+      resolvedAt: null,
+      acknowledgedAt: null,
+      acknowledgedBy: null,
+    };
+  });
 
-async function resolveAlertsForType(workspaceId: string, alertType: SLAAlertType): Promise<void> {
-  await internalQuery(
+const resolveAlertsForType = (workspaceId: string, alertType: SLAAlertType): Effect.Effect<void> =>
+  Effect.promise(() => internalQuery(
     `UPDATE sla_alerts SET status = 'resolved', resolved_at = now()
      WHERE workspace_id = $1 AND alert_type = $2 AND status = 'firing'`,
     [workspaceId, alertType],
-  );
-}
+  )).pipe(Effect.asVoid);
 
 function toAlert(row: {
   id: string;
@@ -350,25 +355,29 @@ function toAlert(row: {
  * Deliver alert notification via webhook or email (best-effort).
  * Sends an HTTP POST with a JSON payload to the configured webhook URL.
  */
-async function deliverAlert(alert: SLAAlert): Promise<void> {
-  const webhookUrl = process.env.ATLAS_SLA_WEBHOOK_URL;
-  if (!webhookUrl) return;
+const deliverAlert = (alert: SLAAlert): Effect.Effect<void, Error> =>
+  Effect.gen(function* () {
+    const webhookUrl = process.env.ATLAS_SLA_WEBHOOK_URL;
+    if (!webhookUrl) return;
 
-  const response = await fetch(webhookUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      type: "sla.alert.fired",
-      alert,
-      timestamp: new Date().toISOString(),
-    }),
+    const response = yield* Effect.tryPromise({
+      try: () => fetch(webhookUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: "sla.alert.fired",
+          alert,
+          timestamp: new Date().toISOString(),
+        }),
+      }),
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    });
+
+    if (!response.ok) {
+      const body = yield* Effect.promise(() => response.text().catch(() => "(unreadable body)"));
+      log.error(
+        { status: response.status, alertId: alert.id, responseBody: body.slice(0, 500) },
+        "SLA alert webhook delivery failed — alert notification was not delivered",
+      );
+    }
   });
-
-  if (!response.ok) {
-    const body = await response.text().catch(() => "(unreadable body)");
-    log.error(
-      { status: response.status, alertId: alert.id, responseBody: body.slice(0, 500) },
-      "SLA alert webhook delivery failed — alert notification was not delivered",
-    );
-  }
-}

@@ -29,68 +29,72 @@ const log = createLogger("ee:sla-metrics");
 
 let _tableReady = false;
 
-async function ensureTable(): Promise<void> {
-  if (_tableReady) return;
-  requireInternalDB("SLA metrics");
+const ensureTable = (): Effect.Effect<void, Error> =>
+  Effect.gen(function* () {
+    if (_tableReady) return;
+    yield* Effect.try({
+      try: () => requireInternalDB("SLA metrics"),
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    });
 
-  await internalQuery(
-    `CREATE TABLE IF NOT EXISTS sla_metrics (
-       id            TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
-       workspace_id  TEXT NOT NULL,
-       latency_ms    DOUBLE PRECISION NOT NULL,
-       is_error      BOOLEAN NOT NULL DEFAULT false,
-       recorded_at   TIMESTAMPTZ NOT NULL DEFAULT now()
-     )`,
-  );
-  // Index for workspace + time range queries
-  await internalQuery(
-    `CREATE INDEX IF NOT EXISTS idx_sla_metrics_ws_time ON sla_metrics (workspace_id, recorded_at DESC)`,
-  );
+    yield* Effect.promise(() => internalQuery(
+      `CREATE TABLE IF NOT EXISTS sla_metrics (
+         id            TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+         workspace_id  TEXT NOT NULL,
+         latency_ms    DOUBLE PRECISION NOT NULL,
+         is_error      BOOLEAN NOT NULL DEFAULT false,
+         recorded_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+       )`,
+    ));
+    // Index for workspace + time range queries
+    yield* Effect.promise(() => internalQuery(
+      `CREATE INDEX IF NOT EXISTS idx_sla_metrics_ws_time ON sla_metrics (workspace_id, recorded_at DESC)`,
+    ));
 
-  // Alerts table
-  await internalQuery(
-    `CREATE TABLE IF NOT EXISTS sla_alerts (
-       id               TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
-       workspace_id     TEXT NOT NULL,
-       alert_type       TEXT NOT NULL,
-       status           TEXT NOT NULL DEFAULT 'firing',
-       current_value    DOUBLE PRECISION NOT NULL,
-       threshold        DOUBLE PRECISION NOT NULL,
-       message          TEXT NOT NULL,
-       fired_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
-       resolved_at      TIMESTAMPTZ,
-       acknowledged_at  TIMESTAMPTZ,
-       acknowledged_by  TEXT
-     )`,
-  );
-  await internalQuery(
-    `CREATE INDEX IF NOT EXISTS idx_sla_alerts_ws ON sla_alerts (workspace_id, status)`,
-  );
+    // Alerts table
+    yield* Effect.promise(() => internalQuery(
+      `CREATE TABLE IF NOT EXISTS sla_alerts (
+         id               TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+         workspace_id     TEXT NOT NULL,
+         alert_type       TEXT NOT NULL,
+         status           TEXT NOT NULL DEFAULT 'firing',
+         current_value    DOUBLE PRECISION NOT NULL,
+         threshold        DOUBLE PRECISION NOT NULL,
+         message          TEXT NOT NULL,
+         fired_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+         resolved_at      TIMESTAMPTZ,
+         acknowledged_at  TIMESTAMPTZ,
+         acknowledged_by  TEXT
+       )`,
+    ));
+    yield* Effect.promise(() => internalQuery(
+      `CREATE INDEX IF NOT EXISTS idx_sla_alerts_ws ON sla_alerts (workspace_id, status)`,
+    ));
 
-  // Thresholds table — one row per workspace (or a default row with workspace_id = '_default')
-  await internalQuery(
-    `CREATE TABLE IF NOT EXISTS sla_thresholds (
-       workspace_id       TEXT PRIMARY KEY,
-       latency_p99_ms     DOUBLE PRECISION NOT NULL DEFAULT 5000,
-       error_rate_pct     DOUBLE PRECISION NOT NULL DEFAULT 5,
-       updated_at         TIMESTAMPTZ NOT NULL DEFAULT now()
-     )`,
-  );
+    // Thresholds table — one row per workspace (or a default row with workspace_id = '_default')
+    yield* Effect.promise(() => internalQuery(
+      `CREATE TABLE IF NOT EXISTS sla_thresholds (
+         workspace_id       TEXT PRIMARY KEY,
+         latency_p99_ms     DOUBLE PRECISION NOT NULL DEFAULT 5000,
+         error_rate_pct     DOUBLE PRECISION NOT NULL DEFAULT 5,
+         updated_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+       )`,
+    ));
 
-  // Insert default thresholds row if missing
-  const rawLatency = parseFloat(process.env.ATLAS_SLA_LATENCY_P99_MS ?? "");
-  const rawErrorRate = parseFloat(process.env.ATLAS_SLA_ERROR_RATE_PCT ?? "");
-  const defaultLatency = isNaN(rawLatency) ? 5000 : rawLatency;
-  const defaultErrorRate = isNaN(rawErrorRate) ? 5 : rawErrorRate;
-  await internalQuery(
-    `INSERT INTO sla_thresholds (workspace_id, latency_p99_ms, error_rate_pct)
-     VALUES ('_default', $1, $2)
-     ON CONFLICT (workspace_id) DO NOTHING`,
-    [defaultLatency, defaultErrorRate],
-  );
+    // Insert default thresholds row if missing
+    const rawLatency = parseFloat(process.env.ATLAS_SLA_LATENCY_P99_MS ?? "");
+    const rawErrorRate = parseFloat(process.env.ATLAS_SLA_ERROR_RATE_PCT ?? "");
+    const defaultLatency = isNaN(rawLatency) ? 5000 : rawLatency;
+    const defaultErrorRate = isNaN(rawErrorRate) ? 5 : rawErrorRate;
+    yield* Effect.promise(() => internalQuery(
+      `INSERT INTO sla_thresholds (workspace_id, latency_p99_ms, error_rate_pct)
+       VALUES ('_default', $1, $2)
+       ON CONFLICT (workspace_id) DO NOTHING`,
+      [defaultLatency, defaultErrorRate],
+    ));
 
-  _tableReady = true;
-}
+    _tableReady = true;
+  });
 
 /** @internal Reset table-ready flag — for testing only. */
 export function _resetTableReady(): void {
@@ -104,30 +108,32 @@ export function _resetTableReady(): void {
 /**
  * Record a single query execution metric. Fire-and-forget — errors are
  * logged but never thrown so this doesn't break the query path.
+ *
+ * Returns an Effect. Callers should use `void Effect.runPromise(recordQueryMetric(...))`
+ * for fire-and-forget semantics.
  */
-export function recordQueryMetric(
+export const recordQueryMetric = (
   workspaceId: string,
   latencyMs: number,
   isError: boolean,
-): void {
-  if (!hasInternalDB()) return;
+): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    if (!hasInternalDB()) return;
 
-  // Ensure table exists (idempotent), then insert. Single promise chain
-  // so both bootstrap and insert failures are caught and logged.
-  ensureTable()
-    .then(() =>
-      internalQuery(
-        `INSERT INTO sla_metrics (workspace_id, latency_ms, is_error) VALUES ($1, $2, $3)`,
-        [workspaceId, latencyMs, isError],
-      ),
-    )
-    .catch((err) => {
+    yield* ensureTable();
+    yield* Effect.promise(() => internalQuery(
+      `INSERT INTO sla_metrics (workspace_id, latency_ms, is_error) VALUES ($1, $2, $3)`,
+      [workspaceId, latencyMs, isError],
+    ));
+  }).pipe(
+    Effect.catchAll((err) => {
       log.warn(
         { err: err instanceof Error ? err.message : String(err), workspaceId },
         "Failed to record SLA metric",
       );
-    });
-}
+      return Effect.void;
+    }),
+  );
 
 // ---------------------------------------------------------------------------
 // Querying — platform admin API
@@ -139,9 +145,9 @@ export function recordQueryMetric(
  */
 export const getAllWorkspaceSLA = (
   hoursBack = 24,
-): Effect.Effect<WorkspaceSLASummary[]> =>
+): Effect.Effect<WorkspaceSLASummary[], Error> =>
   Effect.gen(function* () {
-    yield* Effect.promise(() => ensureTable());
+    yield* ensureTable();
 
     const rows = yield* Effect.promise(() => internalQuery<{
       workspace_id: string;
@@ -194,9 +200,9 @@ export const getAllWorkspaceSLA = (
 export const getWorkspaceSLADetail = (
   workspaceId: string,
   hoursBack = 24,
-): Effect.Effect<WorkspaceSLADetail> =>
+): Effect.Effect<WorkspaceSLADetail, Error> =>
   Effect.gen(function* () {
-    yield* Effect.promise(() => ensureTable());
+    yield* ensureTable();
 
     // Summary
     const summaryRows = yield* Effect.promise(() => internalQuery<{

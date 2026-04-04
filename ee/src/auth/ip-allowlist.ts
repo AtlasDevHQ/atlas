@@ -317,29 +317,38 @@ export const removeIPAllowlistEntry = (orgId: string, entryId: string): Effect.E
  * Returns `{ allowed: false }` when the IP is not in any allowed range.
  * Uses an in-memory cache with 30s TTL for performance.
  */
-export async function checkIPAllowlist(
+export const checkIPAllowlist = (
   orgId: string,
   clientIP: string | null,
-): Promise<{ allowed: boolean }> {
-  // Lazy import to avoid circular dependency
-  const { isEnterpriseEnabled } = await import("../index");
-  if (!isEnterpriseEnabled()) return { allowed: true };
-  if (!hasInternalDB()) return { allowed: true };
+): Effect.Effect<{ allowed: boolean }, Error> =>
+  Effect.gen(function* () {
+    // Lazy import to avoid circular dependency
+    const { isEnterpriseEnabled } = yield* Effect.promise(() => import("../index"));
+    if (!isEnterpriseEnabled()) return { allowed: true };
+    if (!hasInternalDB()) return { allowed: true };
 
-  // Check cache
-  const cached = cache.get(orgId);
-  const now = Date.now();
-  let ranges: ParsedCIDR[];
+    // Check cache
+    const cached = cache.get(orgId);
+    const now = Date.now();
+    let ranges: ParsedCIDR[];
 
-  if (cached && cached.expiry > now) {
-    ranges = cached.ranges;
-  } else {
-    // Load from DB
-    try {
-      const rows = await internalQuery<{ cidr: string; [key: string]: unknown }>(
-        `SELECT cidr FROM ip_allowlist WHERE org_id = $1`,
-        [orgId],
-      );
+    if (cached && cached.expiry > now) {
+      ranges = cached.ranges;
+    } else {
+      // Load from DB — fail closed per CLAUDE.md
+      const rows = yield* Effect.tryPromise({
+        try: () => internalQuery<{ cidr: string; [key: string]: unknown }>(
+          `SELECT cidr FROM ip_allowlist WHERE org_id = $1`,
+          [orgId],
+        ),
+        catch: (err) => {
+          log.error(
+            { err: err instanceof Error ? err.message : String(err), orgId },
+            "Failed to load IP allowlist — blocking request (fail-closed)",
+          );
+          return err instanceof Error ? err : new Error(String(err));
+        },
+      });
       ranges = [];
       for (const row of rows) {
         const parsed = parseCIDR(row.cidr);
@@ -350,21 +359,13 @@ export async function checkIPAllowlist(
         }
       }
       cache.set(orgId, { ranges, expiry: now + CACHE_TTL_MS });
-    } catch (err) {
-      // Fail closed per CLAUDE.md: "catch { return false } on a security check is a bug"
-      log.error(
-        { err: err instanceof Error ? err.message : String(err), orgId },
-        "Failed to load IP allowlist — blocking request (fail-closed)",
-      );
-      throw err;
     }
-  }
 
-  // No entries = no restriction (opt-in)
-  if (ranges.length === 0) return { allowed: true };
+    // No entries = no restriction (opt-in)
+    if (ranges.length === 0) return { allowed: true };
 
-  // No client IP available = cannot verify, deny
-  if (!clientIP) return { allowed: false };
+    // No client IP available = cannot verify, deny
+    if (!clientIP) return { allowed: false };
 
-  return { allowed: isIPAllowed(clientIP, ranges) };
-}
+    return { allowed: isIPAllowed(clientIP, ranges) };
+  });

@@ -40,6 +40,10 @@ mock.module("effect", () => {
         },
       };
     },
+    // Support Effect.runPromise for routes that unwrap Effect-returning EE functions
+    runPromise: (value: unknown) => {
+      return Promise.resolve(value);
+    },
   };
   return { Effect };
 });
@@ -110,7 +114,7 @@ mock.module("@atlas/api/lib/auth/detect", () => ({
 }));
 
 mock.module("@atlas/ee/auth/ip-allowlist", () => ({
-  checkIPAllowlist: mock(async () => ({ allowed: true })),
+  checkIPAllowlist: mock(() => ({ allowed: true })),
   listIPAllowlistEntries: mock(async () => []),
   addIPAllowlistEntry: mock(async () => ({})),
   removeIPAllowlistEntry: mock(async () => false),

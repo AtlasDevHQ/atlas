@@ -166,7 +166,7 @@ describe("resolvePermissions", () => {
 
   it("returns all permissions for undefined user in no-auth mode", async () => {
     mockAuthMode = "none";
-    const perms = await resolvePermissions(undefined);
+    const perms = await run(resolvePermissions(undefined));
     expect(perms.size).toBe(PERMISSIONS.length);
     for (const p of PERMISSIONS) {
       expect(perms.has(p)).toBe(true);
@@ -175,7 +175,7 @@ describe("resolvePermissions", () => {
 
   it("returns empty permissions for undefined user in managed auth mode", async () => {
     mockAuthMode = "managed";
-    const perms = await resolvePermissions(undefined);
+    const perms = await run(resolvePermissions(undefined));
     expect(perms.size).toBe(0);
   });
 
@@ -185,7 +185,7 @@ describe("resolvePermissions", () => {
     })]);
 
     const user = makeUser({ role: "analyst" });
-    const perms = await resolvePermissions(user);
+    const perms = await run(resolvePermissions(user));
     expect(perms.has("query")).toBe(true);
     expect(perms.has("admin:audit")).toBe(true);
     expect(perms.has("admin:users")).toBe(false);
@@ -196,7 +196,7 @@ describe("resolvePermissions", () => {
     ee.queueMockRows([]); // No custom role found
 
     const user = makeUser({ role: "admin" });
-    const perms = await resolvePermissions(user);
+    const perms = await run(resolvePermissions(user));
     expect(perms.size).toBe(PERMISSIONS.length);
   });
 
@@ -204,7 +204,7 @@ describe("resolvePermissions", () => {
     ee.queueMockRows([]); // No custom role found
 
     const user = makeUser({ role: "member" });
-    const perms = await resolvePermissions(user);
+    const perms = await run(resolvePermissions(user));
     expect(perms.has("query")).toBe(true);
     expect(perms.has("query:raw_data")).toBe(true);
     expect(perms.has("admin:users")).toBe(false);
@@ -214,7 +214,7 @@ describe("resolvePermissions", () => {
     ee.queueMockRows([]); // No custom role found
 
     const user = makeUser({ role: undefined });
-    const perms = await resolvePermissions(user);
+    const perms = await run(resolvePermissions(user));
     expect(perms.has("query")).toBe(true);
     expect(perms.has("query:raw_data")).toBe(true);
     expect(perms.has("admin:users")).toBe(false);
@@ -225,7 +225,7 @@ describe("resolvePermissions", () => {
     ee.queueMockRows([{ id: "r1", org_id: "org-1", name: "test", description: "", permissions: "INVALID_JSON{", is_builtin: false, created_at: "", updated_at: "" }]);
 
     const user = makeUser({ role: "test" });
-    const perms = await resolvePermissions(user);
+    const perms = await run(resolvePermissions(user));
     // Corrupt data → empty permissions (fail closed), not elevated legacy
     expect(perms.size).toBe(0);
     expect(perms.has("admin:users")).toBe(false);
@@ -237,12 +237,12 @@ describe("hasPermission", () => {
 
   it("returns true when user has the permission", async () => {
     ee.queueMockRows([]); // Falls back to legacy admin
-    expect(await hasPermission(makeUser({ role: "admin" }), "admin:users")).toBe(true);
+    expect(await run(hasPermission(makeUser({ role: "admin" }), "admin:users"))).toBe(true);
   });
 
   it("returns false when user lacks the permission", async () => {
     ee.queueMockRows([]); // Falls back to legacy member
-    expect(await hasPermission(makeUser({ role: "member" }), "admin:users")).toBe(false);
+    expect(await run(hasPermission(makeUser({ role: "member" }), "admin:users"))).toBe(false);
   });
 });
 
@@ -251,13 +251,13 @@ describe("checkPermission", () => {
 
   it("returns null when permission is satisfied", async () => {
     ee.queueMockRows([]); // Legacy admin
-    const result = await checkPermission(makeUser({ role: "admin" }), "admin:users", "req-1");
+    const result = await run(checkPermission(makeUser({ role: "admin" }), "admin:users", "req-1"));
     expect(result).toBeNull();
   });
 
   it("returns error response when permission is denied", async () => {
     ee.queueMockRows([]); // Legacy member
-    const result = await checkPermission(makeUser({ role: "member" }), "admin:users", "req-1");
+    const result = await run(checkPermission(makeUser({ role: "member" }), "admin:users", "req-1"));
     expect(result).not.toBeNull();
     expect(result!.status).toBe(403);
     expect(result!.body.error).toBe("insufficient_permissions");
@@ -509,7 +509,7 @@ describe("seedBuiltinRoles", () => {
     // Three existence checks, all empty
     ee.queueMockRows([], [], []);
 
-    await seedBuiltinRoles("org-1");
+    await run(seedBuiltinRoles("org-1"));
 
     // 3 SELECTs + 3 INSERTs = 6 queries
     const selects = ee.capturedQueries.filter((q) => q.sql.includes("SELECT"));
@@ -522,7 +522,7 @@ describe("seedBuiltinRoles", () => {
     // First two exist, third doesn't
     ee.queueMockRows([{ id: "existing" }], [{ id: "existing" }], []);
 
-    await seedBuiltinRoles("org-1");
+    await run(seedBuiltinRoles("org-1"));
 
     const inserts = ee.capturedQueries.filter((q) => q.sql.includes("INSERT"));
     expect(inserts.length).toBe(1);

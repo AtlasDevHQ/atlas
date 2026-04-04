@@ -385,20 +385,21 @@ export const deleteSSOProvider = (orgId: string, providerId: string): Effect.Eff
  * Does NOT call requireEnterprise — this is used during login flow
  * where the enterprise check happens upstream.
  */
-export async function findProviderByDomain(emailDomain: string): Promise<SSOProvider | null> {
-  if (!hasInternalDB()) return null;
+export const findProviderByDomain = (emailDomain: string): Effect.Effect<SSOProvider | null> =>
+  Effect.gen(function* () {
+    if (!hasInternalDB()) return null;
 
-  const domain = normalizeDomain(emailDomain);
-  const rows = await internalQuery<SSOProviderRow>(
-    `SELECT id, org_id, type, issuer, domain, enabled, sso_enforced, config, created_at, updated_at
-     FROM sso_providers
-     WHERE domain = $1 AND enabled = true
-     LIMIT 1`,
-    [domain],
-  );
+    const domain = normalizeDomain(emailDomain);
+    const rows = yield* Effect.promise(() => internalQuery<SSOProviderRow>(
+      `SELECT id, org_id, type, issuer, domain, enabled, sso_enforced, config, created_at, updated_at
+       FROM sso_providers
+       WHERE domain = $1 AND enabled = true
+       LIMIT 1`,
+      [domain],
+    ));
 
-  return rows[0] ? rowToProvider(rows[0]) : null;
-}
+    return rows[0] ? rowToProvider(rows[0]) : null;
+  });
 
 /**
  * Extract the domain part from an email address.
@@ -425,37 +426,38 @@ export class SSOEnforcementError extends EEError<SSOEnforcementErrorCode> {
  * Does NOT call requireEnterprise — this is used during the login flow
  * to block password auth. Enterprise gating happens on the admin toggle.
  */
-export async function isSSOEnforced(orgId: string): Promise<{
+export const isSSOEnforced = (orgId: string): Effect.Effect<{
   enforced: boolean;
   provider?: SSOProvider;
   ssoRedirectUrl?: string;
-} | null> {
-  if (!hasInternalDB()) return null;
+} | null> =>
+  Effect.gen(function* () {
+    if (!hasInternalDB()) return null;
 
-  const rows = await internalQuery<SSOProviderRow>(
-    `SELECT id, org_id, type, issuer, domain, enabled, sso_enforced, config, created_at, updated_at
-     FROM sso_providers
-     WHERE org_id = $1 AND enabled = true AND sso_enforced = true
-     LIMIT 1`,
-    [orgId],
-  );
+    const rows = yield* Effect.promise(() => internalQuery<SSOProviderRow>(
+      `SELECT id, org_id, type, issuer, domain, enabled, sso_enforced, config, created_at, updated_at
+       FROM sso_providers
+       WHERE org_id = $1 AND enabled = true AND sso_enforced = true
+       LIMIT 1`,
+      [orgId],
+    ));
 
-  if (!rows[0]) return { enforced: false };
+    if (!rows[0]) return { enforced: false };
 
-  const provider = rowToProvider(rows[0]);
-  const ssoRedirectUrl = provider.type === "saml"
-    ? provider.config.idpSsoUrl
-    : provider.config.discoveryUrl;
+    const provider = rowToProvider(rows[0]);
+    const ssoRedirectUrl = provider.type === "saml"
+      ? provider.config.idpSsoUrl
+      : provider.config.discoveryUrl;
 
-  if (!ssoRedirectUrl) {
-    log.error(
-      { providerId: provider.id, type: provider.type },
-      "SSO enforcement active but provider has no redirect URL configured",
-    );
-  }
+    if (!ssoRedirectUrl) {
+      log.error(
+        { providerId: provider.id, type: provider.type },
+        "SSO enforcement active but provider has no redirect URL configured",
+      );
+    }
 
-  return { enforced: true, provider, ssoRedirectUrl };
-}
+    return { enforced: true, provider, ssoRedirectUrl };
+  });
 
 /**
  * Check SSO enforcement by email domain — used in the login middleware
@@ -463,38 +465,39 @@ export async function isSSOEnforced(orgId: string): Promise<{
  *
  * Does NOT call requireEnterprise — this runs in the login flow.
  */
-export async function isSSOEnforcedForDomain(emailDomain: string): Promise<{
+export const isSSOEnforcedForDomain = (emailDomain: string): Effect.Effect<{
   enforced: boolean;
   provider?: SSOProvider;
   ssoRedirectUrl?: string;
-} | null> {
-  if (!hasInternalDB()) return null;
+} | null> =>
+  Effect.gen(function* () {
+    if (!hasInternalDB()) return null;
 
-  const domain = normalizeDomain(emailDomain);
-  const rows = await internalQuery<SSOProviderRow>(
-    `SELECT id, org_id, type, issuer, domain, enabled, sso_enforced, config, created_at, updated_at
-     FROM sso_providers
-     WHERE domain = $1 AND enabled = true AND sso_enforced = true
-     LIMIT 1`,
-    [domain],
-  );
+    const domain = normalizeDomain(emailDomain);
+    const rows = yield* Effect.promise(() => internalQuery<SSOProviderRow>(
+      `SELECT id, org_id, type, issuer, domain, enabled, sso_enforced, config, created_at, updated_at
+       FROM sso_providers
+       WHERE domain = $1 AND enabled = true AND sso_enforced = true
+       LIMIT 1`,
+      [domain],
+    ));
 
-  if (!rows[0]) return { enforced: false };
+    if (!rows[0]) return { enforced: false };
 
-  const provider = rowToProvider(rows[0]);
-  const ssoRedirectUrl = provider.type === "saml"
-    ? provider.config.idpSsoUrl
-    : provider.config.discoveryUrl;
+    const provider = rowToProvider(rows[0]);
+    const ssoRedirectUrl = provider.type === "saml"
+      ? provider.config.idpSsoUrl
+      : provider.config.discoveryUrl;
 
-  if (!ssoRedirectUrl) {
-    log.error(
-      { providerId: provider.id, type: provider.type },
-      "SSO enforcement active but provider has no redirect URL configured",
-    );
-  }
+    if (!ssoRedirectUrl) {
+      log.error(
+        { providerId: provider.id, type: provider.type },
+        "SSO enforcement active but provider has no redirect URL configured",
+      );
+    }
 
-  return { enforced: true, provider, ssoRedirectUrl };
-}
+    return { enforced: true, provider, ssoRedirectUrl };
+  });
 
 /**
  * Set SSO enforcement for an organization.

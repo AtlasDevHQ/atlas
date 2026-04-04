@@ -11,6 +11,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, mock, type Mock } from "bun:test";
+import { Effect } from "effect";
 import { createConnectionMock } from "@atlas/api/testing/connection";
 
 // --- Mocks ---
@@ -134,7 +135,7 @@ mock.module("@atlas/api/lib/settings", () => ({
 
 // Skip EE IP allowlist check — no real DB in tests
 mock.module("@atlas/ee/auth/ip-allowlist", () => ({
-  checkIPAllowlist: mock(async () => ({ allowed: true })),
+  checkIPAllowlist: mock(() => Effect.succeed({ allowed: true })),
   listIPAllowlistEntries: mock(async () => []),
   addIPAllowlistEntry: mock(async () => ({})),
   removeIPAllowlistEntry: mock(async () => false),

@@ -76,23 +76,24 @@ export interface SCIMSyncStatus {
 
 let _groupMappingsTableEnsured = false;
 
-async function ensureGroupMappingsTable(): Promise<void> {
-  if (_groupMappingsTableEnsured) return;
-  if (!hasInternalDB()) return;
+const ensureGroupMappingsTable = (): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    if (_groupMappingsTableEnsured) return;
+    if (!hasInternalDB()) return;
 
-  const pool = getInternalDB();
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS scim_group_mappings (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      org_id TEXT NOT NULL,
-      scim_group_name TEXT NOT NULL,
-      role_name TEXT NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-      UNIQUE(org_id, scim_group_name)
-    )
-  `);
-  _groupMappingsTableEnsured = true;
-}
+    const pool = getInternalDB();
+    yield* Effect.promise(() => pool.query(`
+      CREATE TABLE IF NOT EXISTS scim_group_mappings (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        org_id TEXT NOT NULL,
+        scim_group_name TEXT NOT NULL,
+        role_name TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        UNIQUE(org_id, scim_group_name)
+      )
+    `));
+    _groupMappingsTableEnsured = true;
+  });
 
 /** @internal — test-only. Reset the table-ensured flag. */
 export function _resetTableEnsured(): void {
@@ -229,7 +230,7 @@ export const listGroupMappings = (orgId: string): Effect.Effect<SCIMGroupMapping
   Effect.gen(function* () {
     yield* requireEnterpriseEffect("scim");
     if (!hasInternalDB()) return [];
-    yield* Effect.promise(() => ensureGroupMappingsTable());
+    yield* ensureGroupMappingsTable();
 
     const rows = yield* Effect.promise(() => internalQuery<SCIMGroupMappingRow>(
       `SELECT id, org_id, scim_group_name, role_name, created_at
@@ -253,7 +254,7 @@ export const createGroupMapping = (
   Effect.gen(function* () {
     yield* requireEnterpriseEffect("scim");
     yield* requireInternalDBEffect("SCIM group mapping");
-    yield* Effect.promise(() => ensureGroupMappingsTable());
+    yield* ensureGroupMappingsTable();
 
     // Validate group name
     if (!isValidScimGroupName(scimGroupName)) {
@@ -307,7 +308,7 @@ export const deleteGroupMapping = (orgId: string, mappingId: string): Effect.Eff
   Effect.gen(function* () {
     yield* requireEnterpriseEffect("scim");
     if (!hasInternalDB()) return false;
-    yield* Effect.promise(() => ensureGroupMappingsTable());
+    yield* ensureGroupMappingsTable();
 
     const pool = getInternalDB();
     const result = yield* Effect.promise(() =>
@@ -328,24 +329,30 @@ export const deleteGroupMapping = (orgId: string, mappingId: string): Effect.Eff
  * Resolve a SCIM group display name to an Atlas role name.
  * Returns null if no mapping exists for the group.
  */
-export async function resolveGroupToRole(orgId: string, scimGroupName: string): Promise<string | null> {
-  if (!hasInternalDB()) return null;
+export const resolveGroupToRole = (orgId: string, scimGroupName: string): Effect.Effect<string | null, Error> =>
+  Effect.gen(function* () {
+    if (!hasInternalDB()) return null;
 
-  try {
-    await ensureGroupMappingsTable();
-    const rows = await internalQuery<{ role_name: string; [key: string]: unknown }>(
-      `SELECT role_name FROM scim_group_mappings WHERE org_id = $1 AND scim_group_name = $2 LIMIT 1`,
-      [orgId, scimGroupName],
+    return yield* Effect.tryPromise({
+      try: async () => {
+        await Effect.runPromise(ensureGroupMappingsTable());
+        const rows = await internalQuery<{ role_name: string; [key: string]: unknown }>(
+          `SELECT role_name FROM scim_group_mappings WHERE org_id = $1 AND scim_group_name = $2 LIMIT 1`,
+          [orgId, scimGroupName],
+        );
+        return rows[0]?.role_name ?? null;
+      },
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    }).pipe(
+      Effect.catchAll((err) => {
+        const msg = err.message;
+        if (msg.includes("does not exist")) {
+          // Table not yet created — no mappings configured
+          return Effect.succeed(null);
+        }
+        // All other errors must propagate — silently returning null
+        // would skip role assignment and is a security-relevant failure.
+        return Effect.fail(err);
+      }),
     );
-    return rows[0]?.role_name ?? null;
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    if (msg.includes("does not exist")) {
-      // Table not yet created — no mappings configured
-      return null;
-    }
-    // All other errors must propagate — silently returning null
-    // would skip role assignment and is a security-relevant failure.
-    throw err;
-  }
-}
+  });

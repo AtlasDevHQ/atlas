@@ -150,13 +150,13 @@ describe("applyMasking", () => {
 
   it("returns unmodified rows when enterprise is disabled", async () => {
     const rows = [{ email: "alice@test.com", id: 1 }];
-    const result = await applyMasking({
+    const result = await run(applyMasking({
       columns: ["email", "id"],
       rows,
       tablesAccessed: ["users"],
       orgId: "org-1",
       userRole: "viewer",
-    });
+    }));
     expect(result).toBe(rows); // Same reference — no copy
   });
 
@@ -164,13 +164,13 @@ describe("applyMasking", () => {
     mockEnterpriseEnabled = true;
     mockHasInternalDB = true;
     const rows = [{ email: "alice@test.com" }];
-    const result = await applyMasking({
+    const result = await run(applyMasking({
       columns: ["email"],
       rows,
       tablesAccessed: ["users"],
       orgId: "org-1",
       userRole: "admin",
-    });
+    }));
     expect(result).toBe(rows);
   });
 
@@ -178,13 +178,13 @@ describe("applyMasking", () => {
     mockEnterpriseEnabled = true;
     mockHasInternalDB = true;
     const rows = [{ email: "alice@test.com" }];
-    const result = await applyMasking({
+    const result = await run(applyMasking({
       columns: ["email"],
       rows,
       tablesAccessed: ["users"],
       orgId: "org-1",
       userRole: "owner",
-    });
+    }));
     expect(result).toBe(rows);
   });
 
@@ -192,26 +192,26 @@ describe("applyMasking", () => {
     mockEnterpriseEnabled = true;
     mockHasInternalDB = false;
     const rows = [{ email: "alice@test.com" }];
-    const result = await applyMasking({
+    const result = await run(applyMasking({
       columns: ["email"],
       rows,
       tablesAccessed: ["users"],
       orgId: "org-1",
       userRole: "viewer",
-    });
+    }));
     expect(result).toBe(rows);
   });
 
   it("returns empty array for empty rows", async () => {
     mockEnterpriseEnabled = true;
     mockHasInternalDB = true;
-    const result = await applyMasking({
+    const result = await run(applyMasking({
       columns: ["email"],
       rows: [],
       tablesAccessed: ["users"],
       orgId: "org-1",
       userRole: "viewer",
-    });
+    }));
     expect(result).toEqual([]);
   });
 
@@ -237,7 +237,7 @@ describe("applyMasking", () => {
       },
     ]);
 
-    const result = await applyMasking({
+    const result = await run(applyMasking({
       columns: ["email", "id"],
       rows: [
         { email: "alice@example.com", id: 1 },
@@ -246,7 +246,7 @@ describe("applyMasking", () => {
       tablesAccessed: ["users"],
       orgId: "org-1",
       userRole: "viewer",
-    });
+    }));
 
     // Viewer gets full mask (overrides partial → full for viewer)
     expect(result[0].email).toBe("***");
@@ -275,13 +275,13 @@ describe("applyMasking", () => {
       },
     ]);
 
-    const result = await applyMasking({
+    const result = await run(applyMasking({
       columns: ["email"],
       rows: [{ email: "alice@example.com" }],
       tablesAccessed: ["users"],
       orgId: "org-1",
       userRole: "analyst",
-    });
+    }));
 
     // Analyst overrides full → partial
     expect(result[0].email).toBe("a***@example.com");
@@ -309,13 +309,13 @@ describe("applyMasking", () => {
     ]);
 
     const originalRows = [{ email: "alice@example.com" }];
-    await applyMasking({
+    await run(applyMasking({
       columns: ["email"],
       rows: originalRows,
       tablesAccessed: ["users"],
       orgId: "org-1",
       userRole: "viewer",
-    });
+    }));
 
     expect(originalRows[0].email).toBe("alice@example.com");
   });
@@ -341,13 +341,13 @@ describe("applyMasking", () => {
       },
     ]);
 
-    const result = await applyMasking({
+    const result = await run(applyMasking({
       columns: ["email"],
       rows: [{ email: "alice@example.com" }],
       tablesAccessed: ["users"],
       orgId: "org-1",
       userRole: undefined,
-    });
+    }));
 
     // Undefined role defaults to viewer (full mask)
     expect(result[0].email).toBe("***");
@@ -583,20 +583,20 @@ describe("invalidateClassificationCache", () => {
       created_at: "2026-01-01", updated_at: "2026-01-01",
     }]);
 
-    const result1 = await applyMasking({
+    const result1 = await run(applyMasking({
       columns: ["email"], rows: [{ email: "test@test.com" }],
       tablesAccessed: ["users"], orgId: "org-1", userRole: "viewer",
-    });
+    }));
     expect(result1[0].email).toBe("***"); // Masked
 
     // Invalidate cache and provide empty classifications
     invalidateClassificationCache("org-1");
     mockQueryRows.push([]); // Re-fetch returns empty (classification was deleted)
 
-    const result2 = await applyMasking({
+    const result2 = await run(applyMasking({
       columns: ["email"], rows: [{ email: "test@test.com" }],
       tablesAccessed: ["users"], orgId: "org-1", userRole: "viewer",
-    });
+    }));
     expect(result2[0].email).toBe("test@test.com"); // No longer masked
   });
 });

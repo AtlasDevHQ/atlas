@@ -178,7 +178,7 @@ mock.module("@atlas/ee/platform/residency", () => ({
 }));
 
 mock.module("@atlas/ee/auth/ip-allowlist", () => ({
-  checkIPAllowlist: mock(async () => ({ allowed: true })),
+  checkIPAllowlist: mock(() => ({ allowed: true })),
   listIPAllowlistEntries: mock(async () => []),
   addIPAllowlistEntry: mock(async () => ({})),
   removeIPAllowlistEntry: mock(async () => false),

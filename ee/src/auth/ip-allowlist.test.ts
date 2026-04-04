@@ -343,39 +343,39 @@ describe("checkIPAllowlist", () => {
 
   it("allows when enterprise is disabled", async () => {
     ee.setEnterpriseEnabled(false);
-    const result = await checkIPAllowlist("org-1", "1.2.3.4");
+    const result = await run(checkIPAllowlist("org-1", "1.2.3.4"));
     expect(result.allowed).toBe(true);
   });
 
   it("allows when no allowlist entries exist (opt-in)", async () => {
     ee.queueMockRows([]); // empty allowlist
-    const result = await checkIPAllowlist("org-1", "1.2.3.4");
+    const result = await run(checkIPAllowlist("org-1", "1.2.3.4"));
     expect(result.allowed).toBe(true);
   });
 
   it("allows matching IP", async () => {
     ee.queueMockRows([{ cidr: "10.0.0.0/8" }]);
-    const result = await checkIPAllowlist("org-1", "10.0.0.1");
+    const result = await run(checkIPAllowlist("org-1", "10.0.0.1"));
     expect(result.allowed).toBe(true);
   });
 
   it("blocks non-matching IP", async () => {
     ee.queueMockRows([{ cidr: "10.0.0.0/8" }]);
-    const result = await checkIPAllowlist("org-1", "192.168.1.1");
+    const result = await run(checkIPAllowlist("org-1", "192.168.1.1"));
     expect(result.allowed).toBe(false);
   });
 
   it("blocks when IP is null and allowlist has entries", async () => {
     ee.queueMockRows([{ cidr: "10.0.0.0/8" }]);
-    const result = await checkIPAllowlist("org-1", null);
+    const result = await run(checkIPAllowlist("org-1", null));
     expect(result.allowed).toBe(false);
   });
 
   it("uses cache on second call", async () => {
     ee.queueMockRows([{ cidr: "10.0.0.0/8" }]);
-    await checkIPAllowlist("org-1", "10.0.0.1");
+    await run(checkIPAllowlist("org-1", "10.0.0.1"));
     // Second call should not query DB (no additional rows needed)
-    const result = await checkIPAllowlist("org-1", "10.0.0.1");
+    const result = await run(checkIPAllowlist("org-1", "10.0.0.1"));
     expect(result.allowed).toBe(true);
     // Only 1 DB query should have been made
     expect(ee.capturedQueries).toHaveLength(1);
@@ -383,13 +383,13 @@ describe("checkIPAllowlist", () => {
 
   it("cache invalidation forces DB reload", async () => {
     ee.queueMockRows([{ cidr: "10.0.0.0/8" }]);
-    await checkIPAllowlist("org-1", "10.0.0.1");
+    await run(checkIPAllowlist("org-1", "10.0.0.1"));
 
     // Invalidate cache
     _clearCache();
     ee.queueMockRows([{ cidr: "192.168.0.0/16" }]);
 
-    const result = await checkIPAllowlist("org-1", "10.0.0.1");
+    const result = await run(checkIPAllowlist("org-1", "10.0.0.1"));
     // Should now be blocked because cache was cleared and new DB data loaded
     expect(result.allowed).toBe(false);
     expect(ee.capturedQueries).toHaveLength(2);
@@ -408,7 +408,7 @@ describe("edge cases", () => {
       { cidr: "192.168.0.0/16" },
     ]);
     // RFC 1918 address in the 172.16.x.x range
-    const result = await checkIPAllowlist("org-1", "172.16.5.10");
+    const result = await run(checkIPAllowlist("org-1", "172.16.5.10"));
     expect(result.allowed).toBe(true);
   });
 
@@ -417,7 +417,7 @@ describe("edge cases", () => {
       { cidr: "10.0.0.0/8" },
       { cidr: "2001:db8::/32" },
     ]);
-    const v4 = await checkIPAllowlist("org-1", "10.0.0.1");
+    const v4 = await run(checkIPAllowlist("org-1", "10.0.0.1"));
     expect(v4.allowed).toBe(true);
 
     // Clear cache for fresh query
@@ -426,7 +426,7 @@ describe("edge cases", () => {
       { cidr: "10.0.0.0/8" },
       { cidr: "2001:db8::/32" },
     ]);
-    const v6 = await checkIPAllowlist("org-1", "2001:db8::1");
+    const v6 = await run(checkIPAllowlist("org-1", "2001:db8::1"));
     expect(v6.allowed).toBe(true);
   });
 

@@ -526,7 +526,7 @@ adminSso.openapi(getEnforcementRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
 
-    const result = yield* Effect.promise(() => isSSOEnforced(orgId!));
+    const result = yield* isSSOEnforced(orgId!);
     return c.json({ enforced: result?.enforced ?? false, orgId: orgId! }, 200);
   }), { label: "get SSO enforcement status", domainErrors: [ssoEnforcementDomainError, ssoDomainError] });
 });

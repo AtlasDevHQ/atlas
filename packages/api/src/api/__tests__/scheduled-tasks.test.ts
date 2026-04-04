@@ -42,8 +42,9 @@ mock.module("@atlas/api/lib/auth/middleware", () => ({
 }));
 
 // Skip EE IP allowlist check — no real DB in tests
+const { Effect: EffectLib } = await import("effect");
 mock.module("@atlas/ee/auth/ip-allowlist", () => ({
-  checkIPAllowlist: mock(async () => ({ allowed: true })),
+  checkIPAllowlist: mock(() => EffectLib.succeed({ allowed: true })),
 }));
 
 // --- CRUD mocks ---

@@ -319,20 +319,20 @@ describe("findProviderByDomain", () => {
 
   it("finds enabled provider for domain", async () => {
     ee.queueMockRows([sampleSamlRow]);
-    const provider = await findProviderByDomain("acme.com");
+    const provider = await run(findProviderByDomain("acme.com"));
     expect(provider).not.toBeNull();
     expect(provider!.domain).toBe("acme.com");
   });
 
   it("returns null when no matching domain", async () => {
     ee.queueMockRows([]);
-    const provider = await findProviderByDomain("unknown.com");
+    const provider = await run(findProviderByDomain("unknown.com"));
     expect(provider).toBeNull();
   });
 
   it("normalizes domain case", async () => {
     ee.queueMockRows([sampleSamlRow]);
-    await findProviderByDomain("ACME.COM");
+    await run(findProviderByDomain("ACME.COM"));
     expect(ee.capturedQueries[0].params[0]).toBe("acme.com");
   });
 
@@ -341,7 +341,7 @@ describe("findProviderByDomain", () => {
     ee.setEnterpriseLicenseKey(undefined);
     ee.queueMockRows([]);
     // Should not throw even though enterprise is disabled
-    const provider = await findProviderByDomain("acme.com");
+    const provider = await run(findProviderByDomain("acme.com"));
     expect(provider).toBeNull();
   });
 });
@@ -534,7 +534,7 @@ describe("isSSOEnforced", () => {
     const enforcedRow = { ...sampleSamlRow, sso_enforced: true };
     ee.queueMockRows([enforcedRow]);
 
-    const result = await isSSOEnforced("org-1");
+    const result = await run(isSSOEnforced("org-1"));
     expect(result).not.toBeNull();
     expect(result!.enforced).toBe(true);
     expect(result!.provider).toBeDefined();
@@ -544,7 +544,7 @@ describe("isSSOEnforced", () => {
   it("returns enforced: false when no enforced providers", async () => {
     ee.queueMockRows([]);
 
-    const result = await isSSOEnforced("org-1");
+    const result = await run(isSSOEnforced("org-1"));
     expect(result).not.toBeNull();
     expect(result!.enforced).toBe(false);
   });
@@ -554,7 +554,7 @@ describe("isSSOEnforced", () => {
     ee.setEnterpriseLicenseKey(undefined);
     ee.queueMockRows([]);
 
-    const result = await isSSOEnforced("org-1");
+    const result = await run(isSSOEnforced("org-1"));
     expect(result).not.toBeNull();
     expect(result!.enforced).toBe(false);
   });
@@ -567,7 +567,7 @@ describe("isSSOEnforcedForDomain", () => {
     const enforcedRow = { ...sampleSamlRow, sso_enforced: true };
     ee.queueMockRows([enforcedRow]);
 
-    const result = await isSSOEnforcedForDomain("acme.com");
+    const result = await run(isSSOEnforcedForDomain("acme.com"));
     expect(result).not.toBeNull();
     expect(result!.enforced).toBe(true);
     expect(result!.ssoRedirectUrl).toBe("https://idp.acme.com/sso");
@@ -577,7 +577,7 @@ describe("isSSOEnforcedForDomain", () => {
     const enforcedOidcRow = { ...sampleOidcRow, enabled: true, sso_enforced: true };
     ee.queueMockRows([enforcedOidcRow]);
 
-    const result = await isSSOEnforcedForDomain("example.com");
+    const result = await run(isSSOEnforcedForDomain("example.com"));
     expect(result).not.toBeNull();
     expect(result!.enforced).toBe(true);
     expect(result!.ssoRedirectUrl).toBe("https://accounts.google.com/.well-known/openid-configuration");
@@ -586,14 +586,14 @@ describe("isSSOEnforcedForDomain", () => {
   it("returns enforced: false when domain has no enforcement", async () => {
     ee.queueMockRows([]);
 
-    const result = await isSSOEnforcedForDomain("noenforcement.com");
+    const result = await run(isSSOEnforcedForDomain("noenforcement.com"));
     expect(result).not.toBeNull();
     expect(result!.enforced).toBe(false);
   });
 
   it("normalizes domain case", async () => {
     ee.queueMockRows([]);
-    await isSSOEnforcedForDomain("ACME.COM");
+    await run(isSSOEnforcedForDomain("ACME.COM"));
     expect(ee.capturedQueries[0].params[0]).toBe("acme.com");
   });
 
@@ -602,7 +602,7 @@ describe("isSSOEnforcedForDomain", () => {
     ee.setEnterpriseLicenseKey(undefined);
     ee.queueMockRows([]);
 
-    const result = await isSSOEnforcedForDomain("acme.com");
+    const result = await run(isSSOEnforcedForDomain("acme.com"));
     expect(result).not.toBeNull();
     expect(result!.enforced).toBe(false);
   });

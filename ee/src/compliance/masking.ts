@@ -50,43 +50,50 @@ export class ComplianceError extends EEError<ComplianceErrorCode> {
 
 const TABLE_NAME = "pii_column_classifications";
 
-async function ensureTable(): Promise<void> {
-  if (!hasInternalDB()) return;
-  await internalQuery(`
-    CREATE TABLE IF NOT EXISTS ${TABLE_NAME} (
-      id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
-      org_id TEXT NOT NULL,
-      table_name TEXT NOT NULL,
-      column_name TEXT NOT NULL,
-      connection_id TEXT NOT NULL DEFAULT 'default',
-      category TEXT NOT NULL,
-      confidence TEXT NOT NULL DEFAULT 'medium',
-      masking_strategy TEXT NOT NULL DEFAULT 'partial',
-      reviewed BOOLEAN NOT NULL DEFAULT false,
-      dismissed BOOLEAN NOT NULL DEFAULT false,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-      UNIQUE(org_id, table_name, column_name, connection_id)
-    )
-  `);
-}
+const ensureTable = (): Effect.Effect<void, Error> =>
+  Effect.gen(function* () {
+    if (!hasInternalDB()) return;
+    yield* Effect.tryPromise({
+      try: () => internalQuery(`
+        CREATE TABLE IF NOT EXISTS ${TABLE_NAME} (
+          id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+          org_id TEXT NOT NULL,
+          table_name TEXT NOT NULL,
+          column_name TEXT NOT NULL,
+          connection_id TEXT NOT NULL DEFAULT 'default',
+          category TEXT NOT NULL,
+          confidence TEXT NOT NULL DEFAULT 'medium',
+          masking_strategy TEXT NOT NULL DEFAULT 'partial',
+          reviewed BOOLEAN NOT NULL DEFAULT false,
+          dismissed BOOLEAN NOT NULL DEFAULT false,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+          UNIQUE(org_id, table_name, column_name, connection_id)
+        )
+      `),
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    });
+  });
 
 let _tableReady = false;
-async function ready(): Promise<boolean> {
-  if (!hasInternalDB()) return false;
-  if (_tableReady) return true;
-  try {
-    await ensureTable();
-    _tableReady = true;
-    return true;
-  } catch (err) {
-    log.warn(
-      { err: err instanceof Error ? err.message : String(err) },
-      "Failed to ensure PII classifications table",
+const ready = (): Effect.Effect<boolean> =>
+  Effect.gen(function* () {
+    if (!hasInternalDB()) return false;
+    if (_tableReady) return true;
+    return yield* ensureTable().pipe(
+      Effect.map(() => {
+        _tableReady = true;
+        return true;
+      }),
+      Effect.catchAll((err) => {
+        log.warn(
+          { err: err instanceof Error ? err.message : String(err) },
+          "Failed to ensure PII classifications table",
+        );
+        return Effect.succeed(false);
+      }),
     );
-    return false;
-  }
-}
+  });
 
 // ── Internal row shape ──────────────────────────────────────────
 
@@ -131,7 +138,7 @@ export const listPIIClassifications = (
 ): Effect.Effect<PIIColumnClassification[], EnterpriseError> =>
   Effect.gen(function* () {
     yield* requireEnterpriseEffect("pii-detection");
-    if (!(yield* Effect.promise(() => ready()))) return [];
+    if (!(yield* ready())) return [];
 
     let sql = `SELECT * FROM ${TABLE_NAME} WHERE dismissed = false`;
     const params: unknown[] = [];
@@ -161,7 +168,7 @@ export const savePIIClassification = (
 ): Effect.Effect<PIIColumnClassification, ComplianceError | EnterpriseError> =>
   Effect.gen(function* () {
     yield* requireEnterpriseEffect("pii-detection");
-    if (!(yield* Effect.promise(() => ready()))) {
+    if (!(yield* ready())) {
       return yield* Effect.fail(new ComplianceError("Internal database not available", "validation"));
     }
 
@@ -186,7 +193,7 @@ export const updatePIIClassification = (
 ): Effect.Effect<PIIColumnClassification, ComplianceError | EnterpriseError> =>
   Effect.gen(function* () {
     yield* requireEnterpriseEffect("pii-detection");
-    if (!(yield* Effect.promise(() => ready()))) {
+    if (!(yield* ready())) {
       return yield* Effect.fail(new ComplianceError("Internal database not available", "validation"));
     }
 
@@ -230,7 +237,7 @@ export const deletePIIClassification = (
 ): Effect.Effect<void, ComplianceError | EnterpriseError> =>
   Effect.gen(function* () {
     yield* requireEnterpriseEffect("pii-detection");
-    if (!(yield* Effect.promise(() => ready()))) {
+    if (!(yield* ready())) {
       return yield* Effect.fail(new ComplianceError("Internal database not available", "validation"));
     }
 
@@ -252,21 +259,25 @@ export const deletePIIClassification = (
 const _classificationCache = new Map<string, { data: PIIClassificationRow[]; expiresAt: number }>();
 const CACHE_TTL_MS = 60_000;
 
-async function getClassificationsForOrg(
+const getClassificationsForOrg = (
   orgId: string,
-): Promise<PIIClassificationRow[]> {
-  const cached = _classificationCache.get(orgId);
-  if (cached && cached.expiresAt > Date.now()) return cached.data;
+): Effect.Effect<PIIClassificationRow[], Error> =>
+  Effect.gen(function* () {
+    const cached = _classificationCache.get(orgId);
+    if (cached && cached.expiresAt > Date.now()) return cached.data;
 
-  if (!(await ready())) return [];
+    if (!(yield* ready())) return [];
 
-  const data = await internalQuery<PIIClassificationRow>(
-    `SELECT * FROM ${TABLE_NAME} WHERE org_id = $1 AND dismissed = false`,
-    [orgId],
-  );
-  _classificationCache.set(orgId, { data, expiresAt: Date.now() + CACHE_TTL_MS });
-  return data;
-}
+    const data = yield* Effect.tryPromise({
+      try: () => internalQuery<PIIClassificationRow>(
+        `SELECT * FROM ${TABLE_NAME} WHERE org_id = $1 AND dismissed = false`,
+        [orgId],
+      ),
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    });
+    _classificationCache.set(orgId, { data, expiresAt: Date.now() + CACHE_TTL_MS });
+    return data;
+  });
 
 /** Invalidate the classification cache for an org (call after CRUD). */
 export function invalidateClassificationCache(orgId: string): void {
@@ -296,62 +307,62 @@ export interface MaskingContext {
  *
  * Returns a new rows array with masked values (does not mutate input).
  */
-export async function applyMasking(
+export const applyMasking = (
   ctx: MaskingContext,
-): Promise<Record<string, unknown>[]> {
-  // Fail open when enterprise is disabled — no masking for non-enterprise deployments
-  if (!isEnterpriseEnabled()) return ctx.rows;
-  if (!hasInternalDB()) return ctx.rows;
-  if (ctx.rows.length === 0) return ctx.rows;
+): Effect.Effect<Record<string, unknown>[]> =>
+  Effect.gen(function* () {
+    // Fail open when enterprise is disabled — no masking for non-enterprise deployments
+    if (!isEnterpriseEnabled()) return ctx.rows;
+    if (!hasInternalDB()) return ctx.rows;
+    if (ctx.rows.length === 0) return ctx.rows;
 
-  // Admins and owners always see raw data
-  const role = ctx.userRole ?? "viewer";
-  if (role === "admin" || role === "owner") return ctx.rows;
+    // Admins and owners always see raw data
+    const role = ctx.userRole ?? "viewer";
+    if (role === "admin" || role === "owner") return ctx.rows;
 
-  let classifications: PIIClassificationRow[];
-  try {
-    classifications = await getClassificationsForOrg(ctx.orgId);
-  } catch (err) {
-    log.warn(
-      { err: err instanceof Error ? err.message : String(err), orgId: ctx.orgId },
-      "Failed to load PII classifications — returning unmasked results",
+    const classifications = yield* getClassificationsForOrg(ctx.orgId).pipe(
+      Effect.catchAll((err) => {
+        log.warn(
+          { err: err instanceof Error ? err.message : String(err), orgId: ctx.orgId },
+          "Failed to load PII classifications — returning unmasked results",
+        );
+        return Effect.succeed([] as PIIClassificationRow[]);
+      }),
     );
-    return ctx.rows;
-  }
 
-  if (classifications.length === 0) return ctx.rows;
+    if (classifications.length === 0) return ctx.rows;
 
-  // Build a lookup: columnName → masking strategy (filtered to tables accessed by this query)
-  const maskLookup = new Map<string, MaskingStrategy>();
-  for (const cls of classifications) {
-    const tableNameLower = cls.table_name.toLowerCase();
-    const colNameLower = cls.column_name.toLowerCase();
-    // Match against tables accessed by this query
-    for (const table of ctx.tablesAccessed) {
-      if (table.toLowerCase() === tableNameLower) {
-        maskLookup.set(colNameLower, cls.masking_strategy as MaskingStrategy);
+    // Build a lookup: columnName → masking strategy (filtered to tables accessed by this query)
+    const maskLookup = new Map<string, MaskingStrategy>();
+    for (const cls of classifications) {
+      const tableNameLower = cls.table_name.toLowerCase();
+      const colNameLower = cls.column_name.toLowerCase();
+      // Match against tables accessed by this query
+      for (const table of ctx.tablesAccessed) {
+        if (table.toLowerCase() === tableNameLower) {
+          maskLookup.set(colNameLower, cls.masking_strategy as MaskingStrategy);
+        }
       }
     }
-  }
 
-  if (maskLookup.size === 0) return ctx.rows;
+    if (maskLookup.size === 0) return ctx.rows;
 
-  // Determine effective strategy based on role
-  const strategyForRole = resolveStrategyForRole(role);
+    // Determine effective strategy based on role
+    const strategyForRole = resolveStrategyForRole(role);
 
-  // Apply masking to each row
-  return ctx.rows.map((row) => {
-    const masked = { ...row };
-    for (const [colName, strategy] of maskLookup) {
-      // Match column names case-insensitively
-      const matchingKey = ctx.columns.find((c) => c.toLowerCase() === colName);
-      if (matchingKey && matchingKey in masked) {
-        masked[matchingKey] = maskValue(masked[matchingKey], strategy, strategyForRole);
+    // Apply masking to each row
+    return ctx.rows.map((row) => {
+      const masked = { ...row };
+      for (const [colName, strategy] of maskLookup) {
+        // Match column names case-insensitively
+        const matchingKey = ctx.columns.find((c) => c.toLowerCase() === colName);
+        if (matchingKey && matchingKey in masked) {
+          masked[matchingKey] = maskValue(masked[matchingKey], strategy, strategyForRole);
+        }
       }
-    }
-    return masked;
+      return masked;
+    });
   });
-}
 
 // ── Masking functions ───────────────────────────────────────────
 

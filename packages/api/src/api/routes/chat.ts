@@ -194,19 +194,15 @@ chat.openapi(chatRoute, async (c) => {
     }
   
     // IP allowlist check — enterprise feature, after auth so we have org context
-    let checkIPAllowlist: ((orgId: string, clientIP: string | null) => Promise<{ allowed: boolean }>) | undefined;
     const eeModule = yield* Effect.tryPromise({
       try: () => import("@atlas/ee/auth/ip-allowlist"),
       catch: (err) => err instanceof Error ? err : new Error(String(err)),
     }).pipe(Effect.option);
-    if (eeModule._tag === "Some") {
-      checkIPAllowlist = eeModule.value.checkIPAllowlist;
-    }
     // ee module not installed — IP allowlist feature unavailable, skip
-    if (checkIPAllowlist) {
+    if (eeModule._tag === "Some") {
       const orgId = authResult.user?.activeOrganizationId;
       if (orgId) {
-        const ipCheck = yield* Effect.promise(() => checkIPAllowlist!(orgId, ip));
+        const ipCheck = yield* eeModule.value.checkIPAllowlist(orgId, ip);
         if (!ipCheck.allowed) {
           log.warn({ requestId, orgId, ip }, "IP not in workspace allowlist");
           return c.json(

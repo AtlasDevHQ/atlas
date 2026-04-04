@@ -120,7 +120,7 @@ describe("purge scheduler", () => {
   });
 
   it("runPurgeCycle calls purge and hard-delete", async () => {
-    await runPurgeCycle();
+    await Effect.runPromise(runPurgeCycle());
     expect(purgeCalled).toBe(true);
     expect(hardDeleteCalled).toBe(true);
   });
@@ -128,7 +128,7 @@ describe("purge scheduler", () => {
   it("runPurgeCycle is no-op when enterprise disabled", async () => {
     mockEnterpriseEnabled = false;
     mockLicenseKey = undefined;
-    await runPurgeCycle();
+    await Effect.runPromise(runPurgeCycle());
     expect(purgeCalled).toBe(false);
     expect(hardDeleteCalled).toBe(false);
   });

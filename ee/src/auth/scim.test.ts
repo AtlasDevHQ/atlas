@@ -274,14 +274,14 @@ describe("resolveGroupToRole", () => {
   it("returns role name when mapping exists", async () => {
     ee.queueMockRows([]); // ensureGroupMappingsTable
     ee.queueMockRows([{ role_name: "analyst" }]);
-    const result = await resolveGroupToRole(ORG_ID, "Engineers");
+    const result = await run(resolveGroupToRole(ORG_ID, "Engineers"));
     expect(result).toBe("analyst");
   });
 
   it("returns null when no mapping", async () => {
     ee.queueMockRows([]); // ensureGroupMappingsTable
     ee.queueMockRows([]); // no match
-    const result = await resolveGroupToRole(ORG_ID, "Unknown Group");
+    const result = await run(resolveGroupToRole(ORG_ID, "Unknown Group"));
     expect(result).toBeNull();
   });
 
@@ -289,7 +289,7 @@ describe("resolveGroupToRole", () => {
     ee.setEnterpriseEnabled(false); // would throw if requireEnterprise were called
     ee.queueMockRows([]); // ensureGroupMappingsTable
     ee.queueMockRows([{ role_name: "analyst" }]);
-    const result = await resolveGroupToRole(ORG_ID, "Engineers");
+    const result = await run(resolveGroupToRole(ORG_ID, "Engineers"));
     expect(result).toBe("analyst");
   });
 });

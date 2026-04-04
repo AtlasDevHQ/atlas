@@ -164,94 +164,103 @@ const LEGACY_ROLE_PERMISSIONS: Record<string, readonly Permission[]> = {
  * This function does NOT call requireEnterprise — it is used during request
  * handling where the check should be transparent.
  */
-export async function resolvePermissions(user: AtlasUser | undefined): Promise<Set<Permission>> {
-  // No user → check auth mode. Only grant all permissions in no-auth mode (local dev).
-  if (!user) {
-    const { detectAuthMode } = await import("@atlas/api/lib/auth/detect");
-    const mode = detectAuthMode();
-    if (mode === "none") {
-      return new Set([...PERMISSIONS]);
+export const resolvePermissions = (user: AtlasUser | undefined): Effect.Effect<Set<Permission>> =>
+  Effect.gen(function* () {
+    // No user → check auth mode. Only grant all permissions in no-auth mode (local dev).
+    if (!user) {
+      const { detectAuthMode } = yield* Effect.promise(() => import("@atlas/api/lib/auth/detect"));
+      const mode = detectAuthMode();
+      if (mode === "none") {
+        return new Set([...PERMISSIONS]);
+      }
+      log.warn("resolvePermissions called with undefined user in managed auth mode — denying all");
+      return new Set<Permission>();
     }
-    log.warn("resolvePermissions called with undefined user in managed auth mode — denying all");
-    return new Set<Permission>();
-  }
 
-  const role = user.role ?? "member";
+    const role = user.role ?? "member";
 
-  // Try enterprise custom roles if internal DB is available
-  if (hasInternalDB() && user.activeOrganizationId) {
-    try {
-      // Check if user has a custom role name assigned (stored in the user's role field)
-      const rows = await internalQuery<CustomRoleRow>(
-        `SELECT id, org_id, name, description, permissions, is_builtin, created_at, updated_at
-         FROM custom_roles
-         WHERE org_id = $1 AND name = $2
-         LIMIT 1`,
-        [user.activeOrganizationId, role],
+    // Try enterprise custom roles if internal DB is available
+    if (hasInternalDB() && user.activeOrganizationId) {
+      const result = yield* Effect.tryPromise({
+        try: () => internalQuery<CustomRoleRow>(
+          `SELECT id, org_id, name, description, permissions, is_builtin, created_at, updated_at
+           FROM custom_roles
+           WHERE org_id = $1 AND name = $2
+           LIMIT 1`,
+          [user.activeOrganizationId, role],
+        ),
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      }).pipe(
+        Effect.map((rows) => {
+          if (rows[0]) {
+            const customRole = rowToRole(rows[0]);
+            return new Set(customRole.permissions) as Set<Permission>;
+          }
+          return null;
+        }),
+        Effect.catchAll((err) => {
+          const msg = err instanceof Error ? err.message : String(err);
+          if (msg.includes("does not exist")) {
+            // Table not yet created by migration — fall through to legacy
+            log.debug("custom_roles table not yet created — using legacy permissions");
+            return Effect.succeed(null);
+          }
+          // Fail closed: DB error → minimal permissions, not elevated legacy ones
+          log.error({ err: msg }, "Failed to resolve custom role — denying elevated permissions");
+          return Effect.succeed(new Set<Permission>(["query"]));
+        }),
       );
 
-      if (rows[0]) {
-        const customRole = rowToRole(rows[0]);
-        return new Set(customRole.permissions);
-      }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      if (msg.includes("does not exist")) {
-        // Table not yet created by migration — fall through to legacy
-        log.debug("custom_roles table not yet created — using legacy permissions");
-      } else {
-        // Fail closed: DB error → minimal permissions, not elevated legacy ones
-        log.error({ err: msg }, "Failed to resolve custom role — denying elevated permissions");
-        return new Set<Permission>(["query"]);
-      }
+      if (result !== null) return result;
     }
-  }
 
-  // Legacy fallback
-  const legacyPerms = LEGACY_ROLE_PERMISSIONS[role] ?? LEGACY_ROLE_PERMISSIONS.member;
-  return new Set(legacyPerms);
-}
+    // Legacy fallback
+    const legacyPerms = LEGACY_ROLE_PERMISSIONS[role] ?? LEGACY_ROLE_PERMISSIONS.member;
+    return new Set(legacyPerms);
+  });
 
 /**
  * Check whether a user has a specific permission.
  * Falls back to legacy role checks if enterprise roles are not configured.
  */
-export async function hasPermission(
+export const hasPermission = (
   user: AtlasUser | undefined,
   permission: Permission,
-): Promise<boolean> {
-  const perms = await resolvePermissions(user);
-  return perms.has(permission);
-}
+): Effect.Effect<boolean> =>
+  Effect.gen(function* () {
+    const perms = yield* resolvePermissions(user);
+    return perms.has(permission);
+  });
 
 /**
  * Hono middleware factory that checks a specific permission.
  * Returns a function that takes `(req, requestId, user)` and returns
  * an error response object or null if authorized.
  */
-export async function checkPermission(
+export const checkPermission = (
   user: AtlasUser | undefined,
   permission: Permission,
   requestId: string,
-): Promise<{ body: Record<string, unknown>; status: 403 } | null> {
-  const allowed = await hasPermission(user, permission);
-  if (!allowed) {
-    log.warn(
-      { userId: user?.id, permission, requestId },
-      "Permission check failed: user lacks %s",
-      permission,
-    );
-    return {
-      body: {
-        error: "insufficient_permissions",
-        message: `This action requires the "${permission}" permission.`,
-        requestId,
-      },
-      status: 403,
-    };
-  }
-  return null;
-}
+): Effect.Effect<{ body: Record<string, unknown>; status: 403 } | null> =>
+  Effect.gen(function* () {
+    const allowed = yield* hasPermission(user, permission);
+    if (!allowed) {
+      log.warn(
+        { userId: user?.id, permission, requestId },
+        "Permission check failed: user lacks %s",
+        permission,
+      );
+      return {
+        body: {
+          error: "insufficient_permissions",
+          message: `This action requires the "${permission}" permission.`,
+          requestId,
+        },
+        status: 403,
+      };
+    }
+    return null;
+  });
 
 // ── CRUD ─────────────────────────────────────────────────────────
 
@@ -259,13 +268,13 @@ export async function checkPermission(
  * List all roles for an organization (built-in + custom).
  * Lazily seeds built-in roles on first access per org.
  */
-export const listRoles = (orgId: string): Effect.Effect<CustomRole[], EnterpriseError> =>
+export const listRoles = (orgId: string): Effect.Effect<CustomRole[], EnterpriseError | Error> =>
   Effect.gen(function* () {
     yield* requireEnterpriseEffect("roles");
     if (!hasInternalDB()) return [];
 
     // Lazy seed: ensure built-in roles exist for this org
-    yield* Effect.promise(() => seedBuiltinRoles(orgId));
+    yield* seedBuiltinRoles(orgId);
 
     const rows = yield* Effect.promise(() => internalQuery<CustomRoleRow>(
       `SELECT id, org_id, name, description, permissions, is_builtin, created_at, updated_at
@@ -535,29 +544,33 @@ export const assignRole = (
  * Seed built-in roles for an organization. Called during migration.
  * Idempotent — checks each role by name + org_id before inserting.
  */
-export async function seedBuiltinRoles(orgId: string): Promise<void> {
-  if (!hasInternalDB()) {
-    log.debug("seedBuiltinRoles skipped — no internal DB");
-    return;
-  }
-
-  const pool = getInternalDB();
-  for (const def of BUILTIN_ROLES) {
-    try {
-      const existing = await pool.query(
-        `SELECT id FROM custom_roles WHERE org_id = $1 AND name = $2`,
-        [orgId, def.name],
-      );
-      if (existing.rows.length === 0) {
-        await pool.query(
-          `INSERT INTO custom_roles (org_id, name, description, permissions, is_builtin)
-           VALUES ($1, $2, $3, $4, true)`,
-          [orgId, def.name, def.description, JSON.stringify(def.permissions)],
-        );
-      }
-    } catch (err) {
-      log.error({ orgId, roleName: def.name, err: err instanceof Error ? err.message : String(err) }, "Failed to seed built-in role");
-      throw err;
+export const seedBuiltinRoles = (orgId: string): Effect.Effect<void, Error> =>
+  Effect.gen(function* () {
+    if (!hasInternalDB()) {
+      log.debug("seedBuiltinRoles skipped — no internal DB");
+      return;
     }
-  }
-}
+
+    const pool = getInternalDB();
+    for (const def of BUILTIN_ROLES) {
+      yield* Effect.tryPromise({
+        try: async () => {
+          const existing = await pool.query(
+            `SELECT id FROM custom_roles WHERE org_id = $1 AND name = $2`,
+            [orgId, def.name],
+          );
+          if (existing.rows.length === 0) {
+            await pool.query(
+              `INSERT INTO custom_roles (org_id, name, description, permissions, is_builtin)
+               VALUES ($1, $2, $3, $4, true)`,
+              [orgId, def.name, def.description, JSON.stringify(def.permissions)],
+            );
+          }
+        },
+        catch: (err) => {
+          log.error({ orgId, roleName: def.name, err: err instanceof Error ? err.message : String(err) }, "Failed to seed built-in role");
+          return err instanceof Error ? err : new Error(String(err));
+        },
+      });
+    }
+  });

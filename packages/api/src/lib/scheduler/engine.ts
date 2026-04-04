@@ -241,28 +241,34 @@ function refreshDueDashboardsEffect(semaphore: Effect.Semaphore) {
 
     log.info({ count: dashboards.length }, "Scheduler tick — found dashboards due for refresh");
 
+    const outcomes = yield* Effect.forEach(
+      dashboards,
+      (dash) =>
+        semaphore.withPermits(1)(
+          Effect.tryPromise({
+            try: async () => {
+              const { lockDashboardForRefresh, refreshDashboardCards } = await import("@atlas/api/lib/dashboards");
+              const { computeNextRun } = await import("@atlas/api/lib/scheduled-tasks");
+              const locked = await lockDashboardForRefresh(dash.id, computeNextRun);
+              if (!locked) return "skipped" as const; // Another process got it or lock failed
+              const result = await refreshDashboardCards(dash.id);
+              return result.failed === 0 ? ("refreshed" as const) : ("failed" as const);
+            },
+            catch: (err) => err instanceof Error ? err : new Error(String(err)),
+          }).pipe(Effect.catchAll((err) => {
+            log.warn({ err: err instanceof Error ? err.message : String(err), dashboardId: dash.id }, "Dashboard auto-refresh failed");
+            return Effect.succeed("failed" as const);
+          })),
+        ),
+      { concurrency: "unbounded" },
+    );
+
     let refreshed = 0;
     let failed = 0;
-
-    for (const dash of dashboards) {
-      yield* semaphore.withPermits(1)(
-        Effect.tryPromise({
-          try: async () => {
-            const { lockDashboardForRefresh, refreshDashboardCards } = await import("@atlas/api/lib/dashboards");
-            const { computeNextRun } = await import("@atlas/api/lib/scheduled-tasks");
-            const locked = await lockDashboardForRefresh(dash.id, computeNextRun);
-            if (!locked) return; // Another process got it
-            const result = await refreshDashboardCards(dash.id);
-            if (result.failed === 0) refreshed++;
-            else failed++;
-          },
-          catch: (err) => err instanceof Error ? err : new Error(String(err)),
-        }).pipe(Effect.catchAll((err) => {
-          log.warn({ err: err instanceof Error ? err.message : String(err), dashboardId: dash.id }, "Dashboard auto-refresh failed");
-          failed++;
-          return Effect.void;
-        })),
-      );
+    for (const o of outcomes) {
+      if (o === "refreshed") refreshed++;
+      else if (o === "failed") failed++;
+      // "skipped" — lock contention, not counted
     }
 
     return { refreshed, failed, total: dashboards.length };

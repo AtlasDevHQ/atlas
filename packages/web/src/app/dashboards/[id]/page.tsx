@@ -236,7 +236,7 @@ export default function DashboardViewPage() {
     },
   );
 
-  const { mutate } = useAdminMutation({ invalidates: refetch });
+  const { mutate, error: mutationError } = useAdminMutation({ invalidates: refetch });
   const [refreshingCardId, setRefreshingCardId] = useState<string | null>(null);
   const [refreshingAll, setRefreshingAll] = useState(false);
   const [deleteCardTarget, setDeleteCardTarget] = useState<DashboardCard | null>(null);
@@ -381,6 +381,9 @@ export default function DashboardViewPage() {
                       {dashboard.title}
                     </h1>
                   )}
+                  {mutationError && (
+                    <p className="mt-1 text-xs text-red-500 dark:text-red-400">{mutationError}</p>
+                  )}
                   {dashboard.description && (
                     <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
                       {dashboard.description}
@@ -400,9 +403,9 @@ export default function DashboardViewPage() {
                   </Button>
                   <Select
                     value={dashboard.refreshSchedule ?? "off"}
-                    onValueChange={(v) => {
+                    onValueChange={async (v) => {
                       const schedule = v === "off" ? null : v;
-                      mutate({
+                      await mutate({
                         path: `/api/v1/dashboards/${id}`,
                         method: "PATCH",
                         body: { refreshSchedule: schedule },

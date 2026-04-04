@@ -637,6 +637,10 @@ export async function lockDashboardForRefresh(
 
     const cronExpr = dashRows[0].refresh_schedule as string;
     const nextRun = computeNextRun(cronExpr);
+    if (!nextRun) {
+      log.warn({ dashboardId, cronExpr }, "lockDashboardForRefresh: computeNextRun returned null — skipping");
+      return false;
+    }
 
     // Atomic UPDATE — only succeeds if next_refresh_at is still in the past
     const rows = await internalQuery<{ id: string }>(
@@ -668,9 +672,13 @@ export async function refreshDashboardCards(dashboardId: string): Promise<{
   const { connections } = await import("@atlas/api/lib/db/connection");
   const { validateSQL } = await import("@atlas/api/lib/tools/sql");
 
-  // Fetch dashboard with cards (unscoped — scheduler runs across all orgs)
+  // Fetch dashboard with cards (unscoped — scheduler runs across all orgs;
+  // SQL is re-validated before execution, connections come from stored card data)
   const dashResult = await getDashboardUnscoped(dashboardId);
-  if (!dashResult.ok) return { refreshed: 0, failed: 0, total: 0 };
+  if (!dashResult.ok) {
+    log.warn({ dashboardId, reason: dashResult.reason }, "Auto-refresh: dashboard not accessible");
+    return { refreshed: 0, failed: 0, total: 0 };
+  }
 
   const cards = dashResult.data.cards;
   let refreshed = 0;
@@ -748,7 +756,15 @@ export async function setRefreshSchedule(
 ): Promise<CrudResult> {
   if (!hasInternalDB()) return { ok: false, reason: "no_db" };
   try {
-    const nextRefresh = schedule ? computeNextRun(schedule)?.toISOString() ?? null : null;
+    let nextRefresh: string | null = null;
+    if (schedule) {
+      const nextDate = computeNextRun(schedule);
+      if (!nextDate) {
+        log.error({ dashboardId, schedule }, "setRefreshSchedule: computeNextRun returned null — schedule will not fire");
+        return { ok: false, reason: "error" };
+      }
+      nextRefresh = nextDate.toISOString();
+    }
     const params: unknown[] = [schedule, nextRefresh, dashboardId];
     const org = orgScopeClause(scope.orgId, params, 4);
 

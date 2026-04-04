@@ -980,14 +980,20 @@ authed.openapi(suggestCardsRoute, async (c) => {
     const semanticIndex = yield* Effect.tryPromise({
       try: () => getOrgSemanticIndex(orgId ?? "default"),
       catch: (err) => err instanceof Error ? err : new Error(String(err)),
-    }).pipe(Effect.catchAll(() => Effect.succeed("")));
+    }).pipe(Effect.catchAll((err) => {
+      log.warn({ err: err.message, orgId, dashboardId: id }, "Failed to load semantic index for suggestions — proceeding without semantic context");
+      return Effect.succeed("");
+    }));
 
     // Optionally load learned patterns for extra context
     const { buildLearnedPatternsSection } = yield* Effect.promise(() => import("@atlas/api/lib/learn/pattern-cache"));
     const patternsSection = yield* Effect.tryPromise({
       try: () => buildLearnedPatternsSection(orgId ?? null, "dashboard suggestions"),
       catch: (err) => err instanceof Error ? err : new Error(String(err)),
-    }).pipe(Effect.catchAll(() => Effect.succeed("")));
+    }).pipe(Effect.catchAll((err) => {
+      log.warn({ err: err.message, orgId, dashboardId: id }, "Failed to load learned patterns for suggestions — proceeding without patterns");
+      return Effect.succeed("");
+    }));
 
     // Build LLM prompt from existing cards
     const existingCards = dash.data.cards.map((card) => ({
@@ -1043,26 +1049,37 @@ authed.openapi(suggestCardsRoute, async (c) => {
         maxOutputTokens: 2000,
       }),
       catch: (err) => err instanceof Error ? err : new Error(String(err)),
-    });
+    }).pipe(Effect.catchAll((err) => {
+      log.error({ err: err.message, dashboardId: id, requestId }, "LLM call failed for card suggestions");
+      return Effect.succeed(null);
+    }));
 
-    // Parse LLM response
-    let rawSuggestions: Array<{
-      title: string;
-      sql: string;
-      chartType: string;
-      categoryColumn: string;
-      valueColumns: string[];
-      reason: string;
-    }>;
+    if (!llmResult) {
+      return c.json({ error: "ai_unavailable", message: "AI model is unavailable. Check your provider configuration or try again later.", requestId }, 500);
+    }
+
+    // Parse LLM response using Zod for safe validation
+    const RawSuggestionSchema = z.array(z.object({
+      title: z.string(),
+      sql: z.string(),
+      chartType: z.string(),
+      categoryColumn: z.string(),
+      valueColumns: z.array(z.string()),
+      reason: z.string(),
+    }));
+
+    let rawSuggestions: z.infer<typeof RawSuggestionSchema>;
 
     try {
       const text = llmResult.text.trim();
       // Strip markdown code fencing if present
       const jsonStr = text.replace(/^```(?:json)?\s*\n?/i, "").replace(/\n?```\s*$/i, "");
-      rawSuggestions = JSON.parse(jsonStr);
-      if (!Array.isArray(rawSuggestions)) {
-        return c.json({ error: "internal_error", message: "AI returned invalid suggestion format.", requestId }, 500);
+      const parsed = RawSuggestionSchema.safeParse(JSON.parse(jsonStr));
+      if (!parsed.success) {
+        log.warn({ errors: parsed.error.issues, dashboardId: id }, "AI suggestions failed schema validation");
+        return c.json({ error: "internal_error", message: "AI returned invalid suggestion format. Please try again.", requestId }, 500);
       }
+      rawSuggestions = parsed.data;
     } catch (err) {
       log.warn({ err: err instanceof Error ? err.message : String(err), text: llmResult.text.slice(0, 500), dashboardId: id }, "Failed to parse AI suggestions");
       return c.json({ error: "internal_error", message: "Failed to parse AI suggestions. Please try again.", requestId }, 500);
@@ -1070,27 +1087,25 @@ authed.openapi(suggestCardsRoute, async (c) => {
 
     // Validate each suggestion's SQL and build response
     const { validateSQL } = yield* Effect.promise(() => import("@atlas/api/lib/tools/sql"));
-    const validChartTypes = new Set(["bar", "line", "pie", "area", "scatter", "table"]);
+    const validChartTypes = new Set(CHART_TYPES);
 
     const suggestions = rawSuggestions
-      .filter((s) => s && typeof s.title === "string" && typeof s.sql === "string" && typeof s.reason === "string")
       .map((s) => {
         const validation = validateSQL(s.sql, undefined);
-        const chartType = validChartTypes.has(s.chartType) ? s.chartType : "table";
+        if (!validation.valid) return null;
+        const chartType = validChartTypes.has(s.chartType as typeof CHART_TYPES[number]) ? s.chartType : "table";
         return {
           title: s.title.slice(0, 200),
           sql: s.sql,
           chartConfig: {
             type: chartType as import("@atlas/api/lib/dashboard-types").ChartType,
-            categoryColumn: typeof s.categoryColumn === "string" ? s.categoryColumn : "",
-            valueColumns: Array.isArray(s.valueColumns) ? s.valueColumns.filter((v): v is string => typeof v === "string") : [],
+            categoryColumn: s.categoryColumn,
+            valueColumns: s.valueColumns,
           },
           reason: s.reason.slice(0, 500),
-          sqlValid: validation.valid,
-          sqlError: validation.valid ? undefined : validation.error,
         };
       })
-      .filter((s) => s.sqlValid);
+      .filter((s): s is NonNullable<typeof s> => s !== null);
 
     return c.json({ suggestions }, 200);
   }), { label: "suggest cards" });

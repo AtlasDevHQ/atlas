@@ -249,6 +249,7 @@ export default function DashboardViewPage() {
   const [titleValue, setTitleValue] = useState("");
   const [suggestions, setSuggestions] = useState<DashboardSuggestion[]>([]);
   const [suggestingCards, setSuggestingCards] = useState(false);
+  const [suggestError, setSuggestError] = useState<string | null>(null);
   const [addingSuggestion, setAddingSuggestion] = useState<number | null>(null);
 
   async function handleRefreshCard(cardId: string) {
@@ -311,15 +312,22 @@ export default function DashboardViewPage() {
   async function handleSuggestCards() {
     setSuggestingCards(true);
     setSuggestions([]);
+    setSuggestError(null);
     try {
-      const res = await fetch(`/api/v1/dashboards/${id}/suggest`, { method: "POST" });
-      if (!res.ok) {
-        const body = await res.json().catch(() => null);
-        throw new Error(body?.message ?? "Failed to generate suggestions.");
+      const result = await mutate({
+        path: `/api/v1/dashboards/${id}/suggest`,
+        method: "POST",
+      });
+      if (result.ok && result.data) {
+        const data = result.data as { suggestions?: DashboardSuggestion[] };
+        setSuggestions(data.suggestions ?? []);
+      } else {
+        setSuggestError("Failed to generate suggestions. Please try again.");
       }
-      const data = await res.json();
-      setSuggestions(data.suggestions ?? []);
-    } catch {
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.debug("[dashboard] Failed to fetch AI suggestions:", message);
+      setSuggestError(message || "Failed to generate suggestions. Please try again.");
       setSuggestions([]);
     } finally {
       setSuggestingCards(false);
@@ -330,17 +338,22 @@ export default function DashboardViewPage() {
     const suggestion = suggestions[index];
     if (!suggestion) return;
     setAddingSuggestion(index);
-    await mutate({
-      path: `/api/v1/dashboards/${id}/cards`,
-      method: "POST",
-      body: {
-        title: suggestion.title,
-        sql: suggestion.sql,
-        chartConfig: suggestion.chartConfig,
-      },
-    });
-    setSuggestions((prev) => prev.filter((_, i) => i !== index));
-    setAddingSuggestion(null);
+    try {
+      const result = await mutate({
+        path: `/api/v1/dashboards/${id}/cards`,
+        method: "POST",
+        body: {
+          title: suggestion.title,
+          sql: suggestion.sql,
+          chartConfig: suggestion.chartConfig,
+        },
+      });
+      if (result.ok) {
+        setSuggestions((prev) => prev.filter((_, i) => i !== index));
+      }
+    } finally {
+      setAddingSuggestion(null);
+    }
   }
 
   function handleDismissSuggestion(index: number) {
@@ -493,6 +506,16 @@ export default function DashboardViewPage() {
                 </div>
               </div>
             </div>
+
+            {/* Suggest error */}
+            {suggestError && (
+              <div className="mb-4 rounded-lg border border-amber-200 bg-amber-50 px-4 py-2.5 text-sm text-amber-800 dark:border-amber-900/50 dark:bg-amber-950/20 dark:text-amber-300">
+                {suggestError}
+                <Button variant="ghost" size="sm" className="ml-2 h-6 text-xs" onClick={() => setSuggestError(null)}>
+                  Dismiss
+                </Button>
+              </div>
+            )}
 
             {/* AI Suggestions */}
             {suggestions.length > 0 && (

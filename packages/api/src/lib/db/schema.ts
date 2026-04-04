@@ -1178,6 +1178,59 @@ export const workspacePlugins = pgTable(
   ],
 );
 
+// ---------------------------------------------------------------------------
+// Dashboards
+// ---------------------------------------------------------------------------
+
+export const dashboards = pgTable(
+  "dashboards",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orgId: text("org_id"),
+    ownerId: text("owner_id").notNull(),
+    title: text("title").notNull(),
+    description: text("description"),
+    // Sharing
+    shareToken: varchar("share_token", { length: 64 }),
+    shareExpiresAt: timestamp("share_expires_at", { withTimezone: true }),
+    shareMode: varchar("share_mode", { length: 10 }).notNull().default("public"),
+    // Auto-refresh
+    refreshSchedule: text("refresh_schedule"),
+    // Timestamps
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    deletedAt: timestamp("deleted_at", { withTimezone: true }),
+  },
+  (t) => [
+    index("idx_dashboards_org").on(t.orgId),
+    index("idx_dashboards_owner").on(t.ownerId),
+    uniqueIndex("idx_dashboards_share_token").on(t.shareToken).where(sql`share_token IS NOT NULL`),
+    check("chk_dashboard_share_mode", sql`share_mode IN ('public', 'org')`),
+  ],
+);
+
+export const dashboardCards = pgTable(
+  "dashboard_cards",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    dashboardId: uuid("dashboard_id").notNull().references(() => dashboards.id, { onDelete: "cascade" }),
+    position: integer("position").notNull().default(0),
+    title: text("title").notNull(),
+    sql: text("sql").notNull(),
+    chartConfig: jsonb("chart_config"),
+    cachedColumns: jsonb("cached_columns"),
+    cachedRows: jsonb("cached_rows"),
+    cachedAt: timestamp("cached_at", { withTimezone: true }),
+    connectionId: text("connection_id"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("idx_dashboard_cards_dashboard").on(t.dashboardId),
+    index("idx_dashboard_cards_position").on(t.dashboardId, t.position),
+  ],
+);
+
 export const sandboxCredentials = pgTable(
   "sandbox_credentials",
   {

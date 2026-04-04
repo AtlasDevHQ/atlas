@@ -4,7 +4,7 @@
   "description": "Shared types for the Atlas text-to-SQL agent",
   "type": "module",
   "scripts": {
-    "build": "rm -rf dist && bun build src/index.ts src/auth.ts src/conversation.ts src/connection.ts src/action.ts src/scheduled-task.ts src/errors.ts src/semantic.ts src/share.ts src/billing.ts --outdir dist --root src --target node --packages external && bun x tsc -p tsconfig.build.json"
+    "build": "rm -rf dist && bun build src/index.ts src/auth.ts src/conversation.ts src/connection.ts src/action.ts src/scheduled-task.ts src/errors.ts src/semantic.ts src/share.ts src/billing.ts src/dashboard.ts --outdir dist --root src --target node --packages external && bun x tsc -p tsconfig.build.json"
   },
   "exports": {
     ".": {
@@ -56,6 +56,11 @@
       "types": "./dist/billing.d.ts",
       "import": "./dist/billing.js",
       "default": "./dist/billing.js"
+    },
+    "./dashboard": {
+      "types": "./dist/dashboard.d.ts",
+      "import": "./dist/dashboard.js",
+      "default": "./dist/dashboard.js"
     }
   },
   "main": "./dist/index.js",

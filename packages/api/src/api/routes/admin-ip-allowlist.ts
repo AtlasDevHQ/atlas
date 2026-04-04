@@ -3,23 +3,23 @@
  *
  * Mounted under /api/v1/admin/ip-allowlist. All routes require admin role AND
  * enterprise license (enforced within the IP allowlist service layer).
+ *
+ * EE imports are lazy (dynamic import) to avoid circular dependency issues
+ * between @atlas/api and @atlas/ee at module link time.
  */
 
 import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
-import { runEffect, domainError } from "@atlas/api/lib/effect/hono";
+import { runEffect } from "@atlas/api/lib/effect/hono";
 import { AuthContext } from "@atlas/api/lib/effect/services";
 import { getClientIP } from "@atlas/api/lib/auth/middleware";
-import {
-  listIPAllowlistEntries,
-  addIPAllowlistEntry,
-  removeIPAllowlistEntry,
-  IPAllowlistError,
-} from "@atlas/ee/auth/ip-allowlist";
 import { ErrorSchema, AuthErrorSchema, isValidId, createIdParamSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 
-const ipAllowlistDomainError = domainError(IPAllowlistError, { validation: 400, conflict: 409, not_found: 404 });
+// Lazy-load EE module to break circular @atlas/api ↔ @atlas/ee dependency
+async function loadEE() {
+  return import("@atlas/ee/auth/ip-allowlist");
+}
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -214,9 +214,10 @@ adminIPAllowlist.openapi(listEntriesRoute, async (c) => {
 
     const callerIP = getClientIP(c.req.raw);
 
-    const entries = yield* listIPAllowlistEntries(orgId!);
+    const ee = yield* Effect.promise(loadEE);
+    const entries = yield* ee.listIPAllowlistEntries(orgId!);
     return c.json({ entries, total: entries.length, callerIP }, 200);
-  }), { label: "list IP allowlist entries", domainErrors: [ipAllowlistDomainError] });
+  }), { label: "list IP allowlist entries" });
 });
 
 // POST / — add a CIDR range to the allowlist
@@ -230,14 +231,15 @@ adminIPAllowlist.openapi(addEntryRoute, async (c) => {
       return c.json({ error: "bad_request", message: "Missing required field: cidr." }, 400);
     }
 
-    const entry = yield* addIPAllowlistEntry(
+    const ee = yield* Effect.promise(loadEE);
+    const entry = yield* ee.addIPAllowlistEntry(
       orgId!,
       body.cidr,
       body.description ?? null,
       user?.id ?? null,
     );
     return c.json({ entry }, 201);
-  }), { label: "add IP allowlist entry", domainErrors: [ipAllowlistDomainError] });
+  }), { label: "add IP allowlist entry" });
 });
 
 // DELETE /:id — remove an IP allowlist entry
@@ -250,12 +252,13 @@ adminIPAllowlist.openapi(deleteEntryRoute, async (c) => {
       return c.json({ error: "bad_request", message: "Invalid entry ID." }, 400);
     }
 
-    const deleted = yield* removeIPAllowlistEntry(orgId!, entryId);
+    const ee = yield* Effect.promise(loadEE);
+    const deleted = yield* ee.removeIPAllowlistEntry(orgId!, entryId);
     if (!deleted) {
       return c.json({ error: "not_found", message: "IP allowlist entry not found." }, 404);
     }
     return c.json({ message: "IP allowlist entry removed." }, 200);
-  }), { label: "remove IP allowlist entry", domainErrors: [ipAllowlistDomainError] });
+  }), { label: "remove IP allowlist entry" });
 });
 
 export { adminIPAllowlist };

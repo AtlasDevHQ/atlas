@@ -25,6 +25,7 @@ import { auth } from "./routes/auth";
 import { query } from "./routes/query";
 import { staticPaths, staticTags, securitySchemes } from "./routes/openapi";
 import { conversations, publicConversations } from "./routes/conversations";
+import { dashboards, publicDashboards } from "./routes/dashboards";
 import { semantic } from "./routes/semantic";
 import { tables } from "./routes/tables";
 import { validateSqlRoute } from "./routes/validate-sql";
@@ -152,6 +153,8 @@ app.route("/api/v1/query", query);
 // OpenAPI spec served below via merged auto + static endpoint
 app.route("/api/v1/conversations", conversations);
 app.route("/api/public/conversations", publicConversations);
+app.route("/api/v1/dashboards", dashboards);
+app.route("/api/public/dashboards", publicDashboards);
 app.route("/api/v1/semantic", semantic);
 app.route("/api/v1/tables", tables);
 app.route("/api/v1/validate-sql", validateSqlRoute);

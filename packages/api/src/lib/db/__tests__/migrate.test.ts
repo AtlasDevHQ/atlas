@@ -62,7 +62,7 @@ describe("runMigrations", () => {
 
     const count = await runMigrations(pool);
 
-    expect(count).toBe(17);
+    expect(count).toBe(18);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -108,6 +108,7 @@ describe("runMigrations", () => {
         "0014_plugin_marketplace.sql",
         "0015_semantic_versions.sql",
         "0016_invitations_org_id.sql",
+        "0017_dashboards.sql",
       ],
     });
 

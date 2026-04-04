@@ -154,7 +154,7 @@ describe("useAtlasAuth", () => {
     );
 
     expect(result.current.error).not.toBeNull();
-    expect(result.current.error!.message).toBe("Network unreachable");
+    expect(result.current.error!.message).toContain("Network unreachable");
   });
 
   it("login delegates to authClient and returns error", async () => {

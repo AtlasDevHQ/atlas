@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { NuqsAdapter } from "nuqs/adapters/next/app";
 import { buildThemeInitScript } from "@/ui/hooks/theme-init-script";
 import { AuthGuard } from "@/ui/components/auth-guard";
+import { QueryProvider } from "@/ui/components/query-provider";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -25,7 +26,7 @@ export default function RootLayout({
       </head>
       <body className="bg-white text-zinc-900 antialiased dark:bg-zinc-950 dark:text-zinc-100">
         <a href="#main" className="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:p-4 focus:bg-background focus:text-foreground">Skip to content</a>
-        <NuqsAdapter><AuthGuard>{children}</AuthGuard></NuqsAdapter>
+        <QueryProvider><NuqsAdapter><AuthGuard>{children}</AuthGuard></NuqsAdapter></QueryProvider>
       </body>
     </html>
   );

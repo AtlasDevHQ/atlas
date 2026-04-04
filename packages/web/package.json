@@ -29,6 +29,8 @@
     "@opentelemetry/sdk-node": "^0.214.0",
     "@opentelemetry/semantic-conventions": "^1.40.0",
     "@radix-ui/react-slot": "^1.2.4",
+    "@tanstack/react-query": "^5.96.2",
+    "@tanstack/react-query-devtools": "^5.96.2",
     "@tanstack/react-table": "^8.21.3",
     "@useatlas/react": "workspace:*",
     "@useatlas/types": "workspace:*",

@@ -459,7 +459,29 @@ Tracking module-deepening refactors discovered by the `improve-codebase-architec
 
 ---
 
-## 21. Extract shared hasInternalDB guard helpers
+## 21. Extract shared EEError base class
+
+**Date:** 2026-04-03
+**Issue:** #1231
+**PR:** #1234
+**Commit:** 9cf0bf7e
+
+**Problem:** 14 EE error class definitions across 13 files repeated the same constructor boilerplate: `extends Error`, `constructor(message, code) { super(message); this.name = "ClassName"; }`. Every EE module independently defined this pattern — RoleError, SCIMError, SSOError, SSOEnforcementError, IPAllowlistError, RetentionError, DomainError, ModelConfigError, ResidencyError, ApprovalError, ComplianceError, ReportError, BrandingError, and EnterpriseError.
+
+**Solution:** Created `ee/src/lib/errors.ts` with an abstract `EEError<TCode extends string>` base class that handles the `message`/`code` constructor and enforces `abstract readonly name`. All 14 error classes migrated to one-liner subclasses (e.g., `export class RoleError extends EEError<RoleErrorCode> { readonly name = "RoleError"; }`). EnterpriseError uses a custom constructor for its default message.
+
+**Impact:**
+- **-49 net lines** (118 added including base class + 52-line test file, 69 removed across 15 files)
+- All 14 error classes migrated to the shared base
+- `instanceof` checks preserved (Error, EEError, specific subclass)
+- Compile-time enforcement via `abstract readonly name`
+- 6 tests covering name/code/message, instanceof chains, cross-class isolation, stack traces
+
+**Category:** 14 duplicated error class constructors replaced by a single abstract base class.
+
+---
+
+## 22. Extract shared hasInternalDB guard helpers
 
 **Date:** 2026-04-03
 **Issue:** #1232

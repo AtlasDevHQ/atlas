@@ -814,7 +814,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] Type-safe exhaustive DomainErrorMapping via `domainError()` helper — branded type, 5xx sanitization, 13 routes migrated (#1235, PR #1236)
 
 ### Follow-ups
-- [ ] Add test coverage for ee/src/backups/ and ee/src/sla/ modules (#1237) — ~900 lines of Effect code with zero tests
+- [x] Add test coverage for ee/src/backups/ and ee/src/sla/ modules (#1237, PR #1238) — ~900 lines of Effect code with zero tests
 
 ---
 

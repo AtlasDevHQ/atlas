@@ -43,9 +43,12 @@ export const verifyBackup = (backupId: string): Effect.Effect<{ verified: boolea
       return yield* Effect.fail(new Error(`Cannot verify backup with status "${backup.status}"`));
     }
 
-    try {
-      // Read and decompress the first chunk to validate the header
-      const header = yield* Effect.promise(() => readGzipHeader(backup.storage_path, 4096));
+    // Inner effect uses tryPromise so errors land in the typed channel
+    const verifyWork = Effect.gen(function* () {
+      const header = yield* Effect.tryPromise({
+        try: () => readGzipHeader(backup.storage_path, 4096),
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      });
 
       // pg_dump plain format starts with "-- PostgreSQL database dump" or similar
       const hasPgDumpHeader = header.includes("PostgreSQL database dump")
@@ -53,42 +56,52 @@ export const verifyBackup = (backupId: string): Effect.Effect<{ verified: boolea
         || header.includes("-- Dumped by");
 
       if (!hasPgDumpHeader) {
-        yield* Effect.promise(() =>
-          internalQuery(
-            `UPDATE backups SET status = 'failed', error_message = 'Verification failed: invalid pg_dump header' WHERE id = $1`,
-            [backupId],
-          ),
-        );
+        yield* Effect.tryPromise({
+          try: () =>
+            internalQuery(
+              `UPDATE backups SET status = 'failed', error_message = 'Verification failed: invalid pg_dump header' WHERE id = $1`,
+              [backupId],
+            ),
+          catch: (err) => err instanceof Error ? err : new Error(String(err)),
+        });
         return { verified: false, message: "Invalid backup file — pg_dump header not found" };
       }
 
       // Mark as verified
-      yield* Effect.promise(() =>
-        internalQuery(
-          `UPDATE backups SET status = 'verified' WHERE id = $1`,
-          [backupId],
-        ),
-      );
+      yield* Effect.tryPromise({
+        try: () =>
+          internalQuery(
+            `UPDATE backups SET status = 'verified' WHERE id = $1`,
+            [backupId],
+          ),
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      });
 
       log.info({ backupId }, "Backup verified successfully");
       return { verified: true, message: "Backup verified — valid pg_dump archive" };
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : String(err);
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), backupId }, "Backup verification failed");
+    });
 
-      // Best-effort status update — fire-and-forget with error handling
-      void internalQuery(
-        `UPDATE backups SET status = 'failed', error_message = $1 WHERE id = $2`,
-        [`Verification failed: ${errorMessage.slice(0, 1000)}`, backupId],
-      ).catch((updateErr) => {
-        log.warn(
-          { err: updateErr instanceof Error ? updateErr.message : String(updateErr), backupId },
-          "Failed to update backup status after verification failure",
-        );
-      });
+    return yield* verifyWork.pipe(
+      Effect.catchAll((err) =>
+        Effect.sync(() => {
+          const errorMessage = err instanceof Error ? err.message : String(err);
+          log.error({ err: err instanceof Error ? err : new Error(String(err)), backupId }, "Backup verification failed");
 
-      return { verified: false, message: `Verification failed: ${errorMessage}` };
-    }
+          // Best-effort status update — fire-and-forget with error handling
+          void internalQuery(
+            `UPDATE backups SET status = 'failed', error_message = $1 WHERE id = $2`,
+            [`Verification failed: ${errorMessage.slice(0, 1000)}`, backupId],
+          ).catch((updateErr) => {
+            log.warn(
+              { err: updateErr instanceof Error ? updateErr.message : String(updateErr), backupId },
+              "Failed to update backup status after verification failure",
+            );
+          });
+
+          return { verified: false, message: `Verification failed: ${errorMessage}` };
+        }),
+      ),
+    );
   });
 
 /**

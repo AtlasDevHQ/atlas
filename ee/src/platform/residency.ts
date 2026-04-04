@@ -8,7 +8,7 @@
  * Region assignment is immutable after creation — changing a workspace's
  * region requires data migration (separate future work).
  *
- * All exported async functions return Effect — callers use `yield*` in Effect.gen.
+ * All exported functions return Effect — callers use `yield*` in Effect.gen.
  */
 
 import { Effect } from "effect";

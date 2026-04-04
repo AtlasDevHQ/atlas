@@ -121,8 +121,8 @@ export const executeRestore = (
     const preRestoreBackupId = preRestore.id;
     log.info({ preRestoreBackupId }, "Pre-restore backup created");
 
-    // Step 2: Restore from backup
-    try {
+    // Step 2: Restore from backup — uses tryPromise so errors are in the typed channel
+    const restoreWork = Effect.gen(function* () {
       const parsed = new URL(databaseUrl);
       const psqlArgs: string[] = [];
 
@@ -150,16 +150,18 @@ export const executeRestore = (
       const input = createReadStream(backup.storage_path);
       const gunzip = createGunzip();
 
-      yield* Effect.promise(() => pipeline(input, gunzip, psql.stdin));
+      yield* Effect.tryPromise({
+        try: () => pipeline(input, gunzip, psql.stdin),
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      });
 
-      const exitCode = yield* Effect.promise(
-        () => new Promise<number>((resolve) => {
-          psql.on("close", resolve);
-        }),
-      );
+      const exitCode = yield* Effect.tryPromise({
+        try: () => new Promise<number>((resolve) => { psql.on("close", resolve); }),
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      });
 
       if (exitCode !== 0) {
-        throw new Error(`psql exited with code ${exitCode}: ${stderr.slice(0, 500)}`);
+        return yield* Effect.fail(new Error(`psql exited with code ${exitCode}: ${stderr.slice(0, 500)}`));
       }
 
       log.info({ backupId, preRestoreBackupId }, "Database restore completed successfully");
@@ -168,15 +170,19 @@ export const executeRestore = (
         preRestoreBackupId,
         message: `Database restored from backup ${backupId}. Pre-restore backup saved as ${preRestoreBackupId}.`,
       };
-    } catch (err) {
-      log.error(
-        { err: err instanceof Error ? err : new Error(String(err)), backupId, preRestoreBackupId },
-        "Database restore failed — pre-restore backup is available for recovery",
-      );
-      throw new Error(
-        `Restore failed: ${err instanceof Error ? err.message : String(err)}. ` +
-        `Pre-restore backup ${preRestoreBackupId} is available for recovery.`,
-        { cause: err },
-      );
-    }
+    });
+
+    return yield* restoreWork.pipe(
+      Effect.mapError((err) => {
+        log.error(
+          { err: err instanceof Error ? err : new Error(String(err)), backupId, preRestoreBackupId },
+          "Database restore failed — pre-restore backup is available for recovery",
+        );
+        return new Error(
+          `Restore failed: ${err instanceof Error ? err.message : String(err)}. ` +
+          `Pre-restore backup ${preRestoreBackupId} is available for recovery.`,
+          { cause: err },
+        );
+      }),
+    );
   });

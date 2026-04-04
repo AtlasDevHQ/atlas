@@ -3,7 +3,7 @@ import { hasInternalDB } from "@atlas/api/lib/db/internal";
 
 /**
  * Guard for write-path EE functions — throws when no internal database is available.
- * Standardizes the error message across all 18 EE modules.
+ * Standardizes the error message across EE modules that require an internal database.
  *
  * @param label - Human-readable operation name (e.g. "custom role management")
  * @param errorFactory - Optional factory to throw a domain-specific error instead of plain Error

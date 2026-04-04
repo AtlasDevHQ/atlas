@@ -200,9 +200,13 @@ export const createBackup = (): Effect.Effect<
     );
     const backupId = rows[0].id;
 
-    try {
-      // Ensure storage directory exists
-      yield* Effect.promise(() => mkdir(dirname(storagePath), { recursive: true }));
+    // Inner effect uses tryPromise so errors land in the typed channel
+    // (Effect.promise treats rejections as defects, which bypass tapError)
+    const backupWork = Effect.gen(function* () {
+      yield* Effect.tryPromise({
+        try: () => mkdir(dirname(storagePath), { recursive: true }),
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      });
 
       const { args, password } = parseDatabaseUrl(databaseUrl);
 
@@ -221,47 +225,58 @@ export const createBackup = (): Effect.Effect<
         stderr += chunk.toString();
       });
 
-      yield* Effect.promise(() => pipeline(pgDump.stdout, gzip, outStream));
+      yield* Effect.tryPromise({
+        try: () => pipeline(pgDump.stdout, gzip, outStream),
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      });
 
-      const exitCode = yield* Effect.promise(
-        () => new Promise<number>((resolve) => {
-          pgDump.on("close", resolve);
-        }),
-      );
+      const exitCode = yield* Effect.tryPromise({
+        try: () => new Promise<number>((resolve) => { pgDump.on("close", resolve); }),
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      });
 
       if (exitCode !== 0) {
-        throw new Error(`pg_dump exited with code ${exitCode}: ${stderr.slice(0, 500)}`);
+        return yield* Effect.fail(new Error(`pg_dump exited with code ${exitCode}: ${stderr.slice(0, 500)}`));
       }
 
       // Get file size
-      const fileStat = yield* Effect.promise(() => stat(storagePath));
+      const fileStat = yield* Effect.tryPromise({
+        try: () => stat(storagePath),
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      });
 
       // Mark as completed
-      yield* Effect.promise(() =>
-        internalQuery(
-          `UPDATE backups SET status = 'completed', size_bytes = $1 WHERE id = $2`,
-          [fileStat.size, backupId],
-        ),
-      );
+      yield* Effect.tryPromise({
+        try: () =>
+          internalQuery(
+            `UPDATE backups SET status = 'completed', size_bytes = $1 WHERE id = $2`,
+            [fileStat.size, backupId],
+          ),
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      });
 
       log.info({ backupId, storagePath, sizeBytes: fileStat.size }, "Backup completed successfully");
       return { id: backupId, storagePath, sizeBytes: fileStat.size, status: "completed" as const };
-    } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : String(err);
-      // Best-effort status update — fire-and-forget with error handling
-      void internalQuery(
-        `UPDATE backups SET status = 'failed', error_message = $1 WHERE id = $2`,
-        [errorMessage.slice(0, 2000), backupId],
-      ).catch((updateErr) => {
-        log.warn(
-          { err: updateErr instanceof Error ? updateErr.message : String(updateErr), backupId },
-          "Failed to update backup status to failed",
-        );
-      });
+    });
 
-      log.error({ err: err instanceof Error ? err : new Error(String(err)), backupId }, "Backup failed");
-      throw err;
-    }
+    return yield* backupWork.pipe(
+      Effect.tapError((err) =>
+        Effect.sync(() => {
+          const errorMessage = err instanceof Error ? err.message : String(err);
+          // Best-effort status update — fire-and-forget with error handling
+          void internalQuery(
+            `UPDATE backups SET status = 'failed', error_message = $1 WHERE id = $2`,
+            [errorMessage.slice(0, 2000), backupId],
+          ).catch((updateErr) => {
+            log.warn(
+              { err: updateErr instanceof Error ? updateErr.message : String(updateErr), backupId },
+              "Failed to update backup status to failed",
+            );
+          });
+          log.error({ err: err instanceof Error ? err : new Error(String(err)), backupId }, "Backup failed");
+        }),
+      ),
+    );
   });
 
 // ---------------------------------------------------------------------------
@@ -331,31 +346,39 @@ export const purgeExpiredBackups = (): Effect.Effect<number, EnterpriseError | E
 
     let purged = 0;
     for (const row of expired) {
-      try {
-        yield* Effect.promise(() => unlink(row.storage_path));
-      } catch (err) {
-        const code = err instanceof Error && "code" in err
-          ? (err as NodeJS.ErrnoException).code
-          : undefined;
-        if (code !== "ENOENT") {
+      const fileDeleted = yield* Effect.tryPromise({
+        try: () => unlink(row.storage_path),
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      }).pipe(
+        Effect.map(() => true),
+        Effect.catchAll((err) => {
+          const code = "code" in err ? (err as NodeJS.ErrnoException).code : undefined;
+          if (code === "ENOENT") return Effect.succeed(true); // file already removed
           log.warn(
-            { err: err instanceof Error ? err.message : String(err), backupId: row.id, path: row.storage_path },
+            { err: err.message, backupId: row.id, path: row.storage_path },
             "Could not delete backup file — skipping DB record deletion to avoid orphan",
           );
-          continue;
-        }
-        // ENOENT is fine — file already removed
-      }
+          return Effect.succeed(false);
+        }),
+      );
 
-      try {
-        yield* Effect.promise(() => internalQuery(`DELETE FROM backups WHERE id = $1`, [row.id]));
-        purged++;
-      } catch (err) {
-        log.warn(
-          { err: err instanceof Error ? err.message : String(err), backupId: row.id },
-          "Failed to delete backup DB record — will retry on next purge cycle",
-        );
-      }
+      if (!fileDeleted) continue;
+
+      const dbDeleted = yield* Effect.tryPromise({
+        try: () => internalQuery(`DELETE FROM backups WHERE id = $1`, [row.id]),
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      }).pipe(
+        Effect.map(() => true),
+        Effect.catchAll((err) => {
+          log.warn(
+            { err: err.message, backupId: row.id },
+            "Failed to delete backup DB record — will retry on next purge cycle",
+          );
+          return Effect.succeed(false);
+        }),
+      );
+
+      if (dbDeleted) purged++;
     }
 
     if (purged > 0) {
@@ -371,17 +394,20 @@ export const purgeExpiredBackups = (): Effect.Effect<number, EnterpriseError | E
 export const listStorageFiles = (): Effect.Effect<string[], EnterpriseError | Error> =>
   Effect.gen(function* () {
     const config = yield* getBackupConfig();
-    try {
-      const files = yield* Effect.promise(() => readdir(config.storage_path));
-      return files.filter((f) => f.endsWith(".sql.gz"));
-    } catch (err) {
-      if (err instanceof Error && "code" in err && (err as NodeJS.ErrnoException).code === "ENOENT") {
-        return [];
-      }
-      log.warn(
-        { err: err instanceof Error ? err.message : String(err), path: config.storage_path },
-        "Failed to list backup storage directory",
-      );
-      throw err;
-    }
+    return yield* Effect.tryPromise({
+      try: () => readdir(config.storage_path),
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    }).pipe(
+      Effect.map((files) => files.filter((f) => f.endsWith(".sql.gz"))),
+      Effect.catchAll((err) => {
+        if ("code" in err && (err as NodeJS.ErrnoException).code === "ENOENT") {
+          return Effect.succeed([] as string[]);
+        }
+        log.warn(
+          { err: err.message, path: config.storage_path },
+          "Failed to list backup storage directory",
+        );
+        return Effect.fail(err);
+      }),
+    );
   });

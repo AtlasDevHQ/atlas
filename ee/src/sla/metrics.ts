@@ -11,8 +11,8 @@
  *
  * Access-gated via platformAdminAuth middleware (platform_admin role required).
  *
- * Query functions return Effect — callers use `yield*` in Effect.gen.
- * `recordQueryMetric` stays fire-and-forget (sync, no Effect).
+ * All exported functions return Effect — callers use `yield*` in Effect.gen.
+ * `recordQueryMetric` returns Effect but is designed for fire-and-forget usage.
  */
 
 import { Effect } from "effect";

@@ -91,7 +91,7 @@ function validateBrandingInput(input: SetWorkspaceBrandingInput): Effect.Effect<
           "validation",
         ));
       }
-    } catch {
+    } catch { // intentionally caught: URL constructor throws TypeError for malformed URLs — converted to BrandingError
       return Effect.fail(new BrandingError(
         `Invalid logo URL: "${input.logoUrl}". Must be a valid URL.`,
         "validation",
@@ -108,7 +108,7 @@ function validateBrandingInput(input: SetWorkspaceBrandingInput): Effect.Effect<
           "validation",
         ));
       }
-    } catch {
+    } catch { // intentionally caught: URL constructor throws TypeError for malformed URLs — converted to BrandingError
       return Effect.fail(new BrandingError(
         `Invalid favicon URL: "${input.faviconUrl}". Must be a valid URL.`,
         "validation",

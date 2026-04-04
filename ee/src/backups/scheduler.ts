@@ -6,7 +6,7 @@
  * (e.g., every minute via setInterval) and will trigger a backup
  * when the cron expression matches the current time.
  *
- * Enterprise-gated via requireEnterprise("backups").
+ * Enterprise-gated via requireEnterpriseEffect("backups").
  */
 
 import { Effect } from "effect";

@@ -9,7 +9,7 @@
  * required). `resolveWorkspaceByHost` returns null gracefully when not
  * configured (used in request routing).
  *
- * All exported async functions return Effect — callers use `yield*` in Effect.gen.
+ * All exported functions return Effect — callers use `yield*` in Effect.gen.
  *
  * Required env vars:
  * - RAILWAY_API_TOKEN — workspace-scoped Railway API token

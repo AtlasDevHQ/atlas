@@ -5,8 +5,9 @@
  *
  *   isEnterpriseEnabled()       — returns boolean (safe for conditional logic)
  *   getEnterpriseLicenseKey()   — returns the license key string, if set
- *   requireEnterprise()         — throws EnterpriseError if not enabled or no license key (guard)
- *   EnterpriseError             — typed error for instanceof checks (thrown by requireEnterprise)
+ *   requireEnterprise()         — throws EnterpriseError if not enabled (sync guard)
+ *   requireEnterpriseEffect()   — Effect.fail(EnterpriseError) if not enabled (Effect guard)
+ *   EnterpriseError             — typed error for instanceof checks
  *   EEError                     — abstract base class for all EE module errors (see lib/errors.ts)
  */
 

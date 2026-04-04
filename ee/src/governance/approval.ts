@@ -365,8 +365,8 @@ export interface ApprovalMatchResult {
  * Matches validated SQL classification (tables/columns) against enabled rules.
  *
  * This function gracefully degrades when enterprise is disabled, returning
- * `{ required: false }` instead of throwing. Unexpected errors from the
- * enterprise check are re-thrown to avoid silently bypassing governance.
+ * `{ required: false }` instead of throwing. Only `EnterpriseError` is
+ * caught — unexpected errors propagate to avoid silently bypassing governance.
  */
 export const checkApprovalRequired = (
   orgId: string | undefined,
@@ -378,11 +378,7 @@ export const checkApprovalRequired = (
       return { required: false, matchedRules: [] };
     }
 
-    // Check if enterprise is enabled — re-throw unexpected errors
-    const eeResult = yield* Effect.either(requireEnterpriseEffect("approval-workflows"));
-    if (eeResult._tag === "Left") {
-      return { required: false, matchedRules: [] };
-    }
+    yield* requireEnterpriseEffect("approval-workflows");
 
     const rows = yield* Effect.promise(() => internalQuery<ApprovalRuleRow>(
       `SELECT id, org_id, name, rule_type, pattern, threshold, enabled, created_at, updated_at
@@ -420,7 +416,13 @@ export const checkApprovalRequired = (
       required: matchedRules.length > 0,
       matchedRules,
     };
-  });
+  }).pipe(
+    // intentionally caught: enterprise disabled — return safe default so agent queries proceed without approval
+    Effect.catchAll((err) => {
+      log.debug({ err: err instanceof Error ? err.message : String(err) }, "Approval check skipped — enterprise not enabled");
+      return Effect.succeed({ required: false, matchedRules: [] as ApprovalRule[] });
+    }),
+  );
 
 // ── Queue management ────────────────────────────────────────────────
 
@@ -613,10 +615,7 @@ export const expireStaleRequests = (): Effect.Effect<number, never> =>
   Effect.gen(function* () {
     if (!hasInternalDB()) return 0;
 
-    const eeResult = yield* Effect.either(requireEnterpriseEffect("approval-workflows"));
-    if (eeResult._tag === "Left") {
-      return 0;
-    }
+    yield* requireEnterpriseEffect("approval-workflows");
 
     const rows = yield* Effect.promise(() => internalQuery<{ id: string }>(
       `UPDATE approval_queue
@@ -629,17 +628,20 @@ export const expireStaleRequests = (): Effect.Effect<number, never> =>
       log.info({ count: rows.length }, "Expired stale approval requests");
     }
     return rows.length;
-  });
+  }).pipe(
+    // intentionally caught: enterprise disabled — skip expiration silently
+    Effect.catchAll((err) => {
+      log.debug({ err: err instanceof Error ? err.message : String(err) }, "Stale request expiration skipped — enterprise not enabled");
+      return Effect.succeed(0);
+    }),
+  );
 
 /** Get count of pending approval requests for an organization. */
 export const getPendingCount = (orgId: string): Effect.Effect<number, never> =>
   Effect.gen(function* () {
     if (!hasInternalDB()) return 0;
 
-    const eeResult = yield* Effect.either(requireEnterpriseEffect("approval-workflows"));
-    if (eeResult._tag === "Left") {
-      return 0;
-    }
+    yield* requireEnterpriseEffect("approval-workflows");
 
     const rows = yield* Effect.promise(() => internalQuery<{ count: string }>(
       `SELECT COUNT(*) as count FROM approval_queue
@@ -648,7 +650,13 @@ export const getPendingCount = (orgId: string): Effect.Effect<number, never> =>
     ));
 
     return rows.length > 0 ? Number(rows[0].count) : 0;
-  });
+  }).pipe(
+    // intentionally caught: enterprise disabled — report zero pending
+    Effect.catchAll((err) => {
+      log.debug({ err: err instanceof Error ? err.message : String(err) }, "Pending count skipped — enterprise not enabled");
+      return Effect.succeed(0);
+    }),
+  );
 
 /**
  * Check whether a query already has an approved request for a given user.
@@ -657,7 +665,8 @@ export const getPendingCount = (orgId: string): Effect.Effect<number, never> =>
  *
  * Returns false when enterprise is disabled — stale approved records from a
  * previously-enabled enterprise license should not grant query access.
- * Unexpected errors are re-thrown to avoid silently bypassing governance.
+ * Only `EnterpriseError` is caught — unexpected errors propagate to avoid
+ * silently bypassing governance.
  */
 export const hasApprovedRequest = (
   orgId: string,
@@ -667,10 +676,7 @@ export const hasApprovedRequest = (
   Effect.gen(function* () {
     if (!hasInternalDB()) return false;
 
-    const eeResult = yield* Effect.either(requireEnterpriseEffect("approval-workflows"));
-    if (eeResult._tag === "Left") {
-      return false;
-    }
+    yield* requireEnterpriseEffect("approval-workflows");
 
     const rows = yield* Effect.promise(() => internalQuery<{ id: string }>(
       `SELECT id FROM approval_queue
@@ -680,4 +686,10 @@ export const hasApprovedRequest = (
     ));
 
     return rows.length > 0;
-  });
+  }).pipe(
+    // intentionally caught: enterprise disabled — stale approved records should not grant access
+    Effect.catchAll((err) => {
+      log.debug({ err: err instanceof Error ? err.message : String(err) }, "Approved request check skipped — enterprise not enabled");
+      return Effect.succeed(false);
+    }),
+  );

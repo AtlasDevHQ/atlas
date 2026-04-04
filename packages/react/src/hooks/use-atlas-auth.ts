@@ -1,8 +1,8 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
 import { useAtlasContext } from "./provider";
-import { AUTH_MODES, type AuthMode } from "../lib/types";
+import { useHealthQuery } from "./use-health-query";
+import type { AuthMode } from "../lib/types";
 
 export interface UseAtlasAuthReturn {
   /** Auth mode detected from the server's /api/health endpoint. `null` while the initial health check is in flight. */
@@ -23,46 +23,12 @@ export interface UseAtlasAuthReturn {
   logout: () => Promise<{ error?: string }>;
 }
 
-interface HealthData {
-  authMode: AuthMode;
-  brandColor?: string;
-}
-
 export function useAtlasAuth(): UseAtlasAuthReturn {
-  const { apiUrl, apiKey, authClient, isCrossOrigin } = useAtlasContext();
+  const { apiKey, authClient } = useAtlasContext();
   const managedSession = authClient.useSession();
-  const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
 
-  // Health check via TanStack Query — shared cache with AtlasChatInner.
-  const healthQuery = useQuery<HealthData>({
-    queryKey: ["atlas", "health"],
-    queryFn: async ({ signal }) => {
-      let res: Response;
-      try {
-        res = await fetch(`${apiUrl}/api/health`, { credentials, signal });
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        console.warn("[Atlas] Health check failed:", msg);
-        throw new Error(`Health check failed: ${msg}`, { cause: err });
-      }
-
-      if (!res.ok) {
-        console.warn(`[Atlas] Health check returned HTTP ${res.status}`);
-        throw new Error(`Health check failed with HTTP ${res.status}`);
-      }
-
-      const data = await res.json();
-      const mode = data?.checks?.auth?.mode;
-      if (typeof mode === "string" && AUTH_MODES.includes(mode as AuthMode)) {
-        return { authMode: mode as AuthMode, brandColor: data?.brandColor };
-      }
-      console.warn("[Atlas] Health check returned no valid auth mode:", data);
-      return { authMode: "none" as AuthMode };
-    },
-    // Match original retry behavior: 3 total attempts, 2s delay
-    retry: 2,
-    retryDelay: 2000,
-  });
+  // Shared health query — deduped with AtlasChatInner via ["atlas", "health"] key.
+  const healthQuery = useHealthQuery();
 
   const authMode = healthQuery.data?.authMode ?? null;
   const error = healthQuery.error instanceof Error ? healthQuery.error : null;

@@ -224,7 +224,7 @@ export default function SchemaDiffPage() {
 
           {/* Refresh button */}
           <div className="flex justify-end">
-            <Button variant="outline" size="sm" onClick={refetch} className="gap-2">
+            <Button variant="outline" size="sm" onClick={() => refetch()} className="gap-2">
               <RefreshCw className="size-3.5" />
               Re-run Diff
             </Button>

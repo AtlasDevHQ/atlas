@@ -1,20 +1,19 @@
 import { describe, it, expect, beforeEach, mock } from "bun:test";
+import { createEEMock } from "../../__mocks__/internal";
 
-// ── Mock hasInternalDB ─────────────────────────────────────────────
-let mockHasDB = false;
-
-mock.module("@atlas/api/lib/db/internal", () => ({
-  hasInternalDB: () => mockHasDB,
-}));
+// ── Mock all exports (CLAUDE.md: mock every named export) ──────────
+const ee = createEEMock();
+mock.module("@atlas/api/lib/db/internal", () => ee.internalDBMock);
 
 // Import after mock
 const { requireInternalDB } = await import("../db-guard");
 
-// ── Tests ──────────────────────────────────────────────��───────────
+// ── Tests ──────────────────────────────────────────────────────────
 
 describe("requireInternalDB", () => {
   beforeEach(() => {
-    mockHasDB = false;
+    ee.reset();
+    ee.setHasInternalDB(false);
   });
 
   it("throws plain Error with label when no internal DB", () => {
@@ -24,7 +23,7 @@ describe("requireInternalDB", () => {
   });
 
   it("does not throw when internal DB is available", () => {
-    mockHasDB = true;
+    ee.setHasInternalDB(true);
     expect(() => requireInternalDB("anything")).not.toThrow();
   });
 
@@ -54,7 +53,7 @@ describe("requireInternalDB", () => {
   });
 
   it("ignores errorFactory when internal DB is available", () => {
-    mockHasDB = true;
+    ee.setHasInternalDB(true);
     expect(() =>
       requireInternalDB("test", () => new Error("should not be thrown")),
     ).not.toThrow();

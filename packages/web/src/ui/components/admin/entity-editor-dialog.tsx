@@ -735,8 +735,14 @@ function useColumnMetadata(tableName: string, isSaas: boolean, dialogOpen: boole
   const { apiUrl, isCrossOrigin } = useAtlasConfig();
   const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
 
-  // Debounce table name to avoid fetching on every keystroke
+  // Debounce table name to avoid fetching on every keystroke.
+  // Sync immediately on dialog open to avoid stale query from previous entity.
   const [debouncedTable, setDebouncedTable] = useState(tableName);
+  useEffect(() => {
+    if (dialogOpen) {
+      setDebouncedTable(tableName);
+    }
+  }, [dialogOpen, tableName]);
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedTable(tableName), 300);
     return () => clearTimeout(timer);

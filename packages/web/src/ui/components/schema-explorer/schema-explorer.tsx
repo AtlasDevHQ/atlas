@@ -390,9 +390,11 @@ export function SchemaExplorer({
       return Array.isArray(data?.entities) ? data.entities : [];
     },
     enabled: open,
+    retry: false,
   });
 
   // Fetch entity detail when one is selected. Auto-cancels on selection change.
+  // staleTime: 0 ensures fresh data on every selection (matches old behavior).
   const entityDetail = useQuery<SemanticEntityDetail>({
     queryKey: ["semantic", "entities", selectedName],
     queryFn: async ({ signal }) => {
@@ -406,12 +408,22 @@ export function SchemaExplorer({
       return data?.entity ?? data;
     },
     enabled: !!selectedName,
+    staleTime: 0,
+    retry: false,
   });
 
   // Reset to list view on every open — prevents stale detail view on reopen
   useEffect(() => {
     if (open) setSelectedName(null);
   }, [open]);
+
+  // Log query errors for developer observability (TanStack catches internally).
+  useEffect(() => {
+    if (entityList.error) console.warn("Schema explorer: failed to fetch entities:", entityList.error);
+  }, [entityList.error]);
+  useEffect(() => {
+    if (entityDetail.error) console.warn("Schema explorer: failed to load entity:", entityDetail.error);
+  }, [entityDetail.error]);
 
   // Derive state from queries for the existing UI
   const entities = entityList.data ?? [];

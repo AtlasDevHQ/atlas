@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useAtlasConfig } from "../../context";
 import {
@@ -70,7 +70,7 @@ export function PromptLibrary({
               signal,
             });
             if (!itemRes.ok) {
-              console.debug(`Failed to fetch items for collection ${col.id}: HTTP ${itemRes.status}`);
+              console.warn(`Failed to fetch items for collection ${col.id}: HTTP ${itemRes.status}`);
               return { ...col, items: [] as PromptItem[] };
             }
             const itemData = await itemRes.json();
@@ -83,7 +83,13 @@ export function PromptLibrary({
       );
     },
     enabled: open,
+    retry: false,
   });
+
+  // Log query errors for developer observability.
+  useEffect(() => {
+    if (queryError) console.warn("Prompt library: failed to load:", queryError);
+  }, [queryError]);
 
   const error = queryError ? (queryError instanceof Error ? queryError.message : "Failed to load prompt library") : null;
 

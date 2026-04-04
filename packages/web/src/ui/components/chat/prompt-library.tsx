@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { useAtlasConfig } from "../../context";
 import {
   Sheet,
@@ -39,69 +40,58 @@ export function PromptLibrary({
   getCredentials: () => RequestCredentials;
 }) {
   const { apiUrl } = useAtlasConfig();
-  const [collections, setCollections] = useState<CollectionWithItems[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
-  const [fetched, setFetched] = useState(false);
 
-  // Fetch collections + items when Sheet opens (cached in state)
-  useEffect(() => {
-    if (!open || fetched) return;
-    let cancelled = false;
+  // Fetch collections + items when Sheet opens. TanStack caches across
+  // open/close cycles (replaces manual `fetched` flag).
+  const { data: collections = [], isPending: loading, error: queryError, refetch } = useQuery<CollectionWithItems[]>({
+    queryKey: ["prompts", "library"],
+    queryFn: async ({ signal }) => {
+      const res = await fetch(`${apiUrl}/api/v1/prompts`, {
+        headers: getHeaders(),
+        credentials: getCredentials(),
+        signal,
+      });
+      if (!res.ok) {
+        let msg = "Failed to load prompt library";
+        try { msg = ((await res.json()) as Record<string, unknown>).message as string ?? msg; } catch { /* intentionally ignored: response may not be JSON */ }
+        throw new Error(msg);
+      }
+      const data = await res.json();
+      const cols: PromptCollection[] = data.collections ?? [];
 
-    async function fetchAll() {
-      setLoading(true);
-      setError(null);
-      try {
-        const res = await fetch(`${apiUrl}/api/v1/prompts`, {
-          headers: getHeaders(),
-          credentials: getCredentials(),
-        });
-        if (!res.ok) {
-          let msg = "Failed to load prompt library";
-          try { msg = ((await res.json()) as Record<string, unknown>).message as string ?? msg; } catch { /* intentionally ignored: response may not be JSON */ }
-          if (!cancelled) setError(msg);
-          return;
-        }
-        const data = await res.json();
-        const cols: PromptCollection[] = data.collections ?? [];
-
-        // Fetch items for each collection in parallel
-        const withItems = await Promise.all(
-          cols.map(async (col) => {
-            try {
-              const itemRes = await fetch(`${apiUrl}/api/v1/prompts/${col.id}`, {
-                headers: getHeaders(),
-                credentials: getCredentials(),
-              });
-              if (!itemRes.ok) {
-                console.debug(`Failed to fetch items for collection ${col.id}: HTTP ${itemRes.status}`);
-                return { ...col, items: [] as PromptItem[] };
-              }
-              const itemData = await itemRes.json();
-              return { ...col, items: (itemData.items ?? []) as PromptItem[] };
-            } catch (err) {
-              console.debug(`Failed to fetch items for collection ${col.id}:`, err instanceof Error ? err.message : String(err));
+      // Fetch items for each collection in parallel
+      return Promise.all(
+        cols.map(async (col) => {
+          try {
+            const itemRes = await fetch(`${apiUrl}/api/v1/prompts/${col.id}`, {
+              headers: getHeaders(),
+              credentials: getCredentials(),
+              signal,
+            });
+            if (!itemRes.ok) {
+              console.warn(`Failed to fetch items for collection ${col.id}: HTTP ${itemRes.status}`);
               return { ...col, items: [] as PromptItem[] };
             }
-          }),
-        );
+            const itemData = await itemRes.json();
+            return { ...col, items: (itemData.items ?? []) as PromptItem[] };
+          } catch (err) {
+            console.debug(`Failed to fetch items for collection ${col.id}:`, err instanceof Error ? err.message : String(err));
+            return { ...col, items: [] as PromptItem[] };
+          }
+        }),
+      );
+    },
+    enabled: open,
+    retry: false,
+  });
 
-        if (!cancelled) {
-          setCollections(withItems);
-          setFetched(true);
-        }
-      } catch (err) {
-        if (!cancelled) setError(err instanceof Error ? err.message : "Failed to load prompt library");
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    }
+  // Log query errors for developer observability.
+  useEffect(() => {
+    if (queryError) console.warn("Prompt library: failed to load:", queryError);
+  }, [queryError]);
 
-    fetchAll();
-    return () => { cancelled = true; };
-  }, [open, fetched, apiUrl, getHeaders, getCredentials]);
+  const error = queryError ? (queryError instanceof Error ? queryError.message : "Failed to load prompt library") : null;
 
   function handleSelectPrompt(question: string) {
     onOpenChange(false);
@@ -150,7 +140,7 @@ export function PromptLibrary({
             ) : error ? (
               <div className="text-center py-12">
                 <p className="text-sm text-muted-foreground">{error}</p>
-                <Button variant="link" size="sm" onClick={() => setFetched(false)} className="mt-2">
+                <Button variant="link" size="sm" onClick={() => refetch()} className="mt-2">
                   Retry
                 </Button>
               </div>

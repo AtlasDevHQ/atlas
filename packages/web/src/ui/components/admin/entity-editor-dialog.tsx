@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { useForm, useFieldArray, type UseFormReturn } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
@@ -720,77 +721,60 @@ interface EntityEditorDialogProps {
   isSaas?: boolean;
 }
 
+/** Marker error for 404 "table not found" — not a real failure. */
+class TableNotFoundError extends Error {
+  constructor(table: string) { super(`Table "${table}" not found`); this.name = "TableNotFoundError"; }
+}
+
 /**
  * Fetch column metadata for a table from the analytics datasource.
  * Returns empty array on error or when not in SaaS mode.
+ * Debounces table name changes via a 300ms delayed state.
  */
 function useColumnMetadata(tableName: string, isSaas: boolean, dialogOpen: boolean) {
   const { apiUrl, isCrossOrigin } = useAtlasConfig();
-  const [columns, setColumns] = useState<ColumnInfo[]>([]);
-  const [tableNotFound, setTableNotFound] = useState(false);
-  const [loading, setLoading] = useState(false);
+  const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
 
+  // Debounce table name to avoid fetching on every keystroke.
+  // Sync immediately on dialog open to avoid stale query from previous entity.
+  const [debouncedTable, setDebouncedTable] = useState(tableName);
   useEffect(() => {
-    if (!dialogOpen || !tableName || !isSaas) {
-      setColumns([]);
-      setTableNotFound(false);
-      return;
+    if (dialogOpen) {
+      setDebouncedTable(tableName);
     }
+  }, [dialogOpen, tableName]);
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedTable(tableName), 300);
+    return () => clearTimeout(timer);
+  }, [tableName]);
 
-    // Only fetch for valid SQL identifiers
-    if (!/^[a-zA-Z_][a-zA-Z0-9_.]*$/.test(tableName)) {
-      setColumns([]);
-      setTableNotFound(false);
-      return;
-    }
+  const isValidIdentifier = !!debouncedTable && /^[a-zA-Z_][a-zA-Z0-9_.]*$/.test(debouncedTable);
 
-    const controller = new AbortController();
-    const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
-
-    // Debounce column fetches
-    const timer = setTimeout(async () => {
-      setLoading(true);
-      try {
-        const res = await fetch(
-          `${apiUrl}/api/v1/admin/semantic/columns/${encodeURIComponent(tableName)}`,
-          { credentials, signal: controller.signal },
-        );
-        if (controller.signal.aborted) return;
-        if (res.status === 404) {
-          setColumns([]);
-          setTableNotFound(true);
-          return;
-        }
-        if (!res.ok) {
-          const body = await res.json().catch(() => null);
-          const msg = (body as Record<string, unknown> | null)?.message ?? `HTTP ${res.status}`;
-          console.debug("Column metadata fetch failed:", msg);
-          setColumns([]);
-          setTableNotFound(false);
-          return;
-        }
-        const data = await res.json();
-        if (!controller.signal.aborted) {
-          setColumns(Array.isArray(data?.columns) ? data.columns : []);
-          setTableNotFound(false);
-        }
-      } catch (err) {
-        if (err instanceof DOMException && err.name === "AbortError") return;
-        console.debug("Column metadata fetch failed:", err instanceof Error ? err.message : String(err));
-        if (!controller.signal.aborted) {
-          setColumns([]);
-          setTableNotFound(false);
-        }
-      } finally {
-        if (!controller.signal.aborted) setLoading(false);
+  const query = useQuery<ColumnInfo[]>({
+    queryKey: ["admin", "semantic", "columns", debouncedTable],
+    queryFn: async ({ signal }) => {
+      const res = await fetch(
+        `${apiUrl}/api/v1/admin/semantic/columns/${encodeURIComponent(debouncedTable)}`,
+        { credentials, signal },
+      );
+      if (res.status === 404) throw new TableNotFoundError(debouncedTable);
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        const rawMsg = (body as Record<string, unknown> | null)?.message;
+        const msg = typeof rawMsg === "string" ? rawMsg : `HTTP ${res.status}`;
+        console.debug("Column metadata fetch failed:", msg);
+        throw new Error(msg);
       }
-    }, 300);
+      const data = await res.json();
+      return Array.isArray(data?.columns) ? data.columns : [];
+    },
+    enabled: dialogOpen && isSaas && isValidIdentifier,
+    retry: false,
+  });
 
-    return () => {
-      clearTimeout(timer);
-      controller.abort();
-    };
-  }, [tableName, dialogOpen, apiUrl, isCrossOrigin, isSaas]);
+  const tableNotFound = query.error instanceof TableNotFoundError;
+  const columns = query.data ?? [];
+  const loading = query.isFetching;
 
   return { columns, tableNotFound, loading };
 }

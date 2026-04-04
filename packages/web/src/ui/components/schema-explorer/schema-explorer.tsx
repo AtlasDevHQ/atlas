@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { useAtlasConfig } from "../../context";
 import {
   Sheet,
@@ -371,87 +372,72 @@ export function SchemaExplorer({
   getCredentials: () => RequestCredentials;
 }) {
   const { apiUrl } = useAtlasConfig();
-  const [entities, setEntities] = useState<SemanticEntitySummary[]>([]);
-  const [selectedEntity, setSelectedEntity] = useState<SemanticEntityDetail | null>(null);
   const [selectedName, setSelectedName] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [detailError, setDetailError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
-  const abortRef = useRef<AbortController | null>(null);
 
-  // Fetch entity list when the sheet opens (or when API config changes)
+  // Fetch entity list when the sheet opens. TanStack handles abort on close.
+  const entityList = useQuery<SemanticEntitySummary[]>({
+    queryKey: ["semantic", "entities"],
+    queryFn: async ({ signal }) => {
+      const res = await fetch(`${apiUrl}/api/v1/semantic/entities`, {
+        headers: getHeaders(),
+        credentials: getCredentials(),
+        signal,
+      });
+      if (!res.ok) throw new Error(await parseErrorResponse(res));
+      const data = await res.json();
+      return Array.isArray(data?.entities) ? data.entities : [];
+    },
+    enabled: open,
+    retry: false,
+  });
+
+  // Fetch entity detail when one is selected. Auto-cancels on selection change.
+  // staleTime: 0 ensures fresh data on every selection (matches old behavior).
+  const entityDetail = useQuery<SemanticEntityDetail>({
+    queryKey: ["semantic", "entities", selectedName],
+    queryFn: async ({ signal }) => {
+      const res = await fetch(`${apiUrl}/api/v1/semantic/entities/${encodeURIComponent(selectedName!)}`, {
+        headers: getHeaders(),
+        credentials: getCredentials(),
+        signal,
+      });
+      if (!res.ok) throw new Error(await parseErrorResponse(res));
+      const data = await res.json();
+      return data?.entity ?? data;
+    },
+    enabled: !!selectedName,
+    staleTime: 0,
+    retry: false,
+  });
+
+  // Reset to list view on every open — prevents stale detail view on reopen
   useEffect(() => {
-    if (!open) return;
+    if (open) setSelectedName(null);
+  }, [open]);
 
-    // Reset to list view on every open — prevents stale detail view on reopen
-    setSelectedName(null);
-    setSelectedEntity(null);
-    setDetailError(null);
-    abortRef.current?.abort();
+  // Log query errors for developer observability (TanStack catches internally).
+  useEffect(() => {
+    if (entityList.error) console.warn("Schema explorer: failed to fetch entities:", entityList.error);
+  }, [entityList.error]);
+  useEffect(() => {
+    if (entityDetail.error) console.warn("Schema explorer: failed to load entity:", entityDetail.error);
+  }, [entityDetail.error]);
 
-    setLoading(true);
-    setError(null);
-
-    const controller = new AbortController();
-    fetch(`${apiUrl}/api/v1/semantic/entities`, {
-      headers: getHeaders(),
-      credentials: getCredentials(),
-      signal: controller.signal,
-    })
-      .then(async (r) => {
-        if (!r.ok) throw new Error(await parseErrorResponse(r));
-        return r.json();
-      })
-      .then((data) => {
-        const list = Array.isArray(data?.entities) ? data.entities : [];
-        setEntities(list);
-      })
-      .catch((err) => {
-        if (err instanceof DOMException && err.name === "AbortError") return;
-        console.warn("Schema explorer: failed to fetch entities:", err);
-        setError(err instanceof Error ? err.message : "Failed to load schema");
-      })
-      .finally(() => setLoading(false));
-
-    return () => controller.abort();
-  }, [open, apiUrl, getHeaders, getCredentials]);
+  // Derive state from queries for the existing UI
+  const entities = entityList.data ?? [];
+  const loading = entityList.isPending && open;
+  const error = entityList.error ? (entityList.error instanceof Error ? entityList.error.message : "Failed to load schema") : null;
+  const selectedEntity = entityDetail.data ?? null;
+  const detailError = entityDetail.error ? (entityDetail.error instanceof Error ? entityDetail.error.message : "Failed to load entity") : null;
 
   function handleSelectEntity(name: string) {
-    // Cancel any in-flight detail request
-    abortRef.current?.abort();
-    const controller = new AbortController();
-    abortRef.current = controller;
-
     setSelectedName(name);
-    setSelectedEntity(null);
-    setDetailError(null);
-
-    fetch(`${apiUrl}/api/v1/semantic/entities/${encodeURIComponent(name)}`, {
-      headers: getHeaders(),
-      credentials: getCredentials(),
-      signal: controller.signal,
-    })
-      .then(async (r) => {
-        if (!r.ok) throw new Error(await parseErrorResponse(r));
-        return r.json();
-      })
-      .then((data) => {
-        setSelectedEntity(data?.entity ?? data);
-      })
-      .catch((err) => {
-        if (err instanceof DOMException && err.name === "AbortError") return;
-        console.warn("Schema explorer: failed to load entity:", err);
-        setDetailError(err instanceof Error ? err.message : "Failed to load entity");
-      });
   }
 
   function handleBack() {
-    abortRef.current?.abort();
     setSelectedName(null);
-    setSelectedEntity(null);
-    setDetailError(null);
   }
 
   function handleInsertQuery(description: string) {

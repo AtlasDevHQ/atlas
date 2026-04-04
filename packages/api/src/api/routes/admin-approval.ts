@@ -18,7 +18,7 @@
 
 import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
-import { runEffect } from "@atlas/api/lib/effect/hono";
+import { runEffect, domainError } from "@atlas/api/lib/effect/hono";
 import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
 import {
   listApprovalRules,
@@ -35,7 +35,7 @@ import {
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 
-const APPROVAL_ERROR_STATUS = { validation: 400, not_found: 404, conflict: 409, expired: 410 } as const;
+const approvalDomainError = domainError(ApprovalError, { validation: 400, not_found: 404, conflict: 409, expired: 410 });
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -288,7 +288,7 @@ adminApproval.openapi(expireRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const expired = yield* Effect.promise(() => expireStaleRequests());
     return c.json({ expired }, 200);
-  }), { label: "expire stale requests", domainErrors: [[ApprovalError, APPROVAL_ERROR_STATUS]] });
+  }), { label: "expire stale requests", domainErrors: [approvalDomainError] });
 });
 
 // GET /pending-count — count of pending requests (needs orgId, not hasInternalDB)
@@ -303,7 +303,7 @@ adminApproval.openapi(pendingCountRoute, async (c) => {
 
     const count = yield* Effect.promise(() => getPendingCount(orgId));
     return c.json({ count }, 200);
-  }), { label: "get pending approval count", domainErrors: [[ApprovalError, APPROVAL_ERROR_STATUS]] });
+  }), { label: "get pending approval count", domainErrors: [approvalDomainError] });
 });
 
 // ── Handlers WITH requireOrgContext ───────────────────────────────────
@@ -316,7 +316,7 @@ adminApproval.openapi(listRulesRoute, async (c) => {
 
     const rules = yield* Effect.promise(() => listApprovalRules(orgId!));
     return c.json({ rules }, 200);
-  }), { label: "list approval rules", domainErrors: [[ApprovalError, APPROVAL_ERROR_STATUS]] });
+  }), { label: "list approval rules", domainErrors: [approvalDomainError] });
 });
 
 // POST /rules — create approval rule
@@ -333,7 +333,7 @@ adminApproval.openapi(createRuleRoute, async (c) => {
       enabled: body.enabled,
     }));
     return c.json({ rule }, 201);
-  }), { label: "create approval rule", domainErrors: [[ApprovalError, APPROVAL_ERROR_STATUS]] });
+  }), { label: "create approval rule", domainErrors: [approvalDomainError] });
 });
 
 // PUT /rules/:id — update approval rule
@@ -345,7 +345,7 @@ adminApproval.openapi(updateRuleRoute, async (c) => {
 
     const rule = yield* Effect.promise(() => updateApprovalRule(orgId!, ruleId, body));
     return c.json({ rule }, 200);
-  }), { label: "update approval rule", domainErrors: [[ApprovalError, APPROVAL_ERROR_STATUS]] });
+  }), { label: "update approval rule", domainErrors: [approvalDomainError] });
 });
 
 // DELETE /rules/:id — delete approval rule
@@ -359,7 +359,7 @@ adminApproval.openapi(deleteRuleRoute, async (c) => {
       return c.json({ error: "not_found", message: "Approval rule not found." }, 404);
     }
     return c.json({ message: "Approval rule deleted." }, 200);
-  }), { label: "delete approval rule", domainErrors: [[ApprovalError, APPROVAL_ERROR_STATUS]] });
+  }), { label: "delete approval rule", domainErrors: [approvalDomainError] });
 });
 
 // GET /queue — list approval requests
@@ -372,7 +372,7 @@ adminApproval.openapi(listQueueRoute, async (c) => {
     const status = statusParam && validStatuses.includes(statusParam) ? statusParam as import("@useatlas/types").ApprovalStatus : undefined;
     const requests = yield* Effect.promise(() => listApprovalRequests(orgId!, status));
     return c.json({ requests }, 200);
-  }), { label: "list approval requests", domainErrors: [[ApprovalError, APPROVAL_ERROR_STATUS]] });
+  }), { label: "list approval requests", domainErrors: [approvalDomainError] });
 });
 
 // GET /queue/:id — get single approval request
@@ -386,7 +386,7 @@ adminApproval.openapi(getQueueItemRoute, async (c) => {
       return c.json({ error: "not_found", message: "Approval request not found." }, 404);
     }
     return c.json({ request: item }, 200);
-  }), { label: "get approval request", domainErrors: [[ApprovalError, APPROVAL_ERROR_STATUS]] });
+  }), { label: "get approval request", domainErrors: [approvalDomainError] });
 });
 
 // POST /queue/:id — review (approve/deny) an approval request
@@ -412,7 +412,7 @@ adminApproval.openapi(reviewRoute, async (c) => {
       body.comment,
     ));
     return c.json({ request: result }, 200);
-  }), { label: "review approval request", domainErrors: [[ApprovalError, APPROVAL_ERROR_STATUS]] });
+  }), { label: "review approval request", domainErrors: [approvalDomainError] });
 });
 
 export { adminApproval };

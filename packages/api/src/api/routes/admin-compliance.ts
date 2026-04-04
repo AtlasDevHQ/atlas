@@ -15,7 +15,7 @@
 import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
 import { HTTPException } from "hono/http-exception";
-import { runEffect } from "@atlas/api/lib/effect/hono";
+import { runEffect, domainError } from "@atlas/api/lib/effect/hono";
 import { AuthContext } from "@atlas/api/lib/effect/services";
 import {
   listPIIClassifications,
@@ -30,14 +30,13 @@ import {
   dataAccessReportToCSV,
   userActivityReportToCSV,
   ReportError,
-  type ReportErrorCode,
 } from "@atlas/ee/compliance/reports";
 import type { PIICategory, MaskingStrategy } from "@useatlas/types";
 import { ErrorSchema, AuthErrorSchema, DeletedResponseSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 
-const COMPLIANCE_ERROR_STATUS = { validation: 400, not_found: 404, conflict: 409 } as const;
-const REPORT_ERROR_STATUS = { validation: 400, not_available: 404 } as const satisfies Record<ReportErrorCode, number>;
+const complianceDomainError = domainError(ComplianceError, { validation: 400, not_found: 404, conflict: 409 });
+const reportDomainError = domainError(ReportError, { validation: 400, not_available: 404 });
 
 // ── Schemas ─────────────────────────────────────────────────────
 
@@ -144,7 +143,7 @@ adminCompliance.openapi(listRoute, async (c) => {
 
     const classifications = yield* Effect.promise(() => listPIIClassifications(orgId!, connectionId));
     return c.json({ classifications }, 200);
-  }), { label: "list PII classifications", domainErrors: [[ComplianceError, COMPLIANCE_ERROR_STATUS], [ReportError, REPORT_ERROR_STATUS]] });
+  }), { label: "list PII classifications", domainErrors: [complianceDomainError, reportDomainError] });
 });
 
 // PUT /classifications/:id
@@ -162,7 +161,7 @@ adminCompliance.openapi(updateRoute, async (c) => {
     }));
     invalidateClassificationCache(orgId!);
     return c.json({ classification: updated }, 200);
-  }), { label: "update PII classification", domainErrors: [[ComplianceError, COMPLIANCE_ERROR_STATUS], [ReportError, REPORT_ERROR_STATUS]] });
+  }), { label: "update PII classification", domainErrors: [complianceDomainError, reportDomainError] });
 });
 
 // DELETE /classifications/:id
@@ -174,7 +173,7 @@ adminCompliance.openapi(deleteRoute, async (c) => {
     yield* Effect.promise(() => deletePIIClassification(orgId!, id));
     invalidateClassificationCache(orgId!);
     return c.json({ deleted: true }, 200);
-  }), { label: "delete PII classification", domainErrors: [[ComplianceError, COMPLIANCE_ERROR_STATUS], [ReportError, REPORT_ERROR_STATUS]] });
+  }), { label: "delete PII classification", domainErrors: [complianceDomainError, reportDomainError] });
 });
 
 // ── Report schemas ──────────────────────────────────────────────
@@ -314,7 +313,7 @@ adminCompliance.openapi(dataAccessReportRoute, async (c) => {
     }
 
     return c.json(report, 200);
-  }), { label: "generate data access report", domainErrors: [[ComplianceError, COMPLIANCE_ERROR_STATUS], [ReportError, REPORT_ERROR_STATUS]] });
+  }), { label: "generate data access report", domainErrors: [complianceDomainError, reportDomainError] });
 });
 
 // GET /reports/user-activity
@@ -348,5 +347,5 @@ adminCompliance.openapi(userActivityReportRoute, async (c) => {
     }
 
     return c.json(report, 200);
-  }), { label: "generate user activity report", domainErrors: [[ComplianceError, COMPLIANCE_ERROR_STATUS], [ReportError, REPORT_ERROR_STATUS]] });
+  }), { label: "generate user activity report", domainErrors: [complianceDomainError, reportDomainError] });
 });

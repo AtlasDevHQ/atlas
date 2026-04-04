@@ -19,7 +19,7 @@ import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createPlatformRouter } from "./admin-router";
 import {
   CustomDomainSchema,
-  domainErrors,
+  customDomainError,
   loadDomains,
   sanitizeDomainError,
 } from "./shared-domains";
@@ -152,7 +152,7 @@ platformDomains.openapi(listDomainsRoute, async (c) => {
 
     const domains = yield* Effect.promise(() => mod.listAllDomains());
     return c.json({ domains }, 200);
-  }), { label: "list domains", domainErrors: domainErrors });
+  }), { label: "list domains", domainErrors: [customDomainError] });
 });
 
 // ── Register domain ──────────────────────────────────────────────────
@@ -178,7 +178,7 @@ platformDomains.openapi(registerDomainRoute, async (c) => {
         return err instanceof Error ? err : new Error(String(err));
       },
     });
-  }), { label: "register domain", domainErrors: domainErrors });
+  }), { label: "register domain", domainErrors: [customDomainError] });
 });
 
 // ── Verify domain ────────────────────────────────────────────────────
@@ -203,7 +203,7 @@ platformDomains.openapi(verifyDomainRoute, async (c) => {
         return err instanceof Error ? err : new Error(String(err));
       },
     });
-  }), { label: "verify domain", domainErrors: domainErrors });
+  }), { label: "verify domain", domainErrors: [customDomainError] });
 });
 
 // ── Delete domain ────────────────────────────────────────────────────
@@ -229,7 +229,7 @@ platformDomains.openapi(deleteDomainRoute, async (c) => {
         return err instanceof Error ? err : new Error(String(err));
       },
     });
-  }), { label: "delete domain", domainErrors: domainErrors });
+  }), { label: "delete domain", domainErrors: [customDomainError] });
 });
 
 export { platformDomains };

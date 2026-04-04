@@ -21,7 +21,7 @@ import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 import {
   CustomDomainSchema,
-  domainErrors,
+  customDomainError,
   loadDomains,
   sanitizeDomainError,
 } from "./shared-domains";
@@ -233,7 +233,7 @@ adminDomains.openapi(getDomainRoute, async (c) => {
 
     const domains = yield* tryDomainCall(() => mod.listDomains(orgId), requestId);
     return c.json({ domain: domains[0] ?? null }, 200);
-  }), { label: "get workspace domain", domainErrors });
+  }), { label: "get workspace domain", domainErrors: [customDomainError] });
 });
 
 // POST / — add custom domain (enterprise plan required)
@@ -275,7 +275,7 @@ adminDomains.openapi(addDomainRoute, async (c) => {
     const domain = yield* tryDomainCall(() => mod.registerDomain(orgId, body.domain), requestId);
     log.info({ orgId, domain: body.domain, requestId }, "Workspace custom domain registered");
     return c.json(domain, 201);
-  }), { label: "add workspace domain", domainErrors });
+  }), { label: "add workspace domain", domainErrors: [customDomainError] });
 });
 
 // POST /verify — check domain verification status
@@ -301,7 +301,7 @@ adminDomains.openapi(verifyDomainRoute, async (c) => {
 
     const domain = yield* tryDomainCall(() => mod.verifyDomain(domains[0].id), requestId);
     return c.json(domain, 200);
-  }), { label: "verify workspace domain", domainErrors });
+  }), { label: "verify workspace domain", domainErrors: [customDomainError] });
 });
 
 // DELETE / — remove workspace custom domain
@@ -328,7 +328,7 @@ adminDomains.openapi(removeDomainRoute, async (c) => {
     yield* tryDomainCall(() => mod.deleteDomain(domains[0].id), requestId);
     log.info({ orgId, domainId: domains[0].id, requestId }, "Workspace custom domain removed");
     return c.json({ deleted: true }, 200);
-  }), { label: "remove workspace domain", domainErrors });
+  }), { label: "remove workspace domain", domainErrors: [customDomainError] });
 });
 
 export { adminDomains };

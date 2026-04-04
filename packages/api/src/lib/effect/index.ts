@@ -44,7 +44,7 @@ export {
   type AtlasErrorTag,
 } from "./errors";
 
-export { runEffect, runHandler, mapTaggedError, type DomainErrorMapping, type RunEffectOptions } from "./hono";
+export { runEffect, runHandler, mapTaggedError, domainError, type DomainErrorMapping, type RunEffectOptions } from "./hono";
 
 // ── Effect Services (P4+) ───────────────────────────────────────────
 

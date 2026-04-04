@@ -43,6 +43,30 @@ export type DomainErrorMapping = [
   statusMap: Record<string, ContentfulStatusCode>,
 ];
 
+/**
+ * Type-safe constructor for `DomainErrorMapping` tuples.
+ *
+ * Infers `TCode` from the error class's `code` property and requires the
+ * status map to cover every code — the compiler will error if a code is
+ * added to the error class's union without a corresponding entry here.
+ *
+ * @example
+ * ```ts
+ * // ApprovalErrorCode = "validation" | "not_found" | "conflict" | "expired"
+ * const approvalErrors = domainError(ApprovalError, {
+ *   validation: 400, not_found: 404, conflict: 409, expired: 410,
+ * });
+ * // Missing "expired" would be a compile error ↑
+ * ```
+ */
+export function domainError<TCode extends string>(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- must accept varied constructor signatures; TCode constraint ensures the statusMap is exhaustive
+  errorClass: new (...args: any[]) => Error & { code: TCode },
+  statusMap: Record<TCode, ContentfulStatusCode>,
+): DomainErrorMapping {
+  return [errorClass, statusMap];
+}
+
 const log = createLogger("effect-bridge");
 
 // ── Error mapping ───────────────────────────────────────────────────

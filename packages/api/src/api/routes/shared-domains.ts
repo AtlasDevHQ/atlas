@@ -6,9 +6,8 @@
 
 import { z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
-import type { DomainErrorMapping } from "@atlas/api/lib/effect/hono";
+import { domainError } from "@atlas/api/lib/effect/hono";
 import { DomainError, type DomainErrorCode } from "@atlas/ee/platform/domains";
-import type { ContentfulStatusCode } from "hono/utils/http-status";
 
 const log = createLogger("domains-shared");
 
@@ -39,7 +38,7 @@ const SANITIZED_CODES = new Set<DomainErrorCode>([
   "data_integrity",
 ]);
 
-const DOMAIN_ERROR_STATUS: Record<DomainErrorCode, ContentfulStatusCode> = {
+export const customDomainError = domainError(DomainError, {
   no_internal_db: 503,
   invalid_domain: 400,
   duplicate_domain: 409,
@@ -47,11 +46,7 @@ const DOMAIN_ERROR_STATUS: Record<DomainErrorCode, ContentfulStatusCode> = {
   railway_error: 502,
   railway_not_configured: 503,
   data_integrity: 500,
-};
-
-export const domainErrors: DomainErrorMapping[] = [
-  [DomainError, DOMAIN_ERROR_STATUS],
-];
+});
 
 // ---------------------------------------------------------------------------
 // Module loader (lazy import — fail gracefully when ee is unavailable)

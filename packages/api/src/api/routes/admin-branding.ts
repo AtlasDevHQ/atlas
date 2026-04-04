@@ -7,7 +7,7 @@
 
 import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
-import { runEffect } from "@atlas/api/lib/effect/hono";
+import { runEffect, domainError } from "@atlas/api/lib/effect/hono";
 import { AuthContext } from "@atlas/api/lib/effect/services";
 import {
   getWorkspaceBranding,
@@ -18,7 +18,7 @@ import {
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 
-const BRANDING_ERROR_STATUS = { validation: 400, not_found: 404 } as const;
+const brandingDomainError = domainError(BrandingError, { validation: 400, not_found: 404 });
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -215,7 +215,7 @@ adminBranding.openapi(getBrandingRoute, async (c) => {
 
     const branding = yield* Effect.promise(() => getWorkspaceBranding(orgId!));
     return c.json({ branding }, 200);
-  }), { label: "get workspace branding", domainErrors: [[BrandingError, BRANDING_ERROR_STATUS]] });
+  }), { label: "get workspace branding", domainErrors: [brandingDomainError] });
 });
 
 // PUT / — set workspace branding
@@ -233,7 +233,7 @@ adminBranding.openapi(setBrandingRoute, async (c) => {
       hideAtlasBranding: body.hideAtlasBranding,
     }));
     return c.json({ branding }, 200);
-  }), { label: "save workspace branding", domainErrors: [[BrandingError, BRANDING_ERROR_STATUS]] });
+  }), { label: "save workspace branding", domainErrors: [brandingDomainError] });
 });
 
 // DELETE / — reset workspace branding
@@ -246,7 +246,7 @@ adminBranding.openapi(deleteBrandingRoute, async (c) => {
       return c.json({ error: "not_found", message: "No custom branding found." }, 404);
     }
     return c.json({ message: "Branding reset to Atlas defaults." }, 200);
-  }), { label: "reset workspace branding", domainErrors: [[BrandingError, BRANDING_ERROR_STATUS]] });
+  }), { label: "reset workspace branding", domainErrors: [brandingDomainError] });
 });
 
 export { adminBranding };

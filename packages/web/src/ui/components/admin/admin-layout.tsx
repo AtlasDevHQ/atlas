@@ -1,6 +1,5 @@
 "use client";
 
-import { useState, useEffect } from "react";
 import type { ReactNode } from "react";
 import { SidebarProvider, SidebarInset, SidebarTrigger } from "@/components/ui/sidebar";
 import { Separator } from "@/components/ui/separator";
@@ -18,37 +17,24 @@ import { AdminSidebar } from "./admin-sidebar";
 import { useAtlasConfig } from "@/ui/context";
 import { LoadingState } from "./loading-state";
 import { ChangePasswordDialog } from "./change-password-dialog";
+import { usePasswordStatus } from "@/ui/hooks/use-password-status";
 
 export function AdminLayout({ children }: { children: ReactNode }) {
-  const { authClient, apiUrl, isCrossOrigin } = useAtlasConfig();
+  const { authClient } = useAtlasConfig();
   const session = authClient.useSession();
-  const [adminCheck, setAdminCheck] = useState<"pending" | "allowed" | "denied">("pending");
-  const [passwordChangeRequired, setPasswordChangeRequired] = useState(false);
 
-  const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
+  // Shared with AtlasChat — TanStack deduplicates to a single request.
+  const { data, isPending, isError } = usePasswordStatus(!!session.data?.user);
 
-  // Verify admin access by calling the backend, which resolves the effective
-  // role (user-level + org member role). This is the source of truth.
-  // Unauthenticated users never reach here — the proxy redirects them.
-  useEffect(() => {
-    if (!session.data?.user) return;
-
-    async function checkAdminAccess() {
-      try {
-        const res = await fetch(`${apiUrl}/api/v1/admin/me/password-status`, { credentials });
-        if (res.ok) {
-          setAdminCheck("allowed");
-          const data = await res.json();
-          if (data.passwordChangeRequired) setPasswordChangeRequired(true);
-        } else {
-          setAdminCheck("denied");
-        }
-      } catch {
-        setAdminCheck("denied");
-      }
-    }
-    checkAdminAccess();
-  }, [session.data?.user, apiUrl, credentials]);
+  // Derive admin check state
+  let adminCheck: "pending" | "allowed" | "denied";
+  if (!session.data?.user || isPending) {
+    adminCheck = "pending";
+  } else if (isError || !data) {
+    adminCheck = "denied";
+  } else {
+    adminCheck = data.allowed ? "allowed" : "denied";
+  }
 
   // Loading session (proxy already handled unauthenticated)
   if (session.isPending || adminCheck === "pending") {
@@ -105,8 +91,8 @@ export function AdminLayout({ children }: { children: ReactNode }) {
       </SidebarInset>
 
       <ChangePasswordDialog
-        open={passwordChangeRequired}
-        onComplete={() => setPasswordChangeRequired(false)}
+        open={data?.passwordChangeRequired ?? false}
+        onComplete={() => { /* Dialog handles its own state */ }}
       />
     </SidebarProvider>
   );

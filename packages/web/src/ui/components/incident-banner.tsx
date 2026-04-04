@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { AlertTriangle, ExternalLink } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -40,6 +40,9 @@ const POLL_INTERVAL_MS = 5 * 60 * 1000;
 /** Fetch timeout */
 const FETCH_TIMEOUT_MS = 5_000;
 
+/** Consider fresh for 4min of the 5min interval */
+const STALE_TIME_MS = 4 * 60 * 1000;
+
 const ACTIVE_STATUSES = new Set(["investigating", "identified", "monitoring"]);
 
 // ---------------------------------------------------------------------------
@@ -49,8 +52,8 @@ const ACTIVE_STATUSES = new Set(["investigating", "identified", "monitoring"]);
 /**
  * Displays a slim banner when there are active incidents on the OpenStatus
  * status page. Fetches the public JSON feed (no auth required) and polls
- * every 5 minutes. Renders nothing when there are no active incidents or
- * when the slug is not configured.
+ * every 5 minutes via TanStack Query's `refetchInterval`. Renders nothing
+ * when there are no active incidents or when the slug is not configured.
  *
  * @param slug - OpenStatus workspace slug (e.g. "atlas"). When falsy, the
  *   banner renders nothing.
@@ -64,25 +67,21 @@ export function IncidentBanner({
   slug: string | undefined;
   statusUrl?: string;
 }) {
-  const [activeReports, setActiveReports] = useState<StatusReport[]>([]);
-
-  useEffect(() => {
-    if (!slug) return;
-
-    const feedUrl = `https://${slug}.openstatus.dev/feed/json`;
-
-    async function fetchIncidents() {
+  const { data: activeReports = [] } = useQuery<StatusReport[]>({
+    queryKey: ["openstatus", slug],
+    queryFn: async ({ signal }) => {
+      const feedUrl = `https://${slug}.openstatus.dev/feed/json`;
       try {
         const res = await fetch(feedUrl, {
           cache: "no-store",
-          signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
+          signal: AbortSignal.any([signal, AbortSignal.timeout(FETCH_TIMEOUT_MS)]),
         });
-        if (!res.ok) return;
+        if (!res.ok) {
+          console.debug(`[incident-banner] Feed returned ${res.status}`);
+          return [];
+        }
         const feed: StatusFeed = await res.json();
-        const active = feed.statusReports.filter((r) =>
-          ACTIVE_STATUSES.has(r.status),
-        );
-        setActiveReports(active);
+        return feed.statusReports.filter((r) => ACTIVE_STATUSES.has(r.status));
       } catch (err) {
         // Feed unavailable — don't show banner. This is expected when
         // the slug isn't configured yet or network is unreachable.
@@ -90,18 +89,19 @@ export function IncidentBanner({
           "[incident-banner] Feed fetch failed:",
           err instanceof Error ? err.message : String(err),
         );
+        return [];
       }
-    }
-
-    fetchIncidents();
-    const id = setInterval(fetchIncidents, POLL_INTERVAL_MS);
-    return () => clearInterval(id);
-  }, [slug]);
+    },
+    enabled: !!slug,
+    refetchInterval: POLL_INTERVAL_MS,
+    refetchIntervalInBackground: false,
+    staleTime: STALE_TIME_MS,
+  });
 
   if (!slug || activeReports.length === 0) return null;
 
   const href = statusUrl ?? `https://${slug}.openstatus.dev`;
-  const mostSevere = activeReports[0];
+  const mostSevere = activeReports[0]!;
   const isInvestigating = mostSevere.status === "investigating";
 
   return (

@@ -20,6 +20,7 @@ import type { QuerySuggestion } from "@/ui/lib/types";
 import { ShareDialog } from "./chat/share-dialog";
 import { ConversationSidebar } from "./conversations/conversation-sidebar";
 import { ChangePasswordDialog } from "./admin/change-password-dialog";
+import { usePasswordStatus } from "@/ui/hooks/use-password-status";
 import { Sun, Moon, Monitor, Star, TableProperties, BookOpen } from "lucide-react";
 import { SchemaExplorer } from "./schema-explorer/schema-explorer";
 import { PromptLibrary } from "./chat/prompt-library";
@@ -133,7 +134,7 @@ export function AtlasChat() {
   const [transientWarning, setTransientWarning] = useState("");
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [loadingConversation, setLoadingConversation] = useState(false);
-  const [passwordChangeRequired, setPasswordChangeRequired] = useState(false);
+  const [passwordDialogDismissed, setPasswordDialogDismissed] = useState(false);
   const [schemaExplorerOpen, setSchemaExplorerOpen] = useState(false);
   const [promptLibraryOpen, setPromptLibraryOpen] = useState(false);
   const [popularSuggestions, setPopularSuggestions] = useState<QuerySuggestion[]>([]);
@@ -186,27 +187,10 @@ export function AtlasChat() {
     convos.fetchList();
   }, [authMode, convos.fetchList]);
 
-  // Check if managed auth user needs to change their default password
-  useEffect(() => {
-    if (!isManaged || !managedSession.data?.user) return;
-
-    async function checkPasswordStatus() {
-      try {
-        const res = await fetch(`${apiUrl}/api/v1/admin/me/password-status`, {
-          credentials: isCrossOrigin ? "include" : "same-origin",
-        });
-        if (!res.ok) {
-          console.warn("Password status check failed:", res.status, res.statusText);
-          return;
-        }
-        const data = await res.json();
-        if (data.passwordChangeRequired) setPasswordChangeRequired(true);
-      } catch (err: unknown) {
-        console.warn("Failed to check password status:", err instanceof Error ? err.message : String(err));
-      }
-    }
-    checkPasswordStatus();
-  }, [isManaged, managedSession.data?.user, apiUrl, isCrossOrigin]);
+  // Check if managed auth user needs to change their default password.
+  // Shared with AdminLayout — TanStack deduplicates to a single request.
+  const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
+  const { data: passwordData } = usePasswordStatus(isManaged && !!managedSession.data?.user);
 
   // Python streaming progress — keyed by tool invocation ID
   const [pythonProgress, setPythonProgress] = useState<Map<string, PythonProgressData[]>>(new Map());
@@ -243,7 +227,7 @@ export function AtlasChat() {
     let cancelled = false;
     setSuggestionsLoading(true);
     fetch(`${apiUrl}/api/v1/suggestions/popular?limit=6`, {
-      credentials: isCrossOrigin ? "include" : "same-origin",
+      credentials,
       headers: getHeaders(),
     })
       .then((res) => (res.ok ? res.json() : null))
@@ -259,7 +243,7 @@ export function AtlasChat() {
         if (!cancelled) setSuggestionsLoading(false);
       });
     return () => { cancelled = true; };
-  }, [messages.length, apiUrl, isCrossOrigin, getHeaders]);
+  }, [messages.length, apiUrl, credentials, getHeaders]);
 
   // Fetch related suggestions after a completed query with SQL results
   useEffect(() => {
@@ -296,7 +280,7 @@ export function AtlasChat() {
 
     let cancelled = false;
     fetch(`${apiUrl}/api/v1/suggestions?${params}&limit=3`, {
-      credentials: isCrossOrigin ? "include" : "same-origin",
+      credentials,
       headers: getHeaders(),
     })
       .then((res) => (res.ok ? res.json() : null))
@@ -309,7 +293,7 @@ export function AtlasChat() {
         // intentionally ignored: suggestions are non-critical
       });
     return () => { cancelled = true; };
-  }, [messages.length, isLoading, apiUrl, isCrossOrigin, getHeaders]);
+  }, [messages.length, isLoading, apiUrl, credentials, getHeaders]);
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -333,7 +317,7 @@ export function AtlasChat() {
   function handleSuggestionSelect(text: string, id: string) {
     fetch(`${apiUrl}/api/v1/suggestions/${id}/click`, {
       method: "POST",
-      credentials: isCrossOrigin ? "include" : "same-origin",
+      credentials,
       headers: getHeaders(),
     }).catch(() => {
       // intentionally ignored: click tracking is non-critical
@@ -697,8 +681,8 @@ export function AtlasChat() {
         getCredentials={getCredentials}
       />
       <ChangePasswordDialog
-        open={passwordChangeRequired}
-        onComplete={() => setPasswordChangeRequired(false)}
+        open={!passwordDialogDismissed && (passwordData?.passwordChangeRequired ?? false)}
+        onComplete={() => setPasswordDialogDismissed(true)}
       />
     </DarkModeContext.Provider>
   );

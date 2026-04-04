@@ -456,3 +456,25 @@ Tracking module-deepening refactors discovered by the `improve-codebase-architec
 - All re-exports for test backward compatibility preserved
 
 **Category:** Monolithic CLI entry point fully decomposed — atlas.ts is now a thin router + re-export shim.
+
+---
+
+## 21. Extract shared hasInternalDB guard helpers
+
+**Date:** 2026-04-03
+**Issue:** #1232
+**PR:** #1233
+**Commit:** b0bdd33c
+
+**Problem:** 75 call sites across 18 EE files repeated `if (!hasInternalDB()) { ... }` with 7 different return-value patterns. The write-path guards (33 throw sites) were the most inconsistent — some threw plain `Error`, some threw domain-specific errors (DomainError, ResidencyError, ApprovalError, ReportError), and error messages varied. No shared guard helper existed.
+
+**Solution:** Created `ee/src/lib/db-guard.ts` with `requireInternalDB(label, errorFactory?)`. Replaced all 33 write-path throw guards across 16 files with the shared helper. Domain-specific error classes preserved via optional error factory parameter. Read-path one-liners (`if (!hasInternalDB()) return []`) intentionally left as-is — they're already terse and correct.
+
+**Impact:**
+- **-63 net lines** (59 added, 122 removed across 18 files)
+- 16 EE module files touched, all 434+ EE tests pass
+- Consistent `"Internal database required for ${label}."` message on all write paths
+- Domain errors (DomainError, ResidencyError, ApprovalError, ReportError) preserved via error factory
+- 5 new tests for the guard helper
+
+**Category:** Repetitive inline guard pattern consolidated into a shared helper with a small, typed interface.

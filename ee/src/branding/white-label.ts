@@ -11,6 +11,7 @@
  * render correctly even if the license lapses.
  */
 
+import { EEError } from "../lib/errors";
 import { requireEnterprise } from "../index";
 import { requireInternalDB } from "../lib/db-guard";
 import {
@@ -29,11 +30,8 @@ const log = createLogger("ee:branding");
 
 export type BrandingErrorCode = "validation" | "not_found";
 
-export class BrandingError extends Error {
-  constructor(message: string, public readonly code: BrandingErrorCode) {
-    super(message);
-    this.name = "BrandingError";
-  }
+export class BrandingError extends EEError<BrandingErrorCode> {
+  readonly name = "BrandingError";
 }
 
 // ── Internal row shape ──────────────────────────────────────────────

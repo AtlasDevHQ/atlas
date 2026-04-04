@@ -9,6 +9,7 @@
  *   EnterpriseError             — typed error for instanceof checks (thrown by requireEnterprise)
  */
 
+import { EEError } from "./lib/errors";
 import { getConfig } from "@atlas/api/lib/config";
 
 /**
@@ -42,11 +43,10 @@ export function getEnterpriseLicenseKey(): string | undefined {
  * Typed error thrown when enterprise features are required but not available.
  * Use `err instanceof EnterpriseError` instead of string matching on messages.
  */
-export class EnterpriseError extends Error {
-  readonly code = "enterprise_required" as const;
+export class EnterpriseError extends EEError<"enterprise_required"> {
+  readonly name = "EnterpriseError";
   constructor(message = "Enterprise features are not enabled") {
-    super(message);
-    this.name = "EnterpriseError";
+    super(message, "enterprise_required");
   }
 }
 

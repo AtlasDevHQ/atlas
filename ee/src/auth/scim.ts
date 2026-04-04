@@ -13,6 +13,7 @@
  * skips the gate, returning null when no mapping exists.
  */
 
+import { EEError } from "../lib/errors";
 import { requireEnterprise } from "../index";
 import { requireInternalDB } from "../lib/db-guard";
 import {
@@ -28,11 +29,8 @@ const log = createLogger("ee:scim");
 
 export type SCIMErrorCode = "not_found" | "conflict" | "validation";
 
-export class SCIMError extends Error {
-  constructor(message: string, public readonly code: SCIMErrorCode) {
-    super(message);
-    this.name = "SCIMError";
-  }
+export class SCIMError extends EEError<SCIMErrorCode> {
+  readonly name = "SCIMError";
 }
 
 // ── Types ───────────────────────────────────────────────────────────

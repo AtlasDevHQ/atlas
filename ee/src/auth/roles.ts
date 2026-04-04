@@ -10,6 +10,7 @@
  * fall back to legacy admin/member role mapping.
  */
 
+import { EEError } from "../lib/errors";
 import { requireEnterprise } from "../index";
 import { requireInternalDB } from "../lib/db-guard";
 import {
@@ -98,11 +99,8 @@ interface CustomRoleRow {
 
 export type RoleErrorCode = "not_found" | "conflict" | "validation" | "builtin_protected";
 
-export class RoleError extends Error {
-  constructor(message: string, public readonly code: RoleErrorCode) {
-    super(message);
-    this.name = "RoleError";
-  }
+export class RoleError extends EEError<RoleErrorCode> {
+  readonly name = "RoleError";
 }
 
 // ── Helpers ──────────────────────────────────────────────────────

@@ -7,6 +7,7 @@
  * pattern as connection URLs.
  */
 
+import { EEError } from "../lib/errors";
 import { requireEnterprise } from "../index";
 import { requireInternalDB } from "../lib/db-guard";
 import {
@@ -32,11 +33,8 @@ const log = createLogger("ee:model-routing");
 
 export type ModelConfigErrorCode = "validation" | "not_found" | "test_failed";
 
-export class ModelConfigError extends Error {
-  constructor(message: string, public readonly code: ModelConfigErrorCode) {
-    super(message);
-    this.name = "ModelConfigError";
-  }
+export class ModelConfigError extends EEError<ModelConfigErrorCode> {
+  readonly name = "ModelConfigError";
 }
 
 // ── Internal row shape ──────────────────────────────────────────────

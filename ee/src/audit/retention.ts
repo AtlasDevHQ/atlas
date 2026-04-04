@@ -13,6 +13,7 @@
  *      deleted_at is older than the hard-delete delay
  */
 
+import { EEError } from "../lib/errors";
 import { requireEnterprise } from "../index";
 import { requireInternalDB } from "../lib/db-guard";
 import {
@@ -109,11 +110,8 @@ const MAX_EXPORT_ROWS = 50_000;
 
 export type RetentionErrorCode = "validation" | "not_found";
 
-export class RetentionError extends Error {
-  constructor(message: string, public readonly code: RetentionErrorCode) {
-    super(message);
-    this.name = "RetentionError";
-  }
+export class RetentionError extends EEError<RetentionErrorCode> {
+  readonly name = "RetentionError";
 }
 
 // ── Row mapping ──────────────────────────────────────────────────────

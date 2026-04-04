@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useState, useRef } from "react";
+import { useQuery } from "@tanstack/react-query";
 import type { z } from "zod";
 import { useAtlasConfig } from "@/ui/context";
 import { extractFetchError, type FetchError } from "@/ui/lib/fetch-error";
@@ -11,8 +12,11 @@ export { type FetchError, friendlyError } from "@/ui/lib/fetch-error";
 
 /**
  * Shared fetch hook for admin pages.
- * Handles loading/error state, structured error body extraction (message + requestId),
- * cancellation on unmount, and credentials.
+ * Delegates to TanStack Query's `useQuery` for automatic deduplication,
+ * stale-while-revalidate (30s from QueryProvider), window-focus refetch,
+ * and garbage collection.
+ *
+ * Preserves the original return shape: `{ data, loading, error, setError, refetch }`.
  *
  * Prefer `schema` (Zod) for runtime validation over `transform`.
  * `schema` and `transform` are mutually exclusive — if both provided, `schema` wins.
@@ -26,72 +30,74 @@ export function useAdminFetch<T>(
   },
 ) {
   const { apiUrl, isCrossOrigin } = useAtlasConfig();
-  const [data, setData] = useState<T | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<FetchError | null>(null);
   const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
+
+  // Ref to avoid stale closure if isCrossOrigin changes at runtime.
   const credentialsRef = useRef(credentials);
   credentialsRef.current = credentials;
 
-  const fetchData = useCallback(async (signal?: AbortSignal) => {
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await fetch(`${apiUrl}${path}`, {
-        credentials: credentialsRef.current,
-        signal,
-      });
+  // Manual error override — exposed via setError for backward compatibility.
+  const [errorOverride, setErrorOverride] = useState<FetchError | null>(null);
+
+  const query = useQuery<T, FetchError>({
+    queryKey: ["admin-fetch", path, ...(opts?.deps ?? [])],
+    queryFn: async ({ signal }) => {
+      // Clear any manual error override when a real fetch starts.
+      setErrorOverride(null);
+
+      let res: Response;
+      try {
+        res = await fetch(`${apiUrl}${path}`, {
+          credentials: credentialsRef.current,
+          signal,
+        });
+      } catch (err) {
+        // Network failure (DNS, offline, CORS) — normalize to FetchError and log.
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn(`useAdminFetch ${path}:`, msg);
+        const fetchErr: FetchError = { message: msg || "Request failed" };
+        throw fetchErr;
+      }
+
       if (!res.ok) {
-        const e = await extractFetchError(res);
-        if (!signal?.aborted) {
-          setData(null);
-          setError(e);
-        }
-        return;
+        throw await extractFetchError(res);
       }
       const json: unknown = await res.json();
-      let result: T;
+
       if (opts?.schema) {
         const parsed = opts.schema.safeParse(json);
         if (!parsed.success) {
-          if (!signal?.aborted) {
-            console.warn(`useAdminFetch schema validation failed for ${path}:`, parsed.error.issues);
-            setData(null);
-            setError({ message: `Unexpected response format from ${path}. Try refreshing the page.` });
-          }
-          return;
+          console.warn(`useAdminFetch schema validation failed for ${path}:`, parsed.error.issues);
+          const err: FetchError = {
+            message: `Unexpected response format from ${path}. Try refreshing the page.`,
+          };
+          throw err;
         }
-        result = parsed.data;
-      } else if (opts?.transform) {
-        result = opts.transform(json);
-      } else {
-        result = json as T;
+        return parsed.data;
       }
-      if (!signal?.aborted) setData(result);
-    } catch (err) {
-      if (err instanceof DOMException && err.name === "AbortError") return;
-      if (!signal?.aborted) {
-        const msg = err instanceof Error ? err.message : String(err);
-        console.warn(`useAdminFetch ${path}:`, msg);
-        setData(null);
-        setError({ message: msg || "Request failed" });
+
+      if (opts?.transform) {
+        return opts.transform(json);
       }
-    } finally {
-      if (!signal?.aborted) setLoading(false);
-    }
-  }, [apiUrl, path, ...(opts?.deps ?? [])]);
 
-  useEffect(() => {
-    const controller = new AbortController();
-    fetchData(controller.signal);
-    return () => controller.abort();
-  }, [fetchData]);
+      return json as T;
+    },
+  });
 
-  const refetch = useCallback(() => {
-    fetchData();
-  }, [fetchData]);
+  // Derive the return value to match the original interface exactly.
+  const error = errorOverride ?? query.error ?? null;
 
-  return { data, loading, error, setError, refetch };
+  return {
+    // Override TanStack Query's default (keep stale data on error) to match
+    // the original hook contract where errors always clear data.
+    data: error ? null : (query.data ?? null),
+    // isPending = no cached data + fetch in flight. Unlike the old hook, this
+    // is NOT true during background refetches when cached data exists.
+    loading: query.isPending,
+    error,
+    setError: setErrorOverride,
+    refetch: query.refetch,
+  };
 }
 
 /**

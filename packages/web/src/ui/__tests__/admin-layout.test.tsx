@@ -26,6 +26,7 @@ mock.module("next/link", () => ({
 
 import { render, fireEvent, waitFor, cleanup } from "@testing-library/react";
 import type React from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AdminLayout } from "../components/admin/admin-layout";
 import { AtlasUIProvider, type AtlasAuthClient } from "../context";
 
@@ -39,14 +40,18 @@ function makeAuthClient(overrides: Partial<AtlasAuthClient> = {}): AtlasAuthClie
   };
 }
 
+let testQueryClient: QueryClient;
+
 function renderLayout(authClient?: AtlasAuthClient) {
   const client = authClient ?? makeAuthClient();
   return render(
-    <AtlasUIProvider config={{ apiUrl: "http://localhost:3001", isCrossOrigin: false, authClient: client }}>
-      <AdminLayout>
-        <div data-testid="child-content">Admin page content</div>
-      </AdminLayout>
-    </AtlasUIProvider>,
+    <QueryClientProvider client={testQueryClient}>
+      <AtlasUIProvider config={{ apiUrl: "http://localhost:3001", isCrossOrigin: false, authClient: client }}>
+        <AdminLayout>
+          <div data-testid="child-content">Admin page content</div>
+        </AdminLayout>
+      </AtlasUIProvider>
+    </QueryClientProvider>,
   );
 }
 
@@ -68,12 +73,16 @@ function mockDeniedFetch() {
 
 describe("AdminLayout", () => {
   beforeEach(() => {
+    testQueryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: 0 } },
+    });
     mockSession = { data: null };
     mockSignOut.mockClear();
     mockAdminFetch();
   });
 
   afterEach(() => {
+    testQueryClient.clear();
     cleanup();
     globalThis.fetch = originalFetch;
   });

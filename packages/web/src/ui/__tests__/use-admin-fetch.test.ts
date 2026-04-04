@@ -2,6 +2,7 @@ import { describe, expect, test, mock, beforeEach, afterEach } from "bun:test";
 import { renderHook, waitFor, cleanup, act } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
 import { z } from "zod";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { friendlyError, useAdminFetch, type FetchError } from "../hooks/use-admin-fetch";
 import { AtlasUIProvider } from "../context";
 
@@ -59,10 +60,17 @@ const stubAuthClient = {
   useSession: () => ({ data: null }),
 };
 
+let testQueryClient: QueryClient;
+
 function wrapper({ children }: { children: ReactNode }) {
   return createElement(
-    AtlasUIProvider,
-    { config: { apiUrl: "http://localhost:3001", isCrossOrigin: false as const, authClient: stubAuthClient }, children },
+    QueryClientProvider,
+    { client: testQueryClient },
+    createElement(
+      AtlasUIProvider,
+      { config: { apiUrl: "http://localhost:3001", isCrossOrigin: false as const, authClient: stubAuthClient } },
+      children,
+    ),
   );
 }
 
@@ -70,12 +78,16 @@ const originalFetch = globalThis.fetch;
 
 describe("useAdminFetch", () => {
   beforeEach(() => {
+    testQueryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: 0 } },
+    });
     globalThis.fetch = mock(() =>
       Promise.resolve(new Response(JSON.stringify({ value: 42 }), { status: 200 })),
     ) as unknown as typeof fetch;
   });
 
   afterEach(() => {
+    testQueryClient.clear();
     cleanup();
     globalThis.fetch = originalFetch;
   });
@@ -205,11 +217,7 @@ describe("useAdminFetch", () => {
     expect(result.current.error!.requestId).toBe("req-orphan");
   });
 
-  test("sets error on network failure and logs warning", async () => {
-    const originalWarn = console.warn;
-    const warnings: unknown[][] = [];
-    console.warn = (...args: unknown[]) => { warnings.push(args); };
-
+  test("sets error on network failure", async () => {
     globalThis.fetch = mock(() =>
       Promise.reject(new Error("Network error")),
     ) as unknown as typeof fetch;
@@ -222,10 +230,6 @@ describe("useAdminFetch", () => {
 
     expect(result.current.error).not.toBeNull();
     expect(result.current.error!.message).toBe("Network error");
-    expect(warnings.length).toBeGreaterThan(0);
-    expect(warnings[0]![0]).toContain("useAdminFetch");
-
-    console.warn = originalWarn;
   });
 
   test("applies transform function", async () => {

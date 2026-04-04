@@ -410,6 +410,25 @@ const getShareStatusRoute = createRoute({
   },
 });
 
+const suggestCardsRoute = createRoute({
+  method: "post",
+  path: "/{id}/suggest",
+  tags: ["Dashboards"],
+  summary: "Suggest new cards via AI",
+  description: "Analyzes existing dashboard cards and proposes 2-3 complementary cards using the AI model and semantic layer. Requires admin role.",
+  request: {
+    params: z.object({ id: z.string().openapi({ param: { name: "id", in: "path" }, example: "00000000-0000-0000-0000-000000000000" }) }),
+  },
+  responses: {
+    200: { description: "Suggested cards", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+    400: { description: "Invalid ID or dashboard has no cards", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+    403: { description: "Forbidden", content: { "application/json": { schema: z.record(z.string(), z.unknown()) } } },
+    404: { description: "Dashboard not found", content: { "application/json": { schema: ErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
 const getSharedDashboardRoute = createRoute({
   method: "get",
   path: "/{token}",
@@ -931,6 +950,165 @@ authed.openapi(getShareStatusRoute, async (c) => {
     }
     return c.json(result.data, 200);
   }), { label: "get share status" });
+});
+
+// ---------------------------------------------------------------------------
+// POST /:id/suggest — AI-driven card suggestions
+// ---------------------------------------------------------------------------
+
+authed.openapi(suggestCardsRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const { orgId } = yield* AuthContext;
+    const { id } = c.req.valid("param");
+    if (!UUID_RE.test(id)) {
+      return c.json({ error: "invalid_request", message: "Invalid dashboard ID format." }, 400);
+    }
+
+    const dash = yield* Effect.promise(() => getDashboard(id, { orgId }));
+    if (!dash.ok) {
+      const fail = crudFailResponse(dash.reason, requestId);
+      return c.json(fail.body, fail.status);
+    }
+
+    if (dash.data.cards.length === 0) {
+      return c.json({ error: "invalid_request", message: "Dashboard has no cards. Add cards first before requesting suggestions." }, 400);
+    }
+
+    // Load semantic layer context for grounding suggestions
+    const { getOrgSemanticIndex } = yield* Effect.promise(() => import("@atlas/api/lib/semantic"));
+    const semanticIndex = yield* Effect.tryPromise({
+      try: () => getOrgSemanticIndex(orgId ?? "default"),
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    }).pipe(Effect.catchAll((err) => {
+      log.warn({ err: err.message, orgId, dashboardId: id }, "Failed to load semantic index for suggestions — proceeding without semantic context");
+      return Effect.succeed("");
+    }));
+
+    // Optionally load learned patterns for extra context
+    const { buildLearnedPatternsSection } = yield* Effect.promise(() => import("@atlas/api/lib/learn/pattern-cache"));
+    const patternsSection = yield* Effect.tryPromise({
+      try: () => buildLearnedPatternsSection(orgId ?? null, "dashboard suggestions"),
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    }).pipe(Effect.catchAll((err) => {
+      log.warn({ err: err.message, orgId, dashboardId: id }, "Failed to load learned patterns for suggestions — proceeding without patterns");
+      return Effect.succeed("");
+    }));
+
+    // Build LLM prompt from existing cards
+    const existingCards = dash.data.cards.map((card) => ({
+      title: card.title,
+      sql: card.sql,
+      chartType: card.chartConfig?.type ?? "table",
+    }));
+
+    const systemPrompt = [
+      "You are a data analyst helping design effective dashboards.",
+      "Given the semantic layer (available tables and columns) and existing dashboard cards, suggest 2-3 new cards that would complement the dashboard.",
+      "",
+      "Guidelines:",
+      "- Suggest metrics that add perspective: trends over time, breakdowns by dimension, comparisons, or anomaly detection.",
+      "- Use ONLY tables and columns defined in the semantic layer below.",
+      "- Write valid, read-only SELECT queries.",
+      "- Choose the most appropriate chart type for each suggestion.",
+      "- Provide a clear reason explaining why each card is useful.",
+      "",
+      "## Semantic Layer (available tables and columns)",
+      semanticIndex || "(No semantic layer available — use tables referenced in existing cards.)",
+      patternsSection ? `\n${patternsSection}` : "",
+    ].join("\n");
+
+    const userPrompt = [
+      `Dashboard: "${dash.data.title}"`,
+      dash.data.description ? `Description: ${dash.data.description}` : "",
+      "",
+      "Existing cards:",
+      ...existingCards.map((card, i) => `${i + 1}. "${card.title}" (${card.chartType})\n   SQL: ${card.sql}`),
+      "",
+      "Respond with a JSON array of 2-3 suggestions. Each suggestion must have exactly these fields:",
+      '- "title": string (concise card title)',
+      '- "sql": string (valid SELECT query)',
+      '- "chartType": one of "bar", "line", "pie", "area", "scatter", "table"',
+      '- "categoryColumn": string (column for x-axis/category)',
+      '- "valueColumns": string[] (columns for y-axis/values)',
+      '- "reason": string (why this card complements the dashboard)',
+      "",
+      "Return ONLY the JSON array, no markdown fencing or extra text.",
+    ].filter(Boolean).join("\n");
+
+    // Call LLM — resolve model imperatively (runEffect only supports RequestContext/AuthContext)
+    const { getModel } = yield* Effect.promise(() => import("@atlas/api/lib/providers"));
+    const model = getModel();
+    const { generateText } = yield* Effect.promise(() => import("ai"));
+
+    const llmResult = yield* Effect.tryPromise({
+      try: () => generateText({
+        model,
+        system: systemPrompt,
+        messages: [{ role: "user", content: userPrompt }],
+        maxOutputTokens: 2000,
+      }),
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    }).pipe(Effect.catchAll((err) => {
+      log.error({ err: err.message, dashboardId: id, requestId }, "LLM call failed for card suggestions");
+      return Effect.succeed(null);
+    }));
+
+    if (!llmResult) {
+      return c.json({ error: "ai_unavailable", message: "AI model is unavailable. Check your provider configuration or try again later.", requestId }, 500);
+    }
+
+    // Parse LLM response using Zod for safe validation
+    const RawSuggestionSchema = z.array(z.object({
+      title: z.string(),
+      sql: z.string(),
+      chartType: z.string(),
+      categoryColumn: z.string(),
+      valueColumns: z.array(z.string()),
+      reason: z.string(),
+    }));
+
+    let rawSuggestions: z.infer<typeof RawSuggestionSchema>;
+
+    try {
+      const text = llmResult.text.trim();
+      // Strip markdown code fencing if present
+      const jsonStr = text.replace(/^```(?:json)?\s*\n?/i, "").replace(/\n?```\s*$/i, "");
+      const parsed = RawSuggestionSchema.safeParse(JSON.parse(jsonStr));
+      if (!parsed.success) {
+        log.warn({ errors: parsed.error.issues, dashboardId: id }, "AI suggestions failed schema validation");
+        return c.json({ error: "internal_error", message: "AI returned invalid suggestion format. Please try again.", requestId }, 500);
+      }
+      rawSuggestions = parsed.data;
+    } catch (err) {
+      log.warn({ err: err instanceof Error ? err.message : String(err), text: llmResult.text.slice(0, 500), dashboardId: id }, "Failed to parse AI suggestions");
+      return c.json({ error: "internal_error", message: "Failed to parse AI suggestions. Please try again.", requestId }, 500);
+    }
+
+    // Validate each suggestion's SQL and build response
+    const { validateSQL } = yield* Effect.promise(() => import("@atlas/api/lib/tools/sql"));
+    const validChartTypes = new Set(CHART_TYPES);
+
+    const suggestions = rawSuggestions
+      .map((s) => {
+        const validation = validateSQL(s.sql, undefined);
+        if (!validation.valid) return null;
+        const chartType = validChartTypes.has(s.chartType as typeof CHART_TYPES[number]) ? s.chartType : "table";
+        return {
+          title: s.title.slice(0, 200),
+          sql: s.sql,
+          chartConfig: {
+            type: chartType as import("@atlas/api/lib/dashboard-types").ChartType,
+            categoryColumn: s.categoryColumn,
+            valueColumns: s.valueColumns,
+          },
+          reason: s.reason.slice(0, 500),
+        };
+      })
+      .filter((s): s is NonNullable<typeof s> => s !== null);
+
+    return c.json({ suggestions }, 200);
+  }), { label: "suggest cards" });
 });
 
 // Mount authenticated routes

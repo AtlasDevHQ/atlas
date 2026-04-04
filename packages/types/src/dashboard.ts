@@ -52,3 +52,14 @@ export interface DashboardCard {
 export interface DashboardWithCards extends Omit<Dashboard, "cardCount"> {
   cards: DashboardCard[];
 }
+
+// ---------------------------------------------------------------------------
+// AI-suggested cards
+// ---------------------------------------------------------------------------
+
+export interface DashboardSuggestion {
+  title: string;
+  sql: string;
+  chartConfig: DashboardChartConfig;
+  reason: string;
+}

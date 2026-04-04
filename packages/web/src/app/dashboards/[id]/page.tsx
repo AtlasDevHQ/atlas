@@ -16,6 +16,9 @@ import {
   LayoutDashboard,
   Check,
   X,
+  Sparkles,
+  Plus,
+  XCircle,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -51,8 +54,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { authClient } from "@/lib/auth/client";
+import { Badge } from "@/components/ui/badge";
 import { DashboardShareDialog } from "./share-dialog";
-import type { DashboardWithCards, DashboardCard } from "@/ui/lib/types";
+import type { DashboardWithCards, DashboardCard, DashboardSuggestion } from "@/ui/lib/types";
 
 const ResultChart = dynamic(
   () => import("@/ui/components/chart/result-chart").then((m) => ({ default: m.ResultChart })),
@@ -243,6 +247,9 @@ export default function DashboardViewPage() {
   const [deleteDashboard, setDeleteDashboard] = useState(false);
   const [editingTitle, setEditingTitle] = useState(false);
   const [titleValue, setTitleValue] = useState("");
+  const [suggestions, setSuggestions] = useState<DashboardSuggestion[]>([]);
+  const [suggestingCards, setSuggestingCards] = useState(false);
+  const [addingSuggestion, setAddingSuggestion] = useState<number | null>(null);
 
   async function handleRefreshCard(cardId: string) {
     setRefreshingCardId(cardId);
@@ -299,6 +306,45 @@ export default function DashboardViewPage() {
       method: "PATCH",
       body: { position: newIdx },
     });
+  }
+
+  async function handleSuggestCards() {
+    setSuggestingCards(true);
+    setSuggestions([]);
+    try {
+      const res = await fetch(`/api/v1/dashboards/${id}/suggest`, { method: "POST" });
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        throw new Error(body?.message ?? "Failed to generate suggestions.");
+      }
+      const data = await res.json();
+      setSuggestions(data.suggestions ?? []);
+    } catch {
+      setSuggestions([]);
+    } finally {
+      setSuggestingCards(false);
+    }
+  }
+
+  async function handleAcceptSuggestion(index: number) {
+    const suggestion = suggestions[index];
+    if (!suggestion) return;
+    setAddingSuggestion(index);
+    await mutate({
+      path: `/api/v1/dashboards/${id}/cards`,
+      method: "POST",
+      body: {
+        title: suggestion.title,
+        sql: suggestion.sql,
+        chartConfig: suggestion.chartConfig,
+      },
+    });
+    setSuggestions((prev) => prev.filter((_, i) => i !== index));
+    setAddingSuggestion(null);
+  }
+
+  function handleDismissSuggestion(index: number) {
+    setSuggestions((prev) => prev.filter((_, i) => i !== index));
   }
 
   async function handleSaveDashboardTitle() {
@@ -395,6 +441,15 @@ export default function DashboardViewPage() {
                   <Button
                     variant="outline"
                     size="sm"
+                    onClick={handleSuggestCards}
+                    disabled={suggestingCards || cards.length === 0}
+                  >
+                    <Sparkles className={`mr-1.5 size-3.5 ${suggestingCards ? "animate-pulse" : ""}`} />
+                    {suggestingCards ? "Thinking..." : "Suggest Cards"}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
                     onClick={handleRefreshAll}
                     disabled={refreshingAll || cards.length === 0}
                   >
@@ -438,6 +493,77 @@ export default function DashboardViewPage() {
                 </div>
               </div>
             </div>
+
+            {/* AI Suggestions */}
+            {suggestions.length > 0 && (
+              <div className="mb-6 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Sparkles className="size-4 text-teal-500" />
+                    <h2 className="text-sm font-medium text-zinc-900 dark:text-zinc-100">
+                      Suggested Cards
+                    </h2>
+                    <Badge variant="secondary" className="text-xs">
+                      {suggestions.length}
+                    </Badge>
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setSuggestions([])}
+                    className="text-xs text-zinc-500"
+                  >
+                    Dismiss All
+                  </Button>
+                </div>
+
+                <div className="space-y-2">
+                  {suggestions.map((suggestion, idx) => (
+                    <Card key={`suggestion-${idx}`} className="border-dashed border-teal-200 bg-teal-50/30 dark:border-teal-900/50 dark:bg-teal-950/10">
+                      <div className="flex items-start gap-3 px-4 py-3">
+                        <div className="flex-1 min-w-0">
+                          <h3 className="text-sm font-medium text-zinc-900 dark:text-zinc-100">
+                            {suggestion.title}
+                          </h3>
+                          <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400 line-clamp-2">
+                            {suggestion.reason}
+                          </p>
+                          <div className="mt-1.5 flex items-center gap-2">
+                            <Badge variant="outline" className="text-[10px] px-1.5 py-0">
+                              {suggestion.chartConfig.type}
+                            </Badge>
+                            <span className="text-[10px] font-mono text-zinc-400 dark:text-zinc-500 truncate max-w-[300px]">
+                              {suggestion.sql.slice(0, 80)}{suggestion.sql.length > 80 ? "..." : ""}
+                            </span>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1 shrink-0">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => handleAcceptSuggestion(idx)}
+                            disabled={addingSuggestion === idx}
+                            className="h-7 border-teal-300 text-teal-700 hover:bg-teal-100 dark:border-teal-800 dark:text-teal-400 dark:hover:bg-teal-900/30"
+                          >
+                            <Plus className="mr-1 size-3" />
+                            {addingSuggestion === idx ? "Adding..." : "Add"}
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="size-7 text-zinc-400 hover:text-zinc-600 dark:hover:text-zinc-300"
+                            onClick={() => handleDismissSuggestion(idx)}
+                            title="Dismiss suggestion"
+                          >
+                            <XCircle className="size-3.5" />
+                          </Button>
+                        </div>
+                      </div>
+                    </Card>
+                  ))}
+                </div>
+              </div>
+            )}
 
             {/* Empty state */}
             {cards.length === 0 && (

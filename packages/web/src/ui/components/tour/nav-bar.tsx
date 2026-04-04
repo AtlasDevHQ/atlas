@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import {
   MessageSquare,
   BookOpen,
+  LayoutDashboard,
   Settings,
   Database,
   CircleHelp,
@@ -27,6 +28,7 @@ interface NavBarProps {
 const navItems = [
   { href: "/", label: "Chat", icon: MessageSquare, tourId: "chat" },
   { href: "/notebook", label: "Notebook", icon: BookOpen, tourId: "notebook" },
+  { href: "/dashboards", label: "Dashboards", icon: LayoutDashboard, tourId: "dashboards" },
 ] as const;
 
 const adminItems = [

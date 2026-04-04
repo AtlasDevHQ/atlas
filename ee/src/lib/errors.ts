@@ -8,6 +8,7 @@
  *   export class FooError extends EEError<FooErrorCode> {
  *     readonly name = "FooError";
  *   }
+ *   throw new FooError("item not found", "not_found");
  */
 export abstract class EEError<TCode extends string> extends Error {
   abstract readonly name: string;

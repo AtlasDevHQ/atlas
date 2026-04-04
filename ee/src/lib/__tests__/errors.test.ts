@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { EEError } from "../errors";
 
-// ── Test subclass (mirrors the pattern used across all EE modules) ──
+// ── Test subclass (mirrors the two-arg pattern used by most EE modules) ──
 
 type TestErrorCode = "not_found" | "conflict" | "validation";
 

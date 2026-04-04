@@ -500,3 +500,26 @@ Tracking module-deepening refactors discovered by the `improve-codebase-architec
 - 5 new tests for the guard helper
 
 **Category:** Repetitive inline guard pattern consolidated into a shared helper with a small, typed interface.
+
+---
+
+## 23. Type-safe exhaustive DomainErrorMapping via `domainError()` helper
+
+**Date:** 2026-04-04
+**Issue:** #1235
+**PR:** #1236
+**Commit:** 9f95f8fb
+
+**Problem:** 13 route files mapped EE domain errors to HTTP status codes via untyped `_ERROR_STATUS` Record constants. Adding a new error code to an EE error class (e.g., `ApprovalErrorCode`) produced no compile error when the route's status map was incomplete — the missing code silently fell through to a generic 500 at runtime. The `DomainErrorMapping` type was a plain tuple `[errorClass, statusMap]` with `Record<string, number>`, no exhaustiveness enforcement.
+
+**Solution:** Created `domainError<TCode>()` generic helper that infers `TCode` from the error class's `code` property and requires `Record<TCode, ContentfulStatusCode>` — the compiler errors if any code is missing. Added `unique symbol` brand to `DomainErrorMapping` to prevent bypassing the helper with raw tuples. Migrated all 13 route files. Also: 5xx domain errors now get messages sanitized to prevent leaking infrastructure details (Railway URLs, project IDs); unmapped codes default to 500 (server bug) not 400 (client error); extracted `shared-residency.ts` for DRY residency error mapping.
+
+**Impact:**
+- **13 route files** migrated from untyped `_ERROR_STATUS` to `domainError()`
+- Compile-time exhaustiveness: omitting a code from any mapping is now a type error
+- Branded type prevents bypassing `domainError()` with raw tuples
+- 5xx message sanitization prevents infrastructure detail leakage
+- `shared-residency.ts` extracted (DRY with `shared-domains.ts` pattern)
+- 57 hono bridge tests (was 54), 4 new `requireInternalDBEffect` tests
+
+**Category:** Untyped status maps replaced with a compile-time exhaustive, branded factory function.

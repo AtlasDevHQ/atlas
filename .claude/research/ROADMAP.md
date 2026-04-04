@@ -811,6 +811,10 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] Consolidate useBranding into useAdminFetch (#1209)
 - [x] Extract shared EEError base class — replace 14 identical error class definitions (#1231, PR #1234)
 - [x] Extract shared hasInternalDB guard helpers — replace 75 inline checks across 18 EE files (#1232, PR #1233)
+- [x] Type-safe exhaustive DomainErrorMapping via `domainError()` helper — branded type, 5xx sanitization, 13 routes migrated (#1235, PR #1236)
+
+### Follow-ups
+- [ ] Add test coverage for ee/src/backups/ and ee/src/sla/ modules (#1237) — ~900 lines of Effect code with zero tests
 
 ---
 

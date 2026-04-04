@@ -285,7 +285,11 @@ function AtlasChatInner({
   const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
 
   // Sync health error + brand color as side effects.
+  // Clears warning on recovery (e.g. window-focus refetch succeeds after initial failure).
   useEffect(() => {
+    if (healthQuery.data) {
+      setHealthWarning("");
+    }
     if (healthQuery.isError) {
       setHealthWarning("Unable to reach the API server. Try refreshing the page.");
     }

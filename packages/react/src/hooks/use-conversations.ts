@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Conversation, ConversationWithMessages, Message } from "../lib/types";
 import type { UIMessage } from "@ai-sdk/react";
@@ -106,11 +106,15 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
     ? (listQuery.error instanceof Error ? listQuery.error.message : "Failed to load conversations")
     : null;
 
+  // Stable ref for refetch — listQuery.refetch changes identity each render.
+  const refetchRef = useRef(listQuery.refetch);
+  refetchRef.current = listQuery.refetch;
+
   const fetchList = useCallback(async () => {
     if (!opts.enabled || !available) return;
-    const result = await listQuery.refetch();
+    const result = await refetchRef.current();
     if (result.error) throw result.error;
-  }, [opts.enabled, available, listQuery.refetch]);
+  }, [opts.enabled, available]);
 
   const loadConversation = useCallback(async (id: string): Promise<UIMessage[]> => {
     const res = await fetch(`${opts.apiUrl}${baseEndpoint}/${id}`, {

@@ -1,6 +1,7 @@
-import { describe, expect, test, mock, afterEach } from "bun:test";
+import { describe, expect, test, mock, beforeEach, afterEach } from "bun:test";
 import { renderHook, waitFor, cleanup, act } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useAdminMutation, type MutateResult } from "../hooks/use-admin-mutation";
 import { AtlasUIProvider } from "../context";
 
@@ -15,10 +16,17 @@ const stubAuthClient = {
   useSession: () => ({ data: null }),
 };
 
+let testQueryClient: QueryClient;
+
 function wrapper({ children }: { children: ReactNode }) {
   return createElement(
-    AtlasUIProvider,
-    { config: { apiUrl: "http://localhost:3001", isCrossOrigin: false as const, authClient: stubAuthClient }, children },
+    QueryClientProvider,
+    { client: testQueryClient },
+    createElement(
+      AtlasUIProvider,
+      { config: { apiUrl: "http://localhost:3001", isCrossOrigin: false as const, authClient: stubAuthClient } },
+      children,
+    ),
   );
 }
 
@@ -36,7 +44,14 @@ function jsonResponse(body: unknown, status = 200) {
 }
 
 describe("useAdminMutation", () => {
+  beforeEach(() => {
+    testQueryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: 0 } },
+    });
+  });
+
   afterEach(() => {
+    testQueryClient.clear();
     cleanup();
     globalThis.fetch = originalFetch;
   });
@@ -250,7 +265,7 @@ describe("useAdminMutation", () => {
   /* ---------------------------------------------------------------- */
 
   test("isMutating tracks per-item loading state", async () => {
-    let resolveFetch: (res: Response) => void;
+    let resolveFetch!: (res: Response) => void;
     globalThis.fetch = mock(() =>
       new Promise<Response>((resolve) => { resolveFetch = resolve; }),
     ) as unknown as typeof fetch;
@@ -263,9 +278,11 @@ describe("useAdminMutation", () => {
     expect(result.current.isMutating("item-1")).toBe(false);
     expect(result.current.saving).toBe(false);
 
-    let mutatePromise: Promise<MutateResult<unknown>>;
-    act(() => {
+    let mutatePromise!: Promise<MutateResult<unknown>>;
+    await act(async () => {
       mutatePromise = result.current.mutate({ itemId: "item-1" });
+      // Wait a tick for TanStack to call fetch and assign resolveFetch
+      await new Promise((r) => setTimeout(r, 0));
     });
 
     // During flight: isMutating is true, saving stays false (itemId path)
@@ -273,8 +290,8 @@ describe("useAdminMutation", () => {
     expect(result.current.saving).toBe(false);
 
     await act(async () => {
-      resolveFetch!(jsonResponse({ ok: true }));
-      await mutatePromise!;
+      resolveFetch(jsonResponse({ ok: true }));
+      await mutatePromise;
     });
 
     expect(result.current.isMutating("item-1")).toBe(false);

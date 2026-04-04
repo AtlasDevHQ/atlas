@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useCallback, useRef } from "react";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useAtlasConfig } from "@/ui/context";
 import { extractFetchError } from "@/ui/lib/fetch-error";
 
@@ -60,15 +61,15 @@ interface UseAdminMutationReturn<TResponse> {
 /**
  * Hook for admin page mutations (POST, PUT, PATCH, DELETE).
  *
- * Handles saving/error state, credentials, JSON serialization,
- * structured error extraction from response bodies, and per-item
- * loading tracking. Reads apiUrl and credentials from AtlasUIContext.
+ * Uses TanStack Query's `useMutation` internally for cache integration.
+ * Preserves the original return shape for backward compatibility.
  */
 export function useAdminMutation<TResponse = unknown>(
   options?: UseAdminMutationOptions,
 ): UseAdminMutationReturn<TResponse> {
   const { apiUrl, isCrossOrigin } = useAtlasConfig();
   const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
+  const queryClient = useQueryClient();
 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -78,7 +79,6 @@ export function useAdminMutation<TResponse = unknown>(
   const optionsRef = useRef(options);
   optionsRef.current = options;
 
-  // useCallback for stable references — hook API contract, not performance
   const clearError = useCallback(() => setError(null), []);
 
   const reset = useCallback(() => {
@@ -92,18 +92,80 @@ export function useAdminMutation<TResponse = unknown>(
     [inFlight],
   );
 
-  const mutate = useCallback(
-    async (callOpts?: MutateOptions<TResponse>): Promise<MutateResult<TResponse>> => {
+  // Internal TanStack mutation — not exposed directly, used by the `mutate` wrapper.
+  const mutation = useMutation<
+    { data: TResponse | undefined; callOpts?: MutateOptions<TResponse> },
+    Error,
+    MutateOptions<TResponse> | undefined
+  >({
+    mutationFn: async (callOpts) => {
       const opts = optionsRef.current;
       const path = callOpts?.path ?? opts?.path;
       const method = callOpts?.method ?? opts?.method ?? "POST";
-      const itemId = callOpts?.itemId;
 
       if (!path) {
-        const msg = "useAdminMutation: no path provided";
-        setError(msg);
-        return { ok: false, error: msg };
+        throw new Error("useAdminMutation: no path provided");
       }
+
+      const headers: Record<string, string> = {};
+      let body: string | undefined;
+      if (callOpts?.body) {
+        headers["Content-Type"] = "application/json";
+        body = JSON.stringify(callOpts.body);
+      }
+
+      const res = await fetch(`${apiUrl}${path}`, {
+        method,
+        credentials,
+        headers,
+        body,
+      });
+
+      if (!res.ok) {
+        const fetchError = await extractFetchError(res);
+        const msg = fetchError.requestId
+          ? `${fetchError.message} (Request ID: ${fetchError.requestId})`
+          : fetchError.message;
+        throw new Error(msg);
+      }
+
+      // Parse response (handle 204 No Content)
+      const contentType = res.headers.get("content-type");
+      let data: TResponse | undefined;
+      if (res.status === 204 || !contentType?.includes("application/json")) {
+        data = undefined;
+      } else {
+        data = (await res.json()) as TResponse;
+      }
+
+      return { data, callOpts };
+    },
+    onSuccess: ({ data, callOpts }) => {
+      // Call invalidates (refetch functions)
+      const opts = optionsRef.current;
+      const invalidates = opts?.invalidates;
+      if (invalidates) {
+        if (Array.isArray(invalidates)) {
+          for (const fn of invalidates) fn();
+        } else {
+          invalidates();
+        }
+      }
+
+      // Invalidate all admin queries so TanStack Query refetches
+      queryClient.invalidateQueries({ queryKey: ["admin-fetch"] });
+
+      // Call onSuccess outside the main flow so callback bugs don't
+      // get misreported as mutation failures.
+      if (data !== undefined) {
+        callOpts?.onSuccess?.(data);
+      }
+    },
+  });
+
+  const mutate = useCallback(
+    async (callOpts?: MutateOptions<TResponse>): Promise<MutateResult<TResponse>> => {
+      const itemId = callOpts?.itemId;
 
       // Track loading state
       if (itemId) {
@@ -113,48 +175,10 @@ export function useAdminMutation<TResponse = unknown>(
       }
       setError(null);
 
-      let data: TResponse | undefined;
       try {
-        const headers: Record<string, string> = {};
-        let body: string | undefined;
-        if (callOpts?.body) {
-          headers["Content-Type"] = "application/json";
-          body = JSON.stringify(callOpts.body);
-        }
+        const result = await mutation.mutateAsync(callOpts);
 
-        const res = await fetch(`${apiUrl}${path}`, {
-          method,
-          credentials,
-          headers,
-          body,
-        });
-
-        if (!res.ok) {
-          const fetchError = await extractFetchError(res);
-          const msg = fetchError.requestId
-            ? `${fetchError.message} (Request ID: ${fetchError.requestId})`
-            : fetchError.message;
-          setError(msg);
-          return { ok: false, error: msg };
-        }
-
-        // Parse response (handle 204 No Content)
-        const contentType = res.headers.get("content-type");
-        if (res.status === 204 || !contentType?.includes("application/json")) {
-          data = undefined;
-        } else {
-          data = (await res.json()) as TResponse;
-        }
-
-        // Call invalidates (refetch functions)
-        const invalidates = opts?.invalidates;
-        if (invalidates) {
-          if (Array.isArray(invalidates)) {
-            for (const fn of invalidates) fn();
-          } else {
-            invalidates();
-          }
-        }
+        return { ok: true, data: result.data };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         const errorMessage = msg || "Request failed";
@@ -171,17 +195,8 @@ export function useAdminMutation<TResponse = unknown>(
           setSaving(false);
         }
       }
-
-      // Call onSuccess outside try/catch so callback bugs don't
-      // get misreported as mutation failures.
-      // Only called when data is present — 204/non-JSON callers use result.ok instead.
-      if (data !== undefined) {
-        callOpts?.onSuccess?.(data);
-      }
-
-      return { ok: true, data };
     },
-    [apiUrl, credentials],
+    [mutation, apiUrl, credentials],
   );
 
   return { mutate, saving, error, clearError, reset, isMutating };

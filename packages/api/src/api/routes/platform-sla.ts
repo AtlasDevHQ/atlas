@@ -252,7 +252,7 @@ platformSLA.openapi(listSLARoute, async (c) => {
 
     const hoursBack = Math.min(Math.max(parseInt(c.req.query("hours") ?? "24", 10) || 24, 1), 720);
 
-    const workspaces = yield* Effect.promise(() => sla.getAllWorkspaceSLA(hoursBack));
+    const workspaces = yield* sla.getAllWorkspaceSLA(hoursBack);
     return c.json({ workspaces, hoursBack }, 200);
   }), { label: "fetch SLA summary" });
 });
@@ -271,7 +271,7 @@ platformSLA.openapi(getWorkspaceSLARoute, async (c) => {
     const workspaceId = c.req.param("workspaceId");
     const hoursBack = Math.min(Math.max(parseInt(c.req.query("hours") ?? "24", 10) || 24, 1), 720);
 
-    const detail = yield* Effect.promise(() => sla.getWorkspaceSLADetail(workspaceId, hoursBack));
+    const detail = yield* sla.getWorkspaceSLADetail(workspaceId, hoursBack);
     return c.json(detail, 200);
   }), { label: "fetch workspace SLA detail" });
 });
@@ -292,7 +292,7 @@ platformSLA.openapi(listAlertsRoute, async (c) => {
     const status = statusParam && validStatuses.has(statusParam as "firing") ? (statusParam as "firing" | "resolved" | "acknowledged") : undefined;
     const { limit } = parsePagination(c, { limit: 100, maxLimit: 500 });
 
-    const alerts = yield* Effect.promise(() => sla.getAlerts(status, limit));
+    const alerts = yield* sla.getAlerts(status, limit);
     return c.json({ alerts }, 200);
   }), { label: "fetch SLA alerts" });
 });
@@ -308,7 +308,7 @@ platformSLA.openapi(getThresholdsRoute, async (c) => {
       return c.json({ error: "not_available", message: "SLA monitoring requires enterprise features to be enabled.", requestId }, 404);
     }
 
-    const thresholds = yield* Effect.promise(() => sla.getThresholds());
+    const thresholds = yield* sla.getThresholds();
     return c.json(thresholds, 200);
   }), { label: "read SLA thresholds" });
 });
@@ -326,7 +326,7 @@ platformSLA.openapi(updateThresholdsRoute, async (c) => {
 
     const body = c.req.valid("json");
 
-    yield* Effect.promise(() => sla.updateThresholds(body));
+    yield* sla.updateThresholds(body);
     log.info({ thresholds: body, requestId }, "SLA thresholds updated by platform admin");
     return c.json({ message: "Thresholds updated.", thresholds: body }, 200);
   }), { label: "update SLA thresholds" });
@@ -351,7 +351,7 @@ platformSLA.openapi(acknowledgeAlertRoute, async (c) => {
     }
     const actorId = user.id;
 
-    const acknowledged = yield* Effect.promise(() => sla.acknowledgeAlert(alertId, actorId));
+    const acknowledged = yield* sla.acknowledgeAlert(alertId, actorId);
     if (!acknowledged) {
       return c.json({ error: "not_firing", message: "Alert is not in firing state.", requestId }, 400);
     }
@@ -371,7 +371,7 @@ platformSLA.openapi(evaluateAlertsRoute, async (c) => {
       return c.json({ error: "not_available", message: "SLA monitoring requires enterprise features to be enabled.", requestId }, 404);
     }
 
-    const newAlerts = yield* Effect.promise(() => sla.evaluateAlerts());
+    const newAlerts = yield* sla.evaluateAlerts();
     return c.json({ newAlerts }, 200);
   }), { label: "evaluate SLA alerts" });
 });

@@ -1,14 +1,13 @@
 /**
- * Shared domain infrastructure — schemas, error mapping, module loading,
- * and error sanitization used by both admin-domains.ts (workspace) and
- * platform-domains.ts (platform admin).
+ * Shared domain infrastructure — schemas, error mapping, and module loading
+ * used by both admin-domains.ts (workspace) and platform-domains.ts (platform admin).
+ * Infrastructure error sanitization happens in classifyError (hono.ts).
  */
 
 import { z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
-import type { DomainErrorMapping } from "@atlas/api/lib/effect/hono";
-import { DomainError, type DomainErrorCode } from "@atlas/ee/platform/domains";
-import type { ContentfulStatusCode } from "hono/utils/http-status";
+import { domainError } from "@atlas/api/lib/effect/hono";
+import { DomainError } from "@atlas/ee/platform/domains";
 
 const log = createLogger("domains-shared");
 
@@ -32,14 +31,7 @@ export const CustomDomainSchema = z.object({
 // Error mapping
 // ---------------------------------------------------------------------------
 
-/** Infrastructure error codes whose messages may contain internal details. */
-const SANITIZED_CODES = new Set<DomainErrorCode>([
-  "railway_error",
-  "railway_not_configured",
-  "data_integrity",
-]);
-
-const DOMAIN_ERROR_STATUS: Record<DomainErrorCode, ContentfulStatusCode> = {
+export const customDomainError = domainError(DomainError, {
   no_internal_db: 503,
   invalid_domain: 400,
   duplicate_domain: 409,
@@ -47,11 +39,7 @@ const DOMAIN_ERROR_STATUS: Record<DomainErrorCode, ContentfulStatusCode> = {
   railway_error: 502,
   railway_not_configured: 503,
   data_integrity: 500,
-};
-
-export const domainErrors: DomainErrorMapping[] = [
-  [DomainError, DOMAIN_ERROR_STATUS],
-];
+});
 
 // ---------------------------------------------------------------------------
 // Module loader (lazy import — fail gracefully when ee is unavailable)
@@ -78,21 +66,3 @@ export async function loadDomains(): Promise<DomainsModule | null> {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Error sanitization
-// ---------------------------------------------------------------------------
-
-/**
- * Sanitize DomainError messages for infrastructure errors before they
- * reach the client. Railway errors and data integrity errors may contain
- * internal infrastructure details that should not be exposed.
- *
- * User-facing errors (invalid_domain, duplicate_domain, domain_not_found)
- * pass through unmodified.
- */
-export function sanitizeDomainError(err: unknown, requestId: string): void {
-  if (err instanceof DomainError && SANITIZED_CODES.has(err.code)) {
-    log.error({ err, code: err.code, requestId }, "Infrastructure domain error");
-    err.message = `Domain service error (ref: ${requestId.slice(0, 8)})`;
-  }
-}

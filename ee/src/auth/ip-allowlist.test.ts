@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, mock } from "bun:test";
+import { Effect } from "effect";
 import { createEEMock } from "../__mocks__/internal";
 
 // ── Mocks ───────────────────────────────────────────────────────────
@@ -7,6 +8,22 @@ const ee = createEEMock();
 
 mock.module("../index", () => ee.enterpriseMock);
 mock.module("@atlas/api/lib/db/internal", () => ee.internalDBMock);
+
+const hasDB = () => (ee.internalDBMock.hasInternalDB as () => boolean)();
+mock.module("../lib/db-guard", () => ({
+  requireInternalDB: (label: string, factory?: () => Error) => {
+    if (!hasDB()) {
+      if (factory) throw factory();
+      throw new Error(`Internal database required for ${label}.`);
+    }
+  },
+  requireInternalDBEffect: (label: string, factory?: () => Error) => {
+    return hasDB()
+      ? Effect.void
+      : Effect.fail(factory?.() ?? new Error(`Internal database required for ${label}.`));
+  },
+}));
+
 mock.module("@atlas/api/lib/logger", () => ee.loggerMock);
 
 // Import after mocks
@@ -23,6 +40,10 @@ const {
 } = await import("./ip-allowlist");
 
 // ── Helpers ─────────────────────────────────────────────────────────
+
+/** Run an Effect, converting failures to rejected promises for test assertions. */
+const run = <A, E>(effect: Effect.Effect<A, E>) =>
+  Effect.runPromise(effect as Effect.Effect<A, never>);
 
 function resetMocks() {
   ee.reset();
@@ -233,7 +254,7 @@ describe("listIPAllowlistEntries", () => {
       },
     ]);
 
-    const entries = await listIPAllowlistEntries("org-1");
+    const entries = await run(listIPAllowlistEntries("org-1"));
     expect(entries).toHaveLength(1);
     expect(entries[0].cidr).toBe("10.0.0.0/8");
     expect(entries[0].description).toBe("Office");
@@ -242,7 +263,7 @@ describe("listIPAllowlistEntries", () => {
 
   it("throws if enterprise not enabled", async () => {
     ee.setEnterpriseEnabled(false);
-    await expect(listIPAllowlistEntries("org-1")).rejects.toThrow("Enterprise features");
+    await expect(run(listIPAllowlistEntries("org-1"))).rejects.toThrow("Enterprise features");
   });
 });
 
@@ -264,37 +285,33 @@ describe("addIPAllowlistEntry", () => {
       },
     ]);
 
-    const entry = await addIPAllowlistEntry("org-1", "10.0.0.0/8", "Office", "admin-1");
+    const entry = await run(addIPAllowlistEntry("org-1", "10.0.0.0/8", "Office", "admin-1"));
     expect(entry.cidr).toBe("10.0.0.0/8");
     expect(entry.description).toBe("Office");
   });
 
   it("rejects invalid CIDR format", async () => {
-    try {
-      await addIPAllowlistEntry("org-1", "not-a-cidr", null, null);
-      expect.unreachable("Should have thrown");
-    } catch (err) {
-      expect(err).toBeInstanceOf(IPAllowlistError);
-      expect((err as InstanceType<typeof IPAllowlistError>).code).toBe("validation");
-    }
+    const err = await Effect.runPromise(
+      addIPAllowlistEntry("org-1", "not-a-cidr", null, null).pipe(Effect.flip),
+    );
+    expect(err).toBeInstanceOf(IPAllowlistError);
+    expect((err as InstanceType<typeof IPAllowlistError>).code).toBe("validation");
   });
 
   it("rejects duplicate CIDR", async () => {
     // Duplicate check returns existing row
     ee.queueMockRows([{ id: "existing-id" }]);
 
-    try {
-      await addIPAllowlistEntry("org-1", "10.0.0.0/8", null, null);
-      expect.unreachable("Should have thrown");
-    } catch (err) {
-      expect(err).toBeInstanceOf(IPAllowlistError);
-      expect((err as InstanceType<typeof IPAllowlistError>).code).toBe("conflict");
-    }
+    const err = await Effect.runPromise(
+      addIPAllowlistEntry("org-1", "10.0.0.0/8", null, null).pipe(Effect.flip),
+    );
+    expect(err).toBeInstanceOf(IPAllowlistError);
+    expect((err as InstanceType<typeof IPAllowlistError>).code).toBe("conflict");
   });
 
   it("throws if enterprise not enabled", async () => {
     ee.setEnterpriseEnabled(false);
-    await expect(addIPAllowlistEntry("org-1", "10.0.0.0/8", null, null)).rejects.toThrow("Enterprise features");
+    await expect(run(addIPAllowlistEntry("org-1", "10.0.0.0/8", null, null))).rejects.toThrow("Enterprise features");
   });
 });
 
@@ -303,19 +320,19 @@ describe("removeIPAllowlistEntry", () => {
 
   it("removes existing entry", async () => {
     ee.queueMockRows([{ id: "entry-1" }]);
-    const deleted = await removeIPAllowlistEntry("org-1", "entry-1");
+    const deleted = await run(removeIPAllowlistEntry("org-1", "entry-1"));
     expect(deleted).toBe(true);
   });
 
   it("returns false for non-existent entry", async () => {
     ee.queueMockRows([]);
-    const deleted = await removeIPAllowlistEntry("org-1", "no-such-entry");
+    const deleted = await run(removeIPAllowlistEntry("org-1", "no-such-entry"));
     expect(deleted).toBe(false);
   });
 
   it("throws if enterprise not enabled", async () => {
     ee.setEnterpriseEnabled(false);
-    await expect(removeIPAllowlistEntry("org-1", "entry-1")).rejects.toThrow("Enterprise features");
+    await expect(run(removeIPAllowlistEntry("org-1", "entry-1"))).rejects.toThrow("Enterprise features");
   });
 });
 
@@ -326,39 +343,39 @@ describe("checkIPAllowlist", () => {
 
   it("allows when enterprise is disabled", async () => {
     ee.setEnterpriseEnabled(false);
-    const result = await checkIPAllowlist("org-1", "1.2.3.4");
+    const result = await run(checkIPAllowlist("org-1", "1.2.3.4"));
     expect(result.allowed).toBe(true);
   });
 
   it("allows when no allowlist entries exist (opt-in)", async () => {
     ee.queueMockRows([]); // empty allowlist
-    const result = await checkIPAllowlist("org-1", "1.2.3.4");
+    const result = await run(checkIPAllowlist("org-1", "1.2.3.4"));
     expect(result.allowed).toBe(true);
   });
 
   it("allows matching IP", async () => {
     ee.queueMockRows([{ cidr: "10.0.0.0/8" }]);
-    const result = await checkIPAllowlist("org-1", "10.0.0.1");
+    const result = await run(checkIPAllowlist("org-1", "10.0.0.1"));
     expect(result.allowed).toBe(true);
   });
 
   it("blocks non-matching IP", async () => {
     ee.queueMockRows([{ cidr: "10.0.0.0/8" }]);
-    const result = await checkIPAllowlist("org-1", "192.168.1.1");
+    const result = await run(checkIPAllowlist("org-1", "192.168.1.1"));
     expect(result.allowed).toBe(false);
   });
 
   it("blocks when IP is null and allowlist has entries", async () => {
     ee.queueMockRows([{ cidr: "10.0.0.0/8" }]);
-    const result = await checkIPAllowlist("org-1", null);
+    const result = await run(checkIPAllowlist("org-1", null));
     expect(result.allowed).toBe(false);
   });
 
   it("uses cache on second call", async () => {
     ee.queueMockRows([{ cidr: "10.0.0.0/8" }]);
-    await checkIPAllowlist("org-1", "10.0.0.1");
+    await run(checkIPAllowlist("org-1", "10.0.0.1"));
     // Second call should not query DB (no additional rows needed)
-    const result = await checkIPAllowlist("org-1", "10.0.0.1");
+    const result = await run(checkIPAllowlist("org-1", "10.0.0.1"));
     expect(result.allowed).toBe(true);
     // Only 1 DB query should have been made
     expect(ee.capturedQueries).toHaveLength(1);
@@ -366,13 +383,13 @@ describe("checkIPAllowlist", () => {
 
   it("cache invalidation forces DB reload", async () => {
     ee.queueMockRows([{ cidr: "10.0.0.0/8" }]);
-    await checkIPAllowlist("org-1", "10.0.0.1");
+    await run(checkIPAllowlist("org-1", "10.0.0.1"));
 
     // Invalidate cache
     _clearCache();
     ee.queueMockRows([{ cidr: "192.168.0.0/16" }]);
 
-    const result = await checkIPAllowlist("org-1", "10.0.0.1");
+    const result = await run(checkIPAllowlist("org-1", "10.0.0.1"));
     // Should now be blocked because cache was cleared and new DB data loaded
     expect(result.allowed).toBe(false);
     expect(ee.capturedQueries).toHaveLength(2);
@@ -391,7 +408,7 @@ describe("edge cases", () => {
       { cidr: "192.168.0.0/16" },
     ]);
     // RFC 1918 address in the 172.16.x.x range
-    const result = await checkIPAllowlist("org-1", "172.16.5.10");
+    const result = await run(checkIPAllowlist("org-1", "172.16.5.10"));
     expect(result.allowed).toBe(true);
   });
 
@@ -400,7 +417,7 @@ describe("edge cases", () => {
       { cidr: "10.0.0.0/8" },
       { cidr: "2001:db8::/32" },
     ]);
-    const v4 = await checkIPAllowlist("org-1", "10.0.0.1");
+    const v4 = await run(checkIPAllowlist("org-1", "10.0.0.1"));
     expect(v4.allowed).toBe(true);
 
     // Clear cache for fresh query
@@ -409,7 +426,7 @@ describe("edge cases", () => {
       { cidr: "10.0.0.0/8" },
       { cidr: "2001:db8::/32" },
     ]);
-    const v6 = await checkIPAllowlist("org-1", "2001:db8::1");
+    const v6 = await run(checkIPAllowlist("org-1", "2001:db8::1"));
     expect(v6.allowed).toBe(true);
   });
 
@@ -463,7 +480,7 @@ describe("fixed issues", () => {
       },
     ]);
 
-    await addIPAllowlistEntry("org-1", "10.0.0.5/8", null, null);
+    await run(addIPAllowlistEntry("org-1", "10.0.0.5/8", null, null));
 
     // The duplicate check query should use normalized "10.0.0.0/8", not raw "10.0.0.5/8"
     expect(ee.capturedQueries[0].params).toEqual(["org-1", "10.0.0.0/8"]);
@@ -517,7 +534,7 @@ describe("fixed issues", () => {
       },
     ]);
 
-    const entry = await addIPAllowlistEntry("org-1", "10.0.0.1", "Single host", null);
+    const entry = await run(addIPAllowlistEntry("org-1", "10.0.0.1", "Single host", null));
     expect(entry.cidr).toBe("10.0.0.1/32");
 
     // The stored CIDR should be the normalized /32 form

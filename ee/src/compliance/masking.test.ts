@@ -1,4 +1,12 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, mock } from "bun:test";
+import { Effect, Exit, Cause } from "effect";
+
+// ── Effect runner helper ──────────────────────────────────────────
+const run = async <A, E>(effect: Effect.Effect<A, E>): Promise<A> => {
+  const exit = await Effect.runPromiseExit(effect);
+  if (Exit.isSuccess(exit)) return exit.value;
+  throw Cause.squash(exit.cause);
+};
 
 // ── Isolate from .env — enterprise flag must be controlled by mock ──
 const savedEnterpriseEnabled = process.env.ATLAS_ENTERPRISE_ENABLED;
@@ -142,13 +150,13 @@ describe("applyMasking", () => {
 
   it("returns unmodified rows when enterprise is disabled", async () => {
     const rows = [{ email: "alice@test.com", id: 1 }];
-    const result = await applyMasking({
+    const result = await run(applyMasking({
       columns: ["email", "id"],
       rows,
       tablesAccessed: ["users"],
       orgId: "org-1",
       userRole: "viewer",
-    });
+    }));
     expect(result).toBe(rows); // Same reference — no copy
   });
 
@@ -156,13 +164,13 @@ describe("applyMasking", () => {
     mockEnterpriseEnabled = true;
     mockHasInternalDB = true;
     const rows = [{ email: "alice@test.com" }];
-    const result = await applyMasking({
+    const result = await run(applyMasking({
       columns: ["email"],
       rows,
       tablesAccessed: ["users"],
       orgId: "org-1",
       userRole: "admin",
-    });
+    }));
     expect(result).toBe(rows);
   });
 
@@ -170,13 +178,13 @@ describe("applyMasking", () => {
     mockEnterpriseEnabled = true;
     mockHasInternalDB = true;
     const rows = [{ email: "alice@test.com" }];
-    const result = await applyMasking({
+    const result = await run(applyMasking({
       columns: ["email"],
       rows,
       tablesAccessed: ["users"],
       orgId: "org-1",
       userRole: "owner",
-    });
+    }));
     expect(result).toBe(rows);
   });
 
@@ -184,26 +192,26 @@ describe("applyMasking", () => {
     mockEnterpriseEnabled = true;
     mockHasInternalDB = false;
     const rows = [{ email: "alice@test.com" }];
-    const result = await applyMasking({
+    const result = await run(applyMasking({
       columns: ["email"],
       rows,
       tablesAccessed: ["users"],
       orgId: "org-1",
       userRole: "viewer",
-    });
+    }));
     expect(result).toBe(rows);
   });
 
   it("returns empty array for empty rows", async () => {
     mockEnterpriseEnabled = true;
     mockHasInternalDB = true;
-    const result = await applyMasking({
+    const result = await run(applyMasking({
       columns: ["email"],
       rows: [],
       tablesAccessed: ["users"],
       orgId: "org-1",
       userRole: "viewer",
-    });
+    }));
     expect(result).toEqual([]);
   });
 
@@ -229,7 +237,7 @@ describe("applyMasking", () => {
       },
     ]);
 
-    const result = await applyMasking({
+    const result = await run(applyMasking({
       columns: ["email", "id"],
       rows: [
         { email: "alice@example.com", id: 1 },
@@ -238,7 +246,7 @@ describe("applyMasking", () => {
       tablesAccessed: ["users"],
       orgId: "org-1",
       userRole: "viewer",
-    });
+    }));
 
     // Viewer gets full mask (overrides partial → full for viewer)
     expect(result[0].email).toBe("***");
@@ -267,13 +275,13 @@ describe("applyMasking", () => {
       },
     ]);
 
-    const result = await applyMasking({
+    const result = await run(applyMasking({
       columns: ["email"],
       rows: [{ email: "alice@example.com" }],
       tablesAccessed: ["users"],
       orgId: "org-1",
       userRole: "analyst",
-    });
+    }));
 
     // Analyst overrides full → partial
     expect(result[0].email).toBe("a***@example.com");
@@ -301,13 +309,13 @@ describe("applyMasking", () => {
     ]);
 
     const originalRows = [{ email: "alice@example.com" }];
-    await applyMasking({
+    await run(applyMasking({
       columns: ["email"],
       rows: originalRows,
       tablesAccessed: ["users"],
       orgId: "org-1",
       userRole: "viewer",
-    });
+    }));
 
     expect(originalRows[0].email).toBe("alice@example.com");
   });
@@ -333,13 +341,13 @@ describe("applyMasking", () => {
       },
     ]);
 
-    const result = await applyMasking({
+    const result = await run(applyMasking({
       columns: ["email"],
       rows: [{ email: "alice@example.com" }],
       tablesAccessed: ["users"],
       orgId: "org-1",
       userRole: undefined,
-    });
+    }));
 
     // Undefined role defaults to viewer (full mask)
     expect(result[0].email).toBe("***");
@@ -393,9 +401,9 @@ describe("savePIIClassification", () => {
       updated_at: "2026-01-01",
     }]);
 
-    const result = await savePIIClassification(
+    const result = await run(savePIIClassification(
       "org-1", "users", "email", "default", "email", "high", "partial",
-    );
+    ));
     expect(result.id).toBe("cls-new");
     expect(result.category).toBe("email");
     expect(result.maskingStrategy).toBe("partial");
@@ -404,28 +412,28 @@ describe("savePIIClassification", () => {
   it("throws on invalid category", async () => {
     mockQueryRows.push([]); // CREATE TABLE
     await expect(
-      savePIIClassification("org-1", "t", "c", "default", "invalid" as "email", "high"),
+      run(savePIIClassification("org-1", "t", "c", "default", "invalid" as "email", "high")),
     ).rejects.toThrow("Invalid PII category");
   });
 
   it("throws on invalid masking strategy", async () => {
     mockQueryRows.push([]); // CREATE TABLE
     await expect(
-      savePIIClassification("org-1", "t", "c", "default", "email", "high", "invalid" as "full"),
+      run(savePIIClassification("org-1", "t", "c", "default", "email", "high", "invalid" as "full")),
     ).rejects.toThrow("Invalid masking strategy");
   });
 
   it("throws when enterprise is disabled", async () => {
     mockEnterpriseEnabled = false;
     await expect(
-      savePIIClassification("org-1", "t", "c", "default", "email", "high"),
+      run(savePIIClassification("org-1", "t", "c", "default", "email", "high")),
     ).rejects.toThrow("Enterprise features");
   });
 
   it("throws when internal DB is unavailable", async () => {
     mockHasInternalDB = false;
     await expect(
-      savePIIClassification("org-1", "t", "c", "default", "email", "high"),
+      run(savePIIClassification("org-1", "t", "c", "default", "email", "high")),
     ).rejects.toThrow("Internal database not available");
   });
 });
@@ -455,11 +463,11 @@ describe("updatePIIClassification", () => {
       updated_at: "2026-01-02",
     }]);
 
-    const result = await updatePIIClassification("org-1", "cls-1", {
+    const result = await run(updatePIIClassification("org-1", "cls-1", {
       category: "phone",
       maskingStrategy: "full",
       reviewed: true,
-    });
+    }));
     expect(result.category).toBe("phone");
     expect(result.maskingStrategy).toBe("full");
     expect(result.reviewed).toBe(true);
@@ -470,7 +478,7 @@ describe("updatePIIClassification", () => {
     mockQueryRows.push([]); // empty result
 
     try {
-      await updatePIIClassification("org-1", "nonexistent", { reviewed: true });
+      await run(updatePIIClassification("org-1", "nonexistent", { reviewed: true }));
       throw new Error("should have thrown");
     } catch (err) {
       expect(err instanceof ComplianceError).toBe(true);
@@ -491,7 +499,7 @@ describe("deletePIIClassification", () => {
     mockQueryRows.push([]); // CREATE TABLE
     mockQueryRows.push([{ id: "cls-1" }]); // RETURNING id
 
-    await expect(deletePIIClassification("org-1", "cls-1")).resolves.toBeUndefined();
+    await expect(run(deletePIIClassification("org-1", "cls-1"))).resolves.toBeUndefined();
   });
 
   it("throws not_found when classification does not exist", async () => {
@@ -499,7 +507,7 @@ describe("deletePIIClassification", () => {
     mockQueryRows.push([]); // empty result
 
     try {
-      await deletePIIClassification("org-1", "nonexistent");
+      await run(deletePIIClassification("org-1", "nonexistent"));
       throw new Error("should have thrown");
     } catch (err) {
       expect(err instanceof ComplianceError).toBe(true);
@@ -510,7 +518,7 @@ describe("deletePIIClassification", () => {
   it("throws when internal DB is unavailable", async () => {
     mockHasInternalDB = false;
     await expect(
-      deletePIIClassification("org-1", "cls-1"),
+      run(deletePIIClassification("org-1", "cls-1")),
     ).rejects.toThrow("Internal database not available");
   });
 });
@@ -542,7 +550,7 @@ describe("listPIIClassifications", () => {
       },
     ]);
 
-    const results = await listPIIClassifications("org-1");
+    const results = await run(listPIIClassifications("org-1"));
     expect(results).toHaveLength(1);
     expect(results[0].tableName).toBe("users");
     expect(results[0].columnName).toBe("email");
@@ -550,7 +558,7 @@ describe("listPIIClassifications", () => {
 
   it("returns empty array when DB is unavailable", async () => {
     mockHasInternalDB = false;
-    const results = await listPIIClassifications("org-1");
+    const results = await run(listPIIClassifications("org-1"));
     expect(results).toEqual([]);
   });
 });
@@ -575,20 +583,20 @@ describe("invalidateClassificationCache", () => {
       created_at: "2026-01-01", updated_at: "2026-01-01",
     }]);
 
-    const result1 = await applyMasking({
+    const result1 = await run(applyMasking({
       columns: ["email"], rows: [{ email: "test@test.com" }],
       tablesAccessed: ["users"], orgId: "org-1", userRole: "viewer",
-    });
+    }));
     expect(result1[0].email).toBe("***"); // Masked
 
     // Invalidate cache and provide empty classifications
     invalidateClassificationCache("org-1");
     mockQueryRows.push([]); // Re-fetch returns empty (classification was deleted)
 
-    const result2 = await applyMasking({
+    const result2 = await run(applyMasking({
       columns: ["email"], rows: [{ email: "test@test.com" }],
       tablesAccessed: ["users"], orgId: "org-1", userRole: "viewer",
-    });
+    }));
     expect(result2[0].email).toBe("test@test.com"); // No longer masked
   });
 });

@@ -695,23 +695,7 @@ onboarding.openapi(
 // Region selection during signup
 // ---------------------------------------------------------------------------
 
-type ResidencyModule = typeof import("@atlas/ee/platform/residency");
-
-async function loadResidency(): Promise<ResidencyModule | null> {
-  try {
-    return await import("@atlas/ee/platform/residency");
-  } catch (err) {
-    if (
-      err != null &&
-      typeof err === "object" &&
-      "code" in err &&
-      (err as NodeJS.ErrnoException).code === "MODULE_NOT_FOUND"
-    ) {
-      return null;
-    }
-    throw err;
-  }
-}
+import { loadResidency, getResidencyDomainError } from "./shared-residency";
 
 const OnboardingRegionSchema = z.object({
   id: z.string(),
@@ -862,6 +846,7 @@ onboarding.openapi(getRegionsRoute, async (c) => {
 onboarding.openapi(
   assignRegionRoute,
   async (c) => {
+    const mod = await loadResidency();
     return runEffect(c, Effect.gen(function* () {
       const { requestId } = yield* RequestContext;
       const { orgId } = yield* AuthContext;
@@ -876,36 +861,14 @@ onboarding.openapi(
 
       const { region } = c.req.valid("json");
 
-      const mod = yield* Effect.promise(() => loadResidency());
       if (!mod) {
         return c.json({ error: "not_available", message: "Data residency is not available in this deployment.", requestId }, 404);
       }
 
-      try {
-        const result = yield* Effect.promise(() => mod.assignWorkspaceRegion(orgId, region));
-        log.info({ orgId, region, requestId }, "Workspace region assigned during signup");
-        return c.json(result, 200);
-      } catch (err) {
-        if (err instanceof mod.ResidencyError) {
-          switch (err.code) {
-            case "invalid_region":
-              return c.json({ error: "invalid_region", message: err.message, requestId }, 400);
-            case "already_assigned":
-              return c.json({ error: "already_assigned", message: err.message, requestId }, 409);
-            case "workspace_not_found":
-              return c.json({ error: "workspace_not_found", message: err.message, requestId }, 404);
-            case "no_internal_db":
-              return c.json({ error: "no_internal_db", message: err.message, requestId }, 503);
-            case "not_configured":
-              return c.json({ error: "not_configured", message: err.message, requestId }, 404);
-            default:
-              log.warn({ code: err.code, requestId }, "Unhandled ResidencyError code");
-              throw err;
-          }
-        }
-        throw err;
-      }
-    }), { label: "assign region during signup" });
+      const result = yield* mod.assignWorkspaceRegion(orgId, region);
+      log.info({ orgId, region, requestId }, "Workspace region assigned during signup");
+      return c.json(result, 200);
+    }), { label: "assign region during signup", domainErrors: mod ? [getResidencyDomainError(mod)] : undefined });
   },
   (result, c) => {
     if (!result.success) {

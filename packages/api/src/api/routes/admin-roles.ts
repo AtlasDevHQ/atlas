@@ -7,7 +7,7 @@
 
 import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
-import { runEffect } from "@atlas/api/lib/effect/hono";
+import { runEffect, domainError } from "@atlas/api/lib/effect/hono";
 import { AuthContext } from "@atlas/api/lib/effect/services";
 import {
   listRoles,
@@ -22,7 +22,7 @@ import {
 import { ErrorSchema, AuthErrorSchema, isValidId, createIdParamSchema, createParamSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 
-const ROLE_ERROR_STATUS = { not_found: 404, conflict: 409, validation: 400, builtin_protected: 403 } as const;
+const roleDomainError = domainError(RoleError, { not_found: 404, conflict: 409, validation: 400, builtin_protected: 403 });
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -206,9 +206,9 @@ adminRoles.openapi(listRolesRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
 
-    const roles = yield* Effect.promise(() => listRoles(orgId!));
+    const roles = yield* listRoles(orgId!);
     return c.json({ roles, permissions: [...PERMISSIONS], total: roles.length }, 200);
-  }), { label: "list roles", domainErrors: [[RoleError, ROLE_ERROR_STATUS]] });
+  }), { label: "list roles", domainErrors: [roleDomainError] });
 });
 
 // POST / — create a custom role
@@ -221,9 +221,9 @@ adminRoles.openapi(createRoleRoute, async (c) => {
       return c.json({ error: "bad_request", message: "Missing required fields: name, permissions." }, 400);
     }
 
-    const role = yield* Effect.promise(() => createRole(orgId!, body));
+    const role = yield* createRole(orgId!, body);
     return c.json({ role }, 201);
-  }), { label: "create role", domainErrors: [[RoleError, ROLE_ERROR_STATUS]] });
+  }), { label: "create role", domainErrors: [roleDomainError] });
 });
 
 // PUT /:id — update a custom role
@@ -238,9 +238,9 @@ adminRoles.openapi(updateRoleRoute, async (c) => {
 
     const body = c.req.valid("json");
 
-    const role = yield* Effect.promise(() => updateRole(orgId!, roleId, body));
+    const role = yield* updateRole(orgId!, roleId, body);
     return c.json({ role }, 200);
-  }), { label: "update role", domainErrors: [[RoleError, ROLE_ERROR_STATUS]] });
+  }), { label: "update role", domainErrors: [roleDomainError] });
 });
 
 // DELETE /:id — delete a custom role
@@ -253,12 +253,12 @@ adminRoles.openapi(deleteRoleRoute, async (c) => {
       return c.json({ error: "bad_request", message: "Invalid role ID." }, 400);
     }
 
-    const deleted = yield* Effect.promise(() => deleteRole(orgId!, roleId));
+    const deleted = yield* deleteRole(orgId!, roleId);
     if (!deleted) {
       return c.json({ error: "not_found", message: "Role not found." }, 404);
     }
     return c.json({ message: "Role deleted." }, 200);
-  }), { label: "delete role", domainErrors: [[RoleError, ROLE_ERROR_STATUS]] });
+  }), { label: "delete role", domainErrors: [roleDomainError] });
 });
 
 // GET /:id/members — list members with a specific role
@@ -271,9 +271,9 @@ adminRoles.openapi(listRoleMembersRoute, async (c) => {
       return c.json({ error: "bad_request", message: "Invalid role ID." }, 400);
     }
 
-    const members = yield* Effect.promise(() => listRoleMembers(orgId!, roleId));
+    const members = yield* listRoleMembers(orgId!, roleId);
     return c.json({ members, total: members.length }, 200);
-  }), { label: "list role members", domainErrors: [[RoleError, ROLE_ERROR_STATUS]] });
+  }), { label: "list role members", domainErrors: [roleDomainError] });
 });
 
 // PUT /users/:userId/role — assign a role to a user
@@ -288,9 +288,9 @@ adminRoles.openapi(assignRoleRoute, async (c) => {
 
     const { role: roleName } = c.req.valid("json");
 
-    const result = yield* Effect.promise(() => assignRole(orgId!, userId, roleName));
+    const result = yield* assignRole(orgId!, userId, roleName);
     return c.json(result, 200);
-  }), { label: "assign role", domainErrors: [[RoleError, ROLE_ERROR_STATUS]] });
+  }), { label: "assign role", domainErrors: [roleDomainError] });
 });
 
 export { adminRoles };

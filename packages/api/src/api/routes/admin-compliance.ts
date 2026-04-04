@@ -15,7 +15,7 @@
 import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
 import { HTTPException } from "hono/http-exception";
-import { runEffect } from "@atlas/api/lib/effect/hono";
+import { runEffect, domainError } from "@atlas/api/lib/effect/hono";
 import { AuthContext } from "@atlas/api/lib/effect/services";
 import {
   listPIIClassifications,
@@ -30,14 +30,13 @@ import {
   dataAccessReportToCSV,
   userActivityReportToCSV,
   ReportError,
-  type ReportErrorCode,
 } from "@atlas/ee/compliance/reports";
 import type { PIICategory, MaskingStrategy } from "@useatlas/types";
 import { ErrorSchema, AuthErrorSchema, DeletedResponseSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 
-const COMPLIANCE_ERROR_STATUS = { validation: 400, not_found: 404, conflict: 409 } as const;
-const REPORT_ERROR_STATUS = { validation: 400, not_available: 404 } as const satisfies Record<ReportErrorCode, number>;
+const complianceDomainError = domainError(ComplianceError, { validation: 400, not_found: 404, conflict: 409 });
+const reportDomainError = domainError(ReportError, { validation: 400, not_available: 404 });
 
 // ── Schemas ─────────────────────────────────────────────────────
 
@@ -142,9 +141,9 @@ adminCompliance.openapi(listRoute, async (c) => {
     const { orgId } = yield* AuthContext;
     const { connectionId } = c.req.valid("query");
 
-    const classifications = yield* Effect.promise(() => listPIIClassifications(orgId!, connectionId));
+    const classifications = yield* listPIIClassifications(orgId!, connectionId);
     return c.json({ classifications }, 200);
-  }), { label: "list PII classifications", domainErrors: [[ComplianceError, COMPLIANCE_ERROR_STATUS], [ReportError, REPORT_ERROR_STATUS]] });
+  }), { label: "list PII classifications", domainErrors: [complianceDomainError, reportDomainError] });
 });
 
 // PUT /classifications/:id
@@ -154,15 +153,15 @@ adminCompliance.openapi(updateRoute, async (c) => {
     const id = c.req.param("id");
     const body = c.req.valid("json");
 
-    const updated = yield* Effect.promise(() => updatePIIClassification(orgId!, id, {
+    const updated = yield* updatePIIClassification(orgId!, id, {
       category: body.category as PIICategory | undefined,
       maskingStrategy: body.maskingStrategy as MaskingStrategy | undefined,
       dismissed: body.dismissed,
       reviewed: body.reviewed,
-    }));
+    });
     invalidateClassificationCache(orgId!);
     return c.json({ classification: updated }, 200);
-  }), { label: "update PII classification", domainErrors: [[ComplianceError, COMPLIANCE_ERROR_STATUS], [ReportError, REPORT_ERROR_STATUS]] });
+  }), { label: "update PII classification", domainErrors: [complianceDomainError, reportDomainError] });
 });
 
 // DELETE /classifications/:id
@@ -171,10 +170,10 @@ adminCompliance.openapi(deleteRoute, async (c) => {
     const { orgId } = yield* AuthContext;
     const id = c.req.param("id");
 
-    yield* Effect.promise(() => deletePIIClassification(orgId!, id));
+    yield* deletePIIClassification(orgId!, id);
     invalidateClassificationCache(orgId!);
     return c.json({ deleted: true }, 200);
-  }), { label: "delete PII classification", domainErrors: [[ComplianceError, COMPLIANCE_ERROR_STATUS], [ReportError, REPORT_ERROR_STATUS]] });
+  }), { label: "delete PII classification", domainErrors: [complianceDomainError, reportDomainError] });
 });
 
 // ── Report schemas ──────────────────────────────────────────────
@@ -289,13 +288,13 @@ adminCompliance.openapi(dataAccessReportRoute, async (c) => {
     const { orgId } = yield* AuthContext;
     const query = c.req.valid("query");
 
-    const report = yield* Effect.promise(() => generateDataAccessReport(orgId!, {
+    const report = yield* generateDataAccessReport(orgId!, {
       startDate: query.startDate,
       endDate: query.endDate,
       userId: query.userId,
       role: query.role,
       table: query.table,
-    }));
+    });
 
     if (query.format === "csv") {
       const csv = dataAccessReportToCSV(report);
@@ -314,7 +313,7 @@ adminCompliance.openapi(dataAccessReportRoute, async (c) => {
     }
 
     return c.json(report, 200);
-  }), { label: "generate data access report", domainErrors: [[ComplianceError, COMPLIANCE_ERROR_STATUS], [ReportError, REPORT_ERROR_STATUS]] });
+  }), { label: "generate data access report", domainErrors: [complianceDomainError, reportDomainError] });
 });
 
 // GET /reports/user-activity
@@ -323,13 +322,13 @@ adminCompliance.openapi(userActivityReportRoute, async (c) => {
     const { orgId } = yield* AuthContext;
     const query = c.req.valid("query");
 
-    const report = yield* Effect.promise(() => generateUserActivityReport(orgId!, {
+    const report = yield* generateUserActivityReport(orgId!, {
       startDate: query.startDate,
       endDate: query.endDate,
       userId: query.userId,
       role: query.role,
       table: query.table,
-    }));
+    });
 
     if (query.format === "csv") {
       const csv = userActivityReportToCSV(report);
@@ -348,5 +347,5 @@ adminCompliance.openapi(userActivityReportRoute, async (c) => {
     }
 
     return c.json(report, 200);
-  }), { label: "generate user activity report", domainErrors: [[ComplianceError, COMPLIANCE_ERROR_STATUS], [ReportError, REPORT_ERROR_STATUS]] });
+  }), { label: "generate user activity report", domainErrors: [complianceDomainError, reportDomainError] });
 });

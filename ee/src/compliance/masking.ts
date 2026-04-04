@@ -9,13 +9,17 @@
  * Integration: called from `packages/api/src/lib/tools/sql.ts` after query
  * execution, before results are returned to the agent/user.
  *
- * All mutating operations (saving classifications) call `requireEnterprise`.
+ * All mutating operations (saving classifications) call `requireEnterpriseEffect`.
  * The masking check itself (`applyMasking`) fails open when enterprise is
  * disabled — non-enterprise deployments get unmasked results.
+ *
+ * All exported functions return Effect — callers use `yield*` in Effect.gen.
  */
 
+import { Effect } from "effect";
 import { EEError } from "../lib/errors";
-import { isEnterpriseEnabled, requireEnterprise } from "../index";
+import { isEnterpriseEnabled } from "../index";
+import { requireEnterpriseEffect, EnterpriseError } from "../index";
 import {
   hasInternalDB,
   internalQuery,
@@ -46,43 +50,50 @@ export class ComplianceError extends EEError<ComplianceErrorCode> {
 
 const TABLE_NAME = "pii_column_classifications";
 
-async function ensureTable(): Promise<void> {
-  if (!hasInternalDB()) return;
-  await internalQuery(`
-    CREATE TABLE IF NOT EXISTS ${TABLE_NAME} (
-      id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
-      org_id TEXT NOT NULL,
-      table_name TEXT NOT NULL,
-      column_name TEXT NOT NULL,
-      connection_id TEXT NOT NULL DEFAULT 'default',
-      category TEXT NOT NULL,
-      confidence TEXT NOT NULL DEFAULT 'medium',
-      masking_strategy TEXT NOT NULL DEFAULT 'partial',
-      reviewed BOOLEAN NOT NULL DEFAULT false,
-      dismissed BOOLEAN NOT NULL DEFAULT false,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-      updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-      UNIQUE(org_id, table_name, column_name, connection_id)
-    )
-  `);
-}
+const ensureTable = (): Effect.Effect<void, Error> =>
+  Effect.gen(function* () {
+    if (!hasInternalDB()) return;
+    yield* Effect.tryPromise({
+      try: () => internalQuery(`
+        CREATE TABLE IF NOT EXISTS ${TABLE_NAME} (
+          id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::text,
+          org_id TEXT NOT NULL,
+          table_name TEXT NOT NULL,
+          column_name TEXT NOT NULL,
+          connection_id TEXT NOT NULL DEFAULT 'default',
+          category TEXT NOT NULL,
+          confidence TEXT NOT NULL DEFAULT 'medium',
+          masking_strategy TEXT NOT NULL DEFAULT 'partial',
+          reviewed BOOLEAN NOT NULL DEFAULT false,
+          dismissed BOOLEAN NOT NULL DEFAULT false,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+          updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+          UNIQUE(org_id, table_name, column_name, connection_id)
+        )
+      `),
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    });
+  });
 
 let _tableReady = false;
-async function ready(): Promise<boolean> {
-  if (!hasInternalDB()) return false;
-  if (_tableReady) return true;
-  try {
-    await ensureTable();
-    _tableReady = true;
-    return true;
-  } catch (err) {
-    log.warn(
-      { err: err instanceof Error ? err.message : String(err) },
-      "Failed to ensure PII classifications table",
+const ready = (): Effect.Effect<boolean> =>
+  Effect.gen(function* () {
+    if (!hasInternalDB()) return false;
+    if (_tableReady) return true;
+    return yield* ensureTable().pipe(
+      Effect.map(() => {
+        _tableReady = true;
+        return true;
+      }),
+      Effect.catchAll((err) => {
+        log.warn(
+          { err: err instanceof Error ? err.message : String(err) },
+          "Failed to ensure PII classifications table",
+        );
+        return Effect.succeed(false);
+      }),
     );
-    return false;
-  }
-}
+  });
 
 // ── Internal row shape ──────────────────────────────────────────
 
@@ -121,31 +132,32 @@ function rowToClassification(row: PIIClassificationRow): PIIColumnClassification
 
 // ── CRUD operations (enterprise-gated) ──────────────────────────
 
-export async function listPIIClassifications(
+export const listPIIClassifications = (
   orgId: string | undefined,
   connectionId?: string,
-): Promise<PIIColumnClassification[]> {
-  requireEnterprise("pii-detection");
-  if (!(await ready())) return [];
+): Effect.Effect<PIIColumnClassification[], EnterpriseError> =>
+  Effect.gen(function* () {
+    yield* requireEnterpriseEffect("pii-detection");
+    if (!(yield* ready())) return [];
 
-  let sql = `SELECT * FROM ${TABLE_NAME} WHERE dismissed = false`;
-  const params: unknown[] = [];
+    let sql = `SELECT * FROM ${TABLE_NAME} WHERE dismissed = false`;
+    const params: unknown[] = [];
 
-  if (orgId) {
-    params.push(orgId);
-    sql += ` AND org_id = $${params.length}`;
-  }
-  if (connectionId) {
-    params.push(connectionId);
-    sql += ` AND connection_id = $${params.length}`;
-  }
-  sql += " ORDER BY table_name, column_name";
+    if (orgId) {
+      params.push(orgId);
+      sql += ` AND org_id = $${params.length}`;
+    }
+    if (connectionId) {
+      params.push(connectionId);
+      sql += ` AND connection_id = $${params.length}`;
+    }
+    sql += " ORDER BY table_name, column_name";
 
-  const rows = await internalQuery<PIIClassificationRow>(sql, params);
-  return rows.map(rowToClassification);
-}
+    const rows = yield* Effect.promise(() => internalQuery<PIIClassificationRow>(sql, params));
+    return rows.map(rowToClassification);
+  });
 
-export async function savePIIClassification(
+export const savePIIClassification = (
   orgId: string,
   tableName: string,
   columnName: string,
@@ -153,87 +165,90 @@ export async function savePIIClassification(
   category: PIICategory,
   confidence: PIIConfidence,
   maskingStrategy: MaskingStrategy = "partial",
-): Promise<PIIColumnClassification> {
-  requireEnterprise("pii-detection");
-  if (!(await ready())) {
-    throw new ComplianceError("Internal database not available", "validation");
-  }
+): Effect.Effect<PIIColumnClassification, ComplianceError | EnterpriseError> =>
+  Effect.gen(function* () {
+    yield* requireEnterpriseEffect("pii-detection");
+    if (!(yield* ready())) {
+      return yield* Effect.fail(new ComplianceError("Internal database not available", "validation"));
+    }
 
-  validateCategory(category);
-  validateStrategy(maskingStrategy);
+    validateCategory(category);
+    validateStrategy(maskingStrategy);
 
-  const rows = await internalQuery<PIIClassificationRow>(
-    `INSERT INTO ${TABLE_NAME} (org_id, table_name, column_name, connection_id, category, confidence, masking_strategy)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
-     ON CONFLICT (org_id, table_name, column_name, connection_id)
-     DO UPDATE SET category = $5, confidence = $6, masking_strategy = $7, updated_at = now(), dismissed = false
-     RETURNING *`,
-    [orgId, tableName, columnName, connectionId, category, confidence, maskingStrategy],
-  );
-  return rowToClassification(rows[0]);
-}
+    const rows = yield* Effect.promise(() => internalQuery<PIIClassificationRow>(
+      `INSERT INTO ${TABLE_NAME} (org_id, table_name, column_name, connection_id, category, confidence, masking_strategy)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       ON CONFLICT (org_id, table_name, column_name, connection_id)
+       DO UPDATE SET category = $5, confidence = $6, masking_strategy = $7, updated_at = now(), dismissed = false
+       RETURNING *`,
+      [orgId, tableName, columnName, connectionId, category, confidence, maskingStrategy],
+    ));
+    return rowToClassification(rows[0]);
+  });
 
-export async function updatePIIClassification(
+export const updatePIIClassification = (
   orgId: string,
   id: string,
   updates: UpdatePIIClassificationRequest,
-): Promise<PIIColumnClassification> {
-  requireEnterprise("pii-detection");
-  if (!(await ready())) {
-    throw new ComplianceError("Internal database not available", "validation");
-  }
+): Effect.Effect<PIIColumnClassification, ComplianceError | EnterpriseError> =>
+  Effect.gen(function* () {
+    yield* requireEnterpriseEffect("pii-detection");
+    if (!(yield* ready())) {
+      return yield* Effect.fail(new ComplianceError("Internal database not available", "validation"));
+    }
 
-  if (updates.category) validateCategory(updates.category);
-  if (updates.maskingStrategy) validateStrategy(updates.maskingStrategy);
+    if (updates.category) validateCategory(updates.category);
+    if (updates.maskingStrategy) validateStrategy(updates.maskingStrategy);
 
-  const setClauses: string[] = ["updated_at = now()"];
-  const params: unknown[] = [orgId, id];
+    const setClauses: string[] = ["updated_at = now()"];
+    const params: unknown[] = [orgId, id];
 
-  if (updates.category !== undefined) {
-    params.push(updates.category);
-    setClauses.push(`category = $${params.length}`);
-  }
-  if (updates.maskingStrategy !== undefined) {
-    params.push(updates.maskingStrategy);
-    setClauses.push(`masking_strategy = $${params.length}`);
-  }
-  if (updates.dismissed !== undefined) {
-    params.push(updates.dismissed);
-    setClauses.push(`dismissed = $${params.length}`);
-  }
-  if (updates.reviewed !== undefined) {
-    params.push(updates.reviewed);
-    setClauses.push(`reviewed = $${params.length}`);
-  }
+    if (updates.category !== undefined) {
+      params.push(updates.category);
+      setClauses.push(`category = $${params.length}`);
+    }
+    if (updates.maskingStrategy !== undefined) {
+      params.push(updates.maskingStrategy);
+      setClauses.push(`masking_strategy = $${params.length}`);
+    }
+    if (updates.dismissed !== undefined) {
+      params.push(updates.dismissed);
+      setClauses.push(`dismissed = $${params.length}`);
+    }
+    if (updates.reviewed !== undefined) {
+      params.push(updates.reviewed);
+      setClauses.push(`reviewed = $${params.length}`);
+    }
 
-  const rows = await internalQuery<PIIClassificationRow>(
-    `UPDATE ${TABLE_NAME} SET ${setClauses.join(", ")} WHERE org_id = $1 AND id = $2 RETURNING *`,
-    params,
-  );
+    const rows = yield* Effect.promise(() => internalQuery<PIIClassificationRow>(
+      `UPDATE ${TABLE_NAME} SET ${setClauses.join(", ")} WHERE org_id = $1 AND id = $2 RETURNING *`,
+      params,
+    ));
 
-  if (rows.length === 0) {
-    throw new ComplianceError("PII classification not found", "not_found");
-  }
-  return rowToClassification(rows[0]);
-}
+    if (rows.length === 0) {
+      return yield* Effect.fail(new ComplianceError("PII classification not found", "not_found"));
+    }
+    return rowToClassification(rows[0]);
+  });
 
-export async function deletePIIClassification(
+export const deletePIIClassification = (
   orgId: string,
   id: string,
-): Promise<void> {
-  requireEnterprise("pii-detection");
-  if (!(await ready())) {
-    throw new ComplianceError("Internal database not available", "validation");
-  }
+): Effect.Effect<void, ComplianceError | EnterpriseError> =>
+  Effect.gen(function* () {
+    yield* requireEnterpriseEffect("pii-detection");
+    if (!(yield* ready())) {
+      return yield* Effect.fail(new ComplianceError("Internal database not available", "validation"));
+    }
 
-  const rows = await internalQuery<{ id: string }>(
-    `DELETE FROM ${TABLE_NAME} WHERE org_id = $1 AND id = $2 RETURNING id`,
-    [orgId, id],
-  );
-  if (rows.length === 0) {
-    throw new ComplianceError("PII classification not found", "not_found");
-  }
-}
+    const rows = yield* Effect.promise(() => internalQuery<{ id: string }>(
+      `DELETE FROM ${TABLE_NAME} WHERE org_id = $1 AND id = $2 RETURNING id`,
+      [orgId, id],
+    ));
+    if (rows.length === 0) {
+      return yield* Effect.fail(new ComplianceError("PII classification not found", "not_found"));
+    }
+  });
 
 // ── Masking application (query result path) ─────────────────────
 
@@ -244,21 +259,25 @@ export async function deletePIIClassification(
 const _classificationCache = new Map<string, { data: PIIClassificationRow[]; expiresAt: number }>();
 const CACHE_TTL_MS = 60_000;
 
-async function getClassificationsForOrg(
+const getClassificationsForOrg = (
   orgId: string,
-): Promise<PIIClassificationRow[]> {
-  const cached = _classificationCache.get(orgId);
-  if (cached && cached.expiresAt > Date.now()) return cached.data;
+): Effect.Effect<PIIClassificationRow[], Error> =>
+  Effect.gen(function* () {
+    const cached = _classificationCache.get(orgId);
+    if (cached && cached.expiresAt > Date.now()) return cached.data;
 
-  if (!(await ready())) return [];
+    if (!(yield* ready())) return [];
 
-  const data = await internalQuery<PIIClassificationRow>(
-    `SELECT * FROM ${TABLE_NAME} WHERE org_id = $1 AND dismissed = false`,
-    [orgId],
-  );
-  _classificationCache.set(orgId, { data, expiresAt: Date.now() + CACHE_TTL_MS });
-  return data;
-}
+    const data = yield* Effect.tryPromise({
+      try: () => internalQuery<PIIClassificationRow>(
+        `SELECT * FROM ${TABLE_NAME} WHERE org_id = $1 AND dismissed = false`,
+        [orgId],
+      ),
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    });
+    _classificationCache.set(orgId, { data, expiresAt: Date.now() + CACHE_TTL_MS });
+    return data;
+  });
 
 /** Invalidate the classification cache for an org (call after CRUD). */
 export function invalidateClassificationCache(orgId: string): void {
@@ -288,62 +307,62 @@ export interface MaskingContext {
  *
  * Returns a new rows array with masked values (does not mutate input).
  */
-export async function applyMasking(
+export const applyMasking = (
   ctx: MaskingContext,
-): Promise<Record<string, unknown>[]> {
-  // Fail open when enterprise is disabled — no masking for non-enterprise deployments
-  if (!isEnterpriseEnabled()) return ctx.rows;
-  if (!hasInternalDB()) return ctx.rows;
-  if (ctx.rows.length === 0) return ctx.rows;
+): Effect.Effect<Record<string, unknown>[]> =>
+  Effect.gen(function* () {
+    // Fail open when enterprise is disabled — no masking for non-enterprise deployments
+    if (!isEnterpriseEnabled()) return ctx.rows;
+    if (!hasInternalDB()) return ctx.rows;
+    if (ctx.rows.length === 0) return ctx.rows;
 
-  // Admins and owners always see raw data
-  const role = ctx.userRole ?? "viewer";
-  if (role === "admin" || role === "owner") return ctx.rows;
+    // Admins and owners always see raw data
+    const role = ctx.userRole ?? "viewer";
+    if (role === "admin" || role === "owner") return ctx.rows;
 
-  let classifications: PIIClassificationRow[];
-  try {
-    classifications = await getClassificationsForOrg(ctx.orgId);
-  } catch (err) {
-    log.warn(
-      { err: err instanceof Error ? err.message : String(err), orgId: ctx.orgId },
-      "Failed to load PII classifications — returning unmasked results",
+    const classifications = yield* getClassificationsForOrg(ctx.orgId).pipe(
+      Effect.catchAll((err) => {
+        log.warn(
+          { err: err instanceof Error ? err.message : String(err), orgId: ctx.orgId },
+          "Failed to load PII classifications — returning unmasked results",
+        );
+        return Effect.succeed([] as PIIClassificationRow[]);
+      }),
     );
-    return ctx.rows;
-  }
 
-  if (classifications.length === 0) return ctx.rows;
+    if (classifications.length === 0) return ctx.rows;
 
-  // Build a lookup: columnName → masking strategy (filtered to tables accessed by this query)
-  const maskLookup = new Map<string, MaskingStrategy>();
-  for (const cls of classifications) {
-    const tableNameLower = cls.table_name.toLowerCase();
-    const colNameLower = cls.column_name.toLowerCase();
-    // Match against tables accessed by this query
-    for (const table of ctx.tablesAccessed) {
-      if (table.toLowerCase() === tableNameLower) {
-        maskLookup.set(colNameLower, cls.masking_strategy as MaskingStrategy);
+    // Build a lookup: columnName → masking strategy (filtered to tables accessed by this query)
+    const maskLookup = new Map<string, MaskingStrategy>();
+    for (const cls of classifications) {
+      const tableNameLower = cls.table_name.toLowerCase();
+      const colNameLower = cls.column_name.toLowerCase();
+      // Match against tables accessed by this query
+      for (const table of ctx.tablesAccessed) {
+        if (table.toLowerCase() === tableNameLower) {
+          maskLookup.set(colNameLower, cls.masking_strategy as MaskingStrategy);
+        }
       }
     }
-  }
 
-  if (maskLookup.size === 0) return ctx.rows;
+    if (maskLookup.size === 0) return ctx.rows;
 
-  // Determine effective strategy based on role
-  const strategyForRole = resolveStrategyForRole(role);
+    // Determine effective strategy based on role
+    const strategyForRole = resolveStrategyForRole(role);
 
-  // Apply masking to each row
-  return ctx.rows.map((row) => {
-    const masked = { ...row };
-    for (const [colName, strategy] of maskLookup) {
-      // Match column names case-insensitively
-      const matchingKey = ctx.columns.find((c) => c.toLowerCase() === colName);
-      if (matchingKey && matchingKey in masked) {
-        masked[matchingKey] = maskValue(masked[matchingKey], strategy, strategyForRole);
+    // Apply masking to each row
+    return ctx.rows.map((row) => {
+      const masked = { ...row };
+      for (const [colName, strategy] of maskLookup) {
+        // Match column names case-insensitively
+        const matchingKey = ctx.columns.find((c) => c.toLowerCase() === colName);
+        if (matchingKey && matchingKey in masked) {
+          masked[matchingKey] = maskValue(masked[matchingKey], strategy, strategyForRole);
+        }
       }
-    }
-    return masked;
+      return masked;
+    });
   });
-}
 
 // ── Masking functions ───────────────────────────────────────────
 

@@ -31,23 +31,7 @@ const log = createLogger("admin-residency");
 // Lazy EE loader — fail-graceful when enterprise is disabled
 // ---------------------------------------------------------------------------
 
-type ResidencyModule = typeof import("@atlas/ee/platform/residency");
-
-async function loadResidency(): Promise<ResidencyModule | null> {
-  try {
-    return await import("@atlas/ee/platform/residency");
-  } catch (err) {
-    if (
-      err != null &&
-      typeof err === "object" &&
-      "code" in err &&
-      (err as NodeJS.ErrnoException).code === "MODULE_NOT_FOUND"
-    ) {
-      return null;
-    }
-    throw err;
-  }
-}
+import { loadResidency, getResidencyDomainError } from "./shared-residency";
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -349,12 +333,12 @@ adminResidency.use(requireOrgContext());
 
 // GET / — workspace residency status
 adminResidency.openapi(getStatusRoute, async (c) => {
+  const mod = await loadResidency();
   return runEffect(
     c,
     Effect.gen(function* () {
       const { orgId } = yield* AuthContext;
 
-      const mod = yield* Effect.promise(() => loadResidency());
       if (!mod) {
         return c.json(
           {
@@ -394,7 +378,7 @@ adminResidency.openapi(getStatusRoute, async (c) => {
       let assignedAt: string | null = null;
 
       if (configured) {
-        const assignment = yield* Effect.promise(() => mod.getWorkspaceRegionAssignment(orgId!));
+        const assignment = yield* mod.getWorkspaceRegionAssignment(orgId!);
         if (assignment) {
           region = assignment.region;
           regionLabel =
@@ -415,46 +399,28 @@ adminResidency.openapi(getStatusRoute, async (c) => {
         200,
       );
     }),
-    { label: "get residency status" },
+    { label: "get residency status", domainErrors: mod ? [getResidencyDomainError(mod)] : undefined },
   );
 });
 
 // PUT / — assign region to workspace
 adminResidency.openapi(assignRegionRoute, async (c) => {
+  const mod = await loadResidency();
   return runEffect(
     c,
     Effect.gen(function* () {
       const { orgId } = yield* AuthContext;
       const { region } = c.req.valid("json");
 
-      const mod = yield* Effect.promise(() => loadResidency());
       if (!mod) {
         return c.json({ error: "not_available", message: "Data residency is not available in this deployment." }, 404);
       }
 
-      try {
-        const result = yield* Effect.promise(() => mod.assignWorkspaceRegion(orgId!, region as string));
-        log.info({ orgId, region }, "Workspace region assigned via self-serve");
-        return c.json(result, 200);
-      } catch (err) {
-        if (err instanceof mod.ResidencyError) {
-          switch (err.code) {
-            case "invalid_region":
-              return c.json({ error: "invalid_region", message: err.message }, 400);
-            case "already_assigned":
-              return c.json({ error: "already_assigned", message: err.message }, 409);
-            case "workspace_not_found":
-              return c.json({ error: "workspace_not_found", message: err.message }, 404);
-            case "no_internal_db":
-              return c.json({ error: "no_internal_db", message: err.message }, 503);
-            case "not_configured":
-              return c.json({ error: "not_configured", message: err.message }, 404);
-          }
-        }
-        throw err;
-      }
+      const result = yield* mod.assignWorkspaceRegion(orgId!, region as string);
+      log.info({ orgId, region }, "Workspace region assigned via self-serve");
+      return c.json(result, 200);
     }),
-    { label: "assign workspace region" },
+    { label: "assign workspace region", domainErrors: mod ? [getResidencyDomainError(mod)] : undefined },
   );
 });
 
@@ -526,6 +492,7 @@ adminResidency.openapi(getMigrationStatusRoute, async (c) => {
 // ---------------------------------------------------------------------------
 
 adminResidency.openapi(requestMigrationRoute, async (c) => {
+  const mod = await loadResidency();
   return runEffect(
     c,
     Effect.gen(function* () {
@@ -541,14 +508,12 @@ adminResidency.openapi(requestMigrationRoute, async (c) => {
         return c.json({ error: "not_available", message: "Migration tracking requires an internal database.", requestId }, 404);
       }
 
-      // Load residency module — needed to validate regions
-      const mod = yield* Effect.promise(() => loadResidency());
       if (!mod) {
         return c.json({ error: "not_available", message: "Data residency is not available in this deployment.", requestId }, 404);
       }
 
       // Validate workspace has a region assigned
-      const assignment = yield* Effect.promise(() => mod.getWorkspaceRegionAssignment(orgId));
+      const assignment = yield* mod.getWorkspaceRegionAssignment(orgId);
       if (!assignment) {
         return c.json({ error: "no_region", message: "No region is assigned to this workspace. Assign a region first.", requestId }, 400);
       }
@@ -643,7 +608,7 @@ adminResidency.openapi(requestMigrationRoute, async (c) => {
 
       return c.json(migration, 201);
     }),
-    { label: "request region migration" },
+    { label: "request region migration", domainErrors: mod ? [getResidencyDomainError(mod)] : undefined },
   );
 });
 

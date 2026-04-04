@@ -27,20 +27,30 @@ const fakeAuthContext = {
   },
 };
 
+// Minimal Effect shim — supports gen, promise, tryPromise, succeed, fail
+function mockEffectIterable(value: unknown) {
+  return { [Symbol.iterator]: function* () { return value; } };
+}
+
 mock.module("effect", () => {
   const Effect = {
     gen: (genFn: () => Generator) => {
       return { _tag: "EffectGen", genFn };
     },
-    promise: (fn: () => Promise<unknown>) => {
-      // Wrap the promise so it can be yielded in the generator
-      return {
-        [Symbol.iterator]: function* (): Generator<unknown, unknown> {
-          // Return a sentinel that runEffect resolves asynchronously
-          return yield { _tag: "EffectPromise", fn };
-        },
-      };
-    },
+    promise: (fn: () => Promise<unknown>) => ({
+      [Symbol.iterator]: function* (): Generator<unknown, unknown> {
+        return yield { _tag: "EffectPromise", fn };
+      },
+    }),
+    tryPromise: (opts: { try: () => Promise<unknown>; catch: (err: unknown) => unknown }) => ({
+      [Symbol.iterator]: function* (): Generator<unknown, unknown> {
+        return yield { _tag: "EffectPromise", fn: opts.try };
+      },
+    }),
+    succeed: (value: unknown) => mockEffectIterable(value),
+    fail: (error: unknown) => ({ [Symbol.iterator]: function* () { throw error; } }),
+    void: mockEffectIterable(undefined),
+    runPromise: (value: unknown) => Promise.resolve(value),
   };
   return { Effect };
 });
@@ -53,26 +63,42 @@ mock.module("@atlas/api/lib/effect/services", () => ({
 }));
 
 mock.module("@atlas/api/lib/effect/hono", () => ({
-  runEffect: async (_c: unknown, effect: { _tag: string; genFn: () => Generator }, _opts?: unknown) => {
-    const gen = effect.genFn();
-    let result = gen.next();
-    while (!result.done) {
-      let value = result.value;
-      // Resolve Effect.promise sentinels
-      if (value && typeof value === "object" && "_tag" in value && value._tag === "EffectPromise") {
-        try {
-          value = await (value as unknown as { fn: () => Promise<unknown> }).fn();
+  runEffect: async (_c: unknown, effect: { _tag: string; genFn: () => Generator }, opts?: { domainErrors?: [unknown, Record<string, number>][] }) => {
+    try {
+      const gen = effect.genFn();
+      let result = gen.next();
+      while (!result.done) {
+        let value = result.value;
+        // Resolve Effect.promise sentinels
+        if (value && typeof value === "object" && "_tag" in value && value._tag === "EffectPromise") {
+          try {
+            value = await (value as unknown as { fn: () => Promise<unknown> }).fn();
+            result = gen.next(value);
+          } catch (err) {
+            result = gen.throw(err);
+          }
+        } else {
           result = gen.next(value);
-        } catch (err) {
-          result = gen.throw(err);
         }
-      } else {
-        result = gen.next(value);
       }
+      return result.value;
+    } catch (err) {
+      // Classify domain errors (mirrors real classifyError behavior)
+      if (opts?.domainErrors && err instanceof Error && "code" in err) {
+        for (const [errorClass, statusMap] of opts.domainErrors) {
+          if (err instanceof (errorClass as { new (...a: unknown[]): Error })) {
+            const code = (err as Error & { code: string }).code;
+            const status = statusMap[code] ?? 500;
+            return new Response(JSON.stringify({ error: code, message: err.message, requestId: "test-req-1" }), { status });
+          }
+        }
+      }
+      throw err;
     }
-    return result.value;
   },
   DomainErrorMapping: Array,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test shim
+  domainError: (cls: unknown, map: unknown) => [cls, map],
 }));
 
 // --- Auth mock ---
@@ -160,20 +186,20 @@ mock.module("@atlas/ee/platform/residency", () => ({
       throw new MockResidencyError("not configured", "not_configured");
     return mockRegions;
   },
-  getWorkspaceRegionAssignment: async () => mockAssignment,
-  assignWorkspaceRegion: async () => {
-    if (mockAssignError) throw mockAssignError;
-    return mockAssignResult;
+  getWorkspaceRegionAssignment: () => mockEffectIterable(mockAssignment),
+  assignWorkspaceRegion: () => {
+    if (mockAssignError) return { [Symbol.iterator]: function* () { throw mockAssignError; } };
+    return mockEffectIterable(mockAssignResult);
   },
   ResidencyError: MockResidencyError,
-  listRegions: async () => [],
-  listWorkspaceRegions: async () => [],
-  resolveRegionDatabaseUrl: async () => null,
+  listRegions: () => mockEffectIterable([]),
+  listWorkspaceRegions: () => mockEffectIterable([]),
+  resolveRegionDatabaseUrl: () => mockEffectIterable(null),
   isConfiguredRegion: () => true,
 }));
 
 mock.module("@atlas/ee/auth/ip-allowlist", () => ({
-  checkIPAllowlist: mock(async () => ({ allowed: true })),
+  checkIPAllowlist: mock(() => ({ allowed: true })),
   listIPAllowlistEntries: mock(async () => []),
   addIPAllowlistEntry: mock(async () => ({})),
   removeIPAllowlistEntry: mock(async () => false),

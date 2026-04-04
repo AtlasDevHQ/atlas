@@ -11,7 +11,7 @@
 
 import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
-import { runEffect } from "@atlas/api/lib/effect/hono";
+import { runEffect, domainError } from "@atlas/api/lib/effect/hono";
 import { AuthContext } from "@atlas/api/lib/effect/services";
 import {
   listConnections,
@@ -25,7 +25,7 @@ import {
 import { ErrorSchema, AuthErrorSchema, isValidId, createIdParamSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 
-const SCIM_ERROR_STATUS = { not_found: 404, conflict: 409, validation: 400 } as const;
+const scimDomainError = domainError(SCIMError, { not_found: 404, conflict: 409, validation: 400 });
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -190,12 +190,12 @@ adminScim.openapi(getStatusRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
 
-    const [scimConnections, syncStatus] = yield* Effect.promise(() => Promise.all([
+    const [scimConnections, syncStatus] = yield* Effect.all([
       listConnections(orgId!),
       getSyncStatus(orgId!),
-    ]));
+    ], { concurrency: "unbounded" });
     return c.json({ connections: scimConnections, syncStatus }, 200);
-  }), { label: "get SCIM status", domainErrors: [[SCIMError, SCIM_ERROR_STATUS]] });
+  }), { label: "get SCIM status", domainErrors: [scimDomainError] });
 });
 
 // DELETE /connections/:id — revoke a SCIM connection
@@ -208,12 +208,12 @@ adminScim.openapi(deleteConnectionRoute, async (c) => {
       return c.json({ error: "bad_request", message: "Invalid connection ID." }, 400);
     }
 
-    const deleted = yield* Effect.promise(() => deleteConnection(orgId!, connectionId));
+    const deleted = yield* deleteConnection(orgId!, connectionId);
     if (!deleted) {
       return c.json({ error: "not_found", message: "SCIM connection not found." }, 404);
     }
     return c.json({ message: "SCIM connection deleted." }, 200);
-  }), { label: "delete SCIM connection", domainErrors: [[SCIMError, SCIM_ERROR_STATUS]] });
+  }), { label: "delete SCIM connection", domainErrors: [scimDomainError] });
 });
 
 // GET /group-mappings — list group→role mappings
@@ -221,9 +221,9 @@ adminScim.openapi(listGroupMappingsRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
 
-    const mappings = yield* Effect.promise(() => listGroupMappings(orgId!));
+    const mappings = yield* listGroupMappings(orgId!);
     return c.json({ mappings, total: mappings.length }, 200);
-  }), { label: "list SCIM group mappings", domainErrors: [[SCIMError, SCIM_ERROR_STATUS]] });
+  }), { label: "list SCIM group mappings", domainErrors: [scimDomainError] });
 });
 
 // POST /group-mappings — create a group→role mapping
@@ -236,9 +236,9 @@ adminScim.openapi(createGroupMappingRoute, async (c) => {
       return c.json({ error: "bad_request", message: "Missing required fields: scimGroupName, roleName." }, 400);
     }
 
-    const mapping = yield* Effect.promise(() => createGroupMapping(orgId!, scimGroupName, roleName));
+    const mapping = yield* createGroupMapping(orgId!, scimGroupName, roleName);
     return c.json({ mapping }, 201);
-  }), { label: "create SCIM group mapping", domainErrors: [[SCIMError, SCIM_ERROR_STATUS]] });
+  }), { label: "create SCIM group mapping", domainErrors: [scimDomainError] });
 });
 
 // DELETE /group-mappings/:id — delete a group mapping
@@ -251,12 +251,12 @@ adminScim.openapi(deleteGroupMappingRoute, async (c) => {
       return c.json({ error: "bad_request", message: "Invalid mapping ID." }, 400);
     }
 
-    const deleted = yield* Effect.promise(() => deleteGroupMapping(orgId!, mappingId));
+    const deleted = yield* deleteGroupMapping(orgId!, mappingId);
     if (!deleted) {
       return c.json({ error: "not_found", message: "SCIM group mapping not found." }, 404);
     }
     return c.json({ message: "SCIM group mapping deleted." }, 200);
-  }), { label: "delete SCIM group mapping", domainErrors: [[SCIMError, SCIM_ERROR_STATUS]] });
+  }), { label: "delete SCIM group mapping", domainErrors: [scimDomainError] });
 });
 
 export { adminScim };

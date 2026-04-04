@@ -8,7 +8,7 @@
 import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
-import { runEffect } from "@atlas/api/lib/effect/hono";
+import { runEffect, domainError } from "@atlas/api/lib/effect/hono";
 import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
 import {
   getWorkspaceModelConfig,
@@ -20,7 +20,7 @@ import {
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter } from "./admin-router";
 
-const MODEL_CONFIG_ERROR_STATUS = { validation: 400, not_found: 404, test_failed: 422 } as const;
+const modelConfigDomainError = domainError(ModelConfigError, { validation: 400, not_found: 404, test_failed: 422 });
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -166,9 +166,9 @@ adminModelConfig.openapi(getConfigRoute, async (c) => {
       return c.json({ error: "bad_request", message: "No active organization. Set an active org first.", requestId }, 400);
     }
 
-    const config = yield* Effect.promise(() => getWorkspaceModelConfig(orgId));
+    const config = yield* getWorkspaceModelConfig(orgId);
     return c.json({ config }, 200);
-  }), { label: "get workspace model config", domainErrors: [[ModelConfigError, MODEL_CONFIG_ERROR_STATUS]] });
+  }), { label: "get workspace model config", domainErrors: [modelConfigDomainError] });
 });
 
 // PUT / — set workspace model configuration
@@ -189,20 +189,20 @@ adminModelConfig.openapi(setConfigRoute, async (c) => {
 
     // If apiKey is omitted, require an existing config to preserve the key
     if (!body.apiKey) {
-      const existing = yield* Effect.promise(() => getWorkspaceModelConfig(orgId));
+      const existing = yield* getWorkspaceModelConfig(orgId);
       if (!existing) {
         return c.json({ error: "validation", message: "API key is required when no existing configuration exists." }, 400);
       }
     }
 
-    const config = yield* Effect.promise(() => setWorkspaceModelConfig(orgId, {
+    const config = yield* setWorkspaceModelConfig(orgId, {
       provider: body.provider,
       model: body.model,
       apiKey: body.apiKey,
       baseUrl: body.baseUrl,
-    }));
+    });
     return c.json({ config }, 200);
-  }), { label: "set workspace model config", domainErrors: [[ModelConfigError, MODEL_CONFIG_ERROR_STATUS]] });
+  }), { label: "set workspace model config", domainErrors: [modelConfigDomainError] });
 });
 
 // DELETE / — reset workspace model configuration
@@ -219,12 +219,12 @@ adminModelConfig.openapi(deleteConfigRoute, async (c) => {
       return c.json({ error: "bad_request", message: "No active organization. Set an active org first.", requestId }, 400);
     }
 
-    const deleted = yield* Effect.promise(() => deleteWorkspaceModelConfig(orgId));
+    const deleted = yield* deleteWorkspaceModelConfig(orgId);
     if (!deleted) {
       return c.json({ error: "not_found", message: "No custom model configuration found." }, 404);
     }
     return c.json({ message: "Model configuration reset to platform default." }, 200);
-  }), { label: "delete workspace model config", domainErrors: [[ModelConfigError, MODEL_CONFIG_ERROR_STATUS]] });
+  }), { label: "delete workspace model config", domainErrors: [modelConfigDomainError] });
 });
 
 // POST /test — test model configuration (no hasInternalDB — tests external APIs only)
@@ -239,14 +239,14 @@ adminModelConfig.openapi(testConfigRoute, async (c) => {
 
     const body = c.req.valid("json");
 
-    const result = yield* Effect.promise(() => testModelConfig({
+    const result = yield* testModelConfig({
       provider: body.provider,
       model: body.model,
       apiKey: body.apiKey,
       baseUrl: body.baseUrl,
-    }));
+    });
     return c.json(result, 200);
-  }), { label: "test model config", domainErrors: [[ModelConfigError, MODEL_CONFIG_ERROR_STATUS]] });
+  }), { label: "test model config", domainErrors: [modelConfigDomainError] });
 });
 
 export { adminModelConfig };

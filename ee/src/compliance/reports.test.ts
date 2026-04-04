@@ -1,4 +1,12 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, mock } from "bun:test";
+import { Effect, Exit, Cause } from "effect";
+
+// ── Effect runner helper ──────────────────────────────────────────
+const run = async <A, E>(effect: Effect.Effect<A, E>): Promise<A> => {
+  const exit = await Effect.runPromiseExit(effect);
+  if (Exit.isSuccess(exit)) return exit.value;
+  throw Cause.squash(exit.cause);
+};
 
 // ── Isolate from .env — enterprise flag must be controlled by mock ──
 const savedEnterpriseEnabled = process.env.ATLAS_ENTERPRISE_ENABLED;
@@ -23,6 +31,16 @@ mock.module("@atlas/api/lib/config", () => ({
 mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => mockHasInternalDB,
   internalQuery: async () => mockQueryResults.shift() ?? [],
+}));
+
+const hasDB = () => mockHasInternalDB;
+mock.module("../lib/db-guard", () => ({
+  requireInternalDB: (label: string, factory?: () => Error) => {
+    if (!hasDB()) { if (factory) throw factory(); throw new Error(`Internal database required for ${label}.`); }
+  },
+  requireInternalDBEffect: (label: string, factory?: () => Error) => {
+    return hasDB() ? Effect.void : Effect.fail(factory?.() ?? new Error(`Internal database required for ${label}.`));
+  },
 }));
 
 mock.module("@atlas/api/lib/logger", () => ({
@@ -59,13 +77,13 @@ describe("enterprise gate", () => {
 
   it("data access report throws when enterprise disabled", async () => {
     await expect(
-      generateDataAccessReport("org-1", BASE_FILTERS),
+      run(generateDataAccessReport("org-1", BASE_FILTERS)),
     ).rejects.toThrow(/Enterprise features/);
   });
 
   it("user activity report throws when enterprise disabled", async () => {
     await expect(
-      generateUserActivityReport("org-1", BASE_FILTERS),
+      run(generateUserActivityReport("org-1", BASE_FILTERS)),
     ).rejects.toThrow(/Enterprise features/);
   });
 });
@@ -82,25 +100,25 @@ describe("generateDataAccessReport", () => {
   it("throws when internal DB unavailable", async () => {
     mockHasInternalDB = false;
     await expect(
-      generateDataAccessReport("org-1", BASE_FILTERS),
+      run(generateDataAccessReport("org-1", BASE_FILTERS)),
     ).rejects.toThrow("Internal database not available");
   });
 
   it("validates date range", async () => {
     await expect(
-      generateDataAccessReport("org-1", { startDate: "invalid", endDate: "2026-03-01" }),
+      run(generateDataAccessReport("org-1", { startDate: "invalid", endDate: "2026-03-01" })),
     ).rejects.toThrow(/Invalid startDate/);
   });
 
   it("validates endDate before startDate", async () => {
     await expect(
-      generateDataAccessReport("org-1", { startDate: "2026-03-01", endDate: "2026-01-01" }),
+      run(generateDataAccessReport("org-1", { startDate: "2026-03-01", endDate: "2026-01-01" })),
     ).rejects.toThrow(/startDate must be before endDate/);
   });
 
   it("validates invalid endDate", async () => {
     await expect(
-      generateDataAccessReport("org-1", { startDate: "2026-01-01", endDate: "not-a-date" }),
+      run(generateDataAccessReport("org-1", { startDate: "2026-01-01", endDate: "not-a-date" })),
     ).rejects.toThrow(/Invalid endDate/);
   });
 
@@ -108,7 +126,7 @@ describe("generateDataAccessReport", () => {
     // Main query returns empty
     mockQueryResults.push([]);
 
-    const report = await generateDataAccessReport("org-1", BASE_FILTERS);
+    const report = await run(generateDataAccessReport("org-1", BASE_FILTERS));
     expect(report.rows).toHaveLength(0);
     expect(report.summary.totalQueries).toBe(0);
     expect(report.summary.uniqueUsers).toBe(0);
@@ -144,7 +162,7 @@ describe("generateDataAccessReport", () => {
     // PII enrichment
     mockQueryResults.push([{ table_name: "users" }]);
 
-    const report = await generateDataAccessReport("org-1", BASE_FILTERS);
+    const report = await run(generateDataAccessReport("org-1", BASE_FILTERS));
     expect(report.rows).toHaveLength(2);
     expect(report.summary.totalQueries).toBe(8);
     expect(report.summary.uniqueUsers).toBe(1);
@@ -183,10 +201,10 @@ describe("generateDataAccessReport", () => {
     // PII enrichment
     mockQueryResults.push([]);
 
-    const report = await generateDataAccessReport("org-1", {
+    const report = await run(generateDataAccessReport("org-1", {
       ...BASE_FILTERS,
       role: "admin",
-    });
+    }));
     expect(report.rows).toHaveLength(1);
     expect(report.rows[0].userId).toBe("user-1");
   });
@@ -218,7 +236,7 @@ describe("generateDataAccessReport", () => {
     // PII enrichment
     mockQueryResults.push([]);
 
-    const report = await generateDataAccessReport("org-1", BASE_FILTERS);
+    const report = await run(generateDataAccessReport("org-1", BASE_FILTERS));
     // Should be aggregated into a single row
     expect(report.rows).toHaveLength(1);
     expect(report.rows[0].queryCount).toBe(5); // 3 + 2
@@ -232,7 +250,7 @@ describe("generateDataAccessReport", () => {
 
   it("thrown errors from validation are ReportError instances", async () => {
     try {
-      await generateDataAccessReport("org-1", { startDate: "bad", endDate: "2026-03-01" });
+      await run(generateDataAccessReport("org-1", { startDate: "bad", endDate: "2026-03-01" }));
       expect(true).toBe(false); // should not reach
     } catch (err) {
       expect(err).toBeInstanceOf(ReportError);
@@ -253,14 +271,14 @@ describe("generateUserActivityReport", () => {
   it("throws when internal DB unavailable", async () => {
     mockHasInternalDB = false;
     await expect(
-      generateUserActivityReport("org-1", BASE_FILTERS),
+      run(generateUserActivityReport("org-1", BASE_FILTERS)),
     ).rejects.toThrow("Internal database not available");
   });
 
   it("returns empty report with no data", async () => {
     mockQueryResults.push([]);
 
-    const report = await generateUserActivityReport("org-1", BASE_FILTERS);
+    const report = await run(generateUserActivityReport("org-1", BASE_FILTERS));
     expect(report.rows).toHaveLength(0);
     expect(report.summary.totalUsers).toBe(0);
     expect(report.summary.activeUsers).toBe(0);
@@ -284,7 +302,7 @@ describe("generateUserActivityReport", () => {
     // Role query
     mockQueryResults.push([{ user_id: "user-1", role: "admin" }]);
 
-    const report = await generateUserActivityReport("org-1", BASE_FILTERS);
+    const report = await run(generateUserActivityReport("org-1", BASE_FILTERS));
     expect(report.rows).toHaveLength(1);
     expect(report.rows[0].totalQueries).toBe(10);
     expect(report.rows[0].lastLoginAt).toBe("2026-02-14T00:00:00Z");

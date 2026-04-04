@@ -28,20 +28,48 @@ import {
   makeAuthContextLayer,
 } from "./services";
 
-// ── Domain error mapping (replaces throwIfEEError) ──────────────────
+// ── Domain error mapping ────────────────────────────────────────────
 
 /**
  * A domain error class → HTTP status code mapping pair.
  *
- * Used by `runEffect` to convert EE domain errors (thrown inside
- * `Effect.tryPromise`) into proper HTTP responses. Replaces the
- * `throwIfEEError` + `DomainErrorMapping` combo from `error-handler.ts`.
+ * Always construct via `domainError()` — raw tuples bypass the compile-time
+ * exhaustive code check. The brand prevents direct tuple construction.
+ *
+ * Used by `runEffect` to convert EE domain errors into proper HTTP responses.
+ * Domain errors surface either as typed failures (from Effect programs) or as
+ * defects (from `Effect.tryPromise` in `runHandler`).
  */
+declare const DomainErrorMappingBrand: unique symbol;
 export type DomainErrorMapping = [
   // eslint-disable-next-line @typescript-eslint/no-explicit-any -- constructor signatures vary across EE error classes; { code: string } ensures the statusMap lookup is valid
   errorClass: new (...args: any[]) => Error & { code: string },
   statusMap: Record<string, ContentfulStatusCode>,
-];
+] & { readonly [DomainErrorMappingBrand]: true };
+
+/**
+ * Type-safe constructor for `DomainErrorMapping` tuples.
+ *
+ * Infers `TCode` from the error class's `code` property and requires the
+ * status map to cover every code — the compiler will error if a code is
+ * added to the error class's union without a corresponding entry here.
+ *
+ * @example
+ * ```ts
+ * // ApprovalErrorCode = "validation" | "not_found" | "conflict" | "expired"
+ * const approvalErrors = domainError(ApprovalError, {
+ *   validation: 400, not_found: 404, conflict: 409, expired: 410,
+ * });
+ * // Missing "expired" would be a compile error ↑
+ * ```
+ */
+export function domainError<TCode extends string>(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- must accept varied constructor signatures; TCode constraint ensures the statusMap is exhaustive
+  errorClass: new (...args: any[]) => Error & { code: TCode },
+  statusMap: Record<TCode, ContentfulStatusCode>,
+): DomainErrorMapping {
+  return [errorClass, statusMap] as unknown as DomainErrorMapping;
+}
 
 const log = createLogger("effect-bridge");
 
@@ -216,12 +244,21 @@ function classifyError(
       if (error instanceof errorClass) {
         const code = error.code;
         if (statusMap[code] === undefined) {
-          log.warn(`Unmapped domain error code "${code}" for ${errorClass.name}, defaulting to 400`);
+          log.error({ err: error, code, requestId }, `Unmapped domain error code "${code}" for ${errorClass.name}, defaulting to 500`);
         }
-        const status = (statusMap[code] ?? 400) as ContentfulStatusCode;
+        const status = (statusMap[code] ?? 500) as ContentfulStatusCode;
+        // Sanitize messages for 5xx domain errors — they may contain infrastructure
+        // details (Railway URLs, project IDs, internal hostnames) that should not
+        // be exposed to clients. 4xx errors are user-facing and pass through.
+        if (status >= 500) {
+          log.error({ err: error, code, requestId }, `Infrastructure domain error (${errorClass.name})`);
+        }
+        const message = status >= 500
+          ? `Service error (ref: ${requestId.slice(0, 8)})`
+          : error.message;
         return new HTTPException(status, {
           res: Response.json(
-            { error: code, message: error.message, requestId },
+            { error: code, message, requestId },
             { status },
           ),
         });
@@ -248,7 +285,7 @@ function classifyError(
 export interface RunEffectOptions {
   /** Human-readable action label for error messages and logs. */
   label?: string;
-  /** Domain error class → HTTP status code mappings (replaces throwIfEEError). */
+  /** Domain error class → HTTP status code mappings for EE module errors. */
   domainErrors?: DomainErrorMapping[];
 }
 
@@ -399,9 +436,9 @@ function buildContextLayer(
     return Layer.merge(requestLayer, authLayer);
   }
 
-  // No auth — provide RequestContext only, with a fallback AuthContext
-  // so programs that yield* AuthContext get a clear error rather than
-  // a cryptic "service not found" at runtime.
+  // No auth — provide RequestContext with a fallback AuthContext (mode: "none",
+  // no user) so programs that yield* AuthContext always get a valid service
+  // rather than a cryptic "service not found" at runtime.
   const noAuthLayer = makeAuthContextLayer("none", undefined);
   return Layer.merge(requestLayer, noAuthLayer);
 }
@@ -415,15 +452,8 @@ function buildContextLayer(
  * that haven't been converted to full Effect programs yet. The handler body stays
  * as async/await — thrown errors are caught and classified by `runEffect`.
  *
- * Automatically bridges Hono request context → Effect Context:
- * - `RequestContext` with `requestId` and `startTime`
- * - `AuthContext` with `mode`, `user`, and `orgId`
- *
- * Effect programs running inside `runHandler` can access these via:
- * ```ts
- * const { requestId } = yield* RequestContext;
- * const { orgId } = yield* AuthContext;
- * ```
+ * Automatically bridges Hono request context → Effect Context so that any
+ * Effect programs called transitively can access `RequestContext` and `AuthContext`.
  *
  * @example
  * ```ts

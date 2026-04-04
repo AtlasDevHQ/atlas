@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, mock } from "bun:test";
+import { Effect } from "effect";
 import { createEEMock } from "../__mocks__/internal";
 
 // ── Mocks ───────────────────────────────────────────────────────────
@@ -7,6 +8,21 @@ const ee = createEEMock();
 
 mock.module("../index", () => ee.enterpriseMock);
 mock.module("@atlas/api/lib/db/internal", () => ee.internalDBMock);
+
+const hasDB = () => (ee.internalDBMock.hasInternalDB as () => boolean)();
+mock.module("../lib/db-guard", () => ({
+  requireInternalDB: (label: string, factory?: () => Error) => {
+    if (!hasDB()) {
+      if (factory) throw factory();
+      throw new Error(`Internal database required for ${label}.`);
+    }
+  },
+  requireInternalDBEffect: (label: string, factory?: () => Error) => {
+    return hasDB()
+      ? Effect.void
+      : Effect.fail(factory?.() ?? new Error(`Internal database required for ${label}.`));
+  },
+}));
 
 let mockAuthMode = "none";
 mock.module("@atlas/api/lib/auth/detect", () => ({
@@ -36,6 +52,10 @@ const {
 } = await import("./roles");
 
 // ── Helpers ─────────────────────────────────────────────────────────
+
+/** Run an Effect, converting failures to rejected promises for test assertions. */
+const run = <A, E>(effect: Effect.Effect<A, E>) =>
+  Effect.runPromise(effect as Effect.Effect<A, never>);
 
 function resetMocks() {
   ee.reset();
@@ -146,7 +166,7 @@ describe("resolvePermissions", () => {
 
   it("returns all permissions for undefined user in no-auth mode", async () => {
     mockAuthMode = "none";
-    const perms = await resolvePermissions(undefined);
+    const perms = await run(resolvePermissions(undefined));
     expect(perms.size).toBe(PERMISSIONS.length);
     for (const p of PERMISSIONS) {
       expect(perms.has(p)).toBe(true);
@@ -155,7 +175,7 @@ describe("resolvePermissions", () => {
 
   it("returns empty permissions for undefined user in managed auth mode", async () => {
     mockAuthMode = "managed";
-    const perms = await resolvePermissions(undefined);
+    const perms = await run(resolvePermissions(undefined));
     expect(perms.size).toBe(0);
   });
 
@@ -165,7 +185,7 @@ describe("resolvePermissions", () => {
     })]);
 
     const user = makeUser({ role: "analyst" });
-    const perms = await resolvePermissions(user);
+    const perms = await run(resolvePermissions(user));
     expect(perms.has("query")).toBe(true);
     expect(perms.has("admin:audit")).toBe(true);
     expect(perms.has("admin:users")).toBe(false);
@@ -176,7 +196,7 @@ describe("resolvePermissions", () => {
     ee.queueMockRows([]); // No custom role found
 
     const user = makeUser({ role: "admin" });
-    const perms = await resolvePermissions(user);
+    const perms = await run(resolvePermissions(user));
     expect(perms.size).toBe(PERMISSIONS.length);
   });
 
@@ -184,7 +204,7 @@ describe("resolvePermissions", () => {
     ee.queueMockRows([]); // No custom role found
 
     const user = makeUser({ role: "member" });
-    const perms = await resolvePermissions(user);
+    const perms = await run(resolvePermissions(user));
     expect(perms.has("query")).toBe(true);
     expect(perms.has("query:raw_data")).toBe(true);
     expect(perms.has("admin:users")).toBe(false);
@@ -194,7 +214,7 @@ describe("resolvePermissions", () => {
     ee.queueMockRows([]); // No custom role found
 
     const user = makeUser({ role: undefined });
-    const perms = await resolvePermissions(user);
+    const perms = await run(resolvePermissions(user));
     expect(perms.has("query")).toBe(true);
     expect(perms.has("query:raw_data")).toBe(true);
     expect(perms.has("admin:users")).toBe(false);
@@ -205,7 +225,7 @@ describe("resolvePermissions", () => {
     ee.queueMockRows([{ id: "r1", org_id: "org-1", name: "test", description: "", permissions: "INVALID_JSON{", is_builtin: false, created_at: "", updated_at: "" }]);
 
     const user = makeUser({ role: "test" });
-    const perms = await resolvePermissions(user);
+    const perms = await run(resolvePermissions(user));
     // Corrupt data → empty permissions (fail closed), not elevated legacy
     expect(perms.size).toBe(0);
     expect(perms.has("admin:users")).toBe(false);
@@ -217,12 +237,12 @@ describe("hasPermission", () => {
 
   it("returns true when user has the permission", async () => {
     ee.queueMockRows([]); // Falls back to legacy admin
-    expect(await hasPermission(makeUser({ role: "admin" }), "admin:users")).toBe(true);
+    expect(await run(hasPermission(makeUser({ role: "admin" }), "admin:users"))).toBe(true);
   });
 
   it("returns false when user lacks the permission", async () => {
     ee.queueMockRows([]); // Falls back to legacy member
-    expect(await hasPermission(makeUser({ role: "member" }), "admin:users")).toBe(false);
+    expect(await run(hasPermission(makeUser({ role: "member" }), "admin:users"))).toBe(false);
   });
 });
 
@@ -231,13 +251,13 @@ describe("checkPermission", () => {
 
   it("returns null when permission is satisfied", async () => {
     ee.queueMockRows([]); // Legacy admin
-    const result = await checkPermission(makeUser({ role: "admin" }), "admin:users", "req-1");
+    const result = await run(checkPermission(makeUser({ role: "admin" }), "admin:users", "req-1"));
     expect(result).toBeNull();
   });
 
   it("returns error response when permission is denied", async () => {
     ee.queueMockRows([]); // Legacy member
-    const result = await checkPermission(makeUser({ role: "member" }), "admin:users", "req-1");
+    const result = await run(checkPermission(makeUser({ role: "member" }), "admin:users", "req-1"));
     expect(result).not.toBeNull();
     expect(result!.status).toBe(403);
     expect(result!.body.error).toBe("insufficient_permissions");
@@ -251,7 +271,7 @@ describe("CRUD operations", () => {
   describe("listRoles", () => {
     it("throws when enterprise is not enabled", async () => {
       ee.setEnterpriseEnabled(false);
-      await expect(listRoles("org-1")).rejects.toThrow("Enterprise features");
+      await expect(run(listRoles("org-1"))).rejects.toThrow("Enterprise features");
     });
 
     it("returns roles from DB", async () => {
@@ -266,7 +286,7 @@ describe("CRUD operations", () => {
         makeRoleRow({ id: "role-2", name: "custom", is_builtin: false }),
       ]);
 
-      const roles = await listRoles("org-1");
+      const roles = await run(listRoles("org-1"));
       expect(roles.length).toBe(2);
       expect(roles[0].name).toBe("analyst");
       expect(roles[1].name).toBe("custom");
@@ -276,14 +296,14 @@ describe("CRUD operations", () => {
   describe("getRole", () => {
     it("returns role when found", async () => {
       ee.queueMockRows([makeRoleRow()]);
-      const role = await getRole("org-1", "role-1");
+      const role = await run(getRole("org-1", "role-1"));
       expect(role).not.toBeNull();
       expect(role!.name).toBe("analyst");
     });
 
     it("returns null when not found", async () => {
       ee.queueMockRows([]);
-      const role = await getRole("org-1", "nonexistent");
+      const role = await run(getRole("org-1", "nonexistent"));
       expect(role).toBeNull();
     });
   });
@@ -298,11 +318,11 @@ describe("CRUD operations", () => {
         permissions: JSON.stringify(["query", "admin:connections"]),
       })]);
 
-      const role = await createRole("org-1", {
+      const role = await run(createRole("org-1", {
         name: "data-engineer",
         description: "Can query and manage connections",
         permissions: ["query", "admin:connections"],
-      });
+      }));
 
       expect(role.name).toBe("data-engineer");
       expect(role.isBuiltin).toBe(false);
@@ -312,23 +332,23 @@ describe("CRUD operations", () => {
 
     it("rejects invalid role names", async () => {
       await expect(
-        createRole("org-1", { name: "123invalid", permissions: ["query"] }),
+        run(createRole("org-1", { name: "123invalid", permissions: ["query"] })),
       ).rejects.toThrow("Invalid role name");
     });
 
     it("rejects invalid permissions", async () => {
       await expect(
-        createRole("org-1", { name: "test", permissions: ["nonexistent"] }),
+        run(createRole("org-1", { name: "test", permissions: ["nonexistent"] })),
       ).rejects.toThrow("Invalid permissions");
     });
 
     it("rejects reserved legacy role names", async () => {
       await expect(
-        createRole("org-1", { name: "member", permissions: ["query"] }),
+        run(createRole("org-1", { name: "member", permissions: ["query"] })),
       ).rejects.toThrow("reserved role name");
 
       await expect(
-        createRole("org-1", { name: "owner", permissions: ["query"] }),
+        run(createRole("org-1", { name: "owner", permissions: ["query"] })),
       ).rejects.toThrow("reserved role name");
     });
 
@@ -336,7 +356,7 @@ describe("CRUD operations", () => {
       ee.queueMockRows([{ id: "existing" }]); // uniqueness check finds existing
 
       await expect(
-        createRole("org-1", { name: "analyst", permissions: ["query"] }),
+        run(createRole("org-1", { name: "analyst", permissions: ["query"] })),
       ).rejects.toThrow("already exists");
     });
   });
@@ -352,10 +372,10 @@ describe("CRUD operations", () => {
         permissions: JSON.stringify(["query"]),
       })]);
 
-      const role = await updateRole("org-1", "role-1", {
+      const role = await run(updateRole("org-1", "role-1", {
         description: "Updated description",
         permissions: ["query"],
-      });
+      }));
 
       expect(role.description).toBe("Updated description");
     });
@@ -364,7 +384,7 @@ describe("CRUD operations", () => {
       ee.queueMockRows([makeRoleRow({ is_builtin: true })]);
 
       await expect(
-        updateRole("org-1", "role-1", { permissions: ["query"] }),
+        run(updateRole("org-1", "role-1", { permissions: ["query"] })),
       ).rejects.toThrow("Built-in roles cannot be modified");
     });
 
@@ -372,7 +392,7 @@ describe("CRUD operations", () => {
       ee.queueMockRows([]); // getRole returns nothing
 
       await expect(
-        updateRole("org-1", "nonexistent", { permissions: ["query"] }),
+        run(updateRole("org-1", "nonexistent", { permissions: ["query"] })),
       ).rejects.toThrow("not found");
     });
   });
@@ -388,7 +408,7 @@ describe("CRUD operations", () => {
       // DELETE (via getInternalDB().query) returns the deleted row
       ee.queueMockRows([{ id: "role-1" }]);
 
-      const result = await deleteRole("org-1", "role-1");
+      const result = await run(deleteRole("org-1", "role-1"));
       expect(result).toBe(true);
     });
 
@@ -403,7 +423,7 @@ describe("CRUD operations", () => {
       ]);
 
       await expect(
-        deleteRole("org-1", "role-1"),
+        run(deleteRole("org-1", "role-1")),
       ).rejects.toThrow("Cannot delete role with 2 active member(s)");
     });
 
@@ -411,14 +431,14 @@ describe("CRUD operations", () => {
       ee.queueMockRows([makeRoleRow({ is_builtin: true })]);
 
       await expect(
-        deleteRole("org-1", "role-1"),
+        run(deleteRole("org-1", "role-1")),
       ).rejects.toThrow("Built-in roles cannot be deleted");
     });
 
     it("returns false when role not found", async () => {
       ee.queueMockRows([]); // getRole returns nothing
 
-      const result = await deleteRole("org-1", "nonexistent");
+      const result = await run(deleteRole("org-1", "nonexistent"));
       expect(result).toBe(false);
     });
   });
@@ -437,7 +457,7 @@ describe("Role assignment", () => {
         { userId: "user-2", role: "analyst", createdAt: "2026-01-02" },
       ]);
 
-      const members = await listRoleMembers("org-1", "role-1");
+      const members = await run(listRoleMembers("org-1", "role-1"));
       expect(members.length).toBe(2);
       expect(members[0].userId).toBe("user-1");
     });
@@ -446,7 +466,7 @@ describe("Role assignment", () => {
       ee.queueMockRows([]); // getRole returns nothing
 
       await expect(
-        listRoleMembers("org-1", "nonexistent"),
+        run(listRoleMembers("org-1", "nonexistent")),
       ).rejects.toThrow("not found");
     });
   });
@@ -458,7 +478,7 @@ describe("Role assignment", () => {
       // UPDATE member
       ee.queueMockRows([{ userId: "user-1", role: "analyst" }]);
 
-      const result = await assignRole("org-1", "user-1", "analyst");
+      const result = await run(assignRole("org-1", "user-1", "analyst"));
       expect(result.userId).toBe("user-1");
       expect(result.role).toBe("analyst");
     });
@@ -467,7 +487,7 @@ describe("Role assignment", () => {
       ee.queueMockRows([]); // role not found
 
       await expect(
-        assignRole("org-1", "user-1", "nonexistent"),
+        run(assignRole("org-1", "user-1", "nonexistent")),
       ).rejects.toThrow("does not exist");
     });
 
@@ -476,7 +496,7 @@ describe("Role assignment", () => {
       ee.queueMockRows([]); // member update returns nothing
 
       await expect(
-        assignRole("org-1", "user-1", "analyst"),
+        run(assignRole("org-1", "user-1", "analyst")),
       ).rejects.toThrow("not a member");
     });
   });
@@ -489,7 +509,7 @@ describe("seedBuiltinRoles", () => {
     // Three existence checks, all empty
     ee.queueMockRows([], [], []);
 
-    await seedBuiltinRoles("org-1");
+    await run(seedBuiltinRoles("org-1"));
 
     // 3 SELECTs + 3 INSERTs = 6 queries
     const selects = ee.capturedQueries.filter((q) => q.sql.includes("SELECT"));
@@ -502,7 +522,7 @@ describe("seedBuiltinRoles", () => {
     // First two exist, third doesn't
     ee.queueMockRows([{ id: "existing" }], [{ id: "existing" }], []);
 
-    await seedBuiltinRoles("org-1");
+    await run(seedBuiltinRoles("org-1"));
 
     const inserts = ee.capturedQueries.filter((q) => q.sql.includes("INSERT"));
     expect(inserts.length).toBe(1);

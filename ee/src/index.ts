@@ -5,11 +5,13 @@
  *
  *   isEnterpriseEnabled()       — returns boolean (safe for conditional logic)
  *   getEnterpriseLicenseKey()   — returns the license key string, if set
- *   requireEnterprise()         — throws EnterpriseError if not enabled or no license key (guard)
- *   EnterpriseError             — typed error for instanceof checks (thrown by requireEnterprise)
+ *   requireEnterprise()         — throws EnterpriseError if not enabled (sync guard)
+ *   requireEnterpriseEffect()   — Effect.fail(EnterpriseError) if not enabled (Effect guard)
+ *   EnterpriseError             — typed error for instanceof checks
  *   EEError                     — abstract base class for all EE module errors (see lib/errors.ts)
  */
 
+import { Effect } from "effect";
 import { EEError } from "./lib/errors";
 export { EEError } from "./lib/errors";
 import { getConfig } from "@atlas/api/lib/config";
@@ -72,6 +74,20 @@ export function requireEnterprise(feature?: string): void {
     );
   }
 }
+
+/**
+ * Effect version of `requireEnterprise`. Fails with `EnterpriseError` when
+ * enterprise is not enabled. Use in EE modules that return Effect.
+ */
+export const requireEnterpriseEffect = (feature?: string): Effect.Effect<void, EnterpriseError> => {
+  const label = feature ? ` (${feature})` : "";
+  return isEnterpriseEnabled()
+    ? Effect.void
+    : Effect.fail(new EnterpriseError(
+        `Enterprise features${label} are not enabled. ` +
+        `Set ATLAS_ENTERPRISE_ENABLED=true or configure enterprise.enabled in atlas.config.ts.`,
+      ));
+};
 
 // Re-export deploy mode resolution
 export { resolveDeployMode } from "./deploy-mode";

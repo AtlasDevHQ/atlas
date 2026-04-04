@@ -6,6 +6,7 @@
  */
 
 import { describe, it, expect, beforeEach, mock, type Mock } from "bun:test";
+import { Effect } from "effect";
 
 // --- Auth mock ---
 
@@ -48,23 +49,23 @@ mock.module("@atlas/api/lib/db/internal", () => ({
 let mockBranding: Record<string, unknown> | null = null;
 let mockSetResult: Record<string, unknown> | null = null;
 let mockDeleteResult = false;
-let mockEeThrow: Error | null = null;
+let mockEeError: Error | null = null;
 
 const { BrandingError: RealBrandingError } = await import("@atlas/ee/branding/white-label");
 const { EnterpriseError } = await import("@atlas/ee/index");
 
 mock.module("@atlas/ee/branding/white-label", () => ({
-  getWorkspaceBranding: async () => {
-    if (mockEeThrow) throw mockEeThrow;
-    return mockBranding;
+  getWorkspaceBranding: () => {
+    if (mockEeError) return Effect.fail(mockEeError);
+    return Effect.succeed(mockBranding);
   },
-  setWorkspaceBranding: async () => {
-    if (mockEeThrow) throw mockEeThrow;
-    return mockSetResult;
+  setWorkspaceBranding: () => {
+    if (mockEeError) return Effect.fail(mockEeError);
+    return Effect.succeed(mockSetResult);
   },
-  deleteWorkspaceBranding: async () => {
-    if (mockEeThrow) throw mockEeThrow;
-    return mockDeleteResult;
+  deleteWorkspaceBranding: () => {
+    if (mockEeError) return Effect.fail(mockEeError);
+    return Effect.succeed(mockDeleteResult);
   },
   BrandingError: RealBrandingError,
 }));
@@ -85,7 +86,7 @@ function resetMocks() {
   mockBranding = null;
   mockSetResult = null;
   mockDeleteResult = false;
-  mockEeThrow = null;
+  mockEeError = null;
   mockAuthenticateRequest.mockImplementation(() =>
     Promise.resolve({
       authenticated: true,
@@ -132,7 +133,7 @@ describe("GET /api/v1/admin/branding", () => {
   });
 
   it("returns 403 when enterprise disabled", async () => {
-    mockEeThrow = new EnterpriseError("Enterprise features (branding) are not enabled.");
+    mockEeError = new EnterpriseError("Enterprise features (branding) are not enabled.");
     const res = await request("GET");
     expect(res.status).toBe(403);
     const json = await res.json() as { error: string };
@@ -172,7 +173,7 @@ describe("GET /api/v1/admin/branding", () => {
   });
 
   it("returns 500 with requestId on unexpected error", async () => {
-    mockEeThrow = new Error("unexpected db failure");
+    mockEeError = new Error("unexpected db failure");
     const res = await request("GET");
     expect(res.status).toBe(500);
     const json = await res.json() as { requestId: string; error: string };
@@ -193,7 +194,7 @@ describe("PUT /api/v1/admin/branding", () => {
   });
 
   it("returns 403 when enterprise disabled", async () => {
-    mockEeThrow = new EnterpriseError("Enterprise features (branding) are not enabled.");
+    mockEeError = new EnterpriseError("Enterprise features (branding) are not enabled.");
     const res = await request("PUT", { logoText: "Test" });
     expect(res.status).toBe(403);
   });
@@ -205,7 +206,7 @@ describe("PUT /api/v1/admin/branding", () => {
   });
 
   it("returns 400 on BrandingError validation", async () => {
-    mockEeThrow = new RealBrandingError("Invalid primary color", "validation");
+    mockEeError = new RealBrandingError("Invalid primary color", "validation");
     const res = await request("PUT", { primaryColor: "bad" });
     expect(res.status).toBe(400);
     const json = await res.json() as { error: string };
@@ -231,7 +232,7 @@ describe("DELETE /api/v1/admin/branding", () => {
   });
 
   it("returns 403 when enterprise disabled", async () => {
-    mockEeThrow = new EnterpriseError("Enterprise features (branding) are not enabled.");
+    mockEeError = new EnterpriseError("Enterprise features (branding) are not enabled.");
     const res = await request("DELETE");
     expect(res.status).toBe(403);
   });

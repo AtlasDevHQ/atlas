@@ -641,8 +641,8 @@ function executeAndAuditEffect(opts: {
 
       // SLA metric (fire-and-forget, enterprise feature)
       if (orgId) {
-        import("@atlas/ee/sla/index")
-          .then(({ recordQueryMetric }) => recordQueryMetric(orgId, durationMs, true))
+        Promise.all([import("@atlas/ee/sla/index"), import("effect")])
+          .then(([{ recordQueryMetric }, { Effect: E }]) => E.runPromise(recordQueryMetric(orgId, durationMs, true)))
           .catch((slaErr) => {
             // Dynamic import failure = ee not installed (expected in non-enterprise).
             // Runtime error from recordQueryMetric = log warning for diagnostics.
@@ -688,7 +688,8 @@ function executeAndAuditEffect(opts: {
           if (orgId) {
             try {
               const { recordQueryMetric } = await import("@atlas/ee/sla/index");
-              recordQueryMetric(orgId, durationMs, false);
+              const { Effect: E } = await import("effect");
+              void E.runPromise(recordQueryMetric(orgId, durationMs, false));
             } catch (err) {
               // Dynamic import failure = ee not installed (expected in non-enterprise).
               // Runtime error from recordQueryMetric = log warning for diagnostics.
@@ -746,11 +747,12 @@ function executeAndAuditEffect(opts: {
             try {
               const { applyMasking } = await import("@atlas/ee/compliance/masking");
               const maskCtx = getRequestContext();
-              maskedRows = await applyMasking({
+              const { Effect: E } = await import("effect");
+              maskedRows = await E.runPromise(applyMasking({
                 columns: result.columns, rows: result.rows,
                 tablesAccessed: classification.tablesAccessed,
                 orgId, userRole: maskCtx?.user?.role,
-              });
+              }));
               maskingApplied = maskedRows !== result.rows;
             } catch (err) {
               log.warn(
@@ -876,9 +878,9 @@ Rules:
               const { checkApprovalRequired } = await import("@atlas/ee/governance/approval");
               const checkReqCtx = getRequestContext();
               const checkOrgId = checkReqCtx?.user?.activeOrganizationId;
-              approvalMatch = await checkApprovalRequired(
+              approvalMatch = await Effect.runPromise(checkApprovalRequired(
                 checkOrgId, classification.tablesAccessed, classification.columnsAccessed,
-              );
+              ));
             } catch (err) {
               log.warn(
                 { err: err instanceof Error ? err.message : String(err), connectionId: connId },
@@ -905,10 +907,10 @@ Rules:
                 };
               }
 
-              const alreadyApproved = await hasApprovedRequest(approvalOrgId, userId, normalizedSql);
+              const alreadyApproved = await Effect.runPromise(hasApprovedRequest(approvalOrgId, userId, normalizedSql));
               if (!alreadyApproved) {
                 const firstRule = approvalMatch.matchedRules[0];
-                const approvalReq = await createApprovalRequest({
+                const approvalReq = await Effect.runPromise(createApprovalRequest({
                   orgId: approvalOrgId,
                   ruleId: firstRule.id,
                   ruleName: firstRule.name,
@@ -919,7 +921,7 @@ Rules:
                   connectionId: connId,
                   tablesAccessed: classification.tablesAccessed,
                   columnsAccessed: classification.columnsAccessed,
-                });
+                }));
                 logQueryAudit({
                   sql: normalizedSql.slice(0, 2000), durationMs: 0, rowCount: null, success: false,
                   error: `Approval required: ${firstRule.name}`,
@@ -971,11 +973,12 @@ Rules:
                 if (classification?.tablesAccessed.length && orgId) {
                   try {
                     const { applyMasking } = await import("@atlas/ee/compliance/masking");
-                    cachedRows = await applyMasking({
+                    const { Effect: E } = await import("effect");
+                    cachedRows = await E.runPromise(applyMasking({
                       columns: cached.columns, rows: cached.rows,
                       tablesAccessed: classification.tablesAccessed,
                       orgId, userRole: ctx?.user?.role,
-                    });
+                    }));
                     cachedMaskingApplied = cachedRows !== cached.rows;
                   } catch (err) {
                     log.warn(

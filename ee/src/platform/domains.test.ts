@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, mock } from "bun:test";
+import { Effect } from "effect";
 import { createEEMock } from "../__mocks__/internal";
 
 // ── Mocks ───────────────────────────────────────────────────────────
@@ -6,6 +7,20 @@ import { createEEMock } from "../__mocks__/internal";
 const ee = createEEMock();
 
 mock.module("../index", () => ee.enterpriseMock);
+const hasDB = () => (ee.internalDBMock.hasInternalDB as () => boolean)();
+mock.module("../lib/db-guard", () => ({
+  requireInternalDB: (label: string, factory?: () => Error) => {
+    if (!hasDB()) {
+      if (factory) throw factory();
+      throw new Error(`Internal database required for ${label}.`);
+    }
+  },
+  requireInternalDBEffect: (label: string, factory?: () => Error) => {
+    return hasDB()
+      ? Effect.void
+      : Effect.fail(factory?.() ?? new Error(`Internal database required for ${label}.`));
+  },
+}));
 mock.module("@atlas/api/lib/db/internal", () => ee.internalDBMock);
 mock.module("@atlas/api/lib/logger", () => ee.loggerMock);
 
@@ -46,6 +61,10 @@ const {
 } = await import("./domains");
 
 // ── Helpers ─────────────────────────────────────────────────────────
+
+/** Run an Effect, converting failures to rejected promises for test assertions. */
+const run = <A, E>(effect: Effect.Effect<A, E>) =>
+  Effect.runPromise(effect as Effect.Effect<A, never>);
 
 function resetMocks() {
   ee.reset();
@@ -120,7 +139,7 @@ describe("domains", () => {
       // INSERT → returning
       ee.queueMockRows([makeDomainRow()]);
 
-      const result = await registerDomain("org-1", "data.acme.com");
+      const result = await run(registerDomain("org-1", "data.acme.com"));
       expect(result.domain).toBe("data.acme.com");
       expect(result.workspaceId).toBe("org-1");
       expect(result.railwayDomainId).toBe("rw-abc");
@@ -130,16 +149,16 @@ describe("domains", () => {
     });
 
     it("rejects invalid domain format", async () => {
-      await expect(registerDomain("org-1", "not a domain")).rejects.toThrow("Invalid domain");
+      await expect(run(registerDomain("org-1", "not a domain"))).rejects.toThrow("Invalid domain");
     });
 
     it("rejects IP addresses", async () => {
-      await expect(registerDomain("org-1", "192.168.1.1")).rejects.toThrow("Invalid domain");
+      await expect(run(registerDomain("org-1", "192.168.1.1"))).rejects.toThrow("Invalid domain");
     });
 
     it("rejects duplicate domain in local DB", async () => {
       ee.queueMockRows([{ id: "existing" }]); // existing domain found
-      await expect(registerDomain("org-1", "data.acme.com")).rejects.toThrow("already registered");
+      await expect(run(registerDomain("org-1", "data.acme.com"))).rejects.toThrow("already registered");
     });
 
     it("rejects domain unavailable on Railway", async () => {
@@ -149,7 +168,7 @@ describe("domains", () => {
         status: 200,
         json: { data: { customDomainAvailable: { available: false, message: "Domain is already in use" } } },
       });
-      await expect(registerDomain("org-1", "data.acme.com")).rejects.toThrow("not available");
+      await expect(run(registerDomain("org-1", "data.acme.com"))).rejects.toThrow("not available");
     });
 
     it("normalizes domain to lowercase", async () => {
@@ -177,7 +196,7 @@ describe("domains", () => {
       });
       ee.queueMockRows([makeDomainRow()]);
 
-      await registerDomain("org-1", "DATA.ACME.COM");
+      await run(registerDomain("org-1", "DATA.ACME.COM"));
       // The INSERT query should use lowercase domain
       const insertQuery = ee.capturedQueries.find((q) => q.sql.includes("INSERT"));
       expect(insertQuery?.params?.[1]).toBe("data.acme.com");
@@ -186,7 +205,7 @@ describe("domains", () => {
     it("throws when Railway is not configured", async () => {
       cleanupEnv();
       ee.queueMockRows([]); // no existing
-      await expect(registerDomain("org-1", "data.acme.com")).rejects.toThrow("Railway API is not configured");
+      await expect(run(registerDomain("org-1", "data.acme.com"))).rejects.toThrow("Railway API is not configured");
     });
 
     it("throws on Railway GraphQL errors (200 with errors array)", async () => {
@@ -202,7 +221,7 @@ describe("domains", () => {
         status: 200,
         json: { errors: [{ message: "Permission denied" }] },
       });
-      await expect(registerDomain("org-1", "data.acme.com")).rejects.toThrow("Railway API error");
+      await expect(run(registerDomain("org-1", "data.acme.com"))).rejects.toThrow("Railway API error");
     });
 
     it("throws on Railway missing data field", async () => {
@@ -218,7 +237,7 @@ describe("domains", () => {
         status: 200,
         json: {},
       });
-      await expect(registerDomain("org-1", "data.acme.com")).rejects.toThrow("Railway API returned no data");
+      await expect(run(registerDomain("org-1", "data.acme.com"))).rejects.toThrow("Railway API returned no data");
     });
 
     it("throws on Railway network error", async () => {
@@ -228,7 +247,7 @@ describe("domains", () => {
       // @ts-expect-error — mock fetch for network failure test
       globalThis.fetch = async () => { throw new TypeError("fetch failed"); };
       try {
-        await expect(registerDomain("org-1", "data.acme.com")).rejects.toThrow("Could not reach Railway API");
+        await expect(run(registerDomain("org-1", "data.acme.com"))).rejects.toThrow("Could not reach Railway API");
       } finally {
         globalThis.fetch = prevFetch;
       }
@@ -259,7 +278,7 @@ describe("domains", () => {
       // UPDATE → returning
       ee.queueMockRows([makeDomainRow({ status: "verified", certificate_status: "ISSUED", verified_at: MOCK_NOW })]);
 
-      const result = await verifyDomain("dom-1");
+      const result = await run(verifyDomain("dom-1"));
       expect(result.status).toBe("verified");
       expect(result.certificateStatus).toBe("ISSUED");
     });
@@ -284,7 +303,7 @@ describe("domains", () => {
       });
       ee.queueMockRows([makeDomainRow({ status: "pending", certificate_status: "PENDING" })]);
 
-      const result = await verifyDomain("dom-1");
+      const result = await run(verifyDomain("dom-1"));
       expect(result.status).toBe("pending");
     });
 
@@ -308,7 +327,7 @@ describe("domains", () => {
       });
       ee.queueMockRows([makeDomainRow({ status: "failed", certificate_status: "FAILED" })]);
 
-      const result = await verifyDomain("dom-1");
+      const result = await run(verifyDomain("dom-1"));
       expect(result.status).toBe("failed");
     });
 
@@ -332,18 +351,18 @@ describe("domains", () => {
       });
       ee.queueMockRows([makeDomainRow({ status: "pending", certificate_status: "ISSUED" })]);
 
-      const result = await verifyDomain("dom-1");
+      const result = await run(verifyDomain("dom-1"));
       expect(result.status).toBe("pending");
     });
 
     it("throws for nonexistent domain", async () => {
       ee.queueMockRows([]); // no results
-      await expect(verifyDomain("dom-999")).rejects.toThrow("not found");
+      await expect(run(verifyDomain("dom-999"))).rejects.toThrow("not found");
     });
 
     it("throws when domain has no Railway ID", async () => {
       ee.queueMockRows([makeDomainRow({ railway_domain_id: null })]);
-      await expect(verifyDomain("dom-1")).rejects.toThrow("no Railway domain ID");
+      await expect(run(verifyDomain("dom-1"))).rejects.toThrow("no Railway domain ID");
     });
   });
 
@@ -354,7 +373,7 @@ describe("domains", () => {
         makeDomainRow({ id: "dom-2", domain: "api.acme.com", status: "verified" }),
       ]);
 
-      const result = await listDomains("org-1");
+      const result = await run(listDomains("org-1"));
       expect(result).toHaveLength(2);
       expect(result[0].domain).toBe("data.acme.com");
       expect(result[1].domain).toBe("api.acme.com");
@@ -362,7 +381,7 @@ describe("domains", () => {
 
     it("returns empty array when workspace has no domains", async () => {
       ee.queueMockRows([]);
-      const result = await listDomains("org-1");
+      const result = await run(listDomains("org-1"));
       expect(result).toHaveLength(0);
     });
   });
@@ -374,7 +393,7 @@ describe("domains", () => {
         makeDomainRow({ id: "dom-2", workspace_id: "org-2", domain: "api.other.com" }),
       ]);
 
-      const result = await listAllDomains();
+      const result = await run(listAllDomains());
       expect(result).toHaveLength(2);
     });
   });
@@ -392,14 +411,14 @@ describe("domains", () => {
       // DELETE
       ee.queueMockRows([]);
 
-      await deleteDomain("dom-1");
+      await run(deleteDomain("dom-1"));
       expect(capturedFetches).toHaveLength(1); // Railway delete called
       expect(ee.capturedQueries).toHaveLength(2); // SELECT + DELETE
     });
 
     it("throws for nonexistent domain", async () => {
       ee.queueMockRows([]); // no results
-      await expect(deleteDomain("dom-999")).rejects.toThrow("not found");
+      await expect(run(deleteDomain("dom-999"))).rejects.toThrow("not found");
     });
 
     it("proceeds with local delete even if Railway delete fails", async () => {
@@ -414,7 +433,7 @@ describe("domains", () => {
       ee.queueMockRows([]);
 
       // Should not throw
-      await deleteDomain("dom-1");
+      await run(deleteDomain("dom-1"));
       expect(ee.capturedQueries).toHaveLength(2); // SELECT + DELETE
     });
 
@@ -422,7 +441,7 @@ describe("domains", () => {
       ee.queueMockRows([makeDomainRow({ railway_domain_id: null })]);
       ee.queueMockRows([]); // DELETE
 
-      await deleteDomain("dom-1");
+      await run(deleteDomain("dom-1"));
       expect(capturedFetches).toHaveLength(0); // No Railway call
     });
   });
@@ -430,38 +449,38 @@ describe("domains", () => {
   describe("resolveWorkspaceByHost", () => {
     it("resolves verified domain to workspace ID", async () => {
       ee.queueMockRows([{ workspace_id: "org-1" }]);
-      const result = await resolveWorkspaceByHost("data.acme.com");
+      const result = await run(resolveWorkspaceByHost("data.acme.com"));
       expect(result).toBe("org-1");
     });
 
     it("returns null for unknown domain", async () => {
       ee.queueMockRows([]);
-      const result = await resolveWorkspaceByHost("unknown.example.com");
+      const result = await run(resolveWorkspaceByHost("unknown.example.com"));
       expect(result).toBeNull();
     });
 
     it("uses cache on second lookup", async () => {
       ee.queueMockRows([{ workspace_id: "org-1" }]);
-      await resolveWorkspaceByHost("data.acme.com");
+      await run(resolveWorkspaceByHost("data.acme.com"));
       // Second call should not hit DB
-      const result = await resolveWorkspaceByHost("data.acme.com");
+      const result = await run(resolveWorkspaceByHost("data.acme.com"));
       expect(result).toBe("org-1");
       expect(ee.capturedQueries).toHaveLength(1); // Only one DB query
     });
 
     it("normalizes hostname to lowercase", async () => {
       ee.queueMockRows([{ workspace_id: "org-1" }]);
-      await resolveWorkspaceByHost("DATA.ACME.COM");
+      await run(resolveWorkspaceByHost("DATA.ACME.COM"));
       const query = ee.capturedQueries[0];
       expect(query.params?.[0]).toBe("data.acme.com");
     });
 
     it("returns null gracefully on DB error", async () => {
       ee.queueMockRows([]);
-      const result = await resolveWorkspaceByHost("unknown.example.com");
+      const result = await run(resolveWorkspaceByHost("unknown.example.com"));
       expect(result).toBeNull();
       // Verify negative cache prevents second DB hit
-      const result2 = await resolveWorkspaceByHost("unknown.example.com");
+      const result2 = await run(resolveWorkspaceByHost("unknown.example.com"));
       expect(result2).toBeNull();
       expect(ee.capturedQueries).toHaveLength(1); // Only one DB query — negative cache worked
     });

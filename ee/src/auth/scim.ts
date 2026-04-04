@@ -13,9 +13,10 @@
  * skips the gate, returning null when no mapping exists.
  */
 
+import { Effect } from "effect";
 import { EEError } from "../lib/errors";
-import { requireEnterprise } from "../index";
-import { requireInternalDB } from "../lib/db-guard";
+import { requireEnterpriseEffect, EnterpriseError } from "../index";
+import { requireInternalDBEffect } from "../lib/db-guard";
 import {
   hasInternalDB,
   internalQuery,
@@ -75,23 +76,24 @@ export interface SCIMSyncStatus {
 
 let _groupMappingsTableEnsured = false;
 
-async function ensureGroupMappingsTable(): Promise<void> {
-  if (_groupMappingsTableEnsured) return;
-  if (!hasInternalDB()) return;
+const ensureGroupMappingsTable = (): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    if (_groupMappingsTableEnsured) return;
+    if (!hasInternalDB()) return;
 
-  const pool = getInternalDB();
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS scim_group_mappings (
-      id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-      org_id TEXT NOT NULL,
-      scim_group_name TEXT NOT NULL,
-      role_name TEXT NOT NULL,
-      created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-      UNIQUE(org_id, scim_group_name)
-    )
-  `);
-  _groupMappingsTableEnsured = true;
-}
+    const pool = getInternalDB();
+    yield* Effect.promise(() => pool.query(`
+      CREATE TABLE IF NOT EXISTS scim_group_mappings (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        org_id TEXT NOT NULL,
+        scim_group_name TEXT NOT NULL,
+        role_name TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        UNIQUE(org_id, scim_group_name)
+      )
+    `));
+    _groupMappingsTableEnsured = true;
+  });
 
 /** @internal — test-only. Reset the table-ensured flag. */
 export function _resetTableEnsured(): void {
@@ -135,39 +137,43 @@ export function isValidScimGroupName(name: string): boolean {
  * List SCIM provider connections for an organization.
  * Reads from the `scimProvider` table created by @better-auth/scim.
  */
-export async function listConnections(orgId: string): Promise<SCIMConnection[]> {
-  requireEnterprise("scim");
-  if (!hasInternalDB()) return [];
+export const listConnections = (orgId: string): Effect.Effect<SCIMConnection[], EnterpriseError> =>
+  Effect.gen(function* () {
+    yield* requireEnterpriseEffect("scim");
+    if (!hasInternalDB()) return [];
 
-  const rows = await internalQuery<SCIMConnectionRow>(
-    `SELECT id, "providerId", "organizationId"
-     FROM "scimProvider"
-     WHERE "organizationId" = $1
-     ORDER BY id ASC`,
-    [orgId],
-  );
-  return rows.map(rowToConnection);
-}
+    const rows = yield* Effect.promise(() => internalQuery<SCIMConnectionRow>(
+      `SELECT id, "providerId", "organizationId"
+       FROM "scimProvider"
+       WHERE "organizationId" = $1
+       ORDER BY id ASC`,
+      [orgId],
+    ));
+    return rows.map(rowToConnection);
+  });
 
 /**
  * Delete a SCIM provider connection (revoke access).
  */
-export async function deleteConnection(orgId: string, connectionId: string): Promise<boolean> {
-  requireEnterprise("scim");
-  if (!hasInternalDB()) return false;
+export const deleteConnection = (orgId: string, connectionId: string): Effect.Effect<boolean, EnterpriseError> =>
+  Effect.gen(function* () {
+    yield* requireEnterpriseEffect("scim");
+    if (!hasInternalDB()) return false;
 
-  const pool = getInternalDB();
-  const result = await pool.query(
-    `DELETE FROM "scimProvider" WHERE id = $1 AND "organizationId" = $2 RETURNING id`,
-    [connectionId, orgId],
-  );
+    const pool = getInternalDB();
+    const result = yield* Effect.promise(() =>
+      pool.query(
+        `DELETE FROM "scimProvider" WHERE id = $1 AND "organizationId" = $2 RETURNING id`,
+        [connectionId, orgId],
+      ),
+    );
 
-  const deleted = result.rows.length > 0;
-  if (deleted) {
-    log.info({ orgId, connectionId }, "SCIM connection deleted");
-  }
-  return deleted;
-}
+    const deleted = result.rows.length > 0;
+    if (deleted) {
+      log.info({ orgId, connectionId }, "SCIM connection deleted");
+    }
+    return deleted;
+  });
 
 // ── Sync Status ─────────────────────────────────────────────────────
 
@@ -175,166 +181,178 @@ export async function deleteConnection(orgId: string, connectionId: string): Pro
  * Get aggregate SCIM sync status for an organization.
  * Counts active connections and users provisioned via SCIM.
  */
-export async function getSyncStatus(orgId: string): Promise<SCIMSyncStatus> {
-  requireEnterprise("scim");
-  if (!hasInternalDB()) {
-    return { connections: 0, provisionedUsers: 0, lastSyncAt: null };
-  }
+export const getSyncStatus = (orgId: string): Effect.Effect<SCIMSyncStatus, EnterpriseError> =>
+  Effect.gen(function* () {
+    yield* requireEnterpriseEffect("scim");
+    if (!hasInternalDB()) {
+      return { connections: 0, provisionedUsers: 0, lastSyncAt: null };
+    }
 
-  // All three queries are independent — run in parallel per CLAUDE.md
-  const [connRows, userRows, lastSyncRows] = await Promise.all([
-    internalQuery<{ count: string; [key: string]: unknown }>(
-      `SELECT COUNT(*)::text AS count FROM "scimProvider" WHERE "organizationId" = $1`,
-      [orgId],
-    ),
-    // Count users provisioned via SCIM — Better Auth stores each external identity
-    // in the `account` table with a `providerId` matching the SCIM provider's ID.
-    internalQuery<{ count: string; [key: string]: unknown }>(
-      `SELECT COUNT(DISTINCT a."userId")::text AS count
-       FROM account a
-       JOIN "scimProvider" sp ON a."providerId" = sp."providerId"
-       WHERE sp."organizationId" = $1`,
-      [orgId],
-    ),
-    // Last sync approximation: most recent SCIM-provisioned user creation.
-    // Misses sync events that only update/deactivate existing users.
-    internalQuery<{ last_sync: string | null; [key: string]: unknown }>(
-      `SELECT MAX(a."createdAt")::text AS last_sync
-       FROM account a
-       JOIN "scimProvider" sp ON a."providerId" = sp."providerId"
-       WHERE sp."organizationId" = $1`,
-      [orgId],
-    ),
-  ]);
+    // All three queries are independent — run in parallel per CLAUDE.md
+    const [connRows, userRows, lastSyncRows] = yield* Effect.promise(() => Promise.all([
+      internalQuery<{ count: string; [key: string]: unknown }>(
+        `SELECT COUNT(*)::text AS count FROM "scimProvider" WHERE "organizationId" = $1`,
+        [orgId],
+      ),
+      // Count users provisioned via SCIM — Better Auth stores each external identity
+      // in the `account` table with a `providerId` matching the SCIM provider's ID.
+      internalQuery<{ count: string; [key: string]: unknown }>(
+        `SELECT COUNT(DISTINCT a."userId")::text AS count
+         FROM account a
+         JOIN "scimProvider" sp ON a."providerId" = sp."providerId"
+         WHERE sp."organizationId" = $1`,
+        [orgId],
+      ),
+      // Last sync approximation: most recent SCIM-provisioned user creation.
+      // Misses sync events that only update/deactivate existing users.
+      internalQuery<{ last_sync: string | null; [key: string]: unknown }>(
+        `SELECT MAX(a."createdAt")::text AS last_sync
+         FROM account a
+         JOIN "scimProvider" sp ON a."providerId" = sp."providerId"
+         WHERE sp."organizationId" = $1`,
+        [orgId],
+      ),
+    ]));
 
-  const connections = parseInt(connRows[0]?.count ?? "0", 10) || 0;
-  const provisionedUsers = parseInt(userRows[0]?.count ?? "0", 10) || 0;
-  const lastSyncAt = lastSyncRows[0]?.last_sync ?? null;
+    const connections = parseInt(connRows[0]?.count ?? "0", 10) || 0;
+    const provisionedUsers = parseInt(userRows[0]?.count ?? "0", 10) || 0;
+    const lastSyncAt = lastSyncRows[0]?.last_sync ?? null;
 
-  return { connections, provisionedUsers, lastSyncAt };
-}
+    return { connections, provisionedUsers, lastSyncAt };
+  });
 
 // ── Group → Role Mapping ────────────────────────────────────────────
 
 /**
  * List SCIM group → role mappings for an organization.
  */
-export async function listGroupMappings(orgId: string): Promise<SCIMGroupMapping[]> {
-  requireEnterprise("scim");
-  if (!hasInternalDB()) return [];
-  await ensureGroupMappingsTable();
+export const listGroupMappings = (orgId: string): Effect.Effect<SCIMGroupMapping[], EnterpriseError> =>
+  Effect.gen(function* () {
+    yield* requireEnterpriseEffect("scim");
+    if (!hasInternalDB()) return [];
+    yield* ensureGroupMappingsTable();
 
-  const rows = await internalQuery<SCIMGroupMappingRow>(
-    `SELECT id, org_id, scim_group_name, role_name, created_at
-     FROM scim_group_mappings
-     WHERE org_id = $1
-     ORDER BY scim_group_name ASC`,
-    [orgId],
-  );
-  return rows.map(rowToGroupMapping);
-}
+    const rows = yield* Effect.promise(() => internalQuery<SCIMGroupMappingRow>(
+      `SELECT id, org_id, scim_group_name, role_name, created_at
+       FROM scim_group_mappings
+       WHERE org_id = $1
+       ORDER BY scim_group_name ASC`,
+      [orgId],
+    ));
+    return rows.map(rowToGroupMapping);
+  });
 
 /**
  * Create a SCIM group → role mapping.
  * Validates the role exists in the organization's custom_roles table.
  */
-export async function createGroupMapping(
+export const createGroupMapping = (
   orgId: string,
   scimGroupName: string,
   roleName: string,
-): Promise<SCIMGroupMapping> {
-  requireEnterprise("scim");
-  requireInternalDB("SCIM group mapping");
-  await ensureGroupMappingsTable();
+): Effect.Effect<SCIMGroupMapping, SCIMError | EnterpriseError | Error> =>
+  Effect.gen(function* () {
+    yield* requireEnterpriseEffect("scim");
+    yield* requireInternalDBEffect("SCIM group mapping");
+    yield* ensureGroupMappingsTable();
 
-  // Validate group name
-  if (!isValidScimGroupName(scimGroupName)) {
-    throw new SCIMError(
-      `Invalid SCIM group name: "${scimGroupName}". Must be 1-255 characters, starting with alphanumeric.`,
-      "validation",
-    );
-  }
+    // Validate group name
+    if (!isValidScimGroupName(scimGroupName)) {
+      return yield* Effect.fail(new SCIMError(
+        `Invalid SCIM group name: "${scimGroupName}". Must be 1-255 characters, starting with alphanumeric.`,
+        "validation",
+      ));
+    }
 
-  // Validate role exists in this org
-  const roleRows = await internalQuery<{ id: string; [key: string]: unknown }>(
-    `SELECT id FROM custom_roles WHERE org_id = $1 AND name = $2`,
-    [orgId, roleName],
-  );
-  if (roleRows.length === 0) {
-    throw new SCIMError(
-      `Role "${roleName}" does not exist in this organization. Create the role first.`,
-      "not_found",
-    );
-  }
+    // Validate role exists in this org
+    const roleRows = yield* Effect.promise(() => internalQuery<{ id: string; [key: string]: unknown }>(
+      `SELECT id FROM custom_roles WHERE org_id = $1 AND name = $2`,
+      [orgId, roleName],
+    ));
+    if (roleRows.length === 0) {
+      return yield* Effect.fail(new SCIMError(
+        `Role "${roleName}" does not exist in this organization. Create the role first.`,
+        "not_found",
+      ));
+    }
 
-  // Check for duplicate mapping
-  const existing = await internalQuery<{ id: string; [key: string]: unknown }>(
-    `SELECT id FROM scim_group_mappings WHERE org_id = $1 AND scim_group_name = $2`,
-    [orgId, scimGroupName],
-  );
-  if (existing.length > 0) {
-    throw new SCIMError(
-      `A mapping for SCIM group "${scimGroupName}" already exists in this organization.`,
-      "conflict",
-    );
-  }
+    // Check for duplicate mapping
+    const existing = yield* Effect.promise(() => internalQuery<{ id: string; [key: string]: unknown }>(
+      `SELECT id FROM scim_group_mappings WHERE org_id = $1 AND scim_group_name = $2`,
+      [orgId, scimGroupName],
+    ));
+    if (existing.length > 0) {
+      return yield* Effect.fail(new SCIMError(
+        `A mapping for SCIM group "${scimGroupName}" already exists in this organization.`,
+        "conflict",
+      ));
+    }
 
-  const rows = await internalQuery<SCIMGroupMappingRow>(
-    `INSERT INTO scim_group_mappings (org_id, scim_group_name, role_name)
-     VALUES ($1, $2, $3)
-     RETURNING id, org_id, scim_group_name, role_name, created_at`,
-    [orgId, scimGroupName, roleName],
-  );
+    const rows = yield* Effect.promise(() => internalQuery<SCIMGroupMappingRow>(
+      `INSERT INTO scim_group_mappings (org_id, scim_group_name, role_name)
+       VALUES ($1, $2, $3)
+       RETURNING id, org_id, scim_group_name, role_name, created_at`,
+      [orgId, scimGroupName, roleName],
+    ));
 
-  if (!rows[0]) throw new Error("Failed to create group mapping — no row returned.");
+    if (!rows[0]) return yield* Effect.die(new Error("Failed to create group mapping — no row returned."));
 
-  log.info({ orgId, scimGroupName, roleName }, "SCIM group mapping created");
-  return rowToGroupMapping(rows[0]);
-}
+    log.info({ orgId, scimGroupName, roleName }, "SCIM group mapping created");
+    return rowToGroupMapping(rows[0]);
+  });
 
 /**
  * Delete a SCIM group → role mapping.
  */
-export async function deleteGroupMapping(orgId: string, mappingId: string): Promise<boolean> {
-  requireEnterprise("scim");
-  if (!hasInternalDB()) return false;
-  await ensureGroupMappingsTable();
+export const deleteGroupMapping = (orgId: string, mappingId: string): Effect.Effect<boolean, EnterpriseError> =>
+  Effect.gen(function* () {
+    yield* requireEnterpriseEffect("scim");
+    if (!hasInternalDB()) return false;
+    yield* ensureGroupMappingsTable();
 
-  const pool = getInternalDB();
-  const result = await pool.query(
-    `DELETE FROM scim_group_mappings WHERE id = $1 AND org_id = $2 RETURNING id`,
-    [mappingId, orgId],
-  );
+    const pool = getInternalDB();
+    const result = yield* Effect.promise(() =>
+      pool.query(
+        `DELETE FROM scim_group_mappings WHERE id = $1 AND org_id = $2 RETURNING id`,
+        [mappingId, orgId],
+      ),
+    );
 
-  const deleted = result.rows.length > 0;
-  if (deleted) {
-    log.info({ orgId, mappingId }, "SCIM group mapping deleted");
-  }
-  return deleted;
-}
+    const deleted = result.rows.length > 0;
+    if (deleted) {
+      log.info({ orgId, mappingId }, "SCIM group mapping deleted");
+    }
+    return deleted;
+  });
 
 /**
  * Resolve a SCIM group display name to an Atlas role name.
  * Returns null if no mapping exists for the group.
  */
-export async function resolveGroupToRole(orgId: string, scimGroupName: string): Promise<string | null> {
-  if (!hasInternalDB()) return null;
+export const resolveGroupToRole = (orgId: string, scimGroupName: string): Effect.Effect<string | null, Error> =>
+  Effect.gen(function* () {
+    if (!hasInternalDB()) return null;
 
-  try {
-    await ensureGroupMappingsTable();
-    const rows = await internalQuery<{ role_name: string; [key: string]: unknown }>(
-      `SELECT role_name FROM scim_group_mappings WHERE org_id = $1 AND scim_group_name = $2 LIMIT 1`,
-      [orgId, scimGroupName],
+    return yield* Effect.tryPromise({
+      try: async () => {
+        await Effect.runPromise(ensureGroupMappingsTable());
+        const rows = await internalQuery<{ role_name: string; [key: string]: unknown }>(
+          `SELECT role_name FROM scim_group_mappings WHERE org_id = $1 AND scim_group_name = $2 LIMIT 1`,
+          [orgId, scimGroupName],
+        );
+        return rows[0]?.role_name ?? null;
+      },
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    }).pipe(
+      Effect.catchAll((err) => {
+        const msg = err.message;
+        if (msg.includes("does not exist")) {
+          // Table not yet created — no mappings configured
+          return Effect.succeed(null);
+        }
+        // All other errors must propagate — silently returning null
+        // would skip role assignment and is a security-relevant failure.
+        return Effect.fail(err);
+      }),
     );
-    return rows[0]?.role_name ?? null;
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    if (msg.includes("does not exist")) {
-      // Table not yet created — no mappings configured
-      return null;
-    }
-    // All other errors must propagate — silently returning null
-    // would skip role assignment and is a security-relevant failure.
-    throw err;
-  }
-}
+  });

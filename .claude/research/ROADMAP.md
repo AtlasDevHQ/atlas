@@ -809,6 +809,8 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] CLI command extraction Phase 1 — 6 handlers + shared connection testing (#1208, PR #1225)
 - [x] CLI command extraction Phase 2 — profilers, plugin, init, migrate, help (#1227, PR #1228)
 - [x] Consolidate useBranding into useAdminFetch (#1209)
+- [x] Extract shared EEError base class — replace 14 identical error class definitions (#1231, PR #1234)
+- [x] Extract shared hasInternalDB guard helpers — replace 75 inline checks across 18 EE files (#1232, PR #1233)
 
 ---
 

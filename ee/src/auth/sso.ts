@@ -7,9 +7,10 @@
  * Validation helpers and domain-matching functions do not require a license.
  */
 
+import { Effect } from "effect";
 import { EEError } from "../lib/errors";
-import { requireEnterprise } from "../index";
-import { requireInternalDB } from "../lib/db-guard";
+import { requireEnterpriseEffect, EnterpriseError } from "../index";
+import { requireInternalDBEffect } from "../lib/db-guard";
 import {
   hasInternalDB,
   internalQuery,
@@ -189,184 +190,191 @@ export function validateProviderConfig(type: SSOProviderType, config: unknown): 
 /**
  * List SSO providers for an organization.
  */
-export async function listSSOProviders(orgId: string): Promise<SSOProvider[]> {
-  requireEnterprise("sso");
-  if (!hasInternalDB()) return [];
+export const listSSOProviders = (orgId: string): Effect.Effect<SSOProvider[], EnterpriseError> =>
+  Effect.gen(function* () {
+    yield* requireEnterpriseEffect("sso");
+    if (!hasInternalDB()) return [];
 
-  const rows = await internalQuery<SSOProviderRow>(
-    `SELECT id, org_id, type, issuer, domain, enabled, sso_enforced, config, created_at, updated_at
-     FROM sso_providers
-     WHERE org_id = $1
-     ORDER BY created_at ASC`,
-    [orgId],
-  );
-  return rows.map(rowToProvider);
-}
+    const rows = yield* Effect.promise(() => internalQuery<SSOProviderRow>(
+      `SELECT id, org_id, type, issuer, domain, enabled, sso_enforced, config, created_at, updated_at
+       FROM sso_providers
+       WHERE org_id = $1
+       ORDER BY created_at ASC`,
+      [orgId],
+    ));
+    return rows.map(rowToProvider);
+  });
 
 /**
  * Get a single SSO provider by ID, scoped to org.
  */
-export async function getSSOProvider(orgId: string, providerId: string): Promise<SSOProvider | null> {
-  requireEnterprise("sso");
-  if (!hasInternalDB()) return null;
+export const getSSOProvider = (orgId: string, providerId: string): Effect.Effect<SSOProvider | null, EnterpriseError> =>
+  Effect.gen(function* () {
+    yield* requireEnterpriseEffect("sso");
+    if (!hasInternalDB()) return null;
 
-  const rows = await internalQuery<SSOProviderRow>(
-    `SELECT id, org_id, type, issuer, domain, enabled, sso_enforced, config, created_at, updated_at
-     FROM sso_providers
-     WHERE id = $1 AND org_id = $2`,
-    [providerId, orgId],
-  );
-  return rows[0] ? rowToProvider(rows[0]) : null;
-}
+    const rows = yield* Effect.promise(() => internalQuery<SSOProviderRow>(
+      `SELECT id, org_id, type, issuer, domain, enabled, sso_enforced, config, created_at, updated_at
+       FROM sso_providers
+       WHERE id = $1 AND org_id = $2`,
+      [providerId, orgId],
+    ));
+    return rows[0] ? rowToProvider(rows[0]) : null;
+  });
 
 /**
  * Create a new SSO provider for an organization.
  * Validates config shape and domain uniqueness.
  */
-export async function createSSOProvider(
+export const createSSOProvider = (
   orgId: string,
   input: CreateSSOProviderRequest,
-): Promise<SSOProvider> {
-  requireEnterprise("sso");
-  requireInternalDB("SSO provider management");
+): Effect.Effect<SSOProvider, SSOError | EnterpriseError | Error> =>
+  Effect.gen(function* () {
+    yield* requireEnterpriseEffect("sso");
+    yield* requireInternalDBEffect("SSO provider management");
 
-  // Validate type
-  if (!isValidSSOProviderType(input.type)) {
-    throw new SSOError(`Invalid SSO provider type: ${input.type}. Must be one of: ${SSO_PROVIDER_TYPES.join(", ")}`, "validation");
-  }
+    // Validate type
+    if (!isValidSSOProviderType(input.type)) {
+      return yield* Effect.fail(new SSOError(`Invalid SSO provider type: ${input.type}. Must be one of: ${SSO_PROVIDER_TYPES.join(", ")}`, "validation"));
+    }
 
-  // Validate domain
-  const domain = normalizeDomain(input.domain);
-  if (!isValidDomain(domain)) {
-    throw new SSOError(`Invalid domain: ${input.domain}. Must be a valid domain name (e.g. "acme.com").`, "validation");
-  }
+    // Validate domain
+    const domain = normalizeDomain(input.domain);
+    if (!isValidDomain(domain)) {
+      return yield* Effect.fail(new SSOError(`Invalid domain: ${input.domain}. Must be a valid domain name (e.g. "acme.com").`, "validation"));
+    }
 
-  // Validate config
-  const configError = validateProviderConfig(input.type, input.config);
-  if (configError) throw new SSOError(configError, "validation");
+    // Validate config
+    const configError = validateProviderConfig(input.type, input.config);
+    if (configError) return yield* Effect.fail(new SSOError(configError, "validation"));
 
-  // Check domain uniqueness
-  const existing = await internalQuery<{ id: string; org_id: string }>(
-    `SELECT id, org_id FROM sso_providers WHERE domain = $1`,
-    [domain],
-  );
-  if (existing.length > 0) {
-    throw new SSOError(`Domain "${domain}" is already registered by another SSO provider.`, "conflict");
-  }
+    // Check domain uniqueness
+    const existing = yield* Effect.promise(() => internalQuery<{ id: string; org_id: string }>(
+      `SELECT id, org_id FROM sso_providers WHERE domain = $1`,
+      [domain],
+    ));
+    if (existing.length > 0) {
+      return yield* Effect.fail(new SSOError(`Domain "${domain}" is already registered by another SSO provider.`, "conflict"));
+    }
 
-  const storedConfig = prepareConfigForStorage(input.type, input.config as unknown as Record<string, unknown>);
+    const storedConfig = prepareConfigForStorage(input.type, input.config as unknown as Record<string, unknown>);
 
-  const rows = await internalQuery<SSOProviderRow>(
-    `INSERT INTO sso_providers (org_id, type, issuer, domain, enabled, config)
-     VALUES ($1, $2, $3, $4, $5, $6)
-     RETURNING id, org_id, type, issuer, domain, enabled, sso_enforced, config, created_at, updated_at`,
-    [orgId, input.type, input.issuer, domain, input.enabled ?? false, JSON.stringify(storedConfig)],
-  );
+    const rows = yield* Effect.promise(() => internalQuery<SSOProviderRow>(
+      `INSERT INTO sso_providers (org_id, type, issuer, domain, enabled, config)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING id, org_id, type, issuer, domain, enabled, sso_enforced, config, created_at, updated_at`,
+      [orgId, input.type, input.issuer, domain, input.enabled ?? false, JSON.stringify(storedConfig)],
+    ));
 
-  if (!rows[0]) throw new Error("Failed to create SSO provider — no row returned.");
+    if (!rows[0]) return yield* Effect.die(new Error("Failed to create SSO provider — no row returned."));
 
-  log.info({ orgId, type: input.type, domain, issuer: input.issuer }, "SSO provider created");
-  return rowToProvider(rows[0]);
-}
+    log.info({ orgId, type: input.type, domain, issuer: input.issuer }, "SSO provider created");
+    return rowToProvider(rows[0]);
+  });
 
 /**
  * Update an existing SSO provider.
  */
-export async function updateSSOProvider(
+export const updateSSOProvider = (
   orgId: string,
   providerId: string,
   input: UpdateSSOProviderRequest,
-): Promise<SSOProvider> {
-  requireEnterprise("sso");
-  requireInternalDB("SSO provider management");
+): Effect.Effect<SSOProvider, SSOError | EnterpriseError | Error> =>
+  Effect.gen(function* () {
+    yield* requireEnterpriseEffect("sso");
+    yield* requireInternalDBEffect("SSO provider management");
 
-  // Fetch existing
-  const existing = await getSSOProvider(orgId, providerId);
-  if (!existing) throw new SSOError("SSO provider not found.", "not_found");
+    // Fetch existing
+    const existing = yield* getSSOProvider(orgId, providerId);
+    if (!existing) return yield* Effect.fail(new SSOError("SSO provider not found.", "not_found"));
 
-  // Build update fields
-  const sets: string[] = [];
-  const params: unknown[] = [];
-  let paramIdx = 1;
+    // Build update fields
+    const sets: string[] = [];
+    const params: unknown[] = [];
+    let paramIdx = 1;
 
-  if (input.issuer !== undefined) {
-    sets.push(`issuer = $${paramIdx++}`);
-    params.push(input.issuer);
-  }
-
-  if (input.domain !== undefined) {
-    const domain = normalizeDomain(input.domain);
-    if (!isValidDomain(domain)) {
-      throw new SSOError(`Invalid domain: ${input.domain}. Must be a valid domain name.`, "validation");
+    if (input.issuer !== undefined) {
+      sets.push(`issuer = $${paramIdx++}`);
+      params.push(input.issuer);
     }
-    // Check uniqueness (exclude current provider)
-    const clash = await internalQuery<{ id: string }>(
-      `SELECT id FROM sso_providers WHERE domain = $1 AND id != $2`,
-      [domain, providerId],
-    );
-    if (clash.length > 0) {
-      throw new SSOError(`Domain "${domain}" is already registered by another SSO provider.`, "conflict");
+
+    if (input.domain !== undefined) {
+      const domain = normalizeDomain(input.domain);
+      if (!isValidDomain(domain)) {
+        return yield* Effect.fail(new SSOError(`Invalid domain: ${input.domain}. Must be a valid domain name.`, "validation"));
+      }
+      // Check uniqueness (exclude current provider)
+      const clash = yield* Effect.promise(() => internalQuery<{ id: string }>(
+        `SELECT id FROM sso_providers WHERE domain = $1 AND id != $2`,
+        [domain, providerId],
+      ));
+      if (clash.length > 0) {
+        return yield* Effect.fail(new SSOError(`Domain "${domain}" is already registered by another SSO provider.`, "conflict"));
+      }
+      sets.push(`domain = $${paramIdx++}`);
+      params.push(domain);
     }
-    sets.push(`domain = $${paramIdx++}`);
-    params.push(domain);
-  }
 
-  if (input.enabled !== undefined) {
-    sets.push(`enabled = $${paramIdx++}`);
-    params.push(input.enabled);
-  }
+    if (input.enabled !== undefined) {
+      sets.push(`enabled = $${paramIdx++}`);
+      params.push(input.enabled);
+    }
 
-  if (input.config !== undefined) {
-    // Merge partial config with existing
-    const merged = { ...(existing.config as unknown as Record<string, unknown>), ...input.config };
-    // Re-validate full config
-    const configError = validateProviderConfig(existing.type, merged);
-    if (configError) throw new SSOError(configError, "validation");
+    if (input.config !== undefined) {
+      // Merge partial config with existing
+      const merged = { ...(existing.config as unknown as Record<string, unknown>), ...input.config };
+      // Re-validate full config
+      const configError = validateProviderConfig(existing.type, merged);
+      if (configError) return yield* Effect.fail(new SSOError(configError, "validation"));
 
-    const storedConfig = prepareConfigForStorage(existing.type, merged);
-    sets.push(`config = $${paramIdx++}`);
-    params.push(JSON.stringify(storedConfig));
-  }
+      const storedConfig = prepareConfigForStorage(existing.type, merged);
+      sets.push(`config = $${paramIdx++}`);
+      params.push(JSON.stringify(storedConfig));
+    }
 
-  if (sets.length === 0) {
-    return existing; // Nothing to update
-  }
+    if (sets.length === 0) {
+      return existing; // Nothing to update
+    }
 
-  sets.push(`updated_at = now()`);
-  params.push(providerId, orgId);
+    sets.push(`updated_at = now()`);
+    params.push(providerId, orgId);
 
-  const rows = await internalQuery<SSOProviderRow>(
-    `UPDATE sso_providers SET ${sets.join(", ")}
-     WHERE id = $${paramIdx++} AND org_id = $${paramIdx}
-     RETURNING id, org_id, type, issuer, domain, enabled, sso_enforced, config, created_at, updated_at`,
-    params,
-  );
+    const rows = yield* Effect.promise(() => internalQuery<SSOProviderRow>(
+      `UPDATE sso_providers SET ${sets.join(", ")}
+       WHERE id = $${paramIdx++} AND org_id = $${paramIdx}
+       RETURNING id, org_id, type, issuer, domain, enabled, sso_enforced, config, created_at, updated_at`,
+      params,
+    ));
 
-  if (!rows[0]) throw new SSOError("SSO provider not found or update failed.", "not_found");
+    if (!rows[0]) return yield* Effect.fail(new SSOError("SSO provider not found or update failed.", "not_found"));
 
-  log.info({ orgId, providerId }, "SSO provider updated");
-  return rowToProvider(rows[0]);
-}
+    log.info({ orgId, providerId }, "SSO provider updated");
+    return rowToProvider(rows[0]);
+  });
 
 /**
  * Delete an SSO provider.
  */
-export async function deleteSSOProvider(orgId: string, providerId: string): Promise<boolean> {
-  requireEnterprise("sso");
-  if (!hasInternalDB()) return false;
+export const deleteSSOProvider = (orgId: string, providerId: string): Effect.Effect<boolean, EnterpriseError> =>
+  Effect.gen(function* () {
+    yield* requireEnterpriseEffect("sso");
+    if (!hasInternalDB()) return false;
 
-  const pool = getInternalDB();
-  const result = await pool.query(
-    `DELETE FROM sso_providers WHERE id = $1 AND org_id = $2 RETURNING id`,
-    [providerId, orgId],
-  );
+    const pool = getInternalDB();
+    const result = yield* Effect.promise(() =>
+      pool.query(
+        `DELETE FROM sso_providers WHERE id = $1 AND org_id = $2 RETURNING id`,
+        [providerId, orgId],
+      ),
+    );
 
-  const deleted = result.rows.length > 0;
-  if (deleted) {
-    log.info({ orgId, providerId }, "SSO provider deleted");
-  }
-  return deleted;
-}
+    const deleted = result.rows.length > 0;
+    if (deleted) {
+      log.info({ orgId, providerId }, "SSO provider deleted");
+    }
+    return deleted;
+  });
 
 // ── Domain matching ─────────────────────────────────────────────────
 
@@ -377,20 +385,21 @@ export async function deleteSSOProvider(orgId: string, providerId: string): Prom
  * Does NOT call requireEnterprise — this is used during login flow
  * where the enterprise check happens upstream.
  */
-export async function findProviderByDomain(emailDomain: string): Promise<SSOProvider | null> {
-  if (!hasInternalDB()) return null;
+export const findProviderByDomain = (emailDomain: string): Effect.Effect<SSOProvider | null> =>
+  Effect.gen(function* () {
+    if (!hasInternalDB()) return null;
 
-  const domain = normalizeDomain(emailDomain);
-  const rows = await internalQuery<SSOProviderRow>(
-    `SELECT id, org_id, type, issuer, domain, enabled, sso_enforced, config, created_at, updated_at
-     FROM sso_providers
-     WHERE domain = $1 AND enabled = true
-     LIMIT 1`,
-    [domain],
-  );
+    const domain = normalizeDomain(emailDomain);
+    const rows = yield* Effect.promise(() => internalQuery<SSOProviderRow>(
+      `SELECT id, org_id, type, issuer, domain, enabled, sso_enforced, config, created_at, updated_at
+       FROM sso_providers
+       WHERE domain = $1 AND enabled = true
+       LIMIT 1`,
+      [domain],
+    ));
 
-  return rows[0] ? rowToProvider(rows[0]) : null;
-}
+    return rows[0] ? rowToProvider(rows[0]) : null;
+  });
 
 /**
  * Extract the domain part from an email address.
@@ -417,37 +426,38 @@ export class SSOEnforcementError extends EEError<SSOEnforcementErrorCode> {
  * Does NOT call requireEnterprise — this is used during the login flow
  * to block password auth. Enterprise gating happens on the admin toggle.
  */
-export async function isSSOEnforced(orgId: string): Promise<{
+export const isSSOEnforced = (orgId: string): Effect.Effect<{
   enforced: boolean;
   provider?: SSOProvider;
   ssoRedirectUrl?: string;
-} | null> {
-  if (!hasInternalDB()) return null;
+} | null> =>
+  Effect.gen(function* () {
+    if (!hasInternalDB()) return null;
 
-  const rows = await internalQuery<SSOProviderRow>(
-    `SELECT id, org_id, type, issuer, domain, enabled, sso_enforced, config, created_at, updated_at
-     FROM sso_providers
-     WHERE org_id = $1 AND enabled = true AND sso_enforced = true
-     LIMIT 1`,
-    [orgId],
-  );
+    const rows = yield* Effect.promise(() => internalQuery<SSOProviderRow>(
+      `SELECT id, org_id, type, issuer, domain, enabled, sso_enforced, config, created_at, updated_at
+       FROM sso_providers
+       WHERE org_id = $1 AND enabled = true AND sso_enforced = true
+       LIMIT 1`,
+      [orgId],
+    ));
 
-  if (!rows[0]) return { enforced: false };
+    if (!rows[0]) return { enforced: false };
 
-  const provider = rowToProvider(rows[0]);
-  const ssoRedirectUrl = provider.type === "saml"
-    ? provider.config.idpSsoUrl
-    : provider.config.discoveryUrl;
+    const provider = rowToProvider(rows[0]);
+    const ssoRedirectUrl = provider.type === "saml"
+      ? provider.config.idpSsoUrl
+      : provider.config.discoveryUrl;
 
-  if (!ssoRedirectUrl) {
-    log.error(
-      { providerId: provider.id, type: provider.type },
-      "SSO enforcement active but provider has no redirect URL configured",
-    );
-  }
+    if (!ssoRedirectUrl) {
+      log.error(
+        { providerId: provider.id, type: provider.type },
+        "SSO enforcement active but provider has no redirect URL configured",
+      );
+    }
 
-  return { enforced: true, provider, ssoRedirectUrl };
-}
+    return { enforced: true, provider, ssoRedirectUrl };
+  });
 
 /**
  * Check SSO enforcement by email domain — used in the login middleware
@@ -455,74 +465,76 @@ export async function isSSOEnforced(orgId: string): Promise<{
  *
  * Does NOT call requireEnterprise — this runs in the login flow.
  */
-export async function isSSOEnforcedForDomain(emailDomain: string): Promise<{
+export const isSSOEnforcedForDomain = (emailDomain: string): Effect.Effect<{
   enforced: boolean;
   provider?: SSOProvider;
   ssoRedirectUrl?: string;
-} | null> {
-  if (!hasInternalDB()) return null;
+} | null> =>
+  Effect.gen(function* () {
+    if (!hasInternalDB()) return null;
 
-  const domain = normalizeDomain(emailDomain);
-  const rows = await internalQuery<SSOProviderRow>(
-    `SELECT id, org_id, type, issuer, domain, enabled, sso_enforced, config, created_at, updated_at
-     FROM sso_providers
-     WHERE domain = $1 AND enabled = true AND sso_enforced = true
-     LIMIT 1`,
-    [domain],
-  );
+    const domain = normalizeDomain(emailDomain);
+    const rows = yield* Effect.promise(() => internalQuery<SSOProviderRow>(
+      `SELECT id, org_id, type, issuer, domain, enabled, sso_enforced, config, created_at, updated_at
+       FROM sso_providers
+       WHERE domain = $1 AND enabled = true AND sso_enforced = true
+       LIMIT 1`,
+      [domain],
+    ));
 
-  if (!rows[0]) return { enforced: false };
+    if (!rows[0]) return { enforced: false };
 
-  const provider = rowToProvider(rows[0]);
-  const ssoRedirectUrl = provider.type === "saml"
-    ? provider.config.idpSsoUrl
-    : provider.config.discoveryUrl;
+    const provider = rowToProvider(rows[0]);
+    const ssoRedirectUrl = provider.type === "saml"
+      ? provider.config.idpSsoUrl
+      : provider.config.discoveryUrl;
 
-  if (!ssoRedirectUrl) {
-    log.error(
-      { providerId: provider.id, type: provider.type },
-      "SSO enforcement active but provider has no redirect URL configured",
-    );
-  }
+    if (!ssoRedirectUrl) {
+      log.error(
+        { providerId: provider.id, type: provider.type },
+        "SSO enforcement active but provider has no redirect URL configured",
+      );
+    }
 
-  return { enforced: true, provider, ssoRedirectUrl };
-}
+    return { enforced: true, provider, ssoRedirectUrl };
+  });
 
 /**
  * Set SSO enforcement for an organization.
  * Requires enterprise license and at least one active (enabled) SSO provider.
  */
-export async function setSSOEnforcement(orgId: string, enforced: boolean): Promise<{ enforced: boolean; orgId: string }> {
-  requireEnterprise("sso");
-  requireInternalDB("SSO enforcement");
+export const setSSOEnforcement = (orgId: string, enforced: boolean): Effect.Effect<{ enforced: boolean; orgId: string }, SSOEnforcementError | EnterpriseError | Error> =>
+  Effect.gen(function* () {
+    yield* requireEnterpriseEffect("sso");
+    yield* requireInternalDBEffect("SSO enforcement");
 
-  if (enforced) {
-    // Verify at least one active SSO provider exists for this org
-    const active = await internalQuery<{ id: string }>(
-      `SELECT id FROM sso_providers WHERE org_id = $1 AND enabled = true LIMIT 1`,
-      [orgId],
-    );
-    if (active.length === 0) {
-      throw new SSOEnforcementError(
-        "Cannot enforce SSO without at least one active SSO provider. Create and enable a SAML or OIDC provider first.",
-        "no_provider",
-      );
+    if (enforced) {
+      // Verify at least one active SSO provider exists for this org
+      const active = yield* Effect.promise(() => internalQuery<{ id: string }>(
+        `SELECT id FROM sso_providers WHERE org_id = $1 AND enabled = true LIMIT 1`,
+        [orgId],
+      ));
+      if (active.length === 0) {
+        return yield* Effect.fail(new SSOEnforcementError(
+          "Cannot enforce SSO without at least one active SSO provider. Create and enable a SAML or OIDC provider first.",
+          "no_provider",
+        ));
+      }
     }
-  }
 
-  // Update all providers for this org (enforcement is org-level)
-  const updated = await internalQuery<{ id: string }>(
-    `UPDATE sso_providers SET sso_enforced = $1, updated_at = now() WHERE org_id = $2 RETURNING id`,
-    [enforced, orgId],
-  );
+    // Update all providers for this org (enforcement is org-level)
+    const updated = yield* Effect.promise(() => internalQuery<{ id: string }>(
+      `UPDATE sso_providers SET sso_enforced = $1, updated_at = now() WHERE org_id = $2 RETURNING id`,
+      [enforced, orgId],
+    ));
 
-  if (enforced && updated.length === 0) {
-    throw new SSOEnforcementError(
-      "No SSO providers were updated. Providers may have been deleted.",
-      "no_provider",
-    );
-  }
+    if (enforced && updated.length === 0) {
+      return yield* Effect.fail(new SSOEnforcementError(
+        "No SSO providers were updated. Providers may have been deleted.",
+        "no_provider",
+      ));
+    }
 
-  log.info({ orgId, enforced }, "SSO enforcement %s", enforced ? "enabled" : "disabled");
-  return { enforced, orgId };
-}
+    log.info({ orgId, enforced }, "SSO enforcement %s", enforced ? "enabled" : "disabled");
+    return { enforced, orgId };
+  });

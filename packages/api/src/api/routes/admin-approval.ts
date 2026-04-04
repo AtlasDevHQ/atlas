@@ -18,7 +18,7 @@
 
 import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
-import { runEffect } from "@atlas/api/lib/effect/hono";
+import { runEffect, domainError } from "@atlas/api/lib/effect/hono";
 import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
 import {
   listApprovalRules,
@@ -35,7 +35,7 @@ import {
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 
-const APPROVAL_ERROR_STATUS = { validation: 400, not_found: 404, conflict: 409, expired: 410 } as const;
+const approvalDomainError = domainError(ApprovalError, { validation: 400, not_found: 404, conflict: 409, expired: 410 });
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -286,9 +286,9 @@ const adminApproval = createAdminRouter();
 // POST /expire — manually expire stale requests (global, no org/DB needed)
 adminApproval.openapi(expireRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
-    const expired = yield* Effect.promise(() => expireStaleRequests());
+    const expired = yield* expireStaleRequests();
     return c.json({ expired }, 200);
-  }), { label: "expire stale requests", domainErrors: [[ApprovalError, APPROVAL_ERROR_STATUS]] });
+  }), { label: "expire stale requests", domainErrors: [approvalDomainError] });
 });
 
 // GET /pending-count — count of pending requests (needs orgId, not hasInternalDB)
@@ -301,9 +301,9 @@ adminApproval.openapi(pendingCountRoute, async (c) => {
       return c.json({ error: "bad_request", message: "No active organization. Set an active org first.", requestId }, 400);
     }
 
-    const count = yield* Effect.promise(() => getPendingCount(orgId));
+    const count = yield* getPendingCount(orgId);
     return c.json({ count }, 200);
-  }), { label: "get pending approval count", domainErrors: [[ApprovalError, APPROVAL_ERROR_STATUS]] });
+  }), { label: "get pending approval count", domainErrors: [approvalDomainError] });
 });
 
 // ── Handlers WITH requireOrgContext ───────────────────────────────────
@@ -314,9 +314,9 @@ adminApproval.openapi(listRulesRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
 
-    const rules = yield* Effect.promise(() => listApprovalRules(orgId!));
+    const rules = yield* listApprovalRules(orgId!);
     return c.json({ rules }, 200);
-  }), { label: "list approval rules", domainErrors: [[ApprovalError, APPROVAL_ERROR_STATUS]] });
+  }), { label: "list approval rules", domainErrors: [approvalDomainError] });
 });
 
 // POST /rules — create approval rule
@@ -325,15 +325,15 @@ adminApproval.openapi(createRuleRoute, async (c) => {
     const { orgId } = yield* AuthContext;
     const body = c.req.valid("json");
 
-    const rule = yield* Effect.promise(() => createApprovalRule(orgId!, {
+    const rule = yield* createApprovalRule(orgId!, {
       name: body.name,
       ruleType: body.ruleType,
       pattern: body.pattern,
       threshold: body.threshold ?? null,
       enabled: body.enabled,
-    }));
+    });
     return c.json({ rule }, 201);
-  }), { label: "create approval rule", domainErrors: [[ApprovalError, APPROVAL_ERROR_STATUS]] });
+  }), { label: "create approval rule", domainErrors: [approvalDomainError] });
 });
 
 // PUT /rules/:id — update approval rule
@@ -343,9 +343,9 @@ adminApproval.openapi(updateRuleRoute, async (c) => {
     const ruleId = c.req.param("id");
     const body = c.req.valid("json");
 
-    const rule = yield* Effect.promise(() => updateApprovalRule(orgId!, ruleId, body));
+    const rule = yield* updateApprovalRule(orgId!, ruleId, body);
     return c.json({ rule }, 200);
-  }), { label: "update approval rule", domainErrors: [[ApprovalError, APPROVAL_ERROR_STATUS]] });
+  }), { label: "update approval rule", domainErrors: [approvalDomainError] });
 });
 
 // DELETE /rules/:id — delete approval rule
@@ -354,12 +354,12 @@ adminApproval.openapi(deleteRuleRoute, async (c) => {
     const { orgId } = yield* AuthContext;
     const ruleId = c.req.param("id");
 
-    const deleted = yield* Effect.promise(() => deleteApprovalRule(orgId!, ruleId));
+    const deleted = yield* deleteApprovalRule(orgId!, ruleId);
     if (!deleted) {
       return c.json({ error: "not_found", message: "Approval rule not found." }, 404);
     }
     return c.json({ message: "Approval rule deleted." }, 200);
-  }), { label: "delete approval rule", domainErrors: [[ApprovalError, APPROVAL_ERROR_STATUS]] });
+  }), { label: "delete approval rule", domainErrors: [approvalDomainError] });
 });
 
 // GET /queue — list approval requests
@@ -370,9 +370,9 @@ adminApproval.openapi(listQueueRoute, async (c) => {
     const statusParam = new URL(c.req.raw.url).searchParams.get("status") as import("@useatlas/types").ApprovalStatus | null;
     const validStatuses = ["pending", "approved", "denied", "expired"];
     const status = statusParam && validStatuses.includes(statusParam) ? statusParam as import("@useatlas/types").ApprovalStatus : undefined;
-    const requests = yield* Effect.promise(() => listApprovalRequests(orgId!, status));
+    const requests = yield* listApprovalRequests(orgId!, status);
     return c.json({ requests }, 200);
-  }), { label: "list approval requests", domainErrors: [[ApprovalError, APPROVAL_ERROR_STATUS]] });
+  }), { label: "list approval requests", domainErrors: [approvalDomainError] });
 });
 
 // GET /queue/:id — get single approval request
@@ -381,12 +381,12 @@ adminApproval.openapi(getQueueItemRoute, async (c) => {
     const { orgId } = yield* AuthContext;
     const itemId = c.req.param("id");
 
-    const item = yield* Effect.promise(() => getApprovalRequest(orgId!, itemId));
+    const item = yield* getApprovalRequest(orgId!, itemId);
     if (!item) {
       return c.json({ error: "not_found", message: "Approval request not found." }, 404);
     }
     return c.json({ request: item }, 200);
-  }), { label: "get approval request", domainErrors: [[ApprovalError, APPROVAL_ERROR_STATUS]] });
+  }), { label: "get approval request", domainErrors: [approvalDomainError] });
 });
 
 // POST /queue/:id — review (approve/deny) an approval request
@@ -403,16 +403,16 @@ adminApproval.openapi(reviewRoute, async (c) => {
       return c.json({ error: "bad_request", message: "Reviewer user ID unavailable." }, 400);
     }
 
-    const result = yield* Effect.promise(() => reviewApprovalRequest(
+    const result = yield* reviewApprovalRequest(
       orgId!,
       itemId,
       reviewerId,
       reviewerEmail,
       body.action,
       body.comment,
-    ));
+    );
     return c.json({ request: result }, 200);
-  }), { label: "review approval request", domainErrors: [[ApprovalError, APPROVAL_ERROR_STATUS]] });
+  }), { label: "review approval request", domainErrors: [approvalDomainError] });
 });
 
 export { adminApproval };

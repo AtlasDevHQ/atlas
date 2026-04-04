@@ -13,12 +13,12 @@
 import { createRoute, z } from "@hono/zod-openapi";
 import { Effect } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
-import { runEffect, type DomainErrorMapping } from "@atlas/api/lib/effect/hono";
+import { runEffect, domainError } from "@atlas/api/lib/effect/hono";
 import {
   RequestContext,
 } from "@atlas/api/lib/effect/services";
-import { ResidencyError, type ResidencyErrorCode } from "@atlas/ee/platform/residency";
-import type { ContentfulStatusCode } from "hono/utils/http-status";
+import { ResidencyError } from "@atlas/ee/platform/residency";
+
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createPlatformRouter } from "./admin-router";
 
@@ -149,17 +149,13 @@ const listAssignmentsRoute = createRoute({
 
 type ResidencyModule = typeof import("@atlas/ee/platform/residency");
 
-const RESIDENCY_ERROR_STATUS: Record<ResidencyErrorCode, ContentfulStatusCode> = {
+const residencyDomainError = domainError(ResidencyError, {
   not_configured: 404,
   invalid_region: 400,
   already_assigned: 409,
   workspace_not_found: 404,
   no_internal_db: 503,
-};
-
-const residencyDomainErrors: DomainErrorMapping[] = [
-  [ResidencyError, RESIDENCY_ERROR_STATUS],
-];
+});
 
 async function loadResidency(): Promise<ResidencyModule | null> {
   try {
@@ -193,10 +189,10 @@ platformResidency.openapi(listRegionsRoute, async (c) => {
       return c.json({ error: "not_available", message: "Data residency requires enterprise features to be enabled.", requestId }, 404);
     }
 
-    const regions = yield* Effect.promise(() => mod.listRegions());
+    const regions = yield* mod.listRegions();
     const defaultRegion = mod.getDefaultRegion();
     return c.json({ regions, defaultRegion }, 200);
-  }), { label: "list regions", domainErrors: residencyDomainErrors });
+  }), { label: "list regions", domainErrors: [residencyDomainError] });
 });
 
 // ── Get workspace region ─────────────────────────────────────────────
@@ -211,12 +207,12 @@ platformResidency.openapi(getWorkspaceRegionRoute, async (c) => {
       return c.json({ error: "not_available", message: "Data residency requires enterprise features to be enabled.", requestId }, 404);
     }
 
-    const assignment = yield* Effect.promise(() => mod.getWorkspaceRegionAssignment(workspaceId));
+    const assignment = yield* mod.getWorkspaceRegionAssignment(workspaceId);
     if (!assignment) {
       return c.json({ error: "not_found", message: `Workspace "${workspaceId}" has no region assigned.`, requestId }, 404);
     }
     return c.json(assignment, 200);
-  }), { label: "get workspace region", domainErrors: residencyDomainErrors });
+  }), { label: "get workspace region", domainErrors: [residencyDomainError] });
 });
 
 // ── Assign region to workspace ───────────────────────────────────────
@@ -232,10 +228,10 @@ platformResidency.openapi(assignRegionRoute, async (c) => {
       return c.json({ error: "not_available", message: "Data residency requires enterprise features to be enabled.", requestId }, 404);
     }
 
-    const assignment = yield* Effect.promise(() => mod.assignWorkspaceRegion(workspaceId, body.region));
+    const assignment = yield* mod.assignWorkspaceRegion(workspaceId, body.region);
     log.info({ workspaceId, region: body.region, requestId }, "Region assigned to workspace");
     return c.json(assignment, 200);
-  }), { label: "assign region", domainErrors: residencyDomainErrors });
+  }), { label: "assign region", domainErrors: [residencyDomainError] });
 });
 
 // ── List all assignments ─────────────────────────────────────────────
@@ -249,9 +245,9 @@ platformResidency.openapi(listAssignmentsRoute, async (c) => {
       return c.json({ error: "not_available", message: "Data residency requires enterprise features to be enabled.", requestId }, 404);
     }
 
-    const assignments = yield* Effect.promise(() => mod.listWorkspaceRegions());
+    const assignments = yield* mod.listWorkspaceRegions();
     return c.json({ assignments }, 200);
-  }), { label: "list region assignments", domainErrors: residencyDomainErrors });
+  }), { label: "list region assignments", domainErrors: [residencyDomainError] });
 });
 
 export { platformResidency };

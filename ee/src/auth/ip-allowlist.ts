@@ -9,10 +9,11 @@
  * Validation helpers do not require a license.
  */
 
+import { Effect } from "effect";
 import ipaddr from "ipaddr.js";
 import { EEError } from "../lib/errors";
-import { requireEnterprise } from "../index";
-import { requireInternalDB } from "../lib/db-guard";
+import { requireEnterpriseEffect, EnterpriseError } from "../index";
+import { requireInternalDBEffect } from "../lib/db-guard";
 import {
   hasInternalDB,
   internalQuery,
@@ -206,19 +207,20 @@ function rowToEntry(row: IPAllowlistRow): IPAllowlistEntry {
 /**
  * List IP allowlist entries for an organization.
  */
-export async function listIPAllowlistEntries(orgId: string): Promise<IPAllowlistEntry[]> {
-  requireEnterprise("ip-allowlist");
-  if (!hasInternalDB()) return [];
+export const listIPAllowlistEntries = (orgId: string): Effect.Effect<IPAllowlistEntry[], EnterpriseError> =>
+  Effect.gen(function* () {
+    yield* requireEnterpriseEffect("ip-allowlist");
+    if (!hasInternalDB()) return [];
 
-  const rows = await internalQuery<IPAllowlistRow>(
-    `SELECT id, org_id, cidr, description, created_at, created_by
-     FROM ip_allowlist
-     WHERE org_id = $1
-     ORDER BY created_at ASC`,
-    [orgId],
-  );
-  return rows.map(rowToEntry);
-}
+    const rows = yield* Effect.promise(() => internalQuery<IPAllowlistRow>(
+      `SELECT id, org_id, cidr, description, created_at, created_by
+       FROM ip_allowlist
+       WHERE org_id = $1
+       ORDER BY created_at ASC`,
+      [orgId],
+    ));
+    return rows.map(rowToEntry);
+  });
 
 /**
  * Add a CIDR range to an organization's IP allowlist.
@@ -229,73 +231,77 @@ export async function listIPAllowlistEntries(orgId: string): Promise<IPAllowlist
  * address, so `10.0.0.5/8` and `10.0.0.0/8` are correctly identified
  * as the same range.
  */
-export async function addIPAllowlistEntry(
+export const addIPAllowlistEntry = (
   orgId: string,
   cidr: string,
   description: string | null,
   createdBy: string | null,
-): Promise<IPAllowlistEntry> {
-  requireEnterprise("ip-allowlist");
-  requireInternalDB("IP allowlist management");
+): Effect.Effect<IPAllowlistEntry, IPAllowlistError | EnterpriseError | Error> =>
+  Effect.gen(function* () {
+    yield* requireEnterpriseEffect("ip-allowlist");
+    yield* requireInternalDBEffect("IP allowlist management");
 
-  // Validate CIDR format
-  const parsed = parseCIDR(cidr);
-  if (!parsed) {
-    throw new IPAllowlistError(
-      `Invalid CIDR notation: "${cidr}". Expected format: 10.0.0.0/8 (IPv4), 2001:db8::/32 (IPv6), or plain IP.`,
-      "validation",
-    );
-  }
+    // Validate CIDR format
+    const parsed = parseCIDR(cidr);
+    if (!parsed) {
+      return yield* Effect.fail(new IPAllowlistError(
+        `Invalid CIDR notation: "${cidr}". Expected format: 10.0.0.0/8 (IPv4), 2001:db8::/32 (IPv6), or plain IP.`,
+        "validation",
+      ));
+    }
 
-  // Use normalized form for both storage and duplicate check
-  const normalizedCidr = parsed.normalized;
+    // Use normalized form for both storage and duplicate check
+    const normalizedCidr = parsed.normalized;
 
-  // Check for duplicates using normalized CIDR (network address + prefix)
-  const existing = await internalQuery<{ id: string }>(
-    `SELECT id FROM ip_allowlist WHERE org_id = $1 AND cidr = $2`,
-    [orgId, normalizedCidr],
-  );
-  if (existing.length > 0) {
-    throw new IPAllowlistError(
-      `CIDR range "${normalizedCidr}" is already in the allowlist.`,
-      "conflict",
-    );
-  }
+    // Check for duplicates using normalized CIDR (network address + prefix)
+    const existing = yield* Effect.promise(() => internalQuery<{ id: string }>(
+      `SELECT id FROM ip_allowlist WHERE org_id = $1 AND cidr = $2`,
+      [orgId, normalizedCidr],
+    ));
+    if (existing.length > 0) {
+      return yield* Effect.fail(new IPAllowlistError(
+        `CIDR range "${normalizedCidr}" is already in the allowlist.`,
+        "conflict",
+      ));
+    }
 
-  const rows = await internalQuery<IPAllowlistRow>(
-    `INSERT INTO ip_allowlist (org_id, cidr, description, created_by)
-     VALUES ($1, $2, $3, $4)
-     RETURNING id, org_id, cidr, description, created_at, created_by`,
-    [orgId, normalizedCidr, description, createdBy],
-  );
+    const rows = yield* Effect.promise(() => internalQuery<IPAllowlistRow>(
+      `INSERT INTO ip_allowlist (org_id, cidr, description, created_by)
+       VALUES ($1, $2, $3, $4)
+       RETURNING id, org_id, cidr, description, created_at, created_by`,
+      [orgId, normalizedCidr, description, createdBy],
+    ));
 
-  if (!rows[0]) throw new Error("Failed to add IP allowlist entry — no row returned.");
+    if (!rows[0]) return yield* Effect.die(new Error("Failed to add IP allowlist entry — no row returned."));
 
-  log.info({ orgId, cidr: normalizedCidr }, "IP allowlist entry added");
-  invalidateCache(orgId);
-  return rowToEntry(rows[0]);
-}
+    log.info({ orgId, cidr: normalizedCidr }, "IP allowlist entry added");
+    invalidateCache(orgId);
+    return rowToEntry(rows[0]);
+  });
 
 /**
  * Remove an IP allowlist entry by ID.
  */
-export async function removeIPAllowlistEntry(orgId: string, entryId: string): Promise<boolean> {
-  requireEnterprise("ip-allowlist");
-  if (!hasInternalDB()) return false;
+export const removeIPAllowlistEntry = (orgId: string, entryId: string): Effect.Effect<boolean, EnterpriseError> =>
+  Effect.gen(function* () {
+    yield* requireEnterpriseEffect("ip-allowlist");
+    if (!hasInternalDB()) return false;
 
-  const pool = getInternalDB();
-  const result = await pool.query(
-    `DELETE FROM ip_allowlist WHERE id = $1 AND org_id = $2 RETURNING id`,
-    [entryId, orgId],
-  );
+    const pool = getInternalDB();
+    const result = yield* Effect.promise(() =>
+      pool.query(
+        `DELETE FROM ip_allowlist WHERE id = $1 AND org_id = $2 RETURNING id`,
+        [entryId, orgId],
+      ),
+    );
 
-  const deleted = result.rows.length > 0;
-  if (deleted) {
-    log.info({ orgId, entryId }, "IP allowlist entry removed");
-    invalidateCache(orgId);
-  }
-  return deleted;
-}
+    const deleted = result.rows.length > 0;
+    if (deleted) {
+      log.info({ orgId, entryId }, "IP allowlist entry removed");
+      invalidateCache(orgId);
+    }
+    return deleted;
+  });
 
 // ── Middleware helper ─────────────────────────────────────────────────
 
@@ -311,29 +317,38 @@ export async function removeIPAllowlistEntry(orgId: string, entryId: string): Pr
  * Returns `{ allowed: false }` when the IP is not in any allowed range.
  * Uses an in-memory cache with 30s TTL for performance.
  */
-export async function checkIPAllowlist(
+export const checkIPAllowlist = (
   orgId: string,
   clientIP: string | null,
-): Promise<{ allowed: boolean }> {
-  // Lazy import to avoid circular dependency
-  const { isEnterpriseEnabled } = await import("../index");
-  if (!isEnterpriseEnabled()) return { allowed: true };
-  if (!hasInternalDB()) return { allowed: true };
+): Effect.Effect<{ allowed: boolean }, Error> =>
+  Effect.gen(function* () {
+    // Lazy import to avoid circular dependency
+    const { isEnterpriseEnabled } = yield* Effect.promise(() => import("../index"));
+    if (!isEnterpriseEnabled()) return { allowed: true };
+    if (!hasInternalDB()) return { allowed: true };
 
-  // Check cache
-  const cached = cache.get(orgId);
-  const now = Date.now();
-  let ranges: ParsedCIDR[];
+    // Check cache
+    const cached = cache.get(orgId);
+    const now = Date.now();
+    let ranges: ParsedCIDR[];
 
-  if (cached && cached.expiry > now) {
-    ranges = cached.ranges;
-  } else {
-    // Load from DB
-    try {
-      const rows = await internalQuery<{ cidr: string; [key: string]: unknown }>(
-        `SELECT cidr FROM ip_allowlist WHERE org_id = $1`,
-        [orgId],
-      );
+    if (cached && cached.expiry > now) {
+      ranges = cached.ranges;
+    } else {
+      // Load from DB — fail closed per CLAUDE.md
+      const rows = yield* Effect.tryPromise({
+        try: () => internalQuery<{ cidr: string; [key: string]: unknown }>(
+          `SELECT cidr FROM ip_allowlist WHERE org_id = $1`,
+          [orgId],
+        ),
+        catch: (err) => {
+          log.error(
+            { err: err instanceof Error ? err.message : String(err), orgId },
+            "Failed to load IP allowlist — blocking request (fail-closed)",
+          );
+          return err instanceof Error ? err : new Error(String(err));
+        },
+      });
       ranges = [];
       for (const row of rows) {
         const parsed = parseCIDR(row.cidr);
@@ -344,21 +359,13 @@ export async function checkIPAllowlist(
         }
       }
       cache.set(orgId, { ranges, expiry: now + CACHE_TTL_MS });
-    } catch (err) {
-      // Fail closed per CLAUDE.md: "catch { return false } on a security check is a bug"
-      log.error(
-        { err: err instanceof Error ? err.message : String(err), orgId },
-        "Failed to load IP allowlist — blocking request (fail-closed)",
-      );
-      throw err;
     }
-  }
 
-  // No entries = no restriction (opt-in)
-  if (ranges.length === 0) return { allowed: true };
+    // No entries = no restriction (opt-in)
+    if (ranges.length === 0) return { allowed: true };
 
-  // No client IP available = cannot verify, deny
-  if (!clientIP) return { allowed: false };
+    // No client IP available = cannot verify, deny
+    if (!clientIP) return { allowed: false };
 
-  return { allowed: isIPAllowed(clientIP, ranges) };
-}
+    return { allowed: isIPAllowed(clientIP, ranges) };
+  });

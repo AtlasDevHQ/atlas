@@ -6,9 +6,10 @@
  * (e.g., every minute via setInterval) and will trigger a backup
  * when the cron expression matches the current time.
  *
- * Enterprise-gated via requireEnterprise("backups").
+ * Enterprise-gated via requireEnterpriseEffect("backups").
  */
 
+import { Effect } from "effect";
 import { requireEnterprise } from "../index";
 import { createLogger } from "@atlas/api/lib/logger";
 import { createBackup, getBackupConfig, purgeExpiredBackups, ensureTable } from "./engine";
@@ -80,63 +81,59 @@ function fieldMatches(pattern: string, value: number): boolean {
  * Check if a backup should run now and execute it.
  * Called once per minute by the scheduler interval.
  */
-async function tick(): Promise<void> {
-  const now = new Date();
-  const currentMinute = now.getUTCHours() * 60 + now.getUTCMinutes();
+const tick = (): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    const now = new Date();
+    const currentMinute = now.getUTCHours() * 60 + now.getUTCMinutes();
 
-  // Prevent double-execution in the same minute
-  if (currentMinute === _lastRunMinute) return;
+    // Prevent double-execution in the same minute
+    if (currentMinute === _lastRunMinute) return;
 
-  try {
-    const config = await getBackupConfig();
+    const config = yield* getBackupConfig();
 
     if (!cronMatchesNow(config.schedule)) return;
 
     _lastRunMinute = currentMinute;
     log.info({ schedule: config.schedule }, "Scheduled backup triggered");
 
-    await createBackup();
+    yield* createBackup();
 
     // Purge expired backups after successful backup
-    await purgeExpiredBackups();
-  } catch (err) {
-    log.error(
-      { err: err instanceof Error ? err : new Error(String(err)) },
-      "Scheduled backup failed",
-    );
-  }
-}
+    yield* purgeExpiredBackups();
+  }).pipe(
+    Effect.catchAll((err) => {
+      log.error(
+        { err: err instanceof Error ? err : new Error(String(err)) },
+        "Scheduled backup failed",
+      );
+      return Effect.void;
+    }),
+  );
 
 /**
  * Start the backup scheduler. Runs a check every 60 seconds.
  * Idempotent — calling multiple times is safe.
  */
-export async function startScheduler(): Promise<void> {
-  requireEnterprise("backups");
-  await ensureTable();
-
-  if (_schedulerInterval) return;
-
-  const config = await getBackupConfig();
-  log.info({ schedule: config.schedule, retentionDays: config.retention_days }, "Backup scheduler started");
-
-  // Check immediately, then every 60 seconds
-  tick().catch((err) => {
-    log.error(
-      { err: err instanceof Error ? err : new Error(String(err)) },
-      "Initial scheduler tick failed",
-    );
-  });
-
-  _schedulerInterval = setInterval(() => {
-    tick().catch((err) => {
-      log.error(
-        { err: err instanceof Error ? err : new Error(String(err)) },
-        "Scheduler tick failed",
-      );
+export const startScheduler = (): Effect.Effect<void, Error> =>
+  Effect.gen(function* () {
+    yield* Effect.try({
+      try: () => requireEnterprise("backups"),
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
     });
-  }, 60_000);
-}
+    yield* ensureTable();
+
+    if (_schedulerInterval) return;
+
+    const config = yield* getBackupConfig();
+    log.info({ schedule: config.schedule, retentionDays: config.retention_days }, "Backup scheduler started");
+
+    // Check immediately, then every 60 seconds
+    void Effect.runPromise(tick());
+
+    _schedulerInterval = setInterval(() => {
+      void Effect.runPromise(tick());
+    }, 60_000);
+  });
 
 /**
  * Stop the backup scheduler.

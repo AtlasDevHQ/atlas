@@ -21,9 +21,8 @@ import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 import {
   CustomDomainSchema,
-  domainErrors,
+  customDomainError,
   loadDomains,
-  sanitizeDomainError,
 } from "./shared-domains";
 
 const log = createLogger("admin-domains");
@@ -194,20 +193,6 @@ async function checkPlanGate(
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Wraps EE domain calls in Effect.tryPromise with error sanitization. */
-function tryDomainCall<T>(
-  fn: () => Promise<T>,
-  requestId: string,
-) {
-  return Effect.tryPromise({
-    try: fn,
-    catch: (err) => {
-      sanitizeDomainError(err, requestId);
-      return err instanceof Error ? err : new Error(String(err));
-    },
-  });
-}
-
 // ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
@@ -231,9 +216,9 @@ adminDomains.openapi(getDomainRoute, async (c) => {
       return c.json({ error: "not_available", message: "Custom domains require enterprise features to be enabled.", requestId }, 404);
     }
 
-    const domains = yield* tryDomainCall(() => mod.listDomains(orgId), requestId);
+    const domains = yield* mod.listDomains(orgId);
     return c.json({ domain: domains[0] ?? null }, 200);
-  }), { label: "get workspace domain", domainErrors });
+  }), { label: "get workspace domain", domainErrors: [customDomainError] });
 });
 
 // POST / — add custom domain (enterprise plan required)
@@ -261,7 +246,7 @@ adminDomains.openapi(addDomainRoute, async (c) => {
     // this check. A UNIQUE constraint on custom_domains(workspace_id) would be the
     // proper fix; the downstream registerDomain will fail with duplicate_domain if the
     // domain name itself collides.
-    const existing = yield* tryDomainCall(() => mod.listDomains(orgId), requestId);
+    const existing = yield* mod.listDomains(orgId);
     if (existing.length > 0) {
       return c.json({
         error: "duplicate_domain",
@@ -272,10 +257,10 @@ adminDomains.openapi(addDomainRoute, async (c) => {
 
     const body = c.req.valid("json");
 
-    const domain = yield* tryDomainCall(() => mod.registerDomain(orgId, body.domain), requestId);
+    const domain = yield* mod.registerDomain(orgId, body.domain);
     log.info({ orgId, domain: body.domain, requestId }, "Workspace custom domain registered");
     return c.json(domain, 201);
-  }), { label: "add workspace domain", domainErrors });
+  }), { label: "add workspace domain", domainErrors: [customDomainError] });
 });
 
 // POST /verify — check domain verification status
@@ -294,14 +279,14 @@ adminDomains.openapi(verifyDomainRoute, async (c) => {
     }
 
     // MVP: one domain per workspace, so we always operate on the first result
-    const domains = yield* tryDomainCall(() => mod.listDomains(orgId), requestId);
+    const domains = yield* mod.listDomains(orgId);
     if (domains.length === 0) {
       return c.json({ error: "not_found", message: "No custom domain configured for this workspace.", requestId }, 404);
     }
 
-    const domain = yield* tryDomainCall(() => mod.verifyDomain(domains[0].id), requestId);
+    const domain = yield* mod.verifyDomain(domains[0].id);
     return c.json(domain, 200);
-  }), { label: "verify workspace domain", domainErrors });
+  }), { label: "verify workspace domain", domainErrors: [customDomainError] });
 });
 
 // DELETE / — remove workspace custom domain
@@ -320,15 +305,15 @@ adminDomains.openapi(removeDomainRoute, async (c) => {
     }
 
     // MVP: one domain per workspace, so we always operate on the first result
-    const domains = yield* tryDomainCall(() => mod.listDomains(orgId), requestId);
+    const domains = yield* mod.listDomains(orgId);
     if (domains.length === 0) {
       return c.json({ error: "not_found", message: "No custom domain configured for this workspace.", requestId }, 404);
     }
 
-    yield* tryDomainCall(() => mod.deleteDomain(domains[0].id), requestId);
+    yield* mod.deleteDomain(domains[0].id);
     log.info({ orgId, domainId: domains[0].id, requestId }, "Workspace custom domain removed");
     return c.json({ deleted: true }, 200);
-  }), { label: "remove workspace domain", domainErrors });
+  }), { label: "remove workspace domain", domainErrors: [customDomainError] });
 });
 
 export { adminDomains };

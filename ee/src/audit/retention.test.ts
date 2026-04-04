@@ -1,4 +1,12 @@
 import { describe, it, expect, beforeEach, mock } from "bun:test";
+import { Effect, Exit, Cause } from "effect";
+
+// ── Effect runner helper ──────────────────────────────────────────
+const run = async <A, E>(effect: Effect.Effect<A, E>): Promise<A> => {
+  const exit = await Effect.runPromiseExit(effect);
+  if (Exit.isSuccess(exit)) return exit.value;
+  throw Cause.squash(exit.cause);
+};
 
 // ---------------------------------------------------------------------------
 // Mock control variables
@@ -58,6 +66,15 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   },
 }));
 
+mock.module("../lib/db-guard", () => ({
+  requireInternalDB: (label: string, factory?: () => Error) => {
+    if (!mockInternalDB) { if (factory) throw factory(); throw new Error(`Internal database required for ${label}.`); }
+  },
+  requireInternalDBEffect: (label: string, factory?: () => Error) => {
+    return mockInternalDB ? Effect.void : Effect.fail(factory?.() ?? new Error(`Internal database required for ${label}.`));
+  },
+}));
+
 // Import after mocks
 const {
   getRetentionPolicy,
@@ -86,7 +103,7 @@ describe("getRetentionPolicy", () => {
 
   it("returns null when no policy exists", async () => {
     queryResults = [[]];
-    const result = await getRetentionPolicy("org-1");
+    const result = await run(getRetentionPolicy("org-1"));
     expect(result).toBeNull();
   });
 
@@ -101,7 +118,7 @@ describe("getRetentionPolicy", () => {
       last_purge_at: null,
       last_purge_count: null,
     }]];
-    const result = await getRetentionPolicy("org-1");
+    const result = await run(getRetentionPolicy("org-1"));
     expect(result).not.toBeNull();
     expect(result!.orgId).toBe("org-1");
     expect(result!.retentionDays).toBe(90);
@@ -110,14 +127,14 @@ describe("getRetentionPolicy", () => {
 
   it("returns null when no internal DB", async () => {
     mockInternalDB = false;
-    const result = await getRetentionPolicy("org-1");
+    const result = await run(getRetentionPolicy("org-1"));
     expect(result).toBeNull();
   });
 
   it("throws when enterprise is not enabled", async () => {
     mockEnterpriseEnabled = false;
     mockLicenseKey = undefined;
-    await expect(getRetentionPolicy("org-1")).rejects.toThrow("Enterprise features");
+    await expect(run(getRetentionPolicy("org-1"))).rejects.toThrow("Enterprise features");
   });
 });
 
@@ -143,7 +160,7 @@ describe("setRetentionPolicy", () => {
       last_purge_at: null,
       last_purge_count: null,
     }]];
-    const result = await setRetentionPolicy("org-1", { retentionDays: 90 }, "user-1");
+    const result = await run(setRetentionPolicy("org-1", { retentionDays: 90 }, "user-1"));
     expect(result.retentionDays).toBe(90);
     expect(result.hardDeleteDelayDays).toBe(30);
   });
@@ -159,38 +176,38 @@ describe("setRetentionPolicy", () => {
       last_purge_at: null,
       last_purge_count: null,
     }]];
-    const result = await setRetentionPolicy("org-1", { retentionDays: null }, "user-1");
+    const result = await run(setRetentionPolicy("org-1", { retentionDays: null }, "user-1"));
     expect(result.retentionDays).toBeNull();
   });
 
   it("rejects retention days below minimum", async () => {
     await expect(
-      setRetentionPolicy("org-1", { retentionDays: 3 }, "user-1"),
+      run(setRetentionPolicy("org-1", { retentionDays: 3 }, "user-1")),
     ).rejects.toThrow(`at least ${MIN_RETENTION_DAYS} days`);
   });
 
   it("rejects non-integer retention days", async () => {
     await expect(
-      setRetentionPolicy("org-1", { retentionDays: 10.5 }, "user-1"),
+      run(setRetentionPolicy("org-1", { retentionDays: 10.5 }, "user-1")),
     ).rejects.toThrow(`at least ${MIN_RETENTION_DAYS} days`);
   });
 
   it("rejects negative hard delete delay", async () => {
     await expect(
-      setRetentionPolicy("org-1", { retentionDays: 30, hardDeleteDelayDays: -1 }, "user-1"),
+      run(setRetentionPolicy("org-1", { retentionDays: 30, hardDeleteDelayDays: -1 }, "user-1")),
     ).rejects.toThrow("non-negative integer");
   });
 
   it("throws when no internal DB", async () => {
     mockInternalDB = false;
     await expect(
-      setRetentionPolicy("org-1", { retentionDays: 30 }, "user-1"),
+      run(setRetentionPolicy("org-1", { retentionDays: 30 }, "user-1")),
     ).rejects.toThrow("Internal database required");
   });
 
   it("throws RetentionError with correct code for validation", async () => {
     try {
-      await setRetentionPolicy("org-1", { retentionDays: 1 }, "user-1");
+      await run(setRetentionPolicy("org-1", { retentionDays: 1 }, "user-1"));
       expect(true).toBe(false); // Should not reach here
     } catch (err) {
       expect(err).toBeInstanceOf(RetentionError);
@@ -212,7 +229,7 @@ describe("purgeExpiredEntries", () => {
 
   it("returns empty array when no configs exist", async () => {
     queryResults = [[]]; // No retention configs
-    const result = await purgeExpiredEntries("org-1");
+    const result = await run(purgeExpiredEntries("org-1"));
     expect(result).toEqual([]);
   });
 
@@ -226,7 +243,7 @@ describe("purgeExpiredEntries", () => {
       return { rows: [{ cnt: 2 }] };
     });
 
-    const result = await purgeExpiredEntries("org-1");
+    const result = await run(purgeExpiredEntries("org-1"));
     expect(result.length).toBe(1);
     expect(result[0].orgId).toBe("org-1");
     expect(result[0].softDeletedCount).toBe(2);
@@ -234,7 +251,7 @@ describe("purgeExpiredEntries", () => {
 
   it("returns empty when no internal DB", async () => {
     mockInternalDB = false;
-    const result = await purgeExpiredEntries();
+    const result = await run(purgeExpiredEntries());
     expect(result).toEqual([]);
   });
 });
@@ -260,13 +277,13 @@ describe("hardDeleteExpired", () => {
       return { rows: [{ cnt: 1 }] };
     });
 
-    const result = await hardDeleteExpired();
+    const result = await run(hardDeleteExpired());
     expect(result.deletedCount).toBe(1);
   });
 
   it("returns zero when no internal DB", async () => {
     mockInternalDB = false;
-    const result = await hardDeleteExpired();
+    const result = await run(hardDeleteExpired());
     expect(result.deletedCount).toBe(0);
   });
 });
@@ -306,10 +323,10 @@ describe("exportAuditLog", () => {
       }],
     ];
 
-    const result = await exportAuditLog({
+    const result = await run(exportAuditLog({
       orgId: "org-1",
       format: "json",
-    });
+    }));
 
     expect(result.format).toBe("json");
     expect(result.rowCount).toBe(1);
@@ -342,10 +359,10 @@ describe("exportAuditLog", () => {
       }],
     ];
 
-    const result = await exportAuditLog({
+    const result = await run(exportAuditLog({
       orgId: "org-1",
       format: "csv",
-    });
+    }));
 
     expect(result.format).toBe("csv");
     expect(result.content).toContain("id,timestamp,user_id");
@@ -354,18 +371,18 @@ describe("exportAuditLog", () => {
 
   it("validates date formats", async () => {
     await expect(
-      exportAuditLog({ orgId: "org-1", format: "json", startDate: "not-a-date" }),
+      run(exportAuditLog({ orgId: "org-1", format: "json", startDate: "not-a-date" })),
     ).rejects.toThrow("Invalid start_date format");
 
     await expect(
-      exportAuditLog({ orgId: "org-1", format: "json", endDate: "bad" }),
+      run(exportAuditLog({ orgId: "org-1", format: "json", endDate: "bad" })),
     ).rejects.toThrow("Invalid end_date format");
   });
 
   it("throws when no internal DB", async () => {
     mockInternalDB = false;
     await expect(
-      exportAuditLog({ orgId: "org-1", format: "json" }),
+      run(exportAuditLog({ orgId: "org-1", format: "json" })),
     ).rejects.toThrow("Internal database required");
   });
 });

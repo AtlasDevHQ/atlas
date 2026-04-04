@@ -1365,9 +1365,9 @@ export async function getRegionAwareConnection(
   orgId: string,
   connectionId: string = "default",
 ): Promise<RegionAwareResult> {
-  let resolveRegionDatabaseUrl: Awaited<typeof import("@atlas/ee/platform/residency")>["resolveRegionDatabaseUrl"];
+  let resolveRegionDatabaseUrlFn: Awaited<typeof import("@atlas/ee/platform/residency")>["resolveRegionDatabaseUrl"];
   try {
-    ({ resolveRegionDatabaseUrl } = await import("@atlas/ee/platform/residency"));
+    ({ resolveRegionDatabaseUrl: resolveRegionDatabaseUrlFn } = await import("@atlas/ee/platform/residency"));
   } catch (err) {
     // ee module not installed — non-enterprise deployment, use default
     if (err instanceof Error && "code" in err && (err as NodeJS.ErrnoException).code === "MODULE_NOT_FOUND") {
@@ -1379,9 +1379,10 @@ export async function getRegionAwareConnection(
     throw err instanceof Error ? err : new Error(String(err));
   }
 
-  let regionInfo: Awaited<ReturnType<typeof resolveRegionDatabaseUrl>>;
+  let regionInfo: { databaseUrl: string; datasourceUrl?: string; region: string } | null;
   try {
-    regionInfo = await resolveRegionDatabaseUrl(orgId);
+    const { Effect } = await import("effect");
+    regionInfo = await Effect.runPromise(resolveRegionDatabaseUrlFn(orgId));
   } catch (err) {
     log.warn(
       { err: err instanceof Error ? err.message : String(err), orgId },

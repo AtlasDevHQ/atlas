@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, mock } from "bun:test";
+import { Effect } from "effect";
 import { createEEMock } from "../__mocks__/internal";
 
 // ── Mocks ───────────────────────────────────────────────────────────
@@ -31,6 +32,20 @@ const mockRows: Record<string, unknown>[][] = [];
 let queryCallCount = 0;
 
 mock.module("../index", () => ee.enterpriseMock);
+const hasDB = () => (ee.internalDBMock.hasInternalDB as () => boolean)();
+mock.module("../lib/db-guard", () => ({
+  requireInternalDB: (label: string, factory?: () => Error) => {
+    if (!hasDB()) {
+      if (factory) throw factory();
+      throw new Error(`Internal database required for ${label}.`);
+    }
+  },
+  requireInternalDBEffect: (label: string, factory?: () => Error) => {
+    return hasDB()
+      ? Effect.void
+      : Effect.fail(factory?.() ?? new Error(`Internal database required for ${label}.`));
+  },
+}));
 mock.module("@atlas/api/lib/db/internal", () => ee.internalDBMock);
 
 let mockConfig: Record<string, unknown> | null = null;
@@ -56,6 +71,10 @@ const {
 } = await import("./residency");
 
 // ── Helpers ─────────────────────────────────────────────────────────
+
+/** Run an Effect, converting failures to rejected promises for test assertions. */
+const run = <A, E>(effect: Effect.Effect<A, E>) =>
+  Effect.runPromise(effect as Effect.Effect<A, never>);
 
 function resetMocks() {
   ee.reset();
@@ -101,7 +120,7 @@ describe("residency", () => {
         { region: "eu-west", cnt: "1" },
       ]);
 
-      const regions = await listRegions();
+      const regions = await run(listRegions());
       expect(regions).toHaveLength(2);
       expect(regions[0].region).toBe("us-east");
       expect(regions[0].workspaceCount).toBe(3);
@@ -111,7 +130,7 @@ describe("residency", () => {
 
     it("returns zero counts for regions with no workspaces", async () => {
       ee.queueMockRows([]); // no workspace counts
-      const regions = await listRegions();
+      const regions = await run(listRegions());
       expect(regions[0].workspaceCount).toBe(0);
     });
   });
@@ -120,31 +139,31 @@ describe("residency", () => {
     it("assigns a valid region to a workspace", async () => {
       // setWorkspaceRegion returns assigned: true by default
       mockRows.push([]);
-      const result = await assignWorkspaceRegion("org-1", "eu-west");
+      const result = await run(assignWorkspaceRegion("org-1", "eu-west"));
       expect(result.workspaceId).toBe("org-1");
       expect(result.region).toBe("eu-west");
       expect(result.assignedAt).toBeDefined();
     });
 
     it("rejects invalid region", async () => {
-      await expect(assignWorkspaceRegion("org-1", "ap-south")).rejects.toThrow("Invalid region");
+      await expect(run(assignWorkspaceRegion("org-1", "ap-south"))).rejects.toThrow("Invalid region");
     });
 
     it("rejects reassignment (immutability)", async () => {
       mockRows.push([{ assigned: false, existing: "us-east" }]);
-      await expect(assignWorkspaceRegion("org-1", "eu-west")).rejects.toThrow("already assigned");
+      await expect(run(assignWorkspaceRegion("org-1", "eu-west"))).rejects.toThrow("already assigned");
     });
 
     it("throws not found for nonexistent workspace", async () => {
       mockRows.push([{ assigned: false }]); // no existing field
-      await expect(assignWorkspaceRegion("org-999", "us-east")).rejects.toThrow("not found");
+      await expect(run(assignWorkspaceRegion("org-999", "us-east"))).rejects.toThrow("not found");
     });
   });
 
   describe("getWorkspaceRegionAssignment", () => {
     it("returns assignment for workspace with region", async () => {
       ee.queueMockRows([{ region: "eu-west", region_assigned_at: "2026-03-23T00:00:00Z" }]);
-      const result = await getWorkspaceRegionAssignment("org-1");
+      const result = await run(getWorkspaceRegionAssignment("org-1"));
       expect(result).not.toBeNull();
       expect(result!.region).toBe("eu-west");
       expect(result!.workspaceId).toBe("org-1");
@@ -152,13 +171,13 @@ describe("residency", () => {
 
     it("returns null for workspace without region", async () => {
       ee.queueMockRows([{ region: null, region_assigned_at: null }]);
-      const result = await getWorkspaceRegionAssignment("org-1");
+      const result = await run(getWorkspaceRegionAssignment("org-1"));
       expect(result).toBeNull();
     });
 
     it("returns null for nonexistent workspace", async () => {
       ee.queueMockRows([]);
-      const result = await getWorkspaceRegionAssignment("org-999");
+      const result = await run(getWorkspaceRegionAssignment("org-999"));
       expect(result).toBeNull();
     });
   });
@@ -166,7 +185,7 @@ describe("residency", () => {
   describe("resolveRegionDatabaseUrl", () => {
     it("resolves database URLs for workspace with region", async () => {
       mockRows.push([{ region: "eu-west" }]);
-      const result = await resolveRegionDatabaseUrl("org-1");
+      const result = await run(resolveRegionDatabaseUrl("org-1"));
       expect(result).not.toBeNull();
       expect(result!.databaseUrl).toBe("postgresql://eu-west/atlas");
       expect(result!.datasourceUrl).toBe("postgresql://eu-west/data");
@@ -175,13 +194,13 @@ describe("residency", () => {
 
     it("returns null when residency is not configured", async () => {
       mockConfig = {};
-      const result = await resolveRegionDatabaseUrl("org-1");
+      const result = await run(resolveRegionDatabaseUrl("org-1"));
       expect(result).toBeNull();
     });
 
     it("returns null when workspace has no region", async () => {
       mockRows.push([{ region: null }]);
-      const result = await resolveRegionDatabaseUrl("org-1");
+      const result = await run(resolveRegionDatabaseUrl("org-1"));
       expect(result).toBeNull();
     });
   });
@@ -192,7 +211,7 @@ describe("residency", () => {
         { id: "org-1", region: "us-east", region_assigned_at: "2026-03-23T00:00:00Z" },
         { id: "org-2", region: "eu-west", region_assigned_at: "2026-03-23T01:00:00Z" },
       ]);
-      const result = await listWorkspaceRegions();
+      const result = await run(listWorkspaceRegions());
       expect(result).toHaveLength(2);
       expect(result[0].workspaceId).toBe("org-1");
       expect(result[1].workspaceId).toBe("org-2");

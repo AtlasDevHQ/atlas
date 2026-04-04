@@ -7,7 +7,7 @@
 
 import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
-import { runEffect } from "@atlas/api/lib/effect/hono";
+import { runEffect, domainError } from "@atlas/api/lib/effect/hono";
 import { AuthContext } from "@atlas/api/lib/effect/services";
 import { getClientIP } from "@atlas/api/lib/auth/middleware";
 import {
@@ -19,7 +19,7 @@ import {
 import { ErrorSchema, AuthErrorSchema, isValidId, createIdParamSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 
-const IP_ALLOWLIST_ERROR_STATUS = { validation: 400, conflict: 409, not_found: 404 } as const;
+const ipAllowlistDomainError = domainError(IPAllowlistError, { validation: 400, conflict: 409, not_found: 404 });
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -214,9 +214,9 @@ adminIPAllowlist.openapi(listEntriesRoute, async (c) => {
 
     const callerIP = getClientIP(c.req.raw);
 
-    const entries = yield* Effect.promise(() => listIPAllowlistEntries(orgId!));
+    const entries = yield* listIPAllowlistEntries(orgId!);
     return c.json({ entries, total: entries.length, callerIP }, 200);
-  }), { label: "list IP allowlist entries", domainErrors: [[IPAllowlistError, IP_ALLOWLIST_ERROR_STATUS]] });
+  }), { label: "list IP allowlist entries", domainErrors: [ipAllowlistDomainError] });
 });
 
 // POST / — add a CIDR range to the allowlist
@@ -230,14 +230,14 @@ adminIPAllowlist.openapi(addEntryRoute, async (c) => {
       return c.json({ error: "bad_request", message: "Missing required field: cidr." }, 400);
     }
 
-    const entry = yield* Effect.promise(() => addIPAllowlistEntry(
+    const entry = yield* addIPAllowlistEntry(
       orgId!,
       body.cidr,
       body.description ?? null,
       user?.id ?? null,
-    ));
+    );
     return c.json({ entry }, 201);
-  }), { label: "add IP allowlist entry", domainErrors: [[IPAllowlistError, IP_ALLOWLIST_ERROR_STATUS]] });
+  }), { label: "add IP allowlist entry", domainErrors: [ipAllowlistDomainError] });
 });
 
 // DELETE /:id — remove an IP allowlist entry
@@ -250,12 +250,12 @@ adminIPAllowlist.openapi(deleteEntryRoute, async (c) => {
       return c.json({ error: "bad_request", message: "Invalid entry ID." }, 400);
     }
 
-    const deleted = yield* Effect.promise(() => removeIPAllowlistEntry(orgId!, entryId));
+    const deleted = yield* removeIPAllowlistEntry(orgId!, entryId);
     if (!deleted) {
       return c.json({ error: "not_found", message: "IP allowlist entry not found." }, 404);
     }
     return c.json({ message: "IP allowlist entry removed." }, 200);
-  }), { label: "remove IP allowlist entry", domainErrors: [[IPAllowlistError, IP_ALLOWLIST_ERROR_STATUS]] });
+  }), { label: "remove IP allowlist entry", domainErrors: [ipAllowlistDomainError] });
 });
 
 export { adminIPAllowlist };

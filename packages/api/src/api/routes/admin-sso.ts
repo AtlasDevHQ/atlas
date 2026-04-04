@@ -7,7 +7,7 @@
 
 import { createRoute, z } from "@hono/zod-openapi";
 import { Effect } from "effect";
-import { runEffect } from "@atlas/api/lib/effect/hono";
+import { runEffect, domainError } from "@atlas/api/lib/effect/hono";
 import {
   AuthContext,
 } from "@atlas/api/lib/effect/services";
@@ -31,8 +31,8 @@ import type {
 import { ErrorSchema, AuthErrorSchema, isValidId, createIdParamSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 
-const SSO_ERROR_STATUS = { not_found: 404, conflict: 409, validation: 400 } as const;
-const SSO_ENFORCEMENT_ERROR_STATUS = { no_provider: 400, not_enterprise: 400 } as const;
+const ssoDomainError = domainError(SSOError, { not_found: 404, conflict: 409, validation: 400 });
+const ssoEnforcementDomainError = domainError(SSOEnforcementError, { no_provider: 400, not_enterprise: 400 });
 
 // ---------------------------------------------------------------------------
 // Schemas
@@ -447,9 +447,9 @@ adminSso.openapi(listProvidersRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
 
-    const providers = yield* Effect.promise(() => listSSOProviders(orgId!));
+    const providers = yield* listSSOProviders(orgId!);
     return c.json({ providers: providers.map(summarizeProvider), total: providers.length }, 200);
-  }), { label: "list SSO providers", domainErrors: [[SSOEnforcementError, SSO_ENFORCEMENT_ERROR_STATUS], [SSOError, SSO_ERROR_STATUS]] });
+  }), { label: "list SSO providers", domainErrors: [ssoEnforcementDomainError, ssoDomainError] });
 });
 
 // GET /providers/:id — get a single SSO provider
@@ -462,12 +462,12 @@ adminSso.openapi(getProviderRoute, async (c) => {
       return c.json({ error: "bad_request", message: "Invalid provider ID." }, 400);
     }
 
-    const provider = yield* Effect.promise(() => getSSOProvider(orgId!, providerId));
+    const provider = yield* getSSOProvider(orgId!, providerId);
     if (!provider) {
       return c.json({ error: "not_found", message: "SSO provider not found." }, 404);
     }
     return c.json({ provider: redactProvider(provider) }, 200);
-  }), { label: "get SSO provider", domainErrors: [[SSOEnforcementError, SSO_ENFORCEMENT_ERROR_STATUS], [SSOError, SSO_ERROR_STATUS]] });
+  }), { label: "get SSO provider", domainErrors: [ssoEnforcementDomainError, ssoDomainError] });
 });
 
 // POST /providers — create a new SSO provider
@@ -481,9 +481,9 @@ adminSso.openapi(createProviderRoute, async (c) => {
       return c.json({ error: "bad_request", message: "Missing required fields: type, issuer, domain, config." }, 400);
     }
 
-    const provider = yield* Effect.promise(() => createSSOProvider(orgId!, body as unknown as CreateSSOProviderRequest));
+    const provider = yield* createSSOProvider(orgId!, body as unknown as CreateSSOProviderRequest);
     return c.json({ provider: redactProvider(provider) }, 201);
-  }), { label: "create SSO provider", domainErrors: [[SSOEnforcementError, SSO_ENFORCEMENT_ERROR_STATUS], [SSOError, SSO_ERROR_STATUS]] });
+  }), { label: "create SSO provider", domainErrors: [ssoEnforcementDomainError, ssoDomainError] });
 });
 
 // PATCH /providers/:id — update an SSO provider
@@ -498,9 +498,9 @@ adminSso.openapi(updateProviderRoute, async (c) => {
 
     const body = c.req.valid("json") as UpdateSSOProviderRequest;
 
-    const provider = yield* Effect.promise(() => updateSSOProvider(orgId!, providerId, body));
+    const provider = yield* updateSSOProvider(orgId!, providerId, body);
     return c.json({ provider: redactProvider(provider) }, 200);
-  }), { label: "update SSO provider", domainErrors: [[SSOEnforcementError, SSO_ENFORCEMENT_ERROR_STATUS], [SSOError, SSO_ERROR_STATUS]] });
+  }), { label: "update SSO provider", domainErrors: [ssoEnforcementDomainError, ssoDomainError] });
 });
 
 // DELETE /providers/:id — delete an SSO provider
@@ -513,12 +513,12 @@ adminSso.openapi(deleteProviderRoute, async (c) => {
       return c.json({ error: "bad_request", message: "Invalid provider ID." }, 400);
     }
 
-    const deleted = yield* Effect.promise(() => deleteSSOProvider(orgId!, providerId));
+    const deleted = yield* deleteSSOProvider(orgId!, providerId);
     if (!deleted) {
       return c.json({ error: "not_found", message: "SSO provider not found." }, 404);
     }
     return c.json({ message: "SSO provider deleted." }, 200);
-  }), { label: "delete SSO provider", domainErrors: [[SSOEnforcementError, SSO_ENFORCEMENT_ERROR_STATUS], [SSOError, SSO_ERROR_STATUS]] });
+  }), { label: "delete SSO provider", domainErrors: [ssoEnforcementDomainError, ssoDomainError] });
 });
 
 // GET /enforcement — get SSO enforcement status
@@ -526,9 +526,9 @@ adminSso.openapi(getEnforcementRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
 
-    const result = yield* Effect.promise(() => isSSOEnforced(orgId!));
+    const result = yield* isSSOEnforced(orgId!);
     return c.json({ enforced: result?.enforced ?? false, orgId: orgId! }, 200);
-  }), { label: "get SSO enforcement status", domainErrors: [[SSOEnforcementError, SSO_ENFORCEMENT_ERROR_STATUS], [SSOError, SSO_ERROR_STATUS]] });
+  }), { label: "get SSO enforcement status", domainErrors: [ssoEnforcementDomainError, ssoDomainError] });
 });
 
 // PUT /enforcement — set SSO enforcement
@@ -537,9 +537,9 @@ adminSso.openapi(setEnforcementRoute, async (c) => {
     const { orgId } = yield* AuthContext;
     const { enforced } = c.req.valid("json");
 
-    const result = yield* Effect.promise(() => setSSOEnforcement(orgId!, enforced));
+    const result = yield* setSSOEnforcement(orgId!, enforced);
     return c.json(result, 200);
-  }), { label: "set SSO enforcement", domainErrors: [[SSOEnforcementError, SSO_ENFORCEMENT_ERROR_STATUS], [SSOError, SSO_ERROR_STATUS]] });
+  }), { label: "set SSO enforcement", domainErrors: [ssoEnforcementDomainError, ssoDomainError] });
 });
 
 export { adminSso };

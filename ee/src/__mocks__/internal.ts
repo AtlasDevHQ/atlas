@@ -20,6 +20,7 @@
  * @module
  */
 
+import { Effect } from "effect";
 import { EnterpriseError } from "../index";
 
 // Re-export so tests can import from the mock factory
@@ -90,6 +91,15 @@ export function createEEMock(overrides?: EEMockOverrides): EEMock {
           `Set ATLAS_ENTERPRISE_ENABLED=true or configure enterprise.enabled in atlas.config.ts.`,
         );
       }
+    },
+    requireEnterpriseEffect: (feature?: string) => {
+      const label = feature ? ` (${feature})` : "";
+      return enterpriseEnabled
+        ? Effect.void
+        : Effect.fail(new EnterpriseError(
+            `Enterprise features${label} are not enabled. ` +
+            `Set ATLAS_ENTERPRISE_ENABLED=true or configure enterprise.enabled in atlas.config.ts.`,
+          ));
     },
     ...overrides?.enterprise,
   };

@@ -66,20 +66,23 @@ export async function authPreamble(
   // IP allowlist check — enterprise feature, after auth so we have org context
   const orgId = authResult.user?.activeOrganizationId;
   if (orgId) {
-    let checkIPAllowlist: ((orgId: string, clientIP: string | null) => Promise<{ allowed: boolean }>) | undefined;
     try {
-      ({ checkIPAllowlist } = await import("@atlas/ee/auth/ip-allowlist"));
-    } catch {
-      // ee module not installed — IP allowlist feature unavailable, skip
-    }
-    if (checkIPAllowlist) {
-      const ipCheck = await checkIPAllowlist(orgId, ip);
+      const [{ checkIPAllowlist }, { Effect: E }] = await Promise.all([
+        import("@atlas/ee/auth/ip-allowlist"),
+        import("effect"),
+      ]);
+      const ipCheck = await E.runPromise(checkIPAllowlist(orgId, ip));
       if (!ipCheck.allowed) {
         log.warn({ requestId, orgId, ip }, "IP not in workspace allowlist");
         return {
           error: { error: "ip_not_allowed", message: "Your IP address is not in the workspace's allowlist.", requestId },
           status: 403 as const,
         };
+      }
+    } catch (err) {
+      // ee module not installed — IP allowlist feature unavailable, skip
+      if (err instanceof Error && !err.message.includes("Cannot find module") && !err.message.includes("Cannot find package")) {
+        throw err;
       }
     }
   }

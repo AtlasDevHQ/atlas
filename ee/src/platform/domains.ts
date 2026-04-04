@@ -9,6 +9,8 @@
  * required). `resolveWorkspaceByHost` returns null gracefully when not
  * configured (used in request routing).
  *
+ * All exported functions return Effect — callers use `yield*` in Effect.gen.
+ *
  * Required env vars:
  * - RAILWAY_API_TOKEN — workspace-scoped Railway API token
  * - RAILWAY_PROJECT_ID — Railway project ID
@@ -16,8 +18,9 @@
  * - RAILWAY_WEB_SERVICE_ID — Railway service ID for the web service
  */
 
+import { Effect } from "effect";
 import { EEError } from "../lib/errors";
-import { requireInternalDB } from "../lib/db-guard";
+import { requireInternalDBEffect } from "../lib/db-guard";
 import {
   hasInternalDB,
   internalQuery,
@@ -50,8 +53,8 @@ function isValidDomain(domain: string): boolean {
   return /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/i.test(domain);
 }
 
-function requireDB(): void {
-  requireInternalDB("custom domains", () => new DomainError("Internal database is required for custom domains.", "no_internal_db"));
+function requireDB(): Effect.Effect<void, DomainError | Error> {
+  return requireInternalDBEffect("custom domains", () => new DomainError("Internal database is required for custom domains.", "no_internal_db"));
 }
 
 /** Coerce a DB value (Date or string) to an ISO 8601 string. Throws on null/undefined/unexpected types. */
@@ -127,60 +130,61 @@ function getRailwayConfig(): RailwayConfig {
 
 const RAILWAY_API_URL = "https://backboard.railway.com/graphql/v2";
 
-async function railwayGraphQL<T>(
+const railwayGraphQL = <T>(
   config: RailwayConfig,
   query: string,
   variables: Record<string, unknown>,
-): Promise<T> {
-  let response: Response;
-  try {
-    response = await fetch(RAILWAY_API_URL, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${config.token}`,
+): Effect.Effect<T, DomainError> =>
+  Effect.gen(function* () {
+    const response = yield* Effect.tryPromise({
+      try: () => fetch(RAILWAY_API_URL, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${config.token}`,
+        },
+        body: JSON.stringify({ query, variables }),
+      }),
+      catch: (err) => {
+        log.error(
+          { err: err instanceof Error ? err.message : String(err) },
+          "Railway API network error — could not reach backboard.railway.com",
+        );
+        return new DomainError(
+          "Could not reach Railway API. Check network connectivity and RAILWAY_API_TOKEN.",
+          "railway_error",
+        );
       },
-      body: JSON.stringify({ query, variables }),
     });
-  } catch (err) {
-    log.error(
-      { err: err instanceof Error ? err.message : String(err) },
-      "Railway API network error — could not reach backboard.railway.com",
-    );
-    throw new DomainError(
-      "Could not reach Railway API. Check network connectivity and RAILWAY_API_TOKEN.",
-      "railway_error",
-    );
-  }
 
-  if (!response.ok) {
-    const text = await response.text();
-    log.error({ status: response.status, body: text.slice(0, 500) }, "Railway API HTTP error");
-    throw new DomainError(
-      `Railway API returned ${response.status}`,
-      "railway_error",
-    );
-  }
+    if (!response.ok) {
+      const text = yield* Effect.promise(() => response.text());
+      log.error({ status: response.status, body: text.slice(0, 500) }, "Railway API HTTP error");
+      return yield* Effect.fail(new DomainError(
+        `Railway API returned ${response.status}`,
+        "railway_error",
+      ));
+    }
 
-  const json = (await response.json()) as { data?: T; errors?: Array<{ message: string }> };
+    const json = (yield* Effect.promise(() => response.json())) as { data?: T; errors?: Array<{ message: string }> };
 
-  if (json.errors && json.errors.length > 0) {
-    const msg = json.errors.map((e) => e.message).join("; ");
-    log.error({ errors: json.errors }, "Railway API GraphQL errors");
-    throw new DomainError(`Railway API error: ${msg}`, "railway_error");
-  }
+    if (json.errors && json.errors.length > 0) {
+      const msg = json.errors.map((e) => e.message).join("; ");
+      log.error({ errors: json.errors }, "Railway API GraphQL errors");
+      return yield* Effect.fail(new DomainError(`Railway API error: ${msg}`, "railway_error"));
+    }
 
-  if (!json.data) {
-    throw new DomainError("Railway API returned no data", "railway_error");
-  }
+    if (!json.data) {
+      return yield* Effect.fail(new DomainError("Railway API returned no data", "railway_error"));
+    }
 
-  return json.data;
-}
+    return json.data;
+  });
 
 // ── Railway operations ──────────────────────────────────────────────
 
-async function checkDomainAvailable(config: RailwayConfig, domain: string): Promise<{ available: boolean; message: string }> {
-  const data = await railwayGraphQL<{ customDomainAvailable: { available: boolean; message: string } }>(
+const checkDomainAvailable = (config: RailwayConfig, domain: string): Effect.Effect<{ available: boolean; message: string }, DomainError> =>
+  railwayGraphQL<{ customDomainAvailable: { available: boolean; message: string } }>(
     config,
     `query ($domain: String!) {
       customDomainAvailable(domain: $domain) {
@@ -189,9 +193,7 @@ async function checkDomainAvailable(config: RailwayConfig, domain: string): Prom
       }
     }`,
     { domain },
-  );
-  return data.customDomainAvailable;
-}
+  ).pipe(Effect.map((data) => data.customDomainAvailable));
 
 interface RailwayDomainCreateResult {
   customDomainCreate: {
@@ -204,8 +206,8 @@ interface RailwayDomainCreateResult {
   };
 }
 
-async function createRailwayDomain(config: RailwayConfig, domain: string): Promise<RailwayDomainCreateResult["customDomainCreate"]> {
-  const data = await railwayGraphQL<RailwayDomainCreateResult>(
+const createRailwayDomain = (config: RailwayConfig, domain: string): Effect.Effect<RailwayDomainCreateResult["customDomainCreate"], DomainError> =>
+  railwayGraphQL<RailwayDomainCreateResult>(
     config,
     `mutation ($input: CustomDomainCreateInput!) {
       customDomainCreate(input: $input) {
@@ -229,9 +231,7 @@ async function createRailwayDomain(config: RailwayConfig, domain: string): Promi
         domain,
       },
     },
-  );
-  return data.customDomainCreate;
-}
+  ).pipe(Effect.map((data) => data.customDomainCreate));
 
 interface RailwayDomainStatusResult {
   customDomain: {
@@ -244,8 +244,8 @@ interface RailwayDomainStatusResult {
   };
 }
 
-async function getRailwayDomainStatus(config: RailwayConfig, railwayDomainId: string): Promise<RailwayDomainStatusResult["customDomain"]> {
-  const data = await railwayGraphQL<RailwayDomainStatusResult>(
+const getRailwayDomainStatus = (config: RailwayConfig, railwayDomainId: string): Effect.Effect<RailwayDomainStatusResult["customDomain"], DomainError> =>
+  railwayGraphQL<RailwayDomainStatusResult>(
     config,
     `query ($id: String!, $projectId: String!) {
       customDomain(id: $id, projectId: $projectId) {
@@ -262,19 +262,16 @@ async function getRailwayDomainStatus(config: RailwayConfig, railwayDomainId: st
       }
     }`,
     { id: railwayDomainId, projectId: config.projectId },
-  );
-  return data.customDomain;
-}
+  ).pipe(Effect.map((data) => data.customDomain));
 
-async function deleteRailwayDomain(config: RailwayConfig, railwayDomainId: string): Promise<void> {
-  await railwayGraphQL<{ customDomainDelete: boolean }>(
+const deleteRailwayDomain = (config: RailwayConfig, railwayDomainId: string): Effect.Effect<void, DomainError> =>
+  railwayGraphQL<{ customDomainDelete: boolean }>(
     config,
     `mutation ($id: String!) {
       customDomainDelete(id: $id)
     }`,
     { id: railwayDomainId },
-  );
-}
+  ).pipe(Effect.asVoid);
 
 // ── Host resolution cache (60s TTL) ────────────────────────────────
 
@@ -287,74 +284,79 @@ const hostCache = new Map<string, { workspaceId: string; expiresAt: number }>();
  * Register a custom domain for a workspace.
  * Checks availability with Railway, creates the domain, stores the mapping.
  */
-export async function registerDomain(
+export const registerDomain = (
   workspaceId: string,
   domain: string,
-): Promise<CustomDomain> {
+): Effect.Effect<CustomDomain, DomainError | Error> =>
+  Effect.gen(function* () {
+    yield* requireDB();
 
-  requireDB();
-
-  const normalized = domain.toLowerCase().trim();
-  if (!isValidDomain(normalized)) {
-    throw new DomainError(
-      `Invalid domain "${domain}". Provide a valid hostname (e.g. data.example.com).`,
-      "invalid_domain",
-    );
-  }
-
-  // Check for existing registration in our DB
-  const existing = await internalQuery<Record<string, unknown>>(
-    `SELECT id FROM custom_domains WHERE domain = $1`,
-    [normalized],
-  );
-  if (existing.length > 0) {
-    throw new DomainError(
-      `Domain "${normalized}" is already registered.`,
-      "duplicate_domain",
-    );
-  }
-
-  const config = getRailwayConfig();
-
-  // Check availability with Railway
-  const availability = await checkDomainAvailable(config, normalized);
-  if (!availability.available) {
-    throw new DomainError(
-      `Domain "${normalized}" is not available: ${availability.message}`,
-      "duplicate_domain",
-    );
-  }
-
-  // Create domain in Railway
-  const railwayDomain = await createRailwayDomain(config, normalized);
-  const cnameTarget = railwayDomain.status.dnsRecords[0]?.requiredValue ?? null;
-
-  // Store in Atlas internal DB — roll back Railway domain on failure
-  let rows: Record<string, unknown>[];
-  try {
-    rows = await internalQuery<Record<string, unknown>>(
-      `INSERT INTO custom_domains (workspace_id, domain, railway_domain_id, cname_target, certificate_status)
-       VALUES ($1, $2, $3, $4, $5)
-       RETURNING *`,
-      [workspaceId, normalized, railwayDomain.id, cnameTarget, railwayDomain.status.certificateStatus],
-    );
-  } catch (err) {
-    // Roll back Railway domain to avoid orphaned resources
-    try {
-      await deleteRailwayDomain(config, railwayDomain.id);
-      log.warn({ railwayDomainId: railwayDomain.id }, "Rolled back Railway domain after DB insert failure");
-    } catch (rollbackErr) {
-      log.error(
-        { railwayDomainId: railwayDomain.id, err: rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr) },
-        "Failed to roll back Railway domain — orphaned domain in Railway",
-      );
+    const normalized = domain.toLowerCase().trim();
+    if (!isValidDomain(normalized)) {
+      return yield* Effect.fail(new DomainError(
+        `Invalid domain "${domain}". Provide a valid hostname (e.g. data.example.com).`,
+        "invalid_domain",
+      ));
     }
-    throw err;
-  }
 
-  log.info({ workspaceId, domain: normalized, railwayDomainId: railwayDomain.id }, "Custom domain registered");
-  return rowToDomain(rows[0]);
-}
+    // Check for existing registration in our DB
+    const existing = yield* Effect.promise(() => internalQuery<Record<string, unknown>>(
+      `SELECT id FROM custom_domains WHERE domain = $1`,
+      [normalized],
+    ));
+    if (existing.length > 0) {
+      return yield* Effect.fail(new DomainError(
+        `Domain "${normalized}" is already registered.`,
+        "duplicate_domain",
+      ));
+    }
+
+    const config = getRailwayConfig();
+
+    // Check availability with Railway
+    const availability = yield* checkDomainAvailable(config, normalized);
+    if (!availability.available) {
+      return yield* Effect.fail(new DomainError(
+        `Domain "${normalized}" is not available: ${availability.message}`,
+        "duplicate_domain",
+      ));
+    }
+
+    // Create domain in Railway
+    const railwayDomain = yield* createRailwayDomain(config, normalized);
+    const cnameTarget = railwayDomain.status.dnsRecords[0]?.requiredValue ?? null;
+
+    // Store in Atlas internal DB — roll back Railway domain on failure
+    const rows = yield* Effect.tryPromise({
+      try: () => internalQuery<Record<string, unknown>>(
+        `INSERT INTO custom_domains (workspace_id, domain, railway_domain_id, cname_target, certificate_status)
+         VALUES ($1, $2, $3, $4, $5)
+         RETURNING *`,
+        [workspaceId, normalized, railwayDomain.id, cnameTarget, railwayDomain.status.certificateStatus],
+      ),
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    }).pipe(
+      Effect.catchAll((err) =>
+        // Roll back Railway domain to avoid orphaned resources
+        deleteRailwayDomain(config, railwayDomain.id).pipe(
+          Effect.tap(() => {
+            log.warn({ railwayDomainId: railwayDomain.id }, "Rolled back Railway domain after DB insert failure");
+          }),
+          Effect.catchAll((rollbackErr) => {
+            log.error(
+              { railwayDomainId: railwayDomain.id, err: rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr) },
+              "Failed to roll back Railway domain — orphaned domain in Railway",
+            );
+            return Effect.void;
+          }),
+          Effect.flatMap(() => Effect.fail(err)),
+        ),
+      ),
+    );
+
+    log.info({ workspaceId, domain: normalized, railwayDomainId: railwayDomain.id }, "Custom domain registered");
+    return rowToDomain(rows[0]);
+  });
 
 /**
  * Verify a custom domain by checking Railway for DNS + cert status.
@@ -363,152 +365,153 @@ export async function registerDomain(
  * and certificate provisioning. Updates local status accordingly.
  * Invalidates the host resolution cache on successful verification.
  */
-export async function verifyDomain(domainId: string): Promise<CustomDomain> {
+export const verifyDomain = (domainId: string): Effect.Effect<CustomDomain, DomainError | Error> =>
+  Effect.gen(function* () {
+    yield* requireDB();
 
-  requireDB();
+    const rows = yield* Effect.promise(() => internalQuery<Record<string, unknown>>(
+      `SELECT * FROM custom_domains WHERE id = $1`,
+      [domainId],
+    ));
 
-  const rows = await internalQuery<Record<string, unknown>>(
-    `SELECT * FROM custom_domains WHERE id = $1`,
-    [domainId],
-  );
+    if (rows.length === 0) {
+      return yield* Effect.fail(new DomainError(
+        `Domain with ID "${domainId}" not found.`,
+        "domain_not_found",
+      ));
+    }
 
-  if (rows.length === 0) {
-    throw new DomainError(
-      `Domain with ID "${domainId}" not found.`,
-      "domain_not_found",
-    );
-  }
+    const record = rowToDomain(rows[0]);
 
-  const record = rowToDomain(rows[0]);
+    if (!record.railwayDomainId) {
+      return yield* Effect.fail(new DomainError(
+        `Domain "${record.domain}" has no Railway domain ID — registration may have been incomplete.`,
+        "railway_error",
+      ));
+    }
 
-  if (!record.railwayDomainId) {
-    throw new DomainError(
-      `Domain "${record.domain}" has no Railway domain ID — registration may have been incomplete.`,
-      "railway_error",
-    );
-  }
+    const config = getRailwayConfig();
+    const railwayStatus = yield* getRailwayDomainStatus(config, record.railwayDomainId!);
 
-  const config = getRailwayConfig();
-  const railwayStatus = await getRailwayDomainStatus(config, record.railwayDomainId);
+    const certRaw = String(railwayStatus.status.certificateStatus ?? "");
+    let certStatus: CertificateStatus;
+    if (CERTIFICATE_STATUSES.includes(certRaw as CertificateStatus)) {
+      certStatus = certRaw as CertificateStatus;
+    } else {
+      log.warn(
+        { domainId, railwayCertificateStatus: certRaw, knownStatuses: [...CERTIFICATE_STATUSES] },
+        "Railway returned unrecognized certificate status — falling back to PENDING",
+      );
+      certStatus = "PENDING";
+    }
+    const dnsReady = railwayStatus.status.dnsRecords.every((r) => r.status === "VALID" || r.status === "valid");
+    const verified = certStatus === "ISSUED" && dnsReady;
 
-  const certRaw = String(railwayStatus.status.certificateStatus ?? "");
-  let certStatus: CertificateStatus;
-  if (CERTIFICATE_STATUSES.includes(certRaw as CertificateStatus)) {
-    certStatus = certRaw as CertificateStatus;
-  } else {
-    log.warn(
-      { domainId, railwayCertificateStatus: certRaw, knownStatuses: [...CERTIFICATE_STATUSES] },
-      "Railway returned unrecognized certificate status — falling back to PENDING",
-    );
-    certStatus = "PENDING";
-  }
-  const dnsReady = railwayStatus.status.dnsRecords.every((r) => r.status === "VALID" || r.status === "valid");
-  const verified = certStatus === "ISSUED" && dnsReady;
+    const newStatus = verified ? "verified" : (certStatus === "FAILED" ? "failed" : "pending");
+    const updatedRows = yield* Effect.promise(() => internalQuery<Record<string, unknown>>(
+      `UPDATE custom_domains
+       SET status = $1,
+           certificate_status = $2,
+           verified_at = CASE WHEN $1 = 'verified' THEN now() ELSE verified_at END
+       WHERE id = $3
+       RETURNING *`,
+      [newStatus, certStatus, domainId],
+    ));
 
-  const newStatus = verified ? "verified" : (certStatus === "FAILED" ? "failed" : "pending");
-  const updatedRows = await internalQuery<Record<string, unknown>>(
-    `UPDATE custom_domains
-     SET status = $1,
-         certificate_status = $2,
-         verified_at = CASE WHEN $1 = 'verified' THEN now() ELSE verified_at END
-     WHERE id = $3
-     RETURNING *`,
-    [newStatus, certStatus, domainId],
-  );
+    if (updatedRows.length === 0) {
+      return yield* Effect.fail(new DomainError(
+        `Domain "${domainId}" was deleted during verification.`,
+        "domain_not_found",
+      ));
+    }
 
-  if (updatedRows.length === 0) {
-    throw new DomainError(
-      `Domain "${domainId}" was deleted during verification.`,
-      "domain_not_found",
-    );
-  }
+    if (verified) {
+      log.info({ domainId, domain: record.domain }, "Custom domain verified");
+      // Invalidate cache for this domain
+      hostCache.delete(record.domain);
+    } else {
+      log.info({ domainId, domain: record.domain, certStatus, dnsReady }, "Custom domain verification checked — not yet verified");
+    }
 
-  if (verified) {
-    log.info({ domainId, domain: record.domain }, "Custom domain verified");
-    // Invalidate cache for this domain
-    hostCache.delete(record.domain);
-  } else {
-    log.info({ domainId, domain: record.domain, certStatus, dnsReady }, "Custom domain verification checked — not yet verified");
-  }
-
-  return rowToDomain(updatedRows[0]);
-}
+    return rowToDomain(updatedRows[0]);
+  });
 
 /**
  * List all custom domains for a workspace.
  */
-export async function listDomains(workspaceId: string): Promise<CustomDomain[]> {
+export const listDomains = (workspaceId: string): Effect.Effect<CustomDomain[], DomainError | Error> =>
+  Effect.gen(function* () {
+    yield* requireDB();
 
-  requireDB();
+    const rows = yield* Effect.promise(() => internalQuery<Record<string, unknown>>(
+      `SELECT * FROM custom_domains WHERE workspace_id = $1 ORDER BY created_at DESC`,
+      [workspaceId],
+    ));
 
-  const rows = await internalQuery<Record<string, unknown>>(
-    `SELECT * FROM custom_domains WHERE workspace_id = $1 ORDER BY created_at DESC`,
-    [workspaceId],
-  );
-
-  return rows.map(rowToDomain);
-}
+    return rows.map(rowToDomain);
+  });
 
 /**
  * List all custom domains across all workspaces (platform admin view).
  */
-export async function listAllDomains(): Promise<CustomDomain[]> {
+export const listAllDomains = (): Effect.Effect<CustomDomain[], DomainError | Error> =>
+  Effect.gen(function* () {
+    yield* requireDB();
 
-  requireDB();
+    const rows = yield* Effect.promise(() => internalQuery<Record<string, unknown>>(
+      `SELECT * FROM custom_domains ORDER BY created_at DESC`,
+      [],
+    ));
 
-  const rows = await internalQuery<Record<string, unknown>>(
-    `SELECT * FROM custom_domains ORDER BY created_at DESC`,
-    [],
-  );
-
-  return rows.map(rowToDomain);
-}
+    return rows.map(rowToDomain);
+  });
 
 /**
  * Delete a custom domain from both Railway and Atlas DB.
  */
-export async function deleteDomain(domainId: string): Promise<void> {
+export const deleteDomain = (domainId: string): Effect.Effect<void, DomainError | Error> =>
+  Effect.gen(function* () {
+    yield* requireDB();
 
-  requireDB();
+    const rows = yield* Effect.promise(() => internalQuery<Record<string, unknown>>(
+      `SELECT * FROM custom_domains WHERE id = $1`,
+      [domainId],
+    ));
 
-  const rows = await internalQuery<Record<string, unknown>>(
-    `SELECT * FROM custom_domains WHERE id = $1`,
-    [domainId],
-  );
+    if (rows.length === 0) {
+      return yield* Effect.fail(new DomainError(
+        `Domain with ID "${domainId}" not found.`,
+        "domain_not_found",
+      ));
+    }
 
-  if (rows.length === 0) {
-    throw new DomainError(
-      `Domain with ID "${domainId}" not found.`,
-      "domain_not_found",
-    );
-  }
+    const record = rowToDomain(rows[0]);
 
-  const record = rowToDomain(rows[0]);
-
-  // Delete from Railway if we have a domain ID
-  if (record.railwayDomainId) {
-    try {
+    // Delete from Railway if we have a domain ID
+    if (record.railwayDomainId) {
       const config = getRailwayConfig();
-      await deleteRailwayDomain(config, record.railwayDomainId);
-    } catch (err) {
-      log.warn(
-        { domainId, railwayDomainId: record.railwayDomainId, err: err instanceof Error ? err.message : String(err) },
-        "Failed to delete domain from Railway — proceeding with local deletion",
+      yield* deleteRailwayDomain(config, record.railwayDomainId).pipe(
+        Effect.catchAll((err) => {
+          log.warn(
+            { domainId, railwayDomainId: record.railwayDomainId, err: err instanceof Error ? err.message : String(err) },
+            "Failed to delete domain from Railway — proceeding with local deletion",
+          );
+          return Effect.void;
+        }),
       );
     }
-  }
 
-  // Delete from Atlas DB
-  await internalQuery<Record<string, unknown>>(
-    `DELETE FROM custom_domains WHERE id = $1`,
-    [domainId],
-  );
+    // Delete from Atlas DB
+    yield* Effect.promise(() => internalQuery<Record<string, unknown>>(
+      `DELETE FROM custom_domains WHERE id = $1`,
+      [domainId],
+    ));
 
-  // Invalidate cache
-  hostCache.delete(record.domain);
+    // Invalidate cache
+    hostCache.delete(record.domain);
 
-  log.info({ domainId, domain: record.domain }, "Custom domain deleted");
-}
+    log.info({ domainId, domain: record.domain }, "Custom domain deleted");
+  });
 
 /**
  * Resolve a hostname to a workspace ID via verified custom domains.
@@ -516,39 +519,42 @@ export async function deleteDomain(domainId: string): Promise<void> {
  * Uses a 60-second in-memory cache to avoid DB lookups on every request.
  * Returns null if no verified domain matches or no internal DB configured.
  */
-export async function resolveWorkspaceByHost(hostname: string): Promise<string | null> {
-  if (!hasInternalDB()) return null;
+export const resolveWorkspaceByHost = (hostname: string): Effect.Effect<string | null> =>
+  Effect.gen(function* () {
+    if (!hasInternalDB()) return null;
 
-  const normalized = hostname.toLowerCase().trim();
+    const normalized = hostname.toLowerCase().trim();
 
-  // Check cache (empty string = negative cache entry)
-  const cached = hostCache.get(normalized);
-  if (cached && cached.expiresAt > Date.now()) {
-    return cached.workspaceId || null;
-  }
-
-  try {
-    const rows = await internalQuery<{ workspace_id: string }>(
-      `SELECT workspace_id FROM custom_domains WHERE domain = $1 AND status = 'verified' LIMIT 1`,
-      [normalized],
-    );
-
-    if (rows.length > 0) {
-      hostCache.set(normalized, { workspaceId: rows[0].workspace_id, expiresAt: Date.now() + CACHE_TTL_MS });
-      return rows[0].workspace_id;
+    // Check cache (empty string = negative cache entry)
+    const cached = hostCache.get(normalized);
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.workspaceId || null;
     }
 
-    // Negative cache — avoid DB query on every request for non-custom-domain hostnames
-    hostCache.set(normalized, { workspaceId: "", expiresAt: Date.now() + CACHE_TTL_MS });
-    return null;
-  } catch (err) {
-    log.error(
-      { hostname: normalized, err: err instanceof Error ? err.message : String(err) },
-      "Failed to resolve custom domain — request will use default workspace routing",
-    );
-    return null;
-  }
-}
+    return yield* Effect.promise(async () => {
+      try {
+        const rows = await internalQuery<{ workspace_id: string }>(
+          `SELECT workspace_id FROM custom_domains WHERE domain = $1 AND status = 'verified' LIMIT 1`,
+          [normalized],
+        );
+
+        if (rows.length > 0) {
+          hostCache.set(normalized, { workspaceId: rows[0].workspace_id, expiresAt: Date.now() + CACHE_TTL_MS });
+          return rows[0].workspace_id;
+        }
+
+        // Negative cache — avoid DB query on every request for non-custom-domain hostnames
+        hostCache.set(normalized, { workspaceId: "", expiresAt: Date.now() + CACHE_TTL_MS });
+        return null;
+      } catch (err) {
+        log.error(
+          { hostname: normalized, err: err instanceof Error ? err.message : String(err) },
+          "Failed to resolve custom domain — request will use default workspace routing",
+        );
+        return null;
+      }
+    });
+  });
 
 /** @internal Reset host resolution cache — for testing only. */
 export function _resetHostCache(): void {

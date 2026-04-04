@@ -8,6 +8,7 @@
  * enterprise features are enabled.
  */
 
+import { Effect } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
 import { isEnterpriseEnabled } from "../index";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
@@ -24,32 +25,39 @@ let _running = false;
  * Run a single purge cycle: soft-delete expired entries, then hard-delete old ones.
  * Errors are logged but never thrown — the scheduler must not crash.
  */
-export async function runPurgeCycle(): Promise<void> {
-  if (!isEnterpriseEnabled() || !hasInternalDB()) return;
+export const runPurgeCycle = (): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    if (!isEnterpriseEnabled() || !hasInternalDB()) return;
 
-  try {
-    const { purgeExpiredEntries, hardDeleteExpired } = await import("./retention");
+    yield* Effect.tryPromise({
+      try: async () => {
+        const { purgeExpiredEntries, hardDeleteExpired } = await import("./retention");
 
-    // Soft-delete expired entries across all orgs
-    const softResults = await purgeExpiredEntries();
-    const totalSoftDeleted = softResults.reduce((sum, r) => sum + r.softDeletedCount, 0);
+        // Soft-delete expired entries across all orgs
+        const softResults = await Effect.runPromise(purgeExpiredEntries());
+        const totalSoftDeleted = softResults.reduce((sum: number, r: { softDeletedCount: number }) => sum + r.softDeletedCount, 0);
 
-    if (totalSoftDeleted > 0) {
-      log.info({ totalSoftDeleted, orgs: softResults.length }, "Audit purge cycle: soft-delete complete");
-    }
+        if (totalSoftDeleted > 0) {
+          log.info({ totalSoftDeleted, orgs: softResults.length }, "Audit purge cycle: soft-delete complete");
+        }
 
-    // Hard-delete entries past the delay
-    const hardResult = await hardDeleteExpired();
-    if (hardResult.deletedCount > 0) {
-      log.info({ deletedCount: hardResult.deletedCount }, "Audit purge cycle: hard-delete complete");
-    }
-  } catch (err) {
-    log.error(
-      { err: err instanceof Error ? err.message : String(err) },
-      "Audit purge cycle failed — will retry next interval",
+        // Hard-delete entries past the delay
+        const hardResult = await Effect.runPromise(hardDeleteExpired());
+        if (hardResult.deletedCount > 0) {
+          log.info({ deletedCount: hardResult.deletedCount }, "Audit purge cycle: hard-delete complete");
+        }
+      },
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    }).pipe(
+      Effect.catchAll((err) => {
+        log.error(
+          { err: err.message },
+          "Audit purge cycle failed — will retry next interval",
+        );
+        return Effect.void;
+      }),
     );
-  }
-}
+  });
 
 /**
  * Start the audit purge scheduler.
@@ -79,11 +87,11 @@ export function startAuditPurgeScheduler(intervalMs?: number): void {
   log.info({ intervalMs: interval }, "Starting audit purge scheduler");
 
   // Run initial purge cycle (non-blocking)
-  void runPurgeCycle();
+  void Effect.runPromise(runPurgeCycle());
 
   // Schedule recurring purge
   _timer = setInterval(() => {
-    void runPurgeCycle();
+    void Effect.runPromise(runPurgeCycle());
   }, interval);
 
   // Don't prevent process exit

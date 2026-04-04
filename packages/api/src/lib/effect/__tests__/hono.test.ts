@@ -20,7 +20,7 @@ mock.module("@atlas/api/lib/logger", () => ({
   redactPaths: [],
 }));
 
-const { runEffect, runHandler, mapTaggedError } = await import("../hono");
+const { runEffect, runHandler, mapTaggedError, domainError } = await import("../hono");
 const { EnterpriseError } = await import("@atlas/ee/index");
 const {
   EmptyQueryError,
@@ -51,23 +51,36 @@ const {
 
 type TestEnv = { Variables: { requestId: string } };
 
-// Test domain error classes (mirrors real EE error classes)
+// Test domain error classes — use union types to mirror real EE error classes
+// and exercise the domainError() exhaustiveness constraint.
+type FakeErrorCode = "validation" | "not_found" | "conflict";
 class FakeError extends Error {
-  constructor(message: string, public readonly code: string) {
+  constructor(message: string, public readonly code: FakeErrorCode) {
     super(message);
     this.name = "FakeError";
   }
 }
 
+type OtherFakeErrorCode = "expired" | "forbidden";
 class OtherFakeError extends Error {
-  constructor(message: string, public readonly code: string) {
+  constructor(message: string, public readonly code: OtherFakeErrorCode) {
     super(message);
     this.name = "OtherFakeError";
   }
 }
 
-const STATUS_MAP = { validation: 400, not_found: 404, conflict: 409 } as const;
-const OTHER_STATUS_MAP = { expired: 410, forbidden: 403 } as const;
+// InfraError has 5xx codes to test message sanitization
+type InfraErrorCode = "db_down" | "bad_config";
+class InfraError extends Error {
+  constructor(message: string, public readonly code: InfraErrorCode) {
+    super(message);
+    this.name = "InfraError";
+  }
+}
+
+const fakeDomainError = domainError(FakeError, { validation: 400, not_found: 404, conflict: 409 });
+const otherFakeDomainError = domainError(OtherFakeError, { expired: 410, forbidden: 403 });
+const infraDomainError = domainError(InfraError, { db_down: 503, bad_config: 500 });
 
 interface ErrorBody {
   error: string;
@@ -529,13 +542,19 @@ describe("runEffect", () => {
     expect(body.error).toBe("unauthorized");
   });
 
+  it("domainError() returns a tuple with error class and status map", () => {
+    const mapping = domainError(FakeError, { validation: 400, not_found: 404, conflict: 409 });
+    expect(mapping[0]).toBe(FakeError);
+    expect(mapping[1]).toEqual({ validation: 400, not_found: 404, conflict: 409 });
+  });
+
   it("maps domain errors via domainErrors option", async () => {
     const app = createApp();
     app.get("/test", async (c) =>
       runEffect(
         c,
         Effect.fail(new FakeError("Not found", "not_found")),
-        { label: "test", domainErrors: [[FakeError, STATUS_MAP]] },
+        { label: "test", domainErrors: [fakeDomainError] },
       ),
     );
 
@@ -547,20 +566,55 @@ describe("runEffect", () => {
     expect(body.requestId).toBe("test-req-123");
   });
 
-  it("defaults unmapped domain error code to 400", async () => {
+  it("defaults unmapped domain error code to 500", async () => {
     const app = createApp();
     app.get("/test", async (c) =>
       runEffect(
         c,
-        Effect.fail(new FakeError("Unknown code", "unknown_code")),
-        { label: "test", domainErrors: [[FakeError, STATUS_MAP]] },
+        Effect.fail(new FakeError("Unknown code", "unknown_code" as FakeErrorCode)),
+        { label: "test", domainErrors: [fakeDomainError] },
       ),
     );
 
     const res = await app.request("/test");
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(500);
     const body = (await res.json()) as ErrorBody;
     expect(body.error).toBe("unknown_code");
+  });
+
+  it("sanitizes 5xx domain error messages to prevent information leakage", async () => {
+    const app = createApp();
+    app.get("/test", async (c) =>
+      runEffect(
+        c,
+        Effect.fail(new InfraError("Connection to internal-db.railway.internal:5432 refused", "db_down")),
+        { label: "test", domainErrors: [infraDomainError] },
+      ),
+    );
+
+    const res = await app.request("/test");
+    expect(res.status).toBe(503);
+    const body = (await res.json()) as ErrorBody;
+    expect(body.error).toBe("db_down");
+    // Message should be sanitized — not the raw infrastructure error
+    expect(body.message).toContain("Service error (ref:");
+    expect(body.message).not.toContain("railway");
+  });
+
+  it("passes 4xx domain error messages through unsanitized", async () => {
+    const app = createApp();
+    app.get("/test", async (c) =>
+      runEffect(
+        c,
+        Effect.fail(new FakeError("The item was not found", "not_found")),
+        { label: "test", domainErrors: [fakeDomainError] },
+      ),
+    );
+
+    const res = await app.request("/test");
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as ErrorBody;
+    expect(body.message).toBe("The item was not found");
   });
 
   it("classifies domain errors in the defect path", async () => {
@@ -569,7 +623,7 @@ describe("runEffect", () => {
       runEffect(
         c,
         Effect.die(new FakeError("Conflict", "conflict")),
-        { label: "test", domainErrors: [[FakeError, STATUS_MAP]] },
+        { label: "test", domainErrors: [fakeDomainError] },
       ),
     );
 
@@ -585,7 +639,7 @@ describe("runEffect", () => {
       runEffect(
         c,
         Effect.fail(new EnterpriseError()),
-        { label: "test", domainErrors: [[FakeError, STATUS_MAP]] },
+        { label: "test", domainErrors: [fakeDomainError] },
       ),
     );
 
@@ -601,7 +655,7 @@ describe("runEffect", () => {
       runEffect(
         c,
         Effect.fail(new OtherFakeError("Token expired", "expired")),
-        { label: "test", domainErrors: [[FakeError, STATUS_MAP], [OtherFakeError, OTHER_STATUS_MAP]] },
+        { label: "test", domainErrors: [fakeDomainError, otherFakeDomainError] },
       ),
     );
 
@@ -675,7 +729,7 @@ describe("runHandler", () => {
     const app = createApp();
     app.get("/test", async (c) => runHandler(c, "create rule", async () => {
       throw new FakeError("Already exists", "conflict");
-    }, { domainErrors: [[FakeError, STATUS_MAP]] }));
+    }, { domainErrors: [fakeDomainError] }));
 
     const res = await app.request("/test");
     expect(res.status).toBe(409);
@@ -684,14 +738,14 @@ describe("runHandler", () => {
     expect(body.message).toBe("Already exists");
   });
 
-  it("defaults unmapped domain error code to 400", async () => {
+  it("defaults unmapped domain error code to 500", async () => {
     const app = createApp();
     app.get("/test", async (c) => runHandler(c, "create item", async () => {
-      throw new FakeError("Bad code", "unknown_code");
-    }, { domainErrors: [[FakeError, STATUS_MAP]] }));
+      throw new FakeError("Bad code", "unknown_code" as FakeErrorCode);
+    }, { domainErrors: [fakeDomainError] }));
 
     const res = await app.request("/test");
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(500);
     const body = (await res.json()) as ErrorBody;
     expect(body.error).toBe("unknown_code");
   });

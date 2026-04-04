@@ -71,19 +71,23 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
   const listQuery = useQuery<ConversationListData>({
     queryKey: ["conversations", "list"],
     queryFn: async ({ signal }) => {
-      const res = await fetch(`${opts.apiUrl}/api/v1/conversations?limit=50`, {
-        headers: opts.getHeaders(),
-        credentials: opts.getCredentials(),
-        signal,
-      });
-
-      if (res.status === 404) {
-        return { conversations: [], total: 0, available: false };
+      let res: Response;
+      try {
+        res = await fetch(`${opts.apiUrl}/api/v1/conversations?limit=50`, {
+          headers: opts.getHeaders(),
+          credentials: opts.getCredentials(),
+          signal,
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn("fetchList: network error:", msg);
+        throw new Error(`Failed to load conversations: ${msg}`, { cause: err });
       }
 
       if (!res.ok) {
+        // Parse body to distinguish permanent "not_available" from transient errors.
         const errorBody = await res.json().catch(() => null);
-        if (errorBody?.code === "not_available") {
+        if (res.status === 404 && errorBody?.error === "not_available") {
           return { conversations: [], total: 0, available: false };
         }
         console.warn(`fetchList: HTTP ${res.status}`, errorBody);
@@ -109,9 +113,11 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
     : null;
 
   // Backward-compatible fetchList — triggers a refetch.
+  // Propagates errors from refetch so callers that use try/catch get failures.
   const fetchList = useCallback(async () => {
     if (!opts.enabled || !available) return;
-    await listQuery.refetch();
+    const result = await listQuery.refetch();
+    if (result.error) throw result.error;
   }, [opts.enabled, available, listQuery.refetch]);
 
   const loadConversation = useCallback(async (id: string): Promise<UIMessage[]> => {

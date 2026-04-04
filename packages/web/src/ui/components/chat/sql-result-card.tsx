@@ -2,7 +2,7 @@
 
 import { useContext, useMemo, useState } from "react";
 import { getToolArgs, getToolResult, isToolComplete, downloadCSV, downloadExcel, toCsvString } from "../../lib/helpers";
-import { FileDown, FileSpreadsheet } from "lucide-react";
+import { FileDown, FileSpreadsheet, LayoutDashboard } from "lucide-react";
 import { DarkModeContext } from "../../hooks/use-dark-mode";
 import { detectCharts } from "../chart/chart-detection";
 import dynamic from "next/dynamic";
@@ -30,6 +30,11 @@ export function SQLResultCard({ part }: { part: unknown }) {
   );
 }
 
+const AddToDashboardDialog = dynamic(
+  () => import("./add-to-dashboard-dialog").then((m) => ({ default: m.AddToDashboardDialog })),
+  { ssr: false, loading: () => null },
+);
+
 function SQLResultCardInner({ part }: { part: unknown }) {
   const dark = useContext(DarkModeContext);
   const args = getToolArgs(part);
@@ -38,6 +43,7 @@ function SQLResultCardInner({ part }: { part: unknown }) {
   const [sqlOpen, setSqlOpen] = useState(false);
   const [viewMode, setViewMode] = useState<"both" | "chart" | "table">("both");
   const [excelError, setExcelError] = useState(false);
+  const [dashboardDialogOpen, setDashboardDialogOpen] = useState(false);
 
   const columns = useMemo(
     () => (done && result?.success ? ((result.columns as string[]) ?? []) : []),
@@ -156,10 +162,33 @@ function SQLResultCardInner({ part }: { part: unknown }) {
             <span className="hidden sm:inline">Excel</span>
           </button>
         )}
+        {hasData && (
+          <button
+            onClick={() => setDashboardDialogOpen(true)}
+            className="inline-flex items-center gap-1.5 rounded border border-zinc-200 px-2 py-1.5 text-xs text-zinc-500 transition-colors hover:border-zinc-400 hover:text-zinc-800 dark:border-zinc-700 dark:text-zinc-400 dark:hover:border-zinc-500 dark:hover:text-zinc-200"
+            title="Add to dashboard"
+          >
+            <LayoutDashboard className="size-3.5" />
+            <span className="hidden sm:inline">Dashboard</span>
+          </button>
+        )}
         {excelError && (
           <span className="text-xs text-red-500 dark:text-red-400">Excel download failed</span>
         )}
       </div>
+      {hasData && dashboardDialogOpen && (
+        <ResultCardErrorBoundary label="Dashboard dialog">
+          <AddToDashboardDialog
+            open={dashboardDialogOpen}
+            onOpenChange={setDashboardDialogOpen}
+            sql={sql}
+            columns={columns}
+            rows={rows}
+            chartResult={chartResult}
+            explanation={String(args.explanation ?? "")}
+          />
+        </ResultCardErrorBoundary>
+      )}
       {sqlOpen && sql && (
         <div className="px-3 pb-2">
           <SQLBlock sql={sql} />

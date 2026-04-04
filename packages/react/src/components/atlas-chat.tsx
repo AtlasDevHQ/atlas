@@ -3,6 +3,7 @@
 import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, isToolUIPart } from "ai";
 import { useState, useRef, useEffect, useMemo, useCallback } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { AUTH_MODES, type AuthMode } from "../lib/types";
 import type { ToolRenderers } from "../lib/tool-renderer-types";
 import { AtlasUIProvider, useAtlasConfig, ActionAuthProvider, type AtlasAuthClient } from "../context";
@@ -216,7 +217,7 @@ function AtlasChatInner({
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [loadingConversation, setLoadingConversation] = useState(false);
-  const [passwordChangeRequired, setPasswordChangeRequired] = useState(false);
+  // passwordChangeRequired state removed — derived from passwordQuery.data below
   const [schemaExplorerOpen, setSchemaExplorerOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -254,7 +255,7 @@ function AtlasChatInner({
   const conversationIdRef = useRef(conversationId);
   conversationIdRef.current = conversationId;
 
-  // Load API key from sessionStorage on mount + fetch auth mode
+  // Load API key from sessionStorage on mount
   useEffect(() => {
     if (!propApiKey) {
       try {
@@ -264,75 +265,75 @@ function AtlasChatInner({
         console.warn("Cannot read API key from sessionStorage:", err);
       }
     }
+  }, [propApiKey]);
 
-    async function fetchHealth(attempt: number): Promise<void> {
+  // Health check via TanStack Query — shared cache with useAtlasAuth.
+  const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
+  const healthQuery = useQuery<{ authMode: AuthMode; brandColor?: string }>({
+    queryKey: ["atlas", "health"],
+    queryFn: async ({ signal }) => {
+      let res: Response;
       try {
-        const res = await fetch(`${apiUrl}/api/health`, {
-          credentials: isCrossOrigin ? "include" : "same-origin",
-        });
-        if (!res.ok) {
-          console.warn(`Health check returned ${res.status}`);
-          if (attempt < 2) {
-            await new Promise((r) => setTimeout(r, 2000));
-            return fetchHealth(attempt + 1);
-          }
-          setHealthWarning("Health check failed — check server logs. Try refreshing the page.");
-          setHealthFailed(true);
-          setAuthMode("none");
-          return;
-        }
-        const data = await res.json();
-        const mode = data?.checks?.auth?.mode;
-        if (typeof mode === "string" && AUTH_MODES.includes(mode as AuthMode)) {
-          setAuthMode(mode as AuthMode);
-        } else {
-          console.warn("Health check succeeded but returned no valid auth mode:", data);
-          setHealthWarning("Could not determine authentication mode from the server.");
-          setAuthMode("none");
-        }
-        if (typeof data?.brandColor === "string" && OKLCH_RE.test(data.brandColor)) {
-          applyBrandColor(data.brandColor);
-        }
+        res = await fetch(`${apiUrl}/api/health`, { credentials, signal });
       } catch (err) {
-        console.warn("Health endpoint unavailable:", err);
-        if (attempt < 2) {
-          await new Promise((r) => setTimeout(r, 2000));
-          return fetchHealth(attempt + 1);
-        }
-        setHealthWarning("Unable to reach the API server. Try refreshing the page.");
-        setHealthFailed(true);
-        setAuthMode("none");
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn("Health endpoint unavailable:", msg);
+        throw new Error(`Health check failed: ${msg}`, { cause: err });
+      }
+      if (!res.ok) {
+        console.warn(`Health check returned ${res.status}`);
+        throw new Error(`Health check failed with HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      const mode = data?.checks?.auth?.mode;
+      if (typeof mode === "string" && AUTH_MODES.includes(mode as AuthMode)) {
+        return { authMode: mode as AuthMode, brandColor: data?.brandColor };
+      }
+      console.warn("Health check succeeded but returned no valid auth mode:", data);
+      return { authMode: "none" as AuthMode };
+    },
+    retry: 2,
+    retryDelay: 2000,
+  });
+
+  // Sync health query results to local state for the existing UI.
+  useEffect(() => {
+    if (healthQuery.data) {
+      setAuthMode(healthQuery.data.authMode);
+      if (typeof healthQuery.data.brandColor === "string" && OKLCH_RE.test(healthQuery.data.brandColor)) {
+        applyBrandColor(healthQuery.data.brandColor);
       }
     }
-    fetchHealth(1);
-  }, [apiUrl, isCrossOrigin]);
+    if (healthQuery.isError) {
+      setHealthWarning("Unable to reach the API server. Try refreshing the page.");
+      setHealthFailed(true);
+      setAuthMode("none");
+    }
+  }, [healthQuery.data, healthQuery.isError]);
 
   // Fetch conversation list after auth is resolved
   useEffect(() => {
     if (sidebar) convos.fetchList();
   }, [authMode, sidebar, convos.fetchList]);
 
-  // Check if managed auth user needs to change their default password
-  useEffect(() => {
-    if (!isManaged || !managedSession.data?.user) return;
-
-    async function checkPasswordStatus() {
-      try {
-        const res = await fetch(`${apiUrl}/api/v1/admin/me/password-status`, {
-          credentials: isCrossOrigin ? "include" : "same-origin",
-        });
-        if (!res.ok) {
-          console.warn(`Password status check returned HTTP ${res.status}`);
-          return;
-        }
-        const data = await res.json();
-        if (data.passwordChangeRequired) setPasswordChangeRequired(true);
-      } catch (err) {
-        console.warn("Failed to check password status:", err);
+  // Check if managed auth user needs to change their default password.
+  const passwordQuery = useQuery<{ passwordChangeRequired?: boolean }>({
+    queryKey: ["admin", "me", "password-status"],
+    queryFn: async ({ signal }) => {
+      const res = await fetch(`${apiUrl}/api/v1/admin/me/password-status`, {
+        credentials,
+        signal,
+      });
+      if (!res.ok) {
+        console.warn(`Password status check returned HTTP ${res.status}`);
+        return {};
       }
-    }
-    checkPasswordStatus();
-  }, [isManaged, managedSession.data?.user, apiUrl, isCrossOrigin]);
+      return res.json();
+    },
+    enabled: isManaged && !!managedSession.data?.user,
+    retry: false,
+  });
+  const [passwordDialogDismissed, setPasswordDialogDismissed] = useState(false);
 
   const handleSaveApiKey = useCallback((key: string) => {
     setApiKey(key);
@@ -708,8 +709,8 @@ function AtlasChatInner({
         />
       )}
       <ChangePasswordDialog
-        open={passwordChangeRequired}
-        onComplete={() => setPasswordChangeRequired(false)}
+        open={!passwordDialogDismissed && (passwordQuery.data?.passwordChangeRequired ?? false)}
+        onComplete={() => setPasswordDialogDismissed(true)}
       />
     </DarkModeContext.Provider>
   );

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { useAtlasContext } from "./provider";
 import { AUTH_MODES, type AuthMode } from "../lib/types";
 
@@ -23,65 +23,58 @@ export interface UseAtlasAuthReturn {
   logout: () => Promise<{ error?: string }>;
 }
 
+interface HealthData {
+  authMode: AuthMode;
+  brandColor?: string;
+}
+
 export function useAtlasAuth(): UseAtlasAuthReturn {
   const { apiUrl, apiKey, authClient, isCrossOrigin } = useAtlasContext();
-  const [authMode, setAuthMode] = useState<AuthMode | null>(null);
-  const [error, setError] = useState<Error | null>(null);
   const managedSession = authClient.useSession();
+  const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
 
-  useEffect(() => {
-    let cancelled = false;
-
-    async function fetchHealth(attempt: number): Promise<void> {
+  // Health check via TanStack Query — shared cache with AtlasChatInner.
+  const healthQuery = useQuery<HealthData>({
+    queryKey: ["atlas", "health"],
+    queryFn: async ({ signal }) => {
+      let res: Response;
       try {
-        const res = await fetch(`${apiUrl}/api/health`, {
-          credentials: isCrossOrigin ? "include" : "same-origin",
-        });
-        if (!res.ok) {
-          console.warn(`[Atlas] Health check returned HTTP ${res.status} (attempt ${attempt})`);
-          if (attempt < 2 && !cancelled) {
-            await new Promise((r) => setTimeout(r, 2000));
-            return fetchHealth(attempt + 1);
-          }
-          if (!cancelled) {
-            setError(new Error(`Health check failed with HTTP ${res.status}`));
-            setAuthMode("none");
-          }
-          return;
-        }
-        const data = await res.json();
-        const mode = data?.checks?.auth?.mode;
-        if (!cancelled) {
-          if (typeof mode === "string" && AUTH_MODES.includes(mode as AuthMode)) {
-            setAuthMode(mode as AuthMode);
-          } else {
-            console.warn("[Atlas] Health check returned no valid auth mode:", data);
-            setAuthMode("none");
-          }
-        }
+        res = await fetch(`${apiUrl}/api/health`, { credentials, signal });
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        console.warn(`[Atlas] Health check failed (attempt ${attempt}):`, message);
-        if (attempt < 2 && !cancelled) {
-          await new Promise((r) => setTimeout(r, 2000));
-          return fetchHealth(attempt + 1);
-        }
-        if (!cancelled) {
-          setError(err instanceof Error ? err : new Error(message));
-          setAuthMode("none");
-        }
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn("[Atlas] Health check failed:", msg);
+        throw new Error(`Health check failed: ${msg}`, { cause: err });
       }
-    }
 
-    fetchHealth(1);
-    return () => { cancelled = true; };
-  }, [apiUrl, isCrossOrigin]);
+      if (!res.ok) {
+        console.warn(`[Atlas] Health check returned HTTP ${res.status}`);
+        throw new Error(`Health check failed with HTTP ${res.status}`);
+      }
+
+      const data = await res.json();
+      const mode = data?.checks?.auth?.mode;
+      if (typeof mode === "string" && AUTH_MODES.includes(mode as AuthMode)) {
+        return { authMode: mode as AuthMode, brandColor: data?.brandColor };
+      }
+      console.warn("[Atlas] Health check returned no valid auth mode:", data);
+      return { authMode: "none" as AuthMode };
+    },
+    // Match original retry behavior: 3 total attempts, 2s delay
+    retry: 2,
+    retryDelay: 2000,
+  });
+
+  const authMode = healthQuery.data?.authMode ?? null;
+  const error = healthQuery.error instanceof Error ? healthQuery.error : null;
+
+  // If health check failed after all retries, fall back to "none"
+  const effectiveAuthMode = healthQuery.isError ? ("none" as AuthMode) : authMode;
 
   const isAuthenticated = (() => {
-    if (authMode === null) return false;
-    if (authMode === "none") return true;
-    if (authMode === "simple-key" || authMode === "byot") return !!apiKey;
-    if (authMode === "managed") return !!managedSession.data?.user;
+    if (effectiveAuthMode === null) return false;
+    if (effectiveAuthMode === "none") return true;
+    if (effectiveAuthMode === "simple-key" || effectiveAuthMode === "byot") return !!apiKey;
+    if (effectiveAuthMode === "managed") return !!managedSession.data?.user;
     return false;
   })();
 
@@ -119,10 +112,10 @@ export function useAtlasAuth(): UseAtlasAuthReturn {
   };
 
   return {
-    authMode,
+    authMode: effectiveAuthMode,
     isAuthenticated,
     session: managedSession.data ?? null,
-    isLoading: authMode === null || (authMode === "managed" && !!managedSession.isPending),
+    isLoading: effectiveAuthMode === null || (effectiveAuthMode === "managed" && !!managedSession.isPending),
     error,
     login,
     signup,

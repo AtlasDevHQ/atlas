@@ -113,20 +113,28 @@ describe("useAtlasConversations", () => {
       { wrapper },
     );
 
-    await act(async () => {
-      await result.current.refresh();
+    // Wait for TanStack Query to load the initial data
+    await waitFor(() => {
+      expect(result.current.conversations).toHaveLength(1);
     });
-    expect(result.current.conversations).toHaveLength(1);
 
-    // Mock DELETE response
-    fetchMock.mockImplementation(() =>
-      Promise.resolve(new Response("", { status: 200 })),
-    );
+    // Mock DELETE response (also returns empty list for any subsequent GET refetch)
+    fetchMock.mockImplementation((_url: string, init?: RequestInit) => {
+      if (init?.method === "DELETE") {
+        return Promise.resolve(new Response("", { status: 200 }));
+      }
+      return Promise.resolve(new Response(
+        JSON.stringify({ conversations: [], total: 0 }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ));
+    });
 
     await act(async () => {
       await result.current.deleteConversation("conv-1");
     });
-    expect(result.current.conversations).toHaveLength(0);
+    await waitFor(() => {
+      expect(result.current.conversations).toHaveLength(0);
+    });
     expect(result.current.total).toBe(0);
   });
 
@@ -136,10 +144,10 @@ describe("useAtlasConversations", () => {
       { wrapper },
     );
 
-    await act(async () => {
-      await result.current.refresh();
+    // Wait for TanStack Query to load the initial data
+    await waitFor(() => {
+      expect(result.current.conversations).toHaveLength(1);
     });
-    expect(result.current.conversations).toHaveLength(1);
 
     // Mock PATCH to fail
     fetchMock.mockImplementation(() =>

@@ -1,6 +1,7 @@
 "use client";
 
-import { createContext, useContext, type ReactNode } from "react";
+import { createContext, useContext, useState, type ReactNode } from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { AtlasAuthClient } from "../context";
 
 export type { AtlasAuthClient };
@@ -58,20 +59,36 @@ export function useAtlasContext(): AtlasContextValue {
  * better-auth client to all Atlas hooks. Derives isCrossOrigin from apiUrl
  * to configure credential handling for cross-origin requests.
  */
+function makeQueryClient() {
+  return new QueryClient({
+    defaultOptions: {
+      queries: {
+        staleTime: 30_000,
+        retry: 1,
+        refetchOnWindowFocus: true,
+        gcTime: 5 * 60 * 1000,
+      },
+    },
+  });
+}
+
 export function AtlasProvider({
   apiUrl,
   apiKey,
   authClient = noopAuthClient,
   children,
 }: AtlasProviderProps) {
+  const [queryClient] = useState(makeQueryClient);
   const isCrossOrigin =
     typeof window !== "undefined" &&
     apiUrl !== "" &&
     !apiUrl.startsWith(window.location.origin);
 
   return (
-    <AtlasContext.Provider value={{ apiUrl, apiKey, authClient, isCrossOrigin }}>
-      {children}
-    </AtlasContext.Provider>
+    <QueryClientProvider client={queryClient}>
+      <AtlasContext.Provider value={{ apiUrl, apiKey, authClient, isCrossOrigin }}>
+        {children}
+      </AtlasContext.Provider>
+    </QueryClientProvider>
   );
 }

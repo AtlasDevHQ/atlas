@@ -32,7 +32,7 @@ export function SQLResultCard({ part }: { part: unknown }) {
 
 const AddToDashboardDialog = dynamic(
   () => import("./add-to-dashboard-dialog").then((m) => ({ default: m.AddToDashboardDialog })),
-  { ssr: false },
+  { ssr: false, loading: () => null },
 );
 
 function SQLResultCardInner({ part }: { part: unknown }) {
@@ -177,15 +177,17 @@ function SQLResultCardInner({ part }: { part: unknown }) {
         )}
       </div>
       {hasData && dashboardDialogOpen && (
-        <AddToDashboardDialog
-          open={dashboardDialogOpen}
-          onOpenChange={setDashboardDialogOpen}
-          sql={sql}
-          columns={columns}
-          rows={rows}
-          chartResult={chartResult}
-          explanation={String(args.explanation ?? "")}
-        />
+        <ResultCardErrorBoundary label="Dashboard dialog">
+          <AddToDashboardDialog
+            open={dashboardDialogOpen}
+            onOpenChange={setDashboardDialogOpen}
+            sql={sql}
+            columns={columns}
+            rows={rows}
+            chartResult={chartResult}
+            explanation={String(args.explanation ?? "")}
+          />
+        </ResultCardErrorBoundary>
       )}
       {sqlOpen && sql && (
         <div className="px-3 pb-2">

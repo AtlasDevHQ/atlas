@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { z } from "zod";
 import { Loader2, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -21,10 +21,31 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { useAdminFetch } from "../../hooks/use-admin-fetch";
 import { useAdminMutation } from "../../hooks/use-admin-mutation";
-import type { Dashboard, DashboardChartConfig } from "../../lib/types";
+import type { Dashboard, DashboardChartConfig, ChartType } from "../../lib/types";
+import { CHART_TYPES } from "../../lib/types";
 import type { ChartDetectionResult } from "../chart/chart-detection";
+
+// ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+/** Max rows to cache in the card — the card re-executes SQL for live data anyway. */
+const MAX_CACHED_ROWS = 100;
+
+const CHART_TYPE_LABELS: Record<ChartType, string> = {
+  bar: "Bar Chart",
+  line: "Line Chart",
+  pie: "Pie Chart",
+  area: "Area Chart",
+  scatter: "Scatter Plot",
+  table: "Table",
+};
+
+/** Chart types from detectCharts() that are valid for dashboard storage. */
+const STORABLE_CHART_TYPES = new Set<string>(CHART_TYPES);
 
 // ---------------------------------------------------------------------------
 // Types
@@ -39,16 +60,6 @@ interface AddToDashboardDialogProps {
   chartResult: ChartDetectionResult;
   explanation?: string;
 }
-
-const CHART_TYPE_LABELS: Record<string, string> = {
-  bar: "Bar Chart",
-  line: "Line Chart",
-  pie: "Pie Chart",
-  area: "Area Chart",
-  scatter: "Scatter Plot",
-  "stacked-bar": "Stacked Bar",
-  table: "Table",
-};
 
 // ---------------------------------------------------------------------------
 // Component
@@ -70,9 +81,11 @@ export function AddToDashboardDialog({
   const [chartType, setChartType] = useState<string>("table");
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
+  const submittingRef = useRef(false);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout>>();
 
   // Fetch existing dashboards
-  const { data: dashboardData, loading: loadingDashboards } = useAdminFetch<{
+  const { data: dashboardData, loading: loadingDashboards, error: fetchError } = useAdminFetch<{
     dashboards: Dashboard[];
     total: number;
   }>("/api/v1/dashboards", {
@@ -91,33 +104,40 @@ export function AddToDashboardDialog({
 
   const saving = creatingDashboard || addingCard;
 
-  // Pre-fill chart type from detection
+  // Reset state when dialog opens; clean up timeout on unmount
   useEffect(() => {
     if (open) {
       setCardTitle(explanation ?? "Query result");
+      setNewDashboardTitle("");
+      setSelectedDashboardId("");
       setError(null);
       setSuccess(false);
+      submittingRef.current = false;
       if (chartResult.chartable && chartResult.recommendations.length > 0) {
-        setChartType(chartResult.recommendations[0].type);
+        const firstType = chartResult.recommendations[0].type;
+        setChartType(STORABLE_CHART_TYPES.has(firstType) ? firstType : "table");
       } else {
         setChartType("table");
       }
-      // Default to "new" if no dashboards exist
-      if (dashboardData && dashboardData.dashboards.length === 0) {
-        setMode("new");
-      } else {
-        setMode("existing");
-      }
     }
+    return () => {
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    };
   }, [open]); // intentionally reset only on open
 
-  // Build chart config from selected type
+  // Auto-switch to "new" mode when we know there are no dashboards
+  const effectiveMode = mode === "existing" && !loadingDashboards && !fetchError && dashboards.length === 0 ? "new" : mode;
+  const dashboards = dashboardData?.dashboards ?? [];
+
+  // Filter chart recommendations to only storable types
+  const storableRecommendations = chartResult.chartable
+    ? chartResult.recommendations.filter((r) => STORABLE_CHART_TYPES.has(r.type))
+    : [];
+
   function buildChartConfig(): DashboardChartConfig | null {
     if (chartType === "table" || !chartResult.chartable) return null;
 
-    // Find the recommendation matching the selected type, or use the first one
-    const rec = chartResult.recommendations.find((r) => r.type === chartType)
-      ?? chartResult.recommendations[0];
+    const rec = storableRecommendations.find((r) => r.type === chartType);
     if (!rec) return null;
 
     return {
@@ -128,60 +148,126 @@ export function AddToDashboardDialog({
   }
 
   async function handleSubmit() {
-    setError(null);
+    if (submittingRef.current) return;
+    submittingRef.current = true;
 
-    if (!cardTitle.trim()) {
-      setError("Card title is required.");
-      return;
-    }
+    try {
+      setError(null);
 
-    let dashboardId: string;
-
-    if (mode === "new") {
-      if (!newDashboardTitle.trim()) {
-        setError("Dashboard title is required.");
+      if (!cardTitle.trim()) {
+        setError("Card title is required.");
         return;
       }
-      const result = await createDashboard({
-        path: "/api/v1/dashboards",
+
+      let dashboardId: string;
+      let createdNewDashboard = false;
+
+      if (effectiveMode === "new") {
+        if (!newDashboardTitle.trim()) {
+          setError("Dashboard title is required.");
+          return;
+        }
+        const result = await createDashboard({
+          path: "/api/v1/dashboards",
+          method: "POST",
+          body: { title: newDashboardTitle.trim() },
+        });
+        if (!result.ok) {
+          setError(result.error ?? "Failed to create dashboard.");
+          return;
+        }
+        dashboardId = result.data.id;
+        createdNewDashboard = true;
+      } else {
+        if (!selectedDashboardId) {
+          setError("Select a dashboard.");
+          return;
+        }
+        dashboardId = selectedDashboardId;
+      }
+
+      const cardResult = await addCard({
+        path: `/api/v1/dashboards/${dashboardId}/cards`,
         method: "POST",
-        body: { title: newDashboardTitle.trim() },
+        body: {
+          title: cardTitle.trim(),
+          sql,
+          chartConfig: buildChartConfig(),
+          cachedColumns: columns,
+          cachedRows: rows.slice(0, MAX_CACHED_ROWS),
+        },
       });
-      if (!result.ok) {
-        setError(result.error ?? "Failed to create dashboard.");
+
+      if (!cardResult.ok) {
+        if (createdNewDashboard) {
+          // Dashboard was created but card failed — guide user to retry
+          setError(
+            `Dashboard "${newDashboardTitle.trim()}" was created, but adding the card failed: ${cardResult.error ?? "Unknown error"}. ` +
+            `Select it from "Existing" to retry.`
+          );
+          setMode("existing");
+          setSelectedDashboardId(dashboardId);
+        } else {
+          setError(cardResult.error ?? "Failed to add card.");
+        }
         return;
       }
-      dashboardId = result.data.id;
-    } else {
-      if (!selectedDashboardId) {
-        setError("Select a dashboard.");
-        return;
-      }
-      dashboardId = selectedDashboardId;
+
+      setSuccess(true);
+      timeoutRef.current = setTimeout(() => onOpenChange(false), 1200);
+    } finally {
+      submittingRef.current = false;
     }
-
-    const cardResult = await addCard({
-      path: `/api/v1/dashboards/${dashboardId}/cards`,
-      method: "POST",
-      body: {
-        title: cardTitle.trim(),
-        sql,
-        chartConfig: buildChartConfig(),
-        cachedColumns: columns,
-        cachedRows: rows,
-      },
-    });
-
-    if (!cardResult.ok) {
-      setError(cardResult.error ?? "Failed to add card.");
-      return;
-    }
-
-    setSuccess(true);
-    setTimeout(() => onOpenChange(false), 1200);
   }
 
-  const dashboards = dashboardData?.dashboards ?? [];
+  function renderDashboardSelector() {
+    if (effectiveMode === "new") {
+      return (
+        <Input
+          placeholder="Dashboard title"
+          value={newDashboardTitle}
+          onChange={(e) => setNewDashboardTitle(e.target.value)}
+          autoFocus
+        />
+      );
+    }
+    if (loadingDashboards) {
+      return (
+        <div className="flex items-center gap-2 text-xs text-zinc-500">
+          <Loader2 className="size-3 animate-spin" />
+          Loading dashboards...
+        </div>
+      );
+    }
+    if (fetchError) {
+      return (
+        <p className="text-xs text-red-500 dark:text-red-400">
+          Could not load dashboards. Try closing and reopening this dialog.
+        </p>
+      );
+    }
+    if (dashboards.length === 0) {
+      return (
+        <p className="text-xs text-zinc-500 dark:text-zinc-400">
+          No dashboards yet. Create a new one.
+        </p>
+      );
+    }
+    return (
+      <Select value={selectedDashboardId} onValueChange={setSelectedDashboardId}>
+        <SelectTrigger>
+          <SelectValue placeholder="Select a dashboard" />
+        </SelectTrigger>
+        <SelectContent>
+          {dashboards.map((d) => (
+            <SelectItem key={d.id} value={d.id}>
+              {d.title} ({d.cardCount} card{d.cardCount !== 1 ? "s" : ""})
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    );
+  }
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -202,64 +288,20 @@ export function AddToDashboardDialog({
             {/* Dashboard selection */}
             <div className="grid gap-2">
               <Label>Dashboard</Label>
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={() => setMode("existing")}
-                  className={`rounded px-3 py-1.5 text-xs font-medium transition-colors ${
-                    mode === "existing"
-                      ? "bg-zinc-200 text-zinc-800 dark:bg-zinc-700 dark:text-zinc-200"
-                      : "text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-200"
-                  }`}
-                >
-                  Existing
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setMode("new")}
-                  className={`inline-flex items-center gap-1 rounded px-3 py-1.5 text-xs font-medium transition-colors ${
-                    mode === "new"
-                      ? "bg-zinc-200 text-zinc-800 dark:bg-zinc-700 dark:text-zinc-200"
-                      : "text-zinc-500 hover:text-zinc-800 dark:text-zinc-400 dark:hover:text-zinc-200"
-                  }`}
-                >
-                  <Plus className="size-3" />
+              <ToggleGroup
+                type="single"
+                size="sm"
+                value={effectiveMode}
+                onValueChange={(v) => { if (v) setMode(v as "existing" | "new"); }}
+              >
+                <ToggleGroupItem value="existing">Existing</ToggleGroupItem>
+                <ToggleGroupItem value="new">
+                  <Plus className="mr-1 size-3" />
                   New
-                </button>
-              </div>
+                </ToggleGroupItem>
+              </ToggleGroup>
 
-              {mode === "existing" ? (
-                loadingDashboards ? (
-                  <div className="flex items-center gap-2 text-xs text-zinc-500">
-                    <Loader2 className="size-3 animate-spin" />
-                    Loading dashboards...
-                  </div>
-                ) : dashboards.length === 0 ? (
-                  <p className="text-xs text-zinc-500 dark:text-zinc-400">
-                    No dashboards yet. Create a new one.
-                  </p>
-                ) : (
-                  <Select value={selectedDashboardId} onValueChange={setSelectedDashboardId}>
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select a dashboard" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {dashboards.map((d) => (
-                        <SelectItem key={d.id} value={d.id}>
-                          {d.title} ({d.cardCount} card{d.cardCount !== 1 ? "s" : ""})
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                )
-              ) : (
-                <Input
-                  placeholder="Dashboard title"
-                  value={newDashboardTitle}
-                  onChange={(e) => setNewDashboardTitle(e.target.value)}
-                  autoFocus
-                />
-              )}
+              {renderDashboardSelector()}
             </div>
 
             {/* Card title */}
@@ -273,7 +315,7 @@ export function AddToDashboardDialog({
             </div>
 
             {/* Chart type */}
-            {chartResult.chartable && (
+            {storableRecommendations.length > 0 && (
               <div className="grid gap-2">
                 <Label>Visualization</Label>
                 <Select value={chartType} onValueChange={setChartType}>
@@ -282,9 +324,9 @@ export function AddToDashboardDialog({
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="table">Table (no chart)</SelectItem>
-                    {chartResult.recommendations.map((rec) => (
+                    {storableRecommendations.map((rec) => (
                       <SelectItem key={rec.type} value={rec.type}>
-                        {CHART_TYPE_LABELS[rec.type] ?? rec.type} — {rec.reason}
+                        {CHART_TYPE_LABELS[rec.type as ChartType] ?? rec.type} — {rec.reason}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -293,8 +335,10 @@ export function AddToDashboardDialog({
             )}
 
             {/* Error */}
-            {error && (
-              <p className="text-xs text-red-500 dark:text-red-400">{error}</p>
+            {(error || fetchError) && (
+              <p className="text-xs text-red-500 dark:text-red-400">
+                {error ?? "Failed to load dashboards."}
+              </p>
             )}
           </div>
         )}

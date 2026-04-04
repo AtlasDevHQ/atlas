@@ -43,6 +43,7 @@ import { NavBar } from "@/ui/components/tour/nav-bar";
 import { DataTable } from "@/ui/components/chat/data-table";
 import { DarkModeContext } from "@/ui/hooks/use-dark-mode";
 import { authClient } from "@/lib/auth/client";
+import { DashboardShareDialog } from "./share-dialog";
 import type { DashboardWithCards, DashboardCard } from "@/ui/lib/types";
 
 const ResultChart = dynamic(
@@ -389,6 +390,7 @@ export default function DashboardViewPage() {
                     <RefreshCw className={`mr-1.5 size-3.5 ${refreshingAll ? "animate-spin" : ""}`} />
                     Refresh All
                   </Button>
+                  <DashboardShareDialog dashboardId={id} />
                   <Button
                     variant="outline"
                     size="sm"

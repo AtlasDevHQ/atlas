@@ -21,7 +21,6 @@ import {
   CustomDomainSchema,
   customDomainError,
   loadDomains,
-  sanitizeDomainError,
 } from "./shared-domains";
 
 const log = createLogger("platform-domains");
@@ -150,7 +149,7 @@ platformDomains.openapi(listDomainsRoute, async (c) => {
       return c.json({ error: "not_available", message: "Custom domains require enterprise features to be enabled.", requestId }, 404);
     }
 
-    const domains = yield* Effect.promise(() => mod.listAllDomains());
+    const domains = yield* mod.listAllDomains();
     return c.json({ domains }, 200);
   }), { label: "list domains", domainErrors: [customDomainError] });
 });
@@ -167,17 +166,9 @@ platformDomains.openapi(registerDomainRoute, async (c) => {
       return c.json({ error: "not_available", message: "Custom domains require enterprise features to be enabled.", requestId }, 404);
     }
 
-    return yield* Effect.tryPromise({
-      try: async () => {
-        const domain = await mod.registerDomain(body.workspaceId, body.domain);
-        log.info({ workspaceId: body.workspaceId, domain: body.domain, requestId }, "Custom domain registered");
-        return c.json(domain, 201);
-      },
-      catch: (err) => {
-        sanitizeDomainError(err, requestId);
-        return err instanceof Error ? err : new Error(String(err));
-      },
-    });
+    const domain = yield* mod.registerDomain(body.workspaceId, body.domain);
+    log.info({ workspaceId: body.workspaceId, domain: body.domain, requestId }, "Custom domain registered");
+    return c.json(domain, 201);
   }), { label: "register domain", domainErrors: [customDomainError] });
 });
 
@@ -193,16 +184,8 @@ platformDomains.openapi(verifyDomainRoute, async (c) => {
       return c.json({ error: "not_available", message: "Custom domains require enterprise features to be enabled.", requestId }, 404);
     }
 
-    return yield* Effect.tryPromise({
-      try: async () => {
-        const domain = await mod.verifyDomain(domainId);
-        return c.json(domain, 200);
-      },
-      catch: (err) => {
-        sanitizeDomainError(err, requestId);
-        return err instanceof Error ? err : new Error(String(err));
-      },
-    });
+    const domain = yield* mod.verifyDomain(domainId);
+    return c.json(domain, 200);
   }), { label: "verify domain", domainErrors: [customDomainError] });
 });
 
@@ -218,17 +201,9 @@ platformDomains.openapi(deleteDomainRoute, async (c) => {
       return c.json({ error: "not_available", message: "Custom domains require enterprise features to be enabled.", requestId }, 404);
     }
 
-    return yield* Effect.tryPromise({
-      try: async () => {
-        await mod.deleteDomain(domainId);
-        log.info({ domainId, requestId }, "Custom domain deleted");
-        return c.json({ deleted: true }, 200);
-      },
-      catch: (err) => {
-        sanitizeDomainError(err, requestId);
-        return err instanceof Error ? err : new Error(String(err));
-      },
-    });
+    yield* mod.deleteDomain(domainId);
+    log.info({ domainId, requestId }, "Custom domain deleted");
+    return c.json({ deleted: true }, 200);
   }), { label: "delete domain", domainErrors: [customDomainError] });
 });
 

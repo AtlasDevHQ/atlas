@@ -214,7 +214,7 @@ adminIPAllowlist.openapi(listEntriesRoute, async (c) => {
 
     const callerIP = getClientIP(c.req.raw);
 
-    const entries = yield* Effect.promise(() => listIPAllowlistEntries(orgId!));
+    const entries = yield* listIPAllowlistEntries(orgId!);
     return c.json({ entries, total: entries.length, callerIP }, 200);
   }), { label: "list IP allowlist entries", domainErrors: [ipAllowlistDomainError] });
 });
@@ -230,12 +230,12 @@ adminIPAllowlist.openapi(addEntryRoute, async (c) => {
       return c.json({ error: "bad_request", message: "Missing required field: cidr." }, 400);
     }
 
-    const entry = yield* Effect.promise(() => addIPAllowlistEntry(
+    const entry = yield* addIPAllowlistEntry(
       orgId!,
       body.cidr,
       body.description ?? null,
       user?.id ?? null,
-    ));
+    );
     return c.json({ entry }, 201);
   }), { label: "add IP allowlist entry", domainErrors: [ipAllowlistDomainError] });
 });
@@ -250,7 +250,7 @@ adminIPAllowlist.openapi(deleteEntryRoute, async (c) => {
       return c.json({ error: "bad_request", message: "Invalid entry ID." }, 400);
     }
 
-    const deleted = yield* Effect.promise(() => removeIPAllowlistEntry(orgId!, entryId));
+    const deleted = yield* removeIPAllowlistEntry(orgId!, entryId);
     if (!deleted) {
       return c.json({ error: "not_found", message: "IP allowlist entry not found." }, 404);
     }

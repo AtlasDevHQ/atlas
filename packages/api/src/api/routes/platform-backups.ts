@@ -260,7 +260,7 @@ platformBackups.openapi(listBackupsRoute, async (c) => {
       return c.json({ error: "not_available", message: "Backups require enterprise features to be enabled.", requestId }, 404);
     }
 
-    const rows = yield* Effect.promise(() => backups.listBackups(100));
+    const rows = yield* backups.listBackups(100);
     return c.json({ backups: rows.map(toBackupEntry) }, 200);
   }), { label: "list backups" });
 });
@@ -276,9 +276,9 @@ platformBackups.openapi(createBackupRoute, async (c) => {
       return c.json({ error: "not_available", message: "Backups require enterprise features to be enabled.", requestId }, 404);
     }
 
-    const result = yield* Effect.promise(() => backupsMod.createBackup());
+    const result = yield* backupsMod.createBackup();
     log.info({ backupId: result.id, requestId }, "Manual backup created by platform admin");
-    const row = yield* Effect.promise(() => backupsMod.getBackupById(result.id));
+    const row = yield* backupsMod.getBackupById(result.id);
     const backup = row ? toBackupEntry(row) : {
       id: result.id,
       createdAt: new Date().toISOString(),
@@ -305,10 +305,7 @@ platformBackups.openapi(verifyBackupRoute, async (c) => {
 
     const backupId = c.req.param("id");
 
-    const verifyResult = yield* Effect.tryPromise({
-      try: () => backupsMod.verifyBackup(backupId),
-      catch: (err) => err instanceof Error ? err : new Error(String(err)),
-    }).pipe(Effect.either);
+    const verifyResult = yield* backupsMod.verifyBackup(backupId).pipe(Effect.either);
     if (verifyResult._tag === "Left") {
       const message = verifyResult.left.message;
       if (message.includes("not found")) {
@@ -337,10 +334,7 @@ platformBackups.openapi(requestRestoreRoute, async (c) => {
 
     const backupId = c.req.param("id");
 
-    const restoreResult = yield* Effect.tryPromise({
-      try: () => backupsMod.requestRestore(backupId),
-      catch: (err) => err instanceof Error ? err : new Error(String(err)),
-    }).pipe(Effect.either);
+    const restoreResult = yield* backupsMod.requestRestore(backupId).pipe(Effect.either);
     if (restoreResult._tag === "Left") {
       const message = restoreResult.left.message;
       if (message.includes("not found")) {
@@ -369,20 +363,19 @@ platformBackups.openapi(confirmRestoreRoute, async (c) => {
 
     const body = c.req.valid("json");
 
-    return yield* Effect.tryPromise({
-      try: async () => {
-        const result = await backupsMod.executeRestore(body.confirmationToken);
+    return yield* backupsMod.executeRestore(body.confirmationToken).pipe(
+      Effect.map((result) => {
         log.warn({ backupId: c.req.param("id"), preRestoreBackupId: result.preRestoreBackupId, requestId }, "Database restore executed by platform admin");
         return c.json(result, 200);
-      },
-      catch: (err) => err instanceof Error ? err : new Error(String(err)),
-    }).pipe(Effect.catchAll((err) => {
-      const message = err.message;
-      if (message.includes("Invalid or expired") || message.includes("expired")) {
-        return Effect.succeed(c.json({ error: "invalid_token", message, requestId }, 400));
-      }
-      return Effect.die(err);
-    }));
+      }),
+      Effect.catchAll((err) => {
+        const message = err instanceof Error ? err.message : String(err);
+        if (message.includes("Invalid or expired") || message.includes("expired")) {
+          return Effect.succeed(c.json({ error: "invalid_token", message, requestId }, 400));
+        }
+        return Effect.die(err);
+      }),
+    );
   }), { label: "execute restore" });
 });
 
@@ -397,7 +390,7 @@ platformBackups.openapi(getConfigRoute, async (c) => {
       return c.json({ error: "not_available", message: "Backups require enterprise features to be enabled.", requestId }, 404);
     }
 
-    const config = yield* Effect.promise(() => backupsMod.getBackupConfig());
+    const config = yield* backupsMod.getBackupConfig();
     return c.json({
       schedule: config.schedule,
       retentionDays: config.retention_days,
@@ -419,8 +412,8 @@ platformBackups.openapi(updateConfigRoute, async (c) => {
 
     const body = c.req.valid("json");
 
-    yield* Effect.promise(() => backupsMod.updateBackupConfig(body));
-    const config = yield* Effect.promise(() => backupsMod.getBackupConfig());
+    yield* backupsMod.updateBackupConfig(body);
+    const config = yield* backupsMod.getBackupConfig();
     log.info({ config, requestId }, "Backup config updated by platform admin");
     return c.json({
       message: "Configuration updated.",

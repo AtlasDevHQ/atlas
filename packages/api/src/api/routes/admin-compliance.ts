@@ -141,7 +141,7 @@ adminCompliance.openapi(listRoute, async (c) => {
     const { orgId } = yield* AuthContext;
     const { connectionId } = c.req.valid("query");
 
-    const classifications = yield* Effect.promise(() => listPIIClassifications(orgId!, connectionId));
+    const classifications = yield* listPIIClassifications(orgId!, connectionId);
     return c.json({ classifications }, 200);
   }), { label: "list PII classifications", domainErrors: [complianceDomainError, reportDomainError] });
 });
@@ -153,12 +153,12 @@ adminCompliance.openapi(updateRoute, async (c) => {
     const id = c.req.param("id");
     const body = c.req.valid("json");
 
-    const updated = yield* Effect.promise(() => updatePIIClassification(orgId!, id, {
+    const updated = yield* updatePIIClassification(orgId!, id, {
       category: body.category as PIICategory | undefined,
       maskingStrategy: body.maskingStrategy as MaskingStrategy | undefined,
       dismissed: body.dismissed,
       reviewed: body.reviewed,
-    }));
+    });
     invalidateClassificationCache(orgId!);
     return c.json({ classification: updated }, 200);
   }), { label: "update PII classification", domainErrors: [complianceDomainError, reportDomainError] });
@@ -170,7 +170,7 @@ adminCompliance.openapi(deleteRoute, async (c) => {
     const { orgId } = yield* AuthContext;
     const id = c.req.param("id");
 
-    yield* Effect.promise(() => deletePIIClassification(orgId!, id));
+    yield* deletePIIClassification(orgId!, id);
     invalidateClassificationCache(orgId!);
     return c.json({ deleted: true }, 200);
   }), { label: "delete PII classification", domainErrors: [complianceDomainError, reportDomainError] });
@@ -288,13 +288,13 @@ adminCompliance.openapi(dataAccessReportRoute, async (c) => {
     const { orgId } = yield* AuthContext;
     const query = c.req.valid("query");
 
-    const report = yield* Effect.promise(() => generateDataAccessReport(orgId!, {
+    const report = yield* generateDataAccessReport(orgId!, {
       startDate: query.startDate,
       endDate: query.endDate,
       userId: query.userId,
       role: query.role,
       table: query.table,
-    }));
+    });
 
     if (query.format === "csv") {
       const csv = dataAccessReportToCSV(report);
@@ -322,13 +322,13 @@ adminCompliance.openapi(userActivityReportRoute, async (c) => {
     const { orgId } = yield* AuthContext;
     const query = c.req.valid("query");
 
-    const report = yield* Effect.promise(() => generateUserActivityReport(orgId!, {
+    const report = yield* generateUserActivityReport(orgId!, {
       startDate: query.startDate,
       endDate: query.endDate,
       userId: query.userId,
       role: query.role,
       table: query.table,
-    }));
+    });
 
     if (query.format === "csv") {
       const csv = userActivityReportToCSV(report);

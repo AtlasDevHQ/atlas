@@ -189,7 +189,7 @@ platformResidency.openapi(listRegionsRoute, async (c) => {
       return c.json({ error: "not_available", message: "Data residency requires enterprise features to be enabled.", requestId }, 404);
     }
 
-    const regions = yield* Effect.promise(() => mod.listRegions());
+    const regions = yield* mod.listRegions();
     const defaultRegion = mod.getDefaultRegion();
     return c.json({ regions, defaultRegion }, 200);
   }), { label: "list regions", domainErrors: [residencyDomainError] });
@@ -207,7 +207,7 @@ platformResidency.openapi(getWorkspaceRegionRoute, async (c) => {
       return c.json({ error: "not_available", message: "Data residency requires enterprise features to be enabled.", requestId }, 404);
     }
 
-    const assignment = yield* Effect.promise(() => mod.getWorkspaceRegionAssignment(workspaceId));
+    const assignment = yield* mod.getWorkspaceRegionAssignment(workspaceId);
     if (!assignment) {
       return c.json({ error: "not_found", message: `Workspace "${workspaceId}" has no region assigned.`, requestId }, 404);
     }
@@ -228,7 +228,7 @@ platformResidency.openapi(assignRegionRoute, async (c) => {
       return c.json({ error: "not_available", message: "Data residency requires enterprise features to be enabled.", requestId }, 404);
     }
 
-    const assignment = yield* Effect.promise(() => mod.assignWorkspaceRegion(workspaceId, body.region));
+    const assignment = yield* mod.assignWorkspaceRegion(workspaceId, body.region);
     log.info({ workspaceId, region: body.region, requestId }, "Region assigned to workspace");
     return c.json(assignment, 200);
   }), { label: "assign region", domainErrors: [residencyDomainError] });
@@ -245,7 +245,7 @@ platformResidency.openapi(listAssignmentsRoute, async (c) => {
       return c.json({ error: "not_available", message: "Data residency requires enterprise features to be enabled.", requestId }, 404);
     }
 
-    const assignments = yield* Effect.promise(() => mod.listWorkspaceRegions());
+    const assignments = yield* mod.listWorkspaceRegions();
     return c.json({ assignments }, 200);
   }), { label: "list region assignments", domainErrors: [residencyDomainError] });
 });

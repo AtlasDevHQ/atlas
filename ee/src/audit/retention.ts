@@ -2,9 +2,11 @@
  * Enterprise audit log retention — configurable retention policies,
  * soft-delete purging, hard-delete cleanup, and compliance export.
  *
- * All mutating operations call `requireEnterprise("audit-retention")`.
+ * All mutating operations call `requireEnterpriseEffect("audit-retention")`.
  * Read operations (get policy) are gated too so non-enterprise users
  * don't see partial config states.
+ *
+ * All exported functions return Effect — callers use `yield*` in Effect.gen.
  *
  * Purge flow:
  *   1. `purgeExpiredEntries(orgId?)` — soft-deletes (sets deleted_at)
@@ -13,9 +15,10 @@
  *      deleted_at is older than the hard-delete delay
  */
 
+import { Effect } from "effect";
 import { EEError } from "../lib/errors";
-import { requireEnterprise } from "../index";
-import { requireInternalDB } from "../lib/db-guard";
+import { requireEnterpriseEffect, EnterpriseError } from "../index";
+import { requireInternalDBEffect } from "../lib/db-guard";
 import {
   hasInternalDB,
   internalQuery,
@@ -134,72 +137,74 @@ function rowToPolicy(row: RetentionConfigRow): AuditRetentionPolicy {
  * Get the audit retention policy for an organization.
  * Returns null if no policy is configured (unlimited retention).
  */
-export async function getRetentionPolicy(orgId: string): Promise<AuditRetentionPolicy | null> {
-  requireEnterprise("audit-retention");
-  if (!hasInternalDB()) return null;
+export const getRetentionPolicy = (orgId: string): Effect.Effect<AuditRetentionPolicy | null, EnterpriseError> =>
+  Effect.gen(function* () {
+    yield* requireEnterpriseEffect("audit-retention");
+    if (!hasInternalDB()) return null;
 
-  const rows = await internalQuery<RetentionConfigRow>(
-    `SELECT id, org_id, retention_days, hard_delete_delay_days, updated_at, updated_by, last_purge_at, last_purge_count
-     FROM audit_retention_config
-     WHERE org_id = $1`,
-    [orgId],
-  );
+    const rows = yield* Effect.promise(() => internalQuery<RetentionConfigRow>(
+      `SELECT id, org_id, retention_days, hard_delete_delay_days, updated_at, updated_by, last_purge_at, last_purge_count
+       FROM audit_retention_config
+       WHERE org_id = $1`,
+      [orgId],
+    ));
 
-  if (rows.length === 0) return null;
-  return rowToPolicy(rows[0]);
-}
+    if (rows.length === 0) return null;
+    return rowToPolicy(rows[0]);
+  });
 
 /**
  * Set or update the audit retention policy for an organization.
  * Validates retention_days >= MIN_RETENTION_DAYS (or null for unlimited).
  */
-export async function setRetentionPolicy(
+export const setRetentionPolicy = (
   orgId: string,
   input: SetRetentionPolicyInput,
   updatedBy: string | null,
-): Promise<AuditRetentionPolicy> {
-  requireEnterprise("audit-retention");
-  requireInternalDB("audit retention configuration");
+): Effect.Effect<AuditRetentionPolicy, RetentionError | EnterpriseError | Error> =>
+  Effect.gen(function* () {
+    yield* requireEnterpriseEffect("audit-retention");
+    yield* requireInternalDBEffect("audit retention configuration");
 
-  // Validate retention days
-  if (input.retentionDays !== null) {
-    if (!Number.isInteger(input.retentionDays) || input.retentionDays < MIN_RETENTION_DAYS) {
-      throw new RetentionError(
-        `Retention period must be at least ${MIN_RETENTION_DAYS} days or null (unlimited). Got: ${input.retentionDays}.`,
-        "validation",
-      );
+    // Validate retention days
+    if (input.retentionDays !== null) {
+      if (!Number.isInteger(input.retentionDays) || input.retentionDays < MIN_RETENTION_DAYS) {
+        return yield* Effect.fail(new RetentionError(
+          `Retention period must be at least ${MIN_RETENTION_DAYS} days or null (unlimited). Got: ${input.retentionDays}.`,
+          "validation",
+        ));
+      }
     }
-  }
 
-  const hardDeleteDelay = input.hardDeleteDelayDays ?? DEFAULT_HARD_DELETE_DELAY_DAYS;
-  if (!Number.isInteger(hardDeleteDelay) || hardDeleteDelay < 0) {
-    throw new RetentionError(
-      `Hard delete delay must be a non-negative integer. Got: ${hardDeleteDelay}.`,
-      "validation",
+    const hardDeleteDelay = input.hardDeleteDelayDays ?? DEFAULT_HARD_DELETE_DELAY_DAYS;
+    if (!Number.isInteger(hardDeleteDelay) || hardDeleteDelay < 0) {
+      return yield* Effect.fail(new RetentionError(
+        `Hard delete delay must be a non-negative integer. Got: ${hardDeleteDelay}.`,
+        "validation",
+      ));
+    }
+
+    const rows = yield* Effect.promise(() => internalQuery<RetentionConfigRow>(
+      `INSERT INTO audit_retention_config (org_id, retention_days, hard_delete_delay_days, updated_by)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (org_id) DO UPDATE SET
+         retention_days = EXCLUDED.retention_days,
+         hard_delete_delay_days = EXCLUDED.hard_delete_delay_days,
+         updated_at = now(),
+         updated_by = EXCLUDED.updated_by
+       RETURNING id, org_id, retention_days, hard_delete_delay_days, updated_at, updated_by, last_purge_at, last_purge_count`,
+      [orgId, input.retentionDays, hardDeleteDelay, updatedBy],
+    ));
+
+    if (!rows[0]) return yield* Effect.die(new Error("Failed to upsert audit retention config — no row returned."));
+
+    log.info(
+      { orgId, retentionDays: input.retentionDays, hardDeleteDelayDays: hardDeleteDelay },
+      "Audit retention policy updated",
     );
-  }
 
-  const rows = await internalQuery<RetentionConfigRow>(
-    `INSERT INTO audit_retention_config (org_id, retention_days, hard_delete_delay_days, updated_by)
-     VALUES ($1, $2, $3, $4)
-     ON CONFLICT (org_id) DO UPDATE SET
-       retention_days = EXCLUDED.retention_days,
-       hard_delete_delay_days = EXCLUDED.hard_delete_delay_days,
-       updated_at = now(),
-       updated_by = EXCLUDED.updated_by
-     RETURNING id, org_id, retention_days, hard_delete_delay_days, updated_at, updated_by, last_purge_at, last_purge_count`,
-    [orgId, input.retentionDays, hardDeleteDelay, updatedBy],
-  );
-
-  if (!rows[0]) throw new Error("Failed to upsert audit retention config — no row returned.");
-
-  log.info(
-    { orgId, retentionDays: input.retentionDays, hardDeleteDelayDays: hardDeleteDelay },
-    "Audit retention policy updated",
-  );
-
-  return rowToPolicy(rows[0]);
-}
+    return rowToPolicy(rows[0]);
+  });
 
 // ── Purge operations ─────────────────────────────────────────────────
 
@@ -211,60 +216,61 @@ export async function setRetentionPolicy(
  *
  * Returns the count of soft-deleted entries per org.
  */
-export async function purgeExpiredEntries(orgId?: string): Promise<PurgeResult[]> {
-  requireEnterprise("audit-retention");
-  if (!hasInternalDB()) return [];
+export const purgeExpiredEntries = (orgId?: string): Effect.Effect<PurgeResult[], EnterpriseError> =>
+  Effect.gen(function* () {
+    yield* requireEnterpriseEffect("audit-retention");
+    if (!hasInternalDB()) return [];
 
-  const pool = getInternalDB();
-  const results: PurgeResult[] = [];
+    const pool = getInternalDB();
+    const results: PurgeResult[] = [];
 
-  // Get all applicable retention configs
-  let configs: RetentionConfigRow[];
-  if (orgId) {
-    configs = await internalQuery<RetentionConfigRow>(
-      `SELECT org_id, retention_days FROM audit_retention_config WHERE org_id = $1 AND retention_days IS NOT NULL`,
-      [orgId],
-    );
-  } else {
-    configs = await internalQuery<RetentionConfigRow>(
-      `SELECT org_id, retention_days FROM audit_retention_config WHERE retention_days IS NOT NULL`,
-    );
-  }
-
-  for (const config of configs) {
-    if (config.retention_days === null) continue;
-
-    const result = await pool.query(
-      `WITH updated AS (
-         UPDATE audit_log
-         SET deleted_at = now()
-         WHERE org_id = $1
-           AND deleted_at IS NULL
-           AND timestamp < now() - ($2 || ' days')::interval
-         RETURNING 1
-       ) SELECT COUNT(*)::int AS cnt FROM updated`,
-      [config.org_id, config.retention_days],
-    );
-
-    const count = Number((result.rows[0] as Record<string, unknown>)?.cnt ?? 0);
-    results.push({ orgId: config.org_id, softDeletedCount: count });
-
-    // Update last purge metadata
-    await pool.query(
-      `UPDATE audit_retention_config SET last_purge_at = now(), last_purge_count = $1 WHERE org_id = $2`,
-      [count, config.org_id],
-    );
-
-    if (count > 0) {
-      log.info(
-        { orgId: config.org_id, softDeletedCount: count, retentionDays: config.retention_days },
-        "Audit log entries soft-deleted",
-      );
+    // Get all applicable retention configs
+    let configs: RetentionConfigRow[];
+    if (orgId) {
+      configs = yield* Effect.promise(() => internalQuery<RetentionConfigRow>(
+        `SELECT org_id, retention_days FROM audit_retention_config WHERE org_id = $1 AND retention_days IS NOT NULL`,
+        [orgId],
+      ));
+    } else {
+      configs = yield* Effect.promise(() => internalQuery<RetentionConfigRow>(
+        `SELECT org_id, retention_days FROM audit_retention_config WHERE retention_days IS NOT NULL`,
+      ));
     }
-  }
 
-  return results;
-}
+    for (const config of configs) {
+      if (config.retention_days === null) continue;
+
+      const result = yield* Effect.promise(() => pool.query(
+        `WITH updated AS (
+           UPDATE audit_log
+           SET deleted_at = now()
+           WHERE org_id = $1
+             AND deleted_at IS NULL
+             AND timestamp < now() - ($2 || ' days')::interval
+           RETURNING 1
+         ) SELECT COUNT(*)::int AS cnt FROM updated`,
+        [config.org_id, config.retention_days],
+      ));
+
+      const count = Number((result.rows[0] as Record<string, unknown>)?.cnt ?? 0);
+      results.push({ orgId: config.org_id, softDeletedCount: count });
+
+      // Update last purge metadata
+      yield* Effect.promise(() => pool.query(
+        `UPDATE audit_retention_config SET last_purge_at = now(), last_purge_count = $1 WHERE org_id = $2`,
+        [count, config.org_id],
+      ));
+
+      if (count > 0) {
+        log.info(
+          { orgId: config.org_id, softDeletedCount: count, retentionDays: config.retention_days },
+          "Audit log entries soft-deleted",
+        );
+      }
+    }
+
+    return results;
+  });
 
 /**
  * Permanently delete audit log entries that were soft-deleted
@@ -272,49 +278,50 @@ export async function purgeExpiredEntries(orgId?: string): Promise<PurgeResult[]
  *
  * Processes all orgs with retention configs.
  */
-export async function hardDeleteExpired(orgId?: string): Promise<HardDeleteResult> {
-  requireEnterprise("audit-retention");
-  if (!hasInternalDB()) return { deletedCount: 0 };
+export const hardDeleteExpired = (orgId?: string): Effect.Effect<HardDeleteResult, EnterpriseError> =>
+  Effect.gen(function* () {
+    yield* requireEnterpriseEffect("audit-retention");
+    if (!hasInternalDB()) return { deletedCount: 0 };
 
-  const pool = getInternalDB();
+    const pool = getInternalDB();
 
-  // Get retention configs — scoped to orgId when provided, all orgs for scheduler
-  const configs = orgId
-    ? await internalQuery<RetentionConfigRow>(
-        `SELECT org_id, hard_delete_delay_days FROM audit_retention_config WHERE org_id = $1`,
-        [orgId],
-      )
-    : await internalQuery<RetentionConfigRow>(
-        `SELECT org_id, hard_delete_delay_days FROM audit_retention_config`,
-      );
+    // Get retention configs — scoped to orgId when provided, all orgs for scheduler
+    const configs = orgId
+      ? yield* Effect.promise(() => internalQuery<RetentionConfigRow>(
+          `SELECT org_id, hard_delete_delay_days FROM audit_retention_config WHERE org_id = $1`,
+          [orgId],
+        ))
+      : yield* Effect.promise(() => internalQuery<RetentionConfigRow>(
+          `SELECT org_id, hard_delete_delay_days FROM audit_retention_config`,
+        ));
 
-  let totalDeleted = 0;
+    let totalDeleted = 0;
 
-  for (const config of configs) {
-    const result = await pool.query(
-      `WITH deleted AS (
-         DELETE FROM audit_log
-         WHERE org_id = $1
-           AND deleted_at IS NOT NULL
-           AND deleted_at < now() - ($2 || ' days')::interval
-         RETURNING 1
-       ) SELECT COUNT(*)::int AS cnt FROM deleted`,
-      [config.org_id, config.hard_delete_delay_days],
-    );
+    for (const config of configs) {
+      const result = yield* Effect.promise(() => pool.query(
+        `WITH deleted AS (
+           DELETE FROM audit_log
+           WHERE org_id = $1
+             AND deleted_at IS NOT NULL
+             AND deleted_at < now() - ($2 || ' days')::interval
+           RETURNING 1
+         ) SELECT COUNT(*)::int AS cnt FROM deleted`,
+        [config.org_id, config.hard_delete_delay_days],
+      ));
 
-    const count = Number((result.rows[0] as Record<string, unknown>)?.cnt ?? 0);
-    totalDeleted += count;
+      const count = Number((result.rows[0] as Record<string, unknown>)?.cnt ?? 0);
+      totalDeleted += count;
 
-    if (count > 0) {
-      log.info(
-        { orgId: config.org_id, hardDeletedCount: count, delayDays: config.hard_delete_delay_days },
-        "Audit log entries permanently deleted",
-      );
+      if (count > 0) {
+        log.info(
+          { orgId: config.org_id, hardDeletedCount: count, delayDays: config.hard_delete_delay_days },
+          "Audit log entries permanently deleted",
+        );
+      }
     }
-  }
 
-  return { deletedCount: totalDeleted };
-}
+    return { deletedCount: totalDeleted };
+  });
 
 // ── Export ────────────────────────────────────────────────────────────
 
@@ -335,128 +342,129 @@ function csvField(val: string | null | undefined): string {
  * - Limits to MAX_EXPORT_ROWS
  * - Returns the serialized content and metadata
  */
-export async function exportAuditLog(options: ExportOptions): Promise<{
+export const exportAuditLog = (options: ExportOptions): Effect.Effect<{
   content: string;
   format: "csv" | "json";
   rowCount: number;
   totalAvailable: number;
   truncated: boolean;
-}> {
-  requireEnterprise("audit-retention");
-  requireInternalDB("audit log export");
+}, RetentionError | EnterpriseError | Error> =>
+  Effect.gen(function* () {
+    yield* requireEnterpriseEffect("audit-retention");
+    yield* requireInternalDBEffect("audit log export");
 
-  const conditions: string[] = ["a.org_id = $1", "(a.deleted_at IS NULL)"];
-  const params: unknown[] = [options.orgId];
-  let paramIdx = 2;
+    const conditions: string[] = ["a.org_id = $1", "(a.deleted_at IS NULL)"];
+    const params: unknown[] = [options.orgId];
+    let paramIdx = 2;
 
-  if (options.startDate) {
-    if (isNaN(Date.parse(options.startDate))) {
-      throw new RetentionError(
-        `Invalid start_date format: "${options.startDate}". Use ISO 8601 (e.g. 2026-01-01).`,
-        "validation",
-      );
+    if (options.startDate) {
+      if (isNaN(Date.parse(options.startDate))) {
+        return yield* Effect.fail(new RetentionError(
+          `Invalid start_date format: "${options.startDate}". Use ISO 8601 (e.g. 2026-01-01).`,
+          "validation",
+        ));
+      }
+      conditions.push(`a.timestamp >= $${paramIdx++}`);
+      params.push(options.startDate);
     }
-    conditions.push(`a.timestamp >= $${paramIdx++}`);
-    params.push(options.startDate);
-  }
 
-  if (options.endDate) {
-    if (isNaN(Date.parse(options.endDate))) {
-      throw new RetentionError(
-        `Invalid end_date format: "${options.endDate}". Use ISO 8601 (e.g. 2026-03-01).`,
-        "validation",
-      );
+    if (options.endDate) {
+      if (isNaN(Date.parse(options.endDate))) {
+        return yield* Effect.fail(new RetentionError(
+          `Invalid end_date format: "${options.endDate}". Use ISO 8601 (e.g. 2026-03-01).`,
+          "validation",
+        ));
+      }
+      conditions.push(`a.timestamp <= $${paramIdx++}`);
+      params.push(options.endDate);
     }
-    conditions.push(`a.timestamp <= $${paramIdx++}`);
-    params.push(options.endDate);
-  }
 
-  const whereClause = `WHERE ${conditions.join(" AND ")}`;
+    const whereClause = `WHERE ${conditions.join(" AND ")}`;
 
-  // Count total matching
-  const countResult = await internalQuery<{ count: string }>(
-    `SELECT COUNT(*) as count FROM audit_log a ${whereClause}`,
-    params,
-  );
-  const totalAvailable = parseInt(String(countResult[0]?.count ?? "0"), 10);
+    // Count total matching
+    const countResult = yield* Effect.promise(() => internalQuery<{ count: string }>(
+      `SELECT COUNT(*) as count FROM audit_log a ${whereClause}`,
+      params,
+    ));
+    const totalAvailable = parseInt(String(countResult[0]?.count ?? "0"), 10);
 
-  // Fetch rows
-  const rows = await internalQuery<AuditExportRow>(
-    `SELECT a.id, a.timestamp, a.user_id, a.user_label, a.auth_mode, a.sql,
-            a.duration_ms, a.row_count, a.success, a.error,
-            a.source_id, a.source_type, a.target_host,
-            a.tables_accessed, a.columns_accessed, a.org_id,
-            u.email AS user_email
-     FROM audit_log a
-     LEFT JOIN "user" u ON a.user_id = u.id
-     ${whereClause}
-     ORDER BY a.timestamp DESC
-     LIMIT $${paramIdx}`,
-    [...params, MAX_EXPORT_ROWS],
-  );
+    // Fetch rows
+    const rows = yield* Effect.promise(() => internalQuery<AuditExportRow>(
+      `SELECT a.id, a.timestamp, a.user_id, a.user_label, a.auth_mode, a.sql,
+              a.duration_ms, a.row_count, a.success, a.error,
+              a.source_id, a.source_type, a.target_host,
+              a.tables_accessed, a.columns_accessed, a.org_id,
+              u.email AS user_email
+       FROM audit_log a
+       LEFT JOIN "user" u ON a.user_id = u.id
+       ${whereClause}
+       ORDER BY a.timestamp DESC
+       LIMIT $${paramIdx}`,
+      [...params, MAX_EXPORT_ROWS],
+    ));
 
-  const truncated = totalAvailable > MAX_EXPORT_ROWS;
+    const truncated = totalAvailable > MAX_EXPORT_ROWS;
 
-  if (options.format === "json") {
-    const jsonEntries = rows.map((r) => ({
-      id: r.id,
-      timestamp: r.timestamp,
-      userId: r.user_id,
-      userEmail: r.user_email,
-      userLabel: r.user_label,
-      authMode: r.auth_mode,
-      sql: r.sql,
-      durationMs: r.duration_ms,
-      rowCount: r.row_count,
-      success: r.success,
-      error: r.error,
-      sourceId: r.source_id,
-      sourceType: r.source_type,
-      targetHost: r.target_host,
-      tablesAccessed: r.tables_accessed,
-      columnsAccessed: r.columns_accessed,
-      orgId: r.org_id,
-    }));
+    if (options.format === "json") {
+      const jsonEntries = rows.map((r) => ({
+        id: r.id,
+        timestamp: r.timestamp,
+        userId: r.user_id,
+        userEmail: r.user_email,
+        userLabel: r.user_label,
+        authMode: r.auth_mode,
+        sql: r.sql,
+        durationMs: r.duration_ms,
+        rowCount: r.row_count,
+        success: r.success,
+        error: r.error,
+        sourceId: r.source_id,
+        sourceType: r.source_type,
+        targetHost: r.target_host,
+        tablesAccessed: r.tables_accessed,
+        columnsAccessed: r.columns_accessed,
+        orgId: r.org_id,
+      }));
+
+      return {
+        content: JSON.stringify({ entries: jsonEntries, exportedAt: new Date().toISOString(), totalAvailable, truncated }, null, 2),
+        format: "json" as const,
+        rowCount: rows.length,
+        totalAvailable,
+        truncated,
+      };
+    }
+
+    // CSV format
+    const csvHeader = "id,timestamp,user_id,user_email,user_label,auth_mode,sql,duration_ms,row_count,success,error,source_id,source_type,target_host,tables_accessed,columns_accessed,org_id\n";
+    const csvRows = rows.map((r) => {
+      const fields = [
+        csvField(r.id),
+        csvField(r.timestamp),
+        csvField(r.user_id),
+        csvField(r.user_email),
+        csvField(r.user_label),
+        csvField(r.auth_mode),
+        csvField(r.sql),
+        String(r.duration_ms),
+        String(r.row_count ?? ""),
+        String(r.success),
+        csvField(r.error),
+        csvField(r.source_id),
+        csvField(r.source_type),
+        csvField(r.target_host),
+        csvField(typeof r.tables_accessed === "string" ? r.tables_accessed : r.tables_accessed ? JSON.stringify(r.tables_accessed) : null),
+        csvField(typeof r.columns_accessed === "string" ? r.columns_accessed : r.columns_accessed ? JSON.stringify(r.columns_accessed) : null),
+        csvField(r.org_id),
+      ];
+      return fields.join(",");
+    });
 
     return {
-      content: JSON.stringify({ entries: jsonEntries, exportedAt: new Date().toISOString(), totalAvailable, truncated }, null, 2),
-      format: "json",
+      content: csvHeader + csvRows.join("\n"),
+      format: "csv" as const,
       rowCount: rows.length,
       totalAvailable,
       truncated,
     };
-  }
-
-  // CSV format
-  const csvHeader = "id,timestamp,user_id,user_email,user_label,auth_mode,sql,duration_ms,row_count,success,error,source_id,source_type,target_host,tables_accessed,columns_accessed,org_id\n";
-  const csvRows = rows.map((r) => {
-    const fields = [
-      csvField(r.id),
-      csvField(r.timestamp),
-      csvField(r.user_id),
-      csvField(r.user_email),
-      csvField(r.user_label),
-      csvField(r.auth_mode),
-      csvField(r.sql),
-      String(r.duration_ms),
-      String(r.row_count ?? ""),
-      String(r.success),
-      csvField(r.error),
-      csvField(r.source_id),
-      csvField(r.source_type),
-      csvField(r.target_host),
-      csvField(typeof r.tables_accessed === "string" ? r.tables_accessed : r.tables_accessed ? JSON.stringify(r.tables_accessed) : null),
-      csvField(typeof r.columns_accessed === "string" ? r.columns_accessed : r.columns_accessed ? JSON.stringify(r.columns_accessed) : null),
-      csvField(r.org_id),
-    ];
-    return fields.join(",");
   });
-
-  return {
-    content: csvHeader + csvRows.join("\n"),
-    format: "csv",
-    rowCount: rows.length,
-    totalAvailable,
-    truncated,
-  };
-}

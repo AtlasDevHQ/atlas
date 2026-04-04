@@ -394,7 +394,7 @@ adminResidency.openapi(getStatusRoute, async (c) => {
       let assignedAt: string | null = null;
 
       if (configured) {
-        const assignment = yield* Effect.promise(() => mod.getWorkspaceRegionAssignment(orgId!));
+        const assignment = yield* Effect.promise(() => Effect.runPromise(mod.getWorkspaceRegionAssignment(orgId!)));
         if (assignment) {
           region = assignment.region;
           regionLabel =
@@ -433,7 +433,7 @@ adminResidency.openapi(assignRegionRoute, async (c) => {
       }
 
       try {
-        const result = yield* Effect.promise(() => mod.assignWorkspaceRegion(orgId!, region as string));
+        const result = yield* Effect.promise(() => Effect.runPromise(mod.assignWorkspaceRegion(orgId!, region as string)));
         log.info({ orgId, region }, "Workspace region assigned via self-serve");
         return c.json(result, 200);
       } catch (err) {
@@ -548,7 +548,7 @@ adminResidency.openapi(requestMigrationRoute, async (c) => {
       }
 
       // Validate workspace has a region assigned
-      const assignment = yield* Effect.promise(() => mod.getWorkspaceRegionAssignment(orgId));
+      const assignment = yield* Effect.promise(() => Effect.runPromise(mod.getWorkspaceRegionAssignment(orgId)));
       if (!assignment) {
         return c.json({ error: "no_region", message: "No region is assigned to this workspace. Assign a region first.", requestId }, 400);
       }

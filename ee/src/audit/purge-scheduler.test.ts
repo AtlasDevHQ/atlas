@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, mock } from "bun:test";
+import { Effect } from "effect";
 
 // ---------------------------------------------------------------------------
 // Mock control variables
@@ -44,17 +45,17 @@ mock.module("@atlas/api/lib/db/internal", () => ({
 }));
 
 mock.module("./retention", () => ({
-  purgeExpiredEntries: async () => {
+  purgeExpiredEntries: () => {
     purgeCalled = true;
-    return [];
+    return Effect.succeed([]);
   },
-  hardDeleteExpired: async () => {
+  hardDeleteExpired: () => {
     hardDeleteCalled = true;
-    return { deletedCount: 0 };
+    return Effect.succeed({ deletedCount: 0 });
   },
-  getRetentionPolicy: async () => null,
-  setRetentionPolicy: async () => ({}),
-  exportAuditLog: async () => ({ content: "", format: "json", rowCount: 0, totalAvailable: 0, truncated: false }),
+  getRetentionPolicy: () => Effect.succeed(null),
+  setRetentionPolicy: () => Effect.succeed({}),
+  exportAuditLog: () => Effect.succeed({ content: "", format: "json", rowCount: 0, totalAvailable: 0, truncated: false }),
   MIN_RETENTION_DAYS: 7,
   DEFAULT_HARD_DELETE_DELAY_DAYS: 30,
   RetentionError: class extends Error {

@@ -190,10 +190,10 @@ adminScim.openapi(getStatusRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
 
-    const [scimConnections, syncStatus] = yield* Effect.promise(() => Promise.all([
+    const [scimConnections, syncStatus] = yield* Effect.all([
       listConnections(orgId!),
       getSyncStatus(orgId!),
-    ]));
+    ], { concurrency: "unbounded" });
     return c.json({ connections: scimConnections, syncStatus }, 200);
   }), { label: "get SCIM status", domainErrors: [scimDomainError] });
 });
@@ -208,7 +208,7 @@ adminScim.openapi(deleteConnectionRoute, async (c) => {
       return c.json({ error: "bad_request", message: "Invalid connection ID." }, 400);
     }
 
-    const deleted = yield* Effect.promise(() => deleteConnection(orgId!, connectionId));
+    const deleted = yield* deleteConnection(orgId!, connectionId);
     if (!deleted) {
       return c.json({ error: "not_found", message: "SCIM connection not found." }, 404);
     }
@@ -221,7 +221,7 @@ adminScim.openapi(listGroupMappingsRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
 
-    const mappings = yield* Effect.promise(() => listGroupMappings(orgId!));
+    const mappings = yield* listGroupMappings(orgId!);
     return c.json({ mappings, total: mappings.length }, 200);
   }), { label: "list SCIM group mappings", domainErrors: [scimDomainError] });
 });
@@ -236,7 +236,7 @@ adminScim.openapi(createGroupMappingRoute, async (c) => {
       return c.json({ error: "bad_request", message: "Missing required fields: scimGroupName, roleName." }, 400);
     }
 
-    const mapping = yield* Effect.promise(() => createGroupMapping(orgId!, scimGroupName, roleName));
+    const mapping = yield* createGroupMapping(orgId!, scimGroupName, roleName);
     return c.json({ mapping }, 201);
   }), { label: "create SCIM group mapping", domainErrors: [scimDomainError] });
 });
@@ -251,7 +251,7 @@ adminScim.openapi(deleteGroupMappingRoute, async (c) => {
       return c.json({ error: "bad_request", message: "Invalid mapping ID." }, 400);
     }
 
-    const deleted = yield* Effect.promise(() => deleteGroupMapping(orgId!, mappingId));
+    const deleted = yield* deleteGroupMapping(orgId!, mappingId);
     if (!deleted) {
       return c.json({ error: "not_found", message: "SCIM group mapping not found." }, 404);
     }

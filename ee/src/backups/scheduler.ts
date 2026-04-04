@@ -9,6 +9,7 @@
  * Enterprise-gated via requireEnterprise("backups").
  */
 
+import { Effect } from "effect";
 import { requireEnterprise } from "../index";
 import { createLogger } from "@atlas/api/lib/logger";
 import { createBackup, getBackupConfig, purgeExpiredBackups, ensureTable } from "./engine";
@@ -88,17 +89,17 @@ async function tick(): Promise<void> {
   if (currentMinute === _lastRunMinute) return;
 
   try {
-    const config = await getBackupConfig();
+    const config = await Effect.runPromise(getBackupConfig());
 
     if (!cronMatchesNow(config.schedule)) return;
 
     _lastRunMinute = currentMinute;
     log.info({ schedule: config.schedule }, "Scheduled backup triggered");
 
-    await createBackup();
+    await Effect.runPromise(createBackup());
 
     // Purge expired backups after successful backup
-    await purgeExpiredBackups();
+    await Effect.runPromise(purgeExpiredBackups());
   } catch (err) {
     log.error(
       { err: err instanceof Error ? err : new Error(String(err)) },
@@ -113,11 +114,11 @@ async function tick(): Promise<void> {
  */
 export async function startScheduler(): Promise<void> {
   requireEnterprise("backups");
-  await ensureTable();
+  await Effect.runPromise(ensureTable());
 
   if (_schedulerInterval) return;
 
-  const config = await getBackupConfig();
+  const config = await Effect.runPromise(getBackupConfig());
   log.info({ schedule: config.schedule, retentionDays: config.retention_days }, "Backup scheduler started");
 
   // Check immediately, then every 60 seconds

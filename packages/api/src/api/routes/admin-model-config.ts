@@ -166,7 +166,7 @@ adminModelConfig.openapi(getConfigRoute, async (c) => {
       return c.json({ error: "bad_request", message: "No active organization. Set an active org first.", requestId }, 400);
     }
 
-    const config = yield* Effect.promise(() => getWorkspaceModelConfig(orgId));
+    const config = yield* getWorkspaceModelConfig(orgId);
     return c.json({ config }, 200);
   }), { label: "get workspace model config", domainErrors: [modelConfigDomainError] });
 });
@@ -189,18 +189,18 @@ adminModelConfig.openapi(setConfigRoute, async (c) => {
 
     // If apiKey is omitted, require an existing config to preserve the key
     if (!body.apiKey) {
-      const existing = yield* Effect.promise(() => getWorkspaceModelConfig(orgId));
+      const existing = yield* getWorkspaceModelConfig(orgId);
       if (!existing) {
         return c.json({ error: "validation", message: "API key is required when no existing configuration exists." }, 400);
       }
     }
 
-    const config = yield* Effect.promise(() => setWorkspaceModelConfig(orgId, {
+    const config = yield* setWorkspaceModelConfig(orgId, {
       provider: body.provider,
       model: body.model,
       apiKey: body.apiKey,
       baseUrl: body.baseUrl,
-    }));
+    });
     return c.json({ config }, 200);
   }), { label: "set workspace model config", domainErrors: [modelConfigDomainError] });
 });
@@ -219,7 +219,7 @@ adminModelConfig.openapi(deleteConfigRoute, async (c) => {
       return c.json({ error: "bad_request", message: "No active organization. Set an active org first.", requestId }, 400);
     }
 
-    const deleted = yield* Effect.promise(() => deleteWorkspaceModelConfig(orgId));
+    const deleted = yield* deleteWorkspaceModelConfig(orgId);
     if (!deleted) {
       return c.json({ error: "not_found", message: "No custom model configuration found." }, 404);
     }
@@ -239,12 +239,12 @@ adminModelConfig.openapi(testConfigRoute, async (c) => {
 
     const body = c.req.valid("json");
 
-    const result = yield* Effect.promise(() => testModelConfig({
+    const result = yield* testModelConfig({
       provider: body.provider,
       model: body.model,
       apiKey: body.apiKey,
       baseUrl: body.baseUrl,
-    }));
+    });
     return c.json(result, 200);
   }), { label: "test model config", domainErrors: [modelConfigDomainError] });
 });

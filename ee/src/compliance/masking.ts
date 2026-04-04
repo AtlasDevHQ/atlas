@@ -9,13 +9,17 @@
  * Integration: called from `packages/api/src/lib/tools/sql.ts` after query
  * execution, before results are returned to the agent/user.
  *
- * All mutating operations (saving classifications) call `requireEnterprise`.
+ * All mutating operations (saving classifications) call `requireEnterpriseEffect`.
  * The masking check itself (`applyMasking`) fails open when enterprise is
  * disabled — non-enterprise deployments get unmasked results.
+ *
+ * All exported functions return Effect — callers use `yield*` in Effect.gen.
  */
 
+import { Effect } from "effect";
 import { EEError } from "../lib/errors";
-import { isEnterpriseEnabled, requireEnterprise } from "../index";
+import { isEnterpriseEnabled } from "../index";
+import { requireEnterpriseEffect, EnterpriseError } from "../index";
 import {
   hasInternalDB,
   internalQuery,
@@ -121,31 +125,32 @@ function rowToClassification(row: PIIClassificationRow): PIIColumnClassification
 
 // ── CRUD operations (enterprise-gated) ──────────────────────────
 
-export async function listPIIClassifications(
+export const listPIIClassifications = (
   orgId: string | undefined,
   connectionId?: string,
-): Promise<PIIColumnClassification[]> {
-  requireEnterprise("pii-detection");
-  if (!(await ready())) return [];
+): Effect.Effect<PIIColumnClassification[], EnterpriseError> =>
+  Effect.gen(function* () {
+    yield* requireEnterpriseEffect("pii-detection");
+    if (!(yield* Effect.promise(() => ready()))) return [];
 
-  let sql = `SELECT * FROM ${TABLE_NAME} WHERE dismissed = false`;
-  const params: unknown[] = [];
+    let sql = `SELECT * FROM ${TABLE_NAME} WHERE dismissed = false`;
+    const params: unknown[] = [];
 
-  if (orgId) {
-    params.push(orgId);
-    sql += ` AND org_id = $${params.length}`;
-  }
-  if (connectionId) {
-    params.push(connectionId);
-    sql += ` AND connection_id = $${params.length}`;
-  }
-  sql += " ORDER BY table_name, column_name";
+    if (orgId) {
+      params.push(orgId);
+      sql += ` AND org_id = $${params.length}`;
+    }
+    if (connectionId) {
+      params.push(connectionId);
+      sql += ` AND connection_id = $${params.length}`;
+    }
+    sql += " ORDER BY table_name, column_name";
 
-  const rows = await internalQuery<PIIClassificationRow>(sql, params);
-  return rows.map(rowToClassification);
-}
+    const rows = yield* Effect.promise(() => internalQuery<PIIClassificationRow>(sql, params));
+    return rows.map(rowToClassification);
+  });
 
-export async function savePIIClassification(
+export const savePIIClassification = (
   orgId: string,
   tableName: string,
   columnName: string,
@@ -153,87 +158,90 @@ export async function savePIIClassification(
   category: PIICategory,
   confidence: PIIConfidence,
   maskingStrategy: MaskingStrategy = "partial",
-): Promise<PIIColumnClassification> {
-  requireEnterprise("pii-detection");
-  if (!(await ready())) {
-    throw new ComplianceError("Internal database not available", "validation");
-  }
+): Effect.Effect<PIIColumnClassification, ComplianceError | EnterpriseError> =>
+  Effect.gen(function* () {
+    yield* requireEnterpriseEffect("pii-detection");
+    if (!(yield* Effect.promise(() => ready()))) {
+      return yield* Effect.fail(new ComplianceError("Internal database not available", "validation"));
+    }
 
-  validateCategory(category);
-  validateStrategy(maskingStrategy);
+    validateCategory(category);
+    validateStrategy(maskingStrategy);
 
-  const rows = await internalQuery<PIIClassificationRow>(
-    `INSERT INTO ${TABLE_NAME} (org_id, table_name, column_name, connection_id, category, confidence, masking_strategy)
-     VALUES ($1, $2, $3, $4, $5, $6, $7)
-     ON CONFLICT (org_id, table_name, column_name, connection_id)
-     DO UPDATE SET category = $5, confidence = $6, masking_strategy = $7, updated_at = now(), dismissed = false
-     RETURNING *`,
-    [orgId, tableName, columnName, connectionId, category, confidence, maskingStrategy],
-  );
-  return rowToClassification(rows[0]);
-}
+    const rows = yield* Effect.promise(() => internalQuery<PIIClassificationRow>(
+      `INSERT INTO ${TABLE_NAME} (org_id, table_name, column_name, connection_id, category, confidence, masking_strategy)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       ON CONFLICT (org_id, table_name, column_name, connection_id)
+       DO UPDATE SET category = $5, confidence = $6, masking_strategy = $7, updated_at = now(), dismissed = false
+       RETURNING *`,
+      [orgId, tableName, columnName, connectionId, category, confidence, maskingStrategy],
+    ));
+    return rowToClassification(rows[0]);
+  });
 
-export async function updatePIIClassification(
+export const updatePIIClassification = (
   orgId: string,
   id: string,
   updates: UpdatePIIClassificationRequest,
-): Promise<PIIColumnClassification> {
-  requireEnterprise("pii-detection");
-  if (!(await ready())) {
-    throw new ComplianceError("Internal database not available", "validation");
-  }
+): Effect.Effect<PIIColumnClassification, ComplianceError | EnterpriseError> =>
+  Effect.gen(function* () {
+    yield* requireEnterpriseEffect("pii-detection");
+    if (!(yield* Effect.promise(() => ready()))) {
+      return yield* Effect.fail(new ComplianceError("Internal database not available", "validation"));
+    }
 
-  if (updates.category) validateCategory(updates.category);
-  if (updates.maskingStrategy) validateStrategy(updates.maskingStrategy);
+    if (updates.category) validateCategory(updates.category);
+    if (updates.maskingStrategy) validateStrategy(updates.maskingStrategy);
 
-  const setClauses: string[] = ["updated_at = now()"];
-  const params: unknown[] = [orgId, id];
+    const setClauses: string[] = ["updated_at = now()"];
+    const params: unknown[] = [orgId, id];
 
-  if (updates.category !== undefined) {
-    params.push(updates.category);
-    setClauses.push(`category = $${params.length}`);
-  }
-  if (updates.maskingStrategy !== undefined) {
-    params.push(updates.maskingStrategy);
-    setClauses.push(`masking_strategy = $${params.length}`);
-  }
-  if (updates.dismissed !== undefined) {
-    params.push(updates.dismissed);
-    setClauses.push(`dismissed = $${params.length}`);
-  }
-  if (updates.reviewed !== undefined) {
-    params.push(updates.reviewed);
-    setClauses.push(`reviewed = $${params.length}`);
-  }
+    if (updates.category !== undefined) {
+      params.push(updates.category);
+      setClauses.push(`category = $${params.length}`);
+    }
+    if (updates.maskingStrategy !== undefined) {
+      params.push(updates.maskingStrategy);
+      setClauses.push(`masking_strategy = $${params.length}`);
+    }
+    if (updates.dismissed !== undefined) {
+      params.push(updates.dismissed);
+      setClauses.push(`dismissed = $${params.length}`);
+    }
+    if (updates.reviewed !== undefined) {
+      params.push(updates.reviewed);
+      setClauses.push(`reviewed = $${params.length}`);
+    }
 
-  const rows = await internalQuery<PIIClassificationRow>(
-    `UPDATE ${TABLE_NAME} SET ${setClauses.join(", ")} WHERE org_id = $1 AND id = $2 RETURNING *`,
-    params,
-  );
+    const rows = yield* Effect.promise(() => internalQuery<PIIClassificationRow>(
+      `UPDATE ${TABLE_NAME} SET ${setClauses.join(", ")} WHERE org_id = $1 AND id = $2 RETURNING *`,
+      params,
+    ));
 
-  if (rows.length === 0) {
-    throw new ComplianceError("PII classification not found", "not_found");
-  }
-  return rowToClassification(rows[0]);
-}
+    if (rows.length === 0) {
+      return yield* Effect.fail(new ComplianceError("PII classification not found", "not_found"));
+    }
+    return rowToClassification(rows[0]);
+  });
 
-export async function deletePIIClassification(
+export const deletePIIClassification = (
   orgId: string,
   id: string,
-): Promise<void> {
-  requireEnterprise("pii-detection");
-  if (!(await ready())) {
-    throw new ComplianceError("Internal database not available", "validation");
-  }
+): Effect.Effect<void, ComplianceError | EnterpriseError> =>
+  Effect.gen(function* () {
+    yield* requireEnterpriseEffect("pii-detection");
+    if (!(yield* Effect.promise(() => ready()))) {
+      return yield* Effect.fail(new ComplianceError("Internal database not available", "validation"));
+    }
 
-  const rows = await internalQuery<{ id: string }>(
-    `DELETE FROM ${TABLE_NAME} WHERE org_id = $1 AND id = $2 RETURNING id`,
-    [orgId, id],
-  );
-  if (rows.length === 0) {
-    throw new ComplianceError("PII classification not found", "not_found");
-  }
-}
+    const rows = yield* Effect.promise(() => internalQuery<{ id: string }>(
+      `DELETE FROM ${TABLE_NAME} WHERE org_id = $1 AND id = $2 RETURNING id`,
+      [orgId, id],
+    ));
+    if (rows.length === 0) {
+      return yield* Effect.fail(new ComplianceError("PII classification not found", "not_found"));
+    }
+  });
 
 // ── Masking application (query result path) ─────────────────────
 

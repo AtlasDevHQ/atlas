@@ -30,13 +30,15 @@ mock.module("mysql2/promise", () => ({
   }),
 }));
 
+import { Effect } from "effect";
+
 // Mock the EE residency module — default: no region configured
 type RegionResult = { databaseUrl: string; datasourceUrl?: string; region: string } | null;
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- mock function type needs to be wide for reassignment
-let mockResolveRegionDatabaseUrl: (...args: any[]) => Promise<RegionResult> = mock(() => Promise.resolve(null));
+let mockResolveFn: (...args: any[]) => RegionResult = () => null;
 
 mock.module("@atlas/ee/platform/residency", () => ({
-  resolveRegionDatabaseUrl: (...args: unknown[]) => mockResolveRegionDatabaseUrl(...args),
+  resolveRegionDatabaseUrl: (...args: unknown[]) => Effect.succeed(mockResolveFn(...args)),
 }));
 
 // Mock config so getConfig() returns a valid config
@@ -68,7 +70,7 @@ describe("getRegionAwareConnection", () => {
     connections = (connMod as { connections: ConnectionRegistryInstance }).connections;
     connections._reset();
     connections.register("default", { url: "postgresql://localhost/test" });
-    mockResolveRegionDatabaseUrl = mock(() => Promise.resolve(null));
+    mockResolveFn = () => null;
   });
 
   afterEach(() => {
@@ -83,13 +85,11 @@ describe("getRegionAwareConnection", () => {
   });
 
   it("uses regional datasource when resolveRegionDatabaseUrl returns a URL", async () => {
-    mockResolveRegionDatabaseUrl = mock(() =>
-      Promise.resolve({
-        databaseUrl: "postgresql://us-east-1.internal/db",
-        datasourceUrl: "postgresql://us-east-1.rds/analytics",
-        region: "us-east-1",
-      }),
-    );
+    mockResolveFn = () => ({
+      databaseUrl: "postgresql://us-east-1.internal/db",
+      datasourceUrl: "postgresql://us-east-1.rds/analytics",
+      region: "us-east-1",
+    });
 
     const { db, resolvedConnId } = await getRegionAwareConnection("org-1", "default");
     expect(db).toBeDefined();
@@ -108,13 +108,11 @@ describe("getRegionAwareConnection", () => {
   });
 
   it("reuses existing region connection on subsequent calls", async () => {
-    mockResolveRegionDatabaseUrl = mock(() =>
-      Promise.resolve({
-        databaseUrl: "postgresql://eu-west-1.internal/db",
-        datasourceUrl: "postgresql://eu-west-1.rds/analytics",
-        region: "eu-west-1",
-      }),
-    );
+    mockResolveFn = () => ({
+      databaseUrl: "postgresql://eu-west-1.internal/db",
+      datasourceUrl: "postgresql://eu-west-1.rds/analytics",
+      region: "eu-west-1",
+    });
 
     const result1 = await getRegionAwareConnection("org-1", "default");
     const result2 = await getRegionAwareConnection("org-1", "default");
@@ -127,13 +125,11 @@ describe("getRegionAwareConnection", () => {
   });
 
   it("falls back to default when resolveRegionDatabaseUrl returns null datasourceUrl", async () => {
-    mockResolveRegionDatabaseUrl = mock(() =>
-      Promise.resolve({
-        databaseUrl: "postgresql://us-east-1.internal/db",
-        // No datasourceUrl — region has internal DB but no analytics datasource override
-        region: "us-east-1",
-      }),
-    );
+    mockResolveFn = () => ({
+      databaseUrl: "postgresql://us-east-1.internal/db",
+      // No datasourceUrl — region has internal DB but no analytics datasource override
+      region: "us-east-1",
+    });
 
     const { db, resolvedConnId } = await getRegionAwareConnection("org-1", "default");
     expect(db).toBeDefined();
@@ -148,20 +144,20 @@ describe("getRegionAwareConnection", () => {
 
   it("different orgs in different regions get separate pools", async () => {
     // org-1 → us-east-1
-    mockResolveRegionDatabaseUrl = mock((orgId: string) => {
+    mockResolveFn = (orgId: string) => {
       if (orgId === "org-1") {
-        return Promise.resolve({
+        return {
           databaseUrl: "postgresql://us-east-1.internal/db",
           datasourceUrl: "postgresql://us-east-1.rds/analytics",
           region: "us-east-1",
-        });
+        };
       }
-      return Promise.resolve({
+      return {
         databaseUrl: "postgresql://eu-west-1.internal/db",
         datasourceUrl: "postgresql://eu-west-1.rds/analytics",
         region: "eu-west-1",
-      });
-    });
+      };
+    };
 
     const result1 = await getRegionAwareConnection("org-1", "default");
     const result2 = await getRegionAwareConnection("org-2", "default");

@@ -1,4 +1,12 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, mock } from "bun:test";
+import { Effect, Exit, Cause } from "effect";
+
+// ── Effect runner helper ──────────────────────────────────────────
+const run = async <A, E>(effect: Effect.Effect<A, E>): Promise<A> => {
+  const exit = await Effect.runPromiseExit(effect);
+  if (Exit.isSuccess(exit)) return exit.value;
+  throw Cause.squash(exit.cause);
+};
 
 // ── Isolate from .env — enterprise flag must be controlled by mock ──
 const savedEnterpriseEnabled = process.env.ATLAS_ENTERPRISE_ENABLED;
@@ -393,9 +401,9 @@ describe("savePIIClassification", () => {
       updated_at: "2026-01-01",
     }]);
 
-    const result = await savePIIClassification(
+    const result = await run(savePIIClassification(
       "org-1", "users", "email", "default", "email", "high", "partial",
-    );
+    ));
     expect(result.id).toBe("cls-new");
     expect(result.category).toBe("email");
     expect(result.maskingStrategy).toBe("partial");
@@ -404,28 +412,28 @@ describe("savePIIClassification", () => {
   it("throws on invalid category", async () => {
     mockQueryRows.push([]); // CREATE TABLE
     await expect(
-      savePIIClassification("org-1", "t", "c", "default", "invalid" as "email", "high"),
+      run(savePIIClassification("org-1", "t", "c", "default", "invalid" as "email", "high")),
     ).rejects.toThrow("Invalid PII category");
   });
 
   it("throws on invalid masking strategy", async () => {
     mockQueryRows.push([]); // CREATE TABLE
     await expect(
-      savePIIClassification("org-1", "t", "c", "default", "email", "high", "invalid" as "full"),
+      run(savePIIClassification("org-1", "t", "c", "default", "email", "high", "invalid" as "full")),
     ).rejects.toThrow("Invalid masking strategy");
   });
 
   it("throws when enterprise is disabled", async () => {
     mockEnterpriseEnabled = false;
     await expect(
-      savePIIClassification("org-1", "t", "c", "default", "email", "high"),
+      run(savePIIClassification("org-1", "t", "c", "default", "email", "high")),
     ).rejects.toThrow("Enterprise features");
   });
 
   it("throws when internal DB is unavailable", async () => {
     mockHasInternalDB = false;
     await expect(
-      savePIIClassification("org-1", "t", "c", "default", "email", "high"),
+      run(savePIIClassification("org-1", "t", "c", "default", "email", "high")),
     ).rejects.toThrow("Internal database not available");
   });
 });
@@ -455,11 +463,11 @@ describe("updatePIIClassification", () => {
       updated_at: "2026-01-02",
     }]);
 
-    const result = await updatePIIClassification("org-1", "cls-1", {
+    const result = await run(updatePIIClassification("org-1", "cls-1", {
       category: "phone",
       maskingStrategy: "full",
       reviewed: true,
-    });
+    }));
     expect(result.category).toBe("phone");
     expect(result.maskingStrategy).toBe("full");
     expect(result.reviewed).toBe(true);
@@ -470,7 +478,7 @@ describe("updatePIIClassification", () => {
     mockQueryRows.push([]); // empty result
 
     try {
-      await updatePIIClassification("org-1", "nonexistent", { reviewed: true });
+      await run(updatePIIClassification("org-1", "nonexistent", { reviewed: true }));
       throw new Error("should have thrown");
     } catch (err) {
       expect(err instanceof ComplianceError).toBe(true);
@@ -491,7 +499,7 @@ describe("deletePIIClassification", () => {
     mockQueryRows.push([]); // CREATE TABLE
     mockQueryRows.push([{ id: "cls-1" }]); // RETURNING id
 
-    await expect(deletePIIClassification("org-1", "cls-1")).resolves.toBeUndefined();
+    await expect(run(deletePIIClassification("org-1", "cls-1"))).resolves.toBeUndefined();
   });
 
   it("throws not_found when classification does not exist", async () => {
@@ -499,7 +507,7 @@ describe("deletePIIClassification", () => {
     mockQueryRows.push([]); // empty result
 
     try {
-      await deletePIIClassification("org-1", "nonexistent");
+      await run(deletePIIClassification("org-1", "nonexistent"));
       throw new Error("should have thrown");
     } catch (err) {
       expect(err instanceof ComplianceError).toBe(true);
@@ -510,7 +518,7 @@ describe("deletePIIClassification", () => {
   it("throws when internal DB is unavailable", async () => {
     mockHasInternalDB = false;
     await expect(
-      deletePIIClassification("org-1", "cls-1"),
+      run(deletePIIClassification("org-1", "cls-1")),
     ).rejects.toThrow("Internal database not available");
   });
 });
@@ -542,7 +550,7 @@ describe("listPIIClassifications", () => {
       },
     ]);
 
-    const results = await listPIIClassifications("org-1");
+    const results = await run(listPIIClassifications("org-1"));
     expect(results).toHaveLength(1);
     expect(results[0].tableName).toBe("users");
     expect(results[0].columnName).toBe("email");
@@ -550,7 +558,7 @@ describe("listPIIClassifications", () => {
 
   it("returns empty array when DB is unavailable", async () => {
     mockHasInternalDB = false;
-    const results = await listPIIClassifications("org-1");
+    const results = await run(listPIIClassifications("org-1"));
     expect(results).toEqual([]);
   });
 });

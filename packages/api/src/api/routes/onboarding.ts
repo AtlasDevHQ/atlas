@@ -882,7 +882,7 @@ onboarding.openapi(
       }
 
       try {
-        const result = yield* Effect.promise(() => mod.assignWorkspaceRegion(orgId, region));
+        const result = yield* Effect.promise(() => Effect.runPromise(mod.assignWorkspaceRegion(orgId, region)));
         log.info({ orgId, region, requestId }, "Workspace region assigned during signup");
         return c.json(result, 200);
       } catch (err) {

@@ -10,8 +10,12 @@
  * execution and queried by the platform admin API.
  *
  * Access-gated via platformAdminAuth middleware (platform_admin role required).
+ *
+ * Query functions return Effect — callers use `yield*` in Effect.gen.
+ * `recordQueryMetric` stays fire-and-forget (sync, no Effect).
  */
 
+import { Effect } from "effect";
 import { requireInternalDB } from "../lib/db-guard";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
@@ -133,142 +137,142 @@ export function recordQueryMetric(
  * Get SLA summary for all workspaces over the given time window.
  * Default window: last 24 hours.
  */
-export async function getAllWorkspaceSLA(
+export const getAllWorkspaceSLA = (
   hoursBack = 24,
-): Promise<WorkspaceSLASummary[]> {
+): Effect.Effect<WorkspaceSLASummary[]> =>
+  Effect.gen(function* () {
+    yield* Effect.promise(() => ensureTable());
 
-  await ensureTable();
+    const rows = yield* Effect.promise(() => internalQuery<{
+      workspace_id: string;
+      workspace_name: string;
+      total_queries: string;
+      failed_queries: string;
+      latency_p50: number | null;
+      latency_p95: number | null;
+      latency_p99: number | null;
+      last_query_at: string | null;
+    }>(
+      `SELECT
+         m.workspace_id,
+         COALESCE(o.name, m.workspace_id) AS workspace_name,
+         COUNT(*)::text AS total_queries,
+         COUNT(*) FILTER (WHERE m.is_error)::text AS failed_queries,
+         PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY m.latency_ms) AS latency_p50,
+         PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY m.latency_ms) AS latency_p95,
+         PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY m.latency_ms) AS latency_p99,
+         MAX(m.recorded_at)::text AS last_query_at
+       FROM sla_metrics m
+       LEFT JOIN organization o ON o.id = m.workspace_id
+       WHERE m.recorded_at > now() - make_interval(hours => $1)
+       GROUP BY m.workspace_id, o.name
+       ORDER BY COUNT(*) DESC`,
+      [hoursBack],
+    ));
 
-  const rows = await internalQuery<{
-    workspace_id: string;
-    workspace_name: string;
-    total_queries: string;
-    failed_queries: string;
-    latency_p50: number | null;
-    latency_p95: number | null;
-    latency_p99: number | null;
-    last_query_at: string | null;
-  }>(
-    `SELECT
-       m.workspace_id,
-       COALESCE(o.name, m.workspace_id) AS workspace_name,
-       COUNT(*)::text AS total_queries,
-       COUNT(*) FILTER (WHERE m.is_error)::text AS failed_queries,
-       PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY m.latency_ms) AS latency_p50,
-       PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY m.latency_ms) AS latency_p95,
-       PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY m.latency_ms) AS latency_p99,
-       MAX(m.recorded_at)::text AS last_query_at
-     FROM sla_metrics m
-     LEFT JOIN organization o ON o.id = m.workspace_id
-     WHERE m.recorded_at > now() - make_interval(hours => $1)
-     GROUP BY m.workspace_id, o.name
-     ORDER BY COUNT(*) DESC`,
-    [hoursBack],
-  );
-
-  return rows.map((r) => {
-    const total = parseInt(r.total_queries, 10);
-    const failed = parseInt(r.failed_queries, 10);
-    return {
-      workspaceId: r.workspace_id,
-      workspaceName: r.workspace_name,
-      latencyP50Ms: Math.round(r.latency_p50 ?? 0),
-      latencyP95Ms: Math.round(r.latency_p95 ?? 0),
-      latencyP99Ms: Math.round(r.latency_p99 ?? 0),
-      errorRatePct: total > 0 ? Math.round((failed / total) * 10000) / 100 : 0,
-      uptimePct: total > 0 ? Math.round(((total - failed) / total) * 10000) / 100 : 100,
-      totalQueries: total,
-      failedQueries: failed,
-      lastQueryAt: r.last_query_at,
-    };
+    return rows.map((r) => {
+      const total = parseInt(r.total_queries, 10);
+      const failed = parseInt(r.failed_queries, 10);
+      return {
+        workspaceId: r.workspace_id,
+        workspaceName: r.workspace_name,
+        latencyP50Ms: Math.round(r.latency_p50 ?? 0),
+        latencyP95Ms: Math.round(r.latency_p95 ?? 0),
+        latencyP99Ms: Math.round(r.latency_p99 ?? 0),
+        errorRatePct: total > 0 ? Math.round((failed / total) * 10000) / 100 : 0,
+        uptimePct: total > 0 ? Math.round(((total - failed) / total) * 10000) / 100 : 100,
+        totalQueries: total,
+        failedQueries: failed,
+        lastQueryAt: r.last_query_at,
+      };
+    });
   });
-}
 
 /**
  * Get detailed SLA data for a single workspace including time-series.
  */
-export async function getWorkspaceSLADetail(
+export const getWorkspaceSLADetail = (
   workspaceId: string,
   hoursBack = 24,
-): Promise<WorkspaceSLADetail> {
+): Effect.Effect<WorkspaceSLADetail> =>
+  Effect.gen(function* () {
+    yield* Effect.promise(() => ensureTable());
 
-  await ensureTable();
-
-  // Summary
-  const summaryRows = await internalQuery<{
-    workspace_name: string;
-    total_queries: string;
-    failed_queries: string;
-    latency_p50: number | null;
-    latency_p95: number | null;
-    latency_p99: number | null;
-    last_query_at: string | null;
-  }>(
-    `SELECT
-       COALESCE(o.name, $1) AS workspace_name,
-       COUNT(*)::text AS total_queries,
-       COUNT(*) FILTER (WHERE m.is_error)::text AS failed_queries,
-       PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY m.latency_ms) AS latency_p50,
-       PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY m.latency_ms) AS latency_p95,
-       PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY m.latency_ms) AS latency_p99,
-       MAX(m.recorded_at)::text AS last_query_at
-     FROM sla_metrics m
-     LEFT JOIN organization o ON o.id = m.workspace_id
-     WHERE m.workspace_id = $1 AND m.recorded_at > now() - make_interval(hours => $2)
-     GROUP BY o.name`,
-    [workspaceId, hoursBack],
-  );
-
-  const r = summaryRows[0];
-  const total = r ? parseInt(r.total_queries, 10) : 0;
-  const failed = r ? parseInt(r.failed_queries, 10) : 0;
-
-  const summary: WorkspaceSLASummary = {
-    workspaceId,
-    workspaceName: r?.workspace_name ?? workspaceId,
-    latencyP50Ms: Math.round(r?.latency_p50 ?? 0),
-    latencyP95Ms: Math.round(r?.latency_p95 ?? 0),
-    latencyP99Ms: Math.round(r?.latency_p99 ?? 0),
-    errorRatePct: total > 0 ? Math.round((failed / total) * 10000) / 100 : 0,
-    uptimePct: total > 0 ? Math.round(((total - failed) / total) * 10000) / 100 : 100,
-    totalQueries: total,
-    failedQueries: failed,
-    lastQueryAt: r?.last_query_at ?? null,
-  };
-
-  // Time-series: latency p99 and error rate per hour (independent queries)
-  const [latencyRows, errorRows] = await Promise.all([
-    internalQuery<{ bucket: string; value: number }>(
+    // Summary
+    const summaryRows = yield* Effect.promise(() => internalQuery<{
+      workspace_name: string;
+      total_queries: string;
+      failed_queries: string;
+      latency_p50: number | null;
+      latency_p95: number | null;
+      latency_p99: number | null;
+      last_query_at: string | null;
+    }>(
       `SELECT
-         date_trunc('hour', recorded_at)::text AS bucket,
-         PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY latency_ms) AS value
-       FROM sla_metrics
-       WHERE workspace_id = $1 AND recorded_at > now() - make_interval(hours => $2)
-       GROUP BY bucket
-       ORDER BY bucket`,
+         COALESCE(o.name, $1) AS workspace_name,
+         COUNT(*)::text AS total_queries,
+         COUNT(*) FILTER (WHERE m.is_error)::text AS failed_queries,
+         PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY m.latency_ms) AS latency_p50,
+         PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY m.latency_ms) AS latency_p95,
+         PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY m.latency_ms) AS latency_p99,
+         MAX(m.recorded_at)::text AS last_query_at
+       FROM sla_metrics m
+       LEFT JOIN organization o ON o.id = m.workspace_id
+       WHERE m.workspace_id = $1 AND m.recorded_at > now() - make_interval(hours => $2)
+       GROUP BY o.name`,
       [workspaceId, hoursBack],
-    ),
-    internalQuery<{ bucket: string; value: number }>(
-      `SELECT
-         date_trunc('hour', recorded_at)::text AS bucket,
-         CASE WHEN COUNT(*) > 0
-              THEN (COUNT(*) FILTER (WHERE is_error)::float / COUNT(*)::float) * 100
-              ELSE 0
-         END AS value
-       FROM sla_metrics
-       WHERE workspace_id = $1 AND recorded_at > now() - make_interval(hours => $2)
-       GROUP BY bucket
-       ORDER BY bucket`,
-      [workspaceId, hoursBack],
-    ),
-  ]);
+    ));
 
-  const toPoints = (rows: Array<{ bucket: string; value: number }>): SLAMetricPoint[] =>
-    rows.map((row) => ({ timestamp: row.bucket, value: Math.round(row.value * 100) / 100 }));
+    const r = summaryRows[0];
+    const total = r ? parseInt(r.total_queries, 10) : 0;
+    const failed = r ? parseInt(r.failed_queries, 10) : 0;
 
-  return {
-    summary,
-    latencyTimeline: toPoints(latencyRows),
-    errorTimeline: toPoints(errorRows),
-  };
-}
+    const summary: WorkspaceSLASummary = {
+      workspaceId,
+      workspaceName: r?.workspace_name ?? workspaceId,
+      latencyP50Ms: Math.round(r?.latency_p50 ?? 0),
+      latencyP95Ms: Math.round(r?.latency_p95 ?? 0),
+      latencyP99Ms: Math.round(r?.latency_p99 ?? 0),
+      errorRatePct: total > 0 ? Math.round((failed / total) * 10000) / 100 : 0,
+      uptimePct: total > 0 ? Math.round(((total - failed) / total) * 10000) / 100 : 100,
+      totalQueries: total,
+      failedQueries: failed,
+      lastQueryAt: r?.last_query_at ?? null,
+    };
+
+    // Time-series: latency p99 and error rate per hour (independent queries)
+    const [latencyRows, errorRows] = yield* Effect.promise(() => Promise.all([
+      internalQuery<{ bucket: string; value: number }>(
+        `SELECT
+           date_trunc('hour', recorded_at)::text AS bucket,
+           PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY latency_ms) AS value
+         FROM sla_metrics
+         WHERE workspace_id = $1 AND recorded_at > now() - make_interval(hours => $2)
+         GROUP BY bucket
+         ORDER BY bucket`,
+        [workspaceId, hoursBack],
+      ),
+      internalQuery<{ bucket: string; value: number }>(
+        `SELECT
+           date_trunc('hour', recorded_at)::text AS bucket,
+           CASE WHEN COUNT(*) > 0
+                THEN (COUNT(*) FILTER (WHERE is_error)::float / COUNT(*)::float) * 100
+                ELSE 0
+           END AS value
+         FROM sla_metrics
+         WHERE workspace_id = $1 AND recorded_at > now() - make_interval(hours => $2)
+         GROUP BY bucket
+         ORDER BY bucket`,
+        [workspaceId, hoursBack],
+      ),
+    ]));
+
+    const toPoints = (rows: Array<{ bucket: string; value: number }>): SLAMetricPoint[] =>
+      rows.map((row) => ({ timestamp: row.bucket, value: Math.round(row.value * 100) / 100 }));
+
+    return {
+      summary,
+      latencyTimeline: toPoints(latencyRows),
+      errorTimeline: toPoints(errorRows),
+    };
+  });

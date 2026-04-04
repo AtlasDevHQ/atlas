@@ -10,16 +10,17 @@
  * of executing. Designated approvers (via custom roles) can approve or deny.
  * Approved queries can then be re-executed. Stale requests auto-expire.
  *
- * All exported functions require enterprise. CRUD and listing operations call
- * `requireEnterprise()` directly (throws on failure). Functions in the agent's
+ * All exported functions return Effect. CRUD and listing operations call
+ * `requireEnterpriseEffect()` (fails with EnterpriseError). Functions in the agent's
  * critical path (`checkApprovalRequired`, `hasApprovedRequest`,
  * `expireStaleRequests`, `getPendingCount`) catch `EnterpriseError` and return
  * a safe default (false, 0, or empty) while re-throwing unexpected errors.
  */
 
+import { Effect } from "effect";
 import { EEError } from "../lib/errors";
-import { requireEnterprise, EnterpriseError } from "../index";
-import { requireInternalDB } from "../lib/db-guard";
+import { requireEnterpriseEffect, EnterpriseError } from "../index";
+import { requireInternalDBEffect } from "../lib/db-guard";
 import {
   hasInternalDB,
   internalQuery,
@@ -153,28 +154,29 @@ function rowToRequest(row: ApprovalQueueRow): ApprovalRequest | null {
 
 // ── Validation ──────────────────────────────────────────────────────
 
-function validateRuleInput(input: CreateApprovalRuleRequest): void {
+function validateRuleInput(input: CreateApprovalRuleRequest): Effect.Effect<void, ApprovalError> {
   if (!input.name || input.name.trim().length === 0) {
-    throw new ApprovalError("Rule name is required.", "validation");
+    return Effect.fail(new ApprovalError("Rule name is required.", "validation"));
   }
   if (input.name.trim().length > 200) {
-    throw new ApprovalError("Rule name must be 200 characters or fewer.", "validation");
+    return Effect.fail(new ApprovalError("Rule name must be 200 characters or fewer.", "validation"));
   }
   if (!isValidRuleType(input.ruleType)) {
-    throw new ApprovalError(
+    return Effect.fail(new ApprovalError(
       `Invalid rule type "${input.ruleType}". Supported: ${APPROVAL_RULE_TYPES.join(", ")}`,
       "validation",
-    );
+    ));
   }
   if (input.ruleType === "cost") {
     if (input.threshold == null || input.threshold <= 0) {
-      throw new ApprovalError("Cost rules require a positive threshold value.", "validation");
+      return Effect.fail(new ApprovalError("Cost rules require a positive threshold value.", "validation"));
     }
   } else {
     if (!input.pattern || input.pattern.trim().length === 0) {
-      throw new ApprovalError(`Pattern is required for "${input.ruleType}" rules.`, "validation");
+      return Effect.fail(new ApprovalError(`Pattern is required for "${input.ruleType}" rules.`, "validation"));
     }
   }
+  return Effect.void;
 }
 
 // ── Default expiry ──────────────────────────────────────────────────
@@ -194,157 +196,162 @@ function getExpiryHours(): number {
 // ── Rule CRUD ───────────────────────────────────────────────────────
 
 /** List all approval rules for an organization. */
-export async function listApprovalRules(orgId: string): Promise<ApprovalRule[]> {
-  requireEnterprise("approval-workflows");
-  if (!hasInternalDB()) return [];
+export const listApprovalRules = (orgId: string): Effect.Effect<ApprovalRule[], EnterpriseError> =>
+  Effect.gen(function* () {
+    yield* requireEnterpriseEffect("approval-workflows");
+    if (!hasInternalDB()) return [];
 
-  const rows = await internalQuery<ApprovalRuleRow>(
-    `SELECT id, org_id, name, rule_type, pattern, threshold, enabled, created_at, updated_at
-     FROM approval_rules
-     WHERE org_id = $1
-     ORDER BY created_at ASC`,
-    [orgId],
-  );
-  return rows.map(rowToRule).filter((r): r is ApprovalRule => r !== null);
-}
+    const rows = yield* Effect.promise(() => internalQuery<ApprovalRuleRow>(
+      `SELECT id, org_id, name, rule_type, pattern, threshold, enabled, created_at, updated_at
+       FROM approval_rules
+       WHERE org_id = $1
+       ORDER BY created_at ASC`,
+      [orgId],
+    ));
+    return rows.map(rowToRule).filter((r): r is ApprovalRule => r !== null);
+  });
 
 /** Get a single approval rule by ID. */
-export async function getApprovalRule(orgId: string, ruleId: string): Promise<ApprovalRule | null> {
-  requireEnterprise("approval-workflows");
-  if (!hasInternalDB()) return null;
+export const getApprovalRule = (orgId: string, ruleId: string): Effect.Effect<ApprovalRule | null, ApprovalError | EnterpriseError> =>
+  Effect.gen(function* () {
+    yield* requireEnterpriseEffect("approval-workflows");
+    if (!hasInternalDB()) return null;
 
-  const rows = await internalQuery<ApprovalRuleRow>(
-    `SELECT id, org_id, name, rule_type, pattern, threshold, enabled, created_at, updated_at
-     FROM approval_rules
-     WHERE org_id = $1 AND id = $2
-     LIMIT 1`,
-    [orgId, ruleId],
-  );
-  if (rows.length === 0) return null;
-  const rule = rowToRule(rows[0]);
-  if (!rule) {
-    log.warn({ orgId, ruleId, ruleType: rows[0].rule_type }, "Approval rule found but has invalid rule_type — treating as corrupt");
-    throw new ApprovalError(
-      `Approval rule "${ruleId}" exists but has an invalid type "${rows[0].rule_type}".`,
-      "validation",
-    );
-  }
-  return rule;
-}
+    const rows = yield* Effect.promise(() => internalQuery<ApprovalRuleRow>(
+      `SELECT id, org_id, name, rule_type, pattern, threshold, enabled, created_at, updated_at
+       FROM approval_rules
+       WHERE org_id = $1 AND id = $2
+       LIMIT 1`,
+      [orgId, ruleId],
+    ));
+    if (rows.length === 0) return null;
+    const rule = rowToRule(rows[0]);
+    if (!rule) {
+      log.warn({ orgId, ruleId, ruleType: rows[0].rule_type }, "Approval rule found but has invalid rule_type — treating as corrupt");
+      return yield* Effect.fail(new ApprovalError(
+        `Approval rule "${ruleId}" exists but has an invalid type "${rows[0].rule_type}".`,
+        "validation",
+      ));
+    }
+    return rule;
+  });
 
 /** Create a new approval rule. */
-export async function createApprovalRule(
+export const createApprovalRule = (
   orgId: string,
   input: CreateApprovalRuleRequest,
-): Promise<ApprovalRule> {
-  requireEnterprise("approval-workflows");
-  requireInternalDB("approval rules", () => new ApprovalError("Internal database required for approval rules.", "validation"));
+): Effect.Effect<ApprovalRule, ApprovalError | EnterpriseError | Error> =>
+  Effect.gen(function* () {
+    yield* requireEnterpriseEffect("approval-workflows");
+    yield* requireInternalDBEffect("approval rules", () => new ApprovalError("Internal database required for approval rules.", "validation"));
 
-  validateRuleInput(input);
+    yield* validateRuleInput(input);
 
-  const rows = await internalQuery<ApprovalRuleRow>(
-    `INSERT INTO approval_rules (org_id, name, rule_type, pattern, threshold, enabled)
-     VALUES ($1, $2, $3, $4, $5, $6)
-     RETURNING id, org_id, name, rule_type, pattern, threshold, enabled, created_at, updated_at`,
-    [
-      orgId,
-      input.name.trim(),
-      input.ruleType,
-      input.pattern?.trim() ?? "",
-      input.threshold ?? null,
-      input.enabled ?? true,
-    ],
-  );
+    const rows = yield* Effect.promise(() => internalQuery<ApprovalRuleRow>(
+      `INSERT INTO approval_rules (org_id, name, rule_type, pattern, threshold, enabled)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING id, org_id, name, rule_type, pattern, threshold, enabled, created_at, updated_at`,
+      [
+        orgId,
+        input.name.trim(),
+        input.ruleType,
+        input.pattern?.trim() ?? "",
+        input.threshold ?? null,
+        input.enabled ?? true,
+      ],
+    ));
 
-  if (rows.length === 0) {
-    throw new ApprovalError("Failed to create approval rule.", "validation");
-  }
+    if (rows.length === 0) {
+      return yield* Effect.fail(new ApprovalError("Failed to create approval rule.", "validation"));
+    }
 
-  log.info({ orgId, ruleId: rows[0].id, ruleType: input.ruleType, pattern: input.pattern }, "Approval rule created");
-  const rule = rowToRule(rows[0]);
-  if (!rule) throw new ApprovalError(`Created rule has unexpected rule_type "${rows[0].rule_type}" after insert.`, "conflict");
-  return rule;
-}
+    log.info({ orgId, ruleId: rows[0].id, ruleType: input.ruleType, pattern: input.pattern }, "Approval rule created");
+    const rule = rowToRule(rows[0]);
+    if (!rule) return yield* Effect.fail(new ApprovalError(`Created rule has unexpected rule_type "${rows[0].rule_type}" after insert.`, "conflict"));
+    return rule;
+  });
 
 /** Update an existing approval rule. */
-export async function updateApprovalRule(
+export const updateApprovalRule = (
   orgId: string,
   ruleId: string,
   input: UpdateApprovalRuleRequest,
-): Promise<ApprovalRule> {
-  requireEnterprise("approval-workflows");
-  requireInternalDB("approval rules", () => new ApprovalError("Internal database required for approval rules.", "validation"));
+): Effect.Effect<ApprovalRule, ApprovalError | EnterpriseError | Error> =>
+  Effect.gen(function* () {
+    yield* requireEnterpriseEffect("approval-workflows");
+    yield* requireInternalDBEffect("approval rules", () => new ApprovalError("Internal database required for approval rules.", "validation"));
 
-  // Check the rule exists
-  const existing = await getApprovalRule(orgId, ruleId);
-  if (!existing) {
-    throw new ApprovalError(`Approval rule "${ruleId}" not found.`, "not_found");
-  }
-
-  const sets: string[] = [];
-  const params: unknown[] = [];
-  let idx = 3; // $1 = orgId, $2 = ruleId
-
-  if (input.name !== undefined) {
-    if (input.name.trim().length === 0) {
-      throw new ApprovalError("Rule name cannot be empty.", "validation");
+    // Check the rule exists
+    const existing = yield* getApprovalRule(orgId, ruleId);
+    if (!existing) {
+      return yield* Effect.fail(new ApprovalError(`Approval rule "${ruleId}" not found.`, "not_found"));
     }
-    sets.push(`name = $${idx}`);
-    params.push(input.name.trim());
-    idx++;
-  }
-  if (input.pattern !== undefined) {
-    sets.push(`pattern = $${idx}`);
-    params.push(input.pattern.trim());
-    idx++;
-  }
-  if (input.threshold !== undefined) {
-    sets.push(`threshold = $${idx}`);
-    params.push(input.threshold);
-    idx++;
-  }
-  if (input.enabled !== undefined) {
-    sets.push(`enabled = $${idx}`);
-    params.push(input.enabled);
-  }
 
-  if (sets.length === 0) {
-    return existing; // Nothing to update
-  }
+    const sets: string[] = [];
+    const params: unknown[] = [];
+    let idx = 3; // $1 = orgId, $2 = ruleId
 
-  sets.push("updated_at = now()");
+    if (input.name !== undefined) {
+      if (input.name.trim().length === 0) {
+        return yield* Effect.fail(new ApprovalError("Rule name cannot be empty.", "validation"));
+      }
+      sets.push(`name = $${idx}`);
+      params.push(input.name.trim());
+      idx++;
+    }
+    if (input.pattern !== undefined) {
+      sets.push(`pattern = $${idx}`);
+      params.push(input.pattern.trim());
+      idx++;
+    }
+    if (input.threshold !== undefined) {
+      sets.push(`threshold = $${idx}`);
+      params.push(input.threshold);
+      idx++;
+    }
+    if (input.enabled !== undefined) {
+      sets.push(`enabled = $${idx}`);
+      params.push(input.enabled);
+    }
 
-  const rows = await internalQuery<ApprovalRuleRow>(
-    `UPDATE approval_rules SET ${sets.join(", ")} WHERE org_id = $1 AND id = $2
-     RETURNING id, org_id, name, rule_type, pattern, threshold, enabled, created_at, updated_at`,
-    [orgId, ruleId, ...params],
-  );
+    if (sets.length === 0) {
+      return existing; // Nothing to update
+    }
 
-  if (rows.length === 0) {
-    throw new ApprovalError(`Approval rule "${ruleId}" not found.`, "not_found");
-  }
+    sets.push("updated_at = now()");
 
-  log.info({ orgId, ruleId }, "Approval rule updated");
-  const rule = rowToRule(rows[0]);
-  if (!rule) throw new ApprovalError(`Updated rule has unexpected rule_type "${rows[0].rule_type}" after update.`, "conflict");
-  return rule;
-}
+    const rows = yield* Effect.promise(() => internalQuery<ApprovalRuleRow>(
+      `UPDATE approval_rules SET ${sets.join(", ")} WHERE org_id = $1 AND id = $2
+       RETURNING id, org_id, name, rule_type, pattern, threshold, enabled, created_at, updated_at`,
+      [orgId, ruleId, ...params],
+    ));
+
+    if (rows.length === 0) {
+      return yield* Effect.fail(new ApprovalError(`Approval rule "${ruleId}" not found.`, "not_found"));
+    }
+
+    log.info({ orgId, ruleId }, "Approval rule updated");
+    const rule = rowToRule(rows[0]);
+    if (!rule) return yield* Effect.fail(new ApprovalError(`Updated rule has unexpected rule_type "${rows[0].rule_type}" after update.`, "conflict"));
+    return rule;
+  });
 
 /** Delete an approval rule. Returns true if deleted, false if not found. */
-export async function deleteApprovalRule(orgId: string, ruleId: string): Promise<boolean> {
-  requireEnterprise("approval-workflows");
-  if (!hasInternalDB()) return false;
+export const deleteApprovalRule = (orgId: string, ruleId: string): Effect.Effect<boolean, EnterpriseError> =>
+  Effect.gen(function* () {
+    yield* requireEnterpriseEffect("approval-workflows");
+    if (!hasInternalDB()) return false;
 
-  const rows = await internalQuery<{ id: string }>(
-    `DELETE FROM approval_rules WHERE org_id = $1 AND id = $2 RETURNING id`,
-    [orgId, ruleId],
-  );
-  if (rows.length > 0) {
-    log.info({ orgId, ruleId }, "Approval rule deleted");
-    return true;
-  }
-  return false;
-}
+    const rows = yield* Effect.promise(() => internalQuery<{ id: string }>(
+      `DELETE FROM approval_rules WHERE org_id = $1 AND id = $2 RETURNING id`,
+      [orgId, ruleId],
+    ));
+    if (rows.length > 0) {
+      log.info({ orgId, ruleId }, "Approval rule deleted");
+      return true;
+    }
+    return false;
+  });
 
 // ── Matching ────────────────────────────────────────────────────────
 
@@ -361,69 +368,64 @@ export interface ApprovalMatchResult {
  * `{ required: false }` instead of throwing. Unexpected errors from the
  * enterprise check are re-thrown to avoid silently bypassing governance.
  */
-export async function checkApprovalRequired(
+export const checkApprovalRequired = (
   orgId: string | undefined,
   tablesAccessed: string[],
   columnsAccessed: string[],
-): Promise<ApprovalMatchResult> {
-  if (!orgId || !hasInternalDB()) {
-    return { required: false, matchedRules: [] };
-  }
-
-  // Check if enterprise is enabled — re-throw unexpected errors
-  try {
-    requireEnterprise("approval-workflows");
-  } catch (err) {
-    if (err instanceof EnterpriseError) {
+): Effect.Effect<ApprovalMatchResult, never> =>
+  Effect.gen(function* () {
+    if (!orgId || !hasInternalDB()) {
       return { required: false, matchedRules: [] };
     }
-    const msg = err instanceof Error ? err.message : String(err);
-    log.warn({ err: msg }, "Unexpected error checking enterprise status in approval check — re-throwing");
-    throw err;
-  }
 
-  const rows = await internalQuery<ApprovalRuleRow>(
-    `SELECT id, org_id, name, rule_type, pattern, threshold, enabled, created_at, updated_at
-     FROM approval_rules
-     WHERE org_id = $1 AND enabled = true`,
-    [orgId],
-  );
-
-  if (rows.length === 0) {
-    return { required: false, matchedRules: [] };
-  }
-
-  const matchedRules: ApprovalRule[] = [];
-  const tablesLower = tablesAccessed.map((t) => t.toLowerCase());
-  const columnsLower = columnsAccessed.map((c) => c.toLowerCase());
-
-  for (const row of rows) {
-    const rule = rowToRule(row);
-    if (!rule) continue;
-    const patternLower = rule.pattern.toLowerCase();
-
-    if (rule.ruleType === "table") {
-      if (tablesLower.some((t) => t === patternLower || t.endsWith(`.${patternLower}`))) {
-        matchedRules.push(rule);
-      }
-    } else if (rule.ruleType === "column") {
-      if (columnsLower.includes(patternLower)) {
-        matchedRules.push(rule);
-      }
+    // Check if enterprise is enabled — re-throw unexpected errors
+    const eeResult = yield* Effect.either(requireEnterpriseEffect("approval-workflows"));
+    if (eeResult._tag === "Left") {
+      return { required: false, matchedRules: [] };
     }
-    // Cost rules are matched externally by caller (requires row estimate)
-  }
 
-  return {
-    required: matchedRules.length > 0,
-    matchedRules,
-  };
-}
+    const rows = yield* Effect.promise(() => internalQuery<ApprovalRuleRow>(
+      `SELECT id, org_id, name, rule_type, pattern, threshold, enabled, created_at, updated_at
+       FROM approval_rules
+       WHERE org_id = $1 AND enabled = true`,
+      [orgId],
+    ));
+
+    if (rows.length === 0) {
+      return { required: false, matchedRules: [] };
+    }
+
+    const matchedRules: ApprovalRule[] = [];
+    const tablesLower = tablesAccessed.map((t) => t.toLowerCase());
+    const columnsLower = columnsAccessed.map((c) => c.toLowerCase());
+
+    for (const row of rows) {
+      const rule = rowToRule(row);
+      if (!rule) continue;
+      const patternLower = rule.pattern.toLowerCase();
+
+      if (rule.ruleType === "table") {
+        if (tablesLower.some((t) => t === patternLower || t.endsWith(`.${patternLower}`))) {
+          matchedRules.push(rule);
+        }
+      } else if (rule.ruleType === "column") {
+        if (columnsLower.includes(patternLower)) {
+          matchedRules.push(rule);
+        }
+      }
+      // Cost rules are matched externally by caller (requires row estimate)
+    }
+
+    return {
+      required: matchedRules.length > 0,
+      matchedRules,
+    };
+  });
 
 // ── Queue management ────────────────────────────────────────────────
 
 /** Create an approval request (queue a query for review). */
-export async function createApprovalRequest(opts: {
+export const createApprovalRequest = (opts: {
   orgId: string;
   ruleId: string;
   ruleName: string;
@@ -434,225 +436,219 @@ export async function createApprovalRequest(opts: {
   connectionId: string;
   tablesAccessed: string[];
   columnsAccessed: string[];
-}): Promise<ApprovalRequest> {
-  requireEnterprise("approval-workflows");
-  requireInternalDB("approval queue", () => new ApprovalError("Internal database required for approval queue.", "validation"));
+}): Effect.Effect<ApprovalRequest, ApprovalError | EnterpriseError | Error> =>
+  Effect.gen(function* () {
+    yield* requireEnterpriseEffect("approval-workflows");
+    yield* requireInternalDBEffect("approval queue", () => new ApprovalError("Internal database required for approval queue.", "validation"));
 
-  const expiryHours = getExpiryHours();
+    const expiryHours = getExpiryHours();
 
-  const rows = await internalQuery<ApprovalQueueRow>(
-    `INSERT INTO approval_queue
-       (org_id, rule_id, rule_name, requester_id, requester_email, query_sql, explanation,
-        connection_id, tables_accessed, columns_accessed, expires_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now() + make_interval(hours => $11))
-     RETURNING id, org_id, rule_id, rule_name, requester_id, requester_email, query_sql,
-       explanation, connection_id, tables_accessed, columns_accessed, status,
-       reviewer_id, reviewer_email, review_comment, reviewed_at, created_at, expires_at`,
-    [
-      opts.orgId,
-      opts.ruleId,
-      opts.ruleName,
-      opts.requesterId,
-      opts.requesterEmail,
-      opts.querySql,
-      opts.explanation,
-      opts.connectionId,
-      JSON.stringify(opts.tablesAccessed),
-      JSON.stringify(opts.columnsAccessed),
-      expiryHours,
-    ],
-  );
+    const rows = yield* Effect.promise(() => internalQuery<ApprovalQueueRow>(
+      `INSERT INTO approval_queue
+         (org_id, rule_id, rule_name, requester_id, requester_email, query_sql, explanation,
+          connection_id, tables_accessed, columns_accessed, expires_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now() + make_interval(hours => $11))
+       RETURNING id, org_id, rule_id, rule_name, requester_id, requester_email, query_sql,
+         explanation, connection_id, tables_accessed, columns_accessed, status,
+         reviewer_id, reviewer_email, review_comment, reviewed_at, created_at, expires_at`,
+      [
+        opts.orgId,
+        opts.ruleId,
+        opts.ruleName,
+        opts.requesterId,
+        opts.requesterEmail,
+        opts.querySql,
+        opts.explanation,
+        opts.connectionId,
+        JSON.stringify(opts.tablesAccessed),
+        JSON.stringify(opts.columnsAccessed),
+        expiryHours,
+      ],
+    ));
 
-  if (rows.length === 0) {
-    throw new ApprovalError("Failed to create approval request.", "validation");
-  }
+    if (rows.length === 0) {
+      return yield* Effect.fail(new ApprovalError("Failed to create approval request.", "validation"));
+    }
 
-  log.info({ orgId: opts.orgId, requestId: rows[0].id, ruleId: opts.ruleId }, "Approval request created");
-  const request = rowToRequest(rows[0]);
-  if (!request) throw new ApprovalError(`Created request has unexpected status "${rows[0].status}" after insert.`, "conflict");
-  return request;
-}
+    log.info({ orgId: opts.orgId, requestId: rows[0].id, ruleId: opts.ruleId }, "Approval request created");
+    const request = rowToRequest(rows[0]);
+    if (!request) return yield* Effect.fail(new ApprovalError(`Created request has unexpected status "${rows[0].status}" after insert.`, "conflict"));
+    return request;
+  });
 
 /** List approval requests for an organization, optionally filtered by status. */
-export async function listApprovalRequests(
+export const listApprovalRequests = (
   orgId: string,
   status?: ApprovalStatus,
   limit = 100,
   offset = 0,
-): Promise<ApprovalRequest[]> {
-  requireEnterprise("approval-workflows");
-  if (!hasInternalDB()) return [];
+): Effect.Effect<ApprovalRequest[], EnterpriseError> =>
+  Effect.gen(function* () {
+    yield* requireEnterpriseEffect("approval-workflows");
+    if (!hasInternalDB()) return [];
 
-  const safeLimit = Math.min(Math.max(1, limit), 1000);
-  const safeOffset = Math.max(0, offset);
+    const safeLimit = Math.min(Math.max(1, limit), 1000);
+    const safeOffset = Math.max(0, offset);
 
-  let sql = `SELECT id, org_id, rule_id, rule_name, requester_id, requester_email, query_sql,
-       explanation, connection_id, tables_accessed, columns_accessed, status,
-       reviewer_id, reviewer_email, review_comment, reviewed_at, created_at, expires_at
-     FROM approval_queue
-     WHERE org_id = $1`;
-  const params: unknown[] = [orgId];
+    let sql = `SELECT id, org_id, rule_id, rule_name, requester_id, requester_email, query_sql,
+         explanation, connection_id, tables_accessed, columns_accessed, status,
+         reviewer_id, reviewer_email, review_comment, reviewed_at, created_at, expires_at
+       FROM approval_queue
+       WHERE org_id = $1`;
+    const params: unknown[] = [orgId];
 
-  if (status) {
-    sql += ` AND status = $2`;
-    params.push(status);
-  }
+    if (status) {
+      sql += ` AND status = $2`;
+      params.push(status);
+    }
 
-  sql += ` ORDER BY created_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
-  params.push(safeLimit, safeOffset);
+    sql += ` ORDER BY created_at DESC LIMIT $${params.length + 1} OFFSET $${params.length + 2}`;
+    params.push(safeLimit, safeOffset);
 
-  const rows = await internalQuery<ApprovalQueueRow>(sql, params);
-  return rows.map(rowToRequest).filter((r): r is ApprovalRequest => r !== null);
-}
+    const rows = yield* Effect.promise(() => internalQuery<ApprovalQueueRow>(sql, params));
+    return rows.map(rowToRequest).filter((r): r is ApprovalRequest => r !== null);
+  });
 
 /** Get a single approval request by ID. */
-export async function getApprovalRequest(
+export const getApprovalRequest = (
   orgId: string,
   requestId: string,
-): Promise<ApprovalRequest | null> {
-  requireEnterprise("approval-workflows");
-  if (!hasInternalDB()) return null;
+): Effect.Effect<ApprovalRequest | null, ApprovalError | EnterpriseError> =>
+  Effect.gen(function* () {
+    yield* requireEnterpriseEffect("approval-workflows");
+    if (!hasInternalDB()) return null;
 
-  const rows = await internalQuery<ApprovalQueueRow>(
-    `SELECT id, org_id, rule_id, rule_name, requester_id, requester_email, query_sql,
-       explanation, connection_id, tables_accessed, columns_accessed, status,
-       reviewer_id, reviewer_email, review_comment, reviewed_at, created_at, expires_at
-     FROM approval_queue
-     WHERE org_id = $1 AND id = $2
-     LIMIT 1`,
-    [orgId, requestId],
-  );
-  if (rows.length === 0) return null;
-  const request = rowToRequest(rows[0]);
-  if (!request) {
-    log.warn({ orgId, requestId, status: rows[0].status }, "Approval request found but has invalid status — treating as corrupt");
-    throw new ApprovalError(
-      `Approval request "${requestId}" exists but has an invalid status "${rows[0].status}".`,
-      "validation",
-    );
-  }
-  return request;
-}
+    const rows = yield* Effect.promise(() => internalQuery<ApprovalQueueRow>(
+      `SELECT id, org_id, rule_id, rule_name, requester_id, requester_email, query_sql,
+         explanation, connection_id, tables_accessed, columns_accessed, status,
+         reviewer_id, reviewer_email, review_comment, reviewed_at, created_at, expires_at
+       FROM approval_queue
+       WHERE org_id = $1 AND id = $2
+       LIMIT 1`,
+      [orgId, requestId],
+    ));
+    if (rows.length === 0) return null;
+    const request = rowToRequest(rows[0]);
+    if (!request) {
+      log.warn({ orgId, requestId, status: rows[0].status }, "Approval request found but has invalid status — treating as corrupt");
+      return yield* Effect.fail(new ApprovalError(
+        `Approval request "${requestId}" exists but has an invalid status "${rows[0].status}".`,
+        "validation",
+      ));
+    }
+    return request;
+  });
 
 /** Approve or deny an approval request. */
-export async function reviewApprovalRequest(
+export const reviewApprovalRequest = (
   orgId: string,
   requestId: string,
   reviewerId: string,
   reviewerEmail: string | null,
   action: "approve" | "deny",
   comment?: string,
-): Promise<ApprovalRequest> {
-  requireEnterprise("approval-workflows");
-  requireInternalDB("approval queue", () => new ApprovalError("Internal database required for approval queue.", "validation"));
+): Effect.Effect<ApprovalRequest, ApprovalError | EnterpriseError | Error> =>
+  Effect.gen(function* () {
+    yield* requireEnterpriseEffect("approval-workflows");
+    yield* requireInternalDBEffect("approval queue", () => new ApprovalError("Internal database required for approval queue.", "validation"));
 
-  // Fetch the current request
-  const existing = await getApprovalRequest(orgId, requestId);
-  if (!existing) {
-    throw new ApprovalError(`Approval request "${requestId}" not found.`, "not_found");
-  }
+    // Fetch the current request
+    const existing = yield* getApprovalRequest(orgId, requestId);
+    if (!existing) {
+      return yield* Effect.fail(new ApprovalError(`Approval request "${requestId}" not found.`, "not_found"));
+    }
 
-  if (existing.status !== "pending") {
-    throw new ApprovalError(
-      `Cannot ${action} request — current status is "${existing.status}".`,
-      "conflict",
+    if (existing.status !== "pending") {
+      return yield* Effect.fail(new ApprovalError(
+        `Cannot ${action} request — current status is "${existing.status}".`,
+        "conflict",
+      ));
+    }
+
+    // Prevent self-approval — the requester cannot approve their own request
+    if (existing.requesterId === reviewerId) {
+      return yield* Effect.fail(new ApprovalError(
+        "Cannot review your own approval request. A different admin must approve or deny it.",
+        "conflict",
+      ));
+    }
+
+    // Check if expired
+    if (new Date(existing.expiresAt) < new Date()) {
+      // Auto-expire it
+      yield* Effect.promise(() => internalQuery(
+        `UPDATE approval_queue SET status = 'expired' WHERE id = $1`,
+        [requestId],
+      ));
+      return yield* Effect.fail(new ApprovalError("Approval request has expired.", "expired"));
+    }
+
+    const newStatus: ApprovalStatus = action === "approve" ? "approved" : "denied";
+
+    const rows = yield* Effect.promise(() => internalQuery<ApprovalQueueRow>(
+      `UPDATE approval_queue
+       SET status = $3, reviewer_id = $4, reviewer_email = $5, review_comment = $6, reviewed_at = now()
+       WHERE org_id = $1 AND id = $2 AND status = 'pending'
+       RETURNING id, org_id, rule_id, rule_name, requester_id, requester_email, query_sql,
+         explanation, connection_id, tables_accessed, columns_accessed, status,
+         reviewer_id, reviewer_email, review_comment, reviewed_at, created_at, expires_at`,
+      [orgId, requestId, newStatus, reviewerId, reviewerEmail, comment ?? null],
+    ));
+
+    if (rows.length === 0) {
+      return yield* Effect.fail(new ApprovalError(`Approval request "${requestId}" not found or already reviewed.`, "conflict"));
+    }
+
+    log.info(
+      { orgId, requestId, action, reviewerId },
+      `Approval request ${action === "approve" ? "approved" : "denied"}`,
     );
-  }
-
-  // Prevent self-approval — the requester cannot approve their own request
-  if (existing.requesterId === reviewerId) {
-    throw new ApprovalError(
-      "Cannot review your own approval request. A different admin must approve or deny it.",
-      "conflict",
-    );
-  }
-
-  // Check if expired
-  if (new Date(existing.expiresAt) < new Date()) {
-    // Auto-expire it
-    await internalQuery(
-      `UPDATE approval_queue SET status = 'expired' WHERE id = $1`,
-      [requestId],
-    );
-    throw new ApprovalError("Approval request has expired.", "expired");
-  }
-
-  const newStatus: ApprovalStatus = action === "approve" ? "approved" : "denied";
-
-  const rows = await internalQuery<ApprovalQueueRow>(
-    `UPDATE approval_queue
-     SET status = $3, reviewer_id = $4, reviewer_email = $5, review_comment = $6, reviewed_at = now()
-     WHERE org_id = $1 AND id = $2 AND status = 'pending'
-     RETURNING id, org_id, rule_id, rule_name, requester_id, requester_email, query_sql,
-       explanation, connection_id, tables_accessed, columns_accessed, status,
-       reviewer_id, reviewer_email, review_comment, reviewed_at, created_at, expires_at`,
-    [orgId, requestId, newStatus, reviewerId, reviewerEmail, comment ?? null],
-  );
-
-  if (rows.length === 0) {
-    throw new ApprovalError(`Approval request "${requestId}" not found or already reviewed.`, "conflict");
-  }
-
-  log.info(
-    { orgId, requestId, action, reviewerId },
-    `Approval request ${action === "approve" ? "approved" : "denied"}`,
-  );
-  const request = rowToRequest(rows[0]);
-  if (!request) throw new ApprovalError(`Reviewed request has unexpected status "${rows[0].status}" after update.`, "conflict");
-  return request;
-}
+    const request = rowToRequest(rows[0]);
+    if (!request) return yield* Effect.fail(new ApprovalError(`Reviewed request has unexpected status "${rows[0].status}" after update.`, "conflict"));
+    return request;
+  });
 
 /** Expire all stale pending requests across all orgs. Returns count of expired. */
-export async function expireStaleRequests(): Promise<number> {
-  if (!hasInternalDB()) return 0;
+export const expireStaleRequests = (): Effect.Effect<number, never> =>
+  Effect.gen(function* () {
+    if (!hasInternalDB()) return 0;
 
-  try {
-    requireEnterprise("approval-workflows");
-  } catch (err) {
-    if (err instanceof EnterpriseError) {
+    const eeResult = yield* Effect.either(requireEnterpriseEffect("approval-workflows"));
+    if (eeResult._tag === "Left") {
       return 0;
     }
-    const msg = err instanceof Error ? err.message : String(err);
-    log.warn({ err: msg }, "Unexpected error checking enterprise status in expireStaleRequests — re-throwing");
-    throw err;
-  }
 
-  const rows = await internalQuery<{ id: string }>(
-    `UPDATE approval_queue
-     SET status = 'expired'
-     WHERE status = 'pending' AND expires_at < now()
-     RETURNING id`,
-  );
+    const rows = yield* Effect.promise(() => internalQuery<{ id: string }>(
+      `UPDATE approval_queue
+       SET status = 'expired'
+       WHERE status = 'pending' AND expires_at < now()
+       RETURNING id`,
+    ));
 
-  if (rows.length > 0) {
-    log.info({ count: rows.length }, "Expired stale approval requests");
-  }
-  return rows.length;
-}
+    if (rows.length > 0) {
+      log.info({ count: rows.length }, "Expired stale approval requests");
+    }
+    return rows.length;
+  });
 
 /** Get count of pending approval requests for an organization. */
-export async function getPendingCount(orgId: string): Promise<number> {
-  if (!hasInternalDB()) return 0;
+export const getPendingCount = (orgId: string): Effect.Effect<number, never> =>
+  Effect.gen(function* () {
+    if (!hasInternalDB()) return 0;
 
-  try {
-    requireEnterprise("approval-workflows");
-  } catch (err) {
-    if (err instanceof EnterpriseError) {
+    const eeResult = yield* Effect.either(requireEnterpriseEffect("approval-workflows"));
+    if (eeResult._tag === "Left") {
       return 0;
     }
-    const msg = err instanceof Error ? err.message : String(err);
-    log.warn({ err: msg }, "Unexpected error checking enterprise status in getPendingCount — re-throwing");
-    throw err;
-  }
 
-  const rows = await internalQuery<{ count: string }>(
-    `SELECT COUNT(*) as count FROM approval_queue
-     WHERE org_id = $1 AND status = 'pending' AND expires_at > now()`,
-    [orgId],
-  );
+    const rows = yield* Effect.promise(() => internalQuery<{ count: string }>(
+      `SELECT COUNT(*) as count FROM approval_queue
+       WHERE org_id = $1 AND status = 'pending' AND expires_at > now()`,
+      [orgId],
+    ));
 
-  return rows.length > 0 ? Number(rows[0].count) : 0;
-}
+    return rows.length > 0 ? Number(rows[0].count) : 0;
+  });
 
 /**
  * Check whether a query already has an approved request for a given user.
@@ -663,28 +659,25 @@ export async function getPendingCount(orgId: string): Promise<number> {
  * previously-enabled enterprise license should not grant query access.
  * Unexpected errors are re-thrown to avoid silently bypassing governance.
  */
-export async function hasApprovedRequest(
+export const hasApprovedRequest = (
   orgId: string,
   requesterId: string,
   querySql: string,
-): Promise<boolean> {
-  if (!hasInternalDB()) return false;
+): Effect.Effect<boolean, never> =>
+  Effect.gen(function* () {
+    if (!hasInternalDB()) return false;
 
-  try {
-    requireEnterprise("approval-workflows");
-  } catch (err) {
-    if (err instanceof EnterpriseError) return false;
-    const msg = err instanceof Error ? err.message : String(err);
-    log.warn({ err: msg }, "Unexpected error checking enterprise status in hasApprovedRequest — re-throwing");
-    throw err;
-  }
+    const eeResult = yield* Effect.either(requireEnterpriseEffect("approval-workflows"));
+    if (eeResult._tag === "Left") {
+      return false;
+    }
 
-  const rows = await internalQuery<{ id: string }>(
-    `SELECT id FROM approval_queue
-     WHERE org_id = $1 AND requester_id = $2 AND query_sql = $3 AND status = 'approved'
-     LIMIT 1`,
-    [orgId, requesterId, querySql],
-  );
+    const rows = yield* Effect.promise(() => internalQuery<{ id: string }>(
+      `SELECT id FROM approval_queue
+       WHERE org_id = $1 AND requester_id = $2 AND query_sql = $3 AND status = 'approved'
+       LIMIT 1`,
+      [orgId, requesterId, querySql],
+    ));
 
-  return rows.length > 0;
-}
+    return rows.length > 0;
+  });

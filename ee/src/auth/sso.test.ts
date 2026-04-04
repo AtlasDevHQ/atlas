@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, mock } from "bun:test";
+import { Effect } from "effect";
 import { createEEMock, EnterpriseError } from "../__mocks__/internal";
 
 // ── Mocks ───────────────────────────────────────────────────────────
@@ -7,6 +8,22 @@ const ee = createEEMock();
 
 mock.module("../index", () => ee.enterpriseMock);
 mock.module("@atlas/api/lib/db/internal", () => ee.internalDBMock);
+
+const hasDB = () => (ee.internalDBMock.hasInternalDB as () => boolean)();
+mock.module("../lib/db-guard", () => ({
+  requireInternalDB: (label: string, factory?: () => Error) => {
+    if (!hasDB()) {
+      if (factory) throw factory();
+      throw new Error(`Internal database required for ${label}.`);
+    }
+  },
+  requireInternalDBEffect: (label: string, factory?: () => Error) => {
+    return hasDB()
+      ? Effect.void
+      : Effect.fail(factory?.() ?? new Error(`Internal database required for ${label}.`));
+  },
+}));
+
 mock.module("@atlas/api/lib/logger", () => ee.loggerMock);
 
 // Import after mocks
@@ -28,6 +45,10 @@ const {
 } = await import("./sso");
 
 // ── Helpers ─────────────────────────────────────────────────────────
+
+/** Run an Effect, converting failures to rejected promises for test assertions. */
+const run = <A, E>(effect: Effect.Effect<A, E>) =>
+  Effect.runPromise(effect as Effect.Effect<A, never>);
 
 const sampleSamlRow = {
   id: "prov-1",
@@ -126,27 +147,25 @@ describe("Enterprise gating", () => {
 
   it("listSSOProviders throws when enterprise is disabled", async () => {
     ee.setEnterpriseEnabled(false);
-    await expect(listSSOProviders("org-1")).rejects.toThrow("Enterprise features");
+    await expect(run(listSSOProviders("org-1"))).rejects.toThrow("Enterprise features");
   });
 
   it("enterprise gate throws EnterpriseError instance", async () => {
     ee.setEnterpriseEnabled(false);
-    try {
-      await listSSOProviders("org-1");
-      expect.unreachable("Should have thrown");
-    } catch (err) {
-      expect(err).toBeInstanceOf(EnterpriseError);
-    }
+    const err = await Effect.runPromise(
+      listSSOProviders("org-1").pipe(Effect.flip),
+    );
+    expect(err).toBeInstanceOf(EnterpriseError);
   });
 
   it("getSSOProvider throws when enterprise is disabled", async () => {
     ee.setEnterpriseEnabled(false);
-    await expect(getSSOProvider("org-1", "prov-1")).rejects.toThrow("Enterprise features");
+    await expect(run(getSSOProvider("org-1", "prov-1"))).rejects.toThrow("Enterprise features");
   });
 
   it("createSSOProvider throws when enterprise is disabled", async () => {
     ee.setEnterpriseEnabled(false);
-    await expect(createSSOProvider("org-1", {
+    await expect(run(createSSOProvider("org-1", {
       type: "saml",
       issuer: "https://idp.acme.com",
       domain: "acme.com",
@@ -155,18 +174,18 @@ describe("Enterprise gating", () => {
         idpSsoUrl: "https://idp.acme.com/sso",
         idpCertificate: "cert",
       },
-    })).rejects.toThrow("Enterprise features");
+    }))).rejects.toThrow("Enterprise features");
   });
 
   it("deleteSSOProvider throws when enterprise is disabled", async () => {
     ee.setEnterpriseEnabled(false);
-    await expect(deleteSSOProvider("org-1", "prov-1")).rejects.toThrow("Enterprise features");
+    await expect(run(deleteSSOProvider("org-1", "prov-1"))).rejects.toThrow("Enterprise features");
   });
 
   it("does not throw for missing license key when enterprise is enabled", async () => {
     ee.setEnterpriseLicenseKey(undefined);
     ee.queueMockRows([]);
-    const providers = await listSSOProviders("org-1");
+    const providers = await run(listSSOProviders("org-1"));
     expect(providers).toHaveLength(0);
   });
 });
@@ -176,7 +195,7 @@ describe("listSSOProviders", () => {
 
   it("returns providers for the org", async () => {
     ee.queueMockRows([sampleSamlRow, sampleOidcRow]);
-    const providers = await listSSOProviders("org-1");
+    const providers = await run(listSSOProviders("org-1"));
     expect(providers).toHaveLength(2);
     expect(providers[0].type).toBe("saml");
     expect(providers[0].orgId).toBe("org-1");
@@ -185,7 +204,7 @@ describe("listSSOProviders", () => {
 
   it("returns empty array when no providers", async () => {
     ee.queueMockRows([]);
-    const providers = await listSSOProviders("org-1");
+    const providers = await run(listSSOProviders("org-1"));
     expect(providers).toHaveLength(0);
   });
 });
@@ -195,7 +214,7 @@ describe("getSSOProvider", () => {
 
   it("returns a single provider", async () => {
     ee.queueMockRows([sampleSamlRow]);
-    const provider = await getSSOProvider("org-1", "prov-1");
+    const provider = await run(getSSOProvider("org-1", "prov-1"));
     expect(provider).not.toBeNull();
     expect(provider!.id).toBe("prov-1");
     expect(provider!.domain).toBe("acme.com");
@@ -203,7 +222,7 @@ describe("getSSOProvider", () => {
 
   it("returns null when not found", async () => {
     ee.queueMockRows([]);
-    const provider = await getSSOProvider("org-1", "nonexistent");
+    const provider = await run(getSSOProvider("org-1", "nonexistent"));
     expect(provider).toBeNull();
   });
 });
@@ -217,7 +236,7 @@ describe("createSSOProvider", () => {
     // INSERT RETURNING
     ee.queueMockRows([sampleSamlRow]);
 
-    const provider = await createSSOProvider("org-1", {
+    const provider = await run(createSSOProvider("org-1", {
       type: "saml",
       issuer: "https://idp.acme.com",
       domain: "acme.com",
@@ -226,14 +245,14 @@ describe("createSSOProvider", () => {
         idpSsoUrl: "https://idp.acme.com/sso",
         idpCertificate: "-----BEGIN CERTIFICATE-----\nMIIC...\n-----END CERTIFICATE-----",
       },
-    });
+    }));
 
     expect(provider.type).toBe("saml");
     expect(provider.domain).toBe("acme.com");
   });
 
   it("rejects invalid domain", async () => {
-    await expect(createSSOProvider("org-1", {
+    await expect(run(createSSOProvider("org-1", {
       type: "saml",
       issuer: "https://idp.acme.com",
       domain: "not-a-domain",
@@ -242,13 +261,13 @@ describe("createSSOProvider", () => {
         idpSsoUrl: "https://idp.acme.com/sso",
         idpCertificate: "cert",
       },
-    })).rejects.toThrow("Invalid domain");
+    }))).rejects.toThrow("Invalid domain");
   });
 
   it("rejects duplicate domain", async () => {
     ee.queueMockRows([{ id: "existing-prov", org_id: "other-org" }]);
 
-    await expect(createSSOProvider("org-1", {
+    await expect(run(createSSOProvider("org-1", {
       type: "saml",
       issuer: "https://idp.acme.com",
       domain: "acme.com",
@@ -257,25 +276,25 @@ describe("createSSOProvider", () => {
         idpSsoUrl: "https://idp.acme.com/sso",
         idpCertificate: "cert",
       },
-    })).rejects.toThrow("already registered");
+    }))).rejects.toThrow("already registered");
   });
 
   it("rejects invalid SAML config", async () => {
-    await expect(createSSOProvider("org-1", {
+    await expect(run(createSSOProvider("org-1", {
       type: "saml",
       issuer: "https://idp.acme.com",
       domain: "acme.com",
       config: { idpEntityId: "" } as never,
-    })).rejects.toThrow("SAML config requires");
+    }))).rejects.toThrow("SAML config requires");
   });
 
   it("rejects invalid provider type", async () => {
-    await expect(createSSOProvider("org-1", {
+    await expect(run(createSSOProvider("org-1", {
       type: "ldap" as never,
       issuer: "https://ldap.acme.com",
       domain: "acme.com",
       config: {} as never,
-    })).rejects.toThrow("Invalid SSO provider type");
+    }))).rejects.toThrow("Invalid SSO provider type");
   });
 });
 
@@ -284,13 +303,13 @@ describe("deleteSSOProvider", () => {
 
   it("returns true when provider exists", async () => {
     ee.queueMockRows([{ id: "prov-1" }]);
-    const result = await deleteSSOProvider("org-1", "prov-1");
+    const result = await run(deleteSSOProvider("org-1", "prov-1"));
     expect(result).toBe(true);
   });
 
   it("returns false when provider not found", async () => {
     ee.queueMockRows([]);
-    const result = await deleteSSOProvider("org-1", "nonexistent");
+    const result = await run(deleteSSOProvider("org-1", "nonexistent"));
     expect(result).toBe(false);
   });
 });
@@ -336,9 +355,9 @@ describe("updateSSOProvider", () => {
     // UPDATE RETURNING
     ee.queueMockRows([{ ...sampleSamlRow, issuer: "https://new-idp.acme.com" }]);
 
-    const provider = await updateSSOProvider("org-1", "prov-1", {
+    const provider = await run(updateSSOProvider("org-1", "prov-1", {
       issuer: "https://new-idp.acme.com",
-    });
+    }));
     expect(provider.issuer).toBe("https://new-idp.acme.com");
   });
 
@@ -350,9 +369,9 @@ describe("updateSSOProvider", () => {
     // UPDATE RETURNING
     ee.queueMockRows([{ ...sampleSamlRow, domain: "newdomain.com" }]);
 
-    const provider = await updateSSOProvider("org-1", "prov-1", {
+    const provider = await run(updateSSOProvider("org-1", "prov-1", {
       domain: "newdomain.com",
-    });
+    }));
     expect(provider.domain).toBe("newdomain.com");
   });
 
@@ -362,9 +381,9 @@ describe("updateSSOProvider", () => {
     // Domain clash check — found a collision
     ee.queueMockRows([{ id: "other-prov" }]);
 
-    await expect(updateSSOProvider("org-1", "prov-1", {
+    await expect(run(updateSSOProvider("org-1", "prov-1", {
       domain: "taken.com",
-    })).rejects.toThrow("already registered");
+    }))).rejects.toThrow("already registered");
   });
 
   it("updates enabled flag", async () => {
@@ -373,9 +392,9 @@ describe("updateSSOProvider", () => {
     // UPDATE RETURNING
     ee.queueMockRows([{ ...sampleSamlRow, enabled: false }]);
 
-    const provider = await updateSSOProvider("org-1", "prov-1", {
+    const provider = await run(updateSSOProvider("org-1", "prov-1", {
       enabled: false,
-    });
+    }));
     expect(provider.enabled).toBe(false);
   });
 
@@ -383,7 +402,7 @@ describe("updateSSOProvider", () => {
     // getSSOProvider query
     ee.queueMockRows([sampleSamlRow]);
 
-    const provider = await updateSSOProvider("org-1", "prov-1", {});
+    const provider = await run(updateSSOProvider("org-1", "prov-1", {}));
     expect(provider.id).toBe("prov-1");
   });
 
@@ -391,16 +410,16 @@ describe("updateSSOProvider", () => {
     // getSSOProvider returns nothing
     ee.queueMockRows([]);
 
-    await expect(updateSSOProvider("org-1", "nonexistent", {
+    await expect(run(updateSSOProvider("org-1", "nonexistent", {
       issuer: "https://new.com",
-    })).rejects.toThrow("not found");
+    }))).rejects.toThrow("not found");
   });
 
   it("throws when enterprise is disabled", async () => {
     ee.setEnterpriseEnabled(false);
-    await expect(updateSSOProvider("org-1", "prov-1", {
+    await expect(run(updateSSOProvider("org-1", "prov-1", {
       issuer: "https://new.com",
-    })).rejects.toThrow("Enterprise features");
+    }))).rejects.toThrow("Enterprise features");
   });
 });
 
@@ -413,7 +432,7 @@ describe("OIDC encryption round-trip", () => {
     // INSERT RETURNING
     ee.queueMockRows([sampleOidcRow]);
 
-    await createSSOProvider("org-1", {
+    await run(createSSOProvider("org-1", {
       type: "oidc",
       issuer: "https://accounts.google.com",
       domain: "example.com",
@@ -422,7 +441,7 @@ describe("OIDC encryption round-trip", () => {
         clientSecret: "secret-456",
         discoveryUrl: "https://accounts.google.com/.well-known/openid-configuration",
       },
-    });
+    }));
 
     // The INSERT query params should contain the encrypted secret
     const insertQuery = ee.capturedQueries.find(q => q.sql.includes("INSERT INTO sso_providers"));
@@ -433,7 +452,7 @@ describe("OIDC encryption round-trip", () => {
 
   it("decrypts clientSecret on read", async () => {
     ee.queueMockRows([sampleOidcRow]);
-    const providers = await listSSOProviders("org-1");
+    const providers = await run(listSSOProviders("org-1"));
     expect(providers).toHaveLength(1);
     // The mock decryptUrl strips "encrypted:" prefix
     expect((providers[0].config as { clientSecret: string }).clientSecret).toBe("secret-456");
@@ -451,7 +470,7 @@ describe("setSSOEnforcement", () => {
     // UPDATE RETURNING query — must return at least one row
     ee.queueMockRows([{ id: "prov-1" }]);
 
-    const result = await setSSOEnforcement("org-1", true);
+    const result = await run(setSSOEnforcement("org-1", true));
     expect(result.enforced).toBe(true);
     expect(result.orgId).toBe("org-1");
 
@@ -469,7 +488,7 @@ describe("setSSOEnforcement", () => {
     // UPDATE RETURNING — zero rows (provider deleted between check and update)
     ee.queueMockRows([]);
 
-    await expect(setSSOEnforcement("org-1", true)).rejects.toThrow(
+    await expect(run(setSSOEnforcement("org-1", true))).rejects.toThrow(
       "No SSO providers were updated",
     );
   });
@@ -478,7 +497,7 @@ describe("setSSOEnforcement", () => {
     // UPDATE query (no provider check needed for disabling)
     ee.queueMockRows([]);
 
-    const result = await setSSOEnforcement("org-1", false);
+    const result = await run(setSSOEnforcement("org-1", false));
     expect(result.enforced).toBe(false);
     expect(result.orgId).toBe("org-1");
   });
@@ -487,25 +506,23 @@ describe("setSSOEnforcement", () => {
     // Check for active providers — none found
     ee.queueMockRows([]);
 
-    await expect(setSSOEnforcement("org-1", true)).rejects.toThrow(
+    await expect(run(setSSOEnforcement("org-1", true))).rejects.toThrow(
       "Cannot enforce SSO without at least one active SSO provider",
     );
   });
 
   it("throws SSOEnforcementError when no providers", async () => {
     ee.queueMockRows([]);
-    try {
-      await setSSOEnforcement("org-1", true);
-      throw new Error("Should have thrown");
-    } catch (err) {
-      expect(err).toBeInstanceOf(SSOEnforcementError);
-      expect((err as InstanceType<typeof SSOEnforcementError>).code).toBe("no_provider");
-    }
+    const err = await Effect.runPromise(
+      setSSOEnforcement("org-1", true).pipe(Effect.flip),
+    );
+    expect(err).toBeInstanceOf(SSOEnforcementError);
+    expect((err as InstanceType<typeof SSOEnforcementError>).code).toBe("no_provider");
   });
 
   it("throws when enterprise is disabled", async () => {
     ee.setEnterpriseEnabled(false);
-    await expect(setSSOEnforcement("org-1", true)).rejects.toThrow("Enterprise features");
+    await expect(run(setSSOEnforcement("org-1", true))).rejects.toThrow("Enterprise features");
   });
 
 });

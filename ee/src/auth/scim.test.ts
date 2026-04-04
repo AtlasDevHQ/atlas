@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, mock } from "bun:test";
+import { Effect } from "effect";
 import { createEEMock } from "../__mocks__/internal";
 
 // ── Mocks ───────────────────────────────────────────────────────────
@@ -7,6 +8,22 @@ const ee = createEEMock();
 
 mock.module("../index", () => ee.enterpriseMock);
 mock.module("@atlas/api/lib/db/internal", () => ee.internalDBMock);
+
+const hasDB = () => (ee.internalDBMock.hasInternalDB as () => boolean)();
+mock.module("../lib/db-guard", () => ({
+  requireInternalDB: (label: string, factory?: () => Error) => {
+    if (!hasDB()) {
+      if (factory) throw factory();
+      throw new Error(`Internal database required for ${label}.`);
+    }
+  },
+  requireInternalDBEffect: (label: string, factory?: () => Error) => {
+    return hasDB()
+      ? Effect.void
+      : Effect.fail(factory?.() ?? new Error(`Internal database required for ${label}.`));
+  },
+}));
+
 mock.module("@atlas/api/lib/logger", () => ee.loggerMock);
 
 // Import after mocks
@@ -25,6 +42,10 @@ const {
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
+/** Run an Effect, converting failures to rejected promises for test assertions. */
+const run = <A, E>(effect: Effect.Effect<A, E>) =>
+  Effect.runPromise(effect as Effect.Effect<A, never>);
+
 function resetMocks() {
   ee.reset();
   _resetTableEnsured();
@@ -39,22 +60,22 @@ describe("SCIM enterprise gate", () => {
 
   it("listConnections throws when enterprise is disabled", async () => {
     ee.setEnterpriseEnabled(false);
-    await expect(listConnections(ORG_ID)).rejects.toThrow("Enterprise features (scim) are not enabled.");
+    await expect(run(listConnections(ORG_ID))).rejects.toThrow("Enterprise features (scim) are not enabled.");
   });
 
   it("listGroupMappings throws when enterprise is disabled", async () => {
     ee.setEnterpriseEnabled(false);
-    await expect(listGroupMappings(ORG_ID)).rejects.toThrow("Enterprise features (scim) are not enabled.");
+    await expect(run(listGroupMappings(ORG_ID))).rejects.toThrow("Enterprise features (scim) are not enabled.");
   });
 
   it("deleteConnection throws when enterprise is disabled", async () => {
     ee.setEnterpriseEnabled(false);
-    await expect(deleteConnection(ORG_ID, "conn-1")).rejects.toThrow("Enterprise features (scim) are not enabled.");
+    await expect(run(deleteConnection(ORG_ID, "conn-1"))).rejects.toThrow("Enterprise features (scim) are not enabled.");
   });
 
   it("getSyncStatus throws when enterprise is disabled", async () => {
     ee.setEnterpriseEnabled(false);
-    await expect(getSyncStatus(ORG_ID)).rejects.toThrow("Enterprise features (scim) are not enabled.");
+    await expect(run(getSyncStatus(ORG_ID))).rejects.toThrow("Enterprise features (scim) are not enabled.");
   });
 
   it("does not throw for missing license key when enterprise is enabled", async () => {
@@ -62,7 +83,7 @@ describe("SCIM enterprise gate", () => {
     // requireEnterprise no longer checks license key — verify it doesn't throw
     // by calling a simpler function that only does requireEnterprise + query
     ee.queueMockRows([]);
-    const conns = await listConnections(ORG_ID);
+    const conns = await run(listConnections(ORG_ID));
     expect(conns).toHaveLength(0);
   });
 });
@@ -101,7 +122,7 @@ describe("listConnections", () => {
 
   it("returns empty array when no connections", async () => {
     ee.queueMockRows([]); // empty result
-    const result = await listConnections(ORG_ID);
+    const result = await run(listConnections(ORG_ID));
     expect(result).toEqual([]);
   });
 
@@ -113,7 +134,7 @@ describe("listConnections", () => {
         organizationId: ORG_ID,
       },
     ]);
-    const result = await listConnections(ORG_ID);
+    const result = await run(listConnections(ORG_ID));
     expect(result).toHaveLength(1);
     expect(result[0].id).toBe("conn-1");
     expect(result[0].providerId).toBe("okta-prod");
@@ -125,13 +146,13 @@ describe("deleteConnection", () => {
 
   it("returns true when connection deleted", async () => {
     ee.queueMockRows([{ id: "conn-1" }]); // pool.query RETURNING
-    const result = await deleteConnection(ORG_ID, "conn-1");
+    const result = await run(deleteConnection(ORG_ID, "conn-1"));
     expect(result).toBe(true);
   });
 
   it("returns false when connection not found", async () => {
     ee.queueMockRows([]); // no match
-    const result = await deleteConnection(ORG_ID, "nonexistent");
+    const result = await run(deleteConnection(ORG_ID, "nonexistent"));
     expect(result).toBe(false);
   });
 });
@@ -143,7 +164,7 @@ describe("getSyncStatus", () => {
     ee.queueMockRows([{ count: "0" }]); // connections count
     ee.queueMockRows([{ count: "0" }]); // user count
     ee.queueMockRows([{ last_sync: null }]); // last sync
-    const status = await getSyncStatus(ORG_ID);
+    const status = await run(getSyncStatus(ORG_ID));
     expect(status.connections).toBe(0);
     expect(status.provisionedUsers).toBe(0);
     expect(status.lastSyncAt).toBeNull();
@@ -153,7 +174,7 @@ describe("getSyncStatus", () => {
     ee.queueMockRows([{ count: "2" }]);
     ee.queueMockRows([{ count: "15" }]);
     ee.queueMockRows([{ last_sync: "2026-03-22T10:00:00Z" }]);
-    const status = await getSyncStatus(ORG_ID);
+    const status = await run(getSyncStatus(ORG_ID));
     expect(status.connections).toBe(2);
     expect(status.provisionedUsers).toBe(15);
     expect(status.lastSyncAt).toBe("2026-03-22T10:00:00Z");
@@ -167,7 +188,7 @@ describe("group mappings", () => {
     it("returns empty when no mappings", async () => {
       ee.queueMockRows([]); // ensureGroupMappingsTable CREATE TABLE
       ee.queueMockRows([]); // query result
-      const result = await listGroupMappings(ORG_ID);
+      const result = await run(listGroupMappings(ORG_ID));
       expect(result).toEqual([]);
     });
 
@@ -182,7 +203,7 @@ describe("group mappings", () => {
           created_at: "2026-03-22T00:00:00Z",
         },
       ]);
-      const result = await listGroupMappings(ORG_ID);
+      const result = await run(listGroupMappings(ORG_ID));
       expect(result).toHaveLength(1);
       expect(result[0].scimGroupName).toBe("Engineers");
       expect(result[0].roleName).toBe("analyst");
@@ -203,7 +224,7 @@ describe("group mappings", () => {
           created_at: "2026-03-22T00:00:00Z",
         },
       ]); // INSERT RETURNING
-      const result = await createGroupMapping(ORG_ID, "Engineers", "analyst");
+      const result = await run(createGroupMapping(ORG_ID, "Engineers", "analyst"));
       expect(result.id).toBe("map-new");
       expect(result.scimGroupName).toBe("Engineers");
       expect(result.roleName).toBe("analyst");
@@ -211,13 +232,13 @@ describe("group mappings", () => {
 
     it("throws on invalid group name", async () => {
       ee.queueMockRows([]); // ensureGroupMappingsTable
-      await expect(createGroupMapping(ORG_ID, "", "analyst")).rejects.toThrow(SCIMError);
+      await expect(run(createGroupMapping(ORG_ID, "", "analyst"))).rejects.toThrow("Invalid SCIM group name");
     });
 
     it("throws when role does not exist", async () => {
       ee.queueMockRows([]); // ensureGroupMappingsTable
       ee.queueMockRows([]); // role not found
-      await expect(createGroupMapping(ORG_ID, "Engineers", "nonexistent")).rejects.toThrow(
+      await expect(run(createGroupMapping(ORG_ID, "Engineers", "nonexistent"))).rejects.toThrow(
         'Role "nonexistent" does not exist',
       );
     });
@@ -226,7 +247,7 @@ describe("group mappings", () => {
       ee.queueMockRows([]); // ensureGroupMappingsTable
       ee.queueMockRows([{ id: "role-1" }]); // role exists
       ee.queueMockRows([{ id: "existing-map" }]); // duplicate found
-      await expect(createGroupMapping(ORG_ID, "Engineers", "analyst")).rejects.toThrow("already exists");
+      await expect(run(createGroupMapping(ORG_ID, "Engineers", "analyst"))).rejects.toThrow("already exists");
     });
   });
 
@@ -234,14 +255,14 @@ describe("group mappings", () => {
     it("returns true on success", async () => {
       ee.queueMockRows([]); // ensureGroupMappingsTable
       ee.queueMockRows([{ id: "map-1" }]); // pool.query RETURNING
-      const result = await deleteGroupMapping(ORG_ID, "map-1");
+      const result = await run(deleteGroupMapping(ORG_ID, "map-1"));
       expect(result).toBe(true);
     });
 
     it("returns false when not found", async () => {
       ee.queueMockRows([]); // ensureGroupMappingsTable
       ee.queueMockRows([]); // no match
-      const result = await deleteGroupMapping(ORG_ID, "nonexistent");
+      const result = await run(deleteGroupMapping(ORG_ID, "nonexistent"));
       expect(result).toBe(false);
     });
   });
@@ -278,37 +299,37 @@ describe("SCIMError codes", () => {
 
   it("throws validation code for invalid group name", async () => {
     ee.queueMockRows([]); // ensureGroupMappingsTable
-    try {
-      await createGroupMapping(ORG_ID, "", "analyst");
-      expect(true).toBe(false); // should not reach
-    } catch (err) {
-      expect(err).toBeInstanceOf(SCIMError);
-      expect((err as InstanceType<typeof SCIMError>).code).toBe("validation");
-    }
+    const err = await Effect.runPromise(
+      createGroupMapping(ORG_ID, "", "analyst").pipe(
+        Effect.flip,
+      ),
+    );
+    expect(err).toBeInstanceOf(SCIMError);
+    expect((err as InstanceType<typeof SCIMError>).code).toBe("validation");
   });
 
   it("throws not_found code for missing role", async () => {
     ee.queueMockRows([]); // ensureGroupMappingsTable
     ee.queueMockRows([]); // role not found
-    try {
-      await createGroupMapping(ORG_ID, "Engineers", "nonexistent");
-      expect(true).toBe(false);
-    } catch (err) {
-      expect(err).toBeInstanceOf(SCIMError);
-      expect((err as InstanceType<typeof SCIMError>).code).toBe("not_found");
-    }
+    const err = await Effect.runPromise(
+      createGroupMapping(ORG_ID, "Engineers", "nonexistent").pipe(
+        Effect.flip,
+      ),
+    );
+    expect(err).toBeInstanceOf(SCIMError);
+    expect((err as InstanceType<typeof SCIMError>).code).toBe("not_found");
   });
 
   it("throws conflict code for duplicate mapping", async () => {
     ee.queueMockRows([]); // ensureGroupMappingsTable
     ee.queueMockRows([{ id: "role-1" }]); // role exists
     ee.queueMockRows([{ id: "existing-map" }]); // duplicate found
-    try {
-      await createGroupMapping(ORG_ID, "Engineers", "analyst");
-      expect(true).toBe(false);
-    } catch (err) {
-      expect(err).toBeInstanceOf(SCIMError);
-      expect((err as InstanceType<typeof SCIMError>).code).toBe("conflict");
-    }
+    const err = await Effect.runPromise(
+      createGroupMapping(ORG_ID, "Engineers", "analyst").pipe(
+        Effect.flip,
+      ),
+    );
+    expect(err).toBeInstanceOf(SCIMError);
+    expect((err as InstanceType<typeof SCIMError>).code).toBe("conflict");
   });
 });

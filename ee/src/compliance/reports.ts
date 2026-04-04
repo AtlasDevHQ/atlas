@@ -6,12 +6,15 @@
  * 2. User Activity Report — query counts, last login, tables accessed, role info
  *
  * Both reports query the internal DB (audit_log + user/session/member tables)
- * and are enterprise-gated via requireEnterprise("compliance").
+ * and are enterprise-gated via requireEnterpriseEffect("compliance").
+ *
+ * All exported functions return Effect — callers use `yield*` in Effect.gen.
  */
 
+import { Effect } from "effect";
 import { EEError } from "../lib/errors";
-import { requireEnterprise } from "../index";
-import { requireInternalDB } from "../lib/db-guard";
+import { requireEnterpriseEffect, EnterpriseError } from "../index";
+import { requireInternalDBEffect } from "../lib/db-guard";
 import { internalQuery } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 import type {
@@ -26,16 +29,17 @@ const log = createLogger("ee:compliance-reports");
 
 // ── Validation ──────────────────────────────────────────────────
 
-function validateFilters(filters: ComplianceReportFilters): void {
+function validateFilters(filters: ComplianceReportFilters): Effect.Effect<void, ReportError> {
   if (isNaN(Date.parse(filters.startDate))) {
-    throw new ReportError(`Invalid startDate: ${filters.startDate}`, "validation");
+    return Effect.fail(new ReportError(`Invalid startDate: ${filters.startDate}`, "validation"));
   }
   if (isNaN(Date.parse(filters.endDate))) {
-    throw new ReportError(`Invalid endDate: ${filters.endDate}`, "validation");
+    return Effect.fail(new ReportError(`Invalid endDate: ${filters.endDate}`, "validation"));
   }
   if (new Date(filters.startDate) > new Date(filters.endDate)) {
-    throw new ReportError("startDate must be before endDate", "validation");
+    return Effect.fail(new ReportError("startDate must be before endDate", "validation"));
   }
+  return Effect.void;
 }
 
 // ── Error type ──────────────────────────────────────────────────
@@ -59,153 +63,154 @@ interface DataAccessQueryRow {
   [key: string]: unknown;
 }
 
-export async function generateDataAccessReport(
+export const generateDataAccessReport = (
   orgId: string,
   filters: ComplianceReportFilters,
-): Promise<DataAccessReport> {
-  requireEnterprise("compliance");
-  requireInternalDB("compliance reports", () => new ReportError("Internal database not available", "not_available"));
-  validateFilters(filters);
+): Effect.Effect<DataAccessReport, ReportError | EnterpriseError | Error> =>
+  Effect.gen(function* () {
+    yield* requireEnterpriseEffect("compliance");
+    yield* requireInternalDBEffect("compliance reports", () => new ReportError("Internal database not available", "not_available"));
+    yield* validateFilters(filters);
 
-  const conditions: string[] = ["a.org_id = $1", "a.success = true"];
-  const params: unknown[] = [orgId];
+    const conditions: string[] = ["a.org_id = $1", "a.success = true"];
+    const params: unknown[] = [orgId];
 
-  params.push(filters.startDate);
-  conditions.push(`a.timestamp >= $${params.length}`);
-  params.push(filters.endDate);
-  conditions.push(`a.timestamp <= $${params.length}`);
+    params.push(filters.startDate);
+    conditions.push(`a.timestamp >= $${params.length}`);
+    params.push(filters.endDate);
+    conditions.push(`a.timestamp <= $${params.length}`);
 
-  if (filters.userId) {
-    params.push(filters.userId);
-    conditions.push(`a.user_id = $${params.length}`);
-  }
-  if (filters.table) {
-    params.push(filters.table);
-    conditions.push(`a.tables_accessed @> to_jsonb($${params.length}::text)`);
-  }
-
-  const whereClause = conditions.join(" AND ");
-
-  // Flatten tables_accessed JSONB array, group by table + user
-  const rows = await internalQuery<DataAccessQueryRow>(`
-    SELECT
-      t.table_name,
-      a.user_id,
-      u.email AS user_email,
-      COUNT(*)::text AS query_count,
-      a.columns_accessed AS all_columns,
-      MIN(a.timestamp)::text AS first_access,
-      MAX(a.timestamp)::text AS last_access
-    FROM audit_log a
-    CROSS JOIN LATERAL jsonb_array_elements_text(
-      CASE WHEN jsonb_typeof(a.tables_accessed) = 'array' THEN a.tables_accessed ELSE '[]'::jsonb END
-    ) AS t(table_name)
-    LEFT JOIN "user" u ON a.user_id = u.id
-    WHERE ${whereClause}
-    GROUP BY t.table_name, a.user_id, u.email, a.columns_accessed
-    ORDER BY COUNT(*) DESC
-    LIMIT 10000
-  `, params);
-
-  // Aggregate: merge rows per (table, user) since columns_accessed varies per query
-  const aggregated = new Map<string, DataAccessRow>();
-  for (const row of rows) {
-    const key = `${row.table_name}::${row.user_id}`;
-    const existing = aggregated.get(key);
-    const cols = parseJsonbArray(row.all_columns);
-    if (existing) {
-      existing.queryCount += parseInt(row.query_count, 10);
-      for (const c of cols) {
-        if (!existing.uniqueColumns.includes(c)) existing.uniqueColumns.push(c);
-      }
-      if (row.first_access < existing.firstAccess) existing.firstAccess = row.first_access;
-      if (row.last_access > existing.lastAccess) existing.lastAccess = row.last_access;
-    } else {
-      aggregated.set(key, {
-        tableName: row.table_name,
-        userId: row.user_id,
-        userEmail: row.user_email,
-        userRole: null, // filled below
-        queryCount: parseInt(row.query_count, 10),
-        uniqueColumns: cols,
-        hasPII: false, // filled below
-        firstAccess: row.first_access,
-        lastAccess: row.last_access,
-      });
+    if (filters.userId) {
+      params.push(filters.userId);
+      conditions.push(`a.user_id = $${params.length}`);
     }
-  }
-
-  const result = [...aggregated.values()];
-
-  // Enrich with role + PII status concurrently (independent queries)
-  if (result.length > 0) {
-    const userIds = [...new Set(result.map((r) => r.userId).filter(Boolean))];
-
-    const [roleResult, piiResult] = await Promise.allSettled([
-      // Role enrichment from member table
-      userIds.length > 0
-        ? internalQuery<{ user_id: string; role: string }>(
-            `SELECT "userId" AS user_id, role FROM member WHERE "organizationId" = $1 AND "userId" IN (${userIds.map((_, i) => `$${i + 2}`).join(", ")})`,
-            [orgId, ...userIds],
-          )
-        : Promise.resolve([]),
-      // PII enrichment from pii_column_classifications
-      internalQuery<{ table_name: string }>(
-        `SELECT DISTINCT table_name FROM pii_column_classifications WHERE org_id = $1 AND dismissed = false`,
-        [orgId],
-      ),
-    ]);
-
-    if (roleResult.status === "fulfilled") {
-      const roleMap = new Map(roleResult.value.map((r) => [r.user_id, r.role]));
-      for (const row of result) {
-        row.userRole = roleMap.get(row.userId) ?? null;
-      }
-    } else {
-      log.warn(
-        { err: roleResult.reason instanceof Error ? roleResult.reason.message : String(roleResult.reason) },
-        "Could not fetch roles from member table",
-      );
+    if (filters.table) {
+      params.push(filters.table);
+      conditions.push(`a.tables_accessed @> to_jsonb($${params.length}::text)`);
     }
 
-    if (piiResult.status === "fulfilled") {
-      const piiTables = new Set(piiResult.value.map((r) => r.table_name.toLowerCase()));
-      for (const row of result) {
-        row.hasPII = piiTables.has(row.tableName.toLowerCase());
+    const whereClause = conditions.join(" AND ");
+
+    // Flatten tables_accessed JSONB array, group by table + user
+    const rows = yield* Effect.promise(() => internalQuery<DataAccessQueryRow>(`
+      SELECT
+        t.table_name,
+        a.user_id,
+        u.email AS user_email,
+        COUNT(*)::text AS query_count,
+        a.columns_accessed AS all_columns,
+        MIN(a.timestamp)::text AS first_access,
+        MAX(a.timestamp)::text AS last_access
+      FROM audit_log a
+      CROSS JOIN LATERAL jsonb_array_elements_text(
+        CASE WHEN jsonb_typeof(a.tables_accessed) = 'array' THEN a.tables_accessed ELSE '[]'::jsonb END
+      ) AS t(table_name)
+      LEFT JOIN "user" u ON a.user_id = u.id
+      WHERE ${whereClause}
+      GROUP BY t.table_name, a.user_id, u.email, a.columns_accessed
+      ORDER BY COUNT(*) DESC
+      LIMIT 10000
+    `, params));
+
+    // Aggregate: merge rows per (table, user) since columns_accessed varies per query
+    const aggregated = new Map<string, DataAccessRow>();
+    for (const row of rows) {
+      const key = `${row.table_name}::${row.user_id}`;
+      const existing = aggregated.get(key);
+      const cols = parseJsonbArray(row.all_columns);
+      if (existing) {
+        existing.queryCount += parseInt(row.query_count, 10);
+        for (const c of cols) {
+          if (!existing.uniqueColumns.includes(c)) existing.uniqueColumns.push(c);
+        }
+        if (row.first_access < existing.firstAccess) existing.firstAccess = row.first_access;
+        if (row.last_access > existing.lastAccess) existing.lastAccess = row.last_access;
+      } else {
+        aggregated.set(key, {
+          tableName: row.table_name,
+          userId: row.user_id,
+          userEmail: row.user_email,
+          userRole: null, // filled below
+          queryCount: parseInt(row.query_count, 10),
+          uniqueColumns: cols,
+          hasPII: false, // filled below
+          firstAccess: row.first_access,
+          lastAccess: row.last_access,
+        });
       }
-    } else {
-      log.warn(
-        { err: piiResult.reason instanceof Error ? piiResult.reason.message : String(piiResult.reason) },
-        "Could not enrich PII status — table may not exist yet",
-      );
     }
-  }
 
-  // Apply role filter (after enrichment)
-  const filtered = filters.role
-    ? result.filter((r) => r.userRole === filters.role)
-    : result;
+    const result = [...aggregated.values()];
 
-  // Build summary
-  const uniqueUsers = new Set(filtered.map((r) => r.userId));
-  const uniqueTables = new Set(filtered.map((r) => r.tableName));
-  const totalQueries = filtered.reduce((sum, r) => sum + r.queryCount, 0);
-  const piiTablesAccessed = filtered.filter((r) => r.hasPII).length > 0
-    ? new Set(filtered.filter((r) => r.hasPII).map((r) => r.tableName)).size
-    : 0;
+    // Enrich with role + PII status concurrently (independent queries)
+    if (result.length > 0) {
+      const userIds = [...new Set(result.map((r) => r.userId).filter(Boolean))];
 
-  return {
-    rows: filtered,
-    summary: {
-      totalQueries,
-      uniqueUsers: uniqueUsers.size,
-      uniqueTables: uniqueTables.size,
-      piiTablesAccessed,
-    },
-    filters,
-    generatedAt: new Date().toISOString(),
-  };
-}
+      const [roleResult, piiResult] = yield* Effect.promise(() => Promise.allSettled([
+        // Role enrichment from member table
+        userIds.length > 0
+          ? internalQuery<{ user_id: string; role: string }>(
+              `SELECT "userId" AS user_id, role FROM member WHERE "organizationId" = $1 AND "userId" IN (${userIds.map((_, i) => `$${i + 2}`).join(", ")})`,
+              [orgId, ...userIds],
+            )
+          : Promise.resolve([]),
+        // PII enrichment from pii_column_classifications
+        internalQuery<{ table_name: string }>(
+          `SELECT DISTINCT table_name FROM pii_column_classifications WHERE org_id = $1 AND dismissed = false`,
+          [orgId],
+        ),
+      ]));
+
+      if (roleResult.status === "fulfilled") {
+        const roleMap = new Map(roleResult.value.map((r) => [r.user_id, r.role]));
+        for (const row of result) {
+          row.userRole = roleMap.get(row.userId) ?? null;
+        }
+      } else {
+        log.warn(
+          { err: roleResult.reason instanceof Error ? roleResult.reason.message : String(roleResult.reason) },
+          "Could not fetch roles from member table",
+        );
+      }
+
+      if (piiResult.status === "fulfilled") {
+        const piiTables = new Set(piiResult.value.map((r) => r.table_name.toLowerCase()));
+        for (const row of result) {
+          row.hasPII = piiTables.has(row.tableName.toLowerCase());
+        }
+      } else {
+        log.warn(
+          { err: piiResult.reason instanceof Error ? piiResult.reason.message : String(piiResult.reason) },
+          "Could not enrich PII status — table may not exist yet",
+        );
+      }
+    }
+
+    // Apply role filter (after enrichment)
+    const filtered = filters.role
+      ? result.filter((r) => r.userRole === filters.role)
+      : result;
+
+    // Build summary
+    const uniqueUsers = new Set(filtered.map((r) => r.userId));
+    const uniqueTables = new Set(filtered.map((r) => r.tableName));
+    const totalQueries = filtered.reduce((sum, r) => sum + r.queryCount, 0);
+    const piiTablesAccessed = filtered.filter((r) => r.hasPII).length > 0
+      ? new Set(filtered.filter((r) => r.hasPII).map((r) => r.tableName)).size
+      : 0;
+
+    return {
+      rows: filtered,
+      summary: {
+        totalQueries,
+        uniqueUsers: uniqueUsers.size,
+        uniqueTables: uniqueTables.size,
+        piiTablesAccessed,
+      },
+      filters,
+      generatedAt: new Date().toISOString(),
+    };
+  });
 
 // ── User Activity Report ────────────────────────────────────────
 
@@ -218,118 +223,119 @@ interface UserActivityQueryRow {
   [key: string]: unknown;
 }
 
-export async function generateUserActivityReport(
+export const generateUserActivityReport = (
   orgId: string,
   filters: ComplianceReportFilters,
-): Promise<UserActivityReport> {
-  requireEnterprise("compliance");
-  requireInternalDB("compliance reports", () => new ReportError("Internal database not available", "not_available"));
-  validateFilters(filters);
+): Effect.Effect<UserActivityReport, ReportError | EnterpriseError | Error> =>
+  Effect.gen(function* () {
+    yield* requireEnterpriseEffect("compliance");
+    yield* requireInternalDBEffect("compliance reports", () => new ReportError("Internal database not available", "not_available"));
+    yield* validateFilters(filters);
 
-  const conditions: string[] = ["a.org_id = $1", "a.success = true"];
-  const params: unknown[] = [orgId];
+    const conditions: string[] = ["a.org_id = $1", "a.success = true"];
+    const params: unknown[] = [orgId];
 
-  params.push(filters.startDate);
-  conditions.push(`a.timestamp >= $${params.length}`);
-  params.push(filters.endDate);
-  conditions.push(`a.timestamp <= $${params.length}`);
+    params.push(filters.startDate);
+    conditions.push(`a.timestamp >= $${params.length}`);
+    params.push(filters.endDate);
+    conditions.push(`a.timestamp <= $${params.length}`);
 
-  if (filters.userId) {
-    params.push(filters.userId);
-    conditions.push(`a.user_id = $${params.length}`);
-  }
-  if (filters.table) {
-    params.push(filters.table);
-    conditions.push(`a.tables_accessed @> to_jsonb($${params.length}::text)`);
-  }
-
-  const whereClause = conditions.join(" AND ");
-
-  const rows = await internalQuery<UserActivityQueryRow>(`
-    SELECT
-      a.user_id,
-      u.email AS user_email,
-      COUNT(*)::text AS total_queries,
-      jsonb_agg(DISTINCT t.table_name) FILTER (WHERE t.table_name IS NOT NULL) AS tables_list,
-      MAX(a.timestamp)::text AS last_active_at
-    FROM audit_log a
-    LEFT JOIN "user" u ON a.user_id = u.id
-    LEFT JOIN LATERAL jsonb_array_elements_text(
-      CASE WHEN jsonb_typeof(a.tables_accessed) = 'array' THEN a.tables_accessed ELSE '[]'::jsonb END
-    ) AS t(table_name) ON true
-    WHERE ${whereClause}
-    GROUP BY a.user_id, u.email
-    ORDER BY COUNT(*) DESC
-    LIMIT 5000
-  `, params);
-
-  // Enrich with login + role data concurrently (independent queries)
-  const userIds = rows.map((r) => r.user_id).filter(Boolean);
-  const loginMap = new Map<string, string>();
-  const roleMap = new Map<string, string>();
-
-  if (userIds.length > 0) {
-    const [loginResult, roleResult] = await Promise.allSettled([
-      internalQuery<{ user_id: string; last_login: string }>(
-        `SELECT "userId" AS user_id, MAX("createdAt")::text AS last_login
-         FROM session WHERE "userId" IN (${userIds.map((_, i) => `$${i + 1}`).join(", ")})
-         GROUP BY "userId"`,
-        userIds,
-      ),
-      internalQuery<{ user_id: string; role: string }>(
-        `SELECT "userId" AS user_id, role FROM member WHERE "organizationId" = $1 AND "userId" IN (${userIds.map((_, i) => `$${i + 2}`).join(", ")})`,
-        [orgId, ...userIds],
-      ),
-    ]);
-
-    if (loginResult.status === "fulfilled") {
-      for (const r of loginResult.value) loginMap.set(r.user_id, r.last_login);
-    } else {
-      log.warn(
-        { err: loginResult.reason instanceof Error ? loginResult.reason.message : String(loginResult.reason) },
-        "Could not fetch login data from session table",
-      );
+    if (filters.userId) {
+      params.push(filters.userId);
+      conditions.push(`a.user_id = $${params.length}`);
+    }
+    if (filters.table) {
+      params.push(filters.table);
+      conditions.push(`a.tables_accessed @> to_jsonb($${params.length}::text)`);
     }
 
-    if (roleResult.status === "fulfilled") {
-      for (const r of roleResult.value) roleMap.set(r.user_id, r.role);
-    } else {
-      log.warn(
-        { err: roleResult.reason instanceof Error ? roleResult.reason.message : String(roleResult.reason) },
-        "Could not fetch roles from member table",
-      );
+    const whereClause = conditions.join(" AND ");
+
+    const rows = yield* Effect.promise(() => internalQuery<UserActivityQueryRow>(`
+      SELECT
+        a.user_id,
+        u.email AS user_email,
+        COUNT(*)::text AS total_queries,
+        jsonb_agg(DISTINCT t.table_name) FILTER (WHERE t.table_name IS NOT NULL) AS tables_list,
+        MAX(a.timestamp)::text AS last_active_at
+      FROM audit_log a
+      LEFT JOIN "user" u ON a.user_id = u.id
+      LEFT JOIN LATERAL jsonb_array_elements_text(
+        CASE WHEN jsonb_typeof(a.tables_accessed) = 'array' THEN a.tables_accessed ELSE '[]'::jsonb END
+      ) AS t(table_name) ON true
+      WHERE ${whereClause}
+      GROUP BY a.user_id, u.email
+      ORDER BY COUNT(*) DESC
+      LIMIT 5000
+    `, params));
+
+    // Enrich with login + role data concurrently (independent queries)
+    const userIds = rows.map((r) => r.user_id).filter(Boolean);
+    const loginMap = new Map<string, string>();
+    const roleMap = new Map<string, string>();
+
+    if (userIds.length > 0) {
+      const [loginResult, roleResult] = yield* Effect.promise(() => Promise.allSettled([
+        internalQuery<{ user_id: string; last_login: string }>(
+          `SELECT "userId" AS user_id, MAX("createdAt")::text AS last_login
+           FROM session WHERE "userId" IN (${userIds.map((_, i) => `$${i + 1}`).join(", ")})
+           GROUP BY "userId"`,
+          userIds,
+        ),
+        internalQuery<{ user_id: string; role: string }>(
+          `SELECT "userId" AS user_id, role FROM member WHERE "organizationId" = $1 AND "userId" IN (${userIds.map((_, i) => `$${i + 2}`).join(", ")})`,
+          [orgId, ...userIds],
+        ),
+      ]));
+
+      if (loginResult.status === "fulfilled") {
+        for (const r of loginResult.value) loginMap.set(r.user_id, r.last_login);
+      } else {
+        log.warn(
+          { err: loginResult.reason instanceof Error ? loginResult.reason.message : String(loginResult.reason) },
+          "Could not fetch login data from session table",
+        );
+      }
+
+      if (roleResult.status === "fulfilled") {
+        for (const r of roleResult.value) roleMap.set(r.user_id, r.role);
+      } else {
+        log.warn(
+          { err: roleResult.reason instanceof Error ? roleResult.reason.message : String(roleResult.reason) },
+          "Could not fetch roles from member table",
+        );
+      }
     }
-  }
 
-  const activityRows: UserActivityRow[] = rows.map((row) => ({
-    userId: row.user_id,
-    userEmail: row.user_email,
-    role: roleMap.get(row.user_id) ?? null,
-    totalQueries: parseInt(row.total_queries, 10),
-    tablesAccessed: parseJsonbArray(row.tables_list),
-    lastActiveAt: row.last_active_at,
-    lastLoginAt: loginMap.get(row.user_id) ?? null,
-  }));
+    const activityRows: UserActivityRow[] = rows.map((row) => ({
+      userId: row.user_id,
+      userEmail: row.user_email,
+      role: roleMap.get(row.user_id) ?? null,
+      totalQueries: parseInt(row.total_queries, 10),
+      tablesAccessed: parseJsonbArray(row.tables_list),
+      lastActiveAt: row.last_active_at,
+      lastLoginAt: loginMap.get(row.user_id) ?? null,
+    }));
 
-  // Apply role filter
-  const filtered = filters.role
-    ? activityRows.filter((r) => r.role === filters.role)
-    : activityRows;
+    // Apply role filter
+    const filtered = filters.role
+      ? activityRows.filter((r) => r.role === filters.role)
+      : activityRows;
 
-  const totalQueries = filtered.reduce((sum, r) => sum + r.totalQueries, 0);
-  const activeUsers = filtered.filter((r) => r.totalQueries > 0).length;
+    const totalQueries = filtered.reduce((sum, r) => sum + r.totalQueries, 0);
+    const activeUsers = filtered.filter((r) => r.totalQueries > 0).length;
 
-  return {
-    rows: filtered,
-    summary: {
-      totalUsers: filtered.length,
-      activeUsers,
-      totalQueries,
-    },
-    filters,
-    generatedAt: new Date().toISOString(),
-  };
-}
+    return {
+      rows: filtered,
+      summary: {
+        totalUsers: filtered.length,
+        activeUsers,
+        totalQueries,
+      },
+      filters,
+      generatedAt: new Date().toISOString(),
+    };
+  });
 
 // ── CSV export ──────────────────────────────────────────────────
 

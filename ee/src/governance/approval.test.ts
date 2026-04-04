@@ -1,5 +1,13 @@
 import { describe, it, expect, beforeEach, mock } from "bun:test";
+import { Effect, Exit, Cause } from "effect";
 import { createEEMock } from "../__mocks__/internal";
+
+// ── Effect runner helper ──────────────────────────────────────────
+const run = async <A, E>(effect: Effect.Effect<A, E>): Promise<A> => {
+  const exit = await Effect.runPromiseExit(effect);
+  if (Exit.isSuccess(exit)) return exit.value;
+  throw Cause.squash(exit.cause);
+};
 
 // ── Mocks ───────────────────────────────────────────────────────────
 
@@ -23,6 +31,16 @@ const ee = createEEMock();
 
 mock.module("@atlas/api/lib/db/internal", () => ee.internalDBMock);
 mock.module("@atlas/api/lib/logger", () => ee.loggerMock);
+
+const hasDB = () => (ee.internalDBMock.hasInternalDB as () => boolean)();
+mock.module("../lib/db-guard", () => ({
+  requireInternalDB: (label: string, factory?: () => Error) => {
+    if (!hasDB()) { if (factory) throw factory(); throw new Error(`Internal database required for ${label}.`); }
+  },
+  requireInternalDBEffect: (label: string, factory?: () => Error) => {
+    return hasDB() ? Effect.void : Effect.fail(factory?.() ?? new Error(`Internal database required for ${label}.`));
+  },
+}));
 
 // Import after mocks
 const {
@@ -97,13 +115,13 @@ describe("listApprovalRules", () => {
 
   it("returns empty array when no rules exist", async () => {
     ee.queueMockRows([]);
-    const result = await listApprovalRules("org-1");
+    const result = await run(listApprovalRules("org-1"));
     expect(result).toEqual([]);
   });
 
   it("returns rules for the organization", async () => {
     ee.queueMockRows([makeRuleRow(), makeRuleRow({ id: "rule-2", name: "SSN column" })]);
-    const result = await listApprovalRules("org-1");
+    const result = await run(listApprovalRules("org-1"));
     expect(result).toHaveLength(2);
     expect(result[0].name).toBe("PII table approval");
     expect(result[1].name).toBe("SSN column");
@@ -111,7 +129,7 @@ describe("listApprovalRules", () => {
 
   it("throws when enterprise is not enabled", async () => {
     mockEnterpriseEnabled = false;
-    await expect(listApprovalRules("org-1")).rejects.toThrow("Enterprise features");
+    await expect(run(listApprovalRules("org-1"))).rejects.toThrow("Enterprise features");
   });
 });
 
@@ -120,13 +138,13 @@ describe("getApprovalRule", () => {
 
   it("returns null when rule does not exist", async () => {
     ee.queueMockRows([]);
-    const result = await getApprovalRule("org-1", "rule-1");
+    const result = await run(getApprovalRule("org-1", "rule-1"));
     expect(result).toBeNull();
   });
 
   it("returns rule when found", async () => {
     ee.queueMockRows([makeRuleRow()]);
-    const result = await getApprovalRule("org-1", "rule-1");
+    const result = await run(getApprovalRule("org-1", "rule-1"));
     expect(result).not.toBeNull();
     expect(result!.name).toBe("PII table approval");
     expect(result!.ruleType).toBe("table");
@@ -135,7 +153,7 @@ describe("getApprovalRule", () => {
 
   it("throws for rule with invalid rule_type instead of returning null", async () => {
     ee.queueMockRows([makeRuleRow({ rule_type: "bogus" })]);
-    await expect(getApprovalRule("org-1", "rule-1")).rejects.toThrow("invalid type");
+    await expect(run(getApprovalRule("org-1", "rule-1"))).rejects.toThrow("invalid type");
   });
 });
 
@@ -144,11 +162,11 @@ describe("createApprovalRule", () => {
 
   it("creates a table rule", async () => {
     ee.queueMockRows([makeRuleRow()]);
-    const result = await createApprovalRule("org-1", {
+    const result = await run(createApprovalRule("org-1", {
       name: "PII table approval",
       ruleType: "table",
       pattern: "users",
-    });
+    }));
     expect(result.name).toBe("PII table approval");
     expect(result.ruleType).toBe("table");
     expect(ee.capturedQueries[0].sql).toContain("INSERT INTO approval_rules");
@@ -156,36 +174,36 @@ describe("createApprovalRule", () => {
 
   it("rejects empty name", async () => {
     await expect(
-      createApprovalRule("org-1", { name: "", ruleType: "table", pattern: "users" }),
+      run(createApprovalRule("org-1", { name: "", ruleType: "table", pattern: "users" })),
     ).rejects.toThrow("Rule name is required");
   });
 
   it("rejects invalid rule type", async () => {
     await expect(
-      createApprovalRule("org-1", {
+      run(createApprovalRule("org-1", {
         name: "test",
         ruleType: "invalid" as "table",
         pattern: "users",
-      }),
+      })),
     ).rejects.toThrow("Invalid rule type");
   });
 
   it("rejects cost rule without threshold", async () => {
     await expect(
-      createApprovalRule("org-1", { name: "test", ruleType: "cost", pattern: "" }),
+      run(createApprovalRule("org-1", { name: "test", ruleType: "cost", pattern: "" })),
     ).rejects.toThrow("Cost rules require a positive threshold");
   });
 
   it("throws when DB returns invalid rule_type after insert", async () => {
     ee.queueMockRows([makeRuleRow({ rule_type: "corrupted" })]);
     await expect(
-      createApprovalRule("org-1", { name: "test", ruleType: "table", pattern: "users" }),
+      run(createApprovalRule("org-1", { name: "test", ruleType: "table", pattern: "users" })),
     ).rejects.toThrow("unexpected rule_type");
   });
 
   it("rejects table rule without pattern", async () => {
     await expect(
-      createApprovalRule("org-1", { name: "test", ruleType: "table", pattern: "" }),
+      run(createApprovalRule("org-1", { name: "test", ruleType: "table", pattern: "" })),
     ).rejects.toThrow('Pattern is required for "table" rules');
   });
 });
@@ -198,18 +216,18 @@ describe("updateApprovalRule", () => {
     ee.queueMockRows([makeRuleRow()]);
     // UPDATE RETURNING
     ee.queueMockRows([makeRuleRow({ name: "Updated name" })]);
-    const result = await updateApprovalRule("org-1", "rule-1", { name: "Updated name" });
+    const result = await run(updateApprovalRule("org-1", "rule-1", { name: "Updated name" }));
     expect(result.name).toBe("Updated name");
   });
 
   it("throws not_found for missing rule", async () => {
     ee.queueMockRows([]); // getApprovalRule returns nothing
-    await expect(updateApprovalRule("org-1", "missing", { name: "x" })).rejects.toThrow("not found");
+    await expect(run(updateApprovalRule("org-1", "missing", { name: "x" }))).rejects.toThrow("not found");
   });
 
   it("returns existing rule when no changes", async () => {
     ee.queueMockRows([makeRuleRow()]);
-    const result = await updateApprovalRule("org-1", "rule-1", {});
+    const result = await run(updateApprovalRule("org-1", "rule-1", {}));
     expect(result.name).toBe("PII table approval");
   });
 
@@ -217,7 +235,7 @@ describe("updateApprovalRule", () => {
     ee.queueMockRows([makeRuleRow()]); // getApprovalRule succeeds
     ee.queueMockRows([makeRuleRow({ rule_type: "corrupted" })]); // UPDATE RETURNING has bad type
     await expect(
-      updateApprovalRule("org-1", "rule-1", { name: "Updated" }),
+      run(updateApprovalRule("org-1", "rule-1", { name: "Updated" })),
     ).rejects.toThrow("unexpected rule_type");
   });
 });
@@ -228,7 +246,7 @@ describe("deleteApprovalRule", () => {
   it("returns true when rule is deleted", async () => {
     // getInternalDB().query returns rowCount based on rows array length
     ee.queueMockRows([{ deleted: true }]); // simulate 1 affected row
-    const result = await deleteApprovalRule("org-1", "rule-1");
+    const result = await run(deleteApprovalRule("org-1", "rule-1"));
     expect(result).toBe(true);
   });
 });
@@ -239,13 +257,13 @@ describe("checkApprovalRequired", () => {
   beforeEach(resetMocks);
 
   it("returns false when no org ID", async () => {
-    const result = await checkApprovalRequired(undefined, ["users"], ["id"]);
+    const result = await run(checkApprovalRequired(undefined, ["users"], ["id"]));
     expect(result.required).toBe(false);
   });
 
   it("returns false when enterprise is disabled", async () => {
     mockEnterpriseEnabled = false;
-    const result = await checkApprovalRequired("org-1", ["users"], ["id"]);
+    const result = await run(checkApprovalRequired("org-1", ["users"], ["id"]));
     expect(result.required).toBe(false);
   });
 
@@ -253,7 +271,7 @@ describe("checkApprovalRequired", () => {
     const original = new Error("DB connection failed");
     mockGetConfigError = original;
     try {
-      await checkApprovalRequired("org-1", ["users"], ["id"]);
+      await run(checkApprovalRequired("org-1", ["users"], ["id"]));
       expect.unreachable("should have thrown");
     } catch (err) {
       expect(err).toBe(original);
@@ -262,13 +280,13 @@ describe("checkApprovalRequired", () => {
 
   it("returns false when no rules exist", async () => {
     ee.queueMockRows([]); // empty rules
-    const result = await checkApprovalRequired("org-1", ["users"], ["id"]);
+    const result = await run(checkApprovalRequired("org-1", ["users"], ["id"]));
     expect(result.required).toBe(false);
   });
 
   it("matches table rule", async () => {
     ee.queueMockRows([makeRuleRow({ rule_type: "table", pattern: "users" })]);
-    const result = await checkApprovalRequired("org-1", ["users"], ["id"]);
+    const result = await run(checkApprovalRequired("org-1", ["users"], ["id"]));
     expect(result.required).toBe(true);
     expect(result.matchedRules).toHaveLength(1);
     expect(result.matchedRules[0].name).toBe("PII table approval");
@@ -276,25 +294,25 @@ describe("checkApprovalRequired", () => {
 
   it("matches table rule case-insensitively", async () => {
     ee.queueMockRows([makeRuleRow({ rule_type: "table", pattern: "Users" })]);
-    const result = await checkApprovalRequired("org-1", ["users"], ["id"]);
+    const result = await run(checkApprovalRequired("org-1", ["users"], ["id"]));
     expect(result.required).toBe(true);
   });
 
   it("matches column rule", async () => {
     ee.queueMockRows([makeRuleRow({ rule_type: "column", pattern: "ssn" })]);
-    const result = await checkApprovalRequired("org-1", ["users"], ["ssn"]);
+    const result = await run(checkApprovalRequired("org-1", ["users"], ["ssn"]));
     expect(result.required).toBe(true);
   });
 
   it("does not match when table is not accessed", async () => {
     ee.queueMockRows([makeRuleRow({ rule_type: "table", pattern: "secret_data" })]);
-    const result = await checkApprovalRequired("org-1", ["orders"], ["id"]);
+    const result = await run(checkApprovalRequired("org-1", ["orders"], ["id"]));
     expect(result.required).toBe(false);
   });
 
   it("matches schema-qualified table name", async () => {
     ee.queueMockRows([makeRuleRow({ rule_type: "table", pattern: "users" })]);
-    const result = await checkApprovalRequired("org-1", ["public.users"], ["id"]);
+    const result = await run(checkApprovalRequired("org-1", ["public.users"], ["id"]));
     expect(result.required).toBe(true);
   });
 });
@@ -306,7 +324,7 @@ describe("createApprovalRequest", () => {
 
   it("creates an approval request", async () => {
     ee.queueMockRows([makeQueueRow()]);
-    const result = await createApprovalRequest({
+    const result = await run(createApprovalRequest({
       orgId: "org-1",
       ruleId: "rule-1",
       ruleName: "PII table approval",
@@ -317,7 +335,7 @@ describe("createApprovalRequest", () => {
       connectionId: "default",
       tablesAccessed: ["users"],
       columnsAccessed: ["id", "name", "email"],
-    });
+    }));
     expect(result.id).toBe("req-1");
     expect(result.status).toBe("pending");
     expect(result.tablesAccessed).toEqual(["users"]);
@@ -330,7 +348,7 @@ describe("listApprovalRequests", () => {
 
   it("returns all requests", async () => {
     ee.queueMockRows([makeQueueRow(), makeQueueRow({ id: "req-2" })]);
-    const result = await listApprovalRequests("org-1");
+    const result = await run(listApprovalRequests("org-1"));
     expect(result).toHaveLength(2);
   });
 
@@ -340,7 +358,7 @@ describe("listApprovalRequests", () => {
       makeQueueRow({ id: "req-2", status: "bogus" }),
       makeQueueRow({ id: "req-3", status: "pending" }),
     ]);
-    const result = await listApprovalRequests("org-1");
+    const result = await run(listApprovalRequests("org-1"));
     expect(result).toHaveLength(2);
     expect(result[0].id).toBe("req-1");
     expect(result[1].id).toBe("req-3");
@@ -348,7 +366,7 @@ describe("listApprovalRequests", () => {
 
   it("filters by status", async () => {
     ee.queueMockRows([makeQueueRow({ status: "approved" })]);
-    const result = await listApprovalRequests("org-1", "approved");
+    const result = await run(listApprovalRequests("org-1", "approved"));
     expect(result).toHaveLength(1);
     expect(ee.capturedQueries[0].sql).toContain("AND status = $2");
   });
@@ -359,7 +377,7 @@ describe("getApprovalRequest", () => {
 
   it("throws for request with invalid status", async () => {
     ee.queueMockRows([makeQueueRow({ status: "bogus" })]);
-    await expect(getApprovalRequest("org-1", "req-1")).rejects.toThrow("invalid status");
+    await expect(run(getApprovalRequest("org-1", "req-1"))).rejects.toThrow("invalid status");
   });
 });
 
@@ -371,28 +389,28 @@ describe("reviewApprovalRequest", () => {
     ee.queueMockRows([makeQueueRow()]);
     // UPDATE RETURNING
     ee.queueMockRows([makeQueueRow({ status: "approved", reviewer_id: "admin-1", reviewed_at: "2026-01-01T12:00:00Z" })]);
-    const result = await reviewApprovalRequest("org-1", "req-1", "admin-1", "admin@example.com", "approve", "Looks good");
+    const result = await run(reviewApprovalRequest("org-1", "req-1", "admin-1", "admin@example.com", "approve", "Looks good"));
     expect(result.status).toBe("approved");
   });
 
   it("denies a pending request", async () => {
     ee.queueMockRows([makeQueueRow()]);
     ee.queueMockRows([makeQueueRow({ status: "denied", reviewer_id: "admin-1", reviewed_at: "2026-01-01T12:00:00Z" })]);
-    const result = await reviewApprovalRequest("org-1", "req-1", "admin-1", "admin@example.com", "deny");
+    const result = await run(reviewApprovalRequest("org-1", "req-1", "admin-1", "admin@example.com", "deny"));
     expect(result.status).toBe("denied");
   });
 
   it("throws not_found for missing request", async () => {
     ee.queueMockRows([]); // getApprovalRequest returns nothing
     await expect(
-      reviewApprovalRequest("org-1", "missing", "admin-1", null, "approve"),
+      run(reviewApprovalRequest("org-1", "missing", "admin-1", null, "approve")),
     ).rejects.toThrow("not found");
   });
 
   it("throws conflict for already-reviewed request", async () => {
     ee.queueMockRows([makeQueueRow({ status: "approved" })]);
     await expect(
-      reviewApprovalRequest("org-1", "req-1", "admin-1", null, "approve"),
+      run(reviewApprovalRequest("org-1", "req-1", "admin-1", null, "approve")),
     ).rejects.toThrow("Cannot approve request");
   });
 
@@ -402,7 +420,7 @@ describe("reviewApprovalRequest", () => {
     // For the UPDATE to expired status
     ee.queueMockRows([]);
     await expect(
-      reviewApprovalRequest("org-1", "req-1", "admin-1", null, "approve"),
+      run(reviewApprovalRequest("org-1", "req-1", "admin-1", null, "approve")),
     ).rejects.toThrow("expired");
   });
 });
@@ -412,7 +430,7 @@ describe("expireStaleRequests", () => {
 
   it("returns 0 when enterprise is disabled", async () => {
     mockEnterpriseEnabled = false;
-    const result = await expireStaleRequests();
+    const result = await run(expireStaleRequests());
     expect(result).toBe(0);
   });
 
@@ -420,7 +438,7 @@ describe("expireStaleRequests", () => {
     const original = new Error("Config service unavailable");
     mockGetConfigError = original;
     try {
-      await expireStaleRequests();
+      await run(expireStaleRequests());
       expect.unreachable("should have thrown");
     } catch (err) {
       expect(err).toBe(original);
@@ -433,7 +451,7 @@ describe("getPendingCount", () => {
 
   it("returns 0 when enterprise is disabled", async () => {
     mockEnterpriseEnabled = false;
-    const result = await getPendingCount("org-1");
+    const result = await run(getPendingCount("org-1"));
     expect(result).toBe(0);
   });
 
@@ -441,7 +459,7 @@ describe("getPendingCount", () => {
     const original = new Error("Unexpected config failure");
     mockGetConfigError = original;
     try {
-      await getPendingCount("org-1");
+      await run(getPendingCount("org-1"));
       expect.unreachable("should have thrown");
     } catch (err) {
       expect(err).toBe(original);
@@ -450,7 +468,7 @@ describe("getPendingCount", () => {
 
   it("returns count from database", async () => {
     ee.queueMockRows([{ count: "5" }]);
-    const result = await getPendingCount("org-1");
+    const result = await run(getPendingCount("org-1"));
     expect(result).toBe(5);
   });
 });
@@ -461,7 +479,7 @@ describe("reviewApprovalRequest — self-approval", () => {
   it("throws conflict when reviewer is the requester", async () => {
     ee.queueMockRows([makeQueueRow({ requester_id: "user-1" })]);
     await expect(
-      reviewApprovalRequest("org-1", "req-1", "user-1", "user@example.com", "approve"),
+      run(reviewApprovalRequest("org-1", "req-1", "user-1", "user@example.com", "approve")),
     ).rejects.toThrow("Cannot review your own approval request");
   });
 });
@@ -471,20 +489,20 @@ describe("hasApprovedRequest", () => {
 
   it("returns true when an approved request exists", async () => {
     ee.queueMockRows([{ id: "req-1" }]);
-    const result = await hasApprovedRequest("org-1", "user-1", "SELECT * FROM users");
+    const result = await run(hasApprovedRequest("org-1", "user-1", "SELECT * FROM users"));
     expect(result).toBe(true);
     expect(ee.capturedQueries[0].sql).toContain("status = 'approved'");
   });
 
   it("returns false when no approved request exists", async () => {
     ee.queueMockRows([]);
-    const result = await hasApprovedRequest("org-1", "user-1", "SELECT * FROM users");
+    const result = await run(hasApprovedRequest("org-1", "user-1", "SELECT * FROM users"));
     expect(result).toBe(false);
   });
 
   it("returns false when enterprise is disabled without querying DB", async () => {
     mockEnterpriseEnabled = false;
-    const result = await hasApprovedRequest("org-1", "user-1", "SELECT * FROM users");
+    const result = await run(hasApprovedRequest("org-1", "user-1", "SELECT * FROM users"));
     expect(result).toBe(false);
     expect(ee.capturedQueries).toHaveLength(0);
   });
@@ -493,7 +511,7 @@ describe("hasApprovedRequest", () => {
     const original = new Error("Config service down");
     mockGetConfigError = original;
     try {
-      await hasApprovedRequest("org-1", "user-1", "SELECT * FROM users");
+      await run(hasApprovedRequest("org-1", "user-1", "SELECT * FROM users"));
       expect.unreachable("should have thrown");
     } catch (err) {
       expect(err).toBe(original);
@@ -510,7 +528,7 @@ describe("listApprovalRules — invalid rule_type filtering", () => {
       makeRuleRow({ id: "rule-2", rule_type: "bogus" }),
       makeRuleRow({ id: "rule-3", rule_type: "column", name: "SSN column", pattern: "ssn" }),
     ]);
-    const result = await listApprovalRules("org-1");
+    const result = await run(listApprovalRules("org-1"));
     expect(result).toHaveLength(2);
     expect(result[0].id).toBe("rule-1");
     expect(result[1].id).toBe("rule-3");
@@ -521,7 +539,7 @@ describe("listApprovalRules — invalid rule_type filtering", () => {
       makeRuleRow({ id: "rule-1", rule_type: "invalid" }),
       makeRuleRow({ id: "rule-2", rule_type: "" }),
     ]);
-    const result = await listApprovalRules("org-1");
+    const result = await run(listApprovalRules("org-1"));
     expect(result).toEqual([]);
   });
 });
@@ -534,7 +552,7 @@ describe("checkApprovalRequired — invalid rule_type in matching", () => {
       makeRuleRow({ id: "rule-1", rule_type: "bogus", pattern: "users" }),
       makeRuleRow({ id: "rule-2", rule_type: "table", pattern: "users" }),
     ]);
-    const result = await checkApprovalRequired("org-1", ["users"], ["id"]);
+    const result = await run(checkApprovalRequired("org-1", ["users"], ["id"]));
     expect(result.required).toBe(true);
     expect(result.matchedRules).toHaveLength(1);
     expect(result.matchedRules[0].id).toBe("rule-2");

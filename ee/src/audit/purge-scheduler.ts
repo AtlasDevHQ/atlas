@@ -8,6 +8,7 @@
  * enterprise features are enabled.
  */
 
+import { Effect } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
 import { isEnterpriseEnabled } from "../index";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
@@ -31,7 +32,7 @@ export async function runPurgeCycle(): Promise<void> {
     const { purgeExpiredEntries, hardDeleteExpired } = await import("./retention");
 
     // Soft-delete expired entries across all orgs
-    const softResults = await purgeExpiredEntries();
+    const softResults = await Effect.runPromise(purgeExpiredEntries());
     const totalSoftDeleted = softResults.reduce((sum, r) => sum + r.softDeletedCount, 0);
 
     if (totalSoftDeleted > 0) {
@@ -39,7 +40,7 @@ export async function runPurgeCycle(): Promise<void> {
     }
 
     // Hard-delete entries past the delay
-    const hardResult = await hardDeleteExpired();
+    const hardResult = await Effect.runPromise(hardDeleteExpired());
     if (hardResult.deletedCount > 0) {
       log.info({ deletedCount: hardResult.deletedCount }, "Audit purge cycle: hard-delete complete");
     }

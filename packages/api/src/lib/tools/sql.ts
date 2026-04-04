@@ -876,9 +876,9 @@ Rules:
               const { checkApprovalRequired } = await import("@atlas/ee/governance/approval");
               const checkReqCtx = getRequestContext();
               const checkOrgId = checkReqCtx?.user?.activeOrganizationId;
-              approvalMatch = await checkApprovalRequired(
+              approvalMatch = await Effect.runPromise(checkApprovalRequired(
                 checkOrgId, classification.tablesAccessed, classification.columnsAccessed,
-              );
+              ));
             } catch (err) {
               log.warn(
                 { err: err instanceof Error ? err.message : String(err), connectionId: connId },
@@ -905,10 +905,10 @@ Rules:
                 };
               }
 
-              const alreadyApproved = await hasApprovedRequest(approvalOrgId, userId, normalizedSql);
+              const alreadyApproved = await Effect.runPromise(hasApprovedRequest(approvalOrgId, userId, normalizedSql));
               if (!alreadyApproved) {
                 const firstRule = approvalMatch.matchedRules[0];
-                const approvalReq = await createApprovalRequest({
+                const approvalReq = await Effect.runPromise(createApprovalRequest({
                   orgId: approvalOrgId,
                   ruleId: firstRule.id,
                   ruleName: firstRule.name,
@@ -919,7 +919,7 @@ Rules:
                   connectionId: connId,
                   tablesAccessed: classification.tablesAccessed,
                   columnsAccessed: classification.columnsAccessed,
-                });
+                }));
                 logQueryAudit({
                   sql: normalizedSql.slice(0, 2000), durationMs: 0, rowCount: null, success: false,
                   error: `Approval required: ${firstRule.name}`,

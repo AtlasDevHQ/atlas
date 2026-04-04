@@ -7,12 +7,15 @@
  *
  * Region assignment is immutable after creation — changing a workspace's
  * region requires data migration (separate future work).
+ *
+ * All exported async functions return Effect — callers use `yield*` in Effect.gen.
  */
 
+import { Effect } from "effect";
 import { EEError } from "../lib/errors";
 import { getConfig } from "@atlas/api/lib/config";
 import type { ResidencyConfig } from "@atlas/api/lib/config";
-import { requireInternalDB } from "../lib/db-guard";
+import { requireInternalDBEffect } from "../lib/db-guard";
 import {
   hasInternalDB,
   internalQuery,
@@ -50,6 +53,17 @@ function getResidencyConfig(): ResidencyConfig {
   return config.residency;
 }
 
+function getResidencyConfigEffect(): Effect.Effect<ResidencyConfig, ResidencyError> {
+  const config = getConfig();
+  if (!config?.residency) {
+    return Effect.fail(new ResidencyError(
+      "Data residency is not configured. Add a 'residency' section to atlas.config.ts with region definitions.",
+      "not_configured",
+    ));
+  }
+  return Effect.succeed(config.residency);
+}
+
 function isValidRegion(region: string, residency: ResidencyConfig): boolean {
   return region in residency.regions;
 }
@@ -78,28 +92,28 @@ function rowToWorkspaceRegion(row: Record<string, unknown>): WorkspaceRegion {
 /**
  * List all configured regions with workspace counts and health status.
  */
-export async function listRegions(): Promise<RegionStatus[]> {
+export const listRegions = (): Effect.Effect<RegionStatus[], ResidencyError> =>
+  Effect.gen(function* () {
+    const residency = yield* getResidencyConfigEffect();
 
-  const residency = getResidencyConfig();
-
-  const workspaceCounts: Record<string, number> = {};
-  if (hasInternalDB()) {
-    const rows = await internalQuery<{ region: string; cnt: string }>(
-      `SELECT region, COUNT(*) AS cnt FROM organization WHERE region IS NOT NULL GROUP BY region`,
-      [],
-    );
-    for (const row of rows) {
-      workspaceCounts[row.region] = parseInt(row.cnt, 10);
+    const workspaceCounts: Record<string, number> = {};
+    if (hasInternalDB()) {
+      const rows = yield* Effect.promise(() => internalQuery<{ region: string; cnt: string }>(
+        `SELECT region, COUNT(*) AS cnt FROM organization WHERE region IS NOT NULL GROUP BY region`,
+        [],
+      ));
+      for (const row of rows) {
+        workspaceCounts[row.region] = parseInt(row.cnt, 10);
+      }
     }
-  }
 
-  return Object.entries(residency.regions).map(([regionId, regionConfig]) => ({
-    region: regionId,
-    label: regionConfig.label,
-    workspaceCount: workspaceCounts[regionId] ?? 0,
-    healthy: true, // health check can be extended later
-  }));
-}
+    return Object.entries(residency.regions).map(([regionId, regionConfig]) => ({
+      region: regionId,
+      label: regionConfig.label,
+      workspaceCount: workspaceCounts[regionId] ?? 0,
+      healthy: true, // health check can be extended later
+    }));
+  });
 
 /**
  * Get the default region for new workspaces.
@@ -121,72 +135,69 @@ export function getConfiguredRegions(): ResidencyConfig["regions"] {
 
 /**
  * Assign a region to a workspace. Region is immutable once set.
- *
- * @throws {ResidencyError} If region is invalid, already assigned, or workspace not found.
  */
-export async function assignWorkspaceRegion(
+export const assignWorkspaceRegion = (
   workspaceId: string,
   region: string,
-): Promise<WorkspaceRegion> {
+): Effect.Effect<WorkspaceRegion, ResidencyError | Error> =>
+  Effect.gen(function* () {
+    const residency = yield* getResidencyConfigEffect();
 
-  const residency = getResidencyConfig();
+    yield* requireInternalDBEffect("data residency", () => new ResidencyError("Internal database is required for data residency.", "no_internal_db"));
 
-  requireInternalDB("data residency", () => new ResidencyError("Internal database is required for data residency.", "no_internal_db"));
-
-  if (!isValidRegion(region, residency)) {
-    const available = Object.keys(residency.regions).join(", ");
-    throw new ResidencyError(
-      `Invalid region "${region}". Available regions: ${available}`,
-      "invalid_region",
-    );
-  }
-
-  const result = await setWorkspaceRegion(workspaceId, region);
-  if (!result.assigned) {
-    if (result.existing) {
-      throw new ResidencyError(
-        `Workspace is already assigned to region "${result.existing}". Region cannot be changed after assignment.`,
-        "already_assigned",
-      );
+    if (!isValidRegion(region, residency)) {
+      const available = Object.keys(residency.regions).join(", ");
+      return yield* Effect.fail(new ResidencyError(
+        `Invalid region "${region}". Available regions: ${available}`,
+        "invalid_region",
+      ));
     }
-    throw new ResidencyError(
-      `Workspace "${workspaceId}" not found.`,
-      "workspace_not_found",
-    );
-  }
 
-  log.info({ workspaceId, region }, "Workspace assigned to region");
-  return {
-    workspaceId,
-    region: region,
-    assignedAt: new Date().toISOString(),
-  };
-}
+    const result = yield* Effect.promise(() => setWorkspaceRegion(workspaceId, region));
+    if (!result.assigned) {
+      if (result.existing) {
+        return yield* Effect.fail(new ResidencyError(
+          `Workspace is already assigned to region "${result.existing}". Region cannot be changed after assignment.`,
+          "already_assigned",
+        ));
+      }
+      return yield* Effect.fail(new ResidencyError(
+        `Workspace "${workspaceId}" not found.`,
+        "workspace_not_found",
+      ));
+    }
+
+    log.info({ workspaceId, region }, "Workspace assigned to region");
+    return {
+      workspaceId,
+      region: region,
+      assignedAt: new Date().toISOString(),
+    };
+  });
 
 /**
  * Get the region assignment for a workspace.
  * Returns null if the workspace has no region assigned.
  */
-export async function getWorkspaceRegionAssignment(
+export const getWorkspaceRegionAssignment = (
   workspaceId: string,
-): Promise<WorkspaceRegion | null> {
+): Effect.Effect<WorkspaceRegion | null, ResidencyError | Error> =>
+  Effect.gen(function* () {
+    yield* requireInternalDBEffect("data residency", () => new ResidencyError("Internal database is required for data residency.", "no_internal_db"));
 
+    const rows = yield* Effect.promise(() => internalQuery<Record<string, unknown>>(
+      `SELECT region, region_assigned_at FROM organization WHERE id = $1`,
+      [workspaceId],
+    ));
 
-  requireInternalDB("data residency", () => new ResidencyError("Internal database is required for data residency.", "no_internal_db"));
+    if (rows.length === 0 || !rows[0].region) return null;
 
-  const rows = await internalQuery<Record<string, unknown>>(
-    `SELECT region, region_assigned_at FROM organization WHERE id = $1`,
-    [workspaceId],
-  );
-
-  if (rows.length === 0 || !rows[0].region) return null;
-
-  return {
-    workspaceId,
-    region: String(rows[0].region),
-    assignedAt: toISOString(rows[0].region_assigned_at, "region_assigned_at"),
-  };
-}
+    return {
+      workspaceId,
+      region: String(rows[0].region),
+      assignedAt: toISOString(rows[0].region_assigned_at, "region_assigned_at"),
+    };
+  });
 
 /**
  * Resolve region-specific database URLs for a workspace.
@@ -197,46 +208,46 @@ export async function getWorkspaceRegionAssignment(
  *
  * Returns null when no region config exists or workspace has no assignment.
  */
-export async function resolveRegionDatabaseUrl(
+export const resolveRegionDatabaseUrl = (
   workspaceId: string,
-): Promise<{ databaseUrl: string; datasourceUrl?: string; region: string } | null> {
-  const config = getConfig();
-  if (!config?.residency) return null;
+): Effect.Effect<{ databaseUrl: string; datasourceUrl?: string; region: string } | null> =>
+  Effect.gen(function* () {
+    const config = getConfig();
+    if (!config?.residency) return null;
 
-  const region = await getWorkspaceRegion(workspaceId);
-  if (!region) return null;
+    const region = yield* Effect.promise(() => getWorkspaceRegion(workspaceId));
+    if (!region) return null;
 
-  const regionConfig = config.residency.regions[region];
-  if (!regionConfig) {
-    log.error(
-      { workspaceId, region, configuredRegions: Object.keys(config.residency.regions) },
-      "Workspace assigned to region that is no longer configured — data residency contract may be violated",
-    );
-    return null;
-  }
+    const regionConfig = config.residency.regions[region];
+    if (!regionConfig) {
+      log.error(
+        { workspaceId, region, configuredRegions: Object.keys(config.residency.regions) },
+        "Workspace assigned to region that is no longer configured — data residency contract may be violated",
+      );
+      return null;
+    }
 
-  return {
-    databaseUrl: regionConfig.databaseUrl,
-    datasourceUrl: regionConfig.datasourceUrl,
-    region,
-  };
-}
+    return {
+      databaseUrl: regionConfig.databaseUrl,
+      datasourceUrl: regionConfig.datasourceUrl,
+      region,
+    };
+  });
 
 /**
  * List all workspace region assignments (for admin views).
  */
-export async function listWorkspaceRegions(): Promise<WorkspaceRegion[]> {
+export const listWorkspaceRegions = (): Effect.Effect<WorkspaceRegion[], ResidencyError | Error> =>
+  Effect.gen(function* () {
+    yield* requireInternalDBEffect("data residency", () => new ResidencyError("Internal database is required for data residency.", "no_internal_db"));
 
+    const rows = yield* Effect.promise(() => internalQuery<Record<string, unknown>>(
+      `SELECT id, region, region_assigned_at FROM organization WHERE region IS NOT NULL ORDER BY region_assigned_at DESC`,
+      [],
+    ));
 
-  requireInternalDB("data residency", () => new ResidencyError("Internal database is required for data residency.", "no_internal_db"));
-
-  const rows = await internalQuery<Record<string, unknown>>(
-    `SELECT id, region, region_assigned_at FROM organization WHERE region IS NOT NULL ORDER BY region_assigned_at DESC`,
-    [],
-  );
-
-  return rows.map(rowToWorkspaceRegion);
-}
+    return rows.map(rowToWorkspaceRegion);
+  });
 
 /**
  * Validate that a region string is in the configured regions.

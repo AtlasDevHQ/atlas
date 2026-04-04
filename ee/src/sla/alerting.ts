@@ -5,9 +5,12 @@
  * and resolves alerts, and delivers notifications via webhook.
  *
  * Access-gated via platformAdminAuth middleware (platform_admin role required).
+ *
+ * All exported functions return Effect — callers use `yield*` in Effect.gen.
  */
 
-import { requireInternalDB } from "../lib/db-guard";
+import { Effect } from "effect";
+import { requireInternalDBEffect } from "../lib/db-guard";
 import { internalQuery } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 import type { SLAAlert, SLAAlertStatus, SLAAlertType, SLAThresholds } from "@useatlas/types";
@@ -24,42 +27,41 @@ const log = createLogger("ee:sla-alerting");
  * env vars (`ATLAS_SLA_LATENCY_P99_MS`, `ATLAS_SLA_ERROR_RATE_PCT`)
  * with hardcoded defaults.
  */
-export async function getThresholds(workspaceId?: string): Promise<SLAThresholds> {
+export const getThresholds = (workspaceId?: string): Effect.Effect<SLAThresholds, Error> =>
+  Effect.gen(function* () {
+    yield* requireInternalDBEffect("SLA thresholds");
 
+    if (workspaceId) {
+      const rows = yield* Effect.promise(() => internalQuery<{
+        latency_p99_ms: number;
+        error_rate_pct: number;
+      }>(
+        `SELECT latency_p99_ms, error_rate_pct
+         FROM sla_thresholds WHERE workspace_id = $1`,
+        [workspaceId],
+      ));
+      if (rows.length > 0) {
+        return {
+          latencyP99Ms: rows[0].latency_p99_ms,
+          errorRatePct: rows[0].error_rate_pct,
+        };
+      }
+    }
 
-  requireInternalDB("SLA thresholds");
-
-  if (workspaceId) {
-    const rows = await internalQuery<{
+    const defaults = yield* Effect.promise(() => internalQuery<{
       latency_p99_ms: number;
       error_rate_pct: number;
-    }>(
-      `SELECT latency_p99_ms, error_rate_pct
-       FROM sla_thresholds WHERE workspace_id = $1`,
-      [workspaceId],
-    );
-    if (rows.length > 0) {
+    }>(`SELECT latency_p99_ms, error_rate_pct FROM sla_thresholds WHERE workspace_id = '_default'`));
+
+    if (defaults.length > 0) {
       return {
-        latencyP99Ms: rows[0].latency_p99_ms,
-        errorRatePct: rows[0].error_rate_pct,
+        latencyP99Ms: defaults[0].latency_p99_ms,
+        errorRatePct: defaults[0].error_rate_pct,
       };
     }
-  }
 
-  const defaults = await internalQuery<{
-    latency_p99_ms: number;
-    error_rate_pct: number;
-  }>(`SELECT latency_p99_ms, error_rate_pct FROM sla_thresholds WHERE workspace_id = '_default'`);
-
-  if (defaults.length > 0) {
-    return {
-      latencyP99Ms: defaults[0].latency_p99_ms,
-      errorRatePct: defaults[0].error_rate_pct,
-    };
-  }
-
-  return defaultThresholds();
-}
+    return defaultThresholds();
+  });
 
 function defaultThresholds(): SLAThresholds {
   const latency = parseFloat(process.env.ATLAS_SLA_LATENCY_P99_MS ?? "");
@@ -73,21 +75,20 @@ function defaultThresholds(): SLAThresholds {
 /**
  * Update the default SLA thresholds.
  */
-export async function updateThresholds(thresholds: SLAThresholds): Promise<void> {
+export const updateThresholds = (thresholds: SLAThresholds): Effect.Effect<void, Error> =>
+  Effect.gen(function* () {
+    yield* requireInternalDBEffect("SLA thresholds");
 
-
-  requireInternalDB("SLA thresholds");
-
-  await internalQuery(
-    `INSERT INTO sla_thresholds (workspace_id, latency_p99_ms, error_rate_pct, updated_at)
-     VALUES ('_default', $1, $2, now())
-     ON CONFLICT (workspace_id) DO UPDATE SET
-       latency_p99_ms = $1,
-       error_rate_pct = $2,
-       updated_at = now()`,
-    [thresholds.latencyP99Ms, thresholds.errorRatePct],
-  );
-}
+    yield* Effect.promise(() => internalQuery(
+      `INSERT INTO sla_thresholds (workspace_id, latency_p99_ms, error_rate_pct, updated_at)
+       VALUES ('_default', $1, $2, now())
+       ON CONFLICT (workspace_id) DO UPDATE SET
+         latency_p99_ms = $1,
+         error_rate_pct = $2,
+         updated_at = now()`,
+      [thresholds.latencyP99Ms, thresholds.errorRatePct],
+    ));
+  });
 
 // ---------------------------------------------------------------------------
 // Alert queries
@@ -96,66 +97,64 @@ export async function updateThresholds(thresholds: SLAThresholds): Promise<void>
 /**
  * Get all alerts, optionally filtered by status.
  */
-export async function getAlerts(
+export const getAlerts = (
   status?: SLAAlertStatus,
   limit = 100,
-): Promise<SLAAlert[]> {
+): Effect.Effect<SLAAlert[], Error> =>
+  Effect.gen(function* () {
+    yield* requireInternalDBEffect("SLA alerts");
 
+    const rows = yield* Effect.promise(() => internalQuery<{
+      id: string;
+      workspace_id: string;
+      workspace_name: string;
+      alert_type: SLAAlertType;
+      status: SLAAlertStatus;
+      current_value: number;
+      threshold: number;
+      message: string;
+      fired_at: string;
+      resolved_at: string | null;
+      acknowledged_at: string | null;
+      acknowledged_by: string | null;
+    }>(
+      status
+        ? `SELECT a.id, a.workspace_id, COALESCE(o.name, a.workspace_id) AS workspace_name,
+                a.alert_type, a.status, a.current_value, a.threshold, a.message,
+                a.fired_at::text, a.resolved_at::text, a.acknowledged_at::text, a.acknowledged_by
+           FROM sla_alerts a
+           LEFT JOIN organization o ON o.id = a.workspace_id
+           WHERE a.status = $1
+           ORDER BY a.fired_at DESC LIMIT $2`
+        : `SELECT a.id, a.workspace_id, COALESCE(o.name, a.workspace_id) AS workspace_name,
+                a.alert_type, a.status, a.current_value, a.threshold, a.message,
+                a.fired_at::text, a.resolved_at::text, a.acknowledged_at::text, a.acknowledged_by
+           FROM sla_alerts a
+           LEFT JOIN organization o ON o.id = a.workspace_id
+           ORDER BY a.fired_at DESC LIMIT $1`,
+      status ? [status, limit] : [limit],
+    ));
 
-  requireInternalDB("SLA alerts");
-
-  const rows = await internalQuery<{
-    id: string;
-    workspace_id: string;
-    workspace_name: string;
-    alert_type: SLAAlertType;
-    status: SLAAlertStatus;
-    current_value: number;
-    threshold: number;
-    message: string;
-    fired_at: string;
-    resolved_at: string | null;
-    acknowledged_at: string | null;
-    acknowledged_by: string | null;
-  }>(
-    status
-      ? `SELECT a.id, a.workspace_id, COALESCE(o.name, a.workspace_id) AS workspace_name,
-              a.alert_type, a.status, a.current_value, a.threshold, a.message,
-              a.fired_at::text, a.resolved_at::text, a.acknowledged_at::text, a.acknowledged_by
-         FROM sla_alerts a
-         LEFT JOIN organization o ON o.id = a.workspace_id
-         WHERE a.status = $1
-         ORDER BY a.fired_at DESC LIMIT $2`
-      : `SELECT a.id, a.workspace_id, COALESCE(o.name, a.workspace_id) AS workspace_name,
-              a.alert_type, a.status, a.current_value, a.threshold, a.message,
-              a.fired_at::text, a.resolved_at::text, a.acknowledged_at::text, a.acknowledged_by
-         FROM sla_alerts a
-         LEFT JOIN organization o ON o.id = a.workspace_id
-         ORDER BY a.fired_at DESC LIMIT $1`,
-    status ? [status, limit] : [limit],
-  );
-
-  return rows.map(toAlert);
-}
+    return rows.map(toAlert);
+  });
 
 /**
  * Acknowledge an alert.
  */
-export async function acknowledgeAlert(alertId: string, actorId: string): Promise<boolean> {
+export const acknowledgeAlert = (alertId: string, actorId: string): Effect.Effect<boolean, Error> =>
+  Effect.gen(function* () {
+    yield* requireInternalDBEffect("SLA alert acknowledgment");
 
+    const rows = yield* Effect.promise(() => internalQuery<{ id: string }>(
+      `UPDATE sla_alerts
+       SET status = 'acknowledged', acknowledged_at = now(), acknowledged_by = $2
+       WHERE id = $1 AND status = 'firing'
+       RETURNING id`,
+      [alertId, actorId],
+    ));
 
-  requireInternalDB("SLA alert acknowledgment");
-
-  const rows = await internalQuery<{ id: string }>(
-    `UPDATE sla_alerts
-     SET status = 'acknowledged', acknowledged_at = now(), acknowledged_by = $2
-     WHERE id = $1 AND status = 'firing'
-     RETURNING id`,
-    [alertId, actorId],
-  );
-
-  return rows.length > 0;
-}
+    return rows.length > 0;
+  });
 
 // ---------------------------------------------------------------------------
 // Alert evaluation — called periodically or on-demand
@@ -166,96 +165,98 @@ export async function acknowledgeAlert(alertId: string, actorId: string): Promis
  * Returns newly fired alerts. Notifications are dispatched internally
  * via webhook (if configured).
  */
-export async function evaluateAlerts(): Promise<SLAAlert[]> {
+export const evaluateAlerts = (): Effect.Effect<SLAAlert[], Error> =>
+  Effect.gen(function* () {
+    yield* requireInternalDBEffect("SLA evaluation");
 
+    const thresholds = yield* getThresholds();
 
-  requireInternalDB("SLA evaluation");
+    return yield* Effect.promise(async () => {
+      const newAlerts: SLAAlert[] = [];
 
-  const thresholds = await getThresholds();
-  const newAlerts: SLAAlert[] = [];
-
-  // Get recent metrics per workspace (last hour)
-  const wsMetrics = await internalQuery<{
-    workspace_id: string;
-    workspace_name: string;
-    latency_p99: number | null;
-    error_rate: number;
-    total_queries: string;
-  }>(
-    `SELECT
-       m.workspace_id,
-       COALESCE(o.name, m.workspace_id) AS workspace_name,
-       PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY m.latency_ms) AS latency_p99,
-       CASE WHEN COUNT(*) > 0
-            THEN (COUNT(*) FILTER (WHERE m.is_error)::float / COUNT(*)::float) * 100
-            ELSE 0
-       END AS error_rate,
-       COUNT(*)::text AS total_queries
-     FROM sla_metrics m
-     LEFT JOIN organization o ON o.id = m.workspace_id
-     WHERE m.recorded_at > now() - interval '1 hour'
-     GROUP BY m.workspace_id, o.name`,
-  );
-
-  for (const ws of wsMetrics) {
-    try {
-      const totalQueries = parseInt(ws.total_queries, 10);
-      if (totalQueries === 0) continue;
-
-      // Check latency P99
-      if (ws.latency_p99 !== null && ws.latency_p99 > thresholds.latencyP99Ms) {
-        const alert = await createAlertIfNotFiring(
-          ws.workspace_id,
-          ws.workspace_name,
-          "latency_p99",
-          ws.latency_p99,
-          thresholds.latencyP99Ms,
-          `Workspace "${ws.workspace_name}" p99 latency ${Math.round(ws.latency_p99)}ms exceeds threshold ${thresholds.latencyP99Ms}ms`,
-        );
-        if (alert) newAlerts.push(alert);
-      } else {
-        await resolveAlertsForType(ws.workspace_id, "latency_p99");
-      }
-
-      // Check error rate
-      if (ws.error_rate > thresholds.errorRatePct) {
-        const alert = await createAlertIfNotFiring(
-          ws.workspace_id,
-          ws.workspace_name,
-          "error_rate",
-          ws.error_rate,
-          thresholds.errorRatePct,
-          `Workspace "${ws.workspace_name}" error rate ${ws.error_rate.toFixed(1)}% exceeds threshold ${thresholds.errorRatePct}%`,
-        );
-        if (alert) newAlerts.push(alert);
-      } else {
-        await resolveAlertsForType(ws.workspace_id, "error_rate");
-      }
-    } catch (err) {
-      log.error(
-        { err: err instanceof Error ? err.message : String(err), workspaceId: ws.workspace_id },
-        "Failed to evaluate SLA for workspace — skipping",
+      // Get recent metrics per workspace (last hour)
+      const wsMetrics = await internalQuery<{
+        workspace_id: string;
+        workspace_name: string;
+        latency_p99: number | null;
+        error_rate: number;
+        total_queries: string;
+      }>(
+        `SELECT
+           m.workspace_id,
+           COALESCE(o.name, m.workspace_id) AS workspace_name,
+           PERCENTILE_CONT(0.99) WITHIN GROUP (ORDER BY m.latency_ms) AS latency_p99,
+           CASE WHEN COUNT(*) > 0
+                THEN (COUNT(*) FILTER (WHERE m.is_error)::float / COUNT(*)::float) * 100
+                ELSE 0
+           END AS error_rate,
+           COUNT(*)::text AS total_queries
+         FROM sla_metrics m
+         LEFT JOIN organization o ON o.id = m.workspace_id
+         WHERE m.recorded_at > now() - interval '1 hour'
+         GROUP BY m.workspace_id, o.name`,
       );
-    }
-  }
 
-  if (newAlerts.length > 0) {
-    log.info({ count: newAlerts.length }, "New SLA alerts fired");
-    // Attempt webhook delivery (non-critical)
-    for (const alert of newAlerts) {
-      try {
-        await deliverAlert(alert);
-      } catch (err) {
-        log.error(
-          { err: err instanceof Error ? err.message : String(err), alertId: alert.id },
-          "Failed to deliver SLA alert notification — alert was created but notification was not sent",
-        );
+      for (const ws of wsMetrics) {
+        try {
+          const totalQueries = parseInt(ws.total_queries, 10);
+          if (totalQueries === 0) continue;
+
+          // Check latency P99
+          if (ws.latency_p99 !== null && ws.latency_p99 > thresholds.latencyP99Ms) {
+            const alert = await createAlertIfNotFiring(
+              ws.workspace_id,
+              ws.workspace_name,
+              "latency_p99",
+              ws.latency_p99,
+              thresholds.latencyP99Ms,
+              `Workspace "${ws.workspace_name}" p99 latency ${Math.round(ws.latency_p99)}ms exceeds threshold ${thresholds.latencyP99Ms}ms`,
+            );
+            if (alert) newAlerts.push(alert);
+          } else {
+            await resolveAlertsForType(ws.workspace_id, "latency_p99");
+          }
+
+          // Check error rate
+          if (ws.error_rate > thresholds.errorRatePct) {
+            const alert = await createAlertIfNotFiring(
+              ws.workspace_id,
+              ws.workspace_name,
+              "error_rate",
+              ws.error_rate,
+              thresholds.errorRatePct,
+              `Workspace "${ws.workspace_name}" error rate ${ws.error_rate.toFixed(1)}% exceeds threshold ${thresholds.errorRatePct}%`,
+            );
+            if (alert) newAlerts.push(alert);
+          } else {
+            await resolveAlertsForType(ws.workspace_id, "error_rate");
+          }
+        } catch (err) {
+          log.error(
+            { err: err instanceof Error ? err.message : String(err), workspaceId: ws.workspace_id },
+            "Failed to evaluate SLA for workspace — skipping",
+          );
+        }
       }
-    }
-  }
 
-  return newAlerts;
-}
+      if (newAlerts.length > 0) {
+        log.info({ count: newAlerts.length }, "New SLA alerts fired");
+        // Attempt webhook delivery (non-critical)
+        for (const alert of newAlerts) {
+          try {
+            await deliverAlert(alert);
+          } catch (err) {
+            log.error(
+              { err: err instanceof Error ? err.message : String(err), alertId: alert.id },
+              "Failed to deliver SLA alert notification — alert was created but notification was not sent",
+            );
+          }
+        }
+      }
+
+      return newAlerts;
+    });
+  });
 
 // ---------------------------------------------------------------------------
 // Helpers

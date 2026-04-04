@@ -286,7 +286,7 @@ const adminApproval = createAdminRouter();
 // POST /expire — manually expire stale requests (global, no org/DB needed)
 adminApproval.openapi(expireRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
-    const expired = yield* Effect.promise(() => expireStaleRequests());
+    const expired = yield* expireStaleRequests();
     return c.json({ expired }, 200);
   }), { label: "expire stale requests", domainErrors: [approvalDomainError] });
 });
@@ -301,7 +301,7 @@ adminApproval.openapi(pendingCountRoute, async (c) => {
       return c.json({ error: "bad_request", message: "No active organization. Set an active org first.", requestId }, 400);
     }
 
-    const count = yield* Effect.promise(() => getPendingCount(orgId));
+    const count = yield* getPendingCount(orgId);
     return c.json({ count }, 200);
   }), { label: "get pending approval count", domainErrors: [approvalDomainError] });
 });
@@ -314,7 +314,7 @@ adminApproval.openapi(listRulesRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
 
-    const rules = yield* Effect.promise(() => listApprovalRules(orgId!));
+    const rules = yield* listApprovalRules(orgId!);
     return c.json({ rules }, 200);
   }), { label: "list approval rules", domainErrors: [approvalDomainError] });
 });
@@ -325,13 +325,13 @@ adminApproval.openapi(createRuleRoute, async (c) => {
     const { orgId } = yield* AuthContext;
     const body = c.req.valid("json");
 
-    const rule = yield* Effect.promise(() => createApprovalRule(orgId!, {
+    const rule = yield* createApprovalRule(orgId!, {
       name: body.name,
       ruleType: body.ruleType,
       pattern: body.pattern,
       threshold: body.threshold ?? null,
       enabled: body.enabled,
-    }));
+    });
     return c.json({ rule }, 201);
   }), { label: "create approval rule", domainErrors: [approvalDomainError] });
 });
@@ -343,7 +343,7 @@ adminApproval.openapi(updateRuleRoute, async (c) => {
     const ruleId = c.req.param("id");
     const body = c.req.valid("json");
 
-    const rule = yield* Effect.promise(() => updateApprovalRule(orgId!, ruleId, body));
+    const rule = yield* updateApprovalRule(orgId!, ruleId, body);
     return c.json({ rule }, 200);
   }), { label: "update approval rule", domainErrors: [approvalDomainError] });
 });
@@ -354,7 +354,7 @@ adminApproval.openapi(deleteRuleRoute, async (c) => {
     const { orgId } = yield* AuthContext;
     const ruleId = c.req.param("id");
 
-    const deleted = yield* Effect.promise(() => deleteApprovalRule(orgId!, ruleId));
+    const deleted = yield* deleteApprovalRule(orgId!, ruleId);
     if (!deleted) {
       return c.json({ error: "not_found", message: "Approval rule not found." }, 404);
     }
@@ -370,7 +370,7 @@ adminApproval.openapi(listQueueRoute, async (c) => {
     const statusParam = new URL(c.req.raw.url).searchParams.get("status") as import("@useatlas/types").ApprovalStatus | null;
     const validStatuses = ["pending", "approved", "denied", "expired"];
     const status = statusParam && validStatuses.includes(statusParam) ? statusParam as import("@useatlas/types").ApprovalStatus : undefined;
-    const requests = yield* Effect.promise(() => listApprovalRequests(orgId!, status));
+    const requests = yield* listApprovalRequests(orgId!, status);
     return c.json({ requests }, 200);
   }), { label: "list approval requests", domainErrors: [approvalDomainError] });
 });
@@ -381,7 +381,7 @@ adminApproval.openapi(getQueueItemRoute, async (c) => {
     const { orgId } = yield* AuthContext;
     const itemId = c.req.param("id");
 
-    const item = yield* Effect.promise(() => getApprovalRequest(orgId!, itemId));
+    const item = yield* getApprovalRequest(orgId!, itemId);
     if (!item) {
       return c.json({ error: "not_found", message: "Approval request not found." }, 404);
     }
@@ -403,14 +403,14 @@ adminApproval.openapi(reviewRoute, async (c) => {
       return c.json({ error: "bad_request", message: "Reviewer user ID unavailable." }, 400);
     }
 
-    const result = yield* Effect.promise(() => reviewApprovalRequest(
+    const result = yield* reviewApprovalRequest(
       orgId!,
       itemId,
       reviewerId,
       reviewerEmail,
       body.action,
       body.comment,
-    ));
+    );
     return c.json({ request: result }, 200);
   }), { label: "review approval request", domainErrors: [approvalDomainError] });
 });

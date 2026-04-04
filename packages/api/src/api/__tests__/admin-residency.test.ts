@@ -41,6 +41,11 @@ mock.module("effect", () => {
         },
       };
     },
+    // Support Effect.runPromise for routes that unwrap Effect-returning EE functions
+    runPromise: (value: unknown) => {
+      // In test mocks, EE functions return plain values/promises, not Effects
+      return Promise.resolve(value);
+    },
   };
   return { Effect };
 });

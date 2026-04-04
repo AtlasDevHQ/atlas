@@ -9,6 +9,7 @@
  * and are enterprise-gated via requireEnterprise("compliance").
  */
 
+import { EEError } from "../lib/errors";
 import { requireEnterprise } from "../index";
 import { requireInternalDB } from "../lib/db-guard";
 import { internalQuery } from "@atlas/api/lib/db/internal";
@@ -41,11 +42,8 @@ function validateFilters(filters: ComplianceReportFilters): void {
 
 export type ReportErrorCode = "validation" | "not_available";
 
-export class ReportError extends Error {
-  constructor(message: string, public readonly code: ReportErrorCode) {
-    super(message);
-    this.name = "ReportError";
-  }
+export class ReportError extends EEError<ReportErrorCode> {
+  readonly name = "ReportError";
 }
 
 // ── Data Access Report ──────────────────────────────────────────

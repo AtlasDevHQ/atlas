@@ -7,8 +7,11 @@
  *   getEnterpriseLicenseKey()   — returns the license key string, if set
  *   requireEnterprise()         — throws EnterpriseError if not enabled or no license key (guard)
  *   EnterpriseError             — typed error for instanceof checks (thrown by requireEnterprise)
+ *   EEError                     — abstract base class for all EE module errors (see lib/errors.ts)
  */
 
+import { EEError } from "./lib/errors";
+export { EEError } from "./lib/errors";
 import { getConfig } from "@atlas/api/lib/config";
 
 /**
@@ -40,13 +43,13 @@ export function getEnterpriseLicenseKey(): string | undefined {
 
 /**
  * Typed error thrown when enterprise features are required but not available.
+ * Extends `EEError<"enterprise_required">` — see `ee/src/lib/errors.ts`.
  * Use `err instanceof EnterpriseError` instead of string matching on messages.
  */
-export class EnterpriseError extends Error {
-  readonly code = "enterprise_required" as const;
+export class EnterpriseError extends EEError<"enterprise_required"> {
+  readonly name = "EnterpriseError";
   constructor(message = "Enterprise features are not enabled") {
-    super(message);
-    this.name = "EnterpriseError";
+    super(message, "enterprise_required");
   }
 }
 

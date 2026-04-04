@@ -16,6 +16,7 @@
  * - RAILWAY_WEB_SERVICE_ID — Railway service ID for the web service
  */
 
+import { EEError } from "../lib/errors";
 import { requireInternalDB } from "../lib/db-guard";
 import {
   hasInternalDB,
@@ -38,11 +39,8 @@ export type DomainErrorCode =
   | "railway_not_configured"
   | "data_integrity";
 
-export class DomainError extends Error {
-  constructor(message: string, public readonly code: DomainErrorCode) {
-    super(message);
-    this.name = "DomainError";
-  }
+export class DomainError extends EEError<DomainErrorCode> {
+  readonly name = "DomainError";
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────

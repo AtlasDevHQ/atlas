@@ -7,6 +7,7 @@
  * Validation helpers and domain-matching functions do not require a license.
  */
 
+import { EEError } from "../lib/errors";
 import { requireEnterprise } from "../index";
 import { requireInternalDB } from "../lib/db-guard";
 import {
@@ -33,11 +34,8 @@ const log = createLogger("ee:sso");
 
 export type SSOErrorCode = "not_found" | "conflict" | "validation";
 
-export class SSOError extends Error {
-  constructor(message: string, public readonly code: SSOErrorCode) {
-    super(message);
-    this.name = "SSOError";
-  }
+export class SSOError extends EEError<SSOErrorCode> {
+  readonly name = "SSOError";
 }
 
 // ── Internal row shape ──────────────────────────────────────────────
@@ -408,11 +406,8 @@ export function extractEmailDomain(email: string): string | null {
 
 export type SSOEnforcementErrorCode = "no_provider" | "not_enterprise";
 
-export class SSOEnforcementError extends Error {
-  constructor(message: string, public readonly code: SSOEnforcementErrorCode) {
-    super(message);
-    this.name = "SSOEnforcementError";
-  }
+export class SSOEnforcementError extends EEError<SSOEnforcementErrorCode> {
+  readonly name = "SSOEnforcementError";
 }
 
 /**

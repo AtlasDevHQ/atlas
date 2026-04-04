@@ -14,6 +14,7 @@
  * disabled — non-enterprise deployments get unmasked results.
  */
 
+import { EEError } from "../lib/errors";
 import { isEnterpriseEnabled, requireEnterprise } from "../index";
 import {
   hasInternalDB,
@@ -37,11 +38,8 @@ const log = createLogger("ee:compliance");
 
 export type ComplianceErrorCode = "validation" | "not_found" | "conflict";
 
-export class ComplianceError extends Error {
-  constructor(message: string, public readonly code: ComplianceErrorCode) {
-    super(message);
-    this.name = "ComplianceError";
-  }
+export class ComplianceError extends EEError<ComplianceErrorCode> {
+  readonly name = "ComplianceError";
 }
 
 // ── Table management ────────────────────────────────────────────

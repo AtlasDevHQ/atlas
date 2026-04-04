@@ -10,6 +10,7 @@
  */
 
 import ipaddr from "ipaddr.js";
+import { EEError } from "../lib/errors";
 import { requireEnterprise } from "../index";
 import { requireInternalDB } from "../lib/db-guard";
 import {
@@ -58,11 +59,8 @@ interface IPAllowlistRow {
 
 export type IPAllowlistErrorCode = "validation" | "conflict" | "not_found";
 
-export class IPAllowlistError extends Error {
-  constructor(message: string, public readonly code: IPAllowlistErrorCode) {
-    super(message);
-    this.name = "IPAllowlistError";
-  }
+export class IPAllowlistError extends EEError<IPAllowlistErrorCode> {
+  readonly name = "IPAllowlistError";
 }
 
 // ── In-memory cache ──────────────────────────────────────────────────

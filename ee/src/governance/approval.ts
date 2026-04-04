@@ -17,6 +17,7 @@
  * a safe default (false, 0, or empty) while re-throwing unexpected errors.
  */
 
+import { EEError } from "../lib/errors";
 import { requireEnterprise, EnterpriseError } from "../index";
 import { requireInternalDB } from "../lib/db-guard";
 import {
@@ -40,11 +41,8 @@ const log = createLogger("ee:approval-workflows");
 
 export type ApprovalErrorCode = "validation" | "not_found" | "conflict" | "expired";
 
-export class ApprovalError extends Error {
-  constructor(message: string, public readonly code: ApprovalErrorCode) {
-    super(message);
-    this.name = "ApprovalError";
-  }
+export class ApprovalError extends EEError<ApprovalErrorCode> {
+  readonly name = "ApprovalError";
 }
 
 // ── Internal row shapes ─────────────────────────────────────────────

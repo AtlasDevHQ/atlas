@@ -9,6 +9,7 @@
  * region requires data migration (separate future work).
  */
 
+import { EEError } from "../lib/errors";
 import { getConfig } from "@atlas/api/lib/config";
 import type { ResidencyConfig } from "@atlas/api/lib/config";
 import { requireInternalDB } from "../lib/db-guard";
@@ -32,11 +33,8 @@ export type ResidencyErrorCode =
   | "workspace_not_found"
   | "no_internal_db";
 
-export class ResidencyError extends Error {
-  constructor(message: string, public readonly code: ResidencyErrorCode) {
-    super(message);
-    this.name = "ResidencyError";
-  }
+export class ResidencyError extends EEError<ResidencyErrorCode> {
+  readonly name = "ResidencyError";
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────

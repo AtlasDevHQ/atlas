@@ -18,6 +18,7 @@ create-atlas/templates/*/src/
 create-atlas/templates/*/ee/
 create-atlas/templates/*/brand.css
 dist/
+packages/api/src/lib/db/migrations/meta/
 routeTree.gen.ts
 e2e/browser/storage-state.json
 e2e/browser/test-results/

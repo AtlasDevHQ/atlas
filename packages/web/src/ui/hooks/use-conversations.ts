@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useCallback, useRef, useMemo } from "react";
+import { useState, useCallback, useMemo } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Conversation, ConversationWithMessages, Message, ShareStatus, ShareMode, ShareExpiryKey, NotebookStateWire, ForkBranchWire } from "../lib/types";
 import type { UIMessage } from "@ai-sdk/react";
 import { createAtlasFetch } from "../lib/fetch-client";
@@ -51,55 +52,73 @@ export function transformMessages(messages: Message[]): UIMessage[] {
     });
 }
 
+interface ConversationListData {
+  conversations: Conversation[];
+  total: number;
+  available: boolean;
+}
+
 export function useConversations(opts: UseConversationsOptions): UseConversationsReturn {
   const api = useMemo(
     () => createAtlasFetch(opts),
     [opts.apiUrl, opts.getHeaders, opts.getCredentials],
   );
 
-  const [conversations, setConversations] = useState<Conversation[]>([]);
-  const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(false);
-  const [available, setAvailable] = useState(true);
-  const [fetchError, setFetchError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const fetchedRef = useRef(false);
 
-  const fetchList = useCallback(async () => {
-    if (!opts.enabled || !available) return;
-    setLoading(true);
-    setFetchError(null);
-    try {
-      const res = await api.raw("GET", "/api/v1/conversations?limit=50");
-
-      if (res.status === 404) {
-        setAvailable(false);
-        return;
+  // Fetch conversation list via TanStack Query — automatic, cached, deduped.
+  const listQuery = useQuery<ConversationListData>({
+    queryKey: ["conversations", "list"],
+    queryFn: async ({ signal }) => {
+      let res: Response;
+      try {
+        res = await fetch(`${opts.apiUrl}/api/v1/conversations?limit=50`, {
+          headers: opts.getHeaders(),
+          credentials: opts.getCredentials(),
+          signal,
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn("fetchList: network error:", msg);
+        throw new Error(`Failed to load conversations: ${msg}`, { cause: err });
       }
 
       if (!res.ok) {
-        // intentionally ignored: response may not be JSON
+        // Parse body to distinguish permanent "not_available" from transient errors.
         const errorBody = await res.json().catch(() => null);
-        if (errorBody?.code === "not_available") {
-          setAvailable(false);
-          return;
+        if (res.status === 404 && errorBody?.error === "not_available") {
+          return { conversations: [], total: 0, available: false };
         }
         console.warn(`fetchList: HTTP ${res.status}`, errorBody);
-        setFetchError("Failed to load conversations. Please reload the page to try again.");
-        return;
+        throw new Error("Failed to load conversations. Please reload the page to try again.");
       }
 
       const data = await res.json();
-      setConversations(data.conversations ?? []);
-      setTotal(data.total ?? 0);
-      fetchedRef.current = true;
-    } catch (err: unknown) {
-      console.warn("fetchList error:", err instanceof Error ? err.message : String(err));
-      setFetchError("Failed to load conversations. Please reload the page to try again.");
-    } finally {
-      setLoading(false);
-    }
-  }, [api, opts.enabled, available]);
+      return {
+        conversations: data.conversations ?? [],
+        total: data.total ?? 0,
+        available: true,
+      };
+    },
+    enabled: opts.enabled,
+  });
+
+  const conversations = listQuery.data?.conversations ?? [];
+  const total = listQuery.data?.total ?? 0;
+  const available = listQuery.data?.available ?? true;
+  const loading = listQuery.isPending && opts.enabled;
+  const fetchError = listQuery.error
+    ? (listQuery.error instanceof Error ? listQuery.error.message : "Failed to load conversations")
+    : null;
+
+  // Backward-compatible fetchList — triggers a refetch.
+  // Propagates errors from refetch so callers that use try/catch get failures.
+  const fetchList = useCallback(async () => {
+    if (!opts.enabled || !available) return;
+    const result = await listQuery.refetch();
+    if (result.error) throw result.error;
+  }, [opts.enabled, available, listQuery.refetch]);
 
   const loadConversation = useCallback(async (id: string): Promise<UIMessage[]> => {
     const data = await api.get<ConversationWithMessages>(`/api/v1/conversations/${id}`);
@@ -108,25 +127,40 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
 
   const deleteConversation = useCallback(async (id: string): Promise<void> => {
     await api.del(`/api/v1/conversations/${id}`);
-    setConversations((prev) => prev.filter((c) => c.id !== id));
-    setTotal((prev) => Math.max(0, prev - 1));
+    // Update the query cache directly — removes the conversation without refetching.
+    queryClient.setQueryData<ConversationListData>(["conversations", "list"], (old) => {
+      if (!old) return old;
+      return {
+        ...old,
+        conversations: old.conversations.filter((c) => c.id !== id),
+        total: Math.max(0, old.total - 1),
+      };
+    });
     if (selectedId === id) setSelectedId(null);
-  }, [api, selectedId]);
+  }, [api, queryClient, selectedId]);
 
   const starConversation = useCallback(async (id: string, starred: boolean): Promise<void> => {
-    // Optimistic update
-    setConversations((prev) =>
-      prev.map((c) => (c.id === id ? { ...c, starred } : c)),
-    );
+    // Optimistic update via query cache
+    const previousData = queryClient.getQueryData<ConversationListData>(["conversations", "list"]);
+    queryClient.setQueryData<ConversationListData>(["conversations", "list"], (old) => {
+      if (!old) return old;
+      return {
+        ...old,
+        conversations: old.conversations.map((c) =>
+          c.id === id ? { ...c, starred } : c,
+        ),
+      };
+    });
     try {
       await api.patch(`/api/v1/conversations/${id}/star`, { starred });
     } catch (err: unknown) {
-      setConversations((prev) =>
-        prev.map((c) => (c.id === id ? { ...c, starred: !starred } : c)),
-      );
+      // Rollback optimistic update
+      if (previousData) {
+        queryClient.setQueryData(["conversations", "list"], previousData);
+      }
       throw err;
     }
-  }, [api]);
+  }, [api, queryClient]);
 
   const shareConversation = useCallback(async (id: string, shareOpts?: { expiresIn?: ShareExpiryKey; shareMode?: ShareMode }): Promise<{ token: string; url: string }> => {
     const data = await api.post<Record<string, unknown>>(`/api/v1/conversations/${id}/share`, shareOpts);
@@ -181,8 +215,8 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
   }, [api]);
 
   const refresh = useCallback(async () => {
-    await fetchList();
-  }, [fetchList]);
+    await queryClient.invalidateQueries({ queryKey: ["conversations", "list"] });
+  }, [queryClient]);
 
   return {
     conversations,

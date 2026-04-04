@@ -3,6 +3,7 @@
 import { useChat } from "@ai-sdk/react";
 import { isToolUIPart, getToolName } from "ai";
 import { useState, useRef, useEffect, useCallback } from "react";
+import { useQuery } from "@tanstack/react-query";
 import type { PythonProgressData } from "./chat/python-result-card";
 import { useAtlasConfig, ActionAuthProvider } from "../context";
 import { DarkModeContext, useDarkMode, useThemeMode, setTheme, type ThemeMode } from "../hooks/use-dark-mode";
@@ -186,27 +187,27 @@ export function AtlasChat() {
     convos.fetchList();
   }, [authMode, convos.fetchList]);
 
-  // Check if managed auth user needs to change their default password
-  useEffect(() => {
-    if (!isManaged || !managedSession.data?.user) return;
-
-    async function checkPasswordStatus() {
-      try {
-        const res = await fetch(`${apiUrl}/api/v1/admin/me/password-status`, {
-          credentials: isCrossOrigin ? "include" : "same-origin",
-        });
-        if (!res.ok) {
-          console.warn("Password status check failed:", res.status, res.statusText);
-          return;
-        }
-        const data = await res.json();
-        if (data.passwordChangeRequired) setPasswordChangeRequired(true);
-      } catch (err: unknown) {
-        console.warn("Failed to check password status:", err instanceof Error ? err.message : String(err));
+  // Check if managed auth user needs to change their default password.
+  // Shares query key with AdminLayout — TanStack deduplicates the request.
+  const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
+  useQuery({
+    queryKey: ["admin", "me", "password-status"],
+    queryFn: async ({ signal }) => {
+      const res = await fetch(`${apiUrl}/api/v1/admin/me/password-status`, {
+        credentials,
+        signal,
+      });
+      if (!res.ok) {
+        console.warn("Password status check failed:", res.status, res.statusText);
+        return null;
       }
-    }
-    checkPasswordStatus();
-  }, [isManaged, managedSession.data?.user, apiUrl, isCrossOrigin]);
+      const data = await res.json();
+      if (data.passwordChangeRequired) setPasswordChangeRequired(true);
+      return data;
+    },
+    enabled: isManaged && !!managedSession.data?.user,
+    retry: false,
+  });
 
   // Python streaming progress — keyed by tool invocation ID
   const [pythonProgress, setPythonProgress] = useState<Map<string, PythonProgressData[]>>(new Map());
@@ -243,7 +244,7 @@ export function AtlasChat() {
     let cancelled = false;
     setSuggestionsLoading(true);
     fetch(`${apiUrl}/api/v1/suggestions/popular?limit=6`, {
-      credentials: isCrossOrigin ? "include" : "same-origin",
+      credentials,
       headers: getHeaders(),
     })
       .then((res) => (res.ok ? res.json() : null))
@@ -259,7 +260,7 @@ export function AtlasChat() {
         if (!cancelled) setSuggestionsLoading(false);
       });
     return () => { cancelled = true; };
-  }, [messages.length, apiUrl, isCrossOrigin, getHeaders]);
+  }, [messages.length, apiUrl, credentials, getHeaders]);
 
   // Fetch related suggestions after a completed query with SQL results
   useEffect(() => {
@@ -296,7 +297,7 @@ export function AtlasChat() {
 
     let cancelled = false;
     fetch(`${apiUrl}/api/v1/suggestions?${params}&limit=3`, {
-      credentials: isCrossOrigin ? "include" : "same-origin",
+      credentials,
       headers: getHeaders(),
     })
       .then((res) => (res.ok ? res.json() : null))
@@ -333,7 +334,7 @@ export function AtlasChat() {
   function handleSuggestionSelect(text: string, id: string) {
     fetch(`${apiUrl}/api/v1/suggestions/${id}/click`, {
       method: "POST",
-      credentials: isCrossOrigin ? "include" : "same-origin",
+      credentials,
       headers: getHeaders(),
     }).catch(() => {
       // intentionally ignored: click tracking is non-critical

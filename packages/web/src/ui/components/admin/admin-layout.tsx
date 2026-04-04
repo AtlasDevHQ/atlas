@@ -1,7 +1,8 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import type { ReactNode } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { SidebarProvider, SidebarInset, SidebarTrigger } from "@/components/ui/sidebar";
 import { Separator } from "@/components/ui/separator";
 import { Button } from "@/components/ui/button";
@@ -19,36 +20,39 @@ import { useAtlasConfig } from "@/ui/context";
 import { LoadingState } from "./loading-state";
 import { ChangePasswordDialog } from "./change-password-dialog";
 
+interface PasswordStatusResponse {
+  passwordChangeRequired?: boolean;
+}
+
 export function AdminLayout({ children }: { children: ReactNode }) {
   const { authClient, apiUrl, isCrossOrigin } = useAtlasConfig();
   const session = authClient.useSession();
-  const [adminCheck, setAdminCheck] = useState<"pending" | "allowed" | "denied">("pending");
   const [passwordChangeRequired, setPasswordChangeRequired] = useState(false);
 
   const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
 
   // Verify admin access by calling the backend, which resolves the effective
   // role (user-level + org member role). This is the source of truth.
-  // Unauthenticated users never reach here — the proxy redirects them.
-  useEffect(() => {
-    if (!session.data?.user) return;
+  // Shared query key with AtlasChat — TanStack deduplicates the request.
+  const { data: adminStatus, isPending: adminPending } = useQuery<"allowed" | "denied">({
+    queryKey: ["admin", "me", "password-status"],
+    queryFn: async ({ signal }) => {
+      const res = await fetch(`${apiUrl}/api/v1/admin/me/password-status`, {
+        credentials,
+        signal,
+      });
+      if (!res.ok) return "denied";
+      const data: PasswordStatusResponse = await res.json();
+      if (data.passwordChangeRequired) setPasswordChangeRequired(true);
+      return "allowed";
+    },
+    enabled: !!session.data?.user,
+    retry: false,
+  });
 
-    async function checkAdminAccess() {
-      try {
-        const res = await fetch(`${apiUrl}/api/v1/admin/me/password-status`, { credentials });
-        if (res.ok) {
-          setAdminCheck("allowed");
-          const data = await res.json();
-          if (data.passwordChangeRequired) setPasswordChangeRequired(true);
-        } else {
-          setAdminCheck("denied");
-        }
-      } catch {
-        setAdminCheck("denied");
-      }
-    }
-    checkAdminAccess();
-  }, [session.data?.user, apiUrl, credentials]);
+  const adminCheck = !session.data?.user ? "pending"
+    : adminPending ? "pending"
+    : (adminStatus ?? "pending");
 
   // Loading session (proxy already handled unauthenticated)
   if (session.isPending || adminCheck === "pending") {

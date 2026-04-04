@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { z } from "zod";
 import { useAtlasConfig } from "@/ui/context";
@@ -13,7 +13,8 @@ export { type FetchError, friendlyError } from "@/ui/lib/fetch-error";
 /**
  * Shared fetch hook for admin pages.
  * Delegates to TanStack Query's `useQuery` for automatic deduplication,
- * stale-while-revalidate, window-focus refetch, and garbage collection.
+ * stale-while-revalidate (30s from QueryProvider), window-focus refetch,
+ * and garbage collection.
  *
  * Preserves the original return shape: `{ data, loading, error, setError, refetch }`.
  *
@@ -31,6 +32,10 @@ export function useAdminFetch<T>(
   const { apiUrl, isCrossOrigin } = useAtlasConfig();
   const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
 
+  // Ref to avoid stale closure if isCrossOrigin changes at runtime.
+  const credentialsRef = useRef(credentials);
+  credentialsRef.current = credentials;
+
   // Manual error override — exposed via setError for backward compatibility.
   const [errorOverride, setErrorOverride] = useState<FetchError | null>(null);
 
@@ -40,7 +45,20 @@ export function useAdminFetch<T>(
       // Clear any manual error override when a real fetch starts.
       setErrorOverride(null);
 
-      const res = await fetch(`${apiUrl}${path}`, { credentials, signal });
+      let res: Response;
+      try {
+        res = await fetch(`${apiUrl}${path}`, {
+          credentials: credentialsRef.current,
+          signal,
+        });
+      } catch (err) {
+        // Network failure (DNS, offline, CORS) — normalize to FetchError and log.
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn(`useAdminFetch ${path}:`, msg);
+        const fetchErr: FetchError = { message: msg || "Request failed" };
+        throw fetchErr;
+      }
+
       if (!res.ok) {
         throw await extractFetchError(res);
       }
@@ -70,8 +88,11 @@ export function useAdminFetch<T>(
   const error = errorOverride ?? query.error ?? null;
 
   return {
-    // When there's an error (including failed refetch), return null instead of stale data.
+    // Override TanStack Query's default (keep stale data on error) to match
+    // the original hook contract where errors always clear data.
     data: error ? null : (query.data ?? null),
+    // isPending = no cached data + fetch in flight. Unlike the old hook, this
+    // is NOT true during background refetches when cached data exists.
     loading: query.isPending,
     error,
     setError: setErrorOverride,

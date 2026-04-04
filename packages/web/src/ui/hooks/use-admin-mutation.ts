@@ -61,8 +61,9 @@ interface UseAdminMutationReturn<TResponse> {
 /**
  * Hook for admin page mutations (POST, PUT, PATCH, DELETE).
  *
- * Uses TanStack Query's `useMutation` internally for cache integration.
- * Preserves the original return shape for backward compatibility.
+ * Uses TanStack Query's `useMutation` internally. On success, invalidates
+ * all `["admin-fetch"]` queries so `useAdminFetch` consumers automatically
+ * refetch. Preserves the original return shape for backward compatibility.
  */
 export function useAdminMutation<TResponse = unknown>(
   options?: UseAdminMutationOptions,
@@ -75,7 +76,7 @@ export function useAdminMutation<TResponse = unknown>(
   const [error, setError] = useState<string | null>(null);
   const [inFlight, setInFlight] = useState<Set<string>>(new Set());
 
-  // Stable refs for options that shouldn't trigger re-renders
+  // Ref to read latest hook-level options inside mutationFn without recreating the mutation.
   const optionsRef = useRef(options);
   optionsRef.current = options;
 
@@ -92,12 +93,7 @@ export function useAdminMutation<TResponse = unknown>(
     [inFlight],
   );
 
-  // Internal TanStack mutation — not exposed directly, used by the `mutate` wrapper.
-  const mutation = useMutation<
-    { data: TResponse | undefined; callOpts?: MutateOptions<TResponse> },
-    Error,
-    MutateOptions<TResponse> | undefined
-  >({
+  const mutation = useMutation<TResponse | undefined, Error, MutateOptions<TResponse> | undefined>({
     mutationFn: async (callOpts) => {
       const opts = optionsRef.current;
       const path = callOpts?.path ?? opts?.path;
@@ -131,41 +127,32 @@ export function useAdminMutation<TResponse = unknown>(
 
       // Parse response (handle 204 No Content)
       const contentType = res.headers.get("content-type");
-      let data: TResponse | undefined;
       if (res.status === 204 || !contentType?.includes("application/json")) {
-        data = undefined;
-      } else {
-        data = (await res.json()) as TResponse;
+        return undefined;
       }
-
-      return { data, callOpts };
+      return (await res.json()) as TResponse;
     },
-    onSuccess: ({ data, callOpts }) => {
-      // Call invalidates (refetch functions)
-      const opts = optionsRef.current;
-      const invalidates = opts?.invalidates;
-      if (invalidates) {
-        if (Array.isArray(invalidates)) {
-          for (const fn of invalidates) fn();
-        } else {
-          invalidates();
-        }
-      }
-
-      // Invalidate all admin queries so TanStack Query refetches
+    onSuccess: () => {
+      // Invalidate all admin-fetch queries so useAdminFetch consumers get fresh data.
+      // This is intentionally broad — can be narrowed to specific keys if needed.
       queryClient.invalidateQueries({ queryKey: ["admin-fetch"] });
-
-      // Call onSuccess outside the main flow so callback bugs don't
-      // get misreported as mutation failures.
-      if (data !== undefined) {
-        callOpts?.onSuccess?.(data);
-      }
     },
   });
 
+  // Ref for stable mutate callback — useMutation returns a new object each render.
+  const mutationRef = useRef(mutation);
+  mutationRef.current = mutation;
+
   const mutate = useCallback(
     async (callOpts?: MutateOptions<TResponse>): Promise<MutateResult<TResponse>> => {
+      const opts = optionsRef.current;
       const itemId = callOpts?.itemId;
+
+      if (!callOpts?.path && !opts?.path) {
+        const msg = "useAdminMutation: no path provided";
+        setError(msg);
+        return { ok: false, error: msg };
+      }
 
       // Track loading state
       if (itemId) {
@@ -175,10 +162,21 @@ export function useAdminMutation<TResponse = unknown>(
       }
       setError(null);
 
+      let data: TResponse | undefined;
       try {
-        const result = await mutation.mutateAsync(callOpts);
+        data = await mutationRef.current.mutateAsync(callOpts);
 
-        return { ok: true, data: result.data };
+        // Call legacy invalidates (refetch callbacks from callers).
+        // These are redundant with queryClient.invalidateQueries in onSuccess
+        // but kept for backward compatibility during migration.
+        const invalidates = opts?.invalidates;
+        if (invalidates) {
+          if (Array.isArray(invalidates)) {
+            for (const fn of invalidates) fn();
+          } else {
+            invalidates();
+          }
+        }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         const errorMessage = msg || "Request failed";
@@ -195,8 +193,17 @@ export function useAdminMutation<TResponse = unknown>(
           setSaving(false);
         }
       }
+
+      // Call onSuccess outside try/catch so callback bugs don't
+      // get misreported as mutation failures.
+      // Only called when data is present — 204/non-JSON callers use result.ok instead.
+      if (data !== undefined) {
+        callOpts?.onSuccess?.(data);
+      }
+
+      return { ok: true, data };
     },
-    [mutation, apiUrl, credentials],
+    [], // Stable — reads all mutable state via refs
   );
 
   return { mutate, saving, error, clearError, reset, isMutating };

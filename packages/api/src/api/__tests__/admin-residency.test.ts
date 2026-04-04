@@ -29,7 +29,7 @@ const fakeAuthContext = {
 
 // Minimal Effect shim — supports gen, promise, tryPromise, succeed, fail
 function mockEffectIterable(value: unknown) {
-  return { [Symbol.iterator]: function* () { return value; } };
+  return { [Symbol.iterator]: () => ({ next: () => ({ done: true, value }) }) };
 }
 
 mock.module("effect", () => {
@@ -48,7 +48,7 @@ mock.module("effect", () => {
       },
     }),
     succeed: (value: unknown) => mockEffectIterable(value),
-    fail: (error: unknown) => ({ [Symbol.iterator]: function* () { throw error; } }),
+    fail: (error: unknown) => ({ [Symbol.iterator]: () => ({ next: () => { throw error; } }) }),
     void: mockEffectIterable(undefined),
     runPromise: (value: unknown) => Promise.resolve(value),
   };
@@ -97,7 +97,6 @@ mock.module("@atlas/api/lib/effect/hono", () => ({
     }
   },
   DomainErrorMapping: Array,
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test shim
   domainError: (cls: unknown, map: unknown) => [cls, map],
 }));
 
@@ -188,7 +187,7 @@ mock.module("@atlas/ee/platform/residency", () => ({
   },
   getWorkspaceRegionAssignment: () => mockEffectIterable(mockAssignment),
   assignWorkspaceRegion: () => {
-    if (mockAssignError) return { [Symbol.iterator]: function* () { throw mockAssignError; } };
+    if (mockAssignError) return { [Symbol.iterator]: () => ({ next: () => { throw mockAssignError; } }) };
     return mockEffectIterable(mockAssignResult);
   },
   ResidencyError: MockResidencyError,

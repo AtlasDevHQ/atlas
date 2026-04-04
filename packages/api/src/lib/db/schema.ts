@@ -1196,6 +1196,8 @@ export const dashboards = pgTable(
     shareMode: varchar("share_mode", { length: 10 }).notNull().default("public"),
     // Auto-refresh
     refreshSchedule: text("refresh_schedule"),
+    lastRefreshAt: timestamp("last_refresh_at", { withTimezone: true }),
+    nextRefreshAt: timestamp("next_refresh_at", { withTimezone: true }),
     // Timestamps
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -1206,6 +1208,7 @@ export const dashboards = pgTable(
     index("idx_dashboards_owner").on(t.ownerId),
     uniqueIndex("idx_dashboards_share_token").on(t.shareToken).where(sql`share_token IS NOT NULL`),
     check("chk_dashboard_share_mode", sql`share_mode IN ('public', 'org')`),
+    index("idx_dashboards_next_refresh").on(t.nextRefreshAt).where(sql`refresh_schedule IS NOT NULL AND deleted_at IS NULL`),
   ],
 );
 

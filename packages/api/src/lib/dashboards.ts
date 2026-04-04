@@ -41,6 +41,8 @@ function rowToDashboard(r: Record<string, unknown>): Dashboard {
     shareExpiresAt: r.share_expires_at ? String(r.share_expires_at) : null,
     shareMode: (r.share_mode as ShareMode) ?? "public",
     refreshSchedule: (r.refresh_schedule as string) ?? null,
+    lastRefreshAt: r.last_refresh_at ? String(r.last_refresh_at) : null,
+    nextRefreshAt: r.next_refresh_at ? String(r.next_refresh_at) : null,
     cardCount: typeof r.card_count === "number" ? r.card_count : (typeof r.card_count === "string" ? parseInt(r.card_count, 10) : 0),
     createdAt: String(r.created_at),
     updatedAt: String(r.updated_at),
@@ -586,6 +588,195 @@ export async function getSharedDashboard(
     };
   } catch (err) {
     log.error({ err: err instanceof Error ? err.message : String(err) }, "getSharedDashboard failed");
+    return { ok: false, reason: "error" };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Scheduler — auto-refresh
+// ---------------------------------------------------------------------------
+
+/** Get dashboards due for auto-refresh (next_refresh_at <= now). */
+export async function getDashboardsDueForRefresh(): Promise<Dashboard[]> {
+  if (!hasInternalDB()) return [];
+  try {
+    const rows = await internalQuery<Record<string, unknown>>(
+      `SELECT d.*, COALESCE(cc.cnt, 0)::int AS card_count
+       FROM dashboards d
+       LEFT JOIN (SELECT dashboard_id, COUNT(*)::int AS cnt FROM dashboard_cards GROUP BY dashboard_id) cc
+         ON cc.dashboard_id = d.id
+       WHERE d.refresh_schedule IS NOT NULL
+         AND d.next_refresh_at <= now()
+         AND d.deleted_at IS NULL
+       ORDER BY d.next_refresh_at ASC`,
+    );
+    return rows.map(rowToDashboard);
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err.message : String(err) }, "getDashboardsDueForRefresh failed");
+    return [];
+  }
+}
+
+/**
+ * Atomically lock a dashboard for refresh.
+ * Updates last_refresh_at and computes next_refresh_at from the cron expression.
+ * Returns true if lock acquired (this process should run the refresh).
+ */
+export async function lockDashboardForRefresh(
+  dashboardId: string,
+  computeNextRun: (expr: string, after?: Date) => Date | null,
+): Promise<boolean> {
+  if (!hasInternalDB()) return false;
+  try {
+    // Read the cron expression to compute next run
+    const dashRows = await internalQuery<Record<string, unknown>>(
+      `SELECT refresh_schedule FROM dashboards WHERE id = $1 AND refresh_schedule IS NOT NULL AND deleted_at IS NULL`,
+      [dashboardId],
+    );
+    if (dashRows.length === 0) return false;
+
+    const cronExpr = dashRows[0].refresh_schedule as string;
+    const nextRun = computeNextRun(cronExpr);
+    if (!nextRun) {
+      log.warn({ dashboardId, cronExpr }, "lockDashboardForRefresh: computeNextRun returned null — skipping");
+      return false;
+    }
+
+    // Atomic UPDATE — only succeeds if next_refresh_at is still in the past
+    const rows = await internalQuery<{ id: string }>(
+      `UPDATE dashboards SET
+         last_refresh_at = now(),
+         next_refresh_at = $1,
+         updated_at = now()
+       WHERE id = $2 AND refresh_schedule IS NOT NULL AND deleted_at IS NULL
+         AND next_refresh_at <= now()
+       RETURNING id`,
+      [nextRun?.toISOString() ?? null, dashboardId],
+    );
+    return rows.length > 0;
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err.message : String(err), dashboardId }, "lockDashboardForRefresh failed");
+    return false;
+  }
+}
+
+/**
+ * Refresh all cards in a dashboard (standalone — no Hono context).
+ * Used by the scheduler engine during auto-refresh ticks.
+ */
+export async function refreshDashboardCards(dashboardId: string): Promise<{
+  refreshed: number;
+  failed: number;
+  total: number;
+}> {
+  const { connections } = await import("@atlas/api/lib/db/connection");
+  const { validateSQL } = await import("@atlas/api/lib/tools/sql");
+
+  // Fetch dashboard with cards (unscoped — scheduler runs across all orgs;
+  // SQL is re-validated before execution, connections come from stored card data)
+  const dashResult = await getDashboardUnscoped(dashboardId);
+  if (!dashResult.ok) {
+    log.warn({ dashboardId, reason: dashResult.reason }, "Auto-refresh: dashboard not accessible");
+    return { refreshed: 0, failed: 0, total: 0 };
+  }
+
+  const cards = dashResult.data.cards;
+  let refreshed = 0;
+  let failed = 0;
+
+  for (const card of cards) {
+    try {
+      const validation = validateSQL(card.sql, card.connectionId ?? undefined);
+      if (!validation.valid) {
+        log.warn({ cardId: card.id, error: validation.error }, "Auto-refresh: card SQL failed validation");
+        failed++;
+        continue;
+      }
+      const db = card.connectionId
+        ? connections.get(card.connectionId)
+        : connections.getDefault();
+      const queryResult = await db.query(card.sql, 30000);
+      const result = await refreshCard(card.id, dashboardId, {
+        columns: queryResult.columns,
+        rows: queryResult.rows as Record<string, unknown>[],
+      });
+      if (result.ok) refreshed++;
+      else failed++;
+    } catch (err) {
+      log.warn({ err: err instanceof Error ? err.message : String(err), cardId: card.id }, "Auto-refresh: card query failed");
+      failed++;
+    }
+  }
+
+  return { refreshed, failed, total: cards.length };
+}
+
+/** Get dashboard with cards without org scoping (for scheduler engine). */
+async function getDashboardUnscoped(
+  id: string,
+): Promise<CrudDataResult<DashboardWithCards>> {
+  if (!hasInternalDB()) return { ok: false, reason: "no_db" };
+  try {
+    const dashRows = await internalQuery<Record<string, unknown>>(
+      `SELECT d.*, COALESCE(cc.cnt, 0)::int AS card_count
+       FROM dashboards d
+       LEFT JOIN (SELECT dashboard_id, COUNT(*)::int AS cnt FROM dashboard_cards GROUP BY dashboard_id) cc
+         ON cc.dashboard_id = d.id
+       WHERE d.id = $1 AND d.deleted_at IS NULL`,
+      [id],
+    );
+    if (dashRows.length === 0) return { ok: false, reason: "not_found" };
+
+    const cardRows = await internalQuery<Record<string, unknown>>(
+      `SELECT * FROM dashboard_cards WHERE dashboard_id = $1 ORDER BY position ASC, created_at ASC`,
+      [id],
+    );
+
+    const dash = rowToDashboard(dashRows[0]);
+    const { cardCount: _, ...rest } = dash;
+    return {
+      ok: true,
+      data: { ...rest, cards: cardRows.map(rowToCard) },
+    };
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err.message : String(err) }, "getDashboardUnscoped failed");
+    return { ok: false, reason: "error" };
+  }
+}
+
+/**
+ * Set refresh schedule and compute next_refresh_at.
+ * Pass null to disable auto-refresh.
+ */
+export async function setRefreshSchedule(
+  dashboardId: string,
+  scope: { orgId?: string | null },
+  schedule: string | null,
+  computeNextRun: (expr: string, after?: Date) => Date | null,
+): Promise<CrudResult> {
+  if (!hasInternalDB()) return { ok: false, reason: "no_db" };
+  try {
+    let nextRefresh: string | null = null;
+    if (schedule) {
+      const nextDate = computeNextRun(schedule);
+      if (!nextDate) {
+        log.error({ dashboardId, schedule }, "setRefreshSchedule: computeNextRun returned null — schedule will not fire");
+        return { ok: false, reason: "error" };
+      }
+      nextRefresh = nextDate.toISOString();
+    }
+    const params: unknown[] = [schedule, nextRefresh, dashboardId];
+    const org = orgScopeClause(scope.orgId, params, 4);
+
+    const rows = await internalQuery<{ id: string }>(
+      `UPDATE dashboards SET refresh_schedule = $1, next_refresh_at = $2, updated_at = now()
+       WHERE id = $3 AND ${org.clause} AND deleted_at IS NULL
+       RETURNING id`,
+      params,
+    );
+    return rows.length > 0 ? { ok: true } : { ok: false, reason: "not_found" };
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err.message : String(err) }, "setRefreshSchedule failed");
     return { ok: false, reason: "error" };
   }
 }

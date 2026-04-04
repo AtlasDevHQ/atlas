@@ -27,6 +27,7 @@ import {
   unshareDashboard,
   getShareStatus,
   getSharedDashboard,
+  setRefreshSchedule,
   type CrudFailReason,
   type SharedDashboardFailReason,
 } from "@atlas/api/lib/dashboards";
@@ -530,10 +531,39 @@ authed.openapi(
       }
 
       const parsed = c.req.valid("json");
-      const result = yield* Effect.promise(() => updateDashboard(id, { orgId }, parsed));
-      if (!result.ok) {
-        const fail = crudFailResponse(result.reason, requestId);
-        return c.json(fail.body, fail.status);
+
+      // Handle refreshSchedule separately (needs cron validation + next_refresh_at)
+      if (parsed.refreshSchedule !== undefined) {
+        if (parsed.refreshSchedule) {
+          const { validateCronExpression, computeNextRun } = yield* Effect.promise(() => import("@atlas/api/lib/scheduled-tasks"));
+          const cronCheck = validateCronExpression(parsed.refreshSchedule);
+          if (!cronCheck.valid) {
+            return c.json({ error: "invalid_request", message: `Invalid cron expression: ${cronCheck.error}` }, 400);
+          }
+          const schedResult = yield* Effect.promise(() => setRefreshSchedule(id, { orgId }, parsed.refreshSchedule!, computeNextRun));
+          if (!schedResult.ok) {
+            const fail = crudFailResponse(schedResult.reason, requestId);
+            return c.json(fail.body, fail.status);
+          }
+        } else {
+          // Disabling auto-refresh (null)
+          const { computeNextRun } = yield* Effect.promise(() => import("@atlas/api/lib/scheduled-tasks"));
+          const schedResult = yield* Effect.promise(() => setRefreshSchedule(id, { orgId }, null, computeNextRun));
+          if (!schedResult.ok) {
+            const fail = crudFailResponse(schedResult.reason, requestId);
+            return c.json(fail.body, fail.status);
+          }
+        }
+      }
+
+      // Apply remaining updates (title, description)
+      const { refreshSchedule: _, ...otherUpdates } = parsed;
+      if (Object.keys(otherUpdates).length > 0) {
+        const result = yield* Effect.promise(() => updateDashboard(id, { orgId }, otherUpdates));
+        if (!result.ok) {
+          const fail = crudFailResponse(result.reason, requestId);
+          return c.json(fail.body, fail.status);
+        }
       }
 
       // Return updated dashboard

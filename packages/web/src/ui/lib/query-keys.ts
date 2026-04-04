@@ -5,7 +5,11 @@
  * invalidation (e.g. invalidate all conversations, or just one detail).
  *
  * Convention: keys use hierarchical segments so `invalidateQueries({ queryKey: ["admin"] })`
- * invalidates all admin queries, while `["admin", "users"]` targets only users.
+ * invalidates all admin queries (TanStack Query uses prefix matching by default),
+ * while `["admin", "users"]` targets only users.
+ *
+ * The optional `params` argument on list keys is a serialized URL search string
+ * (e.g. `new URLSearchParams(...).toString()`) used to distinguish paginated/filtered queries.
  */
 export const queryKeys = {
   // ---- Public / Chat ----

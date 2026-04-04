@@ -17,15 +17,16 @@ interface AdminQueryFnOptions<T> {
 /**
  * Creates a `queryFn` for use with TanStack Query's `useQuery`.
  *
- * Reads `apiUrl` and cross-origin credentials from the current atlas config context.
- * Handles fetch, JSON parsing, optional Zod validation, and structured error extraction.
+ * Accepts an API path and config (`apiUrl`, `isCrossOrigin`) to build a fetch
+ * function. Handles JSON parsing, optional Zod validation, and structured error
+ * extraction via `extractFetchError`.
  *
  * Usage:
  * ```ts
- * const { apiUrl, isCrossOrigin } = useAtlasConfig();
+ * const config = useQueryConfig();
  * const { data } = useQuery({
  *   queryKey: queryKeys.admin.settings(),
- *   queryFn: adminQueryFn("/api/v1/admin/settings", { apiUrl, isCrossOrigin }),
+ *   queryFn: adminQueryFn("/api/v1/admin/settings", config),
  * });
  * ```
  */
@@ -66,17 +67,8 @@ export function adminQueryFn<T>(
 }
 
 /**
- * Hook that returns the current atlas config for use with `adminQueryFn`.
- *
- * Convenience wrapper so callers don't need to destructure `useAtlasConfig()`.
- *
- * ```ts
- * const config = useQueryConfig();
- * const { data } = useQuery({
- *   queryKey: queryKeys.admin.settings(),
- *   queryFn: adminQueryFn("/api/v1/admin/settings", config),
- * });
- * ```
+ * Extracts the `{ apiUrl, isCrossOrigin }` subset of `AtlasUIConfig` for use
+ * with `adminQueryFn`. Isolates query utilities from the full config shape.
  */
 export function useQueryConfig() {
   const { apiUrl, isCrossOrigin } = useAtlasConfig();

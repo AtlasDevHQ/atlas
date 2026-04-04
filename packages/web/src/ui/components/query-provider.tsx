@@ -8,7 +8,9 @@ function makeQueryClient() {
   return new QueryClient({
     defaultOptions: {
       queries: {
+        // 30s stale time avoids refetching on every mount during admin page navigation.
         staleTime: 30_000,
+        // Single retry — the admin API is either up or requires auth re-flow.
         retry: 1,
         refetchOnWindowFocus: true,
         gcTime: 5 * 60 * 1000,

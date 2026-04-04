@@ -818,6 +818,20 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 
 ---
 
+## TanStack Query Migration
+
+**Frontend data fetching migrated to TanStack Query** across both `packages/web` and `packages/react`. Automatic request deduplication, stale-while-revalidate, window-focus refetch, and cache-aware mutations.
+
+- [x] Foundation — install, QueryProvider, query key factory, shared utils (#1213, #1214, PR #1239)
+- [x] Core hooks — useAdminFetch → useQuery, useAdminMutation → useMutation (#1215, #1216, PR #1240)
+- [x] IncidentBanner refetchInterval + password-status dedup via usePasswordStatus (#1221, #1219, PR #1241)
+- [x] SchemaExplorer, PromptLibrary, EntityEditor → useQuery (#1220, PR #1242)
+- [x] useConversations (web) — list fetch, optimistic star, cache-aware delete (#1217, PR #1243)
+- [x] @useatlas/react — full adoption: useHealthQuery, conversations, AtlasChat QueryProvider (#1218, PR #1244)
+- [x] Polish — health recovery clearing, stable fetchList ref (PR #1245)
+
+---
+
 ## Ideas / Backlog
 
 _Untracked ideas. Create issues when committing to work._

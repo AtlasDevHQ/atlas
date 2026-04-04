@@ -27,6 +27,8 @@ export interface Dashboard {
   shareExpiresAt: string | null;
   shareMode: ShareMode;
   refreshSchedule: string | null;
+  lastRefreshAt: string | null;
+  nextRefreshAt: string | null;
   cardCount: number;
   createdAt: string;
   updatedAt: string;

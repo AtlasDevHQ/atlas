@@ -140,6 +140,10 @@ mock.module("@atlas/api/lib/dashboards", () => ({
   unshareDashboard: mockUnshareDashboard,
   getShareStatus: mockGetShareStatus,
   getSharedDashboard: mockGetSharedDashboard,
+  setRefreshSchedule: mock(() => Promise.resolve({ ok: true })),
+  getDashboardsDueForRefresh: mock(() => Promise.resolve([])),
+  lockDashboardForRefresh: mock(() => Promise.resolve(false)),
+  refreshDashboardCards: mock(() => Promise.resolve({ refreshed: 0, failed: 0, total: 0 })),
 }));
 
 // --- Other mocks required by app index.ts ---

@@ -207,12 +207,65 @@ function tickEffect(
       else tasksFailed++;
     }
 
+    // Dashboard auto-refresh — runs after task executions
+    const dashRefresh = yield* refreshDueDashboardsEffect(semaphore);
+
     return {
       tasksFound: dueTasks.length,
       tasksDispatched,
       tasksCompleted,
       tasksFailed,
+      ...(dashRefresh.total > 0 ? { dashboardsRefreshed: dashRefresh.refreshed, dashboardsFailed: dashRefresh.failed } : {}),
     };
+  });
+}
+
+/**
+ * Find dashboards due for auto-refresh and execute card refreshes.
+ * Follows the same semaphore-bounded concurrency as task execution.
+ */
+function refreshDueDashboardsEffect(semaphore: Effect.Semaphore) {
+  return Effect.gen(function* () {
+    const dashboards = yield* Effect.tryPromise({
+      try: async () => {
+        const { getDashboardsDueForRefresh } = await import("@atlas/api/lib/dashboards");
+        return getDashboardsDueForRefresh();
+      },
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    }).pipe(Effect.catchAll((err) => {
+      log.warn({ err: err instanceof Error ? err.message : String(err) }, "Failed to fetch dashboards due for refresh");
+      return Effect.succeed([] as Awaited<ReturnType<typeof import("@atlas/api/lib/dashboards")["getDashboardsDueForRefresh"]>>);
+    }));
+
+    if (dashboards.length === 0) return { refreshed: 0, failed: 0, total: 0 };
+
+    log.info({ count: dashboards.length }, "Scheduler tick — found dashboards due for refresh");
+
+    let refreshed = 0;
+    let failed = 0;
+
+    for (const dash of dashboards) {
+      yield* semaphore.withPermits(1)(
+        Effect.tryPromise({
+          try: async () => {
+            const { lockDashboardForRefresh, refreshDashboardCards } = await import("@atlas/api/lib/dashboards");
+            const { computeNextRun } = await import("@atlas/api/lib/scheduled-tasks");
+            const locked = await lockDashboardForRefresh(dash.id, computeNextRun);
+            if (!locked) return; // Another process got it
+            const result = await refreshDashboardCards(dash.id);
+            if (result.failed === 0) refreshed++;
+            else failed++;
+          },
+          catch: (err) => err instanceof Error ? err : new Error(String(err)),
+        }).pipe(Effect.catchAll((err) => {
+          log.warn({ err: err instanceof Error ? err.message : String(err), dashboardId: dash.id }, "Dashboard auto-refresh failed");
+          failed++;
+          return Effect.void;
+        })),
+      );
+    }
+
+    return { refreshed, failed, total: dashboards.length };
   });
 }
 
@@ -325,6 +378,9 @@ export interface TickResult {
   tasksDispatched: number;
   tasksCompleted: number;
   tasksFailed: number;
+  /** Dashboard auto-refresh counts (only present when dashboards were due). */
+  dashboardsRefreshed?: number;
+  dashboardsFailed?: number;
   /** Non-null when the tick itself failed (e.g. DB unreachable). */
   error?: string;
 }

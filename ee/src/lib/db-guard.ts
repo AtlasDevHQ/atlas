@@ -1,3 +1,4 @@
+import { Effect } from "effect";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
 
 /**
@@ -16,3 +17,15 @@ export function requireInternalDB(
     throw new Error(`Internal database required for ${label}.`);
   }
 }
+
+/**
+ * Effect version of `requireInternalDB`. Fails with a typed error when no
+ * internal database is available. Use in EE modules that return Effect.
+ */
+export const requireInternalDBEffect = (
+  label: string,
+  errorFactory?: () => Error,
+): Effect.Effect<void, Error> =>
+  hasInternalDB()
+    ? Effect.void
+    : Effect.fail(errorFactory?.() ?? new Error(`Internal database required for ${label}.`));

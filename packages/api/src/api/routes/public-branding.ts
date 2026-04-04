@@ -11,8 +11,9 @@ import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { validationHook } from "./validation-hook";
 import { createLogger } from "@atlas/api/lib/logger";
 import { authenticateRequest } from "@atlas/api/lib/auth/middleware";
+import { Effect } from "effect";
 import { getWorkspaceBrandingPublic } from "@atlas/ee/branding/white-label";
-import { runHandler } from "@atlas/api/lib/effect/hono";
+import { runEffect } from "@atlas/api/lib/effect/hono";
 import { withRequestId, type AuthEnv } from "./middleware";
 import { ErrorSchema } from "./shared-schemas";
 
@@ -66,41 +67,49 @@ const publicBranding = new OpenAPIHono<AuthEnv>({ defaultHook: validationHook })
 
 publicBranding.use(withRequestId);
 
-publicBranding.openapi(getBrandingRoute, async (c) => runHandler(c, "get public branding", async () => {
-  const req = c.req.raw;
+publicBranding.openapi(getBrandingRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const req = c.req.raw;
 
-  // Try to resolve the org from the session. This is best-effort — if auth
-  // fails or there's no session, we return null branding.
-  let orgId: string | undefined;
-  try {
-    const authResult = await authenticateRequest(req);
-    if (authResult.authenticated) {
-      orgId = authResult.user?.activeOrganizationId ?? undefined;
+    // Try to resolve the org from the session. This is best-effort — if auth
+    // fails or there's no session, we return null branding.
+    const orgId = yield* Effect.tryPromise({
+      try: async () => {
+        const authResult = await authenticateRequest(req);
+        if (authResult.authenticated) {
+          return authResult.user?.activeOrganizationId ?? undefined;
+        }
+        return undefined;
+      },
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    }).pipe(
+      Effect.catchAll((err) => {
+        // intentionally ignored: auth failure is expected for unauthenticated visitors
+        log.debug({ err: err.message }, "Public branding: auth resolution failed, returning null branding");
+        return Effect.succeed(undefined);
+      }),
+    );
+
+    if (!orgId) {
+      return c.json({ branding: null }, 200);
     }
-  } catch (err) {
-    // intentionally ignored: auth failure is expected for unauthenticated visitors
-    log.debug({ err: err instanceof Error ? err.message : String(err) }, "Public branding: auth resolution failed, returning null branding");
-  }
 
-  if (!orgId) {
-    return c.json({ branding: null }, 200);
-  }
+    const branding = yield* getWorkspaceBrandingPublic(orgId);
+    if (!branding) {
+      return c.json({ branding: null }, 200);
+    }
 
-  const branding = await getWorkspaceBrandingPublic(orgId);
-  if (!branding) {
-    return c.json({ branding: null }, 200);
-  }
-
-  // Return only public-safe fields (no internal IDs or timestamps)
-  return c.json({
-    branding: {
-      logoUrl: branding.logoUrl,
-      logoText: branding.logoText,
-      primaryColor: branding.primaryColor,
-      faviconUrl: branding.faviconUrl,
-      hideAtlasBranding: branding.hideAtlasBranding,
-    },
-  }, 200);
-}));
+    // Return only public-safe fields (no internal IDs or timestamps)
+    return c.json({
+      branding: {
+        logoUrl: branding.logoUrl,
+        logoText: branding.logoText,
+        primaryColor: branding.primaryColor,
+        faviconUrl: branding.faviconUrl,
+        hideAtlasBranding: branding.hideAtlasBranding,
+      },
+    }, 200);
+  }), { label: "get public branding" });
+});
 
 export { publicBranding };

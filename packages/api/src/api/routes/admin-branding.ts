@@ -213,7 +213,7 @@ adminBranding.openapi(getBrandingRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
 
-    const branding = yield* Effect.promise(() => getWorkspaceBranding(orgId!));
+    const branding = yield* getWorkspaceBranding(orgId!);
     return c.json({ branding }, 200);
   }), { label: "get workspace branding", domainErrors: [brandingDomainError] });
 });
@@ -225,13 +225,13 @@ adminBranding.openapi(setBrandingRoute, async (c) => {
 
     const body = c.req.valid("json");
 
-    const branding = yield* Effect.promise(() => setWorkspaceBranding(orgId!, {
+    const branding = yield* setWorkspaceBranding(orgId!, {
       logoUrl: body.logoUrl,
       logoText: body.logoText,
       primaryColor: body.primaryColor,
       faviconUrl: body.faviconUrl,
       hideAtlasBranding: body.hideAtlasBranding,
-    }));
+    });
     return c.json({ branding }, 200);
   }), { label: "save workspace branding", domainErrors: [brandingDomainError] });
 });
@@ -241,7 +241,7 @@ adminBranding.openapi(deleteBrandingRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
 
-    const deleted = yield* Effect.promise(() => deleteWorkspaceBranding(orgId!));
+    const deleted = yield* deleteWorkspaceBranding(orgId!);
     if (!deleted) {
       return c.json({ error: "not_found", message: "No custom branding found." }, 404);
     }

@@ -6,6 +6,7 @@
  */
 
 import { describe, it, expect, beforeEach, mock, type Mock } from "bun:test";
+import { Effect } from "effect";
 
 // --- Auth mock ---
 
@@ -32,7 +33,7 @@ mock.module("@atlas/api/lib/auth/middleware", () => ({
 let mockPublicBranding: Record<string, unknown> | null = null;
 
 mock.module("@atlas/ee/branding/white-label", () => ({
-  getWorkspaceBrandingPublic: async () => mockPublicBranding,
+  getWorkspaceBrandingPublic: () => Effect.succeed(mockPublicBranding),
 }));
 
 mock.module("@atlas/api/lib/logger", () => ({

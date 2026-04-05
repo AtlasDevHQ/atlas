@@ -280,7 +280,10 @@ export const SettingsLive: Layer.Layer<Settings> = Layer.scoped(
         const { getConfig } = require("@atlas/api/lib/config") as { getConfig: () => { deployMode?: string } | null };
         return getConfig()?.deployMode === "saas";
       },
-      catch: () => false,
+      catch: (err) => {
+        log.debug({ err: err instanceof Error ? err.message : String(err) }, "Config not available for SaaS detection — defaulting to self-hosted");
+        return false;
+      },
     }).pipe(Effect.catchAll(() => Effect.succeed(false)));
 
     if (isSaas) {
@@ -383,10 +386,17 @@ export function makeSchedulerLive(
           };
           return isEmailSchedulerEnabled();
         },
-        catch: () => false,
+        catch: (err) => {
+          log.debug({ err: err instanceof Error ? err.message : String(err) }, "Email scheduler module not available — skipping");
+          return false;
+        },
       }).pipe(Effect.catchAll(() => Effect.succeed(false)));
 
       if (emailEnabled) {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const { DEFAULT_EMAIL_SCHEDULER_INTERVAL_MS } = require("@atlas/api/lib/email/scheduler") as {
+          DEFAULT_EMAIL_SCHEDULER_INTERVAL_MS: number;
+        };
         const emailTick = Effect.tryPromise({
           try: async () => {
             const { runTick } = await import("@atlas/api/lib/email/scheduler");
@@ -401,7 +411,7 @@ export function makeSchedulerLive(
           ),
         );
         const emailFiber = yield* Effect.fork(
-          emailTick.pipe(Effect.repeat(Schedule.spaced(Duration.hours(1)))),
+          emailTick.pipe(Effect.repeat(Schedule.spaced(Duration.millis(DEFAULT_EMAIL_SCHEDULER_INTERVAL_MS)))),
         );
         yield* Effect.addFinalizer(() => Fiber.interrupt(emailFiber));
       } else {

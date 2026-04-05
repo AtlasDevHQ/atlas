@@ -160,6 +160,32 @@ describe("periodic settings refresh (#1092, #1275)", () => {
     expect(getSetting("ATLAS_ROW_LIMIT")).toBe("100");
   });
 
+  it("refreshSettingsTick recovers after a transient DB failure", async () => {
+    enableInternalDB();
+
+    // Load initial value
+    setResults({
+      rows: [{ key: "ATLAS_ROW_LIMIT", value: "100", updated_at: "2026-01-01", updated_by: null, org_id: null }],
+    });
+    await loadSettings();
+    expect(getSetting("ATLAS_ROW_LIMIT")).toBe("100");
+
+    // Simulate DB failure
+    queryThrow = new Error("connection refused");
+    await refreshSettingsTick();
+    expect(getSetting("ATLAS_ROW_LIMIT")).toBe("100"); // old value retained
+
+    // Recover — DB comes back with updated value
+    queryThrow = null;
+    queryResults = [
+      { rows: [{ key: "ATLAS_ROW_LIMIT", value: "300", updated_at: "2026-01-03", updated_by: null, org_id: null }] },
+    ];
+    queryResultIndex = 0;
+
+    await refreshSettingsTick();
+    expect(getSetting("ATLAS_ROW_LIMIT")).toBe("300");
+  });
+
   it("refreshSettingsTick is a no-op when no internal DB", async () => {
     // No DATABASE_URL set — loadSettings is a no-op
     await refreshSettingsTick(); // should not throw

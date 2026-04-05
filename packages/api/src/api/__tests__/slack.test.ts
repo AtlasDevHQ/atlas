@@ -139,7 +139,7 @@ mock.module("@atlas/api/lib/auth/middleware", () => ({
   checkRateLimit: mockCheckRateLimit,
   authenticateRequest: mock(() => Promise.resolve({ mode: "none" as const, user: null })),
   getClientIP: mock(() => "127.0.0.1"),
-  _stopCleanup: mock(() => {}),
+  rateLimitCleanupTick: mock(() => {}),
 }));
 
 // --- Test setup ---

@@ -81,7 +81,7 @@ export function AddToDashboardDialog({
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
   const submittingRef = useRef(false);
-  const timeoutRef = useRef<ReturnType<typeof setTimeout>>();
+  const timeoutRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   // Fetch existing dashboards
   const { data: dashboardData, loading: loadingDashboards, error: fetchError } = useAdminFetch<{

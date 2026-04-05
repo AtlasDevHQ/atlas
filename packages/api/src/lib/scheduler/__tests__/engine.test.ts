@@ -52,6 +52,8 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   incrementSuggestionClick: mock(),
   deleteSuggestion: mock(() => Promise.resolve(false)),
   getAuditLogQueries: mock(() => Promise.resolve([])),
+  setWorkspaceRegion: mock(async () => {}),
+  insertSemanticAmendment: mock(async () => "mock-amendment-id"),
 }));
 
 const mockExecuteResult = {

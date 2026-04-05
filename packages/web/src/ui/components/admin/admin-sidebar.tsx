@@ -65,6 +65,7 @@ const navGroups: NavGroup[] = [
     icon: Database,
     items: [
       { href: "/admin/semantic", label: "Semantic Layer" },
+      { href: "/admin/semantic/improve", label: "Improve Layer" },
       { href: "/admin/schema-diff", label: "Schema Diff" },
       { href: "/admin/connections", label: "Connections" },
       { href: "/admin/cache", label: "Cache" },

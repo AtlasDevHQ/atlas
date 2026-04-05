@@ -42,6 +42,9 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   updateWorkspacePlanTier: async () => true,
   cascadeWorkspaceDelete: async () => ({ conversations: 0, semanticEntities: 0, learnedPatterns: 0, suggestions: 0, scheduledTasks: 0, settings: 0 }),
   getWorkspaceHealthSummary: async () => null,
+  getWorkspaceRegion: async () => null,
+  setWorkspaceRegion: async () => {},
+  insertSemanticAmendment: async () => "mock-amendment-id",
 }));
 
 mock.module("@atlas/api/lib/logger", () => ({

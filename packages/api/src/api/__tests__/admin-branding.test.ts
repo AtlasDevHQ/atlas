@@ -42,6 +42,8 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   getInternalDB: () => ({ query: () => Promise.resolve({ rows: [] }), end: async () => {}, on: () => {} }),
   internalQuery: () => Promise.resolve([]),
   internalExecute: () => {},
+  setWorkspaceRegion: mock(async () => {}),
+  insertSemanticAmendment: mock(async () => "mock-amendment-id"),
 }));
 
 // --- EE branding mock ---

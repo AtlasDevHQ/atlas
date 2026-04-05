@@ -19,7 +19,8 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { BookOpen, BarChart3, FileText, FolderOpen, Code, LayoutDashboard, Terminal, Plus, Pencil, Trash2, History } from "lucide-react";
+import { BookOpen, BarChart3, FileText, FolderOpen, Code, LayoutDashboard, Terminal, Plus, Pencil, Trash2, History, Sparkles } from "lucide-react";
+import Link from "next/link";
 import { EntityDetail, type EntityData } from "@/ui/components/admin/entity-detail";
 import {
   EntityEditorDialog,
@@ -570,12 +571,20 @@ export default function SemanticPage() {
               {isSaas ? "Manage entities, glossary, metrics, and catalog" : "Browse entities, glossary, metrics, and catalog"}
             </p>
           </div>
-          {isSaas && (
-            <Button onClick={handleAddEntity} className="gap-1.5">
-              <Plus className="size-4" />
-              Add Entity
-            </Button>
-          )}
+          <div className="flex items-center gap-2">
+            <Link href="/admin/semantic/improve">
+              <Button variant="outline" className="gap-1.5">
+                <Sparkles className="size-4" />
+                Improve
+              </Button>
+            </Link>
+            {isSaas && (
+              <Button onClick={handleAddEntity} className="gap-1.5">
+                <Plus className="size-4" />
+                Add Entity
+              </Button>
+            )}
+          </div>
         </div>
       </div>
 

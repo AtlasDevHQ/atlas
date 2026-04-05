@@ -863,7 +863,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 ### Native DB Clients (P0 — eliminate bridge layers)
 
 - [x] Migrate internal DB to native `@effect/sql-pg` `PgClient.layer()` (#1281, PR #1286)
-- [ ] Migrate analytics connection pools to native `@effect/sql-pg` and `@effect/sql-mysql2` (#1282)
+- [x] Migrate analytics connection pools to native `@effect/sql-pg` (#1282, PR #1289) — PostgreSQL fully native via `PgClient.layerFromPool()`. MySQL stays on bridge (no `layerFromPool` upstream). Follow-up: #1290
 
 ### Timer Leaks (P0 — resource leaks on Railway restarts)
 
@@ -871,11 +871,11 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] Migrate auth middleware rate-limit cleanup setInterval to Effect Layer (#1274, PR #1285)
 - [x] Migrate settings refresh timer to Effect Layer (#1275, PR #1285)
 - [x] Migrate email scheduler to Effect Layer (#1276, PR #1285)
-- [ ] Replace all setInterval scheduling with Effect Cron/Schedule (#1283)
+- [x] Replace all setInterval scheduling with Effect Schedule fibers (#1283, PR #1291) — 5 remaining timers migrated to SchedulerLayer
 
 ### Concurrency (P1 — unbounded DB calls under load)
 
-- [ ] Replace unbounded Promise.all with Effect.all/forEach + concurrency limits (#1277)
+- [x] Replace unbounded Promise.all with Effect.all/forEach + concurrency limits (#1277, PR #1287)
 
 ### Error Types (P2 — code quality)
 
@@ -884,13 +884,26 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 
 ### Sandbox (P2 — code quality)
 
-- [ ] Convert python-sandbox try/catch chains to Effect.tryPromise with retry (#1279)
+- [x] Convert python-sandbox try/catch chains to Effect.tryPromise with retry (#1279, PR #1288)
 
 ### NOT migrating (bridge layers are correct)
 
 - **Vercel AI SDK** — `AtlasAiModel` bridge stays. Frontend depends on AI SDK's data stream protocol and `useChat` hook. `@effect/ai` native would break the streaming pipeline.
 - **Zod** — Powers `@hono/zod-openapi` for 150-route OpenAPI spec auto-generation. `effect/Schema` would require rewriting every route.
 - **`@effect/platform` HTTP** — Hono handles all HTTP serving. No value in adding another HTTP layer.
+
+---
+
+## Follow-ups (post-1.0.1)
+
+- [x] Smarter semantic layer profiling — probabilistic cardinality, FK inference, join candidate scoring (#1272, PR #1272)
+- [x] Powered by Atlas badge on embedded widgets (PR #1265)
+- [x] Semantic expert agent design doc (#1180, PR #1270)
+- [x] Docs: chatEndpoint default `/api/chat` → `/api/v1/chat` (#1271)
+- [x] Consolidate AtlasUIProvider + AtlasProvider into single AtlasProvider (61b986dc)
+- [x] Fix AtlasContext in AtlasChat — useHealthQuery crash on app.useatlas.dev (f158a4cc)
+- [x] Publish @useatlas/types 0.0.7 — SEMANTIC_TYPES + profiler exports
+- [x] Fix Effect/Turbopack serverExternalPackages conflict in templates
 
 ---
 
@@ -906,7 +919,7 @@ _Untracked ideas. Create issues when committing to work._
 
 ### Competitive Positioning
 - Benchmark participation — publish Spider/BIRD results for credibility. Better after `atlas learn` exists (0.7.0)
-- "Powered by Atlas" badge on embedded widgets (opt-out) — viral distribution mechanic. Value scales with brand recognition
+- ~~"Powered by Atlas" badge on embedded widgets~~ — **shipped** (PR #1265). Opt-out badge on @useatlas/react and script tag widget
 - OSI (Open Semantic Interchange) compatibility — align YAML format with emerging standard (dbt + Cube + Snowflake + ThoughtSpot)
 
 ### Product Extensions

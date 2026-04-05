@@ -666,6 +666,25 @@ Next steps:
   1. Review the generated YAMLs and refine business context
   2. Run \`bun run dev\` to start Atlas
 `);
+
+  // Create initial snapshot after generation
+  try {
+    const { createSnapshot } = await import("../../lib/migrate");
+    const semanticRoot = orgId
+      ? path.join(SEMANTIC_DIR, ".orgs", orgId)
+      : id === "default"
+        ? SEMANTIC_DIR
+        : path.join(SEMANTIC_DIR, id);
+    const entry = createSnapshot(semanticRoot, {
+      message: `Initial snapshot from atlas init${demoDataset ? ` (demo: ${demoDataset})` : ""}`,
+      trigger: "init",
+    });
+    if (entry) {
+      console.log(pc.dim(`  Snapshot ${entry.hash} created for version tracking. Run 'atlas migrate log' to view history.\n`));
+    }
+  } catch (err) {
+    console.warn(`Warning: Could not create initial snapshot: ${err instanceof Error ? err.message : String(err)}`);
+  }
 }
 
 // --- Missing datasource URL error ---

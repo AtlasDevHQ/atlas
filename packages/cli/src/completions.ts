@@ -100,9 +100,15 @@ export const COMMANDS: Record<string, CommandSpec> = {
     },
   },
   migrate: {
-    description: "Generate/apply plugin schema migrations",
+    description: "Semantic layer versioning (snapshot, diff, rollback)",
     flags: {
-      "--apply": "Execute migrations against internal DB",
+      "-m": "Message for the snapshot",
+      "--message": "Message for the snapshot",
+      "--force": "Create snapshot even if nothing changed",
+      "--from": "Source snapshot hash for diff",
+      "--to": "Target snapshot hash for diff",
+      "--source": "Use semantic/{name}/ subdirectory",
+      "--limit": "Max entries to show in log",
     },
   },
   plugin: {

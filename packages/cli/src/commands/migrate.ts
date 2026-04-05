@@ -1,163 +1,315 @@
 /**
- * atlas migrate — Generate or apply plugin schema migrations.
+ * atlas migrate — Semantic layer versioning via snapshots.
  *
- * Extracted from atlas.ts to reduce monolith size.
+ * Subcommands:
+ *   status   — show current state vs last snapshot
+ *   snapshot — capture current state as a versioned snapshot
+ *   diff     — show file-level diff between current state and a snapshot
+ *   log      — show history of snapshots
+ *   rollback — restore semantic layer to a previous snapshot
  */
 
+import * as fs from "fs";
+import pc from "picocolors";
+import { getFlag, requireFlagIdentifier, SEMANTIC_DIR } from "../../lib/cli-utils";
+import {
+  createSnapshot,
+  getHistory,
+  getLatestEntry,
+  currentHash,
+  diffCurrentVsSnapshot,
+  diffSnapshots,
+  rollbackToSnapshot,
+  collectSemanticFiles,
+} from "../../lib/migrate";
+import type { FileDiff, DiffLine } from "../../lib/migrate";
+
+// ── Subcommand dispatch ───────────────────────────────────────────
+
 export async function handleMigrate(args: string[]): Promise<void> {
-  const shouldApply = args.includes("--apply");
+  const subcommand = args[1];
 
-  // Require DATABASE_URL
-  if (!process.env.DATABASE_URL) {
-    console.error("Error: DATABASE_URL is required for atlas migrate.");
-    console.error(
-      "  Set DATABASE_URL to a PostgreSQL connection string for the Atlas internal database.",
-    );
+  const sourceArg = requireFlagIdentifier(args, "--source", "source name");
+  const semanticRoot = sourceArg
+    ? `${SEMANTIC_DIR}/${sourceArg}`
+    : SEMANTIC_DIR;
+
+  if (!fs.existsSync(semanticRoot)) {
+    console.error(pc.red(`Semantic layer not found at ${semanticRoot}. Run 'atlas init' first.`));
     process.exit(1);
   }
 
-  // Load config to get plugin list
-  const { loadConfig } = await import("@atlas/api/lib/config");
-  let config;
-  try {
-    config = await loadConfig();
-  } catch (err) {
-    console.error(
-      `Error loading config: ${err instanceof Error ? err.message : String(err)}`,
-    );
-    process.exit(1);
-  }
-
-  const plugins = config.plugins as
-    | Array<{ id: string; schema?: Record<string, unknown> }>
-    | undefined;
-  if (!plugins?.length) {
-    console.log(
-      "No plugins configured in atlas.config.ts — nothing to migrate.",
-    );
-    return;
-  }
-
-  // Check which plugins have schemas
-  const pluginsWithSchema = plugins.filter(
-    (p) => p.schema && Object.keys(p.schema).length > 0,
-  );
-  if (pluginsWithSchema.length === 0) {
-    console.log("No plugins declare a schema — nothing to migrate.");
-    return;
-  }
-
-  // Generate migration SQL
-  const { generateMigrationSQL, applyMigrations, diffSchema } =
-    await import("@atlas/api/lib/plugins/migrate");
-
-  const statements = generateMigrationSQL(
-    pluginsWithSchema as Parameters<typeof generateMigrationSQL>[0],
-  );
-  if (statements.length === 0) {
-    console.log("No migration statements generated.");
-    return;
-  }
-
-  if (!shouldApply) {
-    // Dry run — print SQL
-    console.log("-- Plugin schema migrations (dry run)\n");
-    console.log(
-      `-- ${statements.length} table(s) from ${pluginsWithSchema.length} plugin(s)\n`,
-    );
-    for (const stmt of statements) {
-      console.log(
-        `-- Plugin: ${stmt.pluginId}, Table: ${stmt.tableName} → ${stmt.prefixedName}`,
-      );
-      console.log(stmt.sql);
-      console.log();
-    }
-    console.log("-- Run with --apply to execute these migrations.");
-
-    // Show diff if possible
-    try {
-      const { getInternalDB } = await import(
-        "@atlas/api/lib/db/internal"
-      );
-      const db = getInternalDB();
-      const diff = await diffSchema(db, statements);
-      if (diff.newTables.length > 0) {
-        console.log(
-          `\nNew tables: ${diff.newTables.join(", ")}`,
-        );
+  switch (subcommand) {
+    case "status":
+      return handleStatus(semanticRoot);
+    case "snapshot":
+      return handleSnapshot(args, semanticRoot);
+    case "diff":
+      return handleDiff(args, semanticRoot);
+    case "log":
+      return handleLog(args, semanticRoot);
+    case "rollback":
+      return handleRollback(args, semanticRoot);
+    default:
+      if (subcommand && !subcommand.startsWith("-")) {
+        console.error(pc.red(`Unknown subcommand: ${subcommand}`));
       }
-      if (diff.existingTables.length > 0) {
-        console.log(
-          `Already existing: ${diff.existingTables.join(", ")}`,
-        );
-      }
-    } catch (err) {
-      const detail =
-        err instanceof Error ? err.message : String(err);
-      console.log(
-        `\n-- Skipped schema diff: could not connect to internal database.`,
+      console.error(
+        "Usage: atlas migrate <status|snapshot|diff|log|rollback> [options]\n\n" +
+        "Run 'atlas migrate --help' for details.",
       );
-      console.log(`--   Reason: ${detail}`);
-    }
+      process.exit(1);
+  }
+}
+
+// ── status ────────────────────────────────────────────────────────
+
+function handleStatus(semanticRoot: string): void {
+  const files = collectSemanticFiles(semanticRoot);
+  const latest = getLatestEntry(semanticRoot);
+  const hash = currentHash(semanticRoot);
+
+  console.log(`\n${pc.bold("Semantic Layer Status")}\n`);
+  console.log(`  Files:    ${pc.bold(String(files.length))} YAML files`);
+  console.log(`  Hash:     ${pc.cyan(hash)}`);
+
+  if (!latest) {
+    console.log(`  Snapshot: ${pc.yellow("none")} — run 'atlas migrate snapshot' to create one`);
+    console.log();
     return;
   }
 
-  // Apply migrations
-  console.log("Applying plugin schema migrations...\n");
+  console.log(`  Latest:   ${pc.cyan(latest.hash)} (${formatTimestamp(latest.timestamp)})`);
 
-  const { getInternalDB } = await import(
-    "@atlas/api/lib/db/internal"
-  );
-  let db;
-  try {
-    db = getInternalDB();
-  } catch (err) {
-    console.error(
-      `Error connecting to internal database: ${err instanceof Error ? err.message : String(err)}`,
-    );
+  if (latest.hash === hash) {
+    console.log(`  Status:   ${pc.green("up to date")} — no changes since last snapshot`);
+  } else {
+    const result = diffCurrentVsSnapshot(semanticRoot);
+    if (result) {
+      const changed = result.diffs.filter((d) => d.status !== "unchanged");
+      const added = changed.filter((d) => d.status === "added").length;
+      const removed = changed.filter((d) => d.status === "removed").length;
+      const modified = changed.filter((d) => d.status === "modified").length;
+
+      const parts: string[] = [];
+      if (added > 0) parts.push(pc.green(`${added} added`));
+      if (modified > 0) parts.push(pc.yellow(`${modified} modified`));
+      if (removed > 0) parts.push(pc.red(`${removed} removed`));
+
+      console.log(`  Status:   ${pc.yellow("changed")} — ${parts.join(", ")}`);
+    } else {
+      console.log(`  Status:   ${pc.yellow("changed")}`);
+    }
+  }
+
+  if (latest.message) {
+    console.log(`  Message:  ${latest.message}`);
+  }
+  console.log();
+}
+
+// ── snapshot ──────────────────────────────────────────────────────
+
+function handleSnapshot(args: string[], semanticRoot: string): void {
+  const message = getFlag(args, "-m") ?? getFlag(args, "--message") ?? "";
+  const force = args.includes("--force");
+
+  const entry = createSnapshot(semanticRoot, {
+    message,
+    trigger: "manual",
+    force,
+  });
+
+  if (!entry) {
+    console.log(pc.dim("No changes since last snapshot — nothing to capture."));
+    console.log(pc.dim("Use --force to create a snapshot anyway."));
+    return;
+  }
+
+  console.log(`\n${pc.green("Snapshot created:")}`);
+  console.log(`  Hash:      ${pc.cyan(entry.hash)}`);
+  console.log(`  Timestamp: ${formatTimestamp(entry.timestamp)}`);
+  if (entry.message) {
+    console.log(`  Message:   ${entry.message}`);
+  }
+  console.log();
+}
+
+// ── diff ──────────────────────────────────────────────────────────
+
+function handleDiff(args: string[], semanticRoot: string): void {
+  const fromHash = getFlag(args, "--from");
+  const toHash = getFlag(args, "--to");
+
+  // Diff between two snapshots
+  if (fromHash && toHash) {
+    const result = diffSnapshots(semanticRoot, fromHash, toHash);
+    if (!result) {
+      console.error(pc.red("Could not find one or both snapshots. Run 'atlas migrate log' to see available snapshots."));
+      process.exit(1);
+    }
+    console.log(`\n${pc.bold("Diff:")} ${pc.cyan(result.from.hash)} → ${pc.cyan(result.to.hash)}\n`);
+    printDiffs(result.diffs);
+    return;
+  }
+
+  // Diff current vs snapshot
+  const targetHash = fromHash ?? getFlag(args, "--snapshot");
+  const result = diffCurrentVsSnapshot(semanticRoot, targetHash ?? undefined);
+
+  if (!result) {
+    if (targetHash) {
+      console.error(pc.red(`Snapshot not found: ${targetHash}. Run 'atlas migrate log' to see available snapshots.`));
+    } else {
+      console.error(pc.yellow("No snapshots found. Run 'atlas migrate snapshot' to create one."));
+    }
     process.exit(1);
   }
 
-  let result;
-  try {
-    result = await applyMigrations(db, statements);
-  } catch (err) {
-    console.error(
-      `Migration failed: ${err instanceof Error ? err.message : String(err)}`,
-    );
-    console.error(
-      "\nYour database may be in a partially migrated state.",
-    );
-    console.error(
-      "Run 'atlas migrate' (without --apply) to review pending migrations.",
-    );
+  console.log(`\n${pc.bold("Diff:")} ${pc.cyan(result.snapshotEntry.hash)} → ${pc.cyan("current")}\n`);
+  printDiffs(result.diffs);
+}
+
+// ── log ───────────────────────────────────────────────────────────
+
+function handleLog(args: string[], semanticRoot: string): void {
+  const limitArg = getFlag(args, "--limit") ?? getFlag(args, "-n");
+  const limit = limitArg ? parseInt(limitArg, 10) : 20;
+  if (Number.isNaN(limit) || limit <= 0) {
+    console.error(pc.red(`Invalid --limit value: "${limitArg}". Must be a positive integer.`));
     process.exit(1);
   }
 
-  if (result.applied.length > 0) {
-    console.log(
-      `Applied ${result.applied.length} migration(s):`,
-    );
-    for (const table of result.applied) {
-      console.log(`  \u2713 ${table}`);
+  const manifest = getHistory(semanticRoot);
+
+  if (manifest.entries.length === 0) {
+    console.log(pc.dim("No snapshots yet. Run 'atlas migrate snapshot' to create one."));
+    return;
+  }
+
+  const entries = manifest.entries.toReversed().slice(0, limit);
+  const currentH = currentHash(semanticRoot);
+
+  console.log(`\n${pc.bold("Snapshot History")} (${manifest.entries.length} total)\n`);
+
+  for (const entry of entries) {
+    const isCurrent = entry.hash === currentH;
+    const hashLabel = isCurrent
+      ? pc.green(`${entry.hash} (current)`)
+      : pc.cyan(entry.hash);
+
+    console.log(`${pc.bold(hashLabel)}  ${formatTimestamp(entry.timestamp)}  [${entry.trigger}]`);
+    if (entry.message) {
+      console.log(`  ${entry.message}`);
     }
   }
-  if (result.skipped.length > 0) {
-    console.log(
-      `Skipped ${result.skipped.length} already-applied migration(s):`,
-    );
-    for (const table of result.skipped) {
-      console.log(`  - ${table}`);
-    }
+
+  if (manifest.entries.length > limit) {
+    console.log(pc.dim(`\n  ... ${manifest.entries.length - limit} older snapshot(s) not shown. Use --limit to see more.`));
   }
-  if (
-    result.applied.length === 0 &&
-    result.skipped.length > 0
-  ) {
-    console.log(
-      "\nAll migrations already applied — nothing to do.",
-    );
-  } else if (result.applied.length > 0) {
-    console.log("\nPlugin schema migrations complete.");
+  console.log();
+}
+
+// ── rollback ──────────────────────────────────────────────────────
+
+/** Known flags that take a value (used to skip flag values when finding positional args). */
+const FLAGS_WITH_VALUES = new Set(["--source", "--limit", "-n", "-m", "--message", "--from", "--to", "--snapshot"]);
+
+function handleRollback(args: string[], semanticRoot: string): void {
+  // Find the first positional arg after "rollback" that isn't a flag or flag value
+  let hash: string | undefined;
+  for (let i = 2; i < args.length; i++) {
+    if (args[i].startsWith("-")) {
+      if (FLAGS_WITH_VALUES.has(args[i])) i++; // skip the value too
+      continue;
+    }
+    // Check if previous arg was a flag expecting a value
+    if (i > 0 && FLAGS_WITH_VALUES.has(args[i - 1])) continue;
+    hash = args[i];
+    break;
+  }
+
+  if (!hash) {
+    console.error(pc.red("Usage: atlas migrate rollback <hash>"));
+    console.error("  Provide the hash (or prefix) of the snapshot to restore.");
+    console.error("  Run 'atlas migrate log' to see available snapshots.");
+    process.exit(1);
+  }
+
+  try {
+    const { restored, preRollback } = rollbackToSnapshot(semanticRoot, hash);
+
+    console.log(`\n${pc.green("Rollback complete:")}`);
+    console.log(`  Restored:     ${pc.cyan(restored.hash)} (${formatTimestamp(restored.timestamp)})`);
+    if (restored.message) {
+      console.log(`  Message:      ${restored.message}`);
+    }
+    if (preRollback) {
+      console.log(`  Pre-rollback: ${pc.dim(preRollback.hash)} (saved automatically)`);
+    }
+    console.log();
+  } catch (err) {
+    console.error(pc.red(`Rollback failed: ${err instanceof Error ? err.message : String(err)}`));
+    process.exit(1);
+  }
+}
+
+// ── Formatting helpers ────────────────────────────────────────────
+
+function formatTimestamp(iso: string): string {
+  const d = new Date(iso);
+  return d.toLocaleString("en-US", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function printDiffs(diffs: FileDiff[]): void {
+  const changed = diffs.filter((d) => d.status !== "unchanged");
+
+  if (changed.length === 0) {
+    console.log(pc.green("  No changes."));
+    return;
+  }
+
+  for (const d of changed) {
+    const statusLabel =
+      d.status === "added" ? pc.green("A")
+      : d.status === "removed" ? pc.red("D")
+      : pc.yellow("M");
+
+    console.log(`${statusLabel}  ${d.path}`);
+  }
+
+  console.log();
+
+  // Show detailed diff for modified files
+  for (const d of changed) {
+    if (d.lines.length === 0) continue;
+
+    console.log(pc.bold(`--- a/${d.path}`));
+    console.log(pc.bold(`+++ b/${d.path}`));
+
+    for (const line of d.lines) {
+      printDiffLine(line);
+    }
+    console.log();
+  }
+}
+
+function printDiffLine(line: DiffLine): void {
+  switch (line.type) {
+    case "added":
+      console.log(pc.green(`+${line.content}`));
+      break;
+    case "removed":
+      console.log(pc.red(`-${line.content}`));
+      break;
+    case "context":
+      console.log(` ${line.content}`);
+      break;
   }
 }

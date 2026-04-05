@@ -21,6 +21,7 @@ import {
 } from "@atlas/api/lib/semantic/expert";
 import type { SessionState } from "@atlas/api/lib/semantic/expert";
 import { applyAmendmentToEntity } from "./apply-amendment";
+import { createSnapshot } from "../migrate";
 
 // ── Diff rendering ─────────────────────────────────────────────────
 
@@ -203,6 +204,7 @@ function printSessionSummary(session: SessionState): void {
 
 export interface InteractiveOptions {
   readonly entitiesDir: string;
+  readonly semanticRoot: string;
   readonly proposals: readonly AnalysisResult[];
 }
 
@@ -215,12 +217,25 @@ export interface InteractiveOptions {
 export async function runInteractiveSession(
   options: InteractiveOptions,
 ): Promise<SessionState> {
-  const { entitiesDir, proposals } = options;
+  const { entitiesDir, semanticRoot, proposals } = options;
   const session = createSession([...proposals]);
 
   if (proposals.length === 0) {
     console.log(pc.green("\nYour semantic layer looks good! No improvements found.\n"));
     return session;
+  }
+
+  // Auto-snapshot before interactive session begins
+  try {
+    const entry = createSnapshot(semanticRoot, {
+      message: `Pre-improve interactive snapshot (${proposals.length} proposals)`,
+      trigger: "interactive",
+    });
+    if (entry) {
+      console.log(pc.dim(`  Snapshot ${entry.hash} created before interactive session`));
+    }
+  } catch (err) {
+    console.warn(pc.yellow(`  Warning: Could not create snapshot: ${err instanceof Error ? err.message : String(err)}`));
   }
 
   console.log(

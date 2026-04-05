@@ -1,6 +1,6 @@
 ---
 title: CLI Reference
-description: Complete reference for the Atlas CLI — init, diff, import, export, migrate-import, index, learn, query, doctor, validate, mcp, completions, and more.
+description: Complete reference for the Atlas CLI — init, diff, migrate, import, export, migrate-import, index, learn, improve, query, doctor, validate, mcp, completions, and more.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
@@ -343,15 +343,110 @@ bun run atlas -- plugin add <package-name>
 
 ## migrate
 
-Generate or apply plugin schema migrations.
+Semantic layer versioning — track changes, create snapshots, diff, and rollback.
+
+Snapshots are stored in `semantic/.history/` as JSON files with a manifest for ordered history. Each snapshot captures all entity YAMLs, glossary, metrics, and catalog at a point in time.
 
 ```bash
-bun run atlas -- migrate [options]
+bun run atlas -- migrate <subcommand> [options]
+```
+
+### migrate status
+
+Show current semantic layer state versus the last snapshot.
+
+```bash
+bun run atlas -- migrate status
+```
+
+Reports the number of YAML files, the current content hash, the latest snapshot hash, and whether any files have changed (added, modified, removed) since the last snapshot.
+
+### migrate snapshot
+
+Capture the current semantic layer state as a versioned snapshot.
+
+```bash
+bun run atlas -- migrate snapshot [options]
 ```
 
 | Flag | Description |
 |------|-------------|
-| `--apply` | Execute migrations against internal database (default: dry-run) |
+| `-m, --message <text>` | Message describing what changed |
+| `--force` | Create snapshot even if nothing changed since the last one |
+| `--source <name>` | Use `semantic/{name}/` subdirectory |
+
+If the current state is identical to the last snapshot, no new snapshot is created (unless `--force` is used).
+
+```bash
+# Create a snapshot with a description
+bun run atlas -- migrate snapshot -m "Added order metrics"
+
+# Force a snapshot even if nothing changed
+bun run atlas -- migrate snapshot --force
+```
+
+### migrate diff
+
+Show a unified diff between the current semantic layer and a snapshot, or between two snapshots.
+
+```bash
+bun run atlas -- migrate diff [options]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--from <hash>` | Source snapshot hash (prefix match) |
+| `--to <hash>` | Target snapshot hash (prefix match). When used with `--from`, diffs between two snapshots |
+| `--source <name>` | Use `semantic/{name}/` subdirectory |
+
+```bash
+# Diff current state vs last snapshot
+bun run atlas -- migrate diff
+
+# Diff current state vs a specific snapshot
+bun run atlas -- migrate diff --from abc123
+
+# Diff between two snapshots
+bun run atlas -- migrate diff --from abc123 --to def456
+```
+
+### migrate log
+
+Show the history of snapshots with hashes, timestamps, triggers, and messages.
+
+```bash
+bun run atlas -- migrate log [options]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--limit <n>` | Max entries to show (default: 20) |
+| `--source <name>` | Use `semantic/{name}/` subdirectory |
+
+### migrate rollback
+
+Restore the semantic layer to a previous snapshot state. A pre-rollback snapshot is automatically created before restoring, so you can always undo a rollback.
+
+```bash
+bun run atlas -- migrate rollback <hash>
+```
+
+The `<hash>` argument accepts a full hash or a prefix (minimum 4 characters).
+
+```bash
+# Rollback to a specific snapshot
+bun run atlas -- migrate rollback abc123
+```
+
+### Auto-snapshots
+
+Atlas automatically creates snapshots at key moments:
+
+- **`atlas init`** — after generating the semantic layer
+- **`atlas improve --apply`** — before applying batch amendments
+- **`atlas improve -i`** — before starting an interactive session
+
+These auto-snapshots use trigger labels (`init`, `improve`, `interactive`) visible in `atlas migrate log`.
 
 ## index
 

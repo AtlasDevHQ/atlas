@@ -18,6 +18,7 @@ import {
 } from "../../lib/cli-utils";
 import type { ParsedEntity, GlossaryTerm, AuditPattern, AnalysisResult } from "@atlas/api/lib/semantic/expert";
 import { applyAmendmentToEntity } from "../../lib/improve/apply-amendment";
+import { createSnapshot } from "../../lib/migrate";
 
 export async function handleImprove(args: string[]): Promise<void> {
   const isInteractive = args.includes("-i") || args.includes("--interactive");
@@ -281,7 +282,7 @@ export async function handleImprove(args: string[]): Promise<void> {
   // 5. Interactive mode — present proposals one at a time
   if (isInteractive) {
     const { runInteractiveSession } = await import("../../lib/improve/interactive");
-    await runInteractiveSession({ entitiesDir, proposals: filtered });
+    await runInteractiveSession({ entitiesDir, semanticRoot, proposals: filtered });
     return;
   }
 
@@ -293,6 +294,19 @@ export async function handleImprove(args: string[]): Promise<void> {
 
   // 6. Apply or store proposals
   if (!isDryRun) {
+    // Auto-snapshot before applying changes
+    try {
+      const entry = createSnapshot(semanticRoot, {
+        message: `Pre-improve snapshot (${filtered.length} amendments)`,
+        trigger: "improve",
+      });
+      if (entry) {
+        console.log(pc.dim(`  Snapshot ${entry.hash} created before applying changes`));
+      }
+    } catch (err) {
+      console.warn(pc.yellow(`  Warning: Could not create snapshot: ${err instanceof Error ? err.message : String(err)}`));
+    }
+
     console.log(`\n${pc.bold("Applying changes...")}\n`);
 
     let applied = 0;

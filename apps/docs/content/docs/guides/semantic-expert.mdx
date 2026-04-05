@@ -193,6 +193,40 @@ atlas improve -i --min-confidence 0.7
 atlas improve -i --entities orders,users
 ```
 
+## Version Tracking with `atlas migrate`
+
+Changes made by `atlas improve` (both batch and interactive mode) are automatically tracked via semantic layer snapshots. Before applying any amendments, a snapshot of the current state is captured so you can review changes and roll back if needed.
+
+### Key Commands
+
+```bash
+# Check current state vs last snapshot
+atlas migrate status
+
+# Create a manual snapshot with a description
+atlas migrate snapshot -m "Before quarterly review"
+
+# See what changed since last snapshot
+atlas migrate diff
+
+# View snapshot history
+atlas migrate log
+
+# Rollback to a previous state
+atlas migrate rollback <hash>
+```
+
+### How It Integrates
+
+- **`atlas init`** — creates an initial snapshot after generating the semantic layer
+- **`atlas improve --apply`** — auto-snapshots before applying batch amendments
+- **`atlas improve -i`** — auto-snapshots before starting an interactive session
+- **`atlas migrate rollback`** — auto-snapshots before restoring (so rollbacks are reversible)
+
+Snapshots are stored in `semantic/.history/` as JSON files. Each snapshot captures all entity YAMLs, glossary, metrics, and catalog at that point in time. Use `atlas migrate log` to see the full history with hashes, timestamps, and trigger labels.
+
+See the [CLI reference](/docs/reference/cli#migrate) for the full `atlas migrate` documentation.
+
 ## What's Next
 
 Phase 3 will add a **web interactive mode** in the admin UI with rich diff previews and one-click approval.

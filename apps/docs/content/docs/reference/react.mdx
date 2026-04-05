@@ -70,7 +70,7 @@ function App() {
 | `schemaExplorer` | `boolean` | `false` | Show the schema explorer button and modal for browsing tables and columns. |
 | `authClient` | `AtlasAuthClient` | — | Custom auth client for `managed` auth mode. Provides session management (login, signup, logout, `useSession`). |
 | `toolRenderers` | `ToolRenderers` | — | Custom renderers for tool results. Map tool names to React components (see [Tool Result Types](#tool-result-types) below). |
-| `chatEndpoint` | `string` | `"/api/chat"` | Custom chat API endpoint path. Combined with `apiUrl` for the full URL. |
+| `chatEndpoint` | `string` | `"/api/v1/chat"` | Custom chat API endpoint path. Combined with `apiUrl` for the full URL. |
 | `conversationsEndpoint` | `string` | `"/api/v1/conversations"` | Custom conversations API endpoint path. Used for listing and loading conversations. |
 | `showBranding` | `boolean` | `true` | Show "Powered by Atlas" badge below the chat input. Set to `false` to hide. Automatically hidden when enterprise white-label branding is active. |
 

@@ -72,15 +72,18 @@ export const checkDataDistribution = tool({
       const distinctCount = parseInt(String(countRow.distinct_count ?? "0"), 10);
 
       // Top values by frequency
+      const textCast = dbType === "mysql" ? `CAST(${col} AS CHAR)` : `${col}::text`;
       const topResult = await db.query(
-        `SELECT ${col}::text AS value, COUNT(*) AS count FROM ${tbl} WHERE ${col} IS NOT NULL GROUP BY ${col} ORDER BY count DESC LIMIT ${resultLimit}`,
+        `SELECT ${textCast} AS value, COUNT(*) AS count FROM ${tbl} WHERE ${col} IS NOT NULL GROUP BY ${col} ORDER BY count DESC LIMIT ${resultLimit}`,
         30000,
       );
 
-      // Get data type
+      // Get data type (escape literals for defense-in-depth — table/column are whitelist-verified above)
+      const safeTable = escapeLiteral(table);
+      const safeColumn = escapeLiteral(column);
       const typeQuery = dbType === "mysql"
-        ? `SELECT data_type FROM information_schema.columns WHERE table_name = '${table}' AND column_name = '${column}'`
-        : `SELECT data_type FROM information_schema.columns WHERE table_name = '${table}' AND column_name = '${column}' AND table_schema = 'public'`;
+        ? `SELECT data_type FROM information_schema.columns WHERE table_name = ${safeTable} AND column_name = ${safeColumn}`
+        : `SELECT data_type FROM information_schema.columns WHERE table_name = ${safeTable} AND column_name = ${safeColumn} AND table_schema = 'public'`;
       const typeResult = await db.query(typeQuery, 30000);
       const dataType = (typeResult.rows[0] as Record<string, string> | undefined)?.data_type ?? "unknown";
 
@@ -108,4 +111,8 @@ export const checkDataDistribution = tool({
 
 function quoteIdent(name: string): string {
   return `"${name.replace(/"/g, '""')}"`;
+}
+
+function escapeLiteral(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
 }

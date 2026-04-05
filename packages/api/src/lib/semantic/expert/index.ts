@@ -14,7 +14,7 @@ export {
   findQueryPatternGaps,
   findVirtualDimensionOpportunities,
 } from "./categories";
-export { computeScore, tableFrequencyImpact, coverageImpact } from "./scoring";
+export { createAnalysisResult, computeScore, tableFrequencyImpact, coverageImpact } from "./scoring";
 export type {
   AnalysisContext,
   AnalysisResult,

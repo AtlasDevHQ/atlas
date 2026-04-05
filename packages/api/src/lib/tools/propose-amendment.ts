@@ -13,6 +13,7 @@ import * as yaml from "js-yaml";
 import { hasInternalDB, insertSemanticAmendment } from "@atlas/api/lib/db/internal";
 import { connections, getDB } from "@atlas/api/lib/db/connection";
 import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
+import { validateSQL } from "@atlas/api/lib/tools/sql";
 import type { AmendmentPayload, AmendmentType } from "@useatlas/types";
 
 const log = createLogger("tool:propose-amendment");
@@ -207,25 +208,39 @@ The amendment object should match the YAML structure for that type (e.g., { name
       // Generate diff
       const diff = unifiedDiff(entityName, beforeYaml, afterYaml);
 
-      // Run test query if provided
+      // Run test query if provided — validate through SQL pipeline first
       let testResult: AmendmentPayload["testResult"];
       if (testQuery) {
         try {
-          const reqCtx = getRequestContext();
-          const orgId = connections.isOrgPoolingEnabled()
-            ? reqCtx?.user?.activeOrganizationId
-            : undefined;
+          // Validate test query through the same SQL pipeline as executeSQL
+          const validation = validateSQL(testQuery);
+          if (!validation.valid) {
+            testResult = {
+              success: false,
+              rowCount: 0,
+              sampleRows: [],
+            };
+            log.warn(
+              { testQuery, error: validation.error },
+              "Amendment test query failed SQL validation",
+            );
+          } else {
+            const reqCtx = getRequestContext();
+            const orgId = connections.isOrgPoolingEnabled()
+              ? reqCtx?.user?.activeOrganizationId
+              : undefined;
 
-          const db = orgId
-            ? connections.getForOrg(orgId)
-            : getDB();
+            const db = orgId
+              ? connections.getForOrg(orgId)
+              : getDB();
 
-          const result = await db.query(testQuery, 30000);
-          testResult = {
-            success: true,
-            rowCount: result.rows.length,
-            sampleRows: result.rows.slice(0, 5) as Record<string, unknown>[],
-          };
+            const result = await db.query(testQuery, 30000);
+            testResult = {
+              success: true,
+              rowCount: result.rows.length,
+              sampleRows: result.rows.slice(0, 5) as Record<string, unknown>[],
+            };
+          }
         } catch (err) {
           testResult = {
             success: false,
@@ -256,7 +271,7 @@ The amendment object should match the YAML structure for that type (e.g., { name
       let status: "queued" | "auto_approved";
 
       if (hasInternalDB()) {
-        proposalId = await insertSemanticAmendment({
+        const result = await insertSemanticAmendment({
           orgId: getRequestContext()?.user?.activeOrganizationId ?? null,
           description: `[${amendmentType}] ${entityName}: ${rationale}`,
           sourceEntity: entityName,
@@ -264,10 +279,8 @@ The amendment object should match the YAML structure for that type (e.g., { name
           amendmentPayload: payload as unknown as Record<string, unknown>,
         });
 
-        const threshold = parseFloat(
-          process.env.ATLAS_EXPERT_AUTO_APPROVE_THRESHOLD ?? "2",
-        );
-        status = confidence >= threshold ? "auto_approved" : "queued";
+        proposalId = result.id;
+        status = result.status === "approved" ? "auto_approved" : "queued";
       } else {
         proposalId = `local-${Date.now()}`;
         status = "queued";

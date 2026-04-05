@@ -729,7 +729,22 @@ export function insertLearnedPattern(pattern: {
 }
 
 /**
- * Insert a semantic amendment proposal. Returns the new row's ID.
+ * Parse the auto-approve threshold from env. Returns a value > 1 (disabled) if
+ * not set or invalid. Single source of truth for the threshold logic.
+ */
+export function getAutoApproveThreshold(): number {
+  const raw = process.env.ATLAS_EXPERT_AUTO_APPROVE_THRESHOLD;
+  if (!raw) return 2; // Disabled by default
+  const parsed = parseFloat(raw);
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1) {
+    log.warn({ raw }, "Invalid ATLAS_EXPERT_AUTO_APPROVE_THRESHOLD — must be 0.0–1.0, defaulting to disabled");
+    return 2;
+  }
+  return parsed;
+}
+
+/**
+ * Insert a semantic amendment proposal. Returns the new row's ID and resolved status.
  * Unlike insertLearnedPattern (fire-and-forget), this awaits the result.
  */
 export async function insertSemanticAmendment(amendment: {
@@ -738,7 +753,10 @@ export async function insertSemanticAmendment(amendment: {
   sourceEntity: string;
   confidence: number;
   amendmentPayload: Record<string, unknown>;
-}): Promise<string> {
+}): Promise<{ id: string; status: "approved" | "pending" }> {
+  const threshold = getAutoApproveThreshold();
+  const status = amendment.confidence >= threshold ? "approved" : "pending";
+
   const rows = await internalQuery<{ id: string }>(
     `INSERT INTO learned_patterns
        (org_id, pattern_sql, description, source_entity, confidence,
@@ -751,13 +769,18 @@ export async function insertSemanticAmendment(amendment: {
       amendment.description,
       amendment.sourceEntity,
       amendment.confidence,
-      amendment.confidence >= parseFloat(process.env.ATLAS_EXPERT_AUTO_APPROVE_THRESHOLD ?? "2")
-        ? "approved"
-        : "pending",
+      status,
       JSON.stringify(amendment.amendmentPayload),
     ],
   );
-  return rows[0].id;
+
+  if (rows.length === 0) {
+    throw new Error(
+      `insertSemanticAmendment: INSERT returned no rows for entity "${amendment.sourceEntity}". The row may not have been created.`,
+    );
+  }
+
+  return { id: rows[0].id, status };
 }
 
 /**

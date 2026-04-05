@@ -4,6 +4,21 @@
  * score = impact × confidence × (1 - staleness)
  */
 
+import type { AnalysisResult } from "./types";
+
+/**
+ * Factory for creating AnalysisResult with auto-computed score.
+ * Prevents inconsistency between score and its component factors.
+ */
+export function createAnalysisResult(
+  fields: Omit<AnalysisResult, "score">,
+): AnalysisResult {
+  return {
+    ...fields,
+    score: computeScore(fields.impact, fields.confidence, fields.staleness),
+  };
+}
+
 /** Compute the composite score for a finding. */
 export function computeScore(
   impact: number,

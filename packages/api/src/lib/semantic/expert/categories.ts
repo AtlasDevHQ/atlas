@@ -7,7 +7,7 @@
 import { mapSQLType } from "@atlas/api/lib/profiler-utils";
 import { suggestMeasureType, describeMeasure } from "@atlas/api/lib/profiler-patterns";
 import type { AnalysisContext, AnalysisResult, ParsedEntity } from "./types";
-import { computeScore, tableFrequencyImpact } from "./scoring";
+import { createAnalysisResult, tableFrequencyImpact } from "./scoring";
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -50,7 +50,7 @@ export function findCoverageGaps(ctx: AnalysisContext): AnalysisResult[] {
       const impact = 0.6;
       const confidence = col.null_count !== null && col.unique_count !== null ? 0.7 : 0.5;
 
-      results.push({
+      results.push(createAnalysisResult({
         category: "coverage_gaps",
         entityName: entity.name,
         amendmentType: "add_dimension",
@@ -65,8 +65,7 @@ export function findCoverageGaps(ctx: AnalysisContext): AnalysisResult[] {
         impact,
         confidence,
         staleness,
-        score: computeScore(impact, confidence, staleness),
-      });
+      }));
     }
   }
 
@@ -85,7 +84,7 @@ export function findDescriptionIssues(ctx: AnalysisContext): AnalysisResult[] {
       const impact = 0.5;
       const confidence = 0.6;
 
-      results.push({
+      results.push(createAnalysisResult({
         category: "description_quality",
         entityName: entity.name,
         amendmentType: "update_description",
@@ -96,8 +95,7 @@ export function findDescriptionIssues(ctx: AnalysisContext): AnalysisResult[] {
         impact,
         confidence,
         staleness,
-        score: computeScore(impact, confidence, staleness),
-      });
+      }));
     }
 
     // Dimension-level descriptions
@@ -107,7 +105,7 @@ export function findDescriptionIssues(ctx: AnalysisContext): AnalysisResult[] {
         const impact = 0.4;
         const confidence = 0.6;
 
-        results.push({
+        results.push(createAnalysisResult({
           category: "description_quality",
           entityName: entity.name,
           amendmentType: "update_description",
@@ -118,8 +116,7 @@ export function findDescriptionIssues(ctx: AnalysisContext): AnalysisResult[] {
           impact,
           confidence,
           staleness,
-          score: computeScore(impact, confidence, staleness),
-        });
+        }));
       }
     }
   }
@@ -146,7 +143,7 @@ export function findTypeInaccuracies(ctx: AnalysisContext): AnalysisResult[] {
         const impact = 0.7;
         const confidence = 0.8;
 
-        results.push({
+        results.push(createAnalysisResult({
           category: "type_accuracy",
           entityName: entity.name,
           amendmentType: "update_dimension",
@@ -155,8 +152,7 @@ export function findTypeInaccuracies(ctx: AnalysisContext): AnalysisResult[] {
           impact,
           confidence,
           staleness,
-          score: computeScore(impact, confidence, staleness),
-        });
+        }));
       }
     }
   }
@@ -200,7 +196,7 @@ export function findMissingMeasures(ctx: AnalysisContext): AnalysisResult[] {
       const confidence = 0.65;
       const desc = describeMeasure(col, aggType);
 
-      results.push({
+      results.push(createAnalysisResult({
         category: "missing_measures",
         entityName: entity.name,
         amendmentType: "add_measure",
@@ -215,8 +211,7 @@ export function findMissingMeasures(ctx: AnalysisContext): AnalysisResult[] {
         impact,
         confidence,
         staleness,
-        score: computeScore(impact, confidence, staleness),
-      });
+      }));
     }
   }
 
@@ -254,7 +249,7 @@ export function findMissingJoins(ctx: AnalysisContext): AnalysisResult[] {
       const impact = 0.8;
       const confidence = fk.source === "constraint" ? 0.95 : 0.6;
 
-      results.push({
+      results.push(createAnalysisResult({
         category: "missing_joins",
         entityName: entity.name,
         amendmentType: "add_join",
@@ -268,8 +263,7 @@ export function findMissingJoins(ctx: AnalysisContext): AnalysisResult[] {
         impact,
         confidence,
         staleness,
-        score: computeScore(impact, confidence, staleness),
-      });
+      }));
     }
   }
 
@@ -283,7 +277,7 @@ export function findGlossaryGaps(ctx: AnalysisContext): AnalysisResult[] {
   const glossaryTerms = new Set(ctx.glossary.map((g) => g.term.toLowerCase()));
 
   // Look for common business abbreviations in column names
-  const BUSINESS_ABBREVS = /\b(acv|arr|mrr|churn|ltv|cac|nps|dau|mau|wau|gmv|arpu|aov|ctr|cvr|roi|roas)\b/i;
+  const BUSINESS_ABBREVS = /(?:^|_)(acv|arr|mrr|churn|ltv|cac|nps|dau|mau|wau|gmv|arpu|aov|ctr|cvr|roi|roas)(?:_|$)/i;
 
   for (const entity of ctx.entities) {
     for (const dim of entity.dimensions) {
@@ -297,7 +291,7 @@ export function findGlossaryGaps(ctx: AnalysisContext): AnalysisResult[] {
       const impact = 0.5;
       const confidence = 0.5;
 
-      results.push({
+      results.push(createAnalysisResult({
         category: "glossary_gaps",
         entityName: entity.name,
         amendmentType: "add_glossary_term",
@@ -306,8 +300,7 @@ export function findGlossaryGaps(ctx: AnalysisContext): AnalysisResult[] {
         impact,
         confidence,
         staleness,
-        score: computeScore(impact, confidence, staleness),
-      });
+      }));
     }
   }
 
@@ -341,7 +334,7 @@ export function findStaleSampleValues(ctx: AnalysisContext): AnalysisResult[] {
       const impact = 0.3;
       const confidence = 0.85;
 
-      results.push({
+      results.push(createAnalysisResult({
         category: "sample_value_staleness",
         entityName: entity.name,
         amendmentType: "update_dimension",
@@ -353,8 +346,7 @@ export function findStaleSampleValues(ctx: AnalysisContext): AnalysisResult[] {
         impact,
         confidence,
         staleness,
-        score: computeScore(impact, confidence, staleness),
-      });
+      }));
     }
   }
 
@@ -385,7 +377,7 @@ export function findQueryPatternGaps(ctx: AnalysisContext): AnalysisResult[] {
       const impact = Math.min(1, pattern.count / 20); // 20+ queries = max impact
       const confidence = 0.7;
 
-      results.push({
+      results.push(createAnalysisResult({
         category: "query_pattern_coverage",
         entityName: entity.name,
         amendmentType: "add_query_pattern",
@@ -398,8 +390,7 @@ export function findQueryPatternGaps(ctx: AnalysisContext): AnalysisResult[] {
         impact,
         confidence,
         staleness,
-        score: computeScore(impact, confidence, staleness),
-      });
+      }));
     }
   }
 
@@ -442,7 +433,7 @@ export function findVirtualDimensionOpportunities(ctx: AnalysisContext): Analysi
         const impact = Math.min(1, pattern.count / 10);
         const confidence = 0.75;
 
-        results.push({
+        results.push(createAnalysisResult({
           category: "virtual_dimension_opportunities",
           entityName: entity.name,
           amendmentType: "add_virtual_dimension",
@@ -457,8 +448,7 @@ export function findVirtualDimensionOpportunities(ctx: AnalysisContext): Analysi
           impact,
           confidence,
           staleness,
-          score: computeScore(impact, confidence, staleness),
-        });
+        }));
       }
     }
 
@@ -483,7 +473,7 @@ export function findVirtualDimensionOpportunities(ctx: AnalysisContext): Analysi
         const impact = Math.min(1, pattern.count / 10);
         const confidence = 0.75;
 
-        results.push({
+        results.push(createAnalysisResult({
           category: "virtual_dimension_opportunities",
           entityName: entity.name,
           amendmentType: "add_virtual_dimension",
@@ -498,8 +488,7 @@ export function findVirtualDimensionOpportunities(ctx: AnalysisContext): Analysi
           impact,
           confidence,
           staleness,
-          score: computeScore(impact, confidence, staleness),
-        });
+        }));
       }
     }
   }

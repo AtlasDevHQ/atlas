@@ -10,6 +10,7 @@
 import { tool } from "ai";
 import { z } from "zod";
 import * as yaml from "js-yaml";
+import { validateSQL } from "@atlas/api/lib/tools/sql";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { connections, getDB } from "@atlas/api/lib/db/connection";
 import { getWhitelistedTables, getOrgWhitelistedTables } from "@atlas/api/lib/semantic";
@@ -72,11 +73,13 @@ export const validateProposal = tool({
             ? JSON.parse(row.amendment_payload)
             : row.amendment_payload
         ) as AmendmentPayload;
-      } catch {
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        log.warn({ proposalId, err: detail }, "Failed to parse amendment_payload JSON");
         return {
           yamlValid: false,
           whitelistValid: false,
-          issues: ["Failed to parse amendment_payload JSON"],
+          issues: [`Failed to parse amendment_payload JSON: ${detail}`],
         };
       }
 
@@ -154,31 +157,41 @@ export const validateProposal = tool({
         | undefined;
 
       if (payload.testQuery) {
-        try {
-          const db = orgId
-            ? connections.getForOrg(orgId)
-            : getDB();
-
-          const result = await db.query(payload.testQuery, 30000);
-          testQueryResult = {
-            success: true,
-            rowCount: result.rows.length,
-            sampleRows: result.rows.slice(0, 3) as Record<string, unknown>[],
-          };
-
-          if (result.rows.length === 0) {
-            issues.push(
-              "Test query returned 0 rows — the amendment may reference incorrect columns",
-            );
-          }
-        } catch (err) {
+        // Validate test query through SQL pipeline before execution
+        const sqlValidation = validateSQL(payload.testQuery);
+        if (!sqlValidation.valid) {
           testQueryResult = {
             success: false,
-            error: err instanceof Error ? err.message : String(err),
+            error: sqlValidation.error,
           };
-          issues.push(
-            `Test query failed: ${err instanceof Error ? err.message : String(err)}`,
-          );
+          issues.push(`Test query failed SQL validation: ${sqlValidation.error}`);
+        } else {
+          try {
+            const db = orgId
+              ? connections.getForOrg(orgId)
+              : getDB();
+
+            const result = await db.query(payload.testQuery, 30000);
+            testQueryResult = {
+              success: true,
+              rowCount: result.rows.length,
+              sampleRows: result.rows.slice(0, 3) as Record<string, unknown>[],
+            };
+
+            if (result.rows.length === 0) {
+              issues.push(
+                "Test query returned 0 rows — the amendment may reference incorrect columns",
+              );
+            }
+          } catch (err) {
+            testQueryResult = {
+              success: false,
+              error: err instanceof Error ? err.message : String(err),
+            };
+            issues.push(
+              `Test query failed: ${err instanceof Error ? err.message : String(err)}`,
+            );
+          }
         }
       }
 

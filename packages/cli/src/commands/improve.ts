@@ -161,7 +161,12 @@ export async function handleImprove(args: string[]): Promise<void> {
       const { internalQuery } = await import("@atlas/api/lib/db/internal");
 
       // Fetch audit patterns
-      const sinceClause = sinceArg ? `AND timestamp >= '${sinceArg}'::timestamptz` : "";
+      const auditParams: unknown[] = [];
+      let sinceClause = "";
+      if (sinceArg) {
+        auditParams.push(sinceArg);
+        sinceClause = `AND timestamp >= $${auditParams.length}::timestamptz`;
+      }
       const auditRows = await internalQuery<{
         sql: string;
         count: string;
@@ -175,7 +180,7 @@ export async function handleImprove(args: string[]): Promise<void> {
          HAVING COUNT(*) >= 2
          ORDER BY COUNT(*) DESC
          LIMIT 200`,
-        [],
+        auditParams,
       );
 
       for (const row of auditRows) {

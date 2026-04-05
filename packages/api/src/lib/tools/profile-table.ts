@@ -63,10 +63,11 @@ export const profileTable = tool({
       );
       const rowCount = parseInt(String(rowCountResult.rows[0]?.cnt ?? "0"), 10);
 
-      // Get column info
+      // Get column info (table name is whitelist-verified above, escape for defense-in-depth)
+      const safeTable = escapeLiteral(table);
       const columnInfoSql = dbType === "mysql"
-        ? `SELECT column_name, data_type, is_nullable FROM information_schema.columns WHERE table_name = '${table}' ORDER BY ordinal_position`
-        : `SELECT column_name, data_type, is_nullable FROM information_schema.columns WHERE table_name = '${table}' AND table_schema = 'public' ORDER BY ordinal_position`;
+        ? `SELECT column_name, data_type, is_nullable FROM information_schema.columns WHERE table_name = ${safeTable} ORDER BY ordinal_position`
+        : `SELECT column_name, data_type, is_nullable FROM information_schema.columns WHERE table_name = ${safeTable} AND table_schema = 'public' ORDER BY ordinal_position`;
 
       const colInfoResult = await db.query(columnInfoSql, 30000);
       const allColumns = colInfoResult.rows as Array<{
@@ -88,15 +89,16 @@ export const profileTable = tool({
             const tableName = quoteIdent(table);
 
             // Combined query: distinct count, null count, min, max
+            const textCast = dbType === "mysql" ? `CAST(${colName} AS CHAR)` : `${colName}::text`;
             const statsResult = await db.query(
-              `SELECT COUNT(DISTINCT ${colName}) AS distinct_count, SUM(CASE WHEN ${colName} IS NULL THEN 1 ELSE 0 END) AS null_count, MIN(${colName}::text) AS min_val, MAX(${colName}::text) AS max_val FROM ${tableName}`,
+              `SELECT COUNT(DISTINCT ${colName}) AS distinct_count, SUM(CASE WHEN ${colName} IS NULL THEN 1 ELSE 0 END) AS null_count, MIN(${textCast}) AS min_val, MAX(${textCast}) AS max_val FROM ${tableName}`,
               30000,
             );
             const stats = statsResult.rows[0] ?? {};
 
             // Top values
             const topResult = await db.query(
-              `SELECT ${colName}::text AS val, COUNT(*) AS cnt FROM ${tableName} WHERE ${colName} IS NOT NULL GROUP BY ${colName} ORDER BY cnt DESC LIMIT 10`,
+              `SELECT ${textCast} AS val, COUNT(*) AS cnt FROM ${tableName} WHERE ${colName} IS NOT NULL GROUP BY ${colName} ORDER BY cnt DESC LIMIT 10`,
               30000,
             );
 
@@ -123,8 +125,8 @@ export const profileTable = tool({
             return {
               name: col.column_name,
               sqlType: col.data_type,
-              nullRate: 0,
-              distinctCount: 0,
+              nullRate: null,
+              distinctCount: null,
               topValues: [],
               error: `Failed to profile: ${err instanceof Error ? err.message : String(err)}`,
             };
@@ -148,4 +150,9 @@ export const profileTable = tool({
 function quoteIdent(name: string): string {
   // Simple identifier quoting — prevents SQL injection in column/table names
   return `"${name.replace(/"/g, '""')}"`;
+}
+
+function escapeLiteral(value: string): string {
+  // Escape single quotes for use in SQL string literals
+  return `'${value.replace(/'/g, "''")}'`;
 }

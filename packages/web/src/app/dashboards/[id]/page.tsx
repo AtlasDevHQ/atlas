@@ -211,7 +211,9 @@ export default function DashboardViewPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
   const session = authClient.useSession();
-  const user = session.data?.user;
+  const user = session.data?.user as
+    | { email?: string; role?: string }
+    | undefined;
   const isAdmin = user?.role === "admin" || user?.role === "owner" || user?.role === "platform_admin";
 
   const { data: dashboard, loading, error, refetch } = useAdminFetch<DashboardWithCards>(

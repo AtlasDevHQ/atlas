@@ -900,10 +900,11 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] Powered by Atlas badge on embedded widgets (PR #1265)
 - [x] Semantic expert agent design doc (#1180, PR #1270)
 - [x] Docs: chatEndpoint default `/api/chat` → `/api/v1/chat` (#1271)
-- [x] Consolidate AtlasUIProvider + AtlasProvider into single AtlasProvider (61b986dc)
+- [x] Consolidate AtlasUIProvider + AtlasProvider into single AtlasProvider, shared auth types to @useatlas/types (PR #1298)
 - [x] Fix AtlasContext in AtlasChat — useHealthQuery crash on app.useatlas.dev (f158a4cc)
 - [x] Publish @useatlas/types 0.0.7 — SEMANTIC_TYPES + profiler exports
 - [x] Fix Effect/Turbopack serverExternalPackages conflict in templates
+- [x] Docs: fix stale AtlasUIProvider references in react.mdx (#1292, #1293)
 
 ---
 

@@ -67,7 +67,7 @@ export function adminQueryFn<T>(
 }
 
 /**
- * Extracts the `{ apiUrl, isCrossOrigin }` subset of `AtlasUIConfig` for use
+ * Extracts the `{ apiUrl, isCrossOrigin }` subset of `AtlasConfig` for use
  * with `adminQueryFn`. Isolates query utilities from the full config shape.
  */
 export function useQueryConfig() {

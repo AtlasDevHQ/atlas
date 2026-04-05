@@ -17,9 +17,7 @@ import { useAtlasConfig } from "@/ui/context";
 export function useUserRole(): string | undefined {
   const { authClient } = useAtlasConfig();
   const session = authClient.useSession();
-  return (session.data?.user as Record<string, unknown> | undefined)?.role as
-    | string
-    | undefined;
+  return session.data?.user?.role;
 }
 
 /**

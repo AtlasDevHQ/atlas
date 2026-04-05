@@ -11,7 +11,7 @@
     "test": "bun scripts/test-isolated.ts"
   },
   "exports": {
-    "./ui/context": "./src/ui/context-reexport.ts",
+    "./ui/context": "./src/ui/context.tsx",
     "./ui/components/atlas-chat": "./src/ui/atlas-chat-reexport.ts"
   },
   "dependencies": {

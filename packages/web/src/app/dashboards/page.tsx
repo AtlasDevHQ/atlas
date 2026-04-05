@@ -59,7 +59,7 @@ function timeAgo(iso: string): string {
 
 export default function DashboardsPage() {
   const session = authClient.useSession();
-  const user = session.data?.user as { role?: string } | undefined;
+  const user = session.data?.user;
   const isAdmin = user?.role === "admin" || user?.role === "owner" || user?.role === "platform_admin";
 
   const { data, loading, error, refetch } = useAdminFetch<{

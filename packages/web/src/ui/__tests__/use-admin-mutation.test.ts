@@ -4,7 +4,7 @@ import { createElement, type ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useAdminMutation, type MutateResult } from "../hooks/use-admin-mutation";
 import { useAdminFetch } from "../hooks/use-admin-fetch";
-import { AtlasUIProvider } from "../context";
+import { AtlasProvider } from "../context";
 
 /* ------------------------------------------------------------------ */
 /*  Setup                                                              */
@@ -24,7 +24,7 @@ function wrapper({ children }: { children: ReactNode }) {
     QueryClientProvider,
     { client: testQueryClient },
     createElement(
-      AtlasUIProvider,
+      AtlasProvider,
       { config: { apiUrl: "http://localhost:3001", isCrossOrigin: false as const, authClient: stubAuthClient } },
       children,
     ),

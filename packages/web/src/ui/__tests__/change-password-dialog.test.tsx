@@ -1,7 +1,7 @@
 import { describe, expect, test, mock, beforeEach, afterEach } from "bun:test";
 import { render, fireEvent, waitFor, cleanup } from "@testing-library/react";
 import { ChangePasswordDialog } from "../components/admin/change-password-dialog";
-import { AtlasUIProvider, type AtlasAuthClient } from "../context";
+import { AtlasProvider, type AtlasAuthClient } from "../context";
 
 const stubAuthClient: AtlasAuthClient = {
   signIn: { email: async () => ({}) },
@@ -12,9 +12,9 @@ const stubAuthClient: AtlasAuthClient = {
 
 function renderDialog(open: boolean, onComplete?: () => void) {
   return render(
-    <AtlasUIProvider config={{ apiUrl: "http://localhost:3001", isCrossOrigin: false, authClient: stubAuthClient }}>
+    <AtlasProvider config={{ apiUrl: "http://localhost:3001", isCrossOrigin: false, authClient: stubAuthClient }}>
       <ChangePasswordDialog open={open} onComplete={onComplete ?? (() => {})} />
-    </AtlasUIProvider>,
+    </AtlasProvider>,
   );
 }
 

@@ -1,58 +1,41 @@
 "use client";
 
 import { createContext, useContext, useMemo, type ReactNode } from "react";
+import type { AtlasAuthClient, ActionAuthValue } from "@useatlas/types";
 
-/**
- * Duck-typed interface that matches better-auth's client shape.
- * Components like ManagedAuthCard call signIn/signUp/signOut and useSession().
- */
-export interface AtlasAuthClient {
-  signIn: {
-    email: (opts: { email: string; password: string }) => Promise<{ error?: { message?: string } | null }>;
-  };
-  signUp: {
-    email: (opts: { email: string; password: string; name: string }) => Promise<{ error?: { message?: string } | null }>;
-  };
-  signOut: () => Promise<unknown>;
-  useSession: () => { data?: { user?: { email?: string } } | null; isPending?: boolean };
-}
+export type { AtlasAuthClient, ActionAuthValue } from "@useatlas/types";
 
-export interface AtlasUIConfig {
+export interface AtlasConfig {
   apiUrl: string;
   isCrossOrigin: boolean;
   authClient: AtlasAuthClient;
 }
 
-const AtlasUIContext = createContext<AtlasUIConfig | null>(null);
+const AtlasContext = createContext<AtlasConfig | null>(null);
 
-export function useAtlasConfig(): AtlasUIConfig {
-  const ctx = useContext(AtlasUIContext);
-  if (!ctx) throw new Error("useAtlasConfig must be used within <AtlasUIProvider>");
+export function useAtlasConfig(): AtlasConfig {
+  const ctx = useContext(AtlasContext);
+  if (!ctx) throw new Error("useAtlasConfig must be used within <AtlasProvider>");
   return ctx;
 }
 
-export function AtlasUIProvider({
+export function AtlasProvider({
   config,
   children,
 }: {
-  config: AtlasUIConfig;
+  config: AtlasConfig;
   children: ReactNode;
 }) {
   return (
-    <AtlasUIContext.Provider value={config}>
+    <AtlasContext.Provider value={config}>
       {children}
-    </AtlasUIContext.Provider>
+    </AtlasContext.Provider>
   );
 }
 
 /* ------------------------------------------------------------------ */
 /*  ActionAuth — internal context for passing auth to action cards     */
 /* ------------------------------------------------------------------ */
-
-export interface ActionAuthValue {
-  getHeaders: () => Record<string, string>;
-  getCredentials: () => RequestCredentials;
-}
 
 const ActionAuthContext = createContext<ActionAuthValue | null>(null);
 

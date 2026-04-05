@@ -4,7 +4,7 @@ import { createElement, type ReactNode } from "react";
 import { z } from "zod";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { friendlyError, useAdminFetch, type FetchError } from "../hooks/use-admin-fetch";
-import { AtlasUIProvider } from "../context";
+import { AtlasProvider } from "../context";
 
 /* ------------------------------------------------------------------ */
 /*  friendlyError (pure function)                                      */
@@ -67,7 +67,7 @@ function wrapper({ children }: { children: ReactNode }) {
     QueryClientProvider,
     { client: testQueryClient },
     createElement(
-      AtlasUIProvider,
+      AtlasProvider,
       { config: { apiUrl: "http://localhost:3001", isCrossOrigin: false as const, authClient: stubAuthClient } },
       children,
     ),

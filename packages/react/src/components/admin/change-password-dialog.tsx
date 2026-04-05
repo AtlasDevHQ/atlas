@@ -21,7 +21,7 @@ export function ChangePasswordDialog({
   onComplete: () => void;
 }) {
   const { apiUrl, isCrossOrigin } = useAtlasContext();
-  const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
+  const credentials: "include" | "omit" | "same-origin" = isCrossOrigin ? "include" : "same-origin";
 
   const [currentPassword, setCurrentPassword] = useState("atlas-dev");
   const [newPassword, setNewPassword] = useState("");

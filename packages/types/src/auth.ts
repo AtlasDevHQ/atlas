@@ -12,6 +12,31 @@ export type AuthMode = (typeof AUTH_MODES)[number];
 export const ATLAS_ROLES = ["member", "admin", "owner", "platform_admin"] as const;
 export type AtlasRole = (typeof ATLAS_ROLES)[number];
 
+// ── Client-side auth interfaces ────────────────────────────────────
+// Shared between @atlas/web and @useatlas/react so each package has
+// a single source of truth for auth client shapes.
+
+/**
+ * Duck-typed interface that matches better-auth's client shape.
+ * Components like ManagedAuthCard call signIn/signUp/signOut and useSession().
+ */
+export interface AtlasAuthClient {
+  signIn: {
+    email: (opts: { email: string; password: string }) => Promise<{ error?: { message?: string } | null }>;
+  };
+  signUp: {
+    email: (opts: { email: string; password: string; name: string }) => Promise<{ error?: { message?: string } | null }>;
+  };
+  signOut: () => Promise<unknown>;
+  useSession: () => { data?: { user?: { email?: string; role?: string } } | null; isPending: boolean };
+}
+
+/** Auth helpers passed to action approval cards via context. */
+export interface ActionAuthValue {
+  getHeaders: () => Record<string, string>;
+  getCredentials: () => "include" | "omit" | "same-origin";
+}
+
 export interface AtlasUser {
   id: string;
   mode: Exclude<AuthMode, "none">;

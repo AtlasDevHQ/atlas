@@ -9,40 +9,37 @@ import type { AnalysisResult } from "./types";
 
 /** A proposal that the user has acted on. */
 export interface ReviewedProposal {
-  /** Original analysis result. */
-  result: AnalysisResult;
-  /** User decision. */
-  decision: "accepted" | "rejected" | "skipped";
-  /** Timestamp of the decision. */
-  decidedAt: Date;
+  readonly result: AnalysisResult;
+  readonly decision: "accepted" | "rejected" | "skipped";
+  readonly decidedAt: Date;
 }
 
 /** A message in the conversation history. */
 export interface ConversationMessage {
-  role: "assistant" | "user";
-  content: string;
+  readonly role: "assistant" | "user";
+  readonly content: string;
 }
 
 /** Session state for interactive improvement mode. */
 export interface SessionState {
   /** Ranked analysis results from the initial analysis. */
-  proposals: AnalysisResult[];
+  readonly proposals: readonly AnalysisResult[];
   /** Index of the next proposal to present (advances as user reviews). */
   currentIndex: number;
   /** Proposals the user has acted on. */
-  reviewed: ReviewedProposal[];
+  readonly reviewed: ReviewedProposal[];
   /** Conversation history for multi-turn context. */
-  messages: ConversationMessage[];
-  /** Entity+type combos that the user rejected — agent should not re-suggest. */
-  rejectedKeys: Set<string>;
+  readonly messages: ConversationMessage[];
+  /** Rejected proposal keys — format: "entityName:amendmentType:name". Agent should not re-suggest. */
+  readonly rejectedKeys: Set<string>;
   /** When the session started. */
-  startedAt: Date;
+  readonly startedAt: Date;
 }
 
 /** Create a new session from initial analysis results. */
-export function createSession(proposals: AnalysisResult[]): SessionState {
+export function createSession(proposals: readonly AnalysisResult[]): SessionState {
   return {
-    proposals,
+    proposals: [...proposals],
     currentIndex: 0,
     reviewed: [],
     messages: [],

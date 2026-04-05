@@ -139,7 +139,7 @@ atlas improve -i
 2. Each proposal is presented with a colorized unified diff showing the YAML change
 3. You choose an action for each proposal:
    - **y** (yes) — apply the change to the YAML file immediately
-   - **n** (no) — reject the change (won't be re-suggested for 30 days)
+   - **n** (no) — reject the change (skipped for this session)
    - **s** (skip) — skip for now (may appear again next run)
    - **q** (quit) — end the session early
 4. A session summary is printed at exit showing accepted/rejected/skipped counts
@@ -180,7 +180,7 @@ Reviewing one at a time.
 +    description: Total of total_cents
 
   Apply? [y/n/s/q/?] y
-  ✓ Applied.
+  Applied.
 ```
 
 You can combine interactive mode with other flags:

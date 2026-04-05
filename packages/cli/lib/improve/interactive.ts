@@ -1,9 +1,9 @@
 /**
  * Interactive session manager for `atlas improve -i`.
  *
- * Readline-based multi-turn conversation: presents analysis results one at a
- * time, shows colorized YAML diffs, and lets the user approve/reject/skip each
- * proposal. Accepted proposals are written to YAML files immediately.
+ * Readline-based interactive review: presents analysis results one at a
+ * time, shows colorized YAML diffs, and lets the user approve/reject/skip
+ * each proposal. Accepted proposals are written to YAML files immediately.
  */
 
 import * as fs from "fs";
@@ -20,72 +20,15 @@ import {
   getSessionSummary,
 } from "@atlas/api/lib/semantic/expert";
 import type { SessionState } from "@atlas/api/lib/semantic/expert";
+import { applyAmendmentToEntity } from "./apply-amendment";
 
 // ── Diff rendering ─────────────────────────────────────────────────
 
-/** Apply an amendment to a parsed entity and return the updated object. */
-function applyAmendmentToEntity(
-  entity: Record<string, unknown>,
-  result: AnalysisResult,
-): Record<string, unknown> {
-  const updated = structuredClone(entity);
-  const amendment = result.amendment;
-
-  switch (result.amendmentType) {
-    case "add_dimension": {
-      const dims = (updated.dimensions ?? []) as Record<string, unknown>[];
-      dims.push(amendment);
-      updated.dimensions = dims;
-      break;
-    }
-    case "add_measure": {
-      const measures = (updated.measures ?? []) as Record<string, unknown>[];
-      measures.push(amendment);
-      updated.measures = measures;
-      break;
-    }
-    case "add_join": {
-      const joins = (updated.joins ?? []) as Record<string, unknown>[];
-      joins.push(amendment);
-      updated.joins = joins;
-      break;
-    }
-    case "add_query_pattern": {
-      const patterns = (updated.query_patterns ?? []) as Record<string, unknown>[];
-      patterns.push(amendment);
-      updated.query_patterns = patterns;
-      break;
-    }
-    case "update_description": {
-      if (amendment.field === "table") {
-        updated.description = amendment.description;
-      } else if (amendment.dimension) {
-        const dims = (updated.dimensions ?? []) as Record<string, unknown>[];
-        const target = dims.find((d) => d.name === amendment.dimension);
-        if (target) target.description = amendment.description;
-      }
-      break;
-    }
-    case "update_dimension": {
-      const dims = (updated.dimensions ?? []) as Record<string, unknown>[];
-      const target = dims.find((d) => d.name === amendment.name);
-      if (target) Object.assign(target, amendment);
-      break;
-    }
-    case "add_virtual_dimension": {
-      const dims = (updated.dimensions ?? []) as Record<string, unknown>[];
-      dims.push({ ...amendment, virtual: true });
-      updated.dimensions = dims;
-      break;
-    }
-    case "add_glossary_term":
-      break;
-  }
-
-  return updated;
-}
-
-/** Generate a colorized unified diff between before/after YAML. */
+/**
+ * Generate a colorized line-by-line diff between before/after YAML.
+ * Uses positional comparison (not a full diff algorithm), which works
+ * well for append-only YAML changes.
+ */
 function renderDiff(entityName: string, before: string, after: string): string {
   const beforeLines = before.split("\n");
   const afterLines = after.split("\n");
@@ -132,6 +75,18 @@ function formatType(type: string): string {
   return type.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+// ── Path safety ────────────────────────────────────────────────────
+
+/** Resolve entity path with directory traversal protection. */
+function safeEntityPath(entitiesDir: string, entityName: string): string | null {
+  const resolved = path.resolve(entitiesDir, `${entityName}.yml`);
+  if (!resolved.startsWith(path.resolve(entitiesDir))) {
+    console.error(pc.red(`  Refused: entity name "${entityName}" escapes entities directory`));
+    return null;
+  }
+  return resolved;
+}
+
 // ── Proposal presentation ──────────────────────────────────────────
 
 /** Print a single proposal with context and diff. */
@@ -162,17 +117,21 @@ function presentProposal(
   }
 
   // Show diff
-  const entityPath = path.join(entitiesDir, `${result.entityName}.yml`);
-  if (fs.existsSync(entityPath)) {
+  const entityPath = safeEntityPath(entitiesDir, result.entityName);
+  if (entityPath && fs.existsSync(entityPath)) {
     try {
       const beforeYaml = fs.readFileSync(entityPath, "utf-8");
       const entity = yaml.load(beforeYaml) as Record<string, unknown>;
-      const updated = applyAmendmentToEntity(entity, result);
+      const { updated, warning } = applyAmendmentToEntity(entity, result);
+      if (warning) {
+        console.warn(pc.yellow(`  Warning: ${warning}`));
+      }
       const afterYaml = yaml.dump(updated, { lineWidth: 120, noRefs: true });
       console.log();
       console.log(renderDiff(result.entityName, beforeYaml, afterYaml));
     } catch (err) {
-      console.warn(pc.yellow(`  Could not generate diff: ${err instanceof Error ? err.message : String(err)}`));
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(pc.yellow(`  Could not generate diff for ${result.entityName}.yml: ${msg}`));
     }
   }
 
@@ -183,7 +142,8 @@ function presentProposal(
 
 /** Apply a single proposal to the YAML file on disk. */
 function applyToFile(result: AnalysisResult, entitiesDir: string): boolean {
-  const entityPath = path.join(entitiesDir, `${result.entityName}.yml`);
+  const entityPath = safeEntityPath(entitiesDir, result.entityName);
+  if (!entityPath) return false;
 
   if (!fs.existsSync(entityPath)) {
     console.warn(pc.yellow(`  File not found: ${entityPath}`));
@@ -193,7 +153,10 @@ function applyToFile(result: AnalysisResult, entitiesDir: string): boolean {
   try {
     const content = fs.readFileSync(entityPath, "utf-8");
     const entity = yaml.load(content) as Record<string, unknown>;
-    const updated = applyAmendmentToEntity(entity, result);
+    const { updated, warning } = applyAmendmentToEntity(entity, result);
+    if (warning) {
+      console.warn(pc.yellow(`  Warning: ${warning}`));
+    }
     const updatedYaml = yaml.dump(updated, { lineWidth: 120, noRefs: true });
     fs.writeFileSync(entityPath, updatedYaml, "utf-8");
     return true;
@@ -205,10 +168,14 @@ function applyToFile(result: AnalysisResult, entitiesDir: string): boolean {
 
 // ── Readline prompt ────────────────────────────────────────────────
 
+/** Prompt the user and resolve with their answer. Rejects on Ctrl+C/Ctrl+D. */
 function prompt(rl: readline.Interface, question: string): Promise<string> {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     rl.question(question, (answer) => {
       resolve(answer.trim().toLowerCase());
+    });
+    rl.once("close", () => {
+      reject(new Error("readline closed"));
     });
   });
 }
@@ -235,8 +202,8 @@ function printSessionSummary(session: SessionState): void {
 // ── Main interactive loop ──────────────────────────────────────────
 
 export interface InteractiveOptions {
-  entitiesDir: string;
-  proposals: AnalysisResult[];
+  readonly entitiesDir: string;
+  readonly proposals: readonly AnalysisResult[];
 }
 
 /**
@@ -249,7 +216,7 @@ export async function runInteractiveSession(
   options: InteractiveOptions,
 ): Promise<SessionState> {
   const { entitiesDir, proposals } = options;
-  const session = createSession(proposals);
+  const session = createSession([...proposals]);
 
   if (proposals.length === 0) {
     console.log(pc.green("\nYour semantic layer looks good! No improvements found.\n"));
@@ -278,7 +245,14 @@ export async function runInteractiveSession(
         entitiesDir,
       );
 
-      const answer = await prompt(rl, pc.bold("  Apply? [y/n/s/q/?] "));
+      let answer: string;
+      try {
+        answer = await prompt(rl, pc.bold("  Apply? [y/n/s/q/?] "));
+      } catch {
+        // readline closed (Ctrl+C / Ctrl+D) — exit gracefully
+        console.log(pc.dim("\n  Session interrupted."));
+        break;
+      }
 
       switch (answer) {
         case "y":
@@ -297,7 +271,7 @@ export async function runInteractiveSession(
 
         case "n":
         case "no": {
-          console.log(pc.red("  Rejected — will not re-suggest."));
+          console.log(pc.red("  Rejected — skipped for this session."));
           addMessage(session, "user", `Rejected: [${proposal.amendmentType}] ${proposal.entityName}`);
           recordDecision(session, "rejected");
           break;
@@ -324,19 +298,17 @@ export async function runInteractiveSession(
         case "help": {
           console.log();
           console.log("  Commands:");
-          console.log(`    ${pc.bold("y")} / ${pc.bold("yes")}     Apply this change to the YAML file`);
-          console.log(`    ${pc.bold("n")} / ${pc.bold("no")}      Reject (won't be re-suggested)`);
-          console.log(`    ${pc.bold("s")} / ${pc.bold("skip")}    Skip for now (may appear again next time)`);
-          console.log(`    ${pc.bold("q")} / ${pc.bold("quit")}    End session and show summary`);
-          console.log(`    ${pc.bold("?")} / ${pc.bold("help")}    Show this help`);
+          console.log(`    ${pc.bold("y")} / ${pc.bold("yes")}      Apply this change to the YAML file`);
+          console.log(`    ${pc.bold("n")} / ${pc.bold("no")}       Reject (skipped for this session)`);
+          console.log(`    ${pc.bold("s")} / ${pc.bold("skip")}     Skip for now (may appear again next time)`);
+          console.log(`    ${pc.bold("q")} / ${pc.bold("quit")}     End session and show summary`);
+          console.log(`    ${pc.bold("?")} / ${pc.bold("help")}     Show this help`);
           console.log();
-          // Don't advance — re-prompt for the same proposal
           continue;
         }
 
         default: {
           console.log(pc.yellow(`  Unknown command "${answer}". Type ? for help.`));
-          // Don't advance — re-prompt for the same proposal
           continue;
         }
       }

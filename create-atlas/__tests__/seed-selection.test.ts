@@ -158,6 +158,24 @@ describe("DEMO_DATASETS config", () => {
       /Unknown demo dataset/,
     );
   });
+
+  test("parseDemoArg recognizes --seed as alias for --demo", async () => {
+    const mod = await import("../../packages/cli/src/commands/init");
+    parseDemoArg = mod.parseDemoArg;
+
+    expect(parseDemoArg(["init", "--seed"])).toBe("simple");
+    expect(parseDemoArg(["init", "--seed", "cybersec"])).toBe("cybersec");
+    expect(parseDemoArg(["init", "--seed", "ecommerce"])).toBe("ecommerce");
+  });
+
+  test("parseDemoArg throws when both --demo and --seed are present", async () => {
+    const mod = await import("../../packages/cli/src/commands/init");
+    parseDemoArg = mod.parseDemoArg;
+
+    expect(() => parseDemoArg(["init", "--demo", "--seed"])).toThrow(
+      /Cannot use both/,
+    );
+  });
 });
 
 // ── Seed SQL file content checks ─────────────────────────────────────
@@ -260,7 +278,38 @@ describe("pruneSeedData", () => {
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "atlas-prune-empty-"));
     fs.mkdirSync(path.join(tmp, "data"), { recursive: true });
     // No seeds dir, no semantic dir — should not throw
-    expect(() => pruneSeedData(tmp, "cybersec", ALL_SEEDS)).not.toThrow();
+    const warning = pruneSeedData(tmp, "cybersec", ALL_SEEDS);
+    // Should warn about missing semantic dir for non-simple seed
+    expect(warning).toContain("not found");
+
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  test("returns null (no warning) when seed semantic exists", () => {
+    const tmp = createFakeProject();
+    const warning = pruneSeedData(tmp, "cybersec", ALL_SEEDS);
+    expect(warning).toBeNull();
+
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  test("returns warning when non-simple seed semantic dir is missing", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "atlas-prune-warn-"));
+    fs.mkdirSync(path.join(tmp, "data"), { recursive: true });
+    // cybersec has no semantic dir
+    const warning = pruneSeedData(tmp, "cybersec", ALL_SEEDS);
+    expect(warning).toContain("Semantic layer");
+    expect(warning).toContain("cybersec");
+
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  test("returns null for simple seed even when semantic dir is missing", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "atlas-prune-simple-"));
+    fs.mkdirSync(path.join(tmp, "data"), { recursive: true });
+    // simple's semantic layer is the template default, no warning needed
+    const warning = pruneSeedData(tmp, "simple", ALL_SEEDS);
+    expect(warning).toBeNull();
 
     fs.rmSync(tmp, { recursive: true, force: true });
   });

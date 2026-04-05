@@ -50,12 +50,18 @@ function copyDirRecursive(src: string, dest: string): void {
 /**
  * After scaffolding with a selected seed, install its semantic layer and
  * remove data for unselected seeds to keep the project lean.
+ *
+ * Returns a warning message if the selected seed's semantic layer was not found,
+ * or null on success.
  */
 export function pruneSeedData(
   targetDir: string,
   selectedSeed: string,
   allSeeds: readonly string[],
-): void {
+): string | null {
+  let warning: string | null = null;
+
+  // Install selected seed's semantic layer
   const seedSemanticDir = path.join(targetDir, "data", "seeds", selectedSeed, "semantic");
   if (fs.existsSync(seedSemanticDir)) {
     const targetSemantic = path.join(targetDir, "semantic");
@@ -63,27 +69,39 @@ export function pruneSeedData(
       fs.rmSync(targetSemantic, { recursive: true });
     }
     copyDirRecursive(seedSemanticDir, targetSemantic);
+  } else if (selectedSeed !== "simple") {
+    // simple's semantic layer is already the template default — only warn for others
+    warning =
+      `Semantic layer for "${selectedSeed}" not found at ${seedSemanticDir}. ` +
+      `The project will use the default semantic layer, which may not match your data. ` +
+      `Run \`bun run atlas -- init --demo ${selectedSeed}\` after resolving the issue.`;
   }
 
-  // Remove seeds not selected
-  const seedsDir = path.join(targetDir, "data", "seeds");
-  if (fs.existsSync(seedsDir)) {
-    for (const entry of fs.readdirSync(seedsDir)) {
-      if (entry !== selectedSeed) {
-        fs.rmSync(path.join(seedsDir, entry), { recursive: true, force: true });
+  // Prune unselected seeds — non-critical, so catch and warn on failure
+  try {
+    const seedsDir = path.join(targetDir, "data", "seeds");
+    if (fs.existsSync(seedsDir)) {
+      for (const entry of fs.readdirSync(seedsDir)) {
+        if (entry !== selectedSeed) {
+          fs.rmSync(path.join(seedsDir, entry), { recursive: true, force: true });
+        }
       }
     }
+
+    for (const name of allSeeds) {
+      if (name === selectedSeed) continue;
+      fs.rmSync(path.join(targetDir, "data", `${name}.sql`), { force: true });
+    }
+    if (selectedSeed !== "simple") {
+      fs.rmSync(path.join(targetDir, "data", "demo.sql"), { force: true });
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    // Log but don't fail — extra seed files don't affect functionality
+    console.warn(`Could not prune unused seed files: ${msg}`);
   }
 
-  // Remove unselected flat seed SQL files (backward-compat copies)
-  for (const name of allSeeds) {
-    if (name === selectedSeed) continue;
-    fs.rmSync(path.join(targetDir, "data", `${name}.sql`), { force: true });
-  }
-  // Remove demo.sql flat copy if not using simple (it's a copy of simple/seed.sql)
-  if (selectedSeed !== "simple") {
-    fs.rmSync(path.join(targetDir, "data", "demo.sql"), { force: true });
-  }
+  return warning;
 }
 
 function bail(message?: string): never {
@@ -839,7 +857,10 @@ async function main() {
 
   // If a demo seed is selected, install its semantic layer and prune other seeds
   if (loadDemo) {
-    pruneSeedData(targetDir, demoDataset, VALID_DEMO_DATASETS);
+    const pruneWarning = pruneSeedData(targetDir, demoDataset, VALID_DEMO_DATASETS);
+    if (pruneWarning) {
+      p.log.warn(pruneWarning);
+    }
   }
 
   // Replace %PROJECT_NAME% in templated files (only files that exist in the template)

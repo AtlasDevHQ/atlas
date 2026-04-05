@@ -25,6 +25,11 @@ test -f "$DEPLOY_DOC" \
 test -f "$TEMPLATES/docker/gitignore" \
   || { echo "ERROR: templates/docker/gitignore not found." >&2; exit 1; }
 
+for seed in simple cybersec ecommerce; do
+  test -d "$CLI_DATA/seeds/$seed/semantic" \
+    || { echo "ERROR: packages/cli/data/seeds/$seed/semantic not found." >&2; exit 1; }
+done
+
 # ── Step 1: Copy shared assets into ALL templates ─────────────────────
 # Every template gets: cli/bin, cli/data (seeds + init SQL), and docs/deploy.md
 for tpl in docker nextjs-standalone; do

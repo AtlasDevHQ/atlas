@@ -66,6 +66,7 @@ function getDemoSemanticDir(demoType: DemoType): string {
 
   throw new Error(
     `Semantic layer not found for demo type "${demoType}". ` +
+    `Each semantic directory must contain an entities/ subdirectory. ` +
     `Checked: ${dockerPath}/entities, ${seedsPath}/entities, ${devPath}/entities`,
   );
 }

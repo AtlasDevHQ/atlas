@@ -85,9 +85,15 @@ export const DEMO_DATASETS: Record<
 };
 
 export function parseDemoArg(args: string[]): DemoDataset | null {
-  if (!args.includes("--demo")) return null;
-  const next = getFlag(args, "--demo");
-  if (!next || next.startsWith("--")) return "simple"; // bare --demo → backward compatible default
+  const hasDemo = args.includes("--demo");
+  const hasSeed = args.includes("--seed");
+  if (!hasDemo && !hasSeed) return null;
+  if (hasDemo && hasSeed) {
+    throw new Error("Cannot use both --demo and --seed. They are aliases — pick one.");
+  }
+  const flag = hasDemo ? "--demo" : "--seed";
+  const next = getFlag(args, flag);
+  if (!next || next.startsWith("--")) return "simple"; // bare flag → backward compatible default
   if (next in DEMO_DATASETS) return next as DemoDataset;
   throw new Error(
     `Unknown demo dataset "${next}". Available: ${Object.keys(DEMO_DATASETS).join(", ")}`,
@@ -618,6 +624,12 @@ async function profileDatasource(
     if (fs.existsSync(curatedSemanticDir)) {
       console.log(`\nApplying curated ${demoDataset} semantic layer...\n`);
       copyDirRecursive(curatedSemanticDir, outputBase);
+    } else {
+      console.warn(
+        `\nWarning: Curated semantic layer for "${demoDataset}" not found at ${curatedSemanticDir}.` +
+        `\nThe auto-profiled semantic layer will be used, which may have less descriptive metadata.` +
+        `\nThis usually indicates an incomplete package installation — try reinstalling @atlas/cli.\n`,
+      );
     }
   }
 

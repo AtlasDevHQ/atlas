@@ -1079,7 +1079,7 @@ function Chat() {
 
 | | Headless Hooks (`@useatlas/react/hooks`) | AtlasChat Component (`@useatlas/react`) |
 |--|--|--|
-| **Provider** | `AtlasProvider` (same component, re-exported from both) | `AtlasChat` wraps `AtlasProvider` internally — no separate wrapper needed |
+| **Provider** | `AtlasProvider` (same component, re-exported from both) | `AtlasChat` provides `AtlasContext` internally — no separate wrapper needed |
 | **Import** | `import { useAtlasChat } from "@useatlas/react/hooks"` | `import { AtlasChat } from "@useatlas/react"` |
 | **UI** | You build your own | Pre-built chat interface with markdown, code highlighting, charts |
 | **Bundle size** | Minimal (React + AI SDK) | Larger (includes Recharts, syntax highlighter, Radix UI) |

@@ -940,23 +940,31 @@ const PUBLIC_RATE_MAX = 60;
 
 const publicRateMap = new Map<string, { count: number; resetAt: number }>();
 
-/** Evict expired entries to prevent unbounded growth. Runs periodically. */
-function sweepPublicRateMap() {
+/**
+ * Evict expired entries to prevent unbounded growth. Called periodically
+ * by the SchedulerLayer fiber in lib/effect/layers.ts.
+ */
+export function conversationRateSweepTick(): void {
   const now = Date.now();
   for (const [key, entry] of publicRateMap) {
     if (now > entry.resetAt) publicRateMap.delete(key);
   }
 }
 
-// Sweep every 60 seconds
-const _sweepInterval = setInterval(sweepPublicRateMap, PUBLIC_RATE_WINDOW_MS);
-// Don't prevent process exit
-if (typeof _sweepInterval === "object" && "unref" in _sweepInterval) _sweepInterval.unref();
+/** Interval for conversation rate sweep. Exported for SchedulerLayer. */
+export const CONVERSATION_RATE_SWEEP_INTERVAL_MS = PUBLIC_RATE_WINDOW_MS;
 
-// Clean up expired share tokens every 60 minutes
-const SHARE_CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
+/** Interval for share token cleanup. Exported for SchedulerLayer. */
+export const SHARE_CLEANUP_INTERVAL_MS = 60 * 60 * 1000;
+
 let shareCleanupConsecutiveFailures = 0;
-const _shareCleanupInterval = setInterval(async () => {
+
+/**
+ * Clean up expired share tokens. Called periodically by the SchedulerLayer
+ * fiber in lib/effect/layers.ts. Tracks consecutive failures and logs when
+ * they reach 5.
+ */
+export async function shareCleanupTick(): Promise<void> {
   try {
     const count = await cleanupExpiredShares();
     if (count >= 0) {
@@ -970,11 +978,11 @@ const _shareCleanupInterval = setInterval(async () => {
     }
   } catch (err) {
     shareCleanupConsecutiveFailures++;
-    log.error({ err: err instanceof Error ? err.message : String(err) },
-      "Unexpected error in share cleanup interval");
+    log.error({ err: err instanceof Error ? err.message : String(err), consecutiveFailures: shareCleanupConsecutiveFailures },
+      "Unexpected error in share cleanup tick");
+    throw err; // re-throw so Effect.catchAll in layers.ts also logs it
   }
-}, SHARE_CLEANUP_INTERVAL_MS);
-if (typeof _shareCleanupInterval === "object" && "unref" in _shareCleanupInterval) _shareCleanupInterval.unref();
+}
 
 function checkPublicRateLimit(ip: string): boolean {
   const now = Date.now();

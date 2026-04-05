@@ -431,33 +431,26 @@ export async function restoreAbuseState(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Periodic cleanup — evict stale window data every 5 minutes
+// Periodic cleanup — evict stale window data (called by SchedulerLayer fiber)
 // ---------------------------------------------------------------------------
 
-const cleanupInterval = setInterval(() => {
-  try {
-    const config = getAbuseConfig();
-    const windowMs = config.queryRateWindowSeconds * 1000;
+/** Interval for abuse cleanup. Exported for SchedulerLayer. */
+export const ABUSE_CLEANUP_INTERVAL_MS = 300_000;
 
-    for (const [id, state] of workspaceState) {
-      pruneWindow(state.window, windowMs);
+/**
+ * Evict stale abuse detection window data. Called periodically by the
+ * SchedulerLayer fiber in lib/effect/layers.ts.
+ */
+export function abuseCleanupTick(): void {
+  const config = getAbuseConfig();
+  const windowMs = config.queryRateWindowSeconds * 1000;
 
-      // Remove entries with no activity and level "none"
-      if (state.level === "none" && state.window.timestamps.length === 0) {
-        workspaceState.delete(id);
-      }
+  for (const [id, state] of workspaceState) {
+    pruneWindow(state.window, windowMs);
+
+    // Remove entries with no activity and level "none"
+    if (state.level === "none" && state.window.timestamps.length === 0) {
+      workspaceState.delete(id);
     }
-  } catch (err) {
-    log.warn(
-      { err: err instanceof Error ? err.message : String(err) },
-      "Abuse cleanup tick failed",
-    );
   }
-}, 300_000);
-
-cleanupInterval.unref();
-
-/** Stop the periodic cleanup timer. For tests. */
-export function _stopCleanup(): void {
-  clearInterval(cleanupInterval);
 }

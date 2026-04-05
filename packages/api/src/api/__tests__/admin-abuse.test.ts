@@ -41,7 +41,8 @@ mock.module("@atlas/api/lib/security/abuse", () => ({
   recordQueryEvent: mock(() => {}),
   restoreAbuseState: mock(async () => {}),
   _resetAbuseState: mock(() => {}),
-  _stopCleanup: mock(() => {}),
+  abuseCleanupTick: mock(() => {}),
+  ABUSE_CLEANUP_INTERVAL_MS: 300_000,
 }));
 
 // --- Import app after mocks ---

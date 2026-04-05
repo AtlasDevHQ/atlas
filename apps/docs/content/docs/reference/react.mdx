@@ -274,8 +274,8 @@ useAtlasConversations({
 | `setSelectedId` | `(id: string \| null) => void` | Set the selected conversation |
 | `refresh` | `() => Promise<void>` | Manually refresh the conversation list |
 | `loadConversation` | `(id: string) => Promise<UIMessage[] \| null>` | Load a conversation's messages (returns AI SDK format) |
-| `deleteConversation` | `(id: string) => Promise<boolean>` | Delete a conversation |
-| `starConversation` | `(id: string, starred: boolean) => Promise<boolean>` | Star or unstar a conversation |
+| `deleteConversation` | `(id: string) => Promise<void>` | Delete a conversation |
+| `starConversation` | `(id: string, starred: boolean) => Promise<void>` | Star or unstar a conversation |
 
 ---
 
@@ -989,8 +989,6 @@ import type {
   AtlasChatStatus,
   // useAtlasAuth
   UseAtlasAuthReturn,
-  // useAtlasContext
-  AtlasContextValue,
   // useAtlasConversations
   UseAtlasConversationsOptions,
   UseAtlasConversationsReturn,

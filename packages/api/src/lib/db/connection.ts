@@ -26,35 +26,28 @@ export type { HealthStatus } from "@atlas/api/lib/connection-types";
 const log = createLogger("db");
 
 // --- Typed error classes for connection lookup/configuration ---
+// Infrastructure errors — caught and translated into domain errors
+// (ConnectionNotFoundError, PoolExhaustedError, NoDatasourceError) at the
+// sql.ts boundary. Not part of the AtlasError union.
 
 /** Thrown when a connection ID is not found in the registry. */
 export class ConnectionNotRegisteredError extends Data.TaggedError("ConnectionNotRegisteredError")<{
+  readonly message: string;
   readonly id: string;
-}> {
-  get message() { return `Connection "${this.id}" is not registered.`; }
-}
+}> {}
 
 /** Thrown when creating an org pool would exceed maxTotalConnections. */
 export class PoolCapacityExceededError extends Data.TaggedError("PoolCapacityExceededError")<{
+  readonly message: string;
   readonly currentSlots: number;
   readonly requestedSlots: number;
   readonly maxTotalConnections: number;
-}> {
-  get message() {
-    return (
-      `Cannot create org pool: would use ${this.currentSlots + this.requestedSlots} connection slots, exceeding maxTotalConnections (${this.maxTotalConnections}). ` +
-      `Reduce pool.perOrg.maxConnections, pool.perOrg.maxOrgs, or increase maxTotalConnections.`
-    );
-  }
-}
+}> {}
 
 /** Thrown when no analytics datasource URL is configured. */
-// eslint-disable-next-line @typescript-eslint/no-empty-object-type
-export class NoDatasourceConfiguredError extends Data.TaggedError("NoDatasourceConfiguredError")<{}> {
-  get message() {
-    return "No analytics datasource configured. Set ATLAS_DATASOURCE_URL to a PostgreSQL or MySQL connection string, or register a datasource plugin.";
-  }
-}
+export class NoDatasourceConfiguredError extends Data.TaggedError("NoDatasourceConfiguredError")<{
+  readonly message: string;
+}> {}
 
 /**
  * Resolve the analytics datasource URL from env vars.
@@ -564,7 +557,7 @@ export class ConnectionRegistry {
 
     const baseEntry = this.entries.get(connectionId);
     if (!baseEntry) {
-      throw new ConnectionNotRegisteredError({ id: connectionId });
+      throw new ConnectionNotRegisteredError({ message: `Connection "${connectionId}" is not registered.`, id: connectionId });
     }
 
     // Plugin-managed connections don't have config — return base directly
@@ -587,7 +580,12 @@ export class ConnectionRegistry {
     // Hard check after all eviction attempts
     const currentSlots = this._totalPoolSlots();
     if (currentSlots + newSlots > this.maxTotalConnections) {
-      throw new PoolCapacityExceededError({ currentSlots, requestedSlots: newSlots, maxTotalConnections: this.maxTotalConnections });
+      throw new PoolCapacityExceededError({
+        message: `Cannot create org pool: would use ${currentSlots + newSlots} connection slots, exceeding maxTotalConnections (${this.maxTotalConnections}). Reduce pool.perOrg.maxConnections, pool.perOrg.maxOrgs, or increase maxTotalConnections.`,
+        currentSlots,
+        requestedSlots: newSlots,
+        maxTotalConnections: this.maxTotalConnections,
+      });
     }
 
     // Create org-scoped pool with org-specific limits
@@ -842,7 +840,7 @@ export class ConnectionRegistry {
   get(id: string): DBConnection {
     const entry = this.entries.get(id);
     if (!entry) {
-      throw new ConnectionNotRegisteredError({ id });
+      throw new ConnectionNotRegisteredError({ message: `Connection "${id}" is not registered.`, id });
     }
     entry.lastQueryAt = Date.now();
     return entry.conn;
@@ -938,7 +936,7 @@ export class ConnectionRegistry {
 
   getDBType(id: string): DBType {
     const entry = this.entries.get(id);
-    if (!entry) throw new ConnectionNotRegisteredError({ id });
+    if (!entry) throw new ConnectionNotRegisteredError({ message: `Connection "${id}" is not registered.`, id });
     return entry.dbType;
   }
 
@@ -968,7 +966,7 @@ export class ConnectionRegistry {
     if (!this.entries.has("default")) {
       const url = resolveDatasourceUrl();
       if (!url) {
-        throw new NoDatasourceConfiguredError();
+        throw new NoDatasourceConfiguredError({ message: "No analytics datasource configured. Set ATLAS_DATASOURCE_URL to a PostgreSQL or MySQL connection string, or register a datasource plugin." });
       }
       this.register("default", {
         url,
@@ -998,7 +996,7 @@ export class ConnectionRegistry {
   async healthCheck(id: string): Promise<HealthCheckResult> {
     const entry = this.entries.get(id);
     if (!entry) {
-      throw new ConnectionNotRegisteredError({ id });
+      throw new ConnectionNotRegisteredError({ message: `Connection "${id}" is not registered.`, id });
     }
 
     const start = performance.now();
@@ -1136,7 +1134,7 @@ export class ConnectionRegistry {
    */
   async drain(id: string): Promise<{ drained: boolean; message: string }> {
     const entry = this.entries.get(id);
-    if (!entry) throw new ConnectionNotRegisteredError({ id });
+    if (!entry) throw new ConnectionNotRegisteredError({ message: `Connection "${id}" is not registered.`, id });
 
     if (!entry.config) {
       return { drained: false, message: "Cannot drain plugin-managed connection — plugin must re-register it" };
@@ -1208,7 +1206,7 @@ export class ConnectionRegistry {
   /** Return pool metrics for a specific connection. */
   getPoolMetrics(id: string): import("@useatlas/types").PoolMetrics {
     const entry = this.entries.get(id);
-    if (!entry) throw new ConnectionNotRegisteredError({ id });
+    if (!entry) throw new ConnectionNotRegisteredError({ message: `Connection "${id}" is not registered.`, id });
 
     return {
       connectionId: id,

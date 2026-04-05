@@ -1,6 +1,6 @@
 {
   "name": "@useatlas/types",
-  "version": "0.0.6",
+  "version": "0.0.7",
   "description": "Shared types for the Atlas text-to-SQL agent",
   "type": "module",
   "scripts": {

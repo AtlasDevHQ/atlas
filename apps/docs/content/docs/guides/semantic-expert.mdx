@@ -125,6 +125,74 @@ The expert agent has 5 dedicated tools:
 
 These are registered in a dedicated `ToolRegistry` alongside the standard `explore` and `executeSQL` tools, giving the expert agent 7 tools total.
 
+## Interactive Mode
+
+Interactive mode lets you review proposals one at a time with colorized YAML diffs, approving or rejecting each change inline.
+
+```bash
+atlas improve -i
+```
+
+### Interactive Session Flow
+
+1. The analysis engine runs (same as batch mode) and ranks all proposals
+2. Each proposal is presented with a colorized unified diff showing the YAML change
+3. You choose an action for each proposal:
+   - **y** (yes) — apply the change to the YAML file immediately
+   - **n** (no) — reject the change (won't be re-suggested for 30 days)
+   - **s** (skip) — skip for now (may appear again next run)
+   - **q** (quit) — end the session early
+4. A session summary is printed at exit showing accepted/rejected/skipped counts
+
+### Example Session
+
+```
+$ atlas improve -i
+
+Atlas Improve — analyzing semantic layer for improvements...
+
+  Loaded 24 entities, 8 glossary terms
+  Profiled 24 tables
+  Analyzed 47 audit log patterns
+
+Found 6 improvements (filtered by confidence >= 0.5).
+Reviewing one at a time.
+
+  y = accept  n = reject  s = skip  q = quit  ? = help
+
+─── Proposal 1/6 ───
+[orders] Add Measure
+  Numeric column "total_cents" (integer) has no measure.
+  Confidence: 65%  Score: 0.423  Category: missing_measures
+  Name: total_total_cents
+  SQL: total_cents
+
+--- a/semantic/entities/orders.yml
++++ b/semantic/entities/orders.yml
+@@ -28,6 +28,10 @@
+ measures:
+   - name: order_count
+     sql: id
+     type: count_distinct
++  - name: total_total_cents
++    sql: total_cents
++    type: sum
++    description: Total of total_cents
+
+  Apply? [y/n/s/q/?] y
+  ✓ Applied.
+```
+
+You can combine interactive mode with other flags:
+
+```bash
+# Interactive mode with high-confidence filter
+atlas improve -i --min-confidence 0.7
+
+# Interactive mode for specific entities
+atlas improve -i --entities orders,users
+```
+
 ## What's Next
 
-Phase 2 will add **interactive mode** (`atlas improve -i`) for multi-turn conversation where the agent asks targeted questions about your data model. Phase 3 will add a **web interactive mode** in the admin UI with rich diff previews and one-click approval.
+Phase 3 will add a **web interactive mode** in the admin UI with rich diff previews and one-click approval.

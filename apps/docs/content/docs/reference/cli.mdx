@@ -463,6 +463,7 @@ bun run atlas -- improve [options]
 
 | Flag | Description |
 |------|-------------|
+| `-i`, `--interactive` | Start interactive mode — review proposals one at a time with approve/reject/skip |
 | `--apply` | Write proposed changes to YAML files (default: dry-run) |
 | `--min-confidence <n>` | Minimum confidence to include (0-1, default: 0.5) |
 | `--entities <list>` | Limit analysis to specific entities (comma-separated) |
@@ -476,7 +477,10 @@ bun run atlas -- improve [options]
 # Preview proposals (dry run, the default)
 atlas improve
 
-# Apply changes to YAML files
+# Interactive mode — review and apply proposals one at a time
+atlas improve -i
+
+# Apply all changes to YAML files (batch)
 atlas improve --apply
 
 # High-confidence improvements only

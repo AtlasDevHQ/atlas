@@ -302,6 +302,11 @@ export const SUBCOMMAND_HELP: Record<string, SubcommandHelp> = {
     usage: "improve [options]",
     flags: [
       {
+        flag: "-i, --interactive",
+        description:
+          "Start interactive conversation mode (review proposals one at a time)",
+      },
+      {
         flag: "--apply",
         description:
           "Write proposed changes to YAML files (default: dry-run)",
@@ -332,6 +337,7 @@ export const SUBCOMMAND_HELP: Record<string, SubcommandHelp> = {
     ],
     examples: [
       "atlas improve",
+      "atlas improve -i",
       "atlas improve --apply",
       "atlas improve --min-confidence 0.7 --entities orders,users",
       "atlas improve --since 2026-03-01 --source warehouse",

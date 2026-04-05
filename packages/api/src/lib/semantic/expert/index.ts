@@ -24,3 +24,16 @@ export type {
   AuditPattern,
 } from "./types";
 export { ANALYSIS_CATEGORIES } from "./types";
+export {
+  createSession,
+  nextProposal,
+  recordDecision,
+  addMessage,
+  getSessionSummary,
+  buildSessionContext,
+} from "./session";
+export type {
+  SessionState,
+  ReviewedProposal,
+  ConversationMessage,
+} from "./session";

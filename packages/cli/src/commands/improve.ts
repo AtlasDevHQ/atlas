@@ -20,6 +20,7 @@ import {
 import type { ParsedEntity, GlossaryTerm, AuditPattern, AnalysisResult } from "@atlas/api/lib/semantic/expert";
 
 export async function handleImprove(args: string[]): Promise<void> {
+  const isInteractive = args.includes("-i") || args.includes("--interactive");
   const isDryRun = !args.includes("--apply");
   const sinceArg = getFlag(args, "--since");
   const minConfidenceArg = getFlag(args, "--min-confidence");
@@ -269,7 +270,14 @@ export async function handleImprove(args: string[]): Promise<void> {
     return;
   }
 
-  // 5. Output proposals
+  // 5. Interactive mode — present proposals one at a time
+  if (isInteractive) {
+    const { runInteractiveSession } = await import("../../lib/improve/interactive");
+    await runInteractiveSession({ entitiesDir, proposals: filtered });
+    return;
+  }
+
+  // 5b. Batch mode — output all proposals
   for (let i = 0; i < filtered.length; i++) {
     const r = filtered[i];
     printProposal(i + 1, r);

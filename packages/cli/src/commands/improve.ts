@@ -1,8 +1,7 @@
 /**
  * atlas improve — Analyze the semantic layer and propose improvements.
  *
- * Phase 1: Non-interactive batch mode. Profiles the database, analyzes
- * semantic layer coverage, and outputs ranked proposals.
+ * Supports batch mode (--apply) and interactive mode (-i).
  */
 
 import * as fs from "fs";
@@ -18,9 +17,19 @@ import {
   cliProfileLogger,
 } from "../../lib/cli-utils";
 import type { ParsedEntity, GlossaryTerm, AuditPattern, AnalysisResult } from "@atlas/api/lib/semantic/expert";
+import { applyAmendmentToEntity } from "../../lib/improve/apply-amendment";
 
 export async function handleImprove(args: string[]): Promise<void> {
+  const isInteractive = args.includes("-i") || args.includes("--interactive");
   const isDryRun = !args.includes("--apply");
+
+  if (isInteractive && args.includes("--apply")) {
+    console.error(
+      pc.red("Cannot use --interactive and --apply together. Interactive mode applies changes inline."),
+    );
+    process.exit(1);
+  }
+
   const sinceArg = getFlag(args, "--since");
   const minConfidenceArg = getFlag(args, "--min-confidence");
   const entitiesArg = getFlag(args, "--entities");
@@ -269,7 +278,14 @@ export async function handleImprove(args: string[]): Promise<void> {
     return;
   }
 
-  // 5. Output proposals
+  // 5. Interactive mode — present proposals one at a time
+  if (isInteractive) {
+    const { runInteractiveSession } = await import("../../lib/improve/interactive");
+    await runInteractiveSession({ entitiesDir, proposals: filtered });
+    return;
+  }
+
+  // 5b. Batch mode — output all proposals
   for (let i = 0; i < filtered.length; i++) {
     const r = filtered[i];
     printProposal(i + 1, r);
@@ -294,10 +310,13 @@ export async function handleImprove(args: string[]): Promise<void> {
         const content = fs.readFileSync(entityPath, "utf-8");
         const entity = yaml.load(content) as Record<string, unknown>;
 
-        applyAmendmentToEntity(entity, r);
+        const { updated, warning } = applyAmendmentToEntity(entity, r);
+        if (warning) {
+          console.warn(pc.yellow(`  Warning: ${warning}`));
+        }
 
-        const updated = yaml.dump(entity, { lineWidth: 120, noRefs: true });
-        fs.writeFileSync(entityPath, updated, "utf-8");
+        const updatedYaml = yaml.dump(updated, { lineWidth: 120, noRefs: true });
+        fs.writeFileSync(entityPath, updatedYaml, "utf-8");
         console.log(pc.green(`  Applied: [${r.amendmentType}] ${r.entityName}`));
         applied++;
       } catch (err) {
@@ -390,61 +409,3 @@ function formatAmendmentType(type: string): string {
   return type.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
-function applyAmendmentToEntity(
-  entity: Record<string, unknown>,
-  result: AnalysisResult,
-): void {
-  const amendment = result.amendment;
-
-  switch (result.amendmentType) {
-    case "add_dimension": {
-      const dims = (entity.dimensions ?? []) as Record<string, unknown>[];
-      dims.push(amendment);
-      entity.dimensions = dims;
-      break;
-    }
-    case "add_measure": {
-      const measures = (entity.measures ?? []) as Record<string, unknown>[];
-      measures.push(amendment);
-      entity.measures = measures;
-      break;
-    }
-    case "add_join": {
-      const joins = (entity.joins ?? []) as Record<string, unknown>[];
-      joins.push(amendment);
-      entity.joins = joins;
-      break;
-    }
-    case "add_query_pattern": {
-      const patterns = (entity.query_patterns ?? []) as Record<string, unknown>[];
-      patterns.push(amendment);
-      entity.query_patterns = patterns;
-      break;
-    }
-    case "update_description": {
-      if (amendment.field === "table") {
-        entity.description = amendment.description;
-      } else if (amendment.dimension) {
-        const dims = (entity.dimensions ?? []) as Record<string, unknown>[];
-        const target = dims.find((d) => d.name === amendment.dimension);
-        if (target) target.description = amendment.description;
-      }
-      break;
-    }
-    case "update_dimension": {
-      const dims = (entity.dimensions ?? []) as Record<string, unknown>[];
-      const target = dims.find((d) => d.name === amendment.name);
-      if (target) Object.assign(target, amendment);
-      break;
-    }
-    case "add_virtual_dimension": {
-      const dims = (entity.dimensions ?? []) as Record<string, unknown>[];
-      dims.push({ ...amendment, virtual: true });
-      entity.dimensions = dims;
-      break;
-    }
-    case "add_glossary_term":
-      // Glossary terms are handled separately from entity files
-      break;
-  }
-}

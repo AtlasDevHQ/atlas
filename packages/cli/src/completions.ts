@@ -89,6 +89,8 @@ export const COMMANDS: Record<string, CommandSpec> = {
   improve: {
     description: "Analyze semantic layer and propose data-driven improvements",
     flags: {
+      "-i": "Start interactive conversation mode",
+      "--interactive": "Start interactive conversation mode",
       "--apply": "Write proposed changes to YAML files",
       "--min-confidence": "Minimum confidence to include (0-1, default: 0.5)",
       "--entities": "Limit to specific entities (comma-separated)",

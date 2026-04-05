@@ -523,3 +523,28 @@ Tracking module-deepening refactors discovered by the `improve-codebase-architec
 - 57 hono bridge tests (was 54), 4 new `requireInternalDBEffect` tests
 
 **Category:** Untyped status maps replaced with a compile-time exhaustive, branded factory function.
+
+---
+
+## 24. TanStack Query migration — frontend data fetching
+
+**Date:** 2026-04-04
+**Issue:** #1212
+**PRs:** #1239, #1240, #1241, #1242, #1243, #1244, #1245
+
+**Problem:** All frontend data fetching used two custom hooks (`useAdminFetch`, `useAdminMutation`) that managed loading/error state manually via `useState` + `useEffect`. No request deduplication — multiple components fetching the same endpoint made separate HTTP requests. No stale-while-revalidate, no cache-aware mutations, no window-focus refetch. Health polling in `IncidentBanner` and password status checks were duplicated across components.
+
+**Solution:** Migrated all data fetching to TanStack Query across `packages/web` and `packages/react`. Built query key factory (`atlasKeys`) for hierarchical cache management. Replaced `useAdminFetch` → `useQuery`, `useAdminMutation` → `useMutation`. Added `QueryProvider` with devtools. Optimistic updates for conversation star/delete. Consolidated health polling into `useHealthQuery`, password checks into `usePasswordStatus`.
+
+**Impact:**
+- Automatic request deduplication across all admin pages and chat UI
+- Stale-while-revalidate for snappier perceived performance
+- Cache-aware mutations with automatic invalidation via `queryClient.invalidateQueries`
+- Window-focus refetch replaces manual polling intervals
+- Health polling consolidated into single `useHealthQuery` hook
+- Password status deduplicated via shared `usePasswordStatus` hook
+- Legacy `useAdminFetch` and `useAdminMutation` hooks removed
+- 11 sub-issues (#1213–#1224) shipped across 7 PRs
+- `@useatlas/react` fully adopted with `QueryClientProvider` + `useHealthQuery`
+
+**Category:** Custom fetch-and-state hooks replaced with library that provides deep module behavior (caching, deduplication, lifecycle management) behind a simple `useQuery`/`useMutation` interface.

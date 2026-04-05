@@ -828,6 +828,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] Phase 4: Share dialog + `/shared/dashboard/[token]` public page with OG tags (#1250, PR #1256)
 - [x] Phase 5: Auto-refresh via scheduler — cron-based, hooks into existing scheduler tick engine (#1251, PR #1257)
 - [x] Phase 6: AI-driven card suggestions — LLM analyzes existing cards, proposes complementary metrics grounded in semantic layer (#1252, PR #1258)
+- [x] Docs: dashboard user guide (#1261, PR #1264)
 
 ---
 
@@ -842,6 +843,16 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] useConversations (web) — list fetch, optimistic star, cache-aware delete (#1217, PR #1243)
 - [x] @useatlas/react — full adoption: useHealthQuery, conversations, AtlasChat QueryProvider (#1218, PR #1244)
 - [x] Polish — health recovery clearing, stable fetchList ref (PR #1245)
+- [x] Cleanup — deduplicate health checks, remove legacy hooks, verify dedup wins (#1222, #1223, #1224)
+
+---
+
+## Follow-ups
+
+- [x] Docs: org management guide (#1263, PR #1264)
+- [x] Docs: add missing env vars to .env.example — auth mode, scheduler, RLS, deploy mode (#1262, PR #1264)
+- [x] Fix: standalone example build — QueryClientProvider + AtlasChat SSR (#1260)
+- [x] Chore: publish @useatlas/types 0.0.6 + bump refs (#1259)
 
 ---
 

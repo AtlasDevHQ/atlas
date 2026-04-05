@@ -319,10 +319,16 @@ export async function getOnboardingStatuses(
     Effect.forEach(
       users,
       (user) =>
-        Effect.tryPromise({
-          try: () => Promise.all([getSentSteps(user.user_id), isUnsubscribed(user.user_id)]),
-          catch: (err) => err instanceof Error ? err : new Error(String(err)),
-        }).pipe(
+        Effect.all([
+          Effect.tryPromise({
+            try: () => getSentSteps(user.user_id),
+            catch: (err) => err instanceof Error ? err : new Error(String(err)),
+          }),
+          Effect.tryPromise({
+            try: () => isUnsubscribed(user.user_id),
+            catch: (err) => err instanceof Error ? err : new Error(String(err)),
+          }),
+        ], { concurrency: 2 }).pipe(
           Effect.map(([sentSteps, unsub]) => ({
             userId: user.user_id,
             email: user.email,
@@ -332,9 +338,12 @@ export async function getOnboardingStatuses(
             unsubscribed: unsub,
             createdAt: user.created_at,
           })),
-          Effect.timeout(Duration.seconds(10)),
+          Effect.timeoutFail({
+            duration: Duration.seconds(10),
+            onTimeout: () => new Error("Onboarding status fetch timed out after 10s"),
+          }),
           Effect.catchAll((err) => {
-            log.warn({ userId: user.user_id, err: err instanceof Error ? err.message : String(err) }, "Failed to fetch onboarding status for user — returning defaults");
+            log.warn({ userId: user.user_id, err: err.message }, "Failed to fetch onboarding status for user — returning defaults");
             return Effect.succeed({
               userId: user.user_id,
               email: user.email,

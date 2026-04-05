@@ -226,7 +226,10 @@ export async function listVersions(
         catch: (err) => err instanceof Error ? err : new Error(String(err)),
       }),
     ], { concurrency: 2 }).pipe(
-      Effect.timeout(Duration.seconds(30)),
+      Effect.timeoutFail({
+        duration: Duration.seconds(30),
+        onTimeout: () => new Error(`Version listing queries for ${entityType}/${name} timed out after 30s`),
+      }),
     ),
   );
 

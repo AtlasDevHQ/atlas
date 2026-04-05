@@ -1201,7 +1201,10 @@ export async function getWorkspaceHealthSummary(orgId: string): Promise<{
         catch: (err) => err instanceof Error ? err : new Error(String(err)),
       }),
     ], { concurrency: 5 }).pipe(
-      Effect.timeout(Duration.seconds(30)),
+      Effect.timeoutFail({
+        duration: Duration.seconds(30),
+        onTimeout: () => new Error(`Workspace health summary queries for org ${orgId} timed out after 30s`),
+      }),
     ),
   );
 

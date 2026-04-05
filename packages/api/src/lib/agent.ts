@@ -540,14 +540,23 @@ export async function runAgent({
     Effect.all([
       // Org semantic data: whitelist + index
       (orgId && hasInternalDB())
-        ? Effect.tryPromise({
-            try: () => Promise.all([loadOrgWhitelist(orgId), getOrgSemanticIndex(orgId)]),
-            catch: (err) => err instanceof Error ? err : new Error(String(err)),
-          }).pipe(
+        ? Effect.all([
+            Effect.tryPromise({
+              try: () => loadOrgWhitelist(orgId),
+              catch: (err) => err instanceof Error ? err : new Error(String(err)),
+            }),
+            Effect.tryPromise({
+              try: () => getOrgSemanticIndex(orgId),
+              catch: (err) => err instanceof Error ? err : new Error(String(err)),
+            }),
+          ], { concurrency: 2 }).pipe(
             Effect.map(([, idx]) => idx || undefined),
-            Effect.timeout(Duration.seconds(30)),
+            Effect.timeoutFail({
+              duration: Duration.seconds(30),
+              onTimeout: () => new Error("Org semantic data load timed out after 30s"),
+            }),
             Effect.catchAll((err) => {
-              log.error({ orgId, err: err instanceof Error ? err.message : String(err) }, "Failed to load org semantic data — agent will use file-based fallback");
+              log.error({ orgId, err: err.message }, "Failed to load org semantic data — agent will use file-based fallback");
               if (!warnings) warnings = [];
               warnings.push("Your organization's semantic layer could not be loaded. Using default configuration. Contact your admin if this persists.");
               return Effect.succeed(undefined);
@@ -569,9 +578,12 @@ export async function runAgent({
             },
             catch: (err) => err instanceof Error ? err : new Error(String(err)),
           }).pipe(
-            Effect.timeout(Duration.seconds(30)),
+            Effect.timeoutFail({
+              duration: Duration.seconds(30),
+              onTimeout: () => new Error("Learned patterns load timed out after 30s"),
+            }),
             Effect.catchAll((err) => {
-              log.warn({ orgId, err: err instanceof Error ? err.message : String(err) }, "Failed to load learned patterns — continuing without");
+              log.warn({ orgId, err: err.message }, "Failed to load learned patterns — continuing without");
               return Effect.succeed(undefined);
             }),
           )

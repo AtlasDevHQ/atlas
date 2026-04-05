@@ -15,6 +15,7 @@ import {
   Hash,
   Bot,
   Calendar,
+  Layers,
 } from "lucide-react";
 import { formatDate } from "@/lib/format";
 
@@ -38,6 +39,19 @@ export const statusBadge: Record<string, { variant: "outline"; className: string
   },
 };
 
+export const typeBadge: Record<string, { variant: "outline"; className: string; label: string }> = {
+  query_pattern: {
+    variant: "outline",
+    className: "border-blue-300 text-blue-700 dark:border-blue-700 dark:text-blue-400",
+    label: "Query Pattern",
+  },
+  semantic_amendment: {
+    variant: "outline",
+    className: "border-orange-300 text-orange-700 dark:border-orange-700 dark:text-orange-400",
+    label: "Amendment",
+  },
+};
+
 const sourceBadge: Record<string, { variant: "outline"; className: string; label: string }> = {
   agent: {
     variant: "outline",
@@ -48,6 +62,11 @@ const sourceBadge: Record<string, { variant: "outline"; className: string; label
     variant: "outline",
     className: "border-purple-300 text-purple-700 dark:border-purple-700 dark:text-purple-400",
     label: "CLI",
+  },
+  "expert-agent": {
+    variant: "outline",
+    className: "border-teal-300 text-teal-700 dark:border-teal-700 dark:text-teal-400",
+    label: "Expert",
   },
 };
 
@@ -90,6 +109,21 @@ export function getLearnedPatternColumns(): ColumnDef<LearnedPattern>[] {
       meta: { label: "Status", icon: CircleDot },
       enableSorting: false,
       size: 100,
+    },
+    {
+      id: "type",
+      accessorKey: "type",
+      header: ({ column }) => (
+        <DataTableColumnHeader column={column} label="Type" />
+      ),
+      cell: ({ row }) => {
+        const type = row.getValue<string>("type") ?? "query_pattern";
+        const badge = typeBadge[type] ?? typeBadge.query_pattern;
+        return <Badge variant={badge.variant} className={badge.className}>{badge.label}</Badge>;
+      },
+      meta: { label: "Type", icon: Layers },
+      enableSorting: false,
+      size: 120,
     },
     {
       id: "patternSql",

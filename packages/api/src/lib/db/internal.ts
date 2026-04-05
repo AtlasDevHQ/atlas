@@ -729,6 +729,38 @@ export function insertLearnedPattern(pattern: {
 }
 
 /**
+ * Insert a semantic amendment proposal. Returns the new row's ID.
+ * Unlike insertLearnedPattern (fire-and-forget), this awaits the result.
+ */
+export async function insertSemanticAmendment(amendment: {
+  orgId: string | null | undefined;
+  description: string;
+  sourceEntity: string;
+  confidence: number;
+  amendmentPayload: Record<string, unknown>;
+}): Promise<string> {
+  const rows = await internalQuery<{ id: string }>(
+    `INSERT INTO learned_patterns
+       (org_id, pattern_sql, description, source_entity, confidence,
+        repetition_count, status, proposed_by, type, amendment_payload)
+     VALUES ($1, $2, $3, $4, $5, 1, $6, 'expert-agent', 'semantic_amendment', $7)
+     RETURNING id`,
+    [
+      amendment.orgId ?? null,
+      `amendment:${amendment.sourceEntity}:${Date.now()}`,
+      amendment.description,
+      amendment.sourceEntity,
+      amendment.confidence,
+      amendment.confidence >= parseFloat(process.env.ATLAS_EXPERT_AUTO_APPROVE_THRESHOLD ?? "2")
+        ? "approved"
+        : "pending",
+      JSON.stringify(amendment.amendmentPayload),
+    ],
+  );
+  return rows[0].id;
+}
+
+/**
  * Increment repetition_count by 1 and increase confidence by 0.1 (capped at 1.0).
  * When sourceFingerprint is provided, appends it to source_queries (capped at 100 entries).
  * Fire-and-forget — errors are logged, never thrown.

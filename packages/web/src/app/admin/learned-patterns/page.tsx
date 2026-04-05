@@ -84,6 +84,12 @@ const STATUS_LABELS: Record<string, string> = {
   approved: "Approved",
   rejected: "Rejected",
 };
+const TYPE_TABS = ["", "query_pattern", "semantic_amendment"] as const;
+const TYPE_LABELS: Record<string, string> = {
+  "": "All",
+  query_pattern: "Query Patterns",
+  semantic_amendment: "Amendments",
+};
 
 // ── Page ──────────────────────────────────────────────────────────
 
@@ -131,6 +137,7 @@ export default function LearnedPatternsPage() {
           offset: String(offset),
         });
         if (params.status) qs.set("status", params.status);
+        if (params.type) qs.set("type", params.type);
         if (params.source_entity) qs.set("source_entity", params.source_entity);
 
         const res = await fetch(`${apiUrl}/api/v1/admin/learned-patterns?${qs}`, { credentials });
@@ -158,7 +165,7 @@ export default function LearnedPatternsPage() {
 
     fetchPatterns();
     return () => { cancelled = true; };
-  }, [apiUrl, offset, params.status, params.source_entity, credentials, fetchKey]);
+  }, [apiUrl, offset, params.status, params.type, params.source_entity, credentials, fetchKey]);
 
   // ── Fetch stats (all statuses, no filter) ───────────────────────
 
@@ -365,7 +372,7 @@ export default function LearnedPatternsPage() {
 
   const selectedCount = table.getSelectedRowModel().rows.length;
 
-  const hasFilters = !!params.status || !!params.source_entity;
+  const hasFilters = !!params.status || !!params.type || !!params.source_entity;
 
   return (
     <div className="p-6">
@@ -428,6 +435,24 @@ export default function LearnedPatternsPage() {
                 </TabsList>
               </Tabs>
             </div>
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-muted-foreground">Type</label>
+              <Tabs
+                value={params.type}
+                onValueChange={(v) => {
+                  table.setPageIndex(0);
+                  setParams({ type: v, page: 1 });
+                }}
+              >
+                <TabsList>
+                  {TYPE_TABS.map((t) => (
+                    <TabsTrigger key={t || "all"} value={t}>
+                      {TYPE_LABELS[t]}
+                    </TabsTrigger>
+                  ))}
+                </TabsList>
+              </Tabs>
+            </div>
             {sourceEntities.length > 0 && (
               <div className="space-y-1">
                 <label className="text-xs font-medium text-muted-foreground">Entity</label>
@@ -459,7 +484,7 @@ export default function LearnedPatternsPage() {
                 className="h-9"
                 onClick={() => {
                   table.setPageIndex(0);
-                  setParams({ status: "", source_entity: "", page: 1 });
+                  setParams({ status: "", type: "", source_entity: "", page: 1 });
                 }}
               >
                 <X className="mr-1.5 size-3.5" />
@@ -480,7 +505,7 @@ export default function LearnedPatternsPage() {
             emptyDescription="Patterns will appear here when the agent or atlas learn CLI proposes new query patterns."
             isEmpty={patterns.length === 0}
             hasFilters={hasFilters}
-            onClearFilters={() => setParams({ status: "", source_entity: "", page: 1 })}
+            onClearFilters={() => setParams({ status: "", type: "", source_entity: "", page: 1 })}
           >
             <DataTable
               table={table}
@@ -516,13 +541,46 @@ export default function LearnedPatternsPage() {
               </SheetHeader>
 
               <div className="mt-6 space-y-6">
-                {/* SQL */}
-                <div className="space-y-2">
-                  <h3 className="text-sm font-medium">Pattern SQL</h3>
-                  <pre className="rounded-md border bg-muted/50 p-3 text-xs font-mono whitespace-pre-wrap break-all overflow-x-auto max-h-64">
-                    {detailPattern.patternSql}
-                  </pre>
-                </div>
+                {/* SQL or Diff */}
+                {detailPattern.type === "semantic_amendment" && detailPattern.amendmentPayload ? (
+                  <div className="space-y-2">
+                    <h3 className="text-sm font-medium">Proposed Change</h3>
+                    {detailPattern.amendmentPayload.rationale && (
+                      <p className="text-xs text-muted-foreground">{String(detailPattern.amendmentPayload.rationale)}</p>
+                    )}
+                    {detailPattern.amendmentPayload.diff ? (
+                      <pre className="rounded-md border bg-muted/50 p-3 text-xs font-mono whitespace-pre-wrap break-all overflow-x-auto max-h-96">
+                        {String(detailPattern.amendmentPayload.diff).split("\n").map((line, i) => {
+                          let className = "text-muted-foreground";
+                          if (line.startsWith("+") && !line.startsWith("+++")) {
+                            className = "text-green-700 bg-green-50 dark:text-green-400 dark:bg-green-950/30";
+                          } else if (line.startsWith("-") && !line.startsWith("---")) {
+                            className = "text-red-700 bg-red-50 dark:text-red-400 dark:bg-red-950/30";
+                          } else if (line.startsWith("@@")) {
+                            className = "text-cyan-700 dark:text-cyan-400";
+                          }
+                          return (
+                            <span key={i} className={className}>
+                              {line}
+                              {"\n"}
+                            </span>
+                          );
+                        })}
+                      </pre>
+                    ) : (
+                      <pre className="rounded-md border bg-muted/50 p-3 text-xs font-mono whitespace-pre-wrap break-all overflow-x-auto max-h-64">
+                        {detailPattern.patternSql}
+                      </pre>
+                    )}
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    <h3 className="text-sm font-medium">Pattern SQL</h3>
+                    <pre className="rounded-md border bg-muted/50 p-3 text-xs font-mono whitespace-pre-wrap break-all overflow-x-auto max-h-64">
+                      {detailPattern.patternSql}
+                    </pre>
+                  </div>
+                )}
 
                 {/* Metadata */}
                 <div className="grid grid-cols-2 gap-4 text-sm">

@@ -50,6 +50,19 @@ function toLearnedPattern(row: Record<string, unknown>): LearnedPattern {
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
     reviewedAt: row.reviewed_at ? String(row.reviewed_at) : null,
+    type: (row.type as LearnedPattern["type"]) ?? "query_pattern",
+    amendmentPayload: row.amendment_payload
+      ? (() => {
+          try {
+            return (typeof row.amendment_payload === "string"
+              ? JSON.parse(row.amendment_payload)
+              : row.amendment_payload) as LearnedPattern["amendmentPayload"];
+          } catch {
+            log.warn({ rowId: row.id }, "Corrupt amendment_payload JSON in learned_patterns row — returning null");
+            return null;
+          }
+        })()
+      : null,
   };
 }
 
@@ -81,11 +94,13 @@ const LearnedPatternSchema = z.object({
   confidence: z.number(),
   repetitionCount: z.number(),
   status: z.enum(["pending", "approved", "rejected"]),
-  proposedBy: z.enum(["agent", "atlas-learn"]).nullable(),
+  proposedBy: z.enum(["agent", "atlas-learn", "expert-agent"]).nullable(),
   reviewedBy: z.string().nullable(),
   createdAt: z.string(),
   updatedAt: z.string(),
   reviewedAt: z.string().nullable(),
+  type: z.enum(["query_pattern", "semantic_amendment"]),
+  amendmentPayload: z.record(z.string(), z.unknown()).nullable(),
 });
 
 const ListResponseSchema = createListResponseSchema("patterns", LearnedPatternSchema, {
@@ -111,11 +126,12 @@ const listPatternsRoute = createRoute({
   tags: ["Admin — Learned Patterns"],
   summary: "List learned patterns",
   description:
-    "Returns a paginated list of learned query patterns. Supports filtering by status, source entity, and confidence range.",
+    "Returns a paginated list of learned query patterns. Supports filtering by status, type, source entity, and confidence range.",
   request: {
     query: z.object({
       status: z.string().optional().openapi({ description: "Filter by status: pending, approved, rejected" }),
       source_entity: z.string().optional().openapi({ description: "Filter by source entity name" }),
+      type: z.string().optional().openapi({ description: "Filter by type: query_pattern, semantic_amendment" }),
       min_confidence: z.string().optional().openapi({ description: "Minimum confidence (0–1)" }),
       max_confidence: z.string().optional().openapi({ description: "Maximum confidence (0–1)" }),
       limit: z.string().optional().openapi({ description: "Maximum results (default 50, max 200)" }),
@@ -367,6 +383,7 @@ adminLearnedPatterns.openapi(listPatternsRoute, async (c) => {
     const url = new URL(c.req.raw.url);
     const status = url.searchParams.get("status");
     const sourceEntity = url.searchParams.get("source_entity");
+    const patternType = url.searchParams.get("type");
     const minConfidence = url.searchParams.get("min_confidence");
     const maxConfidence = url.searchParams.get("max_confidence");
     const { limit, offset } = parsePagination(c);
@@ -383,6 +400,7 @@ adminLearnedPatterns.openapi(listPatternsRoute, async (c) => {
     let nextIdx = org.nextIdx;
 
     if (status) { params.push(status); whereParts.push(`status = $${nextIdx}`); nextIdx++; }
+    if (patternType) { params.push(patternType); whereParts.push(`type = $${nextIdx}`); nextIdx++; }
     if (sourceEntity) { params.push(sourceEntity); whereParts.push(`source_entity = $${nextIdx}`); nextIdx++; }
     if (minConfidence !== null) { params.push(parseFloat(minConfidence)); whereParts.push(`confidence >= $${nextIdx}`); nextIdx++; }
     if (maxConfidence !== null) { params.push(parseFloat(maxConfidence)); whereParts.push(`confidence <= $${nextIdx}`); nextIdx++; }

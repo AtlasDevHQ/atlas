@@ -86,6 +86,17 @@ export const COMMANDS: Record<string, CommandSpec> = {
       "--source": "Read from/write to semantic/{name}/ subdirectory",
     },
   },
+  improve: {
+    description: "Analyze semantic layer and propose data-driven improvements",
+    flags: {
+      "--apply": "Write proposed changes to YAML files",
+      "--min-confidence": "Minimum confidence to include (0-1, default: 0.5)",
+      "--entities": "Limit to specific entities (comma-separated)",
+      "--since": "Only analyze audit log entries after this date",
+      "--source": "Read from/write to semantic/{name}/ subdirectory",
+      "--schema": "PostgreSQL schema (default: public)",
+    },
+  },
   migrate: {
     description: "Generate/apply plugin schema migrations",
     flags: {

@@ -296,6 +296,47 @@ export const SUBCOMMAND_HELP: Record<string, SubcommandHelp> = {
       "atlas learn --source warehouse",
     ],
   },
+  improve: {
+    description:
+      "Analyze the semantic layer and propose data-driven improvements using database profiling and audit log patterns.",
+    usage: "improve [options]",
+    flags: [
+      {
+        flag: "--apply",
+        description:
+          "Write proposed changes to YAML files (default: dry-run)",
+      },
+      {
+        flag: "--min-confidence <n>",
+        description:
+          "Minimum confidence to include (0–1, default: 0.5)",
+      },
+      {
+        flag: "--entities <t1,t2>",
+        description: "Limit analysis to specific entities (comma-separated)",
+      },
+      {
+        flag: "--since <date>",
+        description:
+          "Only analyze audit log entries after this date (ISO 8601)",
+      },
+      {
+        flag: "--source <name>",
+        description:
+          "Read from/write to semantic/{name}/ subdirectory",
+      },
+      {
+        flag: "--schema <name>",
+        description: "PostgreSQL schema name (default: public)",
+      },
+    ],
+    examples: [
+      "atlas improve",
+      "atlas improve --apply",
+      "atlas improve --min-confidence 0.7 --entities orders,users",
+      "atlas improve --since 2026-03-01 --source warehouse",
+    ],
+  },
   export: {
     description:
       "Export workspace data to a portable migration bundle (JSON). Reads from the internal database.",
@@ -519,6 +560,7 @@ export function printOverviewHelp(): void {
       "  migrate-import   Import a migration bundle into a hosted instance\n" +
       "  index            Rebuild or inspect the semantic index\n" +
       "  learn            Analyze audit log and propose YAML improvements\n" +
+      "  improve          Analyze semantic layer and propose data-driven improvements\n" +
       "  diff             Compare DB schema against existing semantic layer\n" +
       "  query            Ask a question via the Atlas API\n" +
       "  validate         Validate config, semantic layer, and connectivity\n" +

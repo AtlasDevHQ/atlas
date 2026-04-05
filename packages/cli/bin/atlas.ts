@@ -242,6 +242,11 @@ async function main() {
     return handleLearn(args);
   }
 
+  if (command === "improve") {
+    const { handleImprove } = await import("../src/commands/improve");
+    return handleImprove(args);
+  }
+
   if (command === "diff") {
     const { handleDiff } = await import("../src/commands/diff");
     return handleDiff(args);

@@ -12,6 +12,7 @@ import type { OnboardingEmailStep, OnboardingMilestone, OnboardingEmailTrigger, 
 import { ONBOARDING_SEQUENCE, MILESTONE_TO_STEP } from "./sequence";
 import { renderOnboardingEmail } from "./templates";
 import { sendEmail } from "./delivery";
+import { Effect, Duration } from "effect";
 
 const log = createLogger("onboarding-email");
 
@@ -314,35 +315,39 @@ export async function getOnboardingStatuses(
     [orgId, limit, offset],
   );
 
-  const statuses = await Promise.all(
-    users.map(async (user) => {
-      try {
-        const [sentSteps, unsub] = await Promise.all([
-          getSentSteps(user.user_id),
-          isUnsubscribed(user.user_id),
-        ]);
-        return {
-          userId: user.user_id,
-          email: user.email,
-          orgId,
-          sentSteps,
-          pendingSteps: ALL_STEPS.filter((s) => !sentSteps.includes(s)),
-          unsubscribed: unsub,
-          createdAt: user.created_at,
-        };
-      } catch (err) {
-        log.warn({ userId: user.user_id, err: err instanceof Error ? err.message : String(err) }, "Failed to fetch onboarding status for user — returning defaults");
-        return {
-          userId: user.user_id,
-          email: user.email,
-          orgId,
-          sentSteps: [] as OnboardingEmailStep[],
-          pendingSteps: ALL_STEPS,
-          unsubscribed: false,
-          createdAt: user.created_at,
-        };
-      }
-    }),
+  const statuses = await Effect.runPromise(
+    Effect.forEach(
+      users,
+      (user) =>
+        Effect.tryPromise({
+          try: () => Promise.all([getSentSteps(user.user_id), isUnsubscribed(user.user_id)]),
+          catch: (err) => err instanceof Error ? err : new Error(String(err)),
+        }).pipe(
+          Effect.map(([sentSteps, unsub]) => ({
+            userId: user.user_id,
+            email: user.email,
+            orgId,
+            sentSteps,
+            pendingSteps: ALL_STEPS.filter((s) => !sentSteps.includes(s)),
+            unsubscribed: unsub,
+            createdAt: user.created_at,
+          })),
+          Effect.timeout(Duration.seconds(10)),
+          Effect.catchAll((err) => {
+            log.warn({ userId: user.user_id, err: err instanceof Error ? err.message : String(err) }, "Failed to fetch onboarding status for user — returning defaults");
+            return Effect.succeed({
+              userId: user.user_id,
+              email: user.email,
+              orgId,
+              sentSteps: [] as OnboardingEmailStep[],
+              pendingSteps: ALL_STEPS,
+              unsubscribed: false,
+              createdAt: user.created_at,
+            });
+          }),
+        ),
+      { concurrency: 5 },
+    ),
   );
 
   return { statuses, total };

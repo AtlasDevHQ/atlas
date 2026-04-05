@@ -1178,28 +1178,32 @@ export async function getWorkspaceHealthSummary(orgId: string): Promise<{
   const workspace = await getWorkspaceDetails(orgId);
   if (!workspace) return null;
 
-  const [memberRows, convRows, queryRows, connRows, taskRows] = await Promise.all([
-    internalQuery<{ count: number }>(
-      `SELECT COUNT(*)::int as count FROM member WHERE "organizationId" = $1`,
-      [orgId],
+  const [memberRows, convRows, queryRows, connRows, taskRows] = await Effect.runPromise(
+    Effect.all([
+      Effect.tryPromise({
+        try: () => internalQuery<{ count: number }>(`SELECT COUNT(*)::int as count FROM member WHERE "organizationId" = $1`, [orgId]),
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      }),
+      Effect.tryPromise({
+        try: () => internalQuery<{ count: number }>(`SELECT COUNT(*)::int as count FROM conversations WHERE org_id = $1`, [orgId]),
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      }),
+      Effect.tryPromise({
+        try: () => internalQuery<{ count: number }>(`SELECT COUNT(*)::int as count FROM audit_log WHERE org_id = $1 AND timestamp > now() - interval '24 hours'`, [orgId]),
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      }),
+      Effect.tryPromise({
+        try: () => internalQuery<{ count: number }>(`SELECT COUNT(*)::int as count FROM connections WHERE org_id = $1`, [orgId]),
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      }),
+      Effect.tryPromise({
+        try: () => internalQuery<{ count: number }>(`SELECT COUNT(*)::int as count FROM scheduled_tasks WHERE org_id = $1 AND enabled = true`, [orgId]),
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      }),
+    ], { concurrency: 5 }).pipe(
+      Effect.timeout(Duration.seconds(30)),
     ),
-    internalQuery<{ count: number }>(
-      `SELECT COUNT(*)::int as count FROM conversations WHERE org_id = $1`,
-      [orgId],
-    ),
-    internalQuery<{ count: number }>(
-      `SELECT COUNT(*)::int as count FROM audit_log WHERE org_id = $1 AND timestamp > now() - interval '24 hours'`,
-      [orgId],
-    ),
-    internalQuery<{ count: number }>(
-      `SELECT COUNT(*)::int as count FROM connections WHERE org_id = $1`,
-      [orgId],
-    ),
-    internalQuery<{ count: number }>(
-      `SELECT COUNT(*)::int as count FROM scheduled_tasks WHERE org_id = $1 AND enabled = true`,
-      [orgId],
-    ),
-  ]);
+  );
 
   return {
     workspace,

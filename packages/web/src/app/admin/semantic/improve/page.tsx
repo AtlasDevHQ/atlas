@@ -1,10 +1,11 @@
 "use client";
 
-import { useState, useRef, useCallback, useMemo } from "react";
+import { useState, useRef, useMemo } from "react";
 import { useChat, type UIMessage } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
 import { useAtlasConfig } from "@/ui/context";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -61,12 +62,12 @@ function ProposalCard({
   approving: boolean;
   rejecting: boolean;
 }) {
-  const confidenceColor =
-    proposal.confidence >= 0.8
-      ? "text-green-600 dark:text-green-400"
-      : proposal.confidence >= 0.5
-        ? "text-yellow-600 dark:text-yellow-400"
-        : "text-red-600 dark:text-red-400";
+  let confidenceColor = "text-red-600 dark:text-red-400";
+  if (proposal.confidence >= 0.8) {
+    confidenceColor = "text-green-600 dark:text-green-400";
+  } else if (proposal.confidence >= 0.5) {
+    confidenceColor = "text-yellow-600 dark:text-yellow-400";
+  }
 
   const decided = proposal.decision !== null;
 
@@ -210,7 +211,6 @@ export default function SemanticImprovePage() {
   const [proposalDecisions, setProposalDecisions] = useState<
     Map<number, "accepted" | "rejected">
   >(new Map());
-  const scrollRef = useRef<HTMLDivElement>(null);
 
   // Transport for the semantic expert agent endpoint
   const sessionIdRef = useRef<string | null>(null);
@@ -234,16 +234,17 @@ export default function SemanticImprovePage() {
     [apiUrl, isCrossOrigin],
   );
 
-  const { messages, sendMessage, status } = useChat({ transport });
+  const { messages, sendMessage, status, error: chatError } = useChat({ transport });
   const isLoading = status === "streaming" || status === "submitted";
 
   // Mutations for approve/reject
-  const { mutate: mutateApprove, isMutating: isApproving } = useAdminMutation({
+  const { mutate: mutateApprove, isMutating: isApproving, error: approveError } = useAdminMutation({
     method: "POST",
   });
-  const { mutate: mutateReject, isMutating: isRejecting } = useAdminMutation({
+  const { mutate: mutateReject, isMutating: isRejecting, error: rejectError } = useAdminMutation({
     method: "POST",
   });
+  const mutationError = approveError || rejectError;
 
   // Extract proposals from messages
   const proposals = extractProposals(messages).map((p) => ({
@@ -251,13 +252,19 @@ export default function SemanticImprovePage() {
     decision: proposalDecisions.get(p.index) ?? p.decision,
   }));
 
-  const handleSend = useCallback(() => {
+  function handleSend() {
     if (!inputValue.trim() || isLoading) return;
-    sendMessage({ role: "user", parts: [{ type: "text" as const, text: inputValue }] });
+    const saved = inputValue;
     setInputValue("");
-  }, [inputValue, isLoading, sendMessage]);
+    sendMessage({ role: "user", parts: [{ type: "text" as const, text: saved }] }).catch(
+      (err: unknown) => {
+        console.error("Failed to send message:", err instanceof Error ? err.message : String(err));
+        setInputValue(saved);
+      },
+    );
+  }
 
-  const handleRunAnalysis = useCallback(() => {
+  function handleRunAnalysis() {
     sendMessage({
       role: "user",
       parts: [
@@ -266,34 +273,30 @@ export default function SemanticImprovePage() {
           text: "Analyze my semantic layer and identify the highest-impact improvements. Start with the most-queried tables and check for missing measures, stale descriptions, and undocumented joins.",
         },
       ],
+    }).catch((err: unknown) => {
+      console.error("Failed to start analysis:", err instanceof Error ? err.message : String(err));
     });
-  }, [sendMessage]);
+  }
 
-  const handleApprove = useCallback(
-    async (index: number) => {
-      const result = await mutateApprove({
-        path: `/api/v1/admin/semantic-improve/proposals/${index}/approve`,
-        itemId: `approve-${index}`,
-      });
-      if (result.ok) {
-        setProposalDecisions((prev) => new Map(prev).set(index, "accepted"));
-      }
-    },
-    [mutateApprove],
-  );
+  async function handleApprove(index: number) {
+    const result = await mutateApprove({
+      path: `/api/v1/admin/semantic-improve/proposals/${index}/approve`,
+      itemId: `approve-${index}`,
+    });
+    if (result.ok) {
+      setProposalDecisions((prev) => new Map(prev).set(index, "accepted"));
+    }
+  }
 
-  const handleReject = useCallback(
-    async (index: number) => {
-      const result = await mutateReject({
-        path: `/api/v1/admin/semantic-improve/proposals/${index}/reject`,
-        itemId: `reject-${index}`,
-      });
-      if (result.ok) {
-        setProposalDecisions((prev) => new Map(prev).set(index, "rejected"));
-      }
-    },
-    [mutateReject],
-  );
+  async function handleReject(index: number) {
+    const result = await mutateReject({
+      path: `/api/v1/admin/semantic-improve/proposals/${index}/reject`,
+      itemId: `reject-${index}`,
+    });
+    if (result.ok) {
+      setProposalDecisions((prev) => new Map(prev).set(index, "rejected"));
+    }
+  }
 
   return (
     <div className="flex h-full flex-col">
@@ -328,7 +331,7 @@ export default function SemanticImprovePage() {
           {/* Chat panel */}
           <ResizablePanel defaultSize={55} minSize={35}>
             <div className="flex h-full flex-col">
-              <ScrollArea className="flex-1 p-4" ref={scrollRef}>
+              <ScrollArea className="flex-1 p-4">
                 <div className="space-y-4 pb-4">
                   {messages.length === 0 && (
                     <div className="flex flex-col items-center justify-center py-16 text-center text-muted-foreground">
@@ -390,6 +393,16 @@ export default function SemanticImprovePage() {
                 </div>
               </ScrollArea>
 
+              {/* Error display */}
+              {chatError && (
+                <div className="border-t bg-destructive/10 px-4 py-3 text-sm text-destructive">
+                  <p className="font-medium">Analysis failed</p>
+                  <p className="text-xs mt-1">
+                    {chatError.message || "An error occurred while communicating with the expert agent."}
+                  </p>
+                </div>
+              )}
+
               {/* Input area */}
               <div className="border-t p-3">
                 <div className="flex gap-2">
@@ -436,6 +449,9 @@ export default function SemanticImprovePage() {
               </div>
               <ScrollArea className="flex-1 p-4">
                 <div className="space-y-3">
+                  {mutationError && (
+                    <ErrorBanner message={mutationError} />
+                  )}
                   {proposals.length === 0 && (
                     <div className="py-12 text-center text-xs text-muted-foreground">
                       Proposals will appear here as the agent identifies improvements.

@@ -14,7 +14,6 @@ import {
 } from "ai";
 import { createLogger } from "@atlas/api/lib/logger";
 import { runHandler } from "@atlas/api/lib/effect/hono";
-import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import { runAgent } from "@atlas/api/lib/agent";
 import { buildExpertRegistry } from "@atlas/api/lib/tools/expert-registry";
 import {
@@ -215,6 +214,10 @@ const approveProposalRoute = createRoute({
       description: "Proposal or session not found",
       content: { "application/json": { schema: ErrorSchema } },
     },
+    409: {
+      description: "Proposal already reviewed",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
     500: {
       description: "Internal server error",
       content: { "application/json": { schema: ErrorSchema } },
@@ -246,6 +249,10 @@ const rejectProposalRoute = createRoute({
     },
     404: {
       description: "Proposal or session not found",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    409: {
+      description: "Proposal already reviewed",
       content: { "application/json": { schema: ErrorSchema } },
     },
     500: {
@@ -316,6 +323,28 @@ function findSessionForProposal(
   return { stored: latest, proposal };
 }
 
+/**
+ * Advance the session to the target proposal and record the decision.
+ * Returns false if the proposal was already reviewed (currentIndex past it).
+ */
+function advanceAndRecord(
+  stored: StoredSession,
+  proposalIndex: number,
+  decision: "accepted" | "rejected" | "skipped",
+): boolean {
+  if (stored.state.currentIndex > proposalIndex) {
+    return false;
+  }
+  while (stored.state.currentIndex < proposalIndex) {
+    recordDecision(stored.state, "skipped");
+  }
+  if (stored.state.currentIndex === proposalIndex) {
+    recordDecision(stored.state, decision);
+  }
+  stored.updatedAt = new Date();
+  return true;
+}
+
 // ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
@@ -378,7 +407,7 @@ Analyze the semantic layer and propose improvements. For each finding:
         messages,
         tools: expertRegistry,
         maxSteps: 15,
-        warnings: expertSystemPrefix ? [expertSystemPrefix] : undefined,
+        warnings: [expertSystemPrefix],
       });
 
       // Create session if not existing
@@ -454,12 +483,12 @@ adminSemanticImprove.openapi(listSessionsRoute, async (c) =>
 // GET /sessions/:id — get session with proposals
 adminSemanticImprove.openapi(getSessionRoute, async (c) =>
   runHandler(c, "get-improve-session", async () => {
-    const { orgId } = c.get("orgContext");
+    const { requestId, orgId } = c.get("orgContext");
     const { id } = c.req.valid("param");
 
     const stored = sessions.get(id);
     if (!stored || stored.orgId !== orgId) {
-      return c.json({ error: "not_found", message: "Session not found." }, 404);
+      return c.json({ error: "not_found", message: "Session not found.", requestId }, 404);
     }
 
     const proposals = stored.state.proposals.map((p, i) => {
@@ -485,7 +514,6 @@ adminSemanticImprove.openapi(approveProposalRoute, async (c) =>
       return c.json({ error: "invalid_id", message: "Proposal ID must be a non-negative integer (the proposal index).", requestId }, 400);
     }
 
-    // Find the most recent session with this proposal
     const match = findSessionForProposal(orgId, proposalIndex);
     if (!match) {
       return c.json({ error: "not_found", message: "Proposal not found. Start an improvement session first.", requestId }, 404);
@@ -493,27 +521,15 @@ adminSemanticImprove.openapi(approveProposalRoute, async (c) =>
 
     const { stored, proposal } = match;
 
-    // Apply the amendment to the entity YAML
-    try {
-      if (!hasInternalDB()) {
-        return c.json({ error: "not_available", message: "Applying amendments requires an internal database (DATABASE_URL).", requestId }, 400);
-      }
+    // Check if already reviewed
+    if (stored.state.currentIndex > proposalIndex) {
+      return c.json({ error: "already_reviewed", message: `Proposal ${proposalIndex} has already been reviewed.`, requestId }, 409);
+    }
 
+    // Apply the amendment to YAML
+    try {
       const { applyAmendmentToEntity } = await import("@atlas/api/lib/semantic/expert/apply");
       await applyAmendmentToEntity(orgId, proposal, requestId);
-
-      // Record decision in session state
-      // Navigate to the proposal's index before recording
-      while (stored.state.currentIndex < proposalIndex) {
-        recordDecision(stored.state, "skipped");
-      }
-      if (stored.state.currentIndex === proposalIndex) {
-        recordDecision(stored.state, "accepted");
-      }
-      stored.updatedAt = new Date();
-
-      log.info({ requestId, orgId, proposalIndex, entity: proposal.entityName }, "Proposal approved");
-      return c.json({ ok: true, proposalIndex, decision: "accepted" }, 200);
     } catch (err) {
       log.error(
         { err: err instanceof Error ? err.message : String(err), requestId, orgId },
@@ -525,6 +541,12 @@ adminSemanticImprove.openapi(approveProposalRoute, async (c) =>
         requestId,
       }, 500);
     }
+
+    // Record decision in session state (separate from YAML apply)
+    advanceAndRecord(stored, proposalIndex, "accepted");
+
+    log.info({ requestId, orgId, proposalIndex, entity: proposal.entityName }, "Proposal approved");
+    return c.json({ ok: true, proposalIndex, decision: "accepted" }, 200);
   }),
 );
 
@@ -544,16 +566,11 @@ adminSemanticImprove.openapi(rejectProposalRoute, async (c) =>
       return c.json({ error: "not_found", message: "Proposal not found. Start an improvement session first.", requestId }, 404);
     }
 
-    const { stored } = match;
+    if (match.stored.state.currentIndex > proposalIndex) {
+      return c.json({ error: "already_reviewed", message: `Proposal ${proposalIndex} has already been reviewed.`, requestId }, 409);
+    }
 
-    // Record decision in session state
-    while (stored.state.currentIndex < proposalIndex) {
-      recordDecision(stored.state, "skipped");
-    }
-    if (stored.state.currentIndex === proposalIndex) {
-      recordDecision(stored.state, "rejected");
-    }
-    stored.updatedAt = new Date();
+    advanceAndRecord(match.stored, proposalIndex, "rejected");
 
     log.info({ requestId, orgId, proposalIndex }, "Proposal rejected");
     return c.json({ ok: true, proposalIndex, decision: "rejected" }, 200);

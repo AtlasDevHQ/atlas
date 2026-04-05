@@ -94,7 +94,7 @@ describe("executeSQL connection error handling", () => {
 
   it("returns curated error for unregistered connection", async () => {
     getFn = (id: string) => {
-      throw new ConnectionNotRegisteredError(id);
+      throw new ConnectionNotRegisteredError({ message: `Connection "${id}" is not registered.`, id });
     };
 
     const result = await exec("SELECT id FROM companies", "unknown-conn");
@@ -105,7 +105,7 @@ describe("executeSQL connection error handling", () => {
 
   it("returns original message when no datasource configured", async () => {
     getDefaultFn = () => {
-      throw new NoDatasourceConfiguredError();
+      throw new NoDatasourceConfiguredError({ message: "No analytics datasource configured. Set ATLAS_DATASOURCE_URL to a PostgreSQL or MySQL connection string, or register a datasource plugin." });
     };
 
     const result = await exec("SELECT id FROM companies");
@@ -116,7 +116,7 @@ describe("executeSQL connection error handling", () => {
 
   it("returns curated error when getDBType throws registration error on default path", async () => {
     getDBTypeFn = () => {
-      throw new ConnectionNotRegisteredError("default");
+      throw new ConnectionNotRegisteredError({ message: 'Connection "default" is not registered.', id: "default" });
     };
 
     const result = await exec("SELECT id FROM companies");

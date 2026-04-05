@@ -110,23 +110,32 @@ export function createConnectionMock(overrides?: ConnectionMockOverrides) {
     extractTargetHost: () => "localhost",
     ConnectionRegistry: class {},
     ConnectionNotRegisteredError: class extends Error {
-      constructor(id: string) {
-        super(`Connection "${id}" is not registered.`);
+      readonly id: string;
+      readonly _tag = "ConnectionNotRegisteredError";
+      constructor(args: { message: string; id: string }) {
+        super(args.message);
         this.name = "ConnectionNotRegisteredError";
+        this.id = args.id;
       }
     },
     NoDatasourceConfiguredError: class extends Error {
-      constructor() {
-        super("No analytics datasource configured.");
+      readonly _tag = "NoDatasourceConfiguredError";
+      constructor(args: { message: string }) {
+        super(args.message);
         this.name = "NoDatasourceConfiguredError";
       }
     },
     PoolCapacityExceededError: class extends Error {
-      constructor(current: number, requested: number, max: number) {
-        super(
-          `Cannot create org pool: would use ${current + requested} connection slots, exceeding maxTotalConnections (${max}).`,
-        );
+      readonly currentSlots: number;
+      readonly requestedSlots: number;
+      readonly maxTotalConnections: number;
+      readonly _tag = "PoolCapacityExceededError";
+      constructor(args: { message: string; currentSlots: number; requestedSlots: number; maxTotalConnections: number }) {
+        super(args.message);
         this.name = "PoolCapacityExceededError";
+        this.currentSlots = args.currentSlots;
+        this.requestedSlots = args.requestedSlots;
+        this.maxTotalConnections = args.maxTotalConnections;
       }
     },
     ...topLevelOverrides,

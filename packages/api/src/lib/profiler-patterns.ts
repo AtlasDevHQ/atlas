@@ -16,7 +16,7 @@ import type {
   SemanticType,
   TableProfile,
 } from "@useatlas/types";
-import { mapSQLType, isViewLike, pluralize, singularize } from "./profiler";
+import { mapSQLType, isViewLike, pluralize, singularize } from "./profiler-utils";
 
 // ---------------------------------------------------------------------------
 // Semantic type detection

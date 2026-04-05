@@ -279,7 +279,7 @@ describe("executeSQL org-scoped routing", () => {
     // Simulate capacity exceeded
     const CapacityError = (await import("@atlas/api/lib/db/connection")).PoolCapacityExceededError;
     mockGetForOrg.mockImplementation(() => {
-      throw new CapacityError(100, 5, 100);
+      throw new CapacityError({ message: "Cannot create org pool: would use 105 connection slots, exceeding maxTotalConnections (100).", currentSlots: 100, requestedSlots: 5, maxTotalConnections: 100 });
     });
 
     const result = await executeTool(

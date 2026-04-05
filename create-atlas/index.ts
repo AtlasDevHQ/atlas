@@ -75,18 +75,25 @@ const useDefaults = args.includes("--defaults") || args.includes("-y");
 
 const skipDoctor = args.includes("--skip-doctor");
 
-// Parse --demo flag (optionally with dataset name)
+// Parse --demo / --seed flag (optionally with dataset name)
+// --seed is the canonical flag; --demo is a backward-compatible alias
 const VALID_DEMO_DATASETS = ["simple", "cybersec", "ecommerce"] as const;
 type DemoDataset = (typeof VALID_DEMO_DATASETS)[number];
 let demoFlag = false;
 let demoDatasetFlag: DemoDataset = "simple";
 const demoIdx = args.indexOf("--demo");
-if (demoIdx !== -1) {
+const seedIdx = args.indexOf("--seed");
+if (demoIdx !== -1 && seedIdx !== -1) {
+  console.error("Cannot use both --demo and --seed. They are aliases — pick one.");
+  process.exit(1);
+}
+const demoOrSeedIdx = Math.max(demoIdx, seedIdx);
+if (demoOrSeedIdx !== -1) {
   demoFlag = true;
-  const next = args[demoIdx + 1];
+  const next = args[demoOrSeedIdx + 1];
   if (next && !next.startsWith("-")) {
     if (!VALID_DEMO_DATASETS.includes(next as DemoDataset)) {
-      console.error(`Unknown demo dataset "${next}". Available: ${VALID_DEMO_DATASETS.join(", ")}`);
+      console.error(`Unknown seed "${next}". Available: ${VALID_DEMO_DATASETS.join(", ")}`);
       process.exit(1);
     }
     demoDatasetFlag = next as DemoDataset;
@@ -95,8 +102,8 @@ if (demoIdx !== -1) {
 
 const positionalArgs = args.filter((a, i) => {
   if (a.startsWith("-")) return false;
-  // Skip the dataset value after --demo
-  if (i > 0 && args[i - 1] === "--demo") return false;
+  // Skip the dataset value after --demo / --seed
+  if (i > 0 && (args[i - 1] === "--demo" || args[i - 1] === "--seed")) return false;
   return true;
 });
 
@@ -254,6 +261,7 @@ ${projectName}/
 | \`bun run atlas -- init\` | Generate semantic layer from database |
 | \`bun run atlas -- init --demo\` | Load simple demo dataset |
 | \`bun run atlas -- init --demo cybersec\` | Load cybersec demo (62 tables) |
+| \`bun run atlas -- init --demo ecommerce\` | Load ecommerce demo (52 tables) |
 | \`bun run atlas -- diff\` | Compare DB schema vs semantic layer |
 | \`bun run atlas -- query "question"\` | Headless query (table output) |
 | \`bun run test\` | Run tests |
@@ -306,11 +314,18 @@ if (args.includes("--help") || args.includes("-h")) {
   Usage: bun create @useatlas [project-name] [options]
 
   Options:
-    --demo [dataset]   Load demo data (simple, cybersec, ecommerce) [default: simple]
+    --seed [dataset]   Load demo data (simple, cybersec, ecommerce) [default: simple]
+    --demo [dataset]   Alias for --seed
     --platform <name>  Deploy target (${VALID_PLATFORMS.join(", ")}) [default: docker]
     --preset <name>    Alias for --platform
     --defaults, -y     Use all default values (non-interactive)
+    --skip-doctor      Skip health check after scaffolding
     --help, -h         Show this help message
+
+  Seeds:
+    simple       3 tables, ~330 rows — quick evaluation, tutorials
+    cybersec     62 tables, ~500K rows — B2B SaaS with tech debt patterns
+    ecommerce    52 tables, ~480K rows — DTC brand + marketplace
 
   Platforms:
     vercel     Next.js + embedded API — auto-detects Vercel sandbox
@@ -320,22 +335,22 @@ if (args.includes("--help") || args.includes("-h")) {
 
   Examples:
     bun create @useatlas my-app
+    bun create @useatlas my-app --seed cybersec
+    bun create @useatlas my-app --seed ecommerce --defaults
     bun create @useatlas my-app --platform vercel
-    bun create @useatlas my-app --preset railway
     bun create @useatlas my-app --defaults
-    bun create @useatlas my-app --demo --defaults
     bun create @useatlas my-app --demo cybersec
 `);
   process.exit(0);
 }
 
 // Reject unknown flags
-const knownFlags = new Set(["--defaults", "-y", "--help", "-h", "--platform", "--preset", "--demo"]);
+const knownFlags = new Set(["--defaults", "-y", "--help", "-h", "--platform", "--preset", "--demo", "--seed", "--skip-doctor"]);
 const unknownFlags = args.filter((a, i) => {
   if (!a.startsWith("-")) return false;
   if (knownFlags.has(a)) return false;
   // Value arguments for flags that take a parameter
-  if (i > 0 && (args[i - 1] === "--platform" || args[i - 1] === "--preset" || args[i - 1] === "--demo")) return false;
+  if (i > 0 && (args[i - 1] === "--platform" || args[i - 1] === "--preset" || args[i - 1] === "--demo" || args[i - 1] === "--seed")) return false;
   return true;
 });
 if (unknownFlags.length > 0) {
@@ -779,6 +794,39 @@ async function main() {
     }
     // vercel.json in docker template is noise
     fs.rmSync(path.join(targetDir, "vercel.json"), { force: true });
+  }
+
+  // If a demo seed is selected, install its semantic layer and prune other seeds
+  if (loadDemo) {
+    const seedSemanticDir = path.join(targetDir, "data", "seeds", demoDataset, "semantic");
+    if (fs.existsSync(seedSemanticDir)) {
+      // Overwrite the default (simple) semantic layer with the selected seed's layer
+      const targetSemantic = path.join(targetDir, "semantic");
+      if (fs.existsSync(targetSemantic)) {
+        fs.rmSync(targetSemantic, { recursive: true });
+      }
+      copyDirRecursive(seedSemanticDir, targetSemantic);
+    }
+
+    // Remove seeds not selected to keep the project lean
+    const seedsDir = path.join(targetDir, "data", "seeds");
+    if (fs.existsSync(seedsDir)) {
+      for (const entry of fs.readdirSync(seedsDir)) {
+        if (entry !== demoDataset) {
+          fs.rmSync(path.join(seedsDir, entry), { recursive: true, force: true });
+        }
+      }
+    }
+
+    // Remove unselected flat seed SQL files (backward-compat copies)
+    for (const name of VALID_DEMO_DATASETS) {
+      if (name === demoDataset) continue;
+      fs.rmSync(path.join(targetDir, "data", `${name}.sql`), { force: true });
+    }
+    // Remove demo.sql flat copy if not using simple (it's a copy of simple/seed.sql)
+    if (demoDataset !== "simple") {
+      fs.rmSync(path.join(targetDir, "data", "demo.sql"), { force: true });
+    }
   }
 
   // Replace %PROJECT_NAME% in templated files (only files that exist in the template)

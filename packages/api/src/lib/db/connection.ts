@@ -79,6 +79,10 @@ export interface DBConnection {
   close(): Promise<void>;
   /** Return real-time pool counters, or null if not available. Postgres returns live stats; MySQL and plugin connections return null. */
   getPoolStats?(): import("@useatlas/types").PoolStats | null;
+  /** Raw database pool for @effect/sql native client creation. Pool lifecycle managed by ConnectionRegistry. */
+  readonly _pool?: unknown;
+  /** Database type identifier for this connection. */
+  readonly _dbType?: DBType;
 }
 
 export type DBType = "postgres" | "mysql" | (string & {});
@@ -294,6 +298,8 @@ function createPostgresDB(config: ConnectionConfig): DBConnection {
         waitingCount: pool.waitingCount ?? 0,
       };
     },
+    _pool: pool,
+    _dbType: "postgres" as const,
   };
 }
 
@@ -331,6 +337,8 @@ function createMySQLDB(config: ConnectionConfig): DBConnection {
       // mysql2 pool internals are not part of the public API — return null
       return null;
     },
+    _pool: pool,
+    _dbType: "mysql" as const,
   };
 }
 

@@ -117,7 +117,7 @@ export {
   type AtlasToolkitShape,
 } from "./toolkit";
 
-// ── SQL Client Service (P11a) ───────────────────────────────────────
+// ── SQL Client Service (native @effect/sql) ─────────────────────────
 
 export {
   AtlasSqlClient,

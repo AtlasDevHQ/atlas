@@ -38,8 +38,8 @@ export async function applyAmendmentToEntity(
 
   // Parse current YAML
   const parsed = yaml.load(entity.yaml_content) as Record<string, unknown>;
-  if (!parsed || typeof parsed !== "object") {
-    throw new Error(`Failed to parse YAML for entity "${result.entityName}"`);
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`Failed to parse YAML for entity "${result.entityName}": expected a mapping`);
   }
 
   // Apply amendment (same logic as CLI's apply-amendment)
@@ -90,57 +90,60 @@ export async function applyAmendmentToEntity(
   );
 }
 
+/** Maps simple "add_*" amendment types to their target array key. */
+const ADD_AMENDMENT_KEYS: Record<string, string> = {
+  add_dimension: "dimensions",
+  add_measure: "measures",
+  add_join: "joins",
+  add_query_pattern: "query_patterns",
+};
+
 /** Apply an amendment to a parsed entity object. Returns a new object. */
-function applyAmendment(
+export function applyAmendment(
   entity: Record<string, unknown>,
   result: AnalysisResult,
 ): Record<string, unknown> {
   const updated = structuredClone(entity);
   const amendment = result.amendment;
 
+  // Handle the four simple "push to array" amendment types
+  const arrayKey = ADD_AMENDMENT_KEYS[result.amendmentType];
+  if (arrayKey) {
+    const arr = (updated[arrayKey] ?? []) as Record<string, unknown>[];
+    arr.push(amendment);
+    updated[arrayKey] = arr;
+    return updated;
+  }
+
   switch (result.amendmentType) {
-    case "add_dimension": {
-      const dims = (updated.dimensions ?? []) as Record<string, unknown>[];
-      dims.push(amendment);
-      updated.dimensions = dims;
-      break;
-    }
-    case "add_measure": {
-      const measures = (updated.measures ?? []) as Record<string, unknown>[];
-      measures.push(amendment);
-      updated.measures = measures;
-      break;
-    }
-    case "add_join": {
-      const joins = (updated.joins ?? []) as Record<string, unknown>[];
-      joins.push(amendment);
-      updated.joins = joins;
-      break;
-    }
-    case "add_query_pattern": {
-      const patterns = (updated.query_patterns ?? []) as Record<string, unknown>[];
-      patterns.push(amendment);
-      updated.query_patterns = patterns;
-      break;
-    }
     case "update_description": {
       if (amendment.field === "table") {
         updated.description = amendment.description;
       } else if (amendment.dimension) {
         const dims = (updated.dimensions ?? []) as Record<string, unknown>[];
         const target = dims.find((d) => d.name === amendment.dimension);
-        if (target) {
-          target.description = amendment.description;
+        if (!target) {
+          throw new Error(
+            `Cannot update description: dimension "${String(amendment.dimension)}" not found in entity "${result.entityName}"`,
+          );
         }
+        target.description = amendment.description;
+      } else {
+        throw new Error(
+          `Invalid update_description amendment: field="${String(amendment.field)}", dimension="${String(amendment.dimension)}"`,
+        );
       }
       break;
     }
     case "update_dimension": {
       const dims = (updated.dimensions ?? []) as Record<string, unknown>[];
       const target = dims.find((d) => d.name === amendment.name);
-      if (target) {
-        Object.assign(target, amendment);
+      if (!target) {
+        throw new Error(
+          `Cannot update dimension: "${String(amendment.name)}" not found in entity "${result.entityName}"`,
+        );
       }
+      Object.assign(target, amendment);
       break;
     }
     case "add_virtual_dimension": {
@@ -152,6 +155,8 @@ function applyAmendment(
     case "add_glossary_term":
       // Glossary amendments don't modify entity files
       break;
+    default:
+      throw new Error(`Unsupported amendment type: ${result.amendmentType}`);
   }
 
   return updated;

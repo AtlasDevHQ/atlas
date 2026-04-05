@@ -14,6 +14,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { initializeConfig } from "@atlas/api/lib/config";
 import { registerTools } from "./tools.js";
 import { registerResources } from "./resources.js";
+import { registerPrompts } from "./prompts.js";
 
 const VERSION = "0.1.0";
 
@@ -43,6 +44,7 @@ export async function createAtlasMcpServer(
 
   registerTools(server);
   registerResources(server);
+  await registerPrompts(server);
 
   return server;
 }

@@ -116,6 +116,43 @@ All SQL validation applies: SELECT-only, table whitelist, auto-LIMIT, statement 
 
 ---
 
+## Prompt Templates
+
+The MCP server exposes prompt templates via `prompts/list` and `prompts/get`, making Atlas discoverable in MCP clients where users can browse curated query patterns.
+
+### Built-in templates
+
+Always available — common analytical patterns with argument substitution:
+
+| Prompt | Arguments | Description |
+|--------|-----------|-------------|
+| `revenue-trend` | `period` | Show revenue trends over a time period |
+| `top-by-metric` | `count`, `entity`, `metric` | Find the top N items ranked by a metric |
+| `compare-periods` | `metric`, `period1`, `period2` | Compare a metric between two time periods |
+| `breakdown` | `metric`, `dimension` | Break down a metric by a dimension |
+| `anomaly-detection` | `metric`, `period` | Find anomalies in a metric over a time period |
+
+### Semantic layer patterns
+
+Query patterns defined in entity YAML files (`query_patterns` field) are automatically registered as prompts. Each pattern becomes a prompt named `entity-{table}-{pattern}`.
+
+For example, if `entities/orders.yml` defines:
+
+```yaml
+query_patterns:
+  - name: monthly-revenue
+    description: Monthly revenue from orders
+    sql: SELECT date_trunc('month', created_at) AS month, SUM(total) FROM orders GROUP BY 1
+```
+
+This becomes the prompt `entity-orders-monthly-revenue` that returns the description and reference SQL.
+
+### Prompt library
+
+If an internal database (`DATABASE_URL`) is configured with the prompt library tables, built-in prompt collection items are also exposed as MCP prompts named `library-{id}`. These are the same prompts shown in the Atlas chat UI prompt library.
+
+---
+
 ## Available Resources
 
 The MCP server exposes the semantic layer as read-only resources:
@@ -154,7 +191,7 @@ const server = await createAtlasMcpServer();
 // Connect to any transport: server.connect(stdioTransport) or server.connect(sseTransport)
 ```
 
-The server factory initializes configuration, registers tools and resources, and returns a ready-to-use `McpServer` instance. Connect it to any transport (stdio, SSE, or custom).
+The server factory initializes configuration, registers tools, resources, and prompt templates, and returns a ready-to-use `McpServer` instance. Connect it to any transport (stdio, SSE, or custom).
 
 ---
 

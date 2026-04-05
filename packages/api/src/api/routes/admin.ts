@@ -220,6 +220,19 @@ try {
   );
 }
 
+// Semantic improve routes — lazy import to avoid loading expert agent tools
+// (and their deep dependency graph) at admin module init time.
+try {
+  const { adminSemanticImprove } = await import("./admin-semantic-improve");
+  admin.route("/semantic-improve", adminSemanticImprove);
+  admin.route("/semantic-improve/", adminSemanticImprove);
+} catch (err) {
+  log.error(
+    { err: err instanceof Error ? err : new Error(String(err)) },
+    "Failed to load semantic improve routes — semantic improvement will be unavailable",
+  );
+}
+
 // Semantic entity editor routes — registered directly (not subrouter) to avoid
 // middleware conflicts with existing /semantic/* GET routes above.
 registerSemanticEditorRoutes(admin, adminAuthAndContext);

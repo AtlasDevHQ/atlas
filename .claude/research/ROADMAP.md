@@ -927,6 +927,18 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] Session summary at exit (accepted/rejected/skipped counts)
 - [x] Docs updated — interactive mode section in semantic-expert.mdx + CLI reference
 
+### Phase 3: Web Interactive Mode
+- [x] Streaming API route (`/api/v1/admin/semantic-improve/chat`) with expert agent tools (#1268)
+- [x] Session management endpoints (list, get, approve, reject proposals)
+- [x] Split-view admin page (`/admin/semantic/improve`) — chat panel + proposals panel
+- [x] Proposal cards with amendment preview, confidence score, approve/reject buttons
+- [x] "Run Analysis" autonomous mode trigger from web UI
+- [x] Applied changes recorded in semantic editor version history
+- [x] "Improve" button in semantic editor page + sidebar navigation link
+- [x] Apply module (`packages/api/src/lib/semantic/expert/apply.ts`) — amendment application with version history
+- [x] Route tests for session and proposal endpoints
+- [x] Docs updated — web UI section in semantic-expert.mdx
+
 ---
 
 ## MCP Prompt Templates

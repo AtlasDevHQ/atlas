@@ -84,6 +84,8 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   _resetCircuitBreaker: () => {},
   _resetEncryptionKeyCache: () => {},
   closeInternalDB: async () => {},
+  setWorkspaceRegion: mock(async () => {}),
+  insertSemanticAmendment: mock(async () => "mock-amendment-id"),
 }));
 
 const mockResetWhitelists: Mock<() => void> = mock(() => {});

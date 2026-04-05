@@ -181,6 +181,8 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   cascadeWorkspaceDelete: mockCascadeWorkspaceDelete,
   getWorkspaceHealthSummary: mockGetWorkspaceHealthSummary,
   getWorkspaceRegion: mock(async () => null),
+  setWorkspaceRegion: mock(async () => {}),
+  insertSemanticAmendment: mock(async () => "mock-amendment-id"),
 }));
 
 mock.module("@atlas/api/lib/learn/pattern-cache", () => ({

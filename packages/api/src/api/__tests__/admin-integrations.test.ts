@@ -129,6 +129,15 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   cascadeWorkspaceDelete: mock(async () => ({ conversations: 0, semanticEntities: 0, learnedPatterns: 0, suggestions: 0, scheduledTasks: 0, settings: 0 })),
   getWorkspaceHealthSummary: mock(async () => null),
   getWorkspaceRegion: mock(async () => null),
+  setWorkspaceRegion: mock(async () => {}),
+  insertSemanticAmendment: mock(async () => "mock-amendment-id"),
+  findPatternBySQL: mock(async () => null),
+  insertLearnedPattern: mock(() => {}),
+  incrementPatternCount: mock(() => {}),
+  getAutoApproveThreshold: mock(() => 999),
+  updateWorkspaceByot: mock(async () => {}),
+  setWorkspaceStripeCustomerId: mock(async () => {}),
+  setWorkspaceTrialEndsAt: mock(async () => {}),
 }));
 
 // --- Slack store mock ---

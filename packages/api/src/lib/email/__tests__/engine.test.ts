@@ -14,6 +14,8 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   internalQuery: mock(() => Promise.resolve(mockInternalQueryResult)),
   internalExecute: mock(() => {}),
   getInternalDB: () => ({ query: () => Promise.resolve({ rows: [] }), end: async () => {}, on: () => {} }),
+  setWorkspaceRegion: mock(async () => {}),
+  insertSemanticAmendment: mock(async () => "mock-amendment-id"),
 }));
 
 // --- Mock email delivery ---

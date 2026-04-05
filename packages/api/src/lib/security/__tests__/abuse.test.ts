@@ -29,6 +29,8 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => false,
   internalExecute: mock(() => {}),
   internalQuery: mock(async () => []),
+  setWorkspaceRegion: mock(async () => {}),
+  insertSemanticAmendment: mock(async () => "mock-amendment-id"),
 }));
 
 // --- Import after mocks ---

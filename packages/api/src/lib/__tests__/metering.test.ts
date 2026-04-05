@@ -44,6 +44,8 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   getInternalDB: () => mockPool,
   _resetPool: () => {},
   _resetCircuitBreaker: () => {},
+  setWorkspaceRegion: mock(async () => {}),
+  insertSemanticAmendment: mock(async () => "mock-amendment-id"),
 }));
 
 mock.module("@atlas/api/lib/logger", () => ({

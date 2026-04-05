@@ -43,7 +43,8 @@ const noopAuthClient: AtlasAuthClient = {
   useSession: () => ({ data: null, isPending: false }),
 };
 
-const AtlasContext = createContext<AtlasContextValue | null>(null);
+/** @internal Exported so AtlasChat can provide this context alongside AtlasUIProvider. */
+export const AtlasContext = createContext<AtlasContextValue | null>(null);
 
 /** Access the AtlasProvider context. Throws if used outside <AtlasProvider>. */
 export function useAtlasContext(): AtlasContextValue {

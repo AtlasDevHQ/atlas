@@ -7,6 +7,7 @@ import { useQuery, QueryClient, QueryClientProvider } from "@tanstack/react-quer
 import type { AuthMode } from "../lib/types";
 import type { ToolRenderers } from "../lib/tool-renderer-types";
 import { AtlasUIProvider, useAtlasConfig, ActionAuthProvider, type AtlasAuthClient } from "../context";
+import { AtlasContext } from "../hooks/provider";
 import { DarkModeContext, useDarkMode, useThemeMode, setTheme, applyBrandColor, OKLCH_RE, type ThemeMode } from "../hooks/use-dark-mode";
 import { useConversations } from "../hooks/use-conversations";
 import { ErrorBanner } from "./chat/error-banner";
@@ -189,19 +190,27 @@ export function AtlasChat(props: AtlasChatProps) {
     },
   }));
 
+  // Derive isCrossOrigin for the headless hooks context (useHealthQuery etc.)
+  const isCrossOrigin =
+    typeof window !== "undefined" &&
+    apiUrl !== "" &&
+    !apiUrl.startsWith(window.location.origin);
+
   return (
     <QueryClientProvider client={queryClient}>
-      <AtlasUIProvider config={{ apiUrl, authClient }}>
-        <AtlasChatInner
-          propApiKey={propApiKey}
-          sidebar={sidebar}
-          schemaExplorerEnabled={schemaExplorerEnabled}
-          toolRenderers={toolRenderers}
-          chatEndpoint={chatEndpoint}
-          conversationsEndpoint={conversationsEndpoint}
-          showBranding={showBranding}
-        />
-      </AtlasUIProvider>
+      <AtlasContext.Provider value={{ apiUrl, apiKey: propApiKey, authClient, isCrossOrigin }}>
+        <AtlasUIProvider config={{ apiUrl, authClient }}>
+          <AtlasChatInner
+            propApiKey={propApiKey}
+            sidebar={sidebar}
+            schemaExplorerEnabled={schemaExplorerEnabled}
+            toolRenderers={toolRenderers}
+            chatEndpoint={chatEndpoint}
+            conversationsEndpoint={conversationsEndpoint}
+            showBranding={showBranding}
+          />
+        </AtlasUIProvider>
+      </AtlasContext.Provider>
     </QueryClientProvider>
   );
 }

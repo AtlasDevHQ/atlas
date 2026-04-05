@@ -1,0 +1,94 @@
+---
+title: Organizations
+description: Create workspaces, switch between organizations, and understand data boundaries.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Organizations (also called workspaces) are the top-level boundary for all data in Atlas. Each organization has its own connections, semantic layer, conversations, audit logs, and settings. Members of one organization cannot see data from another.
+
+<Callout title="Prerequisites">
+- [Managed auth](/deployment/authentication#managed-auth) enabled
+</Callout>
+
+---
+
+## Creating an Organization
+
+### During Signup
+
+New users are prompted to create an organization as part of the signup flow at `/signup/workspace`. Enter a name and optional slug — the slug is auto-generated from the name but can be customized.
+
+### After Signup
+
+Navigate to `/create-org` to create an additional organization. You become the **owner** of any organization you create.
+
+<Callout type="info">
+In **self-hosted mode**, the first user who signs up becomes the platform admin and is prompted to create the initial organization. In **SaaS mode**, each signup creates a new workspace.
+</Callout>
+
+---
+
+## Switching Organizations
+
+If you belong to multiple organizations, use the **organization switcher** in the navigation bar to switch between them. Switching changes your active context — all queries, dashboards, admin pages, and audit logs reflect the selected organization.
+
+Your active organization is stored in your session. API requests use the `activeOrganizationId` from your session token.
+
+---
+
+## Roles
+
+Each member has a role within the organization:
+
+| Role | Description |
+|------|-------------|
+| **Owner** | Full control — billing, deletion, all admin capabilities |
+| **Admin** | Manage connections, users, settings, semantic layer, plugins |
+| **Member** | Ask questions, create notebooks, share conversations |
+
+See [Team Management](/guides/team-management) for inviting members and managing roles. Enterprise workspaces can define [Custom Roles](/guides/custom-roles).
+
+---
+
+## Data Isolation
+
+Organizations provide strict data isolation:
+
+- **Connections** — each org has its own datasource connections
+- **Semantic layer** — entity definitions are org-scoped
+- **Conversations** — chat history is private to the org
+- **Audit logs** — query logs are org-scoped
+- **Settings** — workspace-level configuration overrides
+- **Cache** — query result cache keys include `orgId`
+- **Dashboards** — dashboard cards and sharing are org-scoped
+
+No data leaks between organizations, even when hosted on the same infrastructure.
+
+---
+
+## Admin Management
+
+Organization admins can manage their workspace from the **Admin Console** (`/admin`):
+
+- **Users** — invite, remove, and change roles
+- **Connections** — add and configure datasources
+- **Settings** — workspace-specific overrides (model, rate limits, etc.)
+- **Semantic Layer** — edit entity definitions for your org
+- **Integrations** — configure Slack, Teams, and other connections
+
+Platform admins (SaaS mode only) can manage all organizations from `/admin/platform`.
+
+---
+
+## API
+
+Organization context is derived from your session. All authenticated API requests are automatically scoped to your active organization. To switch organizations programmatically, use the Better Auth organization API:
+
+```typescript
+// List organizations
+const orgs = await authClient.organization.list();
+
+// Switch active organization
+await authClient.organization.setActive({ organizationId: "org-id" });
+```

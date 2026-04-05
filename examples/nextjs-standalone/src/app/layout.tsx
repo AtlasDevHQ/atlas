@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { QueryProvider } from "@atlas/web/ui/components/query-provider";
+import { Providers } from "./providers";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -15,7 +15,7 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className="bg-white text-zinc-900 antialiased dark:bg-zinc-950 dark:text-zinc-100">
-        <QueryProvider>{children}</QueryProvider>
+        <Providers>{children}</Providers>
       </body>
     </html>
   );

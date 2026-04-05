@@ -89,6 +89,7 @@
         "@atlas/api": "workspace:*",
         "@atlas/web": "workspace:*",
         "@better-auth/api-key": "^1.5.6",
+        "@tanstack/react-query": "^5.96.2",
         "better-auth": "^1.5.1",
         "next": "^16.2.1",
         "react": "^19.2.4",

@@ -394,16 +394,72 @@ export const SUBCOMMAND_HELP: Record<string, SubcommandHelp> = {
     ],
   },
   migrate: {
-    description: "Generate or apply plugin schema migrations.",
-    usage: "migrate [options]",
-    flags: [
+    description:
+      "Semantic layer versioning — track changes, create snapshots, diff, and rollback.",
+    usage: "migrate <subcommand> [options]",
+    subcommands: [
       {
-        flag: "--apply",
+        name: "status",
         description:
-          "Execute migrations against internal database (default: dry-run)",
+          "Show current semantic layer state vs last snapshot",
+      },
+      {
+        name: "snapshot",
+        description:
+          "Capture current state as a versioned snapshot",
+      },
+      {
+        name: "diff",
+        description:
+          "Show unified diff between current state and a snapshot",
+      },
+      {
+        name: "log",
+        description: "Show history of snapshots",
+      },
+      {
+        name: "rollback <hash>",
+        description:
+          "Restore semantic layer to a previous snapshot",
       },
     ],
-    examples: ["atlas migrate", "atlas migrate --apply"],
+    flags: [
+      {
+        flag: "-m, --message <text>",
+        description: "Message for the snapshot (used with snapshot)",
+      },
+      {
+        flag: "--force",
+        description:
+          "Create snapshot even if nothing changed (used with snapshot)",
+      },
+      {
+        flag: "--from <hash>",
+        description:
+          "Source snapshot hash for diff comparison",
+      },
+      {
+        flag: "--to <hash>",
+        description:
+          "Target snapshot hash for diff comparison",
+      },
+      {
+        flag: "--source <name>",
+        description: "Use semantic/{name}/ subdirectory",
+      },
+      {
+        flag: "--limit <n>",
+        description: "Max entries to show in log (default: 20)",
+      },
+    ],
+    examples: [
+      "atlas migrate status",
+      'atlas migrate snapshot -m "Added order metrics"',
+      "atlas migrate diff",
+      "atlas migrate diff --from abc123 --to def456",
+      "atlas migrate log",
+      "atlas migrate rollback abc123",
+    ],
   },
   plugin: {
     description: "Manage Atlas plugins.",
@@ -573,7 +629,7 @@ export function printOverviewHelp(): void {
       "  doctor           Alias for validate\n" +
       "  eval             Run eval pipeline against demo schemas\n" +
       "  smoke            Run E2E smoke tests against a running Atlas deployment\n" +
-      "  migrate          Generate/apply plugin schema migrations\n" +
+      "  migrate          Semantic layer versioning (snapshot, diff, rollback)\n" +
       "  plugin           Manage plugins (list, create, add)\n" +
       "  benchmark        Run BIRD benchmark for text-to-SQL accuracy\n" +
       "  mcp              Start MCP server (stdio or SSE transport)\n" +

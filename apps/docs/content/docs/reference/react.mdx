@@ -26,14 +26,14 @@ The pre-built `AtlasChat` component additionally uses `lucide-react`, `react-syn
 The package has two entry points:
 
 ```typescript
-// Pre-built AtlasChat component + UI provider
-import { AtlasChat, AtlasUIProvider } from "@useatlas/react";
+// Pre-built AtlasChat component + provider
+import { AtlasChat, AtlasProvider } from "@useatlas/react";
 
 // Headless hooks only (smaller bundle, no UI components)
 import { AtlasProvider, useAtlasChat, useAtlasAuth } from "@useatlas/react/hooks";
 ```
 
-The main entry point (`@useatlas/react`) exports `AtlasUIProvider` for use with the pre-built `AtlasChat` component. The hooks entry point (`@useatlas/react/hooks`) exports `AtlasProvider`, a lightweight provider for headless hooks.
+Both entry points export the same `AtlasProvider`. The main entry point (`@useatlas/react`) also exports the pre-built `AtlasChat` component. The hooks entry point (`@useatlas/react/hooks`) exports individual hooks for building custom UIs with a smaller bundle.
 
 ---
 
@@ -42,19 +42,17 @@ The main entry point (`@useatlas/react`) exports `AtlasUIProvider` for use with 
 A pre-built, full-featured chat component. Drop it into your app for a ready-made Atlas experience with markdown rendering, code highlighting, charts, conversation history, and schema exploration.
 
 ```tsx
-import { AtlasChat, AtlasUIProvider } from "@useatlas/react";
+import { AtlasChat } from "@useatlas/react";
 
 function App() {
   return (
-    <AtlasUIProvider>
-      <AtlasChat
-        apiUrl="https://your-atlas-api.example.com"
-        apiKey="sk-..."
-        theme="system"
-        sidebar
-        schemaExplorer
-      />
-    </AtlasUIProvider>
+    <AtlasChat
+      apiUrl="https://your-atlas-api.example.com"
+      apiKey="sk-..."
+      theme="system"
+      sidebar
+      schemaExplorer
+    />
   );
 }
 ```
@@ -381,29 +379,6 @@ interface UseConversationsOptions {
 
 ---
 
-## useAtlasConfig
-
-Provides access to the `AtlasUIProvider` context value. This is the provider-level equivalent for the pre-built `AtlasChat` component tree (as opposed to `useAtlasContext` which reads from `AtlasProvider`). Throws if called outside `<AtlasUIProvider>`.
-
-```tsx
-import { useAtlasConfig } from "@useatlas/react";
-
-function CustomWidget() {
-  const { apiUrl, authClient, isCrossOrigin } = useAtlasConfig();
-  // ...
-}
-```
-
-### useAtlasConfig return value
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `apiUrl` | `string` | Atlas API server URL |
-| `authClient` | `AtlasAuthClient` | Auth client instance |
-| `isCrossOrigin` | `boolean` | Whether the API URL is cross-origin |
-
----
-
 ## Utilities
 
 ### setTheme
@@ -436,19 +411,6 @@ const script = buildThemeInitScript();
 
 // Read the stored theme preference directly:
 const stored = localStorage.getItem(THEME_STORAGE_KEY); // "light" | "dark" | "system" | null
-```
-
-### AtlasUIConfig
-
-The configuration object type accepted by `AtlasUIProvider`. Exported for type-safe wrapper components.
-
-```typescript
-import type { AtlasUIConfig } from "@useatlas/react";
-
-const config: AtlasUIConfig = {
-  apiUrl: "https://api.example.com",
-  authClient: myAuthClient,
-};
 ```
 
 ### parseChatError
@@ -1117,7 +1079,7 @@ function Chat() {
 
 | | Headless Hooks (`@useatlas/react/hooks`) | AtlasChat Component (`@useatlas/react`) |
 |--|--|--|
-| **Provider** | `AtlasProvider` from `@useatlas/react/hooks` | `AtlasUIProvider` from `@useatlas/react` |
+| **Provider** | `AtlasProvider` (same component, re-exported from both) | `AtlasChat` wraps `AtlasProvider` internally — no separate wrapper needed |
 | **Import** | `import { useAtlasChat } from "@useatlas/react/hooks"` | `import { AtlasChat } from "@useatlas/react"` |
 | **UI** | You build your own | Pre-built chat interface with markdown, code highlighting, charts |
 | **Bundle size** | Minimal (React + AI SDK) | Larger (includes Recharts, syntax highlighter, Radix UI) |

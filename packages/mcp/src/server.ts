@@ -1,8 +1,8 @@
 /**
  * MCP server factory for Atlas.
  *
- * Creates an MCP server with Atlas's core tools (explore, executeSQL)
- * and the semantic layer exposed as resources.
+ * Creates an MCP server with Atlas's core tools (explore, executeSQL),
+ * the semantic layer exposed as resources, and prompt templates.
  *
  * Usage:
  *   import { createAtlasMcpServer } from "@atlas/mcp/server";
@@ -29,6 +29,7 @@ interface CreateMcpServerOptions {
  * 1. Initializes config (atlas.config.ts or env vars) — same as Hono server.ts
  * 2. Registers the core tools (explore, executeSQL) as MCP tools
  * 3. Registers semantic layer YAML files as MCP resources
+ * 4. Registers prompt templates (built-in, semantic layer, prompt library)
  */
 export async function createAtlasMcpServer(
   opts?: CreateMcpServerOptions,

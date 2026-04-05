@@ -10,6 +10,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 let mockHasInternalDB = false;
 let mockInternalQueryRows: Record<string, unknown>[] = [];
 let mockInternalQueryError: Error | null = null;
+let mockSemanticRootError: Error | null = null;
 let mockScannedEntities: Array<{
   filePath: string;
   sourceName: string;
@@ -17,7 +18,10 @@ let mockScannedEntities: Array<{
 }> = [];
 
 mock.module("@atlas/api/lib/semantic/files", () => ({
-  getSemanticRoot: () => "/tmp/atlas-test-semantic",
+  getSemanticRoot: () => {
+    if (mockSemanticRootError) throw mockSemanticRootError;
+    return "/tmp/atlas-test-semantic";
+  },
 }));
 
 mock.module("@atlas/api/lib/semantic/scanner", () => ({
@@ -83,13 +87,14 @@ describe("MCP prompts — built-in templates", () => {
     mockHasInternalDB = false;
     mockInternalQueryRows = [];
     mockInternalQueryError = null;
+    mockSemanticRootError = null;
   });
 
   it("lists all 5 built-in prompt templates", async () => {
     const { client } = await createTestClient();
     const result = await client.listPrompts();
 
-    expect(result.prompts.length).toBeGreaterThanOrEqual(5);
+    expect(result.prompts.length).toBe(5);
 
     const names = result.prompts.map((p) => p.name);
     expect(names).toContain("revenue-trend");
@@ -196,6 +201,7 @@ describe("MCP prompts — semantic layer", () => {
     mockHasInternalDB = false;
     mockInternalQueryRows = [];
     mockInternalQueryError = null;
+    mockSemanticRootError = null;
     mockScannedEntities = [];
   });
 
@@ -357,6 +363,22 @@ describe("MCP prompts — semantic layer", () => {
     expect(orderPrompt).toBeTruthy();
     expect(orderPrompt!.description).toContain("[orders]");
   });
+
+  it("gracefully handles getSemanticRoot throwing", async () => {
+    mockSemanticRootError = new Error(
+      "ATLAS_SEMANTIC_ROOT is set but empty",
+    );
+
+    const { client } = await createTestClient();
+    const result = await client.listPrompts();
+
+    // Should still have built-in templates, no semantic prompts
+    expect(result.prompts.length).toBe(5);
+    const entityPrompts = result.prompts
+      .map((p) => p.name)
+      .filter((n) => n.startsWith("entity-"));
+    expect(entityPrompts.length).toBe(0);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -366,7 +388,10 @@ describe("MCP prompts — semantic layer", () => {
 describe("MCP prompts — prompt library", () => {
   beforeEach(() => {
     mockScannedEntities = [];
+    mockHasInternalDB = false;
+    mockInternalQueryRows = [];
     mockInternalQueryError = null;
+    mockSemanticRootError = null;
   });
 
   it("registers prompts from internal DB when available", async () => {
@@ -454,7 +479,7 @@ describe("MCP prompts — prompt library", () => {
     const result = await client.listPrompts();
 
     // Should still have built-in templates, just no library prompts
-    expect(result.prompts.length).toBeGreaterThanOrEqual(5);
+    expect(result.prompts.length).toBe(5);
     const libraryPrompts = result.prompts
       .map((p) => p.name)
       .filter((n) => n.startsWith("library-"));

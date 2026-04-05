@@ -129,12 +129,22 @@ function loadSemanticPrompts(): SemanticPrompt[] {
   let root: string;
   try {
     root = getSemanticRoot();
-  } catch {
-    // Semantic root not configured — skip
+  } catch (err) {
+    process.stderr.write(
+      `[atlas-mcp] Semantic root not available, skipping semantic prompts: ${err instanceof Error ? err.message : String(err)}\n`,
+    );
     return prompts;
   }
 
-  const { entities } = scanEntities(root);
+  let entities: ReturnType<typeof scanEntities>["entities"];
+  try {
+    ({ entities } = scanEntities(root));
+  } catch (err) {
+    process.stderr.write(
+      `[atlas-mcp] Failed to scan entities for prompts: ${err instanceof Error ? err.message : String(err)}\n`,
+    );
+    return prompts;
+  }
 
   for (const { raw } of entities) {
     const table = raw.table as string | undefined;

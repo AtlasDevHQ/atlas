@@ -47,23 +47,27 @@ const DEMO_LABELS: Record<DemoType, string> = {
  * Resolve the semantic layer source directory for a demo type.
  *
  * In Docker: demo → /app/semantic, cybersec → /app/data/cybersec-semantic, ecommerce → /app/data/ecommerce-semantic
- * In dev:    demo → {cwd}/semantic, cybersec → {cwd}/packages/cli/data/cybersec-semantic, etc.
+ * In dev:    demo → {cwd}/semantic, cybersec → {cwd}/packages/cli/data/seeds/cybersec/semantic, etc.
  */
 function getDemoSemanticDir(demoType: DemoType): string {
   if (demoType === "demo") return getSemanticRoot();
 
-  // Docker image has these at /app/data/{type}-semantic
+  // Docker image has these at /app/data/{type}-semantic (backward-compat symlinks)
   const dockerPath = path.resolve(process.cwd(), "data", `${demoType}-semantic`);
-  // Dev fallback: packages/cli/data/{type}-semantic
+  // New canonical path: packages/cli/data/seeds/{type}/semantic
+  const seedsPath = path.resolve(process.cwd(), "packages", "cli", "data", "seeds", demoType, "semantic");
+  // Legacy dev fallback: packages/cli/data/{type}-semantic (symlink)
   const devPath = path.resolve(process.cwd(), "packages", "cli", "data", `${demoType}-semantic`);
 
-  // Check Docker path first (production), then dev path
+  // Check Docker path first (production), then seeds path, then legacy dev path
   if (existsSync(path.join(dockerPath, "entities"))) return dockerPath;
+  if (existsSync(path.join(seedsPath, "entities"))) return seedsPath;
   if (existsSync(path.join(devPath, "entities"))) return devPath;
 
   throw new Error(
     `Semantic layer not found for demo type "${demoType}". ` +
-    `Checked: ${dockerPath}/entities, ${devPath}/entities`,
+    `Each semantic directory must contain an entities/ subdirectory. ` +
+    `Checked: ${dockerPath}/entities, ${seedsPath}/entities, ${devPath}/entities`,
   );
 }
 

@@ -25,8 +25,13 @@ test -f "$DEPLOY_DOC" \
 test -f "$TEMPLATES/docker/gitignore" \
   || { echo "ERROR: templates/docker/gitignore not found." >&2; exit 1; }
 
+for seed in simple cybersec ecommerce; do
+  test -d "$CLI_DATA/seeds/$seed/semantic" \
+    || { echo "ERROR: packages/cli/data/seeds/$seed/semantic not found." >&2; exit 1; }
+done
+
 # ── Step 1: Copy shared assets into ALL templates ─────────────────────
-# Every template gets: cli/bin, cli/data, and docs/deploy.md
+# Every template gets: cli/bin, cli/data (seeds + init SQL), and docs/deploy.md
 for tpl in docker nextjs-standalone; do
   echo ":: Syncing shared assets → $tpl"
   rm -rf "$TEMPLATES/$tpl/bin" \
@@ -34,7 +39,15 @@ for tpl in docker nextjs-standalone; do
          "$TEMPLATES/$tpl/docs"
 
   cp -r "$CLI_BIN"      "$TEMPLATES/$tpl/bin"
-  cp -r "$CLI_DATA"     "$TEMPLATES/$tpl/data"
+  # Copy seed data (structured layout + backward-compat symlinks)
+  mkdir -p "$TEMPLATES/$tpl/data/seeds"
+  cp -r "$CLI_DATA"/seeds/* "$TEMPLATES/$tpl/data/seeds/"
+  cp "$CLI_DATA/init-demo-db.sql" "$TEMPLATES/$tpl/data/"
+  # Backward-compat flat files for Docker mounts and legacy paths
+  for seed in simple cybersec ecommerce; do
+    cp "$CLI_DATA/seeds/$seed/seed.sql" "$TEMPLATES/$tpl/data/$seed.sql"
+  done
+  cp "$CLI_DATA/seeds/simple/seed.sql" "$TEMPLATES/$tpl/data/demo.sql"
 
   mkdir -p "$TEMPLATES/$tpl/docs"
   cp "$DEPLOY_DOC"      "$TEMPLATES/$tpl/docs/deploy.md"
@@ -145,10 +158,10 @@ cp "$NEXTJS_EXAMPLE/src/app/api/[...route]/route.ts" \
    "$TEMPLATES/nextjs-standalone/src/app/api/[...route]/route.ts"
 
 # ── Step 5: Copy demo semantic layer into ALL templates ──────────────
-# Ships the pre-built demo semantic layer so 1-click deploys (Vercel
-# deploy button, etc.) work out of the box with ATLAS_DEMO_DATA=true.
+# Ships the pre-built demo (simple) semantic layer so 1-click deploys
+# (Vercel deploy button, etc.) work out of the box with ATLAS_DEMO_DATA=true.
 # Users with their own database will overwrite these by running `atlas init`.
-DEMO_SEMANTIC="$MONOREPO/packages/cli/data/demo-semantic"
+DEMO_SEMANTIC="$MONOREPO/packages/cli/data/seeds/simple/semantic"
 for tpl in docker nextjs-standalone; do
   echo ":: Syncing demo semantic layer → $tpl"
   rm -rf "$TEMPLATES/$tpl/semantic"

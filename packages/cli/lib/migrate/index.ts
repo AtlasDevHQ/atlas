@@ -5,6 +5,7 @@
  */
 
 export {
+  type SnapshotTrigger,
   type SnapshotFile,
   type SnapshotEntry,
   type Snapshot,

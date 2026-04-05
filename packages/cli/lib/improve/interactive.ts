@@ -204,6 +204,7 @@ function printSessionSummary(session: SessionState): void {
 
 export interface InteractiveOptions {
   readonly entitiesDir: string;
+  readonly semanticRoot: string;
   readonly proposals: readonly AnalysisResult[];
 }
 
@@ -216,7 +217,7 @@ export interface InteractiveOptions {
 export async function runInteractiveSession(
   options: InteractiveOptions,
 ): Promise<SessionState> {
-  const { entitiesDir, proposals } = options;
+  const { entitiesDir, semanticRoot, proposals } = options;
   const session = createSession([...proposals]);
 
   if (proposals.length === 0) {
@@ -226,7 +227,6 @@ export async function runInteractiveSession(
 
   // Auto-snapshot before interactive session begins
   try {
-    const semanticRoot = path.resolve(entitiesDir, "..");
     const entry = createSnapshot(semanticRoot, {
       message: `Pre-improve interactive snapshot (${proposals.length} proposals)`,
       trigger: "interactive",

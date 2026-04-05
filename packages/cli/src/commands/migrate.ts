@@ -1,10 +1,10 @@
 /**
- * atlas migrate — Semantic layer versioning and migration tracking.
+ * atlas migrate — Semantic layer versioning via snapshots.
  *
  * Subcommands:
  *   status   — show current state vs last snapshot
  *   snapshot — capture current state as a versioned snapshot
- *   diff     — show unified diff between current state and a snapshot
+ *   diff     — show file-level diff between current state and a snapshot
  *   log      — show history of snapshots
  *   rollback — restore semantic layer to a previous snapshot
  */
@@ -175,6 +175,10 @@ function handleDiff(args: string[], semanticRoot: string): void {
 function handleLog(args: string[], semanticRoot: string): void {
   const limitArg = getFlag(args, "--limit") ?? getFlag(args, "-n");
   const limit = limitArg ? parseInt(limitArg, 10) : 20;
+  if (Number.isNaN(limit) || limit <= 0) {
+    console.error(pc.red(`Invalid --limit value: "${limitArg}". Must be a positive integer.`));
+    process.exit(1);
+  }
 
   const manifest = getHistory(semanticRoot);
 
@@ -208,10 +212,24 @@ function handleLog(args: string[], semanticRoot: string): void {
 
 // ── rollback ──────────────────────────────────────────────────────
 
-function handleRollback(args: string[], semanticRoot: string): void {
-  const hash = args[2];
+/** Known flags that take a value (used to skip flag values when finding positional args). */
+const FLAGS_WITH_VALUES = new Set(["--source", "--limit", "-n", "-m", "--message", "--from", "--to", "--snapshot"]);
 
-  if (!hash || hash.startsWith("-")) {
+function handleRollback(args: string[], semanticRoot: string): void {
+  // Find the first positional arg after "rollback" that isn't a flag or flag value
+  let hash: string | undefined;
+  for (let i = 2; i < args.length; i++) {
+    if (args[i].startsWith("-")) {
+      if (FLAGS_WITH_VALUES.has(args[i])) i++; // skip the value too
+      continue;
+    }
+    // Check if previous arg was a flag expecting a value
+    if (i > 0 && FLAGS_WITH_VALUES.has(args[i - 1])) continue;
+    hash = args[i];
+    break;
+  }
+
+  if (!hash) {
     console.error(pc.red("Usage: atlas migrate rollback <hash>"));
     console.error("  Provide the hash (or prefix) of the snapshot to restore.");
     console.error("  Run 'atlas migrate log' to see available snapshots.");

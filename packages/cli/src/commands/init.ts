@@ -683,7 +683,7 @@ Next steps:
       console.log(pc.dim(`  Snapshot ${entry.hash} created for version tracking. Run 'atlas migrate log' to view history.\n`));
     }
   } catch (err) {
-    console.debug(`Could not create initial snapshot: ${err instanceof Error ? err.message : String(err)}`);
+    console.warn(`Warning: Could not create initial snapshot: ${err instanceof Error ? err.message : String(err)}`);
   }
 }
 

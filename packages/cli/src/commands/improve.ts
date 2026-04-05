@@ -282,7 +282,7 @@ export async function handleImprove(args: string[]): Promise<void> {
   // 5. Interactive mode — present proposals one at a time
   if (isInteractive) {
     const { runInteractiveSession } = await import("../../lib/improve/interactive");
-    await runInteractiveSession({ entitiesDir, proposals: filtered });
+    await runInteractiveSession({ entitiesDir, semanticRoot, proposals: filtered });
     return;
   }
 

@@ -13,6 +13,8 @@ import * as yaml from "js-yaml";
 
 // ── Types ─────────────────────────────────────────────────────────
 
+export type SnapshotTrigger = "manual" | "improve" | "init" | "interactive" | "rollback";
+
 export interface SnapshotFile {
   /** Relative path from semantic root (e.g. "entities/orders.yml") */
   readonly path: string;
@@ -27,8 +29,8 @@ export interface SnapshotEntry {
   readonly timestamp: string;
   /** User-provided message (optional) */
   readonly message: string;
-  /** Trigger: "manual", "improve", "init", "interactive" */
-  readonly trigger: string;
+  /** What triggered this snapshot */
+  readonly trigger: SnapshotTrigger;
   /** Snapshot filename (e.g. "20260405T123456Z-abcd1234.json") */
   readonly filename: string;
 }
@@ -37,13 +39,13 @@ export interface Snapshot {
   readonly hash: string;
   readonly timestamp: string;
   readonly message: string;
-  readonly trigger: string;
+  readonly trigger: SnapshotTrigger;
   readonly files: readonly SnapshotFile[];
 }
 
 export interface Manifest {
   readonly version: 1;
-  readonly entries: SnapshotEntry[];
+  readonly entries: readonly SnapshotEntry[];
 }
 
 export interface DiffLine {
@@ -85,7 +87,19 @@ function readManifest(semanticRoot: string): Manifest {
     return { version: 1, entries: [] };
   }
   const raw = fs.readFileSync(mp, "utf-8");
-  return JSON.parse(raw) as Manifest;
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.entries)) {
+      throw new Error("Invalid manifest structure — expected { version, entries[] }");
+    }
+    return parsed as unknown as Manifest;
+  } catch (err) {
+    throw new Error(
+      `Corrupt manifest at ${mp}: ${err instanceof Error ? err.message : String(err)}. ` +
+      `Delete ${mp} to reset snapshot history.`,
+      { cause: err },
+    );
+  }
 }
 
 function writeManifest(semanticRoot: string, manifest: Manifest): void {
@@ -98,9 +112,22 @@ function writeManifest(semanticRoot: string, manifest: Manifest): void {
 }
 
 /**
+ * Validate that a relative path is safe (no traversal, stays within root).
+ * Returns the resolved absolute path, or throws on traversal attempt.
+ */
+function safePath(semanticRoot: string, relativePath: string): string {
+  const resolved = path.resolve(semanticRoot, relativePath);
+  const rootResolved = path.resolve(semanticRoot);
+  if (!resolved.startsWith(rootResolved + path.sep) && resolved !== rootResolved) {
+    throw new Error(`Path traversal detected in snapshot: ${relativePath}`);
+  }
+  return resolved;
+}
+
+/**
  * Collect all YAML files from the semantic layer directory.
  * Walks entities/, metrics/, and root-level YAML files (glossary.yml, catalog.yml).
- * Skips .history/ and .orgs/ directories.
+ * Skips .history/, .orgs/, and node_modules/ directories.
  */
 export function collectSemanticFiles(semanticRoot: string): SnapshotFile[] {
   const files: SnapshotFile[] = [];
@@ -127,7 +154,8 @@ export function collectSemanticFiles(semanticRoot: string): SnapshotFile[] {
 
 /**
  * Compute a SHA-256 hash of a snapshot's content.
- * The hash is deterministic: files are sorted by path, then concatenated.
+ * The hash is deterministic: files are sorted by path, then each path and
+ * content are fed into the hasher with null-byte delimiters.
  */
 function computeHash(files: readonly SnapshotFile[]): string {
   const sorted = [...files].sort((a, b) => a.path.localeCompare(b.path));
@@ -146,12 +174,13 @@ function computeHash(files: readonly SnapshotFile[]): string {
 /**
  * Create a new snapshot of the current semantic layer state.
  * Returns the created snapshot entry, or null if nothing changed since the last snapshot.
+ * Throws if the semantic layer directory contains no YAML files.
  */
 export function createSnapshot(
   semanticRoot: string,
   options: {
     readonly message?: string;
-    readonly trigger?: string;
+    readonly trigger?: SnapshotTrigger;
     readonly force?: boolean;
   } = {},
 ): SnapshotEntry | null {
@@ -174,12 +203,13 @@ export function createSnapshot(
   const now = new Date();
   const ts = now.toISOString().replace(/[-:]/g, "").replace(/\.\d{3}/, "");
   const filename = `${ts}-${hash}.json`;
+  const trigger = options.trigger ?? "manual";
 
   const snapshot: Snapshot = {
     hash,
     timestamp: now.toISOString(),
     message: options.message ?? "",
-    trigger: options.trigger ?? "manual",
+    trigger,
     files,
   };
 
@@ -194,18 +224,20 @@ export function createSnapshot(
     hash,
     timestamp: now.toISOString(),
     message: options.message ?? "",
-    trigger: options.trigger ?? "manual",
+    trigger,
     filename,
   };
 
-  manifest.entries.push(entry);
-  writeManifest(semanticRoot, manifest);
+  const updated: Manifest = { version: 1, entries: [...manifest.entries, entry] };
+  writeManifest(semanticRoot, updated);
 
   return entry;
 }
 
 /**
  * Load a snapshot by hash (prefix match).
+ * Returns null if no matching entry exists or the snapshot file is missing from disk.
+ * Throws if the snapshot file exists but is corrupt.
  */
 export function loadSnapshot(semanticRoot: string, hashPrefix: string): Snapshot | null {
   const manifest = readManifest(semanticRoot);
@@ -216,7 +248,18 @@ export function loadSnapshot(semanticRoot: string, hashPrefix: string): Snapshot
   if (!fs.existsSync(filePath)) return null;
 
   const raw = fs.readFileSync(filePath, "utf-8");
-  return JSON.parse(raw) as Snapshot;
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.files)) {
+      throw new Error("Invalid snapshot structure — expected { hash, files[] }");
+    }
+    return parsed as unknown as Snapshot;
+  } catch (err) {
+    throw new Error(
+      `Corrupt snapshot file ${entry.filename}: ${err instanceof Error ? err.message : String(err)}`,
+      { cause: err },
+    );
+  }
 }
 
 /**
@@ -236,7 +279,9 @@ export function getLatestEntry(semanticRoot: string): SnapshotEntry | null {
 }
 
 /**
- * Compute a unified diff between two sets of files.
+ * Compute a file-level diff between two sets of snapshot files, classifying each
+ * as added, removed, modified, or unchanged. Modified files include an LCS-based
+ * line-level diff.
  */
 export function diffFiles(
   before: readonly SnapshotFile[],
@@ -252,14 +297,12 @@ export function diffFiles(
     const aContent = afterMap.get(p);
 
     if (bContent === undefined && aContent !== undefined) {
-      // New file
       diffs.push({
         path: p,
         status: "added",
         lines: aContent.split("\n").map((l) => ({ type: "added" as const, content: l })),
       });
     } else if (bContent !== undefined && aContent === undefined) {
-      // Removed file
       diffs.push({
         path: p,
         status: "removed",
@@ -325,8 +368,9 @@ function computeLineDiff(before: string, after: string): DiffLine[] {
 }
 
 /**
- * Compute the diff between the current semantic layer and the last snapshot.
- * Returns null if no snapshot exists.
+ * Compute the diff between the current semantic layer and a snapshot.
+ * Returns null if no snapshots exist, if the target hash is not found,
+ * or if the snapshot file is missing from disk.
  */
 export function diffCurrentVsSnapshot(
   semanticRoot: string,
@@ -379,7 +423,9 @@ export function diffSnapshots(
 
 /**
  * Restore the semantic layer to a previous snapshot state.
- * Creates a pre-rollback snapshot first, then overwrites files.
+ * Creates a pre-rollback snapshot first, then removes all current YAML files
+ * and restores files from the target snapshot. The restore is not atomic —
+ * if it fails partway, the pre-rollback snapshot provides a recovery path.
  */
 export function rollbackToSnapshot(
   semanticRoot: string,
@@ -388,6 +434,11 @@ export function rollbackToSnapshot(
   const snapshot = loadSnapshot(semanticRoot, hashPrefix);
   if (!snapshot) {
     throw new Error(`Snapshot not found: ${hashPrefix}`);
+  }
+
+  // Validate all snapshot paths before any destructive operations
+  for (const f of snapshot.files) {
+    safePath(semanticRoot, f.path);
   }
 
   // Auto-snapshot current state before rolling back
@@ -409,13 +460,25 @@ export function rollbackToSnapshot(
   cleanEmptyDirs(semanticRoot, new Set([".history", ".orgs", "node_modules"]));
 
   // Restore files from snapshot
-  for (const f of snapshot.files) {
-    const fullPath = path.join(semanticRoot, f.path);
-    const dir = path.dirname(fullPath);
-    if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
+  try {
+    for (const f of snapshot.files) {
+      const fullPath = safePath(semanticRoot, f.path);
+      const dir = path.dirname(fullPath);
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      fs.writeFileSync(fullPath, f.content, "utf-8");
     }
-    fs.writeFileSync(fullPath, f.content, "utf-8");
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `Rollback failed during file restoration: ${msg}. ` +
+      `Your semantic layer may be in an inconsistent state. ` +
+      (preRollback
+        ? `A pre-rollback snapshot was saved as ${preRollback.hash}. Run 'atlas migrate rollback ${preRollback.hash}' to restore your previous state.`
+        : `Check ${path.join(semanticRoot, ".history/")} for recoverable snapshots.`),
+      { cause: err },
+    );
   }
 
   // Find the entry for the restored snapshot
@@ -458,8 +521,9 @@ function cleanEmptyDirs(dir: string, skipDirs: Set<string>): void {
 }
 
 /**
- * Parse a YAML snapshot file and return the structured content.
- * Used by the web semantic editor to read snapshot format.
+ * Parse entity YAML files from a snapshot and return structured content.
+ * Designed for use by the web semantic editor to read the snapshot format.
+ * Skips non-entity files and logs unparseable entities via console.debug.
  */
 export function parseSnapshotEntities(
   snapshot: Snapshot,
@@ -473,8 +537,11 @@ export function parseSnapshotEntities(
           const name = path.basename(f.path, path.extname(f.path));
           entities.set(name, parsed);
         }
-      } catch {
-        // intentionally ignored: malformed YAML in snapshot
+      } catch (err) {
+        // Malformed YAML in snapshot — skip but log for debugging
+        console.debug(
+          `Skipped unparseable entity in snapshot: ${f.path}: ${err instanceof Error ? err.message : String(err)}`,
+        );
       }
     }
   }

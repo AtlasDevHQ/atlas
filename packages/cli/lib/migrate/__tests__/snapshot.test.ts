@@ -19,6 +19,7 @@ import {
   diffSnapshots,
   rollbackToSnapshot,
   collectSemanticFiles,
+  parseSnapshotEntities,
 } from "../snapshot";
 import type { SnapshotFile } from "../snapshot";
 
@@ -448,5 +449,178 @@ describe("getHistory", () => {
     expect(manifest.entries[0].message).toBe("first");
     expect(manifest.entries[1].message).toBe("second");
     expect(manifest.entries[2].message).toBe("third");
+  });
+});
+
+// ── parseSnapshotEntities ─────────────────────────────────────────
+
+describe("parseSnapshotEntities", () => {
+  it("parses valid entity YAML from snapshot", () => {
+    setupBasicSemanticLayer();
+    const entry = createSnapshot(semanticRoot())!;
+    const snapshot = loadSnapshot(semanticRoot(), entry.hash)!;
+
+    const entities = parseSnapshotEntities(snapshot);
+    expect(entities.size).toBe(2); // orders + customers
+    expect(entities.has("orders")).toBe(true);
+    expect(entities.has("customers")).toBe(true);
+    expect(entities.get("orders")!.table).toBe("orders");
+  });
+
+  it("excludes non-entity files", () => {
+    setupBasicSemanticLayer();
+    const entry = createSnapshot(semanticRoot())!;
+    const snapshot = loadSnapshot(semanticRoot(), entry.hash)!;
+
+    const entities = parseSnapshotEntities(snapshot);
+    // glossary, catalog, and metrics should not be in the entity map
+    expect(entities.has("glossary")).toBe(false);
+    expect(entities.has("catalog")).toBe(false);
+    expect(entities.has("revenue")).toBe(false);
+  });
+
+  it("skips malformed YAML gracefully", () => {
+    setupBasicSemanticLayer();
+    const entry = createSnapshot(semanticRoot())!;
+    const snapshot = loadSnapshot(semanticRoot(), entry.hash)!;
+
+    // Inject a malformed file into the snapshot
+    const corruptSnapshot = {
+      ...snapshot,
+      files: [...snapshot.files, { path: "entities/broken.yml", content: "{{{{invalid yaml" }],
+    };
+
+    const entities = parseSnapshotEntities(corruptSnapshot);
+    // Should still parse the valid entities
+    expect(entities.size).toBe(2);
+    expect(entities.has("broken")).toBe(false);
+  });
+});
+
+// ── loadSnapshot edge cases ───────────────────────────────────────
+
+describe("loadSnapshot edge cases", () => {
+  it("returns null when snapshot file is missing from disk", () => {
+    setupBasicSemanticLayer();
+    const entry = createSnapshot(semanticRoot())!;
+
+    // Delete the snapshot file but leave the manifest intact
+    const snapshotPath = path.join(semanticRoot(), ".history", entry.filename);
+    fs.unlinkSync(snapshotPath);
+
+    const snapshot = loadSnapshot(semanticRoot(), entry.hash);
+    expect(snapshot).toBeNull();
+  });
+
+  it("throws on corrupt snapshot JSON", () => {
+    setupBasicSemanticLayer();
+    const entry = createSnapshot(semanticRoot())!;
+
+    // Corrupt the snapshot file
+    const snapshotPath = path.join(semanticRoot(), ".history", entry.filename);
+    fs.writeFileSync(snapshotPath, "{{not valid json", "utf-8");
+
+    expect(() => loadSnapshot(semanticRoot(), entry.hash)).toThrow("Corrupt snapshot file");
+  });
+});
+
+// ── readManifest edge cases ───────────────────────────────────────
+
+describe("readManifest edge cases", () => {
+  it("throws on corrupt manifest JSON", () => {
+    setupBasicSemanticLayer();
+    createSnapshot(semanticRoot());
+
+    // Corrupt the manifest
+    const mp = path.join(semanticRoot(), ".history", "manifest.json");
+    fs.writeFileSync(mp, "not json!", "utf-8");
+
+    expect(() => getHistory(semanticRoot())).toThrow("Corrupt manifest");
+  });
+
+  it("throws on manifest with invalid structure", () => {
+    setupBasicSemanticLayer();
+    createSnapshot(semanticRoot());
+
+    // Write valid JSON but wrong structure
+    const mp = path.join(semanticRoot(), ".history", "manifest.json");
+    fs.writeFileSync(mp, JSON.stringify({ version: 1, data: "wrong" }), "utf-8");
+
+    expect(() => getHistory(semanticRoot())).toThrow("Corrupt manifest");
+  });
+});
+
+// ── diffCurrentVsSnapshot with targetHash ─────────────────────────
+
+describe("diffCurrentVsSnapshot with targetHash", () => {
+  it("diffs current state against a specific snapshot by hash", () => {
+    setupBasicSemanticLayer();
+    const first = createSnapshot(semanticRoot(), { message: "v1" })!;
+
+    writeYaml("entities/products.yml", "table: products\n");
+    createSnapshot(semanticRoot(), { message: "v2" });
+
+    writeYaml("entities/invoices.yml", "table: invoices\n");
+
+    // Diff current (has products + invoices) against v1 (no products, no invoices)
+    const result = diffCurrentVsSnapshot(semanticRoot(), first.hash);
+    expect(result).not.toBeNull();
+    expect(result!.snapshotEntry.hash).toBe(first.hash);
+
+    const added = result!.diffs.filter((d) => d.status === "added");
+    expect(added.length).toBe(2); // products + invoices
+  });
+
+  it("returns null for unknown targetHash", () => {
+    setupBasicSemanticLayer();
+    createSnapshot(semanticRoot());
+
+    const result = diffCurrentVsSnapshot(semanticRoot(), "zzzzzzzz");
+    expect(result).toBeNull();
+  });
+});
+
+// ── rollbackToSnapshot path traversal protection ──────────────────
+
+describe("rollbackToSnapshot path safety", () => {
+  it("rejects snapshot with path traversal", () => {
+    setupBasicSemanticLayer();
+    const entry = createSnapshot(semanticRoot())!;
+
+    // Tamper with the snapshot file to include a path traversal
+    const snapshotPath = path.join(semanticRoot(), ".history", entry.filename);
+    const snapshot = JSON.parse(fs.readFileSync(snapshotPath, "utf-8"));
+    snapshot.files.push({ path: "../../etc/evil.yml", content: "malicious" });
+    fs.writeFileSync(snapshotPath, JSON.stringify(snapshot), "utf-8");
+
+    expect(() => rollbackToSnapshot(semanticRoot(), entry.hash)).toThrow("Path traversal detected");
+  });
+
+  it("cleans up empty subdirectories after rollback", () => {
+    setupBasicSemanticLayer();
+    const entry = createSnapshot(semanticRoot())!;
+
+    // Create a new subdirectory with files
+    writeYaml("queries/custom.yml", "name: custom\n");
+    expect(fs.existsSync(path.join(semanticRoot(), "queries"))).toBe(true);
+
+    rollbackToSnapshot(semanticRoot(), entry.hash);
+
+    // queries/ directory should be cleaned up
+    expect(fs.existsSync(path.join(semanticRoot(), "queries"))).toBe(false);
+  });
+});
+
+// ── collectSemanticFiles with .yaml extension ─────────────────────
+
+describe("collectSemanticFiles .yaml extension", () => {
+  it("collects .yaml files alongside .yml files", () => {
+    setupBasicSemanticLayer();
+    writeYaml("entities/products.yaml", "table: products\n");
+
+    const files = collectSemanticFiles(semanticRoot());
+    const yamlFile = files.find((f) => f.path === "entities/products.yaml");
+    expect(yamlFile).toBeDefined();
+    expect(yamlFile!.content).toContain("products");
   });
 });

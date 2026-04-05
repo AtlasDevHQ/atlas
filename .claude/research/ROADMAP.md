@@ -908,16 +908,24 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 
 ---
 
-## Semantic Expert Agent — Phase 1
+## Semantic Expert Agent
 
 **Autonomous analysis engine** that examines the semantic layer and database, identifies improvement opportunities, and proposes validated YAML amendments.
 
+### Phase 1: Autonomous Analysis Engine
 - [x] Analysis engine — 9 analysis categories (coverage, descriptions, types, measures, joins, glossary, sample values, query patterns, virtual dimensions) (#1266, PR #1297)
 - [x] 5 new tools — profileTable, checkDataDistribution, searchAuditLog, proposeAmendment, validateProposal
 - [x] `atlas improve` CLI command — batch mode with ranked proposals
 - [x] DB migration — learned_patterns extended with `type` and `amendment_payload` columns
 - [x] Admin UI — semantic_amendment filter + diff view on learned patterns page
 - [x] Docs — semantic expert guide page + CLI reference update
+
+### Phase 2: Interactive CLI Mode
+- [x] `atlas improve -i` interactive session — multi-turn conversation in terminal (#1267, PR #1301)
+- [x] Conversation state management (`packages/api/src/lib/semantic/expert/session.ts`)
+- [x] YAML amendment apply/reject/edit flow with colorized unified diffs
+- [x] Session summary at exit (accepted/rejected/skipped counts)
+- [x] Docs updated — interactive mode section in semantic-expert.mdx + CLI reference
 
 ---
 

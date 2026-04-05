@@ -856,6 +856,31 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 
 ---
 
+## 1.0.1 — Effect.ts Completion
+
+**Complete Effect.ts adoption across `packages/api/`.** Migrate remaining imperative patterns: setInterval timers → Effect Layers with finalizers, unbounded Promise.all → Effect.all with concurrency, plain Error subclasses → Data.TaggedError, try/catch chains → Effect.tryPromise.
+
+### Timer Leaks (P0 — resource leaks on Railway restarts)
+
+- [ ] Migrate OAuth state cleanup setInterval to Effect Layer with finalizer (#1273)
+- [ ] Migrate auth middleware rate-limit cleanup setInterval to Effect Layer (#1274)
+- [ ] Migrate settings refresh timer to Effect Layer (#1275)
+- [ ] Migrate email scheduler to Effect Layer (#1276)
+
+### Concurrency (P1 — unbounded DB calls under load)
+
+- [ ] Replace unbounded Promise.all with Effect.all/forEach + concurrency limits (#1277)
+
+### Error Types (P2 — code quality)
+
+- [ ] Convert plain Error subclasses to Data.TaggedError (#1278)
+
+### Sandbox (P2 — code quality)
+
+- [ ] Convert python-sandbox try/catch chains to Effect.tryPromise with retry (#1279)
+
+---
+
 ## Ideas / Backlog
 
 _Untracked ideas. Create issues when committing to work._

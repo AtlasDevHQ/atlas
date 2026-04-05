@@ -90,7 +90,7 @@ export function AddToDashboardDialog({
   }>("/api/v1/dashboards");
 
   const { mutate: createDashboard, saving: creatingDashboard } = useAdminMutation<Dashboard>({});
-  const { mutate: addCard, saving: addingCard } = useAdminMutation();
+  const { mutate: addCard, saving: addingCard } = useAdminMutation({});
 
   const saving = creatingDashboard || addingCard;
 

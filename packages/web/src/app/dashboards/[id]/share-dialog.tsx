@@ -63,7 +63,7 @@ export function DashboardShareDialog({ dashboardId }: DashboardShareDialogProps)
     expiresAt: string | null;
     shareMode: ShareMode;
   }>();
-  const { mutate: unshareMutate, saving: unsharing } = useAdminMutation();
+  const { mutate: unshareMutate, saving: unsharing } = useAdminMutation({});
 
   // Fetch share status only when dialog opens (not on mount)
   const fetchShareStatus = useCallback(async () => {

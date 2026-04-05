@@ -4,8 +4,8 @@
  * Runs periodically to send time-based fallback emails for users
  * who haven't hit milestones within the expected timeframes.
  *
- * Designed to be called from the existing scheduler tick or a
- * dedicated setInterval. Default interval: 1 hour.
+ * The periodic timer is managed by the SchedulerLayer fiber in
+ * lib/effect/layers.ts, not a module-level setInterval.
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
@@ -13,48 +13,19 @@ import { checkFallbackEmails, isOnboardingEmailEnabled } from "./engine";
 
 const log = createLogger("onboarding-email-scheduler");
 
-let _timer: ReturnType<typeof setInterval> | null = null;
+/** Default interval: 1 hour. */
+export const DEFAULT_EMAIL_SCHEDULER_INTERVAL_MS = 60 * 60 * 1000;
 
-const DEFAULT_INTERVAL_MS = 60 * 60 * 1000; // 1 hour
-
-/**
- * Start the onboarding email fallback scheduler.
- * Runs checkFallbackEmails on a fixed interval.
- */
-export function startOnboardingEmailScheduler(intervalMs = DEFAULT_INTERVAL_MS): void {
-  if (_timer) {
-    log.debug("Onboarding email scheduler already running");
-    return;
-  }
-
-  if (!isOnboardingEmailEnabled()) {
-    log.debug("Onboarding emails disabled — scheduler not started");
-    return;
-  }
-
-  log.info({ intervalMs }, "Starting onboarding email fallback scheduler");
-
-  // Run immediately on start
-  void runTick();
-
-  _timer = setInterval(() => {
-    void runTick();
-  }, intervalMs);
-  _timer.unref();
+/** Check whether the email scheduler should run. */
+export function isEmailSchedulerEnabled(): boolean {
+  return isOnboardingEmailEnabled();
 }
 
 /**
- * Stop the onboarding email fallback scheduler.
+ * Single tick of the onboarding email scheduler.
+ * Called by the SchedulerLayer fiber.
  */
-export function stopOnboardingEmailScheduler(): void {
-  if (_timer) {
-    clearInterval(_timer);
-    _timer = null;
-    log.info("Onboarding email fallback scheduler stopped");
-  }
-}
-
-async function runTick(): Promise<void> {
+export async function runTick(): Promise<void> {
   try {
     const result = await checkFallbackEmails();
     if (result.sent > 0) {

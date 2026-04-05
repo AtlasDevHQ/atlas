@@ -13,4 +13,4 @@ export type { EmailMessage, DeliveryResult } from "./delivery";
 export type { RenderedEmail } from "./templates";
 export type { SequenceStep } from "./sequence";
 export { onUserSignup, onDatabaseConnected, onFirstQueryExecuted, onTeamMemberInvited, onFeatureExplored } from "./hooks";
-export { startOnboardingEmailScheduler, stopOnboardingEmailScheduler } from "./scheduler";
+export { runTick as emailSchedulerTick, isEmailSchedulerEnabled, DEFAULT_EMAIL_SCHEDULER_INTERVAL_MS } from "./scheduler";

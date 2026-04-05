@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach, afterAll, mock } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
 import type { AuthResult } from "../types";
 import { resetAuthModeCache } from "../detect";
 import {
@@ -6,7 +6,6 @@ import {
   checkRateLimit,
   resetRateLimits,
   getClientIP,
-  _stopCleanup,
   _setValidatorOverrides,
 } from "../middleware";
 
@@ -263,11 +262,6 @@ describe("checkRateLimit()", () => {
     if (origRpm !== undefined) process.env.ATLAS_RATE_LIMIT_RPM = origRpm;
     else delete process.env.ATLAS_RATE_LIMIT_RPM;
     resetRateLimits();
-  });
-
-  // Stop the cleanup timer once after all rate limit tests
-  afterAll(() => {
-    _stopCleanup();
   });
 
   it("allows requests under the limit", () => {

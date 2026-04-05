@@ -36,14 +36,6 @@ const memoryFallback = new Map<string, MemoryState>();
 
 let _warnedFallback = false;
 
-// Periodic sweep for the in-memory fallback (every 10 minutes)
-setInterval(() => {
-  const now = Date.now();
-  for (const [nonce, state] of memoryFallback) {
-    if (now > state.expiresAt) memoryFallback.delete(nonce);
-  }
-}, 600_000).unref();
-
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------

@@ -16,6 +16,7 @@ import {
   type ConfigShape,
   type MigrationShape,
 } from "../layers";
+import { createInternalDBTestLayer } from "@atlas/api/lib/db/internal";
 
 // ── Test helpers ────────────────────────────────────────────────────
 
@@ -88,13 +89,14 @@ describe("Config Layer", () => {
 
 describe("MigrationLive", () => {
   test("reports migration result", async () => {
-    // MigrationLive calls migrateAuthTables() which requires internal DB.
-    // In test env without DB, it should catch the error and return false.
+    // MigrationLive depends on InternalDB — provide a test layer.
+    // Without a real DB, it should catch the error and return false.
+    const testInternalDB = createInternalDBTestLayer({ available: false });
     const result = await Effect.runPromise(
       Effect.gen(function* () {
         const migration = yield* Migration;
         return migration.migrated;
-      }).pipe(Effect.provide(MigrationLive)),
+      }).pipe(Effect.provide(MigrationLive.pipe(Layer.provide(testInternalDB)))),
     );
 
     // Without DATABASE_URL, migration either succeeds (no-op) or fails gracefully

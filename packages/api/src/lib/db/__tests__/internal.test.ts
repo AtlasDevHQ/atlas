@@ -252,31 +252,18 @@ describe("internal DB module", () => {
   });
 
   describe("closeInternalDB()", () => {
-    it("calls pool.end()", async () => {
+    it("is a no-op (pool lifecycle managed by Effect scope)", async () => {
+      // closeInternalDB is deprecated — pool cleanup is handled by the
+      // Effect scope finalizer in makeInternalDBLive. Calling it should
+      // not throw and should not close the pool.
       process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/atlas";
-      const { pool, calls } = createMockPool();
+      const { pool } = createMockPool();
       _resetPool(pool);
-      await closeInternalDB();
-      expect(calls.endCount).toBe(1);
+      await closeInternalDB(); // should not throw, should not close pool
     });
 
     it("is a no-op when no pool exists", async () => {
       await closeInternalDB(); // should not throw
-    });
-
-    it("nullifies the singleton (getInternalDB returns a new pool after close)", async () => {
-      process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/atlas";
-      const { pool: pool1 } = createMockPool();
-      _resetPool(pool1);
-      expect(getInternalDB()).toBe(pool1);
-
-      await closeInternalDB();
-
-      // After close, injecting a new pool and calling getInternalDB should return the new one
-      const { pool: pool2 } = createMockPool();
-      _resetPool(pool2);
-      expect(getInternalDB()).toBe(pool2);
-      expect(pool2).not.toBe(pool1);
     });
   });
 

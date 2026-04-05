@@ -31,6 +31,7 @@
 
 import { Context, Duration, Effect, Fiber, Layer, Schedule } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
+import { InternalDB, makeInternalDBLive } from "@atlas/api/lib/db/internal";
 
 const log = createLogger("effect:layers");
 
@@ -153,11 +154,18 @@ export class Migration extends Context.Tag("Migration")<
 
 /**
  * Run auth + internal DB migrations at boot.
+ * Depends on InternalDB — ensures pool is ready before migrations run.
  * Non-fatal: logs errors but does not fail the Layer.
  */
-export const MigrationLive: Layer.Layer<Migration> = Layer.effect(
+export const MigrationLive: Layer.Layer<Migration, never, InternalDB> = Layer.effect(
   Migration,
   Effect.gen(function* () {
+    const db = yield* InternalDB;
+    if (!db.available) {
+      log.info("No DATABASE_URL — skipping boot migrations");
+      return { migrated: false } satisfies MigrationShape;
+    }
+
     const migrated = yield* Effect.tryPromise({
       try: async () => {
         const { migrateAuthTables } = await import(
@@ -529,30 +537,35 @@ export function makeSchedulerLive(
 /**
  * Build the full application Layer DAG.
  *
- * All layers are independent peers (no Effect-level dependencies between
- * them). Config is provided as a pre-resolved value via `Layer.succeed`.
- * The remaining layers use dynamic imports to reach their modules and do
- * not consume Config from the Effect context.
+ * Layer dependency graph:
+ *   InternalDB          (no deps — creates pg.Pool via PgClient.layerFromPool)
+ *   MigrationLayer      (depends on InternalDB — pool must be ready first)
+ *   All other layers    (independent peers)
  *
- * On shutdown, Effect disposes scoped layers (Telemetry, Settings, Scheduler) via
- * their finalizers. Order among independent layers is unspecified.
+ * On shutdown, Effect disposes scoped layers via their finalizers.
+ * InternalDB scope finalizer closes the pg.Pool automatically.
  * Connection and plugin shutdown is handled imperatively in server.ts.
  */
 export function buildAppLayer(config: ResolvedConfig): Layer.Layer<
-  Telemetry | Config | Migration | SemanticSync | Settings | Scheduler
+  Telemetry | Config | InternalDB | Migration | SemanticSync | Settings | Scheduler
 > {
   const configLayer = Layer.succeed(Config, { config });
+  const internalDBLayer = makeInternalDBLive();
+
+  // MigrationLive depends on InternalDB — provide it
+  const migrationLayer = MigrationLive.pipe(Layer.provide(internalDBLayer));
 
   // Independent layers (no Effect-level deps)
-  const migrationLayer = MigrationLive;
   const semanticSyncLayer = SemanticSyncLive;
   const settingsLayer = SettingsLive;
   const schedulerLayer = makeSchedulerLive(config);
 
-  // Merge all independent layers
+  // Merge all layers. InternalDB is included both directly and as a
+  // dependency of migrationLayer — Effect memoizes same-reference Layers.
   return Layer.mergeAll(
     TelemetryLive,
     configLayer,
+    internalDBLayer,
     migrationLayer,
     semanticSyncLayer,
     settingsLayer,

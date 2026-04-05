@@ -5,15 +5,21 @@
  * Completely separate from the analytics datasource in connection.ts.
  * Configured via DATABASE_URL.
  *
- * Effect migration (P11b):
- * The pool singleton is replaced by an Effect-managed PgClient Layer.
- * Pool lifecycle is automatic via Effect scope — closeInternalDB() is
- * no longer needed (kept for backward compat but delegates to PgClient).
- * The existing internalQuery/internalExecute API is unchanged.
+ * Native @effect/sql-pg integration:
+ * The pool is created via PgClient.layerFromPool() which wraps a scope-managed
+ * pg.Pool with an @effect/sql SqlClient. Pool lifecycle is automatic via Effect
+ * scope — connections close when the Layer scope finalizes.
+ *
+ * The InternalDB service exposes both:
+ * - `sql`: @effect/sql SqlClient for tagged template queries (new code)
+ * - `query`/`execute`: backward-compat imperative API (existing callers)
  */
 
 import * as crypto from "crypto";
 import { Context, Effect, Layer, Schedule, Duration, Fiber } from "effect";
+import { SqlClient } from "@effect/sql";
+import { PgClient } from "@effect/sql-pg";
+import type { Pool as PgPool } from "pg";
 import { createLogger } from "@atlas/api/lib/logger";
 
 const log = createLogger("internal-db");
@@ -127,13 +133,15 @@ export interface InternalPool {
 // ── Effect Service: InternalDB (P11b) ───────────────────────────────
 
 /**
- * InternalDB Effect service — provides access to the internal Postgres pool.
+ * InternalDB Effect service — provides access to the internal Postgres pool
+ * and a native @effect/sql SqlClient for tagged template queries.
  *
  * Effect-managed lifecycle: pool is created during Layer construction and
- * closed automatically when the Layer scope ends. Replaces the manual
- * _pool singleton + closeInternalDB() pattern.
+ * closed automatically when the Layer scope ends via PgClient.layerFromPool().
  */
 export interface InternalDBShape {
+  /** @effect/sql client for tagged template queries. Null when DATABASE_URL is not set. */
+  readonly sql: SqlClient.SqlClient | null;
   /** Execute a parameterized query returning typed rows. */
   query<T extends Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]>;
   /**
@@ -144,7 +152,7 @@ export interface InternalDBShape {
   execute(sql: string, params?: unknown[]): void;
   /** Whether the internal DB is available. */
   readonly available: boolean;
-  /** The underlying pool (for advanced usage like migrations). Null when DATABASE_URL is not set. */
+  /** The underlying pg.Pool (for Better Auth, migrations). Null when DATABASE_URL is not set. */
   readonly pool: InternalPool | null;
 }
 
@@ -156,55 +164,123 @@ export class InternalDB extends Context.Tag("InternalDB")<
 /**
  * Create the Live Layer for InternalDB.
  *
- * Bridge layer: creates the pool via the existing getInternalDB() singleton
- * to preserve production-tested pg.Pool configuration (sslmode normalization,
- * max connections, idle timeout). Pool cleanup is managed by an Effect
- * finalizer that delegates to closeInternalDB().
+ * Uses PgClient.layerFromPool() to wrap a scope-managed pg.Pool with a native
+ * @effect/sql SqlClient. The pool is created with acquireRelease for automatic
+ * cleanup when the Layer scope finalizes — no manual closeInternalDB() needed.
  *
- * Future: replace getInternalDB() with PgClient.make() for native @effect/sql.
+ * The InternalDB service exposes both:
+ * - `sql`: SqlClient for tagged template queries (Effect programs)
+ * - `query`/`execute`: imperative wrappers for existing callers
+ * - `pool`: raw pg.Pool for Better Auth and migrations
  */
 export function makeInternalDBLive(): Layer.Layer<InternalDB> {
-  return Layer.scoped(
+  const databaseUrl = process.env.DATABASE_URL;
+  if (!databaseUrl) {
+    return Layer.succeed(InternalDB, {
+      sql: null,
+      query: async () => { throw new Error("DATABASE_URL is not set"); },
+      execute: () => { log.debug("internalExecute called but DATABASE_URL is not set — no-op"); },
+      available: false,
+      pool: null,
+    } satisfies InternalDBShape);
+  }
+
+  // Normalize sslmode: pg v8 treats 'require' as 'verify-full' but warns.
+  const connString = databaseUrl.replace(
+    /([?&])sslmode=require(?=&|$)/,
+    "$1sslmode=verify-full",
+  );
+
+  // Scoped pool: acquireRelease creates the pool and registers a finalizer
+  // that calls pool.end() when the scope closes. The pool reference is stored
+  // in the module-level _pool for backward-compat standalone functions.
+  const acquirePool = Effect.acquireRelease(
+    Effect.sync(() => {
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { Pool } = require("pg");
+      const pool: PgPool = new Pool({
+        connectionString: connString,
+        max: 5,
+        idleTimeoutMillis: 30000,
+      });
+      pool.on("error", (err: unknown) => {
+        log.error(
+          { err: err instanceof Error ? err : new Error(String(err)) },
+          "Internal DB pool idle client error",
+        );
+      });
+      // Store in module-level ref for backward-compat functions
+      _pool = pool as unknown as InternalPool;
+      return pool;
+    }),
+    (pool) =>
+      Effect.tryPromise({
+        try: () => pool.end(),
+        catch: (err) => (err instanceof Error ? err.message : String(err)),
+      }).pipe(
+        Effect.tap(() => Effect.sync(() => {
+          _pool = null;
+          log.info("Internal DB pool closed via Effect scope");
+        })),
+        Effect.catchAll((errMsg) => {
+          _pool = null;
+          log.warn({ err: errMsg }, "Error closing internal DB pool via Effect finalizer");
+          return Effect.void;
+        }),
+      ),
+  );
+
+  // PgClient.layerFromPool wraps the pool to provide PgClient + SqlClient
+  const pgClientLayer = PgClient.layerFromPool({
+    acquire: acquirePool,
+    applicationName: "atlas-internal",
+  });
+
+  // InternalDB service layer: depends on PgClient/SqlClient from pgClientLayer
+  const internalDbLayer = Layer.scoped(
     InternalDB,
     Effect.gen(function* () {
-      const databaseUrl = process.env.DATABASE_URL;
-      if (!databaseUrl) {
-        return {
-          query: async () => { throw new Error("DATABASE_URL is not set"); },
-          execute: () => { log.debug("internalExecute called but DATABASE_URL is not set — no-op"); },
-          available: false,
-          pool: null,
-        } satisfies InternalDBShape;
-      }
+      const sqlClient = yield* SqlClient.SqlClient;
 
-      // Create pool via the existing getInternalDB() for now.
-      // This preserves the pg.Pool configuration (sslmode normalization,
-      // max connections, idle timeout) that has been production-tested.
-      // Future: replace with PgClient.make({ url: Redacted.make(databaseUrl) })
-      const pool = getInternalDB();
+      // Capture module-level reference for standalone functions (internalQuery, etc.)
+      _sqlClient = sqlClient;
+      // _pool was already set by acquirePool when pgClientLayer constructed
+      const poolRef = _pool;
 
       yield* Effect.addFinalizer(() =>
-        Effect.tryPromise({
-          try: () => closeInternalDB(),
-          catch: (err) => (err instanceof Error ? err.message : String(err)),
-        }).pipe(
-          Effect.catchAll((errMsg) => {
-            log.warn({ err: errMsg }, "Error closing internal DB pool via Effect finalizer");
-            return Effect.void;
-          }),
-        ),
+        Effect.sync(() => {
+          _sqlClient = null;
+        }),
       );
 
       return {
-        query: async <T extends Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]> => {
-          const result = await pool.query(sql, params);
-          return result.rows as T[];
+        sql: sqlClient,
+        query: async <T extends Record<string, unknown>>(sqlStr: string, params?: unknown[]): Promise<T[]> => {
+          const rows = await Effect.runPromise(
+            sqlClient.unsafe<T>(sqlStr, params as ReadonlyArray<unknown>),
+          );
+          return rows as T[];
         },
-        execute: (sql: string, params?: unknown[]) => internalExecute(sql, params),
+        execute: (sqlStr: string, params?: unknown[]) => internalExecute(sqlStr, params),
         available: true,
-        pool,
+        pool: poolRef,
       } satisfies InternalDBShape;
     }),
+  );
+
+  return internalDbLayer.pipe(
+    Layer.provide(pgClientLayer),
+    // Catch SqlError from PgClient (e.g., connection failure) and degrade
+    // to an unavailable service rather than failing the entire Layer DAG.
+    Layer.catchAll((sqlError) =>
+      Layer.succeed(InternalDB, {
+        sql: null,
+        query: async () => { throw new Error(`Internal DB unavailable: ${sqlError.message}`); },
+        execute: () => { log.warn({ err: sqlError.message }, "internalExecute called but internal DB is unavailable"); },
+        available: false,
+        pool: null,
+      } satisfies InternalDBShape),
+    ),
   );
 }
 
@@ -221,6 +297,7 @@ export function createInternalDBTestLayer(
     on: () => {},
   };
   return Layer.succeed(InternalDB, {
+    sql: partial.sql ?? null,
     query: partial.query ?? (async () => []),
     execute: partial.execute ?? (() => {}),
     available: partial.available ?? true,
@@ -228,77 +305,95 @@ export function createInternalDBTestLayer(
   });
 }
 
-// ── Legacy singleton (backward compat) ──────────────────────────────
+// ── Module-level references (set by Layer, used by standalone functions) ─
 
 let _pool: InternalPool | null = null;
+let _sqlClient: SqlClient.SqlClient | null = null;
 
 /** Returns true if DATABASE_URL is configured. */
 export function hasInternalDB(): boolean {
   return !!process.env.DATABASE_URL;
 }
 
-/** Returns the singleton pg.Pool for the internal database. Throws if DATABASE_URL is not set. */
+/**
+ * Returns the internal DB pool.
+ *
+ * @deprecated Pool lifecycle is managed by InternalDB Effect Layer.
+ * Prefer yielding `InternalDB` from Effect context, or use the module-level
+ * `internalQuery`/`internalExecute` helpers. This function exists only for
+ * backward-compat callers (Better Auth, migrations) that need a raw pg.Pool.
+ * Falls back to lazy pool creation if the Layer hasn't booted yet.
+ */
 export function getInternalDB(): InternalPool {
-  if (!_pool) {
-    const databaseUrl = process.env.DATABASE_URL;
-    if (!databaseUrl) {
-      throw new Error(
-        "DATABASE_URL is not set. Atlas internal database requires a PostgreSQL connection string."
-      );
-    }
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { Pool } = require("pg");
-    // Normalize sslmode: pg v8 treats 'require' as 'verify-full' but warns.
-    const connString = databaseUrl.replace(
-      /([?&])sslmode=require(?=&|$)/,
-      "$1sslmode=verify-full",
+  if (_pool) return _pool;
+
+  // Fallback: create pool lazily for code that runs before Layer boot
+  // (e.g. early migration calls, test setup). Once the Layer boots, it
+  // sets _pool and subsequent calls use the Layer-managed pool.
+  const databaseUrl = process.env.DATABASE_URL;
+  if (!databaseUrl) {
+    throw new Error(
+      "DATABASE_URL is not set. Atlas internal database requires a PostgreSQL connection string."
     );
-    _pool = new Pool({
-      connectionString: connString,
-      max: 5,
-      idleTimeoutMillis: 30000,
-    }) as InternalPool;
-    _pool.on("error", (err: unknown) => {
-      log.error(
-        { err: err instanceof Error ? err : new Error(String(err)) },
-        "Internal DB pool idle client error",
-      );
-    });
   }
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const { Pool } = require("pg");
+  const connString = databaseUrl.replace(
+    /([?&])sslmode=require(?=&|$)/,
+    "$1sslmode=verify-full",
+  );
+  _pool = new Pool({
+    connectionString: connString,
+    max: 5,
+    idleTimeoutMillis: 30000,
+  }) as InternalPool;
+  _pool.on("error", (err: unknown) => {
+    log.error(
+      { err: err instanceof Error ? err : new Error(String(err)) },
+      "Internal DB pool idle client error",
+    );
+  });
   return _pool;
 }
 
-/** Gracefully close the internal DB pool. */
+/**
+ * @deprecated Pool lifecycle is managed by InternalDB Effect Layer scope.
+ * This is now a no-op — the scope finalizer handles pool cleanup.
+ * Kept for backward compat (server.ts shutdown sequence).
+ */
 export async function closeInternalDB(): Promise<void> {
-  if (_pool) {
-    const pool = _pool;
-    _pool = null;
-    try {
-      await pool.end();
-    } catch (err: unknown) {
-      log.warn(
-        { err: err instanceof Error ? err.message : String(err) },
-        "Error closing internal DB pool",
-      );
-    }
-  }
+  // No-op: pool lifecycle is managed by Effect scope.
+  // The scope finalizer in makeInternalDBLive calls pool.end().
+  log.debug("closeInternalDB() called — no-op, pool lifecycle managed by Effect scope");
 }
 
-/** Reset singleton for testing. Optionally inject a mock pool. */
-export function _resetPool(mockPool?: InternalPool | null): void {
+/** Reset singleton for testing. Optionally inject a mock pool and/or SqlClient. */
+export function _resetPool(mockPool?: InternalPool | null, mockSql?: SqlClient.SqlClient | null): void {
   _pool = mockPool ?? null;
+  _sqlClient = mockSql ?? null;
   _consecutiveFailures = 0;
   _circuitOpen = false;
   _droppedCount = 0;
 }
 
-/** Parameterized query that returns typed rows. */
+/**
+ * Parameterized query that returns typed rows.
+ * Uses the @effect/sql SqlClient when available (Layer has booted),
+ * falls back to raw pg.Pool for pre-Layer callers.
+ */
 export async function internalQuery<T extends Record<string, unknown>>(
-  sql: string,
+  sqlStr: string,
   params?: unknown[],
 ): Promise<T[]> {
+  if (_sqlClient) {
+    const rows = await Effect.runPromise(
+      _sqlClient.unsafe<T>(sqlStr, params as ReadonlyArray<unknown>),
+    );
+    return rows as T[];
+  }
+  // Fallback: raw pool (pre-Layer boot or tests without SqlClient)
   const pool = getInternalDB();
-  const result = await pool.query(sql, params);
+  const result = await pool.query(sqlStr, params);
   return result.rows as T[];
 }
 
@@ -370,40 +465,53 @@ function _startRecovery(): void {
   _recoveryFiber = Effect.runFork(recovery);
 }
 
-/** Fire-and-forget query — async errors are logged, never thrown.
+/**
+ * Fire-and-forget query — async errors are logged, never thrown.
  * After 5 consecutive failures, a circuit breaker trips and drops
  * all calls until recovery succeeds. Recovery uses exponential backoff
  * (30s → 60s → 120s → 240s → 300s) via Effect.retry. Throws
  * synchronously if DATABASE_URL is not set (callers should check
- * hasInternalDB() first). */
-export function internalExecute(sql: string, params?: unknown[]): void {
+ * hasInternalDB() first).
+ *
+ * Uses @effect/sql SqlClient when available, falls back to raw pg.Pool.
+ */
+export function internalExecute(sqlStr: string, params?: unknown[]): void {
   if (_circuitOpen) {
     _droppedCount++;
     // Re-trigger recovery if previous attempt exhausted retries
     if (!_recoveryFiber) _startRecovery();
     return;
   }
-  const pool = getInternalDB();
-  void pool.query(sql, params)
-    .then(() => { _consecutiveFailures = 0; })
-    .catch((err: unknown) => {
-      _consecutiveFailures++;
-      if (_consecutiveFailures >= MAX_CONSECUTIVE_FAILURES && !_circuitOpen) {
-        _circuitOpen = true;
-        log.error("Internal DB circuit breaker open — fire-and-forget writes disabled until recovery");
-        _startRecovery();
-      }
-      if (!_circuitOpen) {
-        log.error(
-          {
-            err: err instanceof Error ? err.message : String(err),
-            sql: sql.slice(0, 200),
-            paramCount: params?.length ?? 0,
-          },
-          "Internal DB fire-and-forget write failed — row lost",
-        );
-      }
-    });
+
+  const onSuccess = () => { _consecutiveFailures = 0; };
+  const onError = (err: unknown) => {
+    _consecutiveFailures++;
+    if (_consecutiveFailures >= MAX_CONSECUTIVE_FAILURES && !_circuitOpen) {
+      _circuitOpen = true;
+      log.error("Internal DB circuit breaker open — fire-and-forget writes disabled until recovery");
+      _startRecovery();
+    }
+    if (!_circuitOpen) {
+      log.error(
+        {
+          err: err instanceof Error ? err.message : String(err),
+          sql: sqlStr.slice(0, 200),
+          paramCount: params?.length ?? 0,
+        },
+        "Internal DB fire-and-forget write failed — row lost",
+      );
+    }
+  };
+
+  if (_sqlClient) {
+    void Effect.runPromise(
+      _sqlClient.unsafe(sqlStr, params as ReadonlyArray<unknown>),
+    ).then(onSuccess).catch(onError);
+  } else {
+    // Fallback: raw pool
+    const pool = getInternalDB();
+    void pool.query(sqlStr, params).then(onSuccess).catch(onError);
+  }
 }
 
 /** Reset circuit breaker state. For testing only. */
@@ -492,13 +600,10 @@ export async function loadSavedConnections(): Promise<number> {
   const { connections } = await import("@atlas/api/lib/db/connection");
 
   try {
-    const rows = await internalQuery<{
-      id: string;
-      url: string;
-      type: string;
-      description: string | null;
-      schema_name: string | null;
-    }>("SELECT id, url, type, description, schema_name FROM connections");
+    type ConnRow = { id: string; url: string; type: string; description: string | null; schema_name: string | null };
+    const rows: readonly ConnRow[] = _sqlClient
+      ? await Effect.runPromise(_sqlClient<ConnRow>`SELECT id, url, type, description, schema_name FROM connections`)
+      : await internalQuery<ConnRow>("SELECT id, url, type, description, schema_name FROM connections");
 
     let registered = 0;
     for (const row of rows) {
@@ -542,7 +647,6 @@ export async function findPatternBySQL(
   orgId: string | null | undefined,
   patternSql: string,
 ): Promise<{ id: string; confidence: number; repetitionCount: number } | null> {
-  const pool = getInternalDB();
   const params: unknown[] = [patternSql];
   let orgClause: string;
   if (orgId) {
@@ -552,17 +656,17 @@ export async function findPatternBySQL(
     orgClause = `org_id IS NULL`;
   }
 
-  const result = await pool.query(
+  const rows = await internalQuery<{ id: string; confidence: number; repetition_count: number }>(
     `SELECT id, confidence, repetition_count FROM learned_patterns WHERE pattern_sql = $1 AND ${orgClause} LIMIT 1`,
     params,
   );
 
-  if (result.rows.length === 0) return null;
-  const row = result.rows[0];
+  if (rows.length === 0) return null;
+  const row = rows[0];
   return {
-    id: row.id as string,
-    confidence: row.confidence as number,
-    repetitionCount: row.repetition_count as number,
+    id: row.id,
+    confidence: row.confidence,
+    repetitionCount: row.repetition_count,
   };
 }
 
@@ -851,6 +955,12 @@ export interface WorkspaceRow {
  */
 export async function getWorkspaceStatus(orgId: string): Promise<WorkspaceStatus | null> {
   if (!hasInternalDB()) return null;
+  if (_sqlClient) {
+    const rows = await Effect.runPromise(
+      _sqlClient<{ workspace_status: WorkspaceStatus }>`SELECT workspace_status FROM organization WHERE id = ${orgId}`,
+    );
+    return rows[0]?.workspace_status ?? null;
+  }
   const rows = await internalQuery<{ workspace_status: WorkspaceStatus }>(
     `SELECT workspace_status FROM organization WHERE id = $1`,
     [orgId],
@@ -863,6 +973,13 @@ export async function getWorkspaceStatus(orgId: string): Promise<WorkspaceStatus
  */
 export async function getWorkspaceDetails(orgId: string): Promise<WorkspaceRow | null> {
   if (!hasInternalDB()) return null;
+  if (_sqlClient) {
+    const rows = await Effect.runPromise(
+      _sqlClient<WorkspaceRow>`SELECT id, name, slug, workspace_status, plan_tier, byot, stripe_customer_id, trial_ends_at, suspended_at, deleted_at, region, region_assigned_at, "createdAt"
+       FROM organization WHERE id = ${orgId}`,
+    );
+    return rows[0] ?? null;
+  }
   const rows = await internalQuery<WorkspaceRow>(
     `SELECT id, name, slug, workspace_status, plan_tier, byot, stripe_customer_id, trial_ends_at, suspended_at, deleted_at, region, region_assigned_at, "createdAt"
      FROM organization WHERE id = $1`,
@@ -879,19 +996,18 @@ export async function updateWorkspaceStatus(
   orgId: string,
   status: WorkspaceStatus,
 ): Promise<boolean> {
-  const pool = getInternalDB();
   const timestampCol = status === "suspended" ? "suspended_at" : status === "deleted" ? "deleted_at" : null;
 
-  let sql: string;
+  let sqlStr: string;
   if (timestampCol) {
-    sql = `UPDATE organization SET workspace_status = $1, ${timestampCol} = now() WHERE id = $2 RETURNING id`;
+    sqlStr = `UPDATE organization SET workspace_status = $1, ${timestampCol} = now() WHERE id = $2 RETURNING id`;
   } else {
     // Activating: clear both timestamps
-    sql = `UPDATE organization SET workspace_status = $1, suspended_at = NULL, deleted_at = NULL WHERE id = $2 RETURNING id`;
+    sqlStr = `UPDATE organization SET workspace_status = $1, suspended_at = NULL, deleted_at = NULL WHERE id = $2 RETURNING id`;
   }
 
-  const result = await pool.query(sql, [status, orgId]);
-  return result.rows.length > 0;
+  const rows = await internalQuery<{ id: string }>(sqlStr, [status, orgId]);
+  return rows.length > 0;
 }
 
 /**
@@ -902,12 +1018,17 @@ export async function updateWorkspacePlanTier(
   orgId: string,
   planTier: PlanTier,
 ): Promise<boolean> {
-  const pool = getInternalDB();
-  const result = await pool.query(
+  if (_sqlClient) {
+    const rows = await Effect.runPromise(
+      _sqlClient<{ id: string }>`UPDATE organization SET plan_tier = ${planTier} WHERE id = ${orgId} RETURNING id`,
+    );
+    return rows.length > 0;
+  }
+  const rows = await internalQuery<{ id: string }>(
     `UPDATE organization SET plan_tier = $1 WHERE id = $2 RETURNING id`,
     [planTier, orgId],
   );
-  return result.rows.length > 0;
+  return rows.length > 0;
 }
 
 /**
@@ -916,6 +1037,12 @@ export async function updateWorkspacePlanTier(
  */
 export async function getWorkspaceRegion(orgId: string): Promise<string | null> {
   if (!hasInternalDB()) return null;
+  if (_sqlClient) {
+    const rows = await Effect.runPromise(
+      _sqlClient<{ region: string | null }>`SELECT region FROM organization WHERE id = ${orgId}`,
+    );
+    return rows[0]?.region ?? null;
+  }
   const rows = await internalQuery<{ region: string | null }>(
     `SELECT region FROM organization WHERE id = $1`,
     [orgId],
@@ -933,24 +1060,32 @@ export async function setWorkspaceRegion(
   orgId: string,
   region: string,
 ): Promise<{ assigned: boolean; existing?: string }> {
-  const pool = getInternalDB();
-  // Only assign if region is currently NULL (immutable after first assignment)
-  const result = await pool.query(
+  if (_sqlClient) {
+    // Only assign if region is currently NULL (immutable after first assignment)
+    const updated = await Effect.runPromise(
+      _sqlClient<{ id: string }>`UPDATE organization SET region = ${region}, region_assigned_at = now()
+       WHERE id = ${orgId} AND region IS NULL RETURNING id`,
+    );
+    if (updated.length > 0) return { assigned: true };
+    const existing = await Effect.runPromise(
+      _sqlClient<{ region: string | null }>`SELECT region FROM organization WHERE id = ${orgId}`,
+    );
+    if (existing.length === 0) return { assigned: false };
+    return { assigned: false, existing: existing[0].region ?? undefined };
+  }
+
+  // Fallback: raw pool
+  const rows = await internalQuery<{ id: string }>(
     `UPDATE organization SET region = $1, region_assigned_at = now()
      WHERE id = $2 AND region IS NULL RETURNING id`,
     [region, orgId],
   );
-  if (result.rows.length > 0) {
-    return { assigned: true };
-  }
-  // Check if workspace exists with a different region already set
+  if (rows.length > 0) return { assigned: true };
   const existing = await internalQuery<{ region: string | null }>(
     `SELECT region FROM organization WHERE id = $1`,
     [orgId],
   );
-  if (existing.length === 0) {
-    return { assigned: false };
-  }
+  if (existing.length === 0) return { assigned: false };
   return { assigned: false, existing: existing[0].region ?? undefined };
 }
 
@@ -961,8 +1096,8 @@ export async function setWorkspaceRegion(
  * - Hard-deletes org-scoped settings
  * - Disables scheduled tasks
  *
- * All operations run inside a single transaction — either all succeed or
- * none take effect, so retries are always safe.
+ * All operations run inside a single transaction via SqlClient.withTransaction —
+ * either all succeed or none take effect, so retries are always safe.
  */
 export async function cascadeWorkspaceDelete(orgId: string): Promise<{
   conversations: number;
@@ -972,41 +1107,47 @@ export async function cascadeWorkspaceDelete(orgId: string): Promise<{
   scheduledTasks: number;
   settings: number;
 }> {
+  if (_sqlClient) {
+    return Effect.runPromise(
+      _sqlClient.withTransaction(
+        Effect.gen(function* () {
+          const sql = _sqlClient!;
+          const [convRows, seRows, lpRows, qsRows, stRows, settingsRows] = yield* Effect.all([
+            sql<{ id: string }>`UPDATE conversations SET deleted_at = now(), updated_at = now() WHERE org_id = ${orgId} AND deleted_at IS NULL RETURNING id`,
+            sql<{ id: string }>`DELETE FROM semantic_entities WHERE org_id = ${orgId} RETURNING id`,
+            sql<{ id: string }>`DELETE FROM learned_patterns WHERE org_id = ${orgId} RETURNING id`,
+            sql<{ id: string }>`DELETE FROM query_suggestions WHERE org_id = ${orgId} RETURNING id`,
+            sql<{ id: string }>`UPDATE scheduled_tasks SET enabled = false, updated_at = now() WHERE org_id = ${orgId} RETURNING id`,
+            sql<{ key: string }>`DELETE FROM settings WHERE org_id = ${orgId} RETURNING key`,
+          ], { concurrency: "unbounded" });
+
+          return {
+            conversations: convRows.length,
+            semanticEntities: seRows.length,
+            learnedPatterns: lpRows.length,
+            suggestions: qsRows.length,
+            scheduledTasks: stRows.length,
+            settings: settingsRows.length,
+          };
+        }),
+      ),
+    );
+  }
+
+  // Fallback: raw pool with manual transaction
   const pool = getInternalDB();
   const client = await pool.connect();
-
   try {
     await client.query("BEGIN");
-
     const [convResult, seResult, lpResult, qsResult, stResult, settingsResult] = await Promise.all([
-      client.query(
-        `UPDATE conversations SET deleted_at = now(), updated_at = now() WHERE org_id = $1 AND deleted_at IS NULL RETURNING id`,
-        [orgId],
-      ),
-      client.query(
-        `DELETE FROM semantic_entities WHERE org_id = $1 RETURNING id`,
-        [orgId],
-      ),
-      client.query(
-        `DELETE FROM learned_patterns WHERE org_id = $1 RETURNING id`,
-        [orgId],
-      ),
-      client.query(
-        `DELETE FROM query_suggestions WHERE org_id = $1 RETURNING id`,
-        [orgId],
-      ),
-      client.query(
-        `UPDATE scheduled_tasks SET enabled = false, updated_at = now() WHERE org_id = $1 RETURNING id`,
-        [orgId],
-      ),
-      client.query(
-        `DELETE FROM settings WHERE org_id = $1 RETURNING key`,
-        [orgId],
-      ),
+      client.query(`UPDATE conversations SET deleted_at = now(), updated_at = now() WHERE org_id = $1 AND deleted_at IS NULL RETURNING id`, [orgId]),
+      client.query(`DELETE FROM semantic_entities WHERE org_id = $1 RETURNING id`, [orgId]),
+      client.query(`DELETE FROM learned_patterns WHERE org_id = $1 RETURNING id`, [orgId]),
+      client.query(`DELETE FROM query_suggestions WHERE org_id = $1 RETURNING id`, [orgId]),
+      client.query(`UPDATE scheduled_tasks SET enabled = false, updated_at = now() WHERE org_id = $1 RETURNING id`, [orgId]),
+      client.query(`DELETE FROM settings WHERE org_id = $1 RETURNING key`, [orgId]),
     ]);
-
     await client.query("COMMIT");
-
     return {
       conversations: convResult.rows.length,
       semanticEntities: seResult.rows.length,
@@ -1085,12 +1226,17 @@ export async function updateWorkspaceByot(
   orgId: string,
   byot: boolean,
 ): Promise<boolean> {
-  const pool = getInternalDB();
-  const result = await pool.query(
+  if (_sqlClient) {
+    const rows = await Effect.runPromise(
+      _sqlClient<{ id: string }>`UPDATE organization SET byot = ${byot} WHERE id = ${orgId} RETURNING id`,
+    );
+    return rows.length > 0;
+  }
+  const rows = await internalQuery<{ id: string }>(
     `UPDATE organization SET byot = $1 WHERE id = $2 RETURNING id`,
     [byot, orgId],
   );
-  return result.rows.length > 0;
+  return rows.length > 0;
 }
 
 /**
@@ -1100,12 +1246,17 @@ export async function setWorkspaceStripeCustomerId(
   orgId: string,
   stripeCustomerId: string,
 ): Promise<boolean> {
-  const pool = getInternalDB();
-  const result = await pool.query(
+  if (_sqlClient) {
+    const rows = await Effect.runPromise(
+      _sqlClient<{ id: string }>`UPDATE organization SET stripe_customer_id = ${stripeCustomerId} WHERE id = ${orgId} RETURNING id`,
+    );
+    return rows.length > 0;
+  }
+  const rows = await internalQuery<{ id: string }>(
     `UPDATE organization SET stripe_customer_id = $1 WHERE id = $2 RETURNING id`,
     [stripeCustomerId, orgId],
   );
-  return result.rows.length > 0;
+  return rows.length > 0;
 }
 
 /**
@@ -1115,10 +1266,16 @@ export async function setWorkspaceTrialEndsAt(
   orgId: string,
   trialEndsAt: Date,
 ): Promise<boolean> {
-  const pool = getInternalDB();
-  const result = await pool.query(
+  if (_sqlClient) {
+    const iso = trialEndsAt.toISOString();
+    const rows = await Effect.runPromise(
+      _sqlClient<{ id: string }>`UPDATE organization SET trial_ends_at = ${iso} WHERE id = ${orgId} RETURNING id`,
+    );
+    return rows.length > 0;
+  }
+  const rows = await internalQuery<{ id: string }>(
     `UPDATE organization SET trial_ends_at = $1 WHERE id = $2 RETURNING id`,
     [trialEndsAt.toISOString(), orgId],
   );
-  return result.rows.length > 0;
+  return rows.length > 0;
 }

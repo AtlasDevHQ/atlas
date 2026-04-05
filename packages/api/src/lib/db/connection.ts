@@ -223,6 +223,9 @@ function createPostgresDB(config: ConnectionConfig): DBConnection {
     max: config.maxConnections ?? 10,
     idleTimeoutMillis: config.idleTimeoutMs ?? 30000,
   });
+  pool.on("error", (err: Error) => {
+    log.error({ err }, "Analytics pool idle client error");
+  });
 
   const needsSchema = !!(pgSchema && pgSchema !== "public");
 

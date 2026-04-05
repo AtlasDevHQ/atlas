@@ -7,6 +7,8 @@
 
 import { internalQuery, hasInternalDB } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
+import { Effect, Duration } from "effect";
+import { normalizeError } from "@atlas/api/lib/effect/errors";
 
 const log = createLogger("semantic-entities");
 
@@ -202,22 +204,35 @@ export async function listVersions(
 ): Promise<{ versions: Omit<SemanticEntityVersionRow, "yaml_content">[]; total: number }> {
   if (!hasInternalDB()) return { versions: [], total: 0 };
 
-  const [versions, countRows] = await Promise.all([
-    internalQuery<Omit<SemanticEntityVersionRow, "yaml_content">>(
-      `SELECT id, entity_id, org_id, entity_type, name, change_summary, author_id, author_label, version_number, created_at
-       FROM semantic_entity_versions
-       WHERE org_id = $1 AND entity_type = $2 AND name = $3
-       ORDER BY version_number DESC
-       LIMIT $4 OFFSET $5`,
-      [orgId, entityType, name, limit, offset],
+  const [versions, countRows] = await Effect.runPromise(
+    Effect.all([
+      Effect.tryPromise({
+        try: () => internalQuery<Omit<SemanticEntityVersionRow, "yaml_content">>(
+          `SELECT id, entity_id, org_id, entity_type, name, change_summary, author_id, author_label, version_number, created_at
+           FROM semantic_entity_versions
+           WHERE org_id = $1 AND entity_type = $2 AND name = $3
+           ORDER BY version_number DESC
+           LIMIT $4 OFFSET $5`,
+          [orgId, entityType, name, limit, offset],
+        ),
+        catch: normalizeError,
+      }),
+      Effect.tryPromise({
+        try: () => internalQuery<{ count: string }>(
+          `SELECT COUNT(*)::TEXT AS count
+           FROM semantic_entity_versions
+           WHERE org_id = $1 AND entity_type = $2 AND name = $3`,
+          [orgId, entityType, name],
+        ),
+        catch: normalizeError,
+      }),
+    ], { concurrency: "unbounded" }).pipe(
+      Effect.timeoutFail({
+        duration: Duration.seconds(30),
+        onTimeout: () => new Error(`Version listing queries for ${entityType}/${name} timed out after 30s`),
+      }),
     ),
-    internalQuery<{ count: string }>(
-      `SELECT COUNT(*)::TEXT AS count
-       FROM semantic_entity_versions
-       WHERE org_id = $1 AND entity_type = $2 AND name = $3`,
-      [orgId, entityType, name],
-    ),
-  ]);
+  );
 
   return {
     versions,

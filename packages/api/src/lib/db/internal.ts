@@ -21,6 +21,7 @@ import { SqlClient } from "@effect/sql";
 import { PgClient } from "@effect/sql-pg";
 import type { Pool as PgPool } from "pg";
 import { createLogger } from "@atlas/api/lib/logger";
+import { normalizeError } from "@atlas/api/lib/effect/errors";
 
 const log = createLogger("internal-db");
 
@@ -1178,28 +1179,23 @@ export async function getWorkspaceHealthSummary(orgId: string): Promise<{
   const workspace = await getWorkspaceDetails(orgId);
   if (!workspace) return null;
 
-  const [memberRows, convRows, queryRows, connRows, taskRows] = await Promise.all([
-    internalQuery<{ count: number }>(
-      `SELECT COUNT(*)::int as count FROM member WHERE "organizationId" = $1`,
-      [orgId],
+  const countQuery = (sql: string, params: unknown[]) =>
+    Effect.tryPromise({ try: () => internalQuery<{ count: number }>(sql, params), catch: normalizeError });
+
+  const [memberRows, convRows, queryRows, connRows, taskRows] = await Effect.runPromise(
+    Effect.all([
+      countQuery(`SELECT COUNT(*)::int as count FROM member WHERE "organizationId" = $1`, [orgId]),
+      countQuery(`SELECT COUNT(*)::int as count FROM conversations WHERE org_id = $1`, [orgId]),
+      countQuery(`SELECT COUNT(*)::int as count FROM audit_log WHERE org_id = $1 AND timestamp > now() - interval '24 hours'`, [orgId]),
+      countQuery(`SELECT COUNT(*)::int as count FROM connections WHERE org_id = $1`, [orgId]),
+      countQuery(`SELECT COUNT(*)::int as count FROM scheduled_tasks WHERE org_id = $1 AND enabled = true`, [orgId]),
+    ], { concurrency: "unbounded" }).pipe(
+      Effect.timeoutFail({
+        duration: Duration.seconds(30),
+        onTimeout: () => new Error(`Workspace health summary queries for org ${orgId} timed out after 30s`),
+      }),
     ),
-    internalQuery<{ count: number }>(
-      `SELECT COUNT(*)::int as count FROM conversations WHERE org_id = $1`,
-      [orgId],
-    ),
-    internalQuery<{ count: number }>(
-      `SELECT COUNT(*)::int as count FROM audit_log WHERE org_id = $1 AND timestamp > now() - interval '24 hours'`,
-      [orgId],
-    ),
-    internalQuery<{ count: number }>(
-      `SELECT COUNT(*)::int as count FROM connections WHERE org_id = $1`,
-      [orgId],
-    ),
-    internalQuery<{ count: number }>(
-      `SELECT COUNT(*)::int as count FROM scheduled_tasks WHERE org_id = $1 AND enabled = true`,
-      [orgId],
-    ),
-  ]);
+  );
 
   return {
     workspace,

@@ -23,7 +23,8 @@ import {
   type UIMessage,
 } from "ai";
 import type { LanguageModel } from "ai";
-import { Effect } from "effect";
+import { Effect, Duration } from "effect";
+import { normalizeError } from "./effect/errors";
 import { getModel, getProviderType, getModelFromWorkspaceConfig, getWorkspaceProviderType, type ProviderType } from "./providers";
 import { defaultRegistry, type ToolRegistry } from "./tools/registry";
 import { getContextFragments, getDialectHints } from "./plugins/tools";
@@ -535,37 +536,61 @@ export async function runAgent({
   const resolvedModelId = typeof model === "string" ? model : model.modelId;
 
   // Pre-load org-scoped semantic data and learned patterns before the agent loop.
-  // These are independent async operations — run in parallel to avoid waterfalls.
-  let orgSemanticIndex: string | undefined;
-  let learnedPatternsSection: string | undefined;
-
-  const orgSemanticPromise = (orgId && hasInternalDB())
-    ? Promise.all([loadOrgWhitelist(orgId), getOrgSemanticIndex(orgId)])
-        .then(([, idx]) => { orgSemanticIndex = idx || undefined; })
-        .catch((err: unknown) => {
-          log.error({ orgId, err: err instanceof Error ? err.message : String(err) }, "Failed to load org semantic data — agent will use file-based fallback");
-          if (!warnings) warnings = [];
-          warnings.push("Your organization's semantic layer could not be loaded. Using default configuration. Contact your admin if this persists.");
-        })
-    : Promise.resolve();
-
-  const learnedPatternsPromise = hasInternalDB()
-    ? (async () => {
-        const lastUserMsg = [...messages].reverse().find((m) => m.role === "user");
-        const question = lastUserMsg?.parts
-          ?.filter((p): p is { type: "text"; text: string } => p.type === "text")
-          .map((p) => p.text)
-          .join(" ") ?? "";
-        if (question) {
-          const section = await buildLearnedPatternsSection(orgId ?? null, question);
-          if (section) learnedPatternsSection = section;
-        }
-      })().catch((err: unknown) => {
-        log.warn({ orgId, err: err instanceof Error ? err.message : String(err) }, "Failed to load learned patterns — continuing without");
-      })
-    : Promise.resolve();
-
-  await Promise.all([orgSemanticPromise, learnedPatternsPromise]);
+  // Effect.all with concurrency: 2 and per-branch timeouts (30s each).
+  const [orgSemanticIndex, learnedPatternsSection] = await Effect.runPromise(
+    Effect.all([
+      // Org semantic data: whitelist + index
+      (orgId && hasInternalDB())
+        ? Effect.all([
+            Effect.tryPromise({
+              try: () => loadOrgWhitelist(orgId),
+              catch: normalizeError,
+            }),
+            Effect.tryPromise({
+              try: () => getOrgSemanticIndex(orgId),
+              catch: normalizeError,
+            }),
+          ], { concurrency: "unbounded" }).pipe(
+            Effect.map(([, idx]) => idx || undefined),
+            Effect.timeoutFail({
+              duration: Duration.seconds(30),
+              onTimeout: () => new Error("Org semantic data load timed out after 30s"),
+            }),
+            Effect.catchAll((err) => {
+              log.error({ orgId, err: err.message }, "Failed to load org semantic data — agent will use file-based fallback");
+              if (!warnings) warnings = [];
+              warnings.push("Your organization's semantic layer could not be loaded. Using default configuration. Contact your admin if this persists.");
+              return Effect.succeed(undefined);
+            }),
+          )
+        : Effect.succeed(undefined),
+      // Learned patterns
+      hasInternalDB()
+        ? Effect.tryPromise({
+            try: async () => {
+              const lastUserMsg = [...messages].reverse().find((m) => m.role === "user");
+              const question = lastUserMsg?.parts
+                ?.filter((p): p is { type: "text"; text: string } => p.type === "text")
+                .map((p) => p.text)
+                .join(" ") ?? "";
+              if (!question) return undefined;
+              const section = await buildLearnedPatternsSection(orgId ?? null, question);
+              return section || undefined;
+            },
+            catch: normalizeError,
+          }).pipe(
+            Effect.timeoutFail({
+              duration: Duration.seconds(30),
+              onTimeout: () => new Error("Learned patterns load timed out after 30s"),
+            }),
+            Effect.catchAll((err) => {
+              log.warn({ orgId, err: err.message }, "Failed to load learned patterns — continuing without");
+              return Effect.succeed(undefined);
+            }),
+          )
+        : Effect.succeed(undefined),
+    ], { concurrency: "unbounded" }),
+  );
 
   const span = tracer.startSpan("atlas.agent", {
     attributes: {

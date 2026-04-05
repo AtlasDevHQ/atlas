@@ -18,6 +18,13 @@
 
 import { Data } from "effect";
 
+// ── Utilities ──────────────────────────────────────────────────────
+
+/** Normalize unknown caught values to Error. Used in Effect.tryPromise catch clauses. */
+export function normalizeError(err: unknown): Error {
+  return err instanceof Error ? err : new Error(String(err));
+}
+
 // ── SQL Validation ──────────────────────────────────────────────────
 
 /** Empty or whitespace-only SQL input. */

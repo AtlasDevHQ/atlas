@@ -4,7 +4,8 @@
  * Provides native @effect/sql integration for analytics connections managed
  * by ConnectionRegistry. PostgreSQL connections get a native SqlClient via
  * PgClient.layerFromPool(); MySQL and plugin connections use an imperative
- * bridge (mysql2 has no layerFromPool equivalent).
+ * bridge (mysql2 has no layerFromPool equivalent; plugin connections use
+ * arbitrary pool implementations with no standard @effect/sql adapter).
  *
  * @example
  * ```ts
@@ -16,7 +17,7 @@
  *   if (client.sql) {
  *     const rows = yield* client.sql.unsafe("SELECT count(*) FROM users");
  *   }
- *   // Backward-compat query with search_path + timeout enforcement:
+ *   // Backward-compat query with timeout enforcement:
  *   const result = yield* client.query("SELECT count(*) FROM users");
  *   return result.rows;
  * });
@@ -27,6 +28,7 @@ import { Context, Effect, Layer, Scope } from "effect";
 import { SqlClient } from "@effect/sql";
 import { PgClient } from "@effect/sql-pg";
 import type { Pool as PgPool } from "pg";
+import type { DBType, DBConnection } from "@atlas/api/lib/db/connection";
 import { ConnectionRegistry } from "./services";
 import { createLogger } from "@atlas/api/lib/logger";
 
@@ -38,28 +40,31 @@ const log = createLogger("effect:sql");
  * Atlas SQL client service — provides native @effect/sql access and
  * backward-compatible query execution.
  *
- * - `sql`: Native @effect/sql SqlClient for PostgreSQL connections.
- *   Null for MySQL and plugin connections (no layerFromPool available).
+ * - `sql`: Native @effect/sql SqlClient for PostgreSQL connections with an
+ *   accessible pool. Null for MySQL connections, plugin connections, or when
+ *   native client creation fails (graceful degradation).
  * - `query()`: Backward-compat method that delegates to DBConnection.query()
- *   with search_path and statement_timeout enforcement.
+ *   which handles per-connection search_path (PostgreSQL with ATLAS_SCHEMA)
+ *   and per-query statement_timeout / MAX_EXECUTION_TIME.
  */
 export interface AtlasSqlClientShape {
   /** Native @effect/sql SqlClient. Available for PostgreSQL; null for MySQL/plugin connections. */
   readonly sql: SqlClient.SqlClient | null;
   /**
-   * Execute a SQL query with search_path and timeout enforcement.
-   * Returns { columns, rows }. Uses the underlying DBConnection.query()
-   * which handles per-connection search_path and per-query statement_timeout.
+   * Execute a SQL query via the underlying DBConnection.query().
+   * For PostgreSQL, enforces per-connection search_path (when ATLAS_SCHEMA is set)
+   * and per-query statement_timeout. For MySQL, enforces MAX_EXECUTION_TIME.
+   * Returns { columns, rows }.
    */
-  query(
+  readonly query: (
     sql: string,
     timeoutMs?: number,
-  ): Effect.Effect<
+  ) => Effect.Effect<
     { columns: string[]; rows: Record<string, unknown>[] },
     Error
   >;
   /** The database type of the current connection. */
-  readonly dbType: string;
+  readonly dbType: DBType;
   /** The connection ID being used. */
   readonly connectionId: string;
 }
@@ -78,16 +83,36 @@ export class AtlasSqlClient extends Context.Tag("AtlasSqlClient")<
  * Effect scope. The pool lifecycle is NOT managed here — ConnectionRegistry
  * owns the pool. The acquireRelease release is a no-op.
  *
- * Returns null if the pool is not a pg.Pool (MySQL, plugin connections).
+ * Callers are responsible for only passing pg.Pool instances. The pool
+ * parameter is typed as `unknown` because DBConnection._pool is untyped.
  */
 function buildNativePgSqlClient(
   pool: unknown,
 ): Effect.Effect<SqlClient.SqlClient, Error, Scope.Scope> {
   return Effect.gen(function* () {
+    // Runtime guard: verify this looks like a pg.Pool before casting
+    if (
+      !pool ||
+      typeof pool !== "object" ||
+      typeof (pool as Record<string, unknown>).connect !== "function" ||
+      typeof (pool as Record<string, unknown>).end !== "function"
+    ) {
+      return yield* Effect.fail(
+        new Error(
+          "buildNativePgSqlClient: pool does not implement pg.Pool interface " +
+          "(missing connect/end methods). Native SqlClient requires a real pg.Pool.",
+        ),
+      );
+    }
+
     const pgClientLayer = PgClient.layerFromPool({
       acquire: Effect.acquireRelease(
         Effect.succeed(pool as PgPool),
-        () => Effect.void, // No-op: pool lifecycle managed by ConnectionRegistry
+        // No-op release: pool lifecycle managed by ConnectionRegistry.
+        // ConnectionRegistry Layer must outlive AtlasSqlClient Layer so
+        // PgClient internal finalizers can still access the pool during
+        // AtlasSqlClient scope teardown.
+        () => Effect.void,
       ),
       applicationName: "atlas-analytics",
     });
@@ -97,11 +122,59 @@ function buildNativePgSqlClient(
         (err) =>
           new Error(
             `Failed to create native SqlClient: ${err instanceof Error ? err.message : String(err)}`,
+            { cause: err },
           ),
       ),
     );
 
     return Context.get(ctx, SqlClient.SqlClient);
+  });
+}
+
+// ── Shared service builder ──────────────────────────────────────────
+
+/**
+ * Build an AtlasSqlClientShape from a DBConnection + metadata.
+ * Shared between makeAtlasSqlClientLive and makeOrgSqlClientLive.
+ */
+function buildSqlClientService(
+  conn: DBConnection,
+  dbType: DBType,
+  id: string,
+  logContext?: Record<string, string>,
+): Effect.Effect<AtlasSqlClientShape, never, Scope.Scope> {
+  return Effect.gen(function* () {
+    // Build native SqlClient for PostgreSQL connections with a pool
+    const nativeSql: SqlClient.SqlClient | null =
+      dbType === "postgres" && conn._pool
+        ? yield* buildNativePgSqlClient(conn._pool).pipe(
+            Effect.catchAll((err) => {
+              log.warn(
+                {
+                  connectionId: id,
+                  ...logContext,
+                  err: err instanceof Error ? err.message : String(err),
+                },
+                "Failed to create native SqlClient — falling back to bridge",
+              );
+              return Effect.succeed(null as SqlClient.SqlClient | null);
+            }),
+          )
+        : null;
+
+    return {
+      sql: nativeSql,
+      query: (sql, timeoutMs) =>
+        Effect.tryPromise({
+          try: () => conn.query(sql, timeoutMs),
+          catch: (err) =>
+            new Error(
+              `SQL query failed: ${err instanceof Error ? err.message : String(err)}`,
+            ),
+        }),
+      dbType,
+      connectionId: id,
+    } satisfies AtlasSqlClientShape;
   });
 }
 
@@ -136,39 +209,7 @@ export function makeAtlasSqlClientLive(
 
       const conn = registry.get(id);
       const dbType = registry.getDBType(id);
-
-      // Build native SqlClient for PostgreSQL connections
-      const nativeSql: SqlClient.SqlClient | null =
-        dbType === "postgres" && conn._pool
-          ? yield* buildNativePgSqlClient(conn._pool).pipe(
-              Effect.catchAll((err) => {
-                log.warn(
-                  {
-                    connectionId: id,
-                    err: err instanceof Error ? err.message : String(err),
-                  },
-                  "Failed to create native SqlClient — falling back to bridge",
-                );
-                return Effect.succeed(null as SqlClient.SqlClient | null);
-              }),
-            )
-          : null;
-
-      const service: AtlasSqlClientShape = {
-        sql: nativeSql,
-        query: (sql, timeoutMs) =>
-          Effect.tryPromise({
-            try: () => conn.query(sql, timeoutMs),
-            catch: (err) =>
-              new Error(
-                `SQL query failed: ${err instanceof Error ? err.message : String(err)}`,
-              ),
-          }),
-        dbType,
-        connectionId: id,
-      };
-
-      return service;
+      return yield* buildSqlClientService(conn, dbType, id);
     }),
   );
 }
@@ -192,40 +233,7 @@ export function makeOrgSqlClientLive(
       // Use the base connection ID for dbType lookup — org pools inherit
       // the database type from their parent connection, not from the org ID.
       const dbType = registry.getDBType(id);
-
-      // Build native SqlClient for PostgreSQL connections
-      const nativeSql: SqlClient.SqlClient | null =
-        dbType === "postgres" && conn._pool
-          ? yield* buildNativePgSqlClient(conn._pool).pipe(
-              Effect.catchAll((err) => {
-                log.warn(
-                  {
-                    connectionId: id,
-                    orgId,
-                    err: err instanceof Error ? err.message : String(err),
-                  },
-                  "Failed to create native SqlClient for org pool — falling back to bridge",
-                );
-                return Effect.succeed(null as SqlClient.SqlClient | null);
-              }),
-            )
-          : null;
-
-      const service: AtlasSqlClientShape = {
-        sql: nativeSql,
-        query: (sql, timeoutMs) =>
-          Effect.tryPromise({
-            try: () => conn.query(sql, timeoutMs),
-            catch: (err) =>
-              new Error(
-                `SQL query failed: ${err instanceof Error ? err.message : String(err)}`,
-              ),
-          }),
-        dbType,
-        connectionId: id,
-      };
-
-      return service;
+      return yield* buildSqlClientService(conn, dbType, id, { orgId });
     }),
   );
 }
@@ -255,20 +263,23 @@ export function makeOrgSqlClientLive(
 export function createSqlClientTestLayer(options?: {
   queryResult?: { columns: string[]; rows: Record<string, unknown>[] };
   queryError?: Error;
-  dbType?: string;
+  dbType?: DBType;
   connectionId?: string;
   /** Provide a mock SqlClient for testing native @effect/sql access. Defaults to null. */
   sql?: SqlClient.SqlClient | null;
 }): Layer.Layer<AtlasSqlClient> {
-  return Layer.succeed(AtlasSqlClient, {
-    sql: options?.sql ?? null,
-    query: (_sql, _timeoutMs) =>
-      options?.queryError
-        ? Effect.fail(options.queryError)
-        : Effect.succeed(
-            options?.queryResult ?? { columns: [], rows: [] },
-          ),
-    dbType: options?.dbType ?? "postgres",
-    connectionId: options?.connectionId ?? "default",
-  });
+  return Layer.succeed(
+    AtlasSqlClient,
+    {
+      sql: options?.sql ?? null,
+      query: (_sql, _timeoutMs) =>
+        options?.queryError
+          ? Effect.fail(options.queryError)
+          : Effect.succeed(
+              options?.queryResult ?? { columns: [], rows: [] },
+            ),
+      dbType: options?.dbType ?? "postgres",
+      connectionId: options?.connectionId ?? "default",
+    } satisfies AtlasSqlClientShape,
+  );
 }

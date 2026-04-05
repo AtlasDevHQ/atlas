@@ -174,8 +174,7 @@ describe("AtlasSqlClient", () => {
     const mockConn = {
       query: async () => ({ columns: ["id"], rows: [{ id: 1 }] }),
       close: async () => {},
-      _pool: {}, // Has pool but is MySQL
-      _dbType: "mysql" as const,
+      _pool: {}, // Has pool but is MySQL — dbType from registry, not connection
     };
 
     const connLayer = createTestLayer({

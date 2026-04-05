@@ -8,13 +8,7 @@ import {
   getDemoMaxSteps,
   getDemoRpmLimit,
   isDemoEnabled,
-  _stopDemoCleanup,
 } from "@atlas/api/lib/demo";
-
-// Stop cleanup timer to prevent test runner from hanging
-afterAll(() => {
-  _stopDemoCleanup();
-});
 
 describe("isDemoEnabled", () => {
   const original = process.env.ATLAS_DEMO_ENABLED;

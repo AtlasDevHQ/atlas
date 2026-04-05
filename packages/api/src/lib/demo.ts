@@ -212,27 +212,20 @@ export function resetDemoRateLimits(): void {
   demoWindows.clear();
 }
 
-// Periodic cleanup — evict keys with no recent timestamps
-const demoCleanupInterval = setInterval(() => {
-  try {
-    const cutoff = Date.now() - WINDOW_MS;
-    for (const [key, timestamps] of demoWindows) {
-      if (timestamps.length === 0 || timestamps[timestamps.length - 1] <= cutoff) {
-        demoWindows.delete(key);
-      }
-    }
-  } catch (err) {
-    log.error(
-      { err: err instanceof Error ? err : new Error(String(err)) },
-      "Demo rate limit cleanup failed",
-    );
-  }
-}, WINDOW_MS);
-demoCleanupInterval.unref();
+/** Interval for demo rate-limit cleanup. Exported for SchedulerLayer. */
+export const DEMO_CLEANUP_INTERVAL_MS = WINDOW_MS;
 
-/** Stop the demo cleanup timer. For tests. */
-export function _stopDemoCleanup(): void {
-  clearInterval(demoCleanupInterval);
+/**
+ * Evict stale demo rate-limit entries. Called periodically by the
+ * SchedulerLayer fiber in lib/effect/layers.ts.
+ */
+export function demoCleanupTick(): void {
+  const cutoff = Date.now() - WINDOW_MS;
+  for (const [key, timestamps] of demoWindows) {
+    if (timestamps.length === 0 || timestamps[timestamps.length - 1] <= cutoff) {
+      demoWindows.delete(key);
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------

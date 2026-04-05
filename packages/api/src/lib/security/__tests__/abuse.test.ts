@@ -40,11 +40,7 @@ const {
   reinstateWorkspace,
   getAbuseConfig,
   _resetAbuseState,
-  _stopCleanup,
 } = await import("../abuse");
-
-// Stop cleanup timer to prevent test hangs
-_stopCleanup();
 
 describe("Abuse Prevention Engine", () => {
   beforeEach(() => {

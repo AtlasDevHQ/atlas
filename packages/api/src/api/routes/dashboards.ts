@@ -128,13 +128,19 @@ const PUBLIC_RATE_WINDOW_MS = 60_000;
 const PUBLIC_RATE_MAX = 30;
 const publicRateMap = new Map<string, { count: number; resetAt: number }>();
 
-const _cleanupInterval = setInterval(() => {
+/** Interval for dashboard rate-limit cleanup. Exported for SchedulerLayer. */
+export const DASHBOARD_RATE_CLEANUP_INTERVAL_MS = 60_000;
+
+/**
+ * Evict expired dashboard rate-limit entries. Called periodically by the
+ * SchedulerLayer fiber in lib/effect/layers.ts.
+ */
+export function dashboardRateLimitCleanupTick(): void {
   const now = Date.now();
   for (const [key, entry] of publicRateMap) {
     if (now > entry.resetAt) publicRateMap.delete(key);
   }
-}, 60_000);
-if (typeof _cleanupInterval === "object" && "unref" in _cleanupInterval) _cleanupInterval.unref();
+}
 
 function checkPublicRateLimit(ip: string): boolean {
   const now = Date.now();

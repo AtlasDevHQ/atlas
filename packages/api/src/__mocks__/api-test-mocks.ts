@@ -528,7 +528,8 @@ export function createApiTestMocks(
     recordQueryEvent: mock(() => {}),
     restoreAbuseState: mock(async () => {}),
     _resetAbuseState: mock(() => {}),
-    _stopCleanup: mock(() => {}),
+    abuseCleanupTick: mock(() => {}),
+    ABUSE_CLEANUP_INTERVAL_MS: 300_000,
   }));
 
   // ── Role helper functions ─────────────────────────────────────

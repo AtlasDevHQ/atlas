@@ -27,8 +27,9 @@
  * MigrationLayer which depends on InternalDB).
  *
  * SettingsLive and SchedulerLayer fork long-lived periodic fibers
- * (settings refresh, OAuth cleanup, rate-limit cleanup, email scheduler)
- * that are interrupted when their Layer scope closes.
+ * (settings refresh, OAuth cleanup, rate-limit cleanup, email scheduler,
+ * demo cleanup, abuse cleanup, dashboard/conversation rate sweeps,
+ * share token cleanup) that are interrupted when their Layer scope closes.
  */
 
 import { Context, Duration, Effect, Fiber, Layer, Schedule } from "effect";
@@ -350,8 +351,10 @@ export class Scheduler extends Context.Tag("Scheduler")<
 
 /**
  * Create a Scheduler layer that reads the config to decide which backend
- * to start. Periodic cleanup fibers (OAuth state, rate-limit, email) are
- * forked and automatically interrupted when the Layer scope closes.
+ * to start. Periodic cleanup fibers (OAuth state, rate-limit, email, demo
+ * cleanup, abuse detection, dashboard rate-limit, conversation rate sweep,
+ * share token cleanup) are forked and automatically interrupted when the
+ * Layer scope closes.
  */
 export function makeSchedulerLive(
   config: ResolvedConfig,
@@ -504,6 +507,148 @@ export function makeSchedulerLive(
         rateLimitTick.pipe(Effect.repeat(Schedule.spaced(Duration.seconds(60)))),
       );
       yield* Effect.addFinalizer(() => Fiber.interrupt(rateLimitFiber));
+
+      // ── Periodic fiber: demo rate-limit cleanup — interval from DEMO_CLEANUP_INTERVAL_MS ──
+      const demoTick = Effect.try({
+        try: () => {
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          const { demoCleanupTick } = require("@atlas/api/lib/demo") as {
+            demoCleanupTick: () => void;
+          };
+          demoCleanupTick();
+        },
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      }).pipe(
+        Effect.catchAll((err) =>
+          Effect.sync(() => {
+            log.error(
+              { err: err instanceof Error ? err.message : String(err) },
+              "Demo rate-limit cleanup tick failed",
+            );
+          }),
+        ),
+      );
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { DEMO_CLEANUP_INTERVAL_MS } = require("@atlas/api/lib/demo") as {
+        DEMO_CLEANUP_INTERVAL_MS: number;
+      };
+      const demoFiber = yield* Effect.fork(
+        demoTick.pipe(Effect.repeat(Schedule.spaced(Duration.millis(DEMO_CLEANUP_INTERVAL_MS)))),
+      );
+      yield* Effect.addFinalizer(() => Fiber.interrupt(demoFiber));
+
+      // ── Periodic fiber: abuse detection cleanup — every 5 min ──────
+      const abuseTick = Effect.try({
+        try: () => {
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          const { abuseCleanupTick } = require("@atlas/api/lib/security/abuse") as {
+            abuseCleanupTick: () => void;
+          };
+          abuseCleanupTick();
+        },
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      }).pipe(
+        Effect.catchAll((err) =>
+          Effect.sync(() => {
+            log.warn(
+              { err: err instanceof Error ? err.message : String(err) },
+              "Abuse cleanup tick failed",
+            );
+          }),
+        ),
+      );
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { ABUSE_CLEANUP_INTERVAL_MS } = require("@atlas/api/lib/security/abuse") as {
+        ABUSE_CLEANUP_INTERVAL_MS: number;
+      };
+      const abuseFiber = yield* Effect.fork(
+        abuseTick.pipe(Effect.repeat(Schedule.spaced(Duration.millis(ABUSE_CLEANUP_INTERVAL_MS)))),
+      );
+      yield* Effect.addFinalizer(() => Fiber.interrupt(abuseFiber));
+
+      // ── Periodic fiber: dashboard public rate-limit cleanup — every 60s ─
+      const dashboardTick = Effect.try({
+        try: () => {
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          const { dashboardRateLimitCleanupTick } = require("@atlas/api/api/routes/dashboards") as {
+            dashboardRateLimitCleanupTick: () => void;
+          };
+          dashboardRateLimitCleanupTick();
+        },
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      }).pipe(
+        Effect.catchAll((err) =>
+          Effect.sync(() => {
+            log.warn(
+              { err: err instanceof Error ? err.message : String(err) },
+              "Dashboard rate-limit cleanup tick failed",
+            );
+          }),
+        ),
+      );
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { DASHBOARD_RATE_CLEANUP_INTERVAL_MS } = require("@atlas/api/api/routes/dashboards") as {
+        DASHBOARD_RATE_CLEANUP_INTERVAL_MS: number;
+      };
+      const dashboardFiber = yield* Effect.fork(
+        dashboardTick.pipe(Effect.repeat(Schedule.spaced(Duration.millis(DASHBOARD_RATE_CLEANUP_INTERVAL_MS)))),
+      );
+      yield* Effect.addFinalizer(() => Fiber.interrupt(dashboardFiber));
+
+      // ── Periodic fiber: conversation public rate sweep — every 60s ──
+      const convSweepTick = Effect.try({
+        try: () => {
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          const { conversationRateSweepTick } = require("@atlas/api/api/routes/conversations") as {
+            conversationRateSweepTick: () => void;
+          };
+          conversationRateSweepTick();
+        },
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      }).pipe(
+        Effect.catchAll((err) =>
+          Effect.sync(() => {
+            log.warn(
+              { err: err instanceof Error ? err.message : String(err) },
+              "Conversation rate sweep tick failed",
+            );
+          }),
+        ),
+      );
+      // eslint-disable-next-line @typescript-eslint/no-require-imports
+      const { CONVERSATION_RATE_SWEEP_INTERVAL_MS, SHARE_CLEANUP_INTERVAL_MS } = require("@atlas/api/api/routes/conversations") as {
+        CONVERSATION_RATE_SWEEP_INTERVAL_MS: number;
+        SHARE_CLEANUP_INTERVAL_MS: number;
+      };
+      const convSweepFiber = yield* Effect.fork(
+        convSweepTick.pipe(Effect.repeat(Schedule.spaced(Duration.millis(CONVERSATION_RATE_SWEEP_INTERVAL_MS)))),
+      );
+      yield* Effect.addFinalizer(() => Fiber.interrupt(convSweepFiber));
+
+      // ── Periodic fiber: share token cleanup — every 60 min ─────────
+      const shareCleanupEffect = Effect.tryPromise({
+        try: () => {
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          const { shareCleanupTick: tick } = require("@atlas/api/api/routes/conversations") as {
+            shareCleanupTick: () => Promise<void>;
+          };
+          return tick();
+        },
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      }).pipe(
+        Effect.catchAll((err) =>
+          Effect.sync(() => {
+            log.error(
+              { err: err instanceof Error ? err.message : String(err) },
+              "Unexpected error in share cleanup tick",
+            );
+          }),
+        ),
+      );
+      const shareCleanupFiber = yield* Effect.fork(
+        shareCleanupEffect.pipe(Effect.repeat(Schedule.spaced(Duration.millis(SHARE_CLEANUP_INTERVAL_MS)))),
+      );
+      yield* Effect.addFinalizer(() => Fiber.interrupt(shareCleanupFiber));
 
       // --- Finalizer: stop main scheduler ---
       yield* Effect.addFinalizer(() =>

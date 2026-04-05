@@ -4,6 +4,9 @@
  * Stores nonces in the internal database when available (multi-instance safe).
  * Falls back to an in-memory Map for single-instance self-hosted deployments
  * without an internal database.
+ *
+ * Expired state is cleaned up periodically by the SchedulerLayer fiber
+ * (see lib/effect/layers.ts) via {@link cleanExpiredOAuthState}.
  */
 
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";

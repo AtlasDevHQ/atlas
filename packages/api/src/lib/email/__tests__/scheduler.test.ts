@@ -2,8 +2,8 @@
  * Tests for onboarding email scheduler (#1276).
  *
  * Tests the runTick function and isEmailSchedulerEnabled check.
- * The periodic timer is now managed by the SchedulerLayer Effect fiber,
- * so start/stop lifecycle is tested in layers.test.ts.
+ * The periodic timer is managed by the SchedulerLayer Effect fiber
+ * in lib/effect/layers.ts — only the tick function is tested here.
  */
 
 import { describe, it, expect, beforeEach, mock } from "bun:test";

@@ -2,8 +2,8 @@
  * Tests for periodic settings refresh (#1092, #1275).
  *
  * Tests refreshSettingsTick() which is called by the SettingsLive Effect
- * fiber in SaaS mode. Also tests the SettingsLive layer startup/dispose
- * lifecycle for the refresh fiber.
+ * fiber in SaaS mode. Layer startup/dispose lifecycle is tested
+ * separately in lib/effect/__tests__/layers.test.ts.
  *
  * Uses mock.module for config (SaaS mode detection) and logger,
  * plus `_resetPool()` for internal DB mocking.

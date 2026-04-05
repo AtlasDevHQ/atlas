@@ -23,6 +23,10 @@
  * Each layer wraps an imperative startup step with Effect.addFinalizer
  * for cleanup. On shutdown, Effect disposes scoped layers via their
  * finalizers. Order among independent layers is unspecified.
+ *
+ * SettingsLive and SchedulerLayer fork long-lived periodic fibers
+ * (settings refresh, OAuth cleanup, rate-limit cleanup, email scheduler)
+ * that are interrupted when their Layer scope closes.
  */
 
 import { Context, Duration, Effect, Fiber, Layer, Schedule } from "effect";
@@ -463,6 +467,7 @@ export function makeSchedulerLive(
       yield* Effect.addFinalizer(() => Fiber.interrupt(oauthFiber));
 
       // ── Periodic fiber: rate-limit cleanup (#1274) — every 60s ──────
+      // Interval matches WINDOW_MS in middleware.ts (sliding-window duration).
       const rateLimitTick = Effect.try({
         try: () => {
           // eslint-disable-next-line @typescript-eslint/no-require-imports

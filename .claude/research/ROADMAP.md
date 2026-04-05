@@ -858,7 +858,12 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 
 ## 1.0.1 — Effect.ts Completion
 
-**Complete Effect.ts adoption across `packages/api/`.** Migrate remaining imperative patterns: setInterval timers → Effect Layers with finalizers, unbounded Promise.all → Effect.all with concurrency, plain Error subclasses → Data.TaggedError, try/catch chains → Effect.tryPromise.
+**Complete Effect.ts adoption across `packages/api/`.** Eliminate all bridge layers and imperative patterns. Native `@effect/sql` for DB, Effect `Schedule`/`Cron` for timers, `Data.TaggedError` for errors, `Effect.all` for concurrency.
+
+### Native DB Clients (P0 — eliminate bridge layers)
+
+- [ ] Migrate internal DB to native `@effect/sql-pg` `PgClient.layer()` (#1281)
+- [ ] Migrate analytics connection pools to native `@effect/sql-pg` and `@effect/sql-mysql2` (#1282)
 
 ### Timer Leaks (P0 — resource leaks on Railway restarts)
 
@@ -866,6 +871,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [ ] Migrate auth middleware rate-limit cleanup setInterval to Effect Layer (#1274)
 - [ ] Migrate settings refresh timer to Effect Layer (#1275)
 - [ ] Migrate email scheduler to Effect Layer (#1276)
+- [ ] Replace all setInterval scheduling with Effect Cron/Schedule (#1283)
 
 ### Concurrency (P1 — unbounded DB calls under load)
 
@@ -878,6 +884,12 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 ### Sandbox (P2 — code quality)
 
 - [ ] Convert python-sandbox try/catch chains to Effect.tryPromise with retry (#1279)
+
+### NOT migrating (bridge layers are correct)
+
+- **Vercel AI SDK** — `AtlasAiModel` bridge stays. Frontend depends on AI SDK's data stream protocol and `useChat` hook. `@effect/ai` native would break the streaming pipeline.
+- **Zod** — Powers `@hono/zod-openapi` for 150-route OpenAPI spec auto-generation. `effect/Schema` would require rewriting every route.
+- **`@effect/platform` HTTP** — Hono handles all HTTP serving. No value in adding another HTTP layer.
 
 ---
 

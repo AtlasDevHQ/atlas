@@ -102,9 +102,9 @@ export interface AtlasWidgetConfig {
    */
   onError?: string;
   /**
-   * Show "Powered by Atlas" badge at the bottom of the widget (optional, default `true`).
+   * Show "Powered by Atlas" badge at the bottom of the widget (optional, default `"true"`).
    *
-   * Set to `"false"` to hide the badge.
+   * Set to `"false"` to hide the badge. Value is case-sensitive.
    */
   showBranding?: string;
 }

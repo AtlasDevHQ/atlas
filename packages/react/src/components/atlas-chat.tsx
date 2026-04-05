@@ -55,7 +55,7 @@ export interface AtlasChatProps {
   chatEndpoint?: string;
   /** Custom conversations API endpoint path. Defaults to "/api/v1/conversations". */
   conversationsEndpoint?: string;
-  /** Show "Powered by Atlas" badge at the bottom of the chat. Defaults to true. */
+  /** Show "Powered by Atlas" badge at the bottom of the chat. Defaults to true. Automatically hidden when enterprise white-label branding (hideAtlasBranding) is active. */
   showBranding?: boolean;
 }
 
@@ -265,6 +265,7 @@ function AtlasChatInner({
 
   // Fetch branding to detect enterprise white-label (hideAtlasBranding flag).
   // Only fetched when showBranding is true — no point checking if badge is already hidden.
+  // On fetch failure, falls back to showing the badge (fail-open).
   const brandingQuery = useQuery<{ hideAtlasBranding?: boolean }>({
     queryKey: ["atlas", "branding"],
     queryFn: async ({ signal }) => {

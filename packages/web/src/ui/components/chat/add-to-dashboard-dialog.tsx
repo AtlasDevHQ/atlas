@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { z } from "zod";
 import { Loader2, Plus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -88,18 +87,9 @@ export function AddToDashboardDialog({
   const { data: dashboardData, loading: loadingDashboards, error: fetchError } = useAdminFetch<{
     dashboards: Dashboard[];
     total: number;
-  }>("/api/v1/dashboards", {
-    schema: z.object({
-      dashboards: z.array(z.object({
-        id: z.string(),
-        title: z.string(),
-        cardCount: z.number(),
-      }).passthrough()),
-      total: z.number(),
-    }),
-  });
+  }>("/api/v1/dashboards");
 
-  const { mutate: createDashboard, saving: creatingDashboard } = useAdminMutation<Dashboard>();
+  const { mutate: createDashboard, saving: creatingDashboard } = useAdminMutation<Dashboard>({});
   const { mutate: addCard, saving: addingCard } = useAdminMutation();
 
   const saving = creatingDashboard || addingCard;
@@ -125,9 +115,9 @@ export function AddToDashboardDialog({
     };
   }, [open]); // intentionally reset only on open
 
+  const dashboards = dashboardData?.dashboards ?? [];
   // Auto-switch to "new" mode when we know there are no dashboards
   const effectiveMode = mode === "existing" && !loadingDashboards && !fetchError && dashboards.length === 0 ? "new" : mode;
-  const dashboards = dashboardData?.dashboards ?? [];
 
   // Filter chart recommendations to only storable types
   const storableRecommendations = chartResult.chartable
@@ -176,7 +166,7 @@ export function AddToDashboardDialog({
           setError(result.error ?? "Failed to create dashboard.");
           return;
         }
-        dashboardId = result.data.id;
+        dashboardId = (result.data as Dashboard).id;
         createdNewDashboard = true;
       } else {
         if (!selectedDashboardId) {

@@ -2,7 +2,6 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { z } from "zod";
 import {
   LayoutDashboard,
   Plus,
@@ -66,19 +65,7 @@ export default function DashboardsPage() {
   const { data, loading, error, refetch } = useAdminFetch<{
     dashboards: Dashboard[];
     total: number;
-  }>("/api/v1/dashboards", {
-    schema: z.object({
-      dashboards: z.array(z.object({
-        id: z.string(),
-        title: z.string(),
-        description: z.string().nullable().optional(),
-        cardCount: z.number(),
-        createdAt: z.string(),
-        updatedAt: z.string(),
-      }).passthrough()),
-      total: z.number(),
-    }),
-  });
+  }>("/api/v1/dashboards");
 
   const { mutate: createDashboard, saving: creating } = useAdminMutation<Dashboard>({
     invalidates: refetch,

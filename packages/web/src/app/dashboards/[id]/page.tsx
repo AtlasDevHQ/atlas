@@ -4,7 +4,6 @@ import { useContext, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import dynamic from "next/dynamic";
-import { z } from "zod";
 import {
   ArrowLeft,
   RefreshCw,
@@ -217,27 +216,6 @@ export default function DashboardViewPage() {
 
   const { data: dashboard, loading, error, refetch } = useAdminFetch<DashboardWithCards>(
     `/api/v1/dashboards/${id}`,
-    {
-      schema: z.object({
-        id: z.string(),
-        title: z.string(),
-        description: z.string().nullable().optional(),
-        cards: z.array(z.object({
-          id: z.string(),
-          dashboardId: z.string(),
-          position: z.number(),
-          title: z.string(),
-          sql: z.string(),
-          chartConfig: z.unknown().nullable().optional(),
-          cachedColumns: z.array(z.string()).nullable().optional(),
-          cachedRows: z.array(z.record(z.string(), z.unknown())).nullable().optional(),
-          cachedAt: z.string().nullable().optional(),
-          connectionId: z.string().nullable().optional(),
-          createdAt: z.string(),
-          updatedAt: z.string(),
-        }).passthrough()),
-      }).passthrough(),
-    },
   );
 
   const { mutate, error: mutationError } = useAdminMutation({ invalidates: refetch });

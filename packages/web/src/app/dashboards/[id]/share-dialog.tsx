@@ -115,8 +115,10 @@ export function DashboardShareDialog({ dashboardId }: DashboardShareDialogProps)
         return;
       }
       setShared(true);
-      setShareUrl(`${window.location.origin}/shared/dashboard/${result.data.token}`);
-      setExpiresAt(result.data.expiresAt);
+      if (result.data) {
+        setShareUrl(`${window.location.origin}/shared/dashboard/${(result.data as { token: string }).token}`);
+        setExpiresAt((result.data as { expiresAt: string | null }).expiresAt);
+      }
     } finally {
       inFlightRef.current = false;
     }

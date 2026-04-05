@@ -9,6 +9,12 @@
 import * as yaml from "js-yaml";
 import type { DBType } from "@atlas/api/lib/db/connection";
 import { createLogger } from "@atlas/api/lib/logger";
+import {
+  inferSemanticTypes,
+  inferJoinsFromNamingConventions,
+  suggestMeasureType,
+  describeMeasure,
+} from "./profiler-patterns";
 
 // Re-export canonical types so existing consumers of @atlas/api/lib/profiler
 // continue to work without import path changes.
@@ -16,6 +22,7 @@ export {
   OBJECT_TYPES,
   FK_SOURCES,
   PARTITION_STRATEGIES,
+  SEMANTIC_TYPES,
 } from "@useatlas/types";
 export type {
   ObjectType,
@@ -23,6 +30,7 @@ export type {
   DatabaseObject,
   ForeignKey,
   ForeignKeySource,
+  SemanticType,
   PartitionStrategy,
   PartitionInfo,
   TableFlags,
@@ -362,6 +370,8 @@ export function analyzeTableProfiles(profiles: readonly TableProfile[]): TablePr
   }));
 
   inferForeignKeys(analyzed);
+  inferJoinsFromNamingConventions(analyzed);
+  inferSemanticTypes(analyzed);
   detectAbandonedTables(analyzed);
   detectEnumInconsistency(analyzed);
   detectDenormalizedTables(analyzed);
@@ -409,6 +419,7 @@ export function generateEntityYAML(
       dim.description = `Foreign key to ${col.fk_target_table}`;
     }
 
+    if (col.semantic_type) dim.semantic_type = col.semantic_type;
     if (col.unique_count !== null) dim.unique_count = col.unique_count;
     if (col.null_count !== null && col.null_count > 0)
       dim.null_count = col.null_count;
@@ -575,20 +586,59 @@ export function generateEntityYAML(
       if (col.is_primary_key || col.is_foreign_key) continue;
       if (col.name.endsWith("_id")) continue;
       const mappedType = mapSQLType(col.type);
+
+      // Boolean columns → COUNT WHERE true
+      if (mappedType === "boolean") {
+        measures.push({
+          name: `${col.name}_count`,
+          sql: col.name,
+          type: "count_where",
+          description: `Count of rows where ${col.name.replace(/_/g, " ")} is true`,
+        });
+        continue;
+      }
+
       if (mappedType !== "number") continue;
 
-      measures.push({
-        name: `total_${col.name}`,
-        sql: col.name,
-        type: "sum",
-        description: `Sum of ${col.name.replace(/_/g, " ")}`,
-      });
-      measures.push({
-        name: `avg_${col.name}`,
-        sql: col.name,
-        type: "avg",
-        description: `Average ${col.name.replace(/_/g, " ")}`,
-      });
+      const suggestion = suggestMeasureType(col);
+
+      switch (suggestion) {
+        case "sum":
+          measures.push({
+            name: `total_${col.name}`,
+            sql: col.name,
+            type: "sum",
+            description: describeMeasure(col, "sum"),
+          });
+          break;
+        case "avg":
+          measures.push({
+            name: `avg_${col.name}`,
+            sql: col.name,
+            type: "avg",
+            description: describeMeasure(col, "avg"),
+          });
+          break;
+        case "sum_and_avg":
+          measures.push({
+            name: `total_${col.name}`,
+            sql: col.name,
+            type: "sum",
+            description: describeMeasure(col, "sum"),
+          });
+          measures.push({
+            name: `avg_${col.name}`,
+            sql: col.name,
+            type: "avg",
+            description: describeMeasure(col, "avg"),
+          });
+          break;
+        case "count_where":
+          // Booleans are handled above — this branch is unreachable for numeric columns
+          break;
+        default:
+          suggestion satisfies never;
+      }
     }
   }
 
@@ -884,37 +934,53 @@ export function generateMetricYAML(profile: TableProfile, schema: string = "publ
   }
 
   for (const col of numericCols) {
-    metrics.push({
-      id: `total_${col.name}`,
-      label: `Total ${col.name.replace(/_/g, " ")}`,
-      description: `Sum of ${col.name} across all ${profile.table_name}.`,
-      type: "atomic",
-      source: {
-        entity: entityName(profile.table_name),
-        measure: `total_${col.name}`,
-      },
-      sql: `SELECT SUM(${col.name}) as total_${col.name}\nFROM ${qualifiedTable}`,
-      aggregation: "sum",
-      objective: "maximize",
-    });
+    const suggestion = suggestMeasureType(col);
 
-    metrics.push({
-      id: `avg_${col.name}`,
-      label: `Average ${col.name.replace(/_/g, " ")}`,
-      description: `Average ${col.name} per ${singularize(profile.table_name)}.`,
-      type: "atomic",
-      sql: `SELECT AVG(${col.name}) as avg_${col.name}\nFROM ${qualifiedTable}`,
-      aggregation: "avg",
-    });
+    switch (suggestion) {
+      case "sum":
+      case "sum_and_avg":
+        metrics.push({
+          id: `total_${col.name}`,
+          label: `Total ${col.name.replace(/_/g, " ")}`,
+          description: `Sum of ${col.name} across all ${profile.table_name}.`,
+          type: "atomic",
+          source: {
+            entity: entityName(profile.table_name),
+            measure: `total_${col.name}`,
+          },
+          sql: `SELECT SUM(${col.name}) as total_${col.name}\nFROM ${qualifiedTable}`,
+          aggregation: "sum",
+          objective: "maximize",
+        });
+        if (suggestion === "sum") break;
+      // falls through for sum_and_avg
+      case "avg":
+        metrics.push({
+          id: `avg_${col.name}`,
+          label: `Average ${col.name.replace(/_/g, " ")}`,
+          description: `Average ${col.name} per ${singularize(profile.table_name)}.`,
+          type: "atomic",
+          sql: `SELECT AVG(${col.name}) as avg_${col.name}\nFROM ${qualifiedTable}`,
+          aggregation: "avg",
+        });
+        break;
+      case "count_where":
+        // Booleans filtered out by numericCols — unreachable for numeric columns
+        break;
+      default:
+        suggestion satisfies never;
+    }
 
     if (enumCols.length > 0) {
       const enumCol = enumCols[0];
+      const aggFunc = suggestion === "avg" ? "AVG" : "SUM";
+      const aggLabel = suggestion === "avg" ? "avg" : "total";
       metrics.push({
         id: `${col.name}_by_${enumCol.name}`,
         label: `${col.name.replace(/_/g, " ")} by ${enumCol.name}`,
         description: `${col.name} broken down by ${enumCol.name}.`,
         type: "atomic",
-        sql: `SELECT ${enumCol.name}, SUM(${col.name}) as total_${col.name}, AVG(${col.name}) as avg_${col.name}, COUNT(*) as count\nFROM ${qualifiedTable}\nGROUP BY ${enumCol.name}\nORDER BY total_${col.name} DESC`,
+        sql: `SELECT ${enumCol.name}, ${aggFunc}(${col.name}) as ${aggLabel}_${col.name}, COUNT(*) as count\nFROM ${qualifiedTable}\nGROUP BY ${enumCol.name}\nORDER BY ${aggLabel}_${col.name} DESC`,
       });
     }
   }

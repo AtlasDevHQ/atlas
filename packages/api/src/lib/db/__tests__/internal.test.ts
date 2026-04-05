@@ -5,6 +5,7 @@
  * the need to mock the pg module (which is require()'d lazily).
  */
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { Effect } from "effect";
 import {
   hasInternalDB,
   getInternalDB,
@@ -252,9 +253,10 @@ describe("internal DB module", () => {
   });
 
   describe("closeInternalDB()", () => {
-    it("calls pool.end()", async () => {
+    it("closes fallback pools (not managed by Effect Layer)", async () => {
       process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/atlas";
       const { pool, calls } = createMockPool();
+      // _resetPool sets _poolManagedByEffect = false (default), simulating a fallback pool
       _resetPool(pool);
       await closeInternalDB();
       expect(calls.endCount).toBe(1);
@@ -262,21 +264,6 @@ describe("internal DB module", () => {
 
     it("is a no-op when no pool exists", async () => {
       await closeInternalDB(); // should not throw
-    });
-
-    it("nullifies the singleton (getInternalDB returns a new pool after close)", async () => {
-      process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/atlas";
-      const { pool: pool1 } = createMockPool();
-      _resetPool(pool1);
-      expect(getInternalDB()).toBe(pool1);
-
-      await closeInternalDB();
-
-      // After close, injecting a new pool and calling getInternalDB should return the new one
-      const { pool: pool2 } = createMockPool();
-      _resetPool(pool2);
-      expect(getInternalDB()).toBe(pool2);
-      expect(pool2).not.toBe(pool1);
     });
   });
 
@@ -845,6 +832,86 @@ describe("connection URL encryption", () => {
       const count = await loadSavedConnections();
       expect(count).toBe(1);
       expect(connections.has("legacy")).toBe(true);
+    });
+  });
+
+  // ── SqlClient path tests ──────────────────────────────────────────
+
+  describe("SqlClient path (via _resetPool with mock SqlClient)", () => {
+    /** Creates a mock SqlClient that records .unsafe() calls. */
+    function createMockSqlClient() {
+      const calls: { sql: string; params?: ReadonlyArray<unknown> }[] = [];
+      let result: ReadonlyArray<Record<string, unknown>> = [];
+      let error: Error | null = null;
+
+      const mockSql = {
+        unsafe: <T extends object>(sql: string, params?: ReadonlyArray<unknown>) => {
+          calls.push({ sql, params });
+          if (error) return Effect.fail(error);
+          return Effect.succeed(result as ReadonlyArray<T>);
+        },
+      };
+
+      const setResult = (r: ReadonlyArray<Record<string, unknown>>) => { result = r; };
+      const setError = (e: Error | null) => { error = e; };
+
+      // Cast to SqlClient shape — only .unsafe is used by internalQuery/internalExecute
+      return {
+        mockSql: mockSql as unknown as import("@effect/sql").SqlClient.SqlClient,
+        calls,
+        setResult,
+        setError,
+      };
+    }
+
+    it("internalQuery uses SqlClient.unsafe when _sqlClient is set", async () => {
+      process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/atlas";
+      const { pool } = createMockPool();
+      const { mockSql, calls, setResult } = createMockSqlClient();
+      setResult([{ id: "row1" }]);
+      _resetPool(pool, mockSql);
+
+      const rows = await internalQuery<{ id: string }>("SELECT id FROM test WHERE x = $1", [42]);
+      expect(rows).toEqual([{ id: "row1" }]);
+      expect(calls.length).toBe(1);
+      expect(calls[0].sql).toBe("SELECT id FROM test WHERE x = $1");
+      expect(calls[0].params).toEqual([42]);
+    });
+
+    it("internalExecute uses SqlClient.unsafe when _sqlClient is set", async () => {
+      process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/atlas";
+      const { pool } = createMockPool();
+      const { mockSql, calls } = createMockSqlClient();
+      _resetPool(pool, mockSql);
+
+      internalExecute("INSERT INTO t (a) VALUES ($1)", ["val"]);
+      // Fire-and-forget — give it a tick to dispatch
+      await new Promise((r) => setTimeout(r, 10));
+      expect(calls.length).toBe(1);
+      expect(calls[0].sql).toBe("INSERT INTO t (a) VALUES ($1)");
+    });
+
+    it("internalExecute circuit breaker works with SqlClient path", async () => {
+      process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/atlas";
+      const { pool } = createMockPool();
+      const { mockSql, calls, setError } = createMockSqlClient();
+      setError(new Error("mock sql failure"));
+      _resetPool(pool, mockSql);
+
+      // Trigger 5 failures to trip circuit breaker
+      for (let i = 0; i < 5; i++) {
+        internalExecute("INSERT INTO t (a) VALUES ($1)", ["val"]);
+      }
+      await new Promise((r) => setTimeout(r, 50));
+
+      // All 5 should have been dispatched through SqlClient
+      expect(calls.length).toBe(5);
+
+      // 6th call should be dropped by circuit breaker
+      internalExecute("INSERT INTO t (a) VALUES ($1)", ["val"]);
+      await new Promise((r) => setTimeout(r, 10));
+      // Circuit is open — call was dropped, not dispatched (still 5)
+      expect(calls.length).toBe(5);
     });
   });
 });

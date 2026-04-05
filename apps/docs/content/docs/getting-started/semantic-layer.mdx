@@ -128,6 +128,7 @@ cross_source_joins:                   # Optional: joins to other datasources
 | `description` | string | Yes | What this column represents |
 | `primary_key` | boolean | No | Marks primary key columns |
 | `virtual` | boolean | No | Marks computed columns (not raw DB columns) |
+| `semantic_type` | string | No | Auto-detected pattern: `currency`, `percentage`, `email`, `url`, `phone`, `timestamp`. Guides measure inference and agent descriptions |
 | `sample_values` | array | No | Example values to guide the agent |
 
 ### Measure Fields
@@ -136,7 +137,7 @@ cross_source_joins:                   # Optional: joins to other datasources
 |-------|------|----------|-------------|
 | `name` | string | Yes | Metric identifier |
 | `sql` | string | Yes | Column to aggregate |
-| `type` | string | Yes | `count_distinct`, `sum`, `avg`, `min`, `max` |
+| `type` | string | Yes | `count_distinct`, `sum`, `avg`, `min`, `max`, `count_where` |
 | `description` | string | Yes | What this metric measures |
 
 ### Join Fields

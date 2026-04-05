@@ -21,6 +21,17 @@ export type ForeignKeySource = (typeof FK_SOURCES)[number];
 export const PARTITION_STRATEGIES = ["range", "list", "hash"] as const;
 export type PartitionStrategy = (typeof PARTITION_STRATEGIES)[number];
 
+/** Semantic types inferred from column names, sample values, and SQL types. */
+export const SEMANTIC_TYPES = [
+  "currency",
+  "percentage",
+  "email",
+  "url",
+  "phone",
+  "timestamp",
+] as const;
+export type SemanticType = (typeof SEMANTIC_TYPES)[number];
+
 // ---------------------------------------------------------------------------
 // Foreign key
 // ---------------------------------------------------------------------------
@@ -56,6 +67,7 @@ export interface ColumnProfile {
   fk_target_table: string | null;
   fk_target_column: string | null;
   is_enum_like: boolean;
+  semantic_type?: SemanticType;
   profiler_notes: string[];
 }
 
@@ -132,6 +144,7 @@ export interface WizardEntityColumn {
   isPrimaryKey: boolean;
   isForeignKey: boolean;
   isEnumLike: boolean;
+  semanticType?: SemanticType;
   sampleValues: string[];
   uniqueCount: number | null;
   nullCount: number | null;

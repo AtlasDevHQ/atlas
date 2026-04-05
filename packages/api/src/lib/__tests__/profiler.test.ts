@@ -385,8 +385,8 @@ describe("generateMetricYAML", () => {
     });
     const yaml = generateMetricYAML(profile);
     expect(yaml).not.toBeNull();
+    // "total" matches sum-only pattern — no avg generated
     expect(yaml!).toContain("total_total");
-    expect(yaml!).toContain("avg_total");
   });
 
   it("returns null for views", () => {

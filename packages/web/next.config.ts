@@ -41,6 +41,11 @@ const nextConfig: NextConfig = {
     "pino",
     "pino-pretty",
     "stripe",
+    "effect",
+    "@effect/sql",
+    "@effect/sql-pg",
+    "@effect/sql-mysql2",
+    "postgres",
   ],
   // Monorepo: trace files up to the repo root so standalone output includes all packages
   outputFileTracingRoot: path.resolve(import.meta.dirname, "../.."),

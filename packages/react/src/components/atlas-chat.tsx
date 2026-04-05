@@ -268,11 +268,24 @@ function AtlasChatInner({
   const brandingQuery = useQuery<{ hideAtlasBranding?: boolean }>({
     queryKey: ["atlas", "branding"],
     queryFn: async ({ signal }) => {
-      const res = await fetch(`${apiUrl}/api/v1/branding`, {
-        credentials: isCrossOrigin ? "include" : "same-origin",
-        signal,
-      });
-      if (!res.ok) return {};
+      let res: Response;
+      try {
+        const headers: Record<string, string> = {};
+        if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
+        res = await fetch(`${apiUrl}/api/v1/branding`, {
+          credentials: isCrossOrigin ? "include" : "same-origin",
+          headers,
+          signal,
+        });
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        console.warn("[Atlas] Branding check failed:", msg);
+        throw new Error(`Branding check failed: ${msg}`, { cause: err });
+      }
+      if (!res.ok) {
+        console.warn(`[Atlas] Branding check returned HTTP ${res.status}`);
+        return {};
+      }
       const data = await res.json();
       return { hideAtlasBranding: data?.branding?.hideAtlasBranding === true };
     },
@@ -280,7 +293,8 @@ function AtlasChatInner({
     retry: 1,
     staleTime: 5 * 60 * 1000,
   });
-  const brandingVisible = showBranding && !(brandingQuery.data?.hideAtlasBranding);
+  // Hide badge while loading to prevent flicker for enterprise white-label customers.
+  const brandingVisible = showBranding && !brandingQuery.isLoading && !(brandingQuery.data?.hideAtlasBranding);
 
   const authResolved = authMode !== null;
   const isManaged = authMode === "managed";
@@ -730,9 +744,9 @@ function AtlasChatInner({
                     Ask
                   </Button>
                 </form>
+              {brandingVisible && <PoweredByAtlas />}
               </ActionAuthProvider>
             )}
-            {brandingVisible && <PoweredByAtlas />}
           </div>
         </main>
       </div>

@@ -1,8 +1,12 @@
 /**
- * Tests for onboarding email scheduler.
+ * Tests for onboarding email scheduler (#1276).
+ *
+ * Tests the runTick function and isEmailSchedulerEnabled check.
+ * The periodic timer is managed by the SchedulerLayer Effect fiber
+ * in lib/effect/layers.ts — only the tick function is tested here.
  */
 
-import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
+import { describe, it, expect, beforeEach, mock } from "bun:test";
 
 // --- Mock engine ---
 
@@ -25,51 +29,17 @@ mock.module("@atlas/api/lib/logger", () => ({
   }),
 }));
 
-const { startOnboardingEmailScheduler, stopOnboardingEmailScheduler, _runTick } = await import("../scheduler");
+const { _runTick, isEmailSchedulerEnabled } = await import("../scheduler");
 
-describe("startOnboardingEmailScheduler", () => {
-  afterEach(() => {
-    stopOnboardingEmailScheduler();
-    mockCheckFallbackEmails.mockClear();
+describe("isEmailSchedulerEnabled", () => {
+  it("returns true when onboarding emails are enabled", () => {
+    mockEnabled = true;
+    expect(isEmailSchedulerEnabled()).toBe(true);
   });
 
-  it("is a no-op when feature disabled", () => {
+  it("returns false when onboarding emails are disabled", () => {
     mockEnabled = false;
-    startOnboardingEmailScheduler();
-    // No error, no calls
-    expect(mockCheckFallbackEmails).not.toHaveBeenCalled();
-  });
-
-  it("runs initial tick immediately when started", async () => {
-    mockEnabled = true;
-    startOnboardingEmailScheduler(60_000);
-    // Wait for the immediate tick to fire
-    await new Promise((r) => setTimeout(r, 50));
-    expect(mockCheckFallbackEmails).toHaveBeenCalledTimes(1);
-  });
-
-  it("does not create duplicate intervals on double start", async () => {
-    mockEnabled = true;
-    startOnboardingEmailScheduler(60_000);
-    startOnboardingEmailScheduler(60_000);
-    await new Promise((r) => setTimeout(r, 50));
-    // Should only have fired once from the first start's immediate tick
-    expect(mockCheckFallbackEmails).toHaveBeenCalledTimes(1);
-  });
-});
-
-describe("stopOnboardingEmailScheduler", () => {
-  it("stops without error when not started", () => {
-    // Should not throw
-    stopOnboardingEmailScheduler();
-  });
-
-  it("stops a running scheduler", async () => {
-    mockEnabled = true;
-    startOnboardingEmailScheduler(60_000);
-    await new Promise((r) => setTimeout(r, 50));
-    stopOnboardingEmailScheduler();
-    // No error
+    expect(isEmailSchedulerEnabled()).toBe(false);
   });
 });
 

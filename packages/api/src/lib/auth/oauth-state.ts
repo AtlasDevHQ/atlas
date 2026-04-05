@@ -4,6 +4,9 @@
  * Stores nonces in the internal database when available (multi-instance safe).
  * Falls back to an in-memory Map for single-instance self-hosted deployments
  * without an internal database.
+ *
+ * Expired state is cleaned up periodically by the SchedulerLayer fiber
+ * (see lib/effect/layers.ts) via {@link cleanExpiredOAuthState}.
  */
 
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
@@ -35,14 +38,6 @@ export interface OAuthStateResult {
 const memoryFallback = new Map<string, MemoryState>();
 
 let _warnedFallback = false;
-
-// Periodic sweep for the in-memory fallback (every 10 minutes)
-setInterval(() => {
-  const now = Date.now();
-  for (const [nonce, state] of memoryFallback) {
-    if (now > state.expiresAt) memoryFallback.delete(nonce);
-  }
-}, 600_000).unref();
 
 // ---------------------------------------------------------------------------
 // Public API

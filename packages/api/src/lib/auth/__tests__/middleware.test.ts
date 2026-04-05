@@ -1,12 +1,12 @@
-import { describe, it, expect, beforeEach, afterEach, afterAll, mock } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
 import type { AuthResult } from "../types";
 import { resetAuthModeCache } from "../detect";
 import {
   authenticateRequest,
   checkRateLimit,
   resetRateLimits,
+  rateLimitCleanupTick,
   getClientIP,
-  _stopCleanup,
   _setValidatorOverrides,
 } from "../middleware";
 
@@ -265,11 +265,6 @@ describe("checkRateLimit()", () => {
     resetRateLimits();
   });
 
-  // Stop the cleanup timer once after all rate limit tests
-  afterAll(() => {
-    _stopCleanup();
-  });
-
   it("allows requests under the limit", () => {
     for (let i = 0; i < 4; i++) {
       expect(checkRateLimit("user1").allowed).toBe(true);
@@ -378,6 +373,53 @@ describe("checkRateLimit()", () => {
     for (let i = 0; i < 100; i++) {
       expect(checkRateLimit("user8").allowed).toBe(true);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// rateLimitCleanupTick
+// ---------------------------------------------------------------------------
+
+describe("rateLimitCleanupTick()", () => {
+  beforeEach(() => {
+    resetRateLimits();
+    process.env.ATLAS_RATE_LIMIT_RPM = "2";
+  });
+
+  afterEach(() => {
+    delete process.env.ATLAS_RATE_LIMIT_RPM;
+    resetRateLimits();
+  });
+
+  it("removes stale keys whose timestamps are all expired", () => {
+    // Use up slots for two different keys
+    checkRateLimit("stale-user");
+    checkRateLimit("stale-user");
+    checkRateLimit("active-user");
+
+    // Advance time past the 60s window
+    const originalNow = Date.now;
+    Date.now = () => originalNow() + 61_000;
+    try {
+      // Add a fresh timestamp for active-user so it survives cleanup
+      checkRateLimit("active-user");
+
+      rateLimitCleanupTick();
+
+      // stale-user should have been evicted — allowed again
+      expect(checkRateLimit("stale-user").allowed).toBe(true);
+      // active-user should still be tracked (1 fresh timestamp)
+      expect(checkRateLimit("active-user").allowed).toBe(true);
+      // third call for active-user should be blocked (2 existing + 1 = blocked at limit 2)
+      expect(checkRateLimit("active-user").allowed).toBe(false);
+    } finally {
+      Date.now = originalNow;
+    }
+  });
+
+  it("is safe to call when no rate limit state exists", () => {
+    resetRateLimits();
+    rateLimitCleanupTick(); // should not throw
   });
 });
 

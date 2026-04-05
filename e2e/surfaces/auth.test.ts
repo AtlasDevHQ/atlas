@@ -177,7 +177,7 @@ mock.module("@atlas/api/lib/plugins/hooks", () => ({
 const { resetAuthModeCache } = await import(
   "../../packages/api/src/lib/auth/detect"
 );
-const { resetRateLimits, _stopCleanup } = await import(
+const { resetRateLimits } = await import(
   "../../packages/api/src/lib/auth/middleware"
 );
 const { resetJWKSCache } = await import(
@@ -270,7 +270,6 @@ describe("E2E: Auth mode matrix", () => {
 
   afterAll(() => {
     env.restore();
-    _stopCleanup();
     sharedJwksServer?.close();
   });
 

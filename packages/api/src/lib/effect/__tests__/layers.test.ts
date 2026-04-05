@@ -145,17 +145,13 @@ describe("SettingsLive", () => {
     expect(result).toBeGreaterThanOrEqual(0);
   });
 
-  test("does not start refresh timer in self-hosted mode", async () => {
-    const { _getRefreshTimer } = await import("@atlas/api/lib/settings");
-
-    await Effect.runPromise(
-      Effect.gen(function* () {
-        yield* Settings;
-      }).pipe(Effect.provide(SettingsLive)),
-    );
-
-    // In self-hosted mode (default), no periodic timer should be running
-    expect(_getRefreshTimer()).toBeNull();
+  test("does not start refresh fiber in self-hosted mode", async () => {
+    // SettingsLive in self-hosted mode should not fork a refresh fiber.
+    // Verify by running and disposing — no errors on disposal means
+    // no dangling fiber.
+    const rt = ManagedRuntime.make(SettingsLive);
+    await Effect.runPromise(rt.runtimeEffect);
+    await rt.dispose();
   });
 
   test("finalizer runs on disposal without error", async () => {

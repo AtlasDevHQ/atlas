@@ -4,8 +4,8 @@
  * Calls detectAuthMode() and routes to the appropriate validator.
  * Exports in-memory sliding-window rate limiting (checkRateLimit, getClientIP).
  *
- * A background setInterval timer evicts stale rate-limit entries every 60s.
- * Call _stopCleanup() in tests to prevent the timer from keeping the process alive.
+ * Stale rate-limit entries are evicted by a periodic Effect fiber in the
+ * SchedulerLayer (lib/effect/layers.ts), not a module-level setInterval.
  */
 
 import type { AuthResult } from "@atlas/api/lib/auth/types";
@@ -114,29 +114,17 @@ export function resetRateLimits(): void {
   lastWarnedRpmValue = undefined;
 }
 
-/** Periodic cleanup — evict keys with no recent timestamps. */
-const cleanupInterval = setInterval(() => {
-  try {
-    const cutoff = Date.now() - WINDOW_MS;
-    for (const [key, timestamps] of windows) {
-      if (timestamps.length === 0 || timestamps[timestamps.length - 1] <= cutoff) {
-        windows.delete(key);
-      }
+/**
+ * Evict rate-limit keys with no recent timestamps.
+ * Called periodically by the SchedulerLayer fiber.
+ */
+export function rateLimitCleanupTick(): void {
+  const cutoff = Date.now() - WINDOW_MS;
+  for (const [key, timestamps] of windows) {
+    if (timestamps.length === 0 || timestamps[timestamps.length - 1] <= cutoff) {
+      windows.delete(key);
     }
-  } catch (err) {
-    log.error(
-      { err: err instanceof Error ? err : new Error(String(err)) },
-      "Rate limit cleanup failed",
-    );
   }
-}, WINDOW_MS);
-
-// Don't prevent Node/bun from exiting
-cleanupInterval.unref();
-
-/** Stop the periodic cleanup timer. For tests. */
-export function _stopCleanup(): void {
-  clearInterval(cleanupInterval);
 }
 
 // ---------------------------------------------------------------------------

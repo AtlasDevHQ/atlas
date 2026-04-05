@@ -120,7 +120,7 @@ mock.module("@atlas/api/lib/auth/middleware", () => ({
   checkRateLimit: mockCheckRateLimit,
   getClientIP: mock(() => null),
   resetRateLimits: mock(() => {}),
-  _stopCleanup: mock(() => {}),
+  rateLimitCleanupTick: mock(() => {}),
   _setValidatorOverrides: mock(() => {}),
 }));
 

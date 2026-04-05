@@ -142,7 +142,7 @@ export function createApiTestMocks(
     checkRateLimit: mockCheckRateLimit,
     getClientIP: mock(() => null),
     resetRateLimits: mock(() => {}),
-    _stopCleanup: mock(() => {}),
+    rateLimitCleanupTick: mock(() => {}),
     _setValidatorOverrides: mock(() => {}),
   }));
 

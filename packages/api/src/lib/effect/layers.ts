@@ -23,9 +23,13 @@
  * Each layer wraps an imperative startup step with Effect.addFinalizer
  * for cleanup. On shutdown, Effect disposes scoped layers via their
  * finalizers. Order among independent layers is unspecified.
+ *
+ * SettingsLive and SchedulerLayer fork long-lived periodic fibers
+ * (settings refresh, OAuth cleanup, rate-limit cleanup, email scheduler)
+ * that are interrupted when their Layer scope closes.
  */
 
-import { Context, Effect, Layer } from "effect";
+import { Context, Duration, Effect, Fiber, Layer, Schedule } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
 
 const log = createLogger("effect:layers");
@@ -230,13 +234,32 @@ export class Settings extends Context.Tag("Settings")<
   SettingsShape
 >() {}
 
+/** Default refresh interval: 30 seconds. */
+const SETTINGS_REFRESH_DEFAULT_MS = 30_000;
+/** Minimum allowed interval to prevent accidental tight loops. */
+const SETTINGS_REFRESH_MIN_MS = 1_000;
+
+/** Resolve the settings refresh interval from env or default. */
+function resolveSettingsRefreshInterval(): number {
+  const raw = process.env.ATLAS_SETTINGS_REFRESH_INTERVAL;
+  if (raw) {
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed) && parsed >= SETTINGS_REFRESH_MIN_MS) return parsed;
+    log.warn(
+      { raw, parsed },
+      `Invalid ATLAS_SETTINGS_REFRESH_INTERVAL — using default ${SETTINGS_REFRESH_DEFAULT_MS}ms (must be >= ${SETTINGS_REFRESH_MIN_MS})`,
+    );
+  }
+  return SETTINGS_REFRESH_DEFAULT_MS;
+}
+
 /**
  * Load settings overrides from internal DB into in-process cache.
  * Non-fatal: loadSettings() handles errors internally.
  *
- * In SaaS mode, starts a periodic refresh timer so that settings changes
- * from other API replicas propagate within ~30s. The timer is cleaned up
- * via Effect finalizer on shutdown.
+ * In SaaS mode, forks a periodic refresh fiber so that settings changes
+ * from other API replicas propagate within ~30s. The fiber is interrupted
+ * on shutdown via the Layer's scope finalizer.
  */
 export const SettingsLive: Layer.Layer<Settings> = Layer.scoped(
   Settings,
@@ -254,32 +277,45 @@ export const SettingsLive: Layer.Layer<Settings> = Layer.scoped(
       }),
     );
 
-    // In SaaS mode, start periodic refresh for multi-instance consistency
-    const timerCleanup = yield* Effect.tryPromise({
-      try: async () => {
-        const { getConfig } = await import("@atlas/api/lib/config");
-        if (getConfig()?.deployMode === "saas") {
-          const { startSettingsRefreshTimer } = await import("@atlas/api/lib/settings");
-          return startSettingsRefreshTimer();
-        }
-        return null;
+    // In SaaS mode, fork a periodic refresh fiber for multi-instance consistency
+    const isSaas = yield* Effect.try({
+      try: () => {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const { getConfig } = require("@atlas/api/lib/config") as { getConfig: () => { deployMode?: string } | null };
+        return getConfig()?.deployMode === "saas";
       },
-      catch: (err) => (err instanceof Error ? err.message : String(err)),
-    }).pipe(
-      Effect.catchAll((errMsg) => {
-        log.warn(
-          { err: new Error(errMsg) },
-          "Settings refresh timer failed to start — multi-instance settings sync disabled",
-        );
-        return Effect.succeed(null);
-      }),
-    );
+      catch: (err) => {
+        log.debug({ err: err instanceof Error ? err.message : String(err) }, "Config not available for SaaS detection — defaulting to self-hosted");
+        return false;
+      },
+    }).pipe(Effect.catchAll(() => Effect.succeed(false)));
 
-    yield* Effect.addFinalizer(() =>
-      Effect.sync(() => {
-        if (timerCleanup) timerCleanup();
-      }),
-    );
+    if (isSaas) {
+      const intervalMs = resolveSettingsRefreshInterval();
+      const tick = Effect.tryPromise({
+        try: async () => {
+          const { refreshSettingsTick } = await import("@atlas/api/lib/settings");
+          await refreshSettingsTick();
+        },
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      }).pipe(
+        Effect.catchAll((err) =>
+          Effect.sync(() => {
+            log.warn(
+              { err: err instanceof Error ? err.message : String(err) },
+              "Periodic settings refresh failed — will retry next interval",
+            );
+          }),
+        ),
+      );
+
+      const fiber = yield* Effect.fork(
+        tick.pipe(Effect.repeat(Schedule.spaced(Duration.millis(intervalMs)))),
+      );
+      yield* Effect.addFinalizer(() => Fiber.interrupt(fiber));
+
+      log.info({ intervalMs }, "Started periodic settings refresh fiber");
+    }
 
     return { loaded } satisfies SettingsShape;
   }),
@@ -301,7 +337,8 @@ export class Scheduler extends Context.Tag("Scheduler")<
 
 /**
  * Create a Scheduler layer that reads the config to decide which backend
- * to start. Finalizer stops the scheduler and email sub-scheduler.
+ * to start. Periodic cleanup fibers (OAuth state, rate-limit, email) are
+ * forked and automatically interrupted when the Layer scope closes.
  */
 export function makeSchedulerLive(
   config: ResolvedConfig,
@@ -344,24 +381,46 @@ export function makeSchedulerLive(
         );
       }
 
-      // Start onboarding email scheduler
-      yield* Effect.tryPromise({
-        try: async () => {
-          const { startOnboardingEmailScheduler } = await import(
-            "@atlas/api/lib/email/scheduler"
-          );
-          startOnboardingEmailScheduler();
+      // ── Periodic fiber: onboarding email scheduler (#1276) ──────────
+      const emailEnabled = yield* Effect.try({
+        try: () => {
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          const { isEmailSchedulerEnabled } = require("@atlas/api/lib/email/scheduler") as {
+            isEmailSchedulerEnabled: () => boolean;
+          };
+          return isEmailSchedulerEnabled();
         },
-        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-      }).pipe(
-        Effect.catchAll((err) => {
-          log.debug(
-            { err },
-            "Onboarding email scheduler not started — feature may be disabled",
-          );
-          return Effect.void;
-        }),
-      );
+        catch: (err) => {
+          log.debug({ err: err instanceof Error ? err.message : String(err) }, "Email scheduler module not available — skipping");
+          return false;
+        },
+      }).pipe(Effect.catchAll(() => Effect.succeed(false)));
+
+      if (emailEnabled) {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const { DEFAULT_EMAIL_SCHEDULER_INTERVAL_MS } = require("@atlas/api/lib/email/scheduler") as {
+          DEFAULT_EMAIL_SCHEDULER_INTERVAL_MS: number;
+        };
+        const emailTick = Effect.tryPromise({
+          try: async () => {
+            const { runTick } = await import("@atlas/api/lib/email/scheduler");
+            await runTick();
+          },
+          catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+        }).pipe(
+          Effect.catchAll((err) =>
+            Effect.sync(() => {
+              log.warn({ err: err instanceof Error ? err.message : String(err) }, "Onboarding email tick failed");
+            }),
+          ),
+        );
+        const emailFiber = yield* Effect.fork(
+          emailTick.pipe(Effect.repeat(Schedule.spaced(Duration.millis(DEFAULT_EMAIL_SCHEDULER_INTERVAL_MS)))),
+        );
+        yield* Effect.addFinalizer(() => Fiber.interrupt(emailFiber));
+      } else {
+        log.debug("Onboarding email scheduler not started — feature disabled");
+      }
 
       // Start audit purge scheduler (enterprise — no-op when ee module not installed)
       yield* Effect.tryPromise({
@@ -383,33 +442,57 @@ export function makeSchedulerLive(
         }),
       );
 
-      // Clean expired OAuth state every 10 minutes (DB rows + in-memory fallback)
-      const oauthCleanupTimer = setInterval(async () => {
-        let cleanExpiredOAuthState: () => Promise<void>;
-        try {
-          ({ cleanExpiredOAuthState } = await import(
+      // ── Periodic fiber: OAuth state cleanup (#1273) — every 10 min ──
+      const oauthTick = Effect.tryPromise({
+        try: async () => {
+          const { cleanExpiredOAuthState } = await import(
             "@atlas/api/lib/auth/oauth-state"
-          ));
-        } catch (err) {
-          log.error(
-            { err: err instanceof Error ? err.message : String(err) },
-            "OAuth state module failed to load — cleanup disabled",
           );
-          clearInterval(oauthCleanupTimer);
-          return;
-        }
-        try {
           await cleanExpiredOAuthState();
-        } catch (err) {
-          log.warn(
-            { err: err instanceof Error ? err.message : String(err) },
-            "OAuth state cleanup query failed",
-          );
-        }
-      }, 600_000);
-      oauthCleanupTimer.unref();
+        },
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      }).pipe(
+        Effect.catchAll((err) =>
+          Effect.sync(() => {
+            log.warn(
+              { err: err instanceof Error ? err.message : String(err) },
+              "OAuth state cleanup tick failed",
+            );
+          }),
+        ),
+      );
+      const oauthFiber = yield* Effect.fork(
+        oauthTick.pipe(Effect.repeat(Schedule.spaced(Duration.minutes(10)))),
+      );
+      yield* Effect.addFinalizer(() => Fiber.interrupt(oauthFiber));
 
-      // --- Finalizer: stop all schedulers ---
+      // ── Periodic fiber: rate-limit cleanup (#1274) — every 60s ──────
+      // Interval matches WINDOW_MS in middleware.ts (sliding-window duration).
+      const rateLimitTick = Effect.try({
+        try: () => {
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          const { rateLimitCleanupTick } = require("@atlas/api/lib/auth/middleware") as {
+            rateLimitCleanupTick: () => void;
+          };
+          rateLimitCleanupTick();
+        },
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      }).pipe(
+        Effect.catchAll((err) =>
+          Effect.sync(() => {
+            log.warn(
+              { err: err instanceof Error ? err.message : String(err) },
+              "Rate limit cleanup tick failed",
+            );
+          }),
+        ),
+      );
+      const rateLimitFiber = yield* Effect.fork(
+        rateLimitTick.pipe(Effect.repeat(Schedule.spaced(Duration.seconds(60)))),
+      );
+      yield* Effect.addFinalizer(() => Fiber.interrupt(rateLimitFiber));
+
+      // --- Finalizer: stop main scheduler ---
       yield* Effect.addFinalizer(() =>
         Effect.gen(function* () {
           if (backend === "bun") {
@@ -429,24 +512,6 @@ export function makeSchedulerLive(
               }),
             );
           }
-
-          yield* Effect.tryPromise({
-            try: async () => {
-              const { stopOnboardingEmailScheduler } = await import(
-                "@atlas/api/lib/email/scheduler"
-              );
-              stopOnboardingEmailScheduler();
-            },
-            catch: (err) =>
-              err instanceof Error ? err : new Error(String(err)),
-          }).pipe(
-            Effect.catchAll((err) => {
-              log.error({ err }, "Failed to stop onboarding email scheduler");
-              return Effect.void;
-            }),
-          );
-
-          clearInterval(oauthCleanupTimer);
 
           log.info("Schedulers shut down via Effect scope");
         }),

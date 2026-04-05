@@ -15,9 +15,11 @@
  *
  * Only loaded when ATLAS_RUNTIME=vercel or running on the Vercel platform.
  *
- * Effect migration: all try/catch chains replaced with Effect.tryPromise,
- * Effect.timeout (replacing Promise.race), Effect.retry for transient
- * sandbox creation failures, and tagged errors for control flow.
+ * Uses Effect.tryPromise for all async operations, Effect.timeout for
+ * execution deadlines, Effect.retry with exponential backoff for transient
+ * sandbox creation failures, and module-local tagged errors
+ * (SandboxInfraError, SandboxTimeoutError) to distinguish recoverable
+ * failure modes.
  */
 
 import { Effect, Data, Duration, Schedule } from "effect";
@@ -88,22 +90,22 @@ const SANDBOX_BASE = "/vercel/sandbox";
 // ── Local tagged errors ──────────────────────────────────────────────
 // Module-internal errors for Effect control flow. Not part of the global
 // AtlasError union — they're caught at the module boundary and mapped
-// to PythonResult before leaving.
+// to PythonResult failure objects before leaving.
 
 /** Infrastructure error — triggers sandbox invalidation. */
 class SandboxInfraError extends Data.TaggedError("SandboxInfraError")<{
   readonly message: string;
-  readonly cause?: unknown;
 }> {}
 
-/** Timeout error — does NOT invalidate (sandbox is still healthy). */
+/** Timeout error — does NOT invalidate (the sandbox itself is healthy; only the execution was slow). */
 class SandboxTimeoutError extends Data.TaggedError("SandboxTimeoutError")<{
   readonly message: string;
+  readonly timeoutMs: number;
 }> {}
 
 // ── Retry schedule ──────────────────────────────────────────────────
 // Exponential backoff for transient sandbox creation failures:
-// 100ms → 200ms → 400ms, max 3 retries.
+// up to 3 retries (4 total attempts) with delays of 100ms, 200ms, 400ms.
 
 const CREATION_RETRY = Schedule.intersect(
   Schedule.exponential(Duration.millis(100)),
@@ -136,7 +138,6 @@ export function createPythonSandboxBackend(): PythonBackend {
           log.error({ err: detail }, "Failed to import @vercel/sandbox");
           return new SandboxInfraError({
             message: "Vercel Sandbox runtime selected but @vercel/sandbox is not installed.",
-            cause: err,
           });
         },
       });
@@ -147,13 +148,19 @@ export function createPythonSandboxBackend(): PythonBackend {
           Sandbox.create({ runtime: "python3.13", networkPolicy: "allow-all" }),
         catch: (err) => {
           const detail = sandboxErrorDetail(err);
-          log.error({ err: detail }, "Python Sandbox.create() failed");
+          log.warn({ err: detail }, "Python Sandbox.create() attempt failed");
           return new SandboxInfraError({
             message: `Failed to create Python Vercel Sandbox: ${safeError(detail)}.`,
-            cause: err,
           });
         },
-      }).pipe(Effect.retry(CREATION_RETRY));
+      }).pipe(
+        Effect.retry(CREATION_RETRY),
+        Effect.tapError((err) =>
+          Effect.sync(() =>
+            log.error({ err: err.message }, "Python Sandbox.create() failed after retries"),
+          ),
+        ),
+      );
 
       // 3. Install data science packages (non-fatal — catch and continue)
       let packagesInstalled = false;
@@ -175,14 +182,14 @@ export function createPythonSandboxBackend(): PythonBackend {
             );
           }
         },
-        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+        catch: (err) => {
+          const detail = sandboxErrorDetail(err);
+          log.warn({ err: detail }, "pip install failed — continuing without data science packages");
+          return err instanceof Error ? err : new Error(String(err));
+        },
       }).pipe(
-        Effect.catchAll((err) =>
-          Effect.sync(() => {
-            const detail = sandboxErrorDetail(err);
-            log.warn({ err: detail }, "pip install failed — continuing without data science packages");
-          }),
-        ),
+        // intentionally non-fatal: pip failure is logged above, continue without packages
+        Effect.catchAll(() => Effect.void),
       );
 
       // 4. Lock network — stop sandbox on failure via Effect.tapError
@@ -193,7 +200,6 @@ export function createPythonSandboxBackend(): PythonBackend {
           log.error({ err: detail }, "Failed to set deny-all network policy");
           return new SandboxInfraError({
             message: `Failed to lock down sandbox network: ${safeError(detail)}.`,
-            cause: err,
           });
         },
       }).pipe(
@@ -211,6 +217,8 @@ export function createPythonSandboxBackend(): PythonBackend {
                 ),
               ),
             ),
+            // intentionally ignored: sandbox stop during cleanup is best-effort;
+            // the SandboxInfraError from updateNetworkPolicy is the primary error
             Effect.ignore,
           ),
         ),
@@ -259,15 +267,20 @@ export function createPythonSandboxBackend(): PythonBackend {
           10,
         ) || DEFAULT_TIMEOUT_MS;
 
+      // Capture the promise reference before entering the Effect program
+      // to avoid a race where invalidate() nulls sandboxPromise mid-flight
+      const cachedPromise = sandboxPromise;
+
       const program = Effect.gen(function* () {
         // 1. Resolve cached sandbox
         const instance = yield* Effect.tryPromise({
-          try: () => sandboxPromise!,
-          catch: (err) =>
-            new SandboxInfraError({
-              message: err instanceof Error ? err.message : String(err),
-              cause: err,
-            }),
+          try: () => cachedPromise,
+          catch: (err) => {
+            const detail = err instanceof Error ? err.message : String(err);
+            return new SandboxInfraError({
+              message: `Sandbox initialization failed: ${safeError(detail)}`,
+            });
+          },
         });
 
         const { sandbox } = instance;
@@ -283,7 +296,6 @@ export function createPythonSandboxBackend(): PythonBackend {
             log.error({ err: detail, execId }, "Failed to create exec dirs in sandbox");
             return new SandboxInfraError({
               message: `Sandbox infrastructure error: ${safeError(detail)}`,
-              cause: err,
             });
           },
         });
@@ -304,12 +316,11 @@ export function createPythonSandboxBackend(): PythonBackend {
             log.error({ err: detail, execId }, "Failed to write Python files to sandbox");
             return new SandboxInfraError({
               message: `Sandbox infrastructure error: ${safeError(detail)}`,
-              cause: err,
             });
           },
         });
 
-        // 4. Execute Python with Effect.timeout (replaces Promise.race)
+        // 4. Execute Python (with timeout)
         const pythonArgs = [
           `${SANDBOX_BASE}/${wrapperPath}`,
           `${SANDBOX_BASE}/${codePath}`,
@@ -337,7 +348,6 @@ export function createPythonSandboxBackend(): PythonBackend {
             log.error({ err: detail, execId }, "Sandbox runCommand failed for Python");
             return new SandboxInfraError({
               message: `Sandbox infrastructure error: ${safeError(detail)}. Will retry with a fresh sandbox.`,
-              cause: err,
             });
           },
         }).pipe(
@@ -347,6 +357,7 @@ export function createPythonSandboxBackend(): PythonBackend {
             return Effect.fail(
               new SandboxTimeoutError({
                 message: `Python execution timed out after ${timeout}ms`,
+                timeoutMs: timeout,
               }),
             );
           }),
@@ -360,7 +371,6 @@ export function createPythonSandboxBackend(): PythonBackend {
             log.error({ err: detail, execId }, "Failed to read stdout/stderr from sandbox");
             return new SandboxInfraError({
               message: `Failed to read execution output: ${safeError(detail)}`,
-              cause: err,
             });
           },
         });
@@ -435,16 +445,19 @@ export function createPythonSandboxBackend(): PythonBackend {
               return { success: false as const, error: err.message };
             }),
           ),
-          // Timeout errors: don't invalidate, return error result
+          // Timeout errors: don't invalidate (sandbox is healthy, only the execution was slow)
           Effect.catchTag("SandboxTimeoutError", (err) =>
             Effect.succeed({ success: false as const, error: err.message }),
           ),
-          // Unexpected defects: invalidate and return error
+          // Unexpected defects: invalidate and return sanitized error
           Effect.catchAllDefect((defect) => {
             const detail = defect instanceof Error ? defect.message : String(defect);
             log.error({ err: detail, execId }, "Unexpected error in Python sandbox execution");
             invalidate();
-            return Effect.succeed({ success: false as const, error: detail });
+            return Effect.succeed({
+              success: false as const,
+              error: `Unexpected Python sandbox error (${safeError(detail)}). Will retry with a fresh sandbox.`,
+            });
           }),
         ),
       );

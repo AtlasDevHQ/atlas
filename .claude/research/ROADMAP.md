@@ -818,6 +818,19 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 
 ---
 
+## Dashboard Persistence
+
+**Save and share query result layouts.** 6-phase feature (#1246): DB schema, add from chat, list/view pages, sharing, auto-refresh, AI suggestions.
+
+- [x] Phase 1: DB schema + 14 CRUD API endpoints (#1247, PR #1253)
+- [x] Phase 2: "Add to dashboard" button on SQL result cards in chat (#1248, PR #1254)
+- [x] Phase 3: `/dashboards` list page + `/dashboards/:id` view page with DnD card reorder (#1249, PR #1255)
+- [x] Phase 4: Share dialog + `/shared/dashboard/[token]` public page with OG tags (#1250, PR #1256)
+- [x] Phase 5: Auto-refresh via scheduler — cron-based, hooks into existing scheduler tick engine (#1251, PR #1257)
+- [x] Phase 6: AI-driven card suggestions — LLM analyzes existing cards, proposes complementary metrics grounded in semantic layer (#1252, PR #1258)
+
+---
+
 ## TanStack Query Migration
 
 **Frontend data fetching migrated to TanStack Query** across both `packages/web` and `packages/react`. Automatic request deduplication, stale-while-revalidate, window-focus refetch, and cache-aware mutations.
@@ -848,7 +861,7 @@ _Untracked ideas. Create issues when committing to work._
 - OSI (Open Semantic Interchange) compatibility — align YAML format with emerging standard (dbt + Cube + Snowflake + ThoughtSpot)
 
 ### Product Extensions
-- Dashboard persistence — save chart layouts, build lightweight dashboards from query results
+- ~~Dashboard persistence~~ — **shipped** (#1246, PRs #1253–#1258). DB schema + CRUD API, add-to-dashboard from chat, list/view pages with DnD reorder, sharing + public view, auto-refresh via scheduler, AI-driven card suggestions
 - Voice input / natural language voice queries — wait for Web Speech API maturity
 - Multi-agent collaboration — specialist agents per domain with coordinator routing
 - `atlas migrate` — semantic layer versioning and migration tracking

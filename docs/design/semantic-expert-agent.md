@@ -176,7 +176,7 @@ Delegates to the enhanced profiler (#1179). Subject to the same table whitelist 
 }
 ```
 
-Writes to the `learned_patterns` table with `type='semantic_amendment'` and `proposed_by='expert-agent'`. In interactive modes, the diff is shown to the user for approval before applying.
+Writes to the `learned_patterns` table with `type='semantic_amendment'` and `proposed_by='expert-agent'`. This requires extending the `LearnedPatternSource` type in `@useatlas/types` (currently `"agent" | "atlas-learn"`) to include `"expert-agent"`, and updating the Zod schema in `admin-learned-patterns.ts` and any frontend filter logic. In interactive modes, the diff is shown to the user for approval before applying.
 
 **`checkDataDistribution`**
 ```typescript
@@ -377,7 +377,7 @@ For autonomous proposals that aren't auto-approved, the existing learned pattern
 The enhanced profiler is the primary data source for the expert agent. Its output feeds the analysis engine:
 
 ```
-atlas init --profile-only    →  profiler_output.json
+atlas init --profile-only    →  profiler_output.json   (proposed — requires #1179)
 atlas improve                →  reads profiler_output.json (or profiles on demand)
 ```
 
@@ -395,6 +395,8 @@ The expert agent writes proposals to the same `learned_patterns` table used by `
 
 ```sql
 -- New columns needed (backward-compatible additions)
+-- Requires: Drizzle schema update in packages/api/src/lib/db/schema.ts
+-- + new numbered migration via `drizzle-kit generate`
 ALTER TABLE learned_patterns ADD COLUMN type TEXT DEFAULT 'query_pattern';
 -- Values: 'query_pattern' (existing), 'semantic_amendment' (new)
 
@@ -423,17 +425,19 @@ Users can see expert-agent changes in the version history timeline and rollback 
 
 #### 4. Semantic index
 
-After amendments are applied, the semantic index is invalidated and rebuilt:
+After amendments are applied, the semantic index is invalidated and rebuilt. The function differs by context:
 
+**Self-hosted (file-based):**
 ```typescript
 invalidateSemanticIndex();
-// Next agent query will trigger rebuild via getSemanticIndex()
+// Next agent query triggers rebuild via getSemanticIndex()
 ```
 
-For SaaS (org-scoped), the org's whitelist cache is also invalidated:
-
+**SaaS (org-scoped):**
 ```typescript
 invalidateOrgWhitelist(orgId);
+// Handles both whitelist and semantic index invalidation for the org
+// Next agent query triggers rebuild via getOrgSemanticIndex(orgId)
 ```
 
 #### 5. Agent system prompt

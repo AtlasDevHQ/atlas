@@ -13,15 +13,16 @@ describe("AtlasSqlClient", () => {
 
     const result = await Effect.runPromise(
       Effect.gen(function* () {
-        const sql = yield* AtlasSqlClient;
-        const qr = yield* sql.query("SELECT 1");
-        return { columns: qr.columns, rows: qr.rows, dbType: sql.dbType };
+        const client = yield* AtlasSqlClient;
+        const qr = yield* client.query("SELECT 1");
+        return { columns: qr.columns, rows: qr.rows, dbType: client.dbType, sql: client.sql };
       }).pipe(Effect.provide(layer)),
     );
 
     expect(result.columns).toEqual([]);
     expect(result.rows).toEqual([]);
     expect(result.dbType).toBe("postgres");
+    expect(result.sql).toBeNull();
   });
 
   test("createSqlClientTestLayer accepts custom query result", async () => {
@@ -32,14 +33,15 @@ describe("AtlasSqlClient", () => {
 
     const result = await Effect.runPromise(
       Effect.gen(function* () {
-        const sql = yield* AtlasSqlClient;
-        const qr = yield* sql.query("SELECT name FROM users");
-        return { rows: qr.rows, dbType: sql.dbType };
+        const client = yield* AtlasSqlClient;
+        const qr = yield* client.query("SELECT name FROM users");
+        return { rows: qr.rows, dbType: client.dbType, sql: client.sql };
       }).pipe(Effect.provide(layer)),
     );
 
     expect(result.rows).toEqual([{ name: "Alice" }]);
     expect(result.dbType).toBe("mysql");
+    expect(result.sql).toBeNull();
   });
 
   test("createSqlClientTestLayer with query error", async () => {
@@ -49,8 +51,8 @@ describe("AtlasSqlClient", () => {
 
     const exit = await Effect.runPromiseExit(
       Effect.gen(function* () {
-        const sql = yield* AtlasSqlClient;
-        return yield* sql.query("SELECT 1");
+        const client = yield* AtlasSqlClient;
+        return yield* client.query("SELECT 1");
       }).pipe(Effect.provide(layer)),
     );
 
@@ -77,9 +79,9 @@ describe("AtlasSqlClient", () => {
 
     const result = await Effect.runPromise(
       Effect.gen(function* () {
-        const sql = yield* AtlasSqlClient;
-        const qr = yield* sql.query("SELECT count(*) FROM users");
-        return { count: qr.rows[0]?.count, dbType: sql.dbType };
+        const client = yield* AtlasSqlClient;
+        const qr = yield* client.query("SELECT count(*) FROM users");
+        return { count: qr.rows[0]?.count, dbType: client.dbType };
       }).pipe(Effect.provide(combined)),
     );
 
@@ -100,8 +102,8 @@ describe("AtlasSqlClient", () => {
 
     const exit = await Effect.runPromiseExit(
       Effect.gen(function* () {
-        const sql = yield* AtlasSqlClient;
-        return yield* sql.query("SELECT 1");
+        const client = yield* AtlasSqlClient;
+        return yield* client.query("SELECT 1");
       }).pipe(Effect.provide(combined)),
     );
 
@@ -116,12 +118,83 @@ describe("AtlasSqlClient", () => {
 
     const result = await Effect.runPromise(
       Effect.gen(function* () {
-        const sql = yield* AtlasSqlClient;
-        return { id: sql.connectionId, type: sql.dbType };
+        const client = yield* AtlasSqlClient;
+        return { id: client.connectionId, type: client.dbType };
       }).pipe(Effect.provide(layer)),
     );
 
     expect(result.id).toBe("analytics");
     expect(result.type).toBe("postgres");
+  });
+
+  test("sql property is null for non-postgres connections", async () => {
+    const layer = createSqlClientTestLayer({
+      dbType: "mysql",
+    });
+
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const client = yield* AtlasSqlClient;
+        return client.sql;
+      }).pipe(Effect.provide(layer)),
+    );
+
+    expect(result).toBeNull();
+  });
+
+  test("makeAtlasSqlClientLive provides null sql for connections without _pool", async () => {
+    // Mock connection without _pool — simulates plugin connections
+    const mockConn = {
+      query: async () => ({ columns: ["id"], rows: [{ id: 1 }] }),
+      close: async () => {},
+    };
+
+    const connLayer = createTestLayer({
+      get: () => mockConn,
+      has: () => true,
+      getDBType: () => "postgres" as const,
+    });
+
+    const sqlLayer = makeAtlasSqlClientLive("default");
+    const combined = Layer.provide(sqlLayer, connLayer);
+
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const client = yield* AtlasSqlClient;
+        return { sql: client.sql, dbType: client.dbType };
+      }).pipe(Effect.provide(combined)),
+    );
+
+    // No _pool on mock → sql is null (graceful degradation)
+    expect(result.sql).toBeNull();
+    expect(result.dbType).toBe("postgres");
+  });
+
+  test("makeAtlasSqlClientLive provides null sql for mysql connections", async () => {
+    const mockConn = {
+      query: async () => ({ columns: ["id"], rows: [{ id: 1 }] }),
+      close: async () => {},
+      _pool: {}, // Has pool but is MySQL — dbType from registry, not connection
+    };
+
+    const connLayer = createTestLayer({
+      get: () => mockConn,
+      has: () => true,
+      getDBType: () => "mysql" as const,
+    });
+
+    const sqlLayer = makeAtlasSqlClientLive("default");
+    const combined = Layer.provide(sqlLayer, connLayer);
+
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const client = yield* AtlasSqlClient;
+        return { sql: client.sql, dbType: client.dbType };
+      }).pipe(Effect.provide(combined)),
+    );
+
+    // MySQL → no native SqlClient
+    expect(result.sql).toBeNull();
+    expect(result.dbType).toBe("mysql");
   });
 });

@@ -101,6 +101,12 @@ export interface AtlasWidgetConfig {
    * Name of a global function called when the widget encounters an error (optional).
    */
   onError?: string;
+  /**
+   * Show "Powered by Atlas" badge at the bottom of the widget (optional, default `"true"`).
+   *
+   * Set to `"false"` to hide the badge. Value is case-sensitive.
+   */
+  showBranding?: string;
 }
 
 // ---------------------------------------------------------------------------

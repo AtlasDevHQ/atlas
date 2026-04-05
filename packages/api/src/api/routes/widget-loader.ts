@@ -14,6 +14,7 @@
  *   data-on-close          (optional) — global function name called when widget closes
  *   data-on-query-complete (optional) — global function name called on query completion
  *   data-on-error          (optional) — global function name called on widget error
+ *   data-show-branding     (optional, default "true") — "false" hides the "Powered by Atlas" badge
  *
  * Programmatic API (available on window.Atlas after script loads):
  *   Atlas.open()              — opens the widget panel
@@ -66,6 +67,8 @@ var theme=s.getAttribute("data-theme")||"light";
 if(theme!=="light"&&theme!=="dark")theme="light";
 var position=s.getAttribute("data-position")||"bottom-right";
 if(position!=="bottom-right"&&position!=="bottom-left")position="bottom-right";
+var showBranding=s.getAttribute("data-show-branding");
+var brandingParam=showBranding==="false"?"&showBranding=false":"";
 
 var isRight=position==="bottom-right";
 var isOpen=false;
@@ -136,7 +139,7 @@ var wrap=document.createElement("div");
 wrap.className="atlas-wl-frame-wrap";
 
 var iframe=document.createElement("iframe");
-var iframeSrc=apiUrl.replace(/\\/$/,"")+"/widget?position=inline&theme="+encodeURIComponent(theme);
+var iframeSrc=apiUrl.replace(/\\/$/,"")+"/widget?position=inline&theme="+encodeURIComponent(theme)+brandingParam;
 iframe.src=iframeSrc;
 iframe.setAttribute("title","Atlas Chat");
 iframe.setAttribute("allow","clipboard-write");

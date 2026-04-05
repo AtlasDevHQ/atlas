@@ -21,6 +21,7 @@
  *                  custom property and overrides send button, input focus, and link colors
  *   welcome      — welcome message shown before first user message
  *   initialQuery — auto-sends this query on first open
+ *   showBranding — "true" (default) or "false"; hides "Powered by Atlas" badge when "false"
  *
  * postMessage API (from parent window only — e.source === window.parent):
  *   { type: "theme", value: "dark" | "light" }     — "system" not supported via postMessage
@@ -141,6 +142,7 @@ function buildWidgetHTML(config: {
   accent: string;
   welcome: string;
   initialQuery: string;
+  showBranding: boolean;
 }): string {
   // Escape < to \u003c to prevent XSS via </script> injection in the JSON blob
   const configJSON = JSON.stringify(config).replace(/</g, "\\u003c");
@@ -221,7 +223,7 @@ class EB extends Component{
 function render(){
   if(!state.visible){el.dataset.hidden="";return}
   delete el.dataset.hidden;
-  root.render(createElement(EB,null,createElement(AtlasChat,{apiUrl,apiKey:state.apiKey||void 0,theme:state.theme})));
+  root.render(createElement(EB,null,createElement(AtlasChat,{apiUrl,apiKey:state.apiKey||void 0,theme:state.theme,showBranding:cfg.showBranding!==false})));
 }
 
 /** Replace the default Atlas logo element with a custom <img>.
@@ -405,6 +407,7 @@ widget.get("/", (c) => {
   const rawAccent = c.req.query("accent") ?? "";
   const rawWelcome = c.req.query("welcome") ?? "";
   const rawInitialQuery = c.req.query("initialQuery") ?? "";
+  const rawShowBranding = c.req.query("showBranding") ?? "true";
 
   const theme = VALID_THEMES.has(rawTheme) ? rawTheme : "system";
   const apiUrl = sanitizeApiUrl(rawApiUrl);
@@ -415,13 +418,14 @@ widget.get("/", (c) => {
   // Length-limited to prevent oversized HTML responses.
   const welcome = rawWelcome.slice(0, 500);
   const initialQuery = rawInitialQuery.slice(0, 500);
+  const showBranding = rawShowBranding !== "false";
 
   // Allow embedding as iframe from any origin
   c.header("Content-Security-Policy", "frame-ancestors *");
   c.header("Access-Control-Allow-Origin", "*");
 
   return c.html(
-    buildWidgetHTML({ theme, apiUrl, position, logo, accent, welcome, initialQuery }),
+    buildWidgetHTML({ theme, apiUrl, position, logo, accent, welcome, initialQuery, showBranding }),
   );
 });
 

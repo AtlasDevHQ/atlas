@@ -10,6 +10,8 @@
  */
 
 export {
+  // Utilities
+  normalizeError,
   // SQL validation
   EmptyQueryError,
   ForbiddenPatternError,

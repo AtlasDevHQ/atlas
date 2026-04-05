@@ -8,6 +8,7 @@
 import { internalQuery, hasInternalDB } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 import { Effect, Duration } from "effect";
+import { normalizeError } from "@atlas/api/lib/effect/errors";
 
 const log = createLogger("semantic-entities");
 
@@ -214,7 +215,7 @@ export async function listVersions(
            LIMIT $4 OFFSET $5`,
           [orgId, entityType, name, limit, offset],
         ),
-        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+        catch: normalizeError,
       }),
       Effect.tryPromise({
         try: () => internalQuery<{ count: string }>(
@@ -223,9 +224,9 @@ export async function listVersions(
            WHERE org_id = $1 AND entity_type = $2 AND name = $3`,
           [orgId, entityType, name],
         ),
-        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+        catch: normalizeError,
       }),
-    ], { concurrency: 2 }).pipe(
+    ], { concurrency: "unbounded" }).pipe(
       Effect.timeoutFail({
         duration: Duration.seconds(30),
         onTimeout: () => new Error(`Version listing queries for ${entityType}/${name} timed out after 30s`),

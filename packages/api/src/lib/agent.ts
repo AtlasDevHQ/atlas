@@ -24,6 +24,7 @@ import {
 } from "ai";
 import type { LanguageModel } from "ai";
 import { Effect, Duration } from "effect";
+import { normalizeError } from "./effect/errors";
 import { getModel, getProviderType, getModelFromWorkspaceConfig, getWorkspaceProviderType, type ProviderType } from "./providers";
 import { defaultRegistry, type ToolRegistry } from "./tools/registry";
 import { getContextFragments, getDialectHints } from "./plugins/tools";
@@ -543,13 +544,13 @@ export async function runAgent({
         ? Effect.all([
             Effect.tryPromise({
               try: () => loadOrgWhitelist(orgId),
-              catch: (err) => err instanceof Error ? err : new Error(String(err)),
+              catch: normalizeError,
             }),
             Effect.tryPromise({
               try: () => getOrgSemanticIndex(orgId),
-              catch: (err) => err instanceof Error ? err : new Error(String(err)),
+              catch: normalizeError,
             }),
-          ], { concurrency: 2 }).pipe(
+          ], { concurrency: "unbounded" }).pipe(
             Effect.map(([, idx]) => idx || undefined),
             Effect.timeoutFail({
               duration: Duration.seconds(30),
@@ -576,7 +577,7 @@ export async function runAgent({
               const section = await buildLearnedPatternsSection(orgId ?? null, question);
               return section || undefined;
             },
-            catch: (err) => err instanceof Error ? err : new Error(String(err)),
+            catch: normalizeError,
           }).pipe(
             Effect.timeoutFail({
               duration: Duration.seconds(30),
@@ -588,7 +589,7 @@ export async function runAgent({
             }),
           )
         : Effect.succeed(undefined),
-    ], { concurrency: 2 }),
+    ], { concurrency: "unbounded" }),
   );
 
   const span = tracer.startSpan("atlas.agent", {

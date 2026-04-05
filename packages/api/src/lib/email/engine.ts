@@ -13,6 +13,7 @@ import { ONBOARDING_SEQUENCE, MILESTONE_TO_STEP } from "./sequence";
 import { renderOnboardingEmail } from "./templates";
 import { sendEmail } from "./delivery";
 import { Effect, Duration } from "effect";
+import { normalizeError } from "@atlas/api/lib/effect/errors";
 
 const log = createLogger("onboarding-email");
 
@@ -322,13 +323,13 @@ export async function getOnboardingStatuses(
         Effect.all([
           Effect.tryPromise({
             try: () => getSentSteps(user.user_id),
-            catch: (err) => err instanceof Error ? err : new Error(String(err)),
+            catch: normalizeError,
           }),
           Effect.tryPromise({
             try: () => isUnsubscribed(user.user_id),
-            catch: (err) => err instanceof Error ? err : new Error(String(err)),
+            catch: normalizeError,
           }),
-        ], { concurrency: 2 }).pipe(
+        ], { concurrency: "unbounded" }).pipe(
           Effect.map(([sentSteps, unsub]) => ({
             userId: user.user_id,
             email: user.email,
@@ -356,6 +357,11 @@ export async function getOnboardingStatuses(
           }),
         ),
       { concurrency: 5 },
+    ).pipe(
+      Effect.timeoutFail({
+        duration: Duration.seconds(60),
+        onTimeout: () => new Error("Onboarding status batch timed out after 60s"),
+      }),
     ),
   );
 

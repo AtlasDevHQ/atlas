@@ -28,7 +28,7 @@ import { render, fireEvent, waitFor, cleanup } from "@testing-library/react";
 import type React from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { AdminLayout } from "../components/admin/admin-layout";
-import { AtlasUIProvider, type AtlasAuthClient } from "../context";
+import { AtlasProvider, type AtlasAuthClient } from "../context";
 
 function makeAuthClient(overrides: Partial<AtlasAuthClient> = {}): AtlasAuthClient {
   return {
@@ -46,11 +46,11 @@ function renderLayout(authClient?: AtlasAuthClient) {
   const client = authClient ?? makeAuthClient();
   return render(
     <QueryClientProvider client={testQueryClient}>
-      <AtlasUIProvider config={{ apiUrl: "http://localhost:3001", isCrossOrigin: false, authClient: client }}>
+      <AtlasProvider config={{ apiUrl: "http://localhost:3001", isCrossOrigin: false, authClient: client }}>
         <AdminLayout>
           <div data-testid="child-content">Admin page content</div>
         </AdminLayout>
-      </AtlasUIProvider>
+      </AtlasProvider>
     </QueryClientProvider>,
   );
 }

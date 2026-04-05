@@ -24,7 +24,7 @@ mock.module("next/dynamic", () => ({
 }));
 
 import { ToolPart } from "../components/chat/tool-part";
-import { AtlasUIProvider } from "../context";
+import { AtlasProvider } from "../context";
 
 const stubAuthClient = {
   signIn: { email: async () => ({}) },
@@ -35,9 +35,9 @@ const stubAuthClient = {
 
 function Wrapper({ children }: { children: ReactNode }) {
   return (
-    <AtlasUIProvider config={{ apiUrl: "http://localhost:3001", isCrossOrigin: false, authClient: stubAuthClient }}>
+    <AtlasProvider config={{ apiUrl: "http://localhost:3001", isCrossOrigin: false, authClient: stubAuthClient }}>
       {children}
-    </AtlasUIProvider>
+    </AtlasProvider>
   );
 }
 

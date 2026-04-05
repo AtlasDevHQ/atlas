@@ -6,7 +6,7 @@ import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { useQuery, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { AuthMode } from "../lib/types";
 import type { ToolRenderers } from "../lib/tool-renderer-types";
-import { AtlasContext, useAtlasContext, ActionAuthProvider, type AtlasAuthClient } from "../context";
+import { AtlasContext, useAtlasContext, ActionAuthProvider, noopAuthClient, type AtlasAuthClient } from "../context";
 import { DarkModeContext, useDarkMode, useThemeMode, setTheme, applyBrandColor, OKLCH_RE, type ThemeMode } from "../hooks/use-dark-mode";
 import { useConversations } from "../hooks/use-conversations";
 import { ErrorBanner } from "./chat/error-banner";
@@ -60,13 +60,6 @@ export interface AtlasChatProps {
 }
 
 /** No-op auth client for non-managed auth modes. */
-const noopAuthClient: AtlasAuthClient = {
-  signIn: { email: async () => ({ error: { message: "Not supported" } }) },
-  signUp: { email: async () => ({ error: { message: "Not supported" } }) },
-  signOut: async () => {},
-  useSession: () => ({ data: null, isPending: false }),
-};
-
 /* Static SVG icons — hoisted to avoid recreation on every render */
 const MenuIcon = (
   <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20" fill="currentColor" className="h-5 w-5">
@@ -313,7 +306,7 @@ function AtlasChatInner({
     return headers;
   }, [apiKey]);
 
-  const getCredentials = useCallback((): RequestCredentials => {
+  const getCredentials = useCallback((): "include" | "omit" | "same-origin" => {
     return isCrossOrigin ? "include" : "same-origin";
   }, [isCrossOrigin]);
 
@@ -343,7 +336,7 @@ function AtlasChatInner({
     }
   }, [propApiKey]);
 
-  const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
+  const credentials: "include" | "omit" | "same-origin" = isCrossOrigin ? "include" : "same-origin";
 
   // Sync health error + brand color as side effects.
   // Clears warning on recovery (e.g. window-focus refetch succeeds after initial failure).

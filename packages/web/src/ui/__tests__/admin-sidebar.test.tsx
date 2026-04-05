@@ -26,7 +26,7 @@ mock.module("@/ui/hooks/use-branding", () => ({
 
 import { render } from "@testing-library/react";
 import { SidebarProvider } from "@/components/ui/sidebar";
-import { AtlasUIProvider, type AtlasAuthClient } from "../context";
+import { AtlasProvider, type AtlasAuthClient } from "../context";
 import { AdminSidebar } from "../components/admin/admin-sidebar";
 
 const stubAuthClient: AtlasAuthClient = {
@@ -38,9 +38,9 @@ const stubAuthClient: AtlasAuthClient = {
 
 function Wrapper({ children }: { children: ReactNode }) {
   return (
-    <AtlasUIProvider config={{ apiUrl: "http://localhost:3001", isCrossOrigin: false, authClient: stubAuthClient }}>
+    <AtlasProvider config={{ apiUrl: "http://localhost:3001", isCrossOrigin: false, authClient: stubAuthClient }}>
       <SidebarProvider>{children}</SidebarProvider>
-    </AtlasUIProvider>
+    </AtlasProvider>
   );
 }
 

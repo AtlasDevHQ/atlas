@@ -16,7 +16,7 @@ export interface HealthData {
  */
 export function useHealthQuery() {
   const { apiUrl, isCrossOrigin } = useAtlasContext();
-  const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
+  const credentials: "include" | "omit" | "same-origin" = isCrossOrigin ? "include" : "same-origin";
 
   return useQuery<HealthData>({
     queryKey: ["atlas", "health"],

@@ -2,26 +2,12 @@
 
 import { createContext, useContext, useMemo, useState, type ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { AtlasAuthClient, ActionAuthValue } from "@useatlas/types";
 
-// ── Auth client interface ──────────────────────────────────────────
-
-/**
- * Duck-typed interface that matches better-auth's client shape.
- * Components like ManagedAuthCard call signIn/signUp/signOut and useSession().
- */
-export interface AtlasAuthClient {
-  signIn: {
-    email: (opts: { email: string; password: string }) => Promise<{ error?: { message?: string } | null }>;
-  };
-  signUp: {
-    email: (opts: { email: string; password: string; name: string }) => Promise<{ error?: { message?: string } | null }>;
-  };
-  signOut: () => Promise<unknown>;
-  useSession: () => { data?: { user?: { email?: string } } | null; isPending?: boolean };
-}
+export type { AtlasAuthClient, ActionAuthValue } from "@useatlas/types";
 
 /** No-op auth client for non-managed auth modes. Warns when auth operations are attempted. */
-const noopAuthClient: AtlasAuthClient = {
+export const noopAuthClient: AtlasAuthClient = {
   signIn: {
     email: async () => {
       console.warn("[Atlas] signIn called but no authClient was provided to AtlasProvider");
@@ -118,11 +104,6 @@ export function AtlasProvider({
 export { AtlasContext };
 
 // ── ActionAuth — internal context for passing auth to action cards ──
-
-export interface ActionAuthValue {
-  getHeaders: () => Record<string, string>;
-  getCredentials: () => RequestCredentials;
-}
 
 const ActionAuthContext = createContext<ActionAuthValue | null>(null);
 

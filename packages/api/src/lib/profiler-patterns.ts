@@ -5,7 +5,9 @@
  * url, phone, timestamp), discovers joins from naming conventions beyond _id
  * suffix, and suggests appropriate aggregation types for measures.
  *
- * All functions are pure — they operate on TableProfile[] without side effects.
+ * Detection functions (`detectSemanticType`, `suggestMeasureType`, `describeMeasure`)
+ * are pure. Bulk inference functions (`inferSemanticTypes`,
+ * `inferJoinsFromNamingConventions`) mutate profiles in place.
  */
 
 import type {
@@ -24,7 +26,7 @@ const CURRENCY_NAME_PATTERNS = /(?:^|_)(amount|price|cost|revenue|fee|payment|ba
 const CURRENCY_VALUE_PATTERN = /^[$€£¥₹]\s?[\d,.]+$/;
 const TWO_DECIMAL_PATTERN = /^\d[\d,]*\.\d{2}$/;
 
-const PERCENTAGE_NAME_PATTERNS = /(?:^|_)(rate|pct|percent|ratio|proportion|share|coverage|utilization|completion|success_rate|failure_rate|click_rate|open_rate|conversion|churn)(?:$|_|$)/i;
+const PERCENTAGE_NAME_PATTERNS = /(?:^|_)(rate|pct|percent|ratio|proportion|share|coverage|utilization|completion|success_rate|failure_rate|click_rate|open_rate|conversion|churn)(?:$|_)/i;
 
 const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const URL_PATTERN = /^https?:\/\//i;
@@ -221,7 +223,8 @@ export function inferJoinsFromNamingConventions(profiles: TableProfile[]): void 
 // ---------------------------------------------------------------------------
 
 /** Aggregation type suggestion for a column based on name patterns and semantic type. */
-export type MeasureSuggestion = "sum" | "avg" | "sum_and_avg" | "count_where";
+export const MEASURE_SUGGESTIONS = ["sum", "avg", "sum_and_avg", "count_where"] as const;
+export type MeasureSuggestion = (typeof MEASURE_SUGGESTIONS)[number];
 
 const SUM_ONLY_PATTERNS = /(?:^|_)(count|total|num|quantity|qty|sum)(?:$|_)/i;
 const AVG_ONLY_PATTERNS = /(?:^|_)(rate|ratio|pct|percent|avg|average|mean|score|rating|index|rank)(?:$|_)/i;

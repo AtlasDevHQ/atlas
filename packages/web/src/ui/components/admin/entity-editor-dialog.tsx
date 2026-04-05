@@ -49,7 +49,7 @@ import { cn } from "@/lib/utils";
 // ── Schema ────────────────────────────────────────────────────────
 
 const DIMENSION_TYPES = ["string", "number", "date", "boolean", "timestamp"] as const;
-const MEASURE_TYPES = ["count", "sum", "avg", "count_distinct", "min", "max"] as const;
+const MEASURE_TYPES = ["count", "sum", "avg", "count_distinct", "count_where", "min", "max"] as const;
 
 const dimensionSchema = z.object({
   name: z.string().min(1, "Required"),

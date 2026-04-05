@@ -602,21 +602,42 @@ export function generateEntityYAML(
 
       const suggestion = suggestMeasureType(col);
 
-      if (suggestion === "sum" || suggestion === "sum_and_avg") {
-        measures.push({
-          name: `total_${col.name}`,
-          sql: col.name,
-          type: "sum",
-          description: describeMeasure(col, "sum"),
-        });
-      }
-      if (suggestion === "avg" || suggestion === "sum_and_avg") {
-        measures.push({
-          name: `avg_${col.name}`,
-          sql: col.name,
-          type: "avg",
-          description: describeMeasure(col, "avg"),
-        });
+      switch (suggestion) {
+        case "sum":
+          measures.push({
+            name: `total_${col.name}`,
+            sql: col.name,
+            type: "sum",
+            description: describeMeasure(col, "sum"),
+          });
+          break;
+        case "avg":
+          measures.push({
+            name: `avg_${col.name}`,
+            sql: col.name,
+            type: "avg",
+            description: describeMeasure(col, "avg"),
+          });
+          break;
+        case "sum_and_avg":
+          measures.push({
+            name: `total_${col.name}`,
+            sql: col.name,
+            type: "sum",
+            description: describeMeasure(col, "sum"),
+          });
+          measures.push({
+            name: `avg_${col.name}`,
+            sql: col.name,
+            type: "avg",
+            description: describeMeasure(col, "avg"),
+          });
+          break;
+        case "count_where":
+          // Booleans are handled above — this branch is unreachable for numeric columns
+          break;
+        default:
+          suggestion satisfies never;
       }
     }
   }
@@ -915,31 +936,39 @@ export function generateMetricYAML(profile: TableProfile, schema: string = "publ
   for (const col of numericCols) {
     const suggestion = suggestMeasureType(col);
 
-    if (suggestion === "sum" || suggestion === "sum_and_avg") {
-      metrics.push({
-        id: `total_${col.name}`,
-        label: `Total ${col.name.replace(/_/g, " ")}`,
-        description: `Sum of ${col.name} across all ${profile.table_name}.`,
-        type: "atomic",
-        source: {
-          entity: entityName(profile.table_name),
-          measure: `total_${col.name}`,
-        },
-        sql: `SELECT SUM(${col.name}) as total_${col.name}\nFROM ${qualifiedTable}`,
-        aggregation: "sum",
-        objective: "maximize",
-      });
-    }
-
-    if (suggestion === "avg" || suggestion === "sum_and_avg") {
-      metrics.push({
-        id: `avg_${col.name}`,
-        label: `Average ${col.name.replace(/_/g, " ")}`,
-        description: `Average ${col.name} per ${singularize(profile.table_name)}.`,
-        type: "atomic",
-        sql: `SELECT AVG(${col.name}) as avg_${col.name}\nFROM ${qualifiedTable}`,
-        aggregation: "avg",
-      });
+    switch (suggestion) {
+      case "sum":
+      case "sum_and_avg":
+        metrics.push({
+          id: `total_${col.name}`,
+          label: `Total ${col.name.replace(/_/g, " ")}`,
+          description: `Sum of ${col.name} across all ${profile.table_name}.`,
+          type: "atomic",
+          source: {
+            entity: entityName(profile.table_name),
+            measure: `total_${col.name}`,
+          },
+          sql: `SELECT SUM(${col.name}) as total_${col.name}\nFROM ${qualifiedTable}`,
+          aggregation: "sum",
+          objective: "maximize",
+        });
+        if (suggestion === "sum") break;
+      // falls through for sum_and_avg
+      case "avg":
+        metrics.push({
+          id: `avg_${col.name}`,
+          label: `Average ${col.name.replace(/_/g, " ")}`,
+          description: `Average ${col.name} per ${singularize(profile.table_name)}.`,
+          type: "atomic",
+          sql: `SELECT AVG(${col.name}) as avg_${col.name}\nFROM ${qualifiedTable}`,
+          aggregation: "avg",
+        });
+        break;
+      case "count_where":
+        // Booleans filtered out by numericCols — unreachable for numeric columns
+        break;
+      default:
+        suggestion satisfies never;
     }
 
     if (enumCols.length > 0) {

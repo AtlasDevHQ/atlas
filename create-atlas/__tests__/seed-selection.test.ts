@@ -88,6 +88,20 @@ describe("backward-compatible symlinks", () => {
     const target = fs.readlinkSync(symlinkPath);
     expect(target).toBe("seeds/simple/semantic");
   });
+
+  test("cybersec-semantic symlink resolves to seeds/cybersec/semantic", () => {
+    const symlinkPath = path.join(DATA_DIR, "cybersec-semantic");
+    expect(fs.existsSync(symlinkPath)).toBe(true);
+    const target = fs.readlinkSync(symlinkPath);
+    expect(target).toBe("seeds/cybersec/semantic");
+  });
+
+  test("ecommerce-semantic symlink resolves to seeds/ecommerce/semantic", () => {
+    const symlinkPath = path.join(DATA_DIR, "ecommerce-semantic");
+    expect(fs.existsSync(symlinkPath)).toBe(true);
+    const target = fs.readlinkSync(symlinkPath);
+    expect(target).toBe("seeds/ecommerce/semantic");
+  });
 });
 
 // ── CLI DEMO_DATASETS config ─────────────────────────────────────────
@@ -165,5 +179,89 @@ describe("seed SQL content", () => {
     const sql = fs.readFileSync(path.join(SEEDS_DIR, "ecommerce/seed.sql"), "utf-8");
     expect(sql).toContain("generate_series");
     expect(sql).toContain("CREATE TABLE");
+  });
+});
+
+// ── pruneSeedData ────────────────────────────────────────────────────
+
+import { pruneSeedData } from "../index";
+import * as os from "os";
+
+const ALL_SEEDS = ["simple", "cybersec", "ecommerce"] as const;
+
+function createFakeProject(selectedSeed?: string): string {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "atlas-prune-test-"));
+  // Create data/seeds/<name>/ with seed.sql + semantic/entities/
+  for (const seed of ALL_SEEDS) {
+    const seedDir = path.join(tmpDir, "data", "seeds", seed);
+    fs.mkdirSync(path.join(seedDir, "semantic", "entities"), { recursive: true });
+    fs.writeFileSync(path.join(seedDir, "seed.sql"), `-- ${seed} seed SQL`);
+    fs.writeFileSync(path.join(seedDir, "semantic", "catalog.yml"), `name: ${seed}`);
+    fs.writeFileSync(path.join(seedDir, "semantic", "entities", "main.yml"), `table: ${seed}`);
+  }
+  // Create flat backward-compat SQL files
+  fs.writeFileSync(path.join(tmpDir, "data", "demo.sql"), "-- simple");
+  fs.writeFileSync(path.join(tmpDir, "data", "simple.sql"), "-- simple");
+  fs.writeFileSync(path.join(tmpDir, "data", "cybersec.sql"), "-- cybersec");
+  fs.writeFileSync(path.join(tmpDir, "data", "ecommerce.sql"), "-- ecommerce");
+  // Create default semantic/ dir (simulates template's simple semantic layer)
+  fs.mkdirSync(path.join(tmpDir, "semantic", "entities"), { recursive: true });
+  fs.writeFileSync(path.join(tmpDir, "semantic", "catalog.yml"), "name: default");
+  return tmpDir;
+}
+
+describe("pruneSeedData", () => {
+  test("selecting cybersec keeps only cybersec seed dir", () => {
+    const tmp = createFakeProject();
+    pruneSeedData(tmp, "cybersec", ALL_SEEDS);
+
+    expect(fs.existsSync(path.join(tmp, "data", "seeds", "cybersec"))).toBe(true);
+    expect(fs.existsSync(path.join(tmp, "data", "seeds", "simple"))).toBe(false);
+    expect(fs.existsSync(path.join(tmp, "data", "seeds", "ecommerce"))).toBe(false);
+
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  test("selecting cybersec overwrites semantic/ with cybersec semantic", () => {
+    const tmp = createFakeProject();
+    pruneSeedData(tmp, "cybersec", ALL_SEEDS);
+
+    const catalog = fs.readFileSync(path.join(tmp, "semantic", "catalog.yml"), "utf-8");
+    expect(catalog).toContain("cybersec");
+
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  test("selecting cybersec removes demo.sql flat file", () => {
+    const tmp = createFakeProject();
+    pruneSeedData(tmp, "cybersec", ALL_SEEDS);
+
+    expect(fs.existsSync(path.join(tmp, "data", "demo.sql"))).toBe(false);
+    expect(fs.existsSync(path.join(tmp, "data", "simple.sql"))).toBe(false);
+    expect(fs.existsSync(path.join(tmp, "data", "ecommerce.sql"))).toBe(false);
+    // cybersec.sql should remain
+    expect(fs.existsSync(path.join(tmp, "data", "cybersec.sql"))).toBe(true);
+
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  test("selecting simple keeps demo.sql (it is a copy of simple/seed.sql)", () => {
+    const tmp = createFakeProject();
+    pruneSeedData(tmp, "simple", ALL_SEEDS);
+
+    expect(fs.existsSync(path.join(tmp, "data", "demo.sql"))).toBe(true);
+    expect(fs.existsSync(path.join(tmp, "data", "cybersec.sql"))).toBe(false);
+    expect(fs.existsSync(path.join(tmp, "data", "ecommerce.sql"))).toBe(false);
+
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  test("handles missing data/seeds/ directory without crashing", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "atlas-prune-empty-"));
+    fs.mkdirSync(path.join(tmp, "data"), { recursive: true });
+    // No seeds dir, no semantic dir — should not throw
+    expect(() => pruneSeedData(tmp, "cybersec", ALL_SEEDS)).not.toThrow();
+
+    fs.rmSync(tmp, { recursive: true, force: true });
   });
 });

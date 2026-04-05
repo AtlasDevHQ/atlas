@@ -47,6 +47,45 @@ function copyDirRecursive(src: string, dest: string): void {
   }
 }
 
+/**
+ * After scaffolding with a selected seed, install its semantic layer and
+ * remove data for unselected seeds to keep the project lean.
+ */
+export function pruneSeedData(
+  targetDir: string,
+  selectedSeed: string,
+  allSeeds: readonly string[],
+): void {
+  const seedSemanticDir = path.join(targetDir, "data", "seeds", selectedSeed, "semantic");
+  if (fs.existsSync(seedSemanticDir)) {
+    const targetSemantic = path.join(targetDir, "semantic");
+    if (fs.existsSync(targetSemantic)) {
+      fs.rmSync(targetSemantic, { recursive: true });
+    }
+    copyDirRecursive(seedSemanticDir, targetSemantic);
+  }
+
+  // Remove seeds not selected
+  const seedsDir = path.join(targetDir, "data", "seeds");
+  if (fs.existsSync(seedsDir)) {
+    for (const entry of fs.readdirSync(seedsDir)) {
+      if (entry !== selectedSeed) {
+        fs.rmSync(path.join(seedsDir, entry), { recursive: true, force: true });
+      }
+    }
+  }
+
+  // Remove unselected flat seed SQL files (backward-compat copies)
+  for (const name of allSeeds) {
+    if (name === selectedSeed) continue;
+    fs.rmSync(path.join(targetDir, "data", `${name}.sql`), { force: true });
+  }
+  // Remove demo.sql flat copy if not using simple (it's a copy of simple/seed.sql)
+  if (selectedSeed !== "simple") {
+    fs.rmSync(path.join(targetDir, "data", "demo.sql"), { force: true });
+  }
+}
+
 function bail(message?: string): never {
   p.cancel(message ?? "Setup cancelled.");
   process.exit(1);
@@ -646,7 +685,8 @@ async function main() {
   // Demo data is not available for MySQL (SQL files use PostgreSQL-specific syntax)
   if (dbChoice === "mysql") {
     if (demoFlag) {
-      p.log.warn("Demo data is not available for MySQL. The --demo flag will be ignored.");
+      const flagName = seedIdx !== -1 ? "--seed" : "--demo";
+      p.log.warn(`Demo data is not available for MySQL. The ${flagName} flag will be ignored.`);
       loadDemo = false;
     }
     p.log.info(`Demo data: ${pc.dim("not available for MySQL — use your own database")}`);
@@ -657,8 +697,9 @@ async function main() {
       defaultDisplay: "no",
     });
   } else if (demoFlag) {
-    // --demo flag was provided — skip the prompt
-    p.log.info(`Demo data: ${pc.cyan(demoDataset)} ${pc.dim("(--demo)")}`);
+    // --demo or --seed flag was provided — skip the prompt
+    const flagName = seedIdx !== -1 ? "--seed" : "--demo";
+    p.log.info(`Demo data: ${pc.cyan(demoDataset)} ${pc.dim(`(${flagName})`)}`);
   } else {
     loadDemo = await confirmOrDefault({
       label: "Demo data",
@@ -798,35 +839,7 @@ async function main() {
 
   // If a demo seed is selected, install its semantic layer and prune other seeds
   if (loadDemo) {
-    const seedSemanticDir = path.join(targetDir, "data", "seeds", demoDataset, "semantic");
-    if (fs.existsSync(seedSemanticDir)) {
-      // Overwrite the default (simple) semantic layer with the selected seed's layer
-      const targetSemantic = path.join(targetDir, "semantic");
-      if (fs.existsSync(targetSemantic)) {
-        fs.rmSync(targetSemantic, { recursive: true });
-      }
-      copyDirRecursive(seedSemanticDir, targetSemantic);
-    }
-
-    // Remove seeds not selected to keep the project lean
-    const seedsDir = path.join(targetDir, "data", "seeds");
-    if (fs.existsSync(seedsDir)) {
-      for (const entry of fs.readdirSync(seedsDir)) {
-        if (entry !== demoDataset) {
-          fs.rmSync(path.join(seedsDir, entry), { recursive: true, force: true });
-        }
-      }
-    }
-
-    // Remove unselected flat seed SQL files (backward-compat copies)
-    for (const name of VALID_DEMO_DATASETS) {
-      if (name === demoDataset) continue;
-      fs.rmSync(path.join(targetDir, "data", `${name}.sql`), { force: true });
-    }
-    // Remove demo.sql flat copy if not using simple (it's a copy of simple/seed.sql)
-    if (demoDataset !== "simple") {
-      fs.rmSync(path.join(targetDir, "data", "demo.sql"), { force: true });
-    }
+    pruneSeedData(targetDir, demoDataset, VALID_DEMO_DATASETS);
   }
 
   // Replace %PROJECT_NAME% in templated files (only files that exist in the template)

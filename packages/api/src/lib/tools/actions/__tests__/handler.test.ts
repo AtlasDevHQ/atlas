@@ -693,10 +693,10 @@ describe("listPendingActions() — userId filter", () => {
 
 describe("ActionTimeoutError", () => {
   it("stores the timeout duration and has the right message", () => {
-    const err = new ActionTimeoutError(5000);
+    const err = new ActionTimeoutError({ message: "Action timed out after 5000ms", timeoutMs: 5000 });
     expect(err.message).toBe("Action timed out after 5000ms");
     expect(err.timeoutMs).toBe(5000);
-    expect(err.name).toBe("ActionTimeoutError");
+    expect(err._tag).toBe("ActionTimeoutError");
     expect(err).toBeInstanceOf(Error);
   });
 });

@@ -26,16 +26,12 @@ import { logActionAudit } from "./audit";
 
 const log = createLogger("action-handler");
 
+import { ActionTimeoutError } from "@atlas/api/lib/effect/errors";
+export { ActionTimeoutError } from "@atlas/api/lib/effect/errors";
+
 // ---------------------------------------------------------------------------
 // Timeout helper
 // ---------------------------------------------------------------------------
-
-export class ActionTimeoutError extends Error {
-  constructor(public readonly timeoutMs: number) {
-    super(`Action timed out after ${timeoutMs}ms`);
-    this.name = "ActionTimeoutError";
-  }
-}
 
 function executeWithTimeout<T>(
   fn: () => Promise<T>,
@@ -44,7 +40,7 @@ function executeWithTimeout<T>(
   if (timeoutMs == null) return fn();
   let timer: ReturnType<typeof setTimeout>;
   const timeoutPromise = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new ActionTimeoutError(timeoutMs)), timeoutMs);
+    timer = setTimeout(() => reject(new ActionTimeoutError({ message: `Action timed out after ${timeoutMs}ms`, timeoutMs })), timeoutMs);
   });
   return Promise.race([fn(), timeoutPromise]).finally(() => clearTimeout(timer!));
 }

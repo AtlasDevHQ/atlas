@@ -110,23 +110,34 @@ export function createConnectionMock(overrides?: ConnectionMockOverrides) {
     extractTargetHost: () => "localhost",
     ConnectionRegistry: class {},
     ConnectionNotRegisteredError: class extends Error {
-      constructor(id: string) {
-        super(`Connection "${id}" is not registered.`);
+      readonly id: string;
+      readonly _tag = "ConnectionNotRegisteredError";
+      constructor(args: { id: string }) {
+        super(`Connection "${args.id}" is not registered.`);
         this.name = "ConnectionNotRegisteredError";
+        this.id = args.id;
       }
     },
     NoDatasourceConfiguredError: class extends Error {
+      readonly _tag = "NoDatasourceConfiguredError";
       constructor() {
         super("No analytics datasource configured.");
         this.name = "NoDatasourceConfiguredError";
       }
     },
     PoolCapacityExceededError: class extends Error {
-      constructor(current: number, requested: number, max: number) {
+      readonly currentSlots: number;
+      readonly requestedSlots: number;
+      readonly maxTotalConnections: number;
+      readonly _tag = "PoolCapacityExceededError";
+      constructor(args: { currentSlots: number; requestedSlots: number; maxTotalConnections: number }) {
         super(
-          `Cannot create org pool: would use ${current + requested} connection slots, exceeding maxTotalConnections (${max}).`,
+          `Cannot create org pool: would use ${args.currentSlots + args.requestedSlots} connection slots, exceeding maxTotalConnections (${args.maxTotalConnections}).`,
         );
         this.name = "PoolCapacityExceededError";
+        this.currentSlots = args.currentSlots;
+        this.requestedSlots = args.requestedSlots;
+        this.maxTotalConnections = args.maxTotalConnections;
       }
     },
     ...topLevelOverrides,

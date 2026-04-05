@@ -94,7 +94,7 @@ describe("executeSQL connection error handling", () => {
 
   it("returns curated error for unregistered connection", async () => {
     getFn = (id: string) => {
-      throw new ConnectionNotRegisteredError(id);
+      throw new ConnectionNotRegisteredError({ id });
     };
 
     const result = await exec("SELECT id FROM companies", "unknown-conn");
@@ -116,7 +116,7 @@ describe("executeSQL connection error handling", () => {
 
   it("returns curated error when getDBType throws registration error on default path", async () => {
     getDBTypeFn = () => {
-      throw new ConnectionNotRegisteredError("default");
+      throw new ConnectionNotRegisteredError({ id: "default" });
     };
 
     const result = await exec("SELECT id FROM companies");

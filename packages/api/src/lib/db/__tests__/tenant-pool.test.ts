@@ -395,7 +395,8 @@ describe("ConnectionRegistry org-scoped pools", () => {
         expect.unreachable("should have thrown");
       } catch (err) {
         const e = err as import("../connection").PoolCapacityExceededError;
-        expect(e.name).toBe("PoolCapacityExceededError");
+        expect(e._tag).toBe("PoolCapacityExceededError");
+        expect(e).toBeInstanceOf(Error);
         expect(e.currentSlots).toBe(10);
         expect(e.requestedSlots).toBe(5);
         expect(e.maxTotalConnections).toBe(10);

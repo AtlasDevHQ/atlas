@@ -55,6 +55,8 @@ export interface AtlasChatProps {
   chatEndpoint?: string;
   /** Custom conversations API endpoint path. Defaults to "/api/v1/conversations". */
   conversationsEndpoint?: string;
+  /** Show "Powered by Atlas" badge at the bottom of the chat. Defaults to true. */
+  showBranding?: boolean;
 }
 
 /** No-op auth client for non-managed auth modes. */
@@ -172,6 +174,7 @@ export function AtlasChat(props: AtlasChatProps) {
     toolRenderers,
     chatEndpoint = "/api/v1/chat",
     conversationsEndpoint = "/api/v1/conversations",
+    showBranding = true,
   } = props;
 
   // Apply theme from props on mount and when it changes
@@ -196,9 +199,25 @@ export function AtlasChat(props: AtlasChatProps) {
           toolRenderers={toolRenderers}
           chatEndpoint={chatEndpoint}
           conversationsEndpoint={conversationsEndpoint}
+          showBranding={showBranding}
         />
       </AtlasUIProvider>
     </QueryClientProvider>
+  );
+}
+
+function PoweredByAtlas() {
+  return (
+    <div className="flex justify-center pt-2 pb-1">
+      <a
+        href="https://useatlas.dev"
+        target="_blank"
+        rel="noopener noreferrer"
+        className="text-[11px] text-zinc-400 hover:text-zinc-500 dark:text-zinc-500 dark:hover:text-zinc-400 transition-colors"
+      >
+        Powered by Atlas
+      </a>
+    </div>
   );
 }
 
@@ -209,6 +228,7 @@ function AtlasChatInner({
   toolRenderers,
   chatEndpoint,
   conversationsEndpoint,
+  showBranding,
 }: {
   propApiKey?: string;
   sidebar: boolean;
@@ -216,6 +236,7 @@ function AtlasChatInner({
   toolRenderers?: ToolRenderers;
   chatEndpoint: string;
   conversationsEndpoint: string;
+  showBranding: boolean;
 }) {
   const { apiUrl, isCrossOrigin, authClient } = useAtlasConfig();
   const dark = useDarkMode();
@@ -241,6 +262,25 @@ function AtlasChatInner({
   const healthQuery = useHealthQuery();
   const authMode: AuthMode | null = healthQuery.isError ? "none" : (healthQuery.data?.authMode ?? null);
   const healthFailed = healthQuery.isError;
+
+  // Fetch branding to detect enterprise white-label (hideAtlasBranding flag).
+  // Only fetched when showBranding is true — no point checking if badge is already hidden.
+  const brandingQuery = useQuery<{ hideAtlasBranding?: boolean }>({
+    queryKey: ["atlas", "branding"],
+    queryFn: async ({ signal }) => {
+      const res = await fetch(`${apiUrl}/api/v1/branding`, {
+        credentials: isCrossOrigin ? "include" : "same-origin",
+        signal,
+      });
+      if (!res.ok) return {};
+      const data = await res.json();
+      return { hideAtlasBranding: data?.branding?.hideAtlasBranding === true };
+    },
+    enabled: showBranding,
+    retry: 1,
+    staleTime: 5 * 60 * 1000,
+  });
+  const brandingVisible = showBranding && !(brandingQuery.data?.hideAtlasBranding);
 
   const authResolved = authMode !== null;
   const isManaged = authMode === "managed";
@@ -692,6 +732,7 @@ function AtlasChatInner({
                 </form>
               </ActionAuthProvider>
             )}
+            {brandingVisible && <PoweredByAtlas />}
           </div>
         </main>
       </div>

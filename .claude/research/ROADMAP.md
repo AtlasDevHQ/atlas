@@ -862,15 +862,15 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 
 ### Native DB Clients (P0 — eliminate bridge layers)
 
-- [ ] Migrate internal DB to native `@effect/sql-pg` `PgClient.layer()` (#1281)
+- [x] Migrate internal DB to native `@effect/sql-pg` `PgClient.layer()` (#1281, PR #1286)
 - [ ] Migrate analytics connection pools to native `@effect/sql-pg` and `@effect/sql-mysql2` (#1282)
 
 ### Timer Leaks (P0 — resource leaks on Railway restarts)
 
-- [ ] Migrate OAuth state cleanup setInterval to Effect Layer with finalizer (#1273)
-- [ ] Migrate auth middleware rate-limit cleanup setInterval to Effect Layer (#1274)
-- [ ] Migrate settings refresh timer to Effect Layer (#1275)
-- [ ] Migrate email scheduler to Effect Layer (#1276)
+- [x] Migrate OAuth state cleanup setInterval to Effect Layer with finalizer (#1273, PR #1285)
+- [x] Migrate auth middleware rate-limit cleanup setInterval to Effect Layer (#1274, PR #1285)
+- [x] Migrate settings refresh timer to Effect Layer (#1275, PR #1285)
+- [x] Migrate email scheduler to Effect Layer (#1276, PR #1285)
 - [ ] Replace all setInterval scheduling with Effect Cron/Schedule (#1283)
 
 ### Concurrency (P1 — unbounded DB calls under load)
@@ -879,7 +879,8 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 
 ### Error Types (P2 — code quality)
 
-- [ ] Convert plain Error subclasses to Data.TaggedError (#1278)
+- [x] Convert plain Error subclasses to Data.TaggedError (#1278, PR #1284)
+- [x] Extract profiler utility functions to break circular dep (#1280, PR #1284)
 
 ### Sandbox (P2 — code quality)
 

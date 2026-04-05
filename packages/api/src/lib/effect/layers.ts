@@ -6,23 +6,25 @@
  * composable Layers. Config and plugin wiring remain imperative in
  * server.ts because they produce the config object the DAG needs.
  *
- * Layer dependency graph (all independent — merged via Layer.mergeAll):
+ * Layer dependency graph:
  *
+ *   InternalDBLayer         (no deps — creates pg.Pool via PgClient.layerFromPool)
+ *   MigrationLayer          (depends on InternalDB — pool must be ready first)
  *   TelemetryLayer          (no deps)
  *   ConfigLayer             (no deps — receives pre-resolved config via Layer.succeed)
- *   MigrationLayer          (no deps)
  *   SemanticSyncLayer       (no deps)
  *   SettingsLayer           (no deps)
  *   SchedulerLayer          (no deps — receives config as function param)
  *
- *   AppLayer = mergeAll(Telemetry, Config, Migration, SemanticSync, Settings, Scheduler)
+ *   AppLayer = mergeAll(Telemetry, Config, InternalDB, Migration, SemanticSync, Settings, Scheduler)
  *
  * Note: ConnectionLayer (P4) and PluginLayer (P5) live in services.ts
  * and are not yet part of AppLayer — they are wired imperatively in server.ts.
  *
  * Each layer wraps an imperative startup step with Effect.addFinalizer
  * for cleanup. On shutdown, Effect disposes scoped layers via their
- * finalizers. Order among independent layers is unspecified.
+ * finalizers. Order among independent layers is unspecified (except
+ * MigrationLayer which depends on InternalDB).
  *
  * SettingsLive and SchedulerLayer fork long-lived periodic fibers
  * (settings refresh, OAuth cleanup, rate-limit cleanup, email scheduler)
@@ -31,7 +33,7 @@
 
 import { Context, Duration, Effect, Fiber, Layer, Schedule } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
-import { InternalDB, makeInternalDBLive } from "@atlas/api/lib/db/internal";
+import { InternalDB, makeInternalDBLive, hasInternalDB } from "@atlas/api/lib/db/internal";
 
 const log = createLogger("effect:layers");
 
@@ -162,7 +164,10 @@ export const MigrationLive: Layer.Layer<Migration, never, InternalDB> = Layer.ef
   Effect.gen(function* () {
     const db = yield* InternalDB;
     if (!db.available) {
-      log.info("No DATABASE_URL — skipping boot migrations");
+      const reason = hasInternalDB()
+        ? "Internal DB connection failed — skipping boot migrations (check DATABASE_URL connectivity)"
+        : "No DATABASE_URL — skipping boot migrations";
+      log.info(reason);
       return { migrated: false } satisfies MigrationShape;
     }
 

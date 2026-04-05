@@ -130,7 +130,7 @@ export interface InternalPool {
   on(event: "error", listener: (err: Error) => void): void;
 }
 
-// ── Effect Service: InternalDB (P11b) ───────────────────────────────
+// ── Effect Service: InternalDB ───────────────────────────────────────
 
 /**
  * InternalDB Effect service — provides access to the internal Postgres pool
@@ -168,10 +168,11 @@ export class InternalDB extends Context.Tag("InternalDB")<
  * @effect/sql SqlClient. The pool is created with acquireRelease for automatic
  * cleanup when the Layer scope finalizes — no manual closeInternalDB() needed.
  *
- * The InternalDB service exposes both:
+ * The InternalDB service key APIs include:
  * - `sql`: SqlClient for tagged template queries (Effect programs)
  * - `query`/`execute`: imperative wrappers for existing callers
  * - `pool`: raw pg.Pool for Better Auth and migrations
+ * - `available`: boolean indicating whether the DB is connected
  */
 export function makeInternalDBLive(): Layer.Layer<InternalDB> {
   const databaseUrl = process.env.DATABASE_URL;
@@ -211,6 +212,7 @@ export function makeInternalDBLive(): Layer.Layer<InternalDB> {
       });
       // Store in module-level ref for backward-compat functions
       _pool = pool as unknown as InternalPool;
+      _poolManagedByEffect = true;
       return pool;
     }),
     (pool) =>
@@ -220,10 +222,12 @@ export function makeInternalDBLive(): Layer.Layer<InternalDB> {
       }).pipe(
         Effect.tap(() => Effect.sync(() => {
           _pool = null;
+          _poolManagedByEffect = false;
           log.info("Internal DB pool closed via Effect scope");
         })),
         Effect.catchAll((errMsg) => {
           _pool = null;
+          _poolManagedByEffect = false;
           log.warn({ err: errMsg }, "Error closing internal DB pool via Effect finalizer");
           return Effect.void;
         }),
@@ -272,15 +276,20 @@ export function makeInternalDBLive(): Layer.Layer<InternalDB> {
     Layer.provide(pgClientLayer),
     // Catch SqlError from PgClient (e.g., connection failure) and degrade
     // to an unavailable service rather than failing the entire Layer DAG.
-    Layer.catchAll((sqlError) =>
-      Layer.succeed(InternalDB, {
+    Layer.catchAll((sqlError) => {
+      log.error(
+        { err: sqlError instanceof Error ? sqlError : new Error(String(sqlError)) },
+        "Internal DB Layer failed to initialize — degrading to unavailable. " +
+        "Check DATABASE_URL, network connectivity, and Postgres credentials.",
+      );
+      return Layer.succeed(InternalDB, {
         sql: null,
         query: async () => { throw new Error(`Internal DB unavailable: ${sqlError.message}`); },
-        execute: () => { log.warn({ err: sqlError.message }, "internalExecute called but internal DB is unavailable"); },
+        execute: () => { log.warn("internalExecute dropped — internal DB unavailable since startup"); },
         available: false,
         pool: null,
-      } satisfies InternalDBShape),
-    ),
+      } satisfies InternalDBShape);
+    }),
   );
 }
 
@@ -309,6 +318,8 @@ export function createInternalDBTestLayer(
 
 let _pool: InternalPool | null = null;
 let _sqlClient: SqlClient.SqlClient | null = null;
+/** True when the pool was created by the Effect Layer (lifecycle managed by scope). */
+let _poolManagedByEffect = false;
 
 /** Returns true if DATABASE_URL is configured. */
 export function hasInternalDB(): boolean {
@@ -357,20 +368,43 @@ export function getInternalDB(): InternalPool {
 }
 
 /**
- * @deprecated Pool lifecycle is managed by InternalDB Effect Layer scope.
- * This is now a no-op — the scope finalizer handles pool cleanup.
- * Kept for backward compat (server.ts shutdown sequence).
+ * Close the internal DB pool.
+ *
+ * When the pool was created by the Effect Layer (server runtime), this is a
+ * no-op — the scope finalizer handles cleanup. When the pool was created by
+ * the lazy fallback in getInternalDB() (CLI commands, tests), this closes
+ * the pool to prevent connection leaks and process hangs.
  */
 export async function closeInternalDB(): Promise<void> {
-  // No-op: pool lifecycle is managed by Effect scope.
-  // The scope finalizer in makeInternalDBLive calls pool.end().
-  log.debug("closeInternalDB() called — no-op, pool lifecycle managed by Effect scope");
+  if (!_pool) {
+    log.debug("closeInternalDB() called but no pool exists");
+    return;
+  }
+  if (_poolManagedByEffect) {
+    // Pool lifecycle is managed by Effect scope finalizer — skip.
+    log.debug("closeInternalDB() called — pool managed by Effect scope, skipping");
+    return;
+  }
+  // Fallback pool (created by getInternalDB outside of Effect runtime)
+  const pool = _pool;
+  _pool = null;
+  _sqlClient = null;
+  try {
+    await pool.end();
+    log.info("Internal DB fallback pool closed via closeInternalDB()");
+  } catch (err: unknown) {
+    log.warn(
+      { err: err instanceof Error ? err.message : String(err) },
+      "Error closing internal DB pool",
+    );
+  }
 }
 
 /** Reset singleton for testing. Optionally inject a mock pool and/or SqlClient. */
 export function _resetPool(mockPool?: InternalPool | null, mockSql?: SqlClient.SqlClient | null): void {
   _pool = mockPool ?? null;
   _sqlClient = mockSql ?? null;
+  _poolManagedByEffect = false;
   _consecutiveFailures = 0;
   _circuitOpen = false;
   _droppedCount = 0;
@@ -418,7 +452,7 @@ const RECOVERY_SCHEDULE = Schedule.exponential(Duration.seconds(30)).pipe(
 );
 
 /**
- * Start an exponential-backoff recovery probe. On success, re-opens the circuit.
+ * Start an exponential-backoff recovery probe. On success, closes the circuit (resumes writes).
  * On exhaustion of retries, the circuit remains open and the recovery fiber clears
  * itself so the next internalExecute call re-triggers recovery.
  *
@@ -601,9 +635,7 @@ export async function loadSavedConnections(): Promise<number> {
 
   try {
     type ConnRow = { id: string; url: string; type: string; description: string | null; schema_name: string | null };
-    const rows: readonly ConnRow[] = _sqlClient
-      ? await Effect.runPromise(_sqlClient<ConnRow>`SELECT id, url, type, description, schema_name FROM connections`)
-      : await internalQuery<ConnRow>("SELECT id, url, type, description, schema_name FROM connections");
+    const rows = await internalQuery<ConnRow>("SELECT id, url, type, description, schema_name FROM connections");
 
     let registered = 0;
     for (const row of rows) {
@@ -955,12 +987,6 @@ export interface WorkspaceRow {
  */
 export async function getWorkspaceStatus(orgId: string): Promise<WorkspaceStatus | null> {
   if (!hasInternalDB()) return null;
-  if (_sqlClient) {
-    const rows = await Effect.runPromise(
-      _sqlClient<{ workspace_status: WorkspaceStatus }>`SELECT workspace_status FROM organization WHERE id = ${orgId}`,
-    );
-    return rows[0]?.workspace_status ?? null;
-  }
   const rows = await internalQuery<{ workspace_status: WorkspaceStatus }>(
     `SELECT workspace_status FROM organization WHERE id = $1`,
     [orgId],
@@ -973,13 +999,6 @@ export async function getWorkspaceStatus(orgId: string): Promise<WorkspaceStatus
  */
 export async function getWorkspaceDetails(orgId: string): Promise<WorkspaceRow | null> {
   if (!hasInternalDB()) return null;
-  if (_sqlClient) {
-    const rows = await Effect.runPromise(
-      _sqlClient<WorkspaceRow>`SELECT id, name, slug, workspace_status, plan_tier, byot, stripe_customer_id, trial_ends_at, suspended_at, deleted_at, region, region_assigned_at, "createdAt"
-       FROM organization WHERE id = ${orgId}`,
-    );
-    return rows[0] ?? null;
-  }
   const rows = await internalQuery<WorkspaceRow>(
     `SELECT id, name, slug, workspace_status, plan_tier, byot, stripe_customer_id, trial_ends_at, suspended_at, deleted_at, region, region_assigned_at, "createdAt"
      FROM organization WHERE id = $1`,
@@ -1018,12 +1037,6 @@ export async function updateWorkspacePlanTier(
   orgId: string,
   planTier: PlanTier,
 ): Promise<boolean> {
-  if (_sqlClient) {
-    const rows = await Effect.runPromise(
-      _sqlClient<{ id: string }>`UPDATE organization SET plan_tier = ${planTier} WHERE id = ${orgId} RETURNING id`,
-    );
-    return rows.length > 0;
-  }
   const rows = await internalQuery<{ id: string }>(
     `UPDATE organization SET plan_tier = $1 WHERE id = $2 RETURNING id`,
     [planTier, orgId],
@@ -1037,12 +1050,6 @@ export async function updateWorkspacePlanTier(
  */
 export async function getWorkspaceRegion(orgId: string): Promise<string | null> {
   if (!hasInternalDB()) return null;
-  if (_sqlClient) {
-    const rows = await Effect.runPromise(
-      _sqlClient<{ region: string | null }>`SELECT region FROM organization WHERE id = ${orgId}`,
-    );
-    return rows[0]?.region ?? null;
-  }
   const rows = await internalQuery<{ region: string | null }>(
     `SELECT region FROM organization WHERE id = $1`,
     [orgId],
@@ -1060,21 +1067,7 @@ export async function setWorkspaceRegion(
   orgId: string,
   region: string,
 ): Promise<{ assigned: boolean; existing?: string }> {
-  if (_sqlClient) {
-    // Only assign if region is currently NULL (immutable after first assignment)
-    const updated = await Effect.runPromise(
-      _sqlClient<{ id: string }>`UPDATE organization SET region = ${region}, region_assigned_at = now()
-       WHERE id = ${orgId} AND region IS NULL RETURNING id`,
-    );
-    if (updated.length > 0) return { assigned: true };
-    const existing = await Effect.runPromise(
-      _sqlClient<{ region: string | null }>`SELECT region FROM organization WHERE id = ${orgId}`,
-    );
-    if (existing.length === 0) return { assigned: false };
-    return { assigned: false, existing: existing[0].region ?? undefined };
-  }
-
-  // Fallback: raw pool
+  // Only assign if region is currently NULL (immutable after first assignment)
   const rows = await internalQuery<{ id: string }>(
     `UPDATE organization SET region = $1, region_assigned_at = now()
      WHERE id = $2 AND region IS NULL RETURNING id`,
@@ -1108,10 +1101,12 @@ export async function cascadeWorkspaceDelete(orgId: string): Promise<{
   settings: number;
 }> {
   if (_sqlClient) {
+    // Capture in local const before async boundary to avoid race with scope finalizer
+    const sql = _sqlClient;
     return Effect.runPromise(
-      _sqlClient.withTransaction(
+      sql.withTransaction(
         Effect.gen(function* () {
-          const sql = _sqlClient!;
+          // Sequential execution inside transaction — pg connections process one query at a time
           const [convRows, seRows, lpRows, qsRows, stRows, settingsRows] = yield* Effect.all([
             sql<{ id: string }>`UPDATE conversations SET deleted_at = now(), updated_at = now() WHERE org_id = ${orgId} AND deleted_at IS NULL RETURNING id`,
             sql<{ id: string }>`DELETE FROM semantic_entities WHERE org_id = ${orgId} RETURNING id`,
@@ -1119,7 +1114,7 @@ export async function cascadeWorkspaceDelete(orgId: string): Promise<{
             sql<{ id: string }>`DELETE FROM query_suggestions WHERE org_id = ${orgId} RETURNING id`,
             sql<{ id: string }>`UPDATE scheduled_tasks SET enabled = false, updated_at = now() WHERE org_id = ${orgId} RETURNING id`,
             sql<{ key: string }>`DELETE FROM settings WHERE org_id = ${orgId} RETURNING key`,
-          ], { concurrency: "unbounded" });
+          ]);
 
           return {
             conversations: convRows.length,
@@ -1226,12 +1221,6 @@ export async function updateWorkspaceByot(
   orgId: string,
   byot: boolean,
 ): Promise<boolean> {
-  if (_sqlClient) {
-    const rows = await Effect.runPromise(
-      _sqlClient<{ id: string }>`UPDATE organization SET byot = ${byot} WHERE id = ${orgId} RETURNING id`,
-    );
-    return rows.length > 0;
-  }
   const rows = await internalQuery<{ id: string }>(
     `UPDATE organization SET byot = $1 WHERE id = $2 RETURNING id`,
     [byot, orgId],
@@ -1246,12 +1235,6 @@ export async function setWorkspaceStripeCustomerId(
   orgId: string,
   stripeCustomerId: string,
 ): Promise<boolean> {
-  if (_sqlClient) {
-    const rows = await Effect.runPromise(
-      _sqlClient<{ id: string }>`UPDATE organization SET stripe_customer_id = ${stripeCustomerId} WHERE id = ${orgId} RETURNING id`,
-    );
-    return rows.length > 0;
-  }
   const rows = await internalQuery<{ id: string }>(
     `UPDATE organization SET stripe_customer_id = $1 WHERE id = $2 RETURNING id`,
     [stripeCustomerId, orgId],
@@ -1266,13 +1249,6 @@ export async function setWorkspaceTrialEndsAt(
   orgId: string,
   trialEndsAt: Date,
 ): Promise<boolean> {
-  if (_sqlClient) {
-    const iso = trialEndsAt.toISOString();
-    const rows = await Effect.runPromise(
-      _sqlClient<{ id: string }>`UPDATE organization SET trial_ends_at = ${iso} WHERE id = ${orgId} RETURNING id`,
-    );
-    return rows.length > 0;
-  }
   const rows = await internalQuery<{ id: string }>(
     `UPDATE organization SET trial_ends_at = $1 WHERE id = $2 RETURNING id`,
     [trialEndsAt.toISOString(), orgId],

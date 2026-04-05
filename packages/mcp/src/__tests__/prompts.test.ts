@@ -364,6 +364,59 @@ describe("MCP prompts — semantic layer", () => {
     expect(orderPrompt!.description).toContain("[orders]");
   });
 
+  it("slugifies table names with dots and underscores", async () => {
+    mockScannedEntities = [
+      {
+        filePath: "/tmp/entities/order_items.yml",
+        sourceName: "default",
+        raw: {
+          table: "public.order_items",
+          query_patterns: [
+            { name: "item-totals", description: "Totals per item" },
+          ],
+        },
+      },
+    ];
+
+    const { client } = await createTestClient();
+    const result = await client.listPrompts();
+    const names = result.prompts.map((p) => p.name);
+
+    expect(names).toContain("entity-public-order-items-item-totals");
+  });
+
+  it("registers prompts from multiple entities", async () => {
+    mockScannedEntities = [
+      {
+        filePath: "/tmp/entities/orders.yml",
+        sourceName: "default",
+        raw: {
+          table: "orders",
+          query_patterns: [
+            { name: "trend", description: "Order trend" },
+          ],
+        },
+      },
+      {
+        filePath: "/tmp/entities/users.yml",
+        sourceName: "default",
+        raw: {
+          table: "users",
+          query_patterns: [
+            { name: "growth", description: "User growth" },
+          ],
+        },
+      },
+    ];
+
+    const { client } = await createTestClient();
+    const result = await client.listPrompts();
+    const names = result.prompts.map((p) => p.name);
+
+    expect(names).toContain("entity-orders-trend");
+    expect(names).toContain("entity-users-growth");
+  });
+
   it("gracefully handles getSemanticRoot throwing", async () => {
     mockSemanticRootError = new Error(
       "ATLAS_SEMANTIC_ROOT is set but empty",
@@ -417,6 +470,10 @@ describe("MCP prompts — prompt library", () => {
 
     expect(names).toContain("library-abc-123");
     expect(names).toContain("library-def-456");
+
+    // null description falls back to question text
+    const defPrompt = result.prompts.find((p) => p.name === "library-def-456");
+    expect(defPrompt!.description).toContain("Show churn rate by cohort");
   });
 
   it("library prompt returns the question text", async () => {

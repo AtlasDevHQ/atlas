@@ -145,7 +145,7 @@ query_patterns:
     sql: SELECT date_trunc('month', created_at) AS month, SUM(total) FROM orders GROUP BY 1
 ```
 
-This becomes the prompt `entity-orders-monthly-revenue` that returns the description and reference SQL.
+This becomes the prompt `entity-orders-monthly-revenue` that returns the description and reference SQL. Patterns must have at least a `name` or `description` field to be registered.
 
 ### Prompt library
 

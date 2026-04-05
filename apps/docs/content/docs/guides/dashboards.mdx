@@ -1,0 +1,120 @@
+---
+title: Dashboards
+description: Save query results as persistent cards, build visual layouts, share with your team, and get AI-powered suggestions.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Dashboards let you pin query results from chat and organize them into persistent, shareable layouts. Each card stores its SQL, chart configuration, and cached results — and can be refreshed on demand or on a schedule.
+
+<Callout title="Prerequisites">
+- An [internal database](/deployment/authentication#managed-auth) configured (`DATABASE_URL`)
+- At least one query result in chat to add
+</Callout>
+
+---
+
+## Creating a Dashboard
+
+### From Chat
+
+1. Run a query in chat
+2. On the SQL result card, click the **Dashboard** button (grid icon)
+3. Choose **New Dashboard** and enter a title, or select an existing dashboard
+4. Pick a chart type (bar, line, pie, area, scatter, or table)
+5. Click **Add to Dashboard**
+
+The card is saved with its SQL, chart configuration, and current result data.
+
+### From the Dashboard List
+
+Navigate to `/dashboards` to see all dashboards. Click **New Dashboard** to create an empty one, then add cards from chat.
+
+---
+
+## Managing Cards
+
+Each dashboard card shows:
+
+- **Title** — click to edit inline
+- **Chart visualization** — rendered from cached data (if chart type is not "table")
+- **Data table** — the underlying rows and columns
+- **Last refreshed** — timestamp of the most recent data
+
+### Card Actions
+
+| Action | How |
+|--------|-----|
+| **Reorder** | Drag the grip handle (⠿) to rearrange cards |
+| **Refresh** | Click the refresh icon on a single card |
+| **Edit title** | Click the pencil icon |
+| **Remove** | Click the trash icon (removes the card, not the underlying query) |
+
+---
+
+## Refreshing Data
+
+Cards store cached results. To update them:
+
+- **Manual refresh** — Click the refresh icon on a single card, or **Refresh All** in the header
+- **Auto-refresh** — Set a schedule from the timer dropdown:
+  - Every 15 minutes, hourly, every 6 hours, daily, or weekly (Mon 9am)
+
+Auto-refresh uses the scheduler tick engine. The next refresh time is computed from the cron expression and displayed in the dashboard header.
+
+<Callout type="info">
+Auto-refresh requires `ATLAS_SCHEDULER_ENABLED=true`. See [Scheduled Tasks](/guides/scheduled-tasks) for setup.
+</Callout>
+
+---
+
+## AI Suggestions
+
+Click **Suggest Cards** to have the AI analyze your existing cards and propose 2–3 complementary metrics. Suggestions are grounded in your [semantic layer](/concepts/semantic-layer) — the AI only references tables and columns it knows about.
+
+Each suggestion shows:
+
+- **Title** and **reason** — why this card would complement your dashboard
+- **Chart type** and **SQL preview**
+- **Add** — accepts the suggestion and creates a real card
+- **Dismiss** — removes the suggestion
+
+All suggested SQL is validated before being shown. Invalid queries are filtered out automatically.
+
+---
+
+## Sharing
+
+Click the **Share** button to generate a public link. Options:
+
+| Setting | Description |
+|---------|-------------|
+| **Public** | Anyone with the link can view the dashboard (no login required) |
+| **Org-scoped** | Only authenticated members of your organization can view |
+| **Expiry** | 1 hour, 24 hours, 7 days, 30 days, or never |
+
+Shared dashboards display at `/shared/dashboard/[token]` with read-only access to cached data. Viewers cannot modify cards or trigger refreshes.
+
+To revoke access, open the share dialog and click **Revoke**.
+
+---
+
+## API Reference
+
+All dashboard operations are available via the REST API:
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/v1/dashboards` | List dashboards |
+| `POST /api/v1/dashboards` | Create a dashboard |
+| `GET /api/v1/dashboards/:id` | Get dashboard with cards |
+| `PATCH /api/v1/dashboards/:id` | Update title, description, or schedule |
+| `DELETE /api/v1/dashboards/:id` | Delete a dashboard |
+| `POST /api/v1/dashboards/:id/cards` | Add a card |
+| `PATCH /api/v1/dashboards/:id/cards/:cardId` | Update card title or position |
+| `DELETE /api/v1/dashboards/:id/cards/:cardId` | Remove a card |
+| `POST /api/v1/dashboards/:id/cards/:cardId/refresh` | Refresh a single card |
+| `POST /api/v1/dashboards/:id/refresh` | Refresh all cards |
+| `POST /api/v1/dashboards/:id/suggest` | Get AI card suggestions |
+| `POST /api/v1/dashboards/:id/share` | Generate share link |
+| `DELETE /api/v1/dashboards/:id/share` | Revoke share link |

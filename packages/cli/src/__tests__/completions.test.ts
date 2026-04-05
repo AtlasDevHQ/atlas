@@ -15,7 +15,7 @@ describe("completions", () => {
     test("includes all CLI commands (bidirectional)", () => {
       const expected = [
         "init", "diff", "query", "doctor", "validate",
-        "mcp", "learn", "migrate", "plugin", "eval", "smoke",
+        "mcp", "learn", "improve", "migrate", "plugin", "eval", "smoke",
         "benchmark", "export", "migrate-import", "completions",
       ];
       for (const cmd of expected) {

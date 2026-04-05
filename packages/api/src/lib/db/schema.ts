@@ -412,10 +412,13 @@ export const learnedPatterns = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
     reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
+    type: text("type").notNull().default("query_pattern"),
+    amendmentPayload: jsonb("amendment_payload"),
   },
   (t) => [
     index("idx_learned_patterns_org_status").on(t.orgId, t.status),
     index("idx_learned_patterns_org_entity").on(t.orgId, t.sourceEntity),
+    index("idx_learned_patterns_type").on(t.type),
   ],
 );
 

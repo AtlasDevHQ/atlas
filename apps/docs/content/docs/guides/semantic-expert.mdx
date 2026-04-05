@@ -1,0 +1,130 @@
+---
+title: Semantic Expert Agent
+description: Automatically analyze and improve your semantic layer using data profiling, audit log patterns, and validated proposals.
+---
+
+The semantic expert agent examines your database structure, query history, and semantic layer definitions to identify improvement opportunities. It proposes validated changes that go through the standard admin review queue.
+
+## How It Works
+
+The expert agent runs 9 analysis categories:
+
+| Category | What it checks |
+|----------|---------------|
+| **Coverage gaps** | Database columns not represented as entity dimensions |
+| **Description quality** | Empty or auto-generated descriptions on tables and dimensions |
+| **Type accuracy** | Dimension types that don't match actual database column types |
+| **Missing measures** | Aggregatable numeric columns with no defined measures |
+| **Missing joins** | Foreign key relationships not captured in entity joins |
+| **Glossary gaps** | Business abbreviations in column names not defined in glossary |
+| **Sample value staleness** | Declared sample values that no longer appear in the data |
+| **Query pattern coverage** | Frequently-asked queries not captured in query_patterns |
+| **Virtual dimension opportunities** | Common SQL expressions (EXTRACT, DATE_TRUNC) that should be virtual dimensions |
+
+Each finding is scored by `impact x confidence x (1 - staleness)` to prioritize the most valuable improvements.
+
+## Running `atlas improve`
+
+The `atlas improve` CLI command runs the analysis engine in batch mode:
+
+```bash
+# Analyze and show proposals (dry run — default)
+atlas improve
+
+# Apply changes directly to entity YAML files
+atlas improve --apply
+
+# Filter by minimum confidence
+atlas improve --min-confidence 0.7
+
+# Limit to specific entities
+atlas improve --entities orders,users,products
+
+# Only analyze audit log entries after a date
+atlas improve --since 2026-03-01
+
+# Use a specific datasource subdirectory
+atlas improve --source warehouse
+```
+
+### Requirements
+
+- `ATLAS_DATASOURCE_URL` must be set (PostgreSQL required)
+- Semantic layer must exist (run `atlas init` first)
+- `DATABASE_URL` is optional but enables audit log analysis
+
+### CLI Flags
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--apply` | Write changes to YAML files | Dry run |
+| `--min-confidence <n>` | Minimum confidence threshold (0-1) | 0.5 |
+| `--entities <list>` | Comma-separated entity names to analyze | All |
+| `--since <date>` | Analyze audit log entries after this date | All time |
+| `--source <name>` | Read from `semantic/{name}/` subdirectory | `semantic/` |
+| `--schema <name>` | PostgreSQL schema | `public` |
+
+### Example Output
+
+```
+Atlas Improve — analyzing semantic layer for improvements...
+
+  Loaded 24 entities, 8 glossary terms
+  Profiled 24 tables
+  Analyzed 47 audit log patterns
+
+Found 6 improvements (filtered by confidence >= 0.5):
+
+1. [orders] Add Measure
+   Numeric column "total_cents" (integer) has no measure.
+   Confidence: 65%  Score: 0.423  Category: missing_measures
+   Name: total_total_cents
+   SQL: total_cents
+
+2. [users] Update Description
+   Table description "The users table" appears auto-generated.
+   Confidence: 60%  Score: 0.3  Category: description_quality
+
+Dry run — no files modified. Use --apply to write changes.
+```
+
+## Reviewing Proposals in the Admin UI
+
+When the expert agent runs (via CLI or API), proposals are written to the `learned_patterns` table with `type = semantic_amendment`. Review them in the admin UI:
+
+1. Navigate to **Admin > Learned Patterns**
+2. Use the **Type** filter to select "Amendments"
+3. Click a proposal to see the YAML diff with color-coded additions (green) and removals (red)
+4. **Approve** to apply the change, **Reject** to suppress re-proposal for 30 days
+
+Bulk approve/reject is supported — select multiple proposals and use the toolbar buttons.
+
+## Auto-Approval Threshold
+
+By default, all proposals require manual review. To auto-approve high-confidence proposals, set:
+
+```bash
+ATLAS_EXPERT_AUTO_APPROVE_THRESHOLD=0.9
+```
+
+Proposals with `confidence >= 0.9` will be automatically approved and applied. Set to any value above 1.0 to disable (the default behavior).
+
+<Callout type="warn">
+  Auto-approval is powerful but should be used carefully. Start with a high threshold (0.9+) and monitor the results before lowering it.
+</Callout>
+
+## Architecture
+
+The expert agent has 5 dedicated tools:
+
+- **profileTable** — Get column statistics (cardinality, nulls, sample values)
+- **checkDataDistribution** — Analyze a column's value distribution
+- **searchAuditLog** — Find query patterns from actual usage
+- **proposeAmendment** — Create a structured YAML change proposal
+- **validateProposal** — Dry-run validate a proposal (YAML parse, whitelist, test query)
+
+These are registered in a dedicated `ToolRegistry` alongside the standard `explore` and `executeSQL` tools, giving the expert agent 7 tools total.
+
+## What's Next
+
+Phase 2 will add **interactive mode** (`atlas improve -i`) for multi-turn conversation where the agent asks targeted questions about your data model. Phase 3 will add a **web interactive mode** in the admin UI with rich diff previews and one-click approval.

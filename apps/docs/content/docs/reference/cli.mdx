@@ -453,6 +453,41 @@ atlas learn --since 2026-03-01 --limit 500
 atlas learn --suggestions
 ```
 
+## improve
+
+Analyze the semantic layer and propose data-driven improvements using database profiling and audit log patterns. The expert analysis engine examines 9 categories (coverage gaps, description quality, type accuracy, missing measures, missing joins, glossary gaps, sample value staleness, query pattern coverage, and virtual dimension opportunities).
+
+```bash
+bun run atlas -- improve [options]
+```
+
+| Flag | Description |
+|------|-------------|
+| `--apply` | Write proposed changes to YAML files (default: dry-run) |
+| `--min-confidence <n>` | Minimum confidence to include (0-1, default: 0.5) |
+| `--entities <list>` | Limit analysis to specific entities (comma-separated) |
+| `--since <date>` | Only analyze audit log entries after this date (ISO 8601) |
+| `--source <name>` | Read from/write to `semantic/{name}/` subdirectory |
+| `--schema <name>` | PostgreSQL schema name (default: public) |
+
+**Requires** `ATLAS_DATASOURCE_URL` to be set. `DATABASE_URL` is optional but enables audit log analysis.
+
+```bash
+# Preview proposals (dry run, the default)
+atlas improve
+
+# Apply changes to YAML files
+atlas improve --apply
+
+# High-confidence improvements only
+atlas improve --min-confidence 0.7
+
+# Limit to specific entities
+atlas improve --entities orders,users,products
+```
+
+See the [Semantic Expert guide](/docs/guides/semantic-expert) for full documentation.
+
 ## benchmark
 
 Run the [BIRD benchmark](https://bird-bench.github.io/) for text-to-SQL accuracy evaluation. This is a developer tool for measuring Atlas's query generation quality.

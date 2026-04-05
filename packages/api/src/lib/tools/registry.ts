@@ -119,7 +119,7 @@ export class ToolRegistry {
 
 // --- Workflow descriptions (extracted from the system prompt) ---
 
-const EXPLORE_DESCRIPTION = `### 2. Explore the Semantic Layer
+export const EXPLORE_DESCRIPTION = `### 2. Explore the Semantic Layer
 Use the explore tool to run bash commands against the semantic/ directory:
 - Start with \`cat catalog.yml\` to find relevant entities
 - Read entity schemas: \`cat entities/companies.yml\`, \`head -30 entities/deals.yml\`
@@ -129,7 +129,7 @@ Use the explore tool to run bash commands against the semantic/ directory:
 - Combine commands with pipes: \`grep -r "column" entities/ | sort\`, \`cat entities/deals.yml | grep -A5 "measures"\`
 - Never guess column names. Always verify against the schema.`;
 
-const EXECUTE_SQL_DESCRIPTION = `### 3. Write and Execute SQL
+export const EXECUTE_SQL_DESCRIPTION = `### 3. Write and Execute SQL
 Use the executeSQL tool to query the database:
 - Use exact column names from the entity schemas
 - If a canonical metric definition exists, use that SQL — do not improvise

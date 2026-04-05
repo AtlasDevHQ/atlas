@@ -729,6 +729,61 @@ export function insertLearnedPattern(pattern: {
 }
 
 /**
+ * Parse the auto-approve threshold from env. Returns a value > 1 (disabled) if
+ * not set or invalid. Single source of truth for the threshold logic.
+ */
+export function getAutoApproveThreshold(): number {
+  const raw = process.env.ATLAS_EXPERT_AUTO_APPROVE_THRESHOLD;
+  if (!raw) return 2; // Disabled by default
+  const parsed = parseFloat(raw);
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1) {
+    log.warn({ raw }, "Invalid ATLAS_EXPERT_AUTO_APPROVE_THRESHOLD — must be 0.0–1.0, defaulting to disabled");
+    return 2;
+  }
+  return parsed;
+}
+
+/**
+ * Insert a semantic amendment proposal. Returns the new row's ID and resolved status.
+ * Unlike insertLearnedPattern (fire-and-forget), this awaits the result.
+ */
+export async function insertSemanticAmendment(amendment: {
+  orgId: string | null | undefined;
+  description: string;
+  sourceEntity: string;
+  confidence: number;
+  amendmentPayload: Record<string, unknown>;
+}): Promise<{ id: string; status: "approved" | "pending" }> {
+  const threshold = getAutoApproveThreshold();
+  const status = amendment.confidence >= threshold ? "approved" : "pending";
+
+  const rows = await internalQuery<{ id: string }>(
+    `INSERT INTO learned_patterns
+       (org_id, pattern_sql, description, source_entity, confidence,
+        repetition_count, status, proposed_by, type, amendment_payload)
+     VALUES ($1, $2, $3, $4, $5, 1, $6, 'expert-agent', 'semantic_amendment', $7)
+     RETURNING id`,
+    [
+      amendment.orgId ?? null,
+      `amendment:${amendment.sourceEntity}:${Date.now()}`,
+      amendment.description,
+      amendment.sourceEntity,
+      amendment.confidence,
+      status,
+      JSON.stringify(amendment.amendmentPayload),
+    ],
+  );
+
+  if (rows.length === 0) {
+    throw new Error(
+      `insertSemanticAmendment: INSERT returned no rows for entity "${amendment.sourceEntity}". The row may not have been created.`,
+    );
+  }
+
+  return { id: rows[0].id, status };
+}
+
+/**
  * Increment repetition_count by 1 and increase confidence by 0.1 (capped at 1.0).
  * When sourceFingerprint is provided, appends it to source_queries (capped at 100 entries).
  * Fire-and-forget — errors are logged, never thrown.

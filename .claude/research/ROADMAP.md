@@ -907,6 +907,27 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 
 ---
 
+## Semantic Expert Agent — Phase 1
+
+**Autonomous analysis engine** that examines the semantic layer and database, identifies improvement opportunities, and proposes validated YAML amendments.
+
+- [x] Analysis engine — 9 analysis categories (coverage, descriptions, types, measures, joins, glossary, sample values, query patterns, virtual dimensions) (#1266, PR #1297)
+- [x] 5 new tools — profileTable, checkDataDistribution, searchAuditLog, proposeAmendment, validateProposal
+- [x] `atlas improve` CLI command — batch mode with ranked proposals
+- [x] DB migration — learned_patterns extended with `type` and `amendment_payload` columns
+- [x] Admin UI — semantic_amendment filter + diff view on learned patterns page
+- [x] Docs — semantic expert guide page + CLI reference update
+
+---
+
+## MCP Prompt Templates
+
+- [x] Prompt templates via `prompts/list` and `prompts/get` protocol (PR #1296)
+- [x] 5 built-in analytical patterns + semantic layer query_patterns + prompt library items
+- [x] Docs updated (mcp.mdx)
+
+---
+
 ## Ideas / Backlog
 
 _Untracked ideas. Create issues when committing to work._

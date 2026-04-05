@@ -953,7 +953,7 @@ _Untracked ideas. Create issues when committing to work._
 
 ### MCP Enhancements
 - WebSocket transport — enables real-time bidirectional communication
-- Prompt templates — expose curated patterns via MCP `prompts/list`
+- ~~Prompt templates~~ — **shipped** (PR #1296). 5 built-in patterns + semantic layer query_patterns + prompt library
 - Resource subscriptions — notify connected clients when semantic layer changes
 
 ### Plugin Ecosystem

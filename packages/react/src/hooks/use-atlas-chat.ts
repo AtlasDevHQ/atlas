@@ -3,7 +3,7 @@
 import { useState, useRef, useMemo } from "react";
 import { useChat, type UIMessage } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
-import { useAtlasContext } from "./provider";
+import { useAtlasContext } from "../context";
 
 export type AtlasChatStatus = "submitted" | "streaming" | "ready" | "error";
 

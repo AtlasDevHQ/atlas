@@ -1,10 +1,10 @@
 "use client";
 
 import { useState } from "react";
-import { useAtlasConfig } from "../../context";
+import { useAtlasContext } from "../../context";
 
 export function ManagedAuthCard() {
-  const { authClient } = useAtlasConfig();
+  const { authClient } = useAtlasContext();
   const [view, setView] = useState<"login" | "signup">("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");

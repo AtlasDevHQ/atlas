@@ -6,8 +6,7 @@ import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { useQuery, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { AuthMode } from "../lib/types";
 import type { ToolRenderers } from "../lib/tool-renderer-types";
-import { AtlasUIProvider, useAtlasConfig, ActionAuthProvider, type AtlasAuthClient } from "../context";
-import { AtlasContext } from "../hooks/provider";
+import { AtlasContext, useAtlasContext, ActionAuthProvider, type AtlasAuthClient } from "../context";
 import { DarkModeContext, useDarkMode, useThemeMode, setTheme, applyBrandColor, OKLCH_RE, type ThemeMode } from "../hooks/use-dark-mode";
 import { useConversations } from "../hooks/use-conversations";
 import { ErrorBanner } from "./chat/error-banner";
@@ -161,7 +160,7 @@ function SaveButton({
 /**
  * Standalone Atlas chat component.
  *
- * Wraps itself in AtlasUIProvider so consumers only need to pass props.
+ * Wraps itself in AtlasContext so consumers only need to pass props.
  * For advanced usage (e.g. custom auth client), pass `authClient`.
  */
 export function AtlasChat(props: AtlasChatProps) {
@@ -199,17 +198,15 @@ export function AtlasChat(props: AtlasChatProps) {
   return (
     <QueryClientProvider client={queryClient}>
       <AtlasContext.Provider value={{ apiUrl, apiKey: propApiKey, authClient, isCrossOrigin }}>
-        <AtlasUIProvider config={{ apiUrl, authClient }}>
-          <AtlasChatInner
-            propApiKey={propApiKey}
-            sidebar={sidebar}
-            schemaExplorerEnabled={schemaExplorerEnabled}
-            toolRenderers={toolRenderers}
-            chatEndpoint={chatEndpoint}
-            conversationsEndpoint={conversationsEndpoint}
-            showBranding={showBranding}
-          />
-        </AtlasUIProvider>
+        <AtlasChatInner
+          propApiKey={propApiKey}
+          sidebar={sidebar}
+          schemaExplorerEnabled={schemaExplorerEnabled}
+          toolRenderers={toolRenderers}
+          chatEndpoint={chatEndpoint}
+          conversationsEndpoint={conversationsEndpoint}
+          showBranding={showBranding}
+        />
       </AtlasContext.Provider>
     </QueryClientProvider>
   );
@@ -247,7 +244,7 @@ function AtlasChatInner({
   conversationsEndpoint: string;
   showBranding: boolean;
 }) {
-  const { apiUrl, isCrossOrigin, authClient } = useAtlasConfig();
+  const { apiUrl, isCrossOrigin, authClient } = useAtlasContext();
   const dark = useDarkMode();
   const [input, setInput] = useState("");
   // authMode and healthFailed are derived from healthQuery below.

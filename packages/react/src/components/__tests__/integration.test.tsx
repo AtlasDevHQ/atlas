@@ -6,7 +6,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
 import { waitFor, act } from "@testing-library/react";
-import { AtlasProvider } from "../../hooks/provider";
+import { AtlasProvider } from "../../context";
 import { renderHook } from "@testing-library/react";
 import { useAtlasAuth } from "../../hooks/use-atlas-auth";
 import { useAtlasConversations } from "../../hooks/use-atlas-conversations";

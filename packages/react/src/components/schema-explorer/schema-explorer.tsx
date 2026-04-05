@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useRef } from "react";
-import { useAtlasConfig } from "../../context";
+import { useAtlasContext } from "../../context";
 import {
   Sheet,
   SheetContent,
@@ -371,7 +371,7 @@ export function SchemaExplorer({
   getHeaders: () => Record<string, string>;
   getCredentials: () => RequestCredentials;
 }) {
-  const { apiUrl } = useAtlasConfig();
+  const { apiUrl } = useAtlasContext();
   const [entities, setEntities] = useState<SemanticEntitySummary[]>([]);
   const [selectedEntity, setSelectedEntity] = useState<SemanticEntityDetail | null>(null);
   const [selectedName, setSelectedName] = useState<string | null>(null);

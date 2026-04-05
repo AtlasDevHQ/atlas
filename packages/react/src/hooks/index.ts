@@ -1,10 +1,10 @@
-// Provider
-export { AtlasProvider, useAtlasContext } from "./provider";
+// Provider — re-exported from context.tsx (single source of truth)
+export { AtlasProvider, useAtlasContext } from "../context";
 export type {
   AtlasProviderProps,
   AtlasContextValue,
   AtlasAuthClient,
-} from "./provider";
+} from "../context";
 
 // Hooks
 export { useAtlasChat } from "./use-atlas-chat";

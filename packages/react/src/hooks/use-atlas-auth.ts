@@ -1,6 +1,6 @@
 "use client";
 
-import { useAtlasContext } from "./provider";
+import { useAtlasContext } from "../context";
 import { useHealthQuery } from "./use-health-query";
 import type { AuthMode } from "../lib/types";
 

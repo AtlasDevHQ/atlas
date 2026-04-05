@@ -10,7 +10,7 @@ import {
   type ActionApprovalResponse,
   type ActionToolResultShape,
 } from "../../lib/action-types";
-import { useAtlasConfig } from "../../context";
+import { useAtlasContext } from "../../context";
 import { useActionAuth } from "../../context";
 import { LoadingCard } from "../chat/loading-card";
 import { ActionStatusBadge } from "./action-status-badge";
@@ -64,7 +64,7 @@ function borderColor(status: ActionDisplayStatus): string {
 /* ------------------------------------------------------------------ */
 
 export function ActionApprovalCard({ part }: { part: unknown }) {
-  const { apiUrl } = useAtlasConfig();
+  const { apiUrl } = useAtlasContext();
   const actionAuth = useActionAuth();
   const args = getToolArgs(part);
   const rawResult = getToolResult(part);

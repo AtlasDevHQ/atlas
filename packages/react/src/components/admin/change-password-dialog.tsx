@@ -11,7 +11,7 @@ import {
 } from "../ui/alert-dialog";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
-import { useAtlasConfig } from "../../context";
+import { useAtlasContext } from "../../context";
 
 export function ChangePasswordDialog({
   open,
@@ -20,7 +20,7 @@ export function ChangePasswordDialog({
   open: boolean;
   onComplete: () => void;
 }) {
-  const { apiUrl, isCrossOrigin } = useAtlasConfig();
+  const { apiUrl, isCrossOrigin } = useAtlasContext();
   const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
 
   const [currentPassword, setCurrentPassword] = useState("atlas-dev");

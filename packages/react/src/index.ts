@@ -2,9 +2,9 @@
 export { AtlasChat } from "./components/atlas-chat";
 export type { AtlasChatProps } from "./components/atlas-chat";
 
-// Context & providers
-export { AtlasUIProvider, useAtlasConfig } from "./context";
-export type { AtlasUIConfig, AtlasAuthClient } from "./context";
+// Context & provider
+export { AtlasProvider, useAtlasContext } from "./context";
+export type { AtlasProviderProps, AtlasContextValue, AtlasAuthClient } from "./context";
 
 // Theme
 export { setTheme } from "./hooks/use-dark-mode";

@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { useAtlasContext } from "./provider";
+import { useAtlasContext } from "../context";
 import { AUTH_MODES, type AuthMode } from "../lib/types";
 
 export interface HealthData {

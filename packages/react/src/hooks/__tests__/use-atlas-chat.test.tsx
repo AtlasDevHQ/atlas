@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
 import { renderHook, act } from "@testing-library/react";
-import { AtlasProvider } from "../provider";
+import { AtlasProvider } from "../../context";
 import { useAtlasChat } from "../use-atlas-chat";
 import type { ReactNode } from "react";
 

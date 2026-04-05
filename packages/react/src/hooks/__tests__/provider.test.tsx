@@ -1,6 +1,6 @@
 import { describe, it, expect } from "bun:test";
 import { renderHook } from "@testing-library/react";
-import { AtlasProvider, useAtlasContext } from "../provider";
+import { AtlasProvider, useAtlasContext } from "../../context";
 import type { ReactNode } from "react";
 
 function wrapper({ children }: { children: ReactNode }) {

@@ -1,7 +1,7 @@
 "use client";
 
 import type { UIMessage } from "@ai-sdk/react";
-import { useAtlasContext } from "./provider";
+import { useAtlasContext } from "../context";
 import { useConversations } from "./use-conversations";
 import type { Conversation } from "../lib/types";
 

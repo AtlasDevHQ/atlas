@@ -394,7 +394,7 @@ export default function DashboardViewPage() {
         {!loading && error && (
           <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-900/50 dark:bg-red-950/20 dark:text-red-400">
             {error.message ?? "Failed to load dashboard."}
-            <Button variant="ghost" size="sm" className="ml-2" onClick={refetch}>
+            <Button variant="ghost" size="sm" className="ml-2" onClick={() => refetch()}>
               Retry
             </Button>
           </div>

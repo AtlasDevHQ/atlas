@@ -38,7 +38,8 @@ const mocks = createApiTestMocks({
 // --- EE SSO mock ---
 
 // Mock functions that tests can control
-const mockVerifyDomain: Mock<(providerId: string, orgId: string) => Effect.Effect<{ status: string; message: string }>> = mock(
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- mock needs flexible return type for success/failure paths
+const mockVerifyDomain: Mock<(providerId: string, orgId: string) => Effect.Effect<any, any>> = mock(
   () => Effect.succeed({ status: "verified", message: "Domain verified successfully." }),
 );
 
@@ -58,7 +59,8 @@ const mockCreateSSOProvider: Mock<(orgId: string, input: unknown) => Effect.Effe
   () => Effect.die(new Error("not configured")),
 );
 
-const mockUpdateSSOProvider: Mock<(orgId: string, providerId: string, input: unknown) => Effect.Effect<SSOProvider>> = mock(
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- mock needs flexible return type for success/failure paths
+const mockUpdateSSOProvider: Mock<(orgId: string, providerId: string, input: unknown) => Effect.Effect<any, any>> = mock(
   () => Effect.die(new Error("not configured")),
 );
 

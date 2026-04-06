@@ -1,10 +1,11 @@
 /**
  * Enterprise SSO provider management.
  *
- * CRUD for per-organization SAML/OIDC identity providers and
- * domain-based auto-provisioning. Every CRUD function calls
- * `requireEnterprise("sso")` — unlicensed deployments get a clear error.
- * Validation helpers and domain-matching functions do not require a license.
+ * CRUD for per-organization SAML/OIDC identity providers,
+ * domain-based auto-provisioning, and DNS TXT domain ownership
+ * verification. Every CRUD function calls `requireEnterprise("sso")`
+ * — unlicensed deployments get a clear error. Validation helpers
+ * and domain-matching functions do not require a license.
  */
 
 import { Effect } from "effect";
@@ -104,7 +105,7 @@ function rowToProvider(row: SSOProviderRow): SSOProvider {
     verificationToken: row.verification_token ?? null,
     domainVerified: row.domain_verified ?? false,
     domainVerifiedAt: row.domain_verified_at ? String(row.domain_verified_at) : null,
-    domainVerificationStatus: row.domain_verification_status ?? "pending",
+    domainVerificationStatus: (row.domain_verification_status ?? "pending") as "pending" | "verified" | "failed",
   };
 
   if (row.type === "saml") {
@@ -199,6 +200,8 @@ export function validateProviderConfig(type: SSOProviderType, config: unknown): 
 
 /**
  * Generate a DNS TXT verification token for domain ownership proof.
+ * Returns a token in the format `atlas-verify=<uuid>` that the admin
+ * must add as a TXT record on their domain.
  */
 export function generateVerificationToken(): string {
   return `atlas-verify=${crypto.randomUUID()}`;
@@ -206,7 +209,9 @@ export function generateVerificationToken(): string {
 
 /**
  * Verify domain ownership by checking DNS TXT records for the verification token.
- * Updates the provider's verification status in the database.
+ * Returns immediately if the domain is already verified. On DNS lookup failure,
+ * sets status to 'failed' rather than throwing. Updates the provider's
+ * verification status in the database.
  */
 export const verifyDomain = (
   providerId: string,
@@ -216,13 +221,15 @@ export const verifyDomain = (
     yield* requireEnterpriseEffect("sso");
     yield* requireInternalDBEffect("SSO domain verification");
 
-    // Fetch provider
-    const rows = yield* Effect.promise(() => internalQuery<SSOProviderRow>(
-      `SELECT id, org_id, type, issuer, domain, enabled, sso_enforced, config, created_at, updated_at, verification_token, domain_verified, domain_verified_at, domain_verification_status
-       FROM sso_providers
-       WHERE id = $1 AND org_id = $2`,
-      [providerId, orgId],
-    ));
+    const rows = yield* Effect.tryPromise({
+      try: () => internalQuery<SSOProviderRow>(
+        `SELECT id, org_id, type, issuer, domain, enabled, sso_enforced, config, created_at, updated_at, verification_token, domain_verified, domain_verified_at, domain_verification_status
+         FROM sso_providers
+         WHERE id = $1 AND org_id = $2`,
+        [providerId, orgId],
+      ),
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    });
 
     if (rows.length === 0) {
       return yield* Effect.fail(new SSOError("SSO provider not found.", "not_found"));
@@ -237,7 +244,6 @@ export const verifyDomain = (
       return { status: "verified", message: "Domain is already verified." };
     }
 
-    // DNS TXT lookup via Effect.tryPromise
     const dnsResult = yield* Effect.tryPromise({
       try: () => dns.promises.resolveTxt(provider.domain),
       catch: (err) => err instanceof Error ? err : new Error(String(err)),
@@ -250,34 +256,51 @@ export const verifyDomain = (
     );
 
     if (!dnsResult.ok) {
-      yield* Effect.promise(() => internalQuery(
-        `UPDATE sso_providers SET domain_verification_status = 'failed', updated_at = now() WHERE id = $1 AND org_id = $2`,
-        [providerId, orgId],
-      ));
+      yield* Effect.tryPromise({
+        try: () => internalQuery(
+          `UPDATE sso_providers SET domain_verification_status = 'failed', updated_at = now() WHERE id = $1 AND org_id = $2`,
+          [providerId, orgId],
+        ),
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      }).pipe(Effect.catchAll((err) => {
+        log.error({ providerId, err: err.message }, "Failed to persist domain verification failure status");
+        return Effect.void;
+      }));
 
-      return { status: "failed", message: `DNS lookup failed: ${dnsResult.errMsg}` };
+      return { status: "failed", message: `DNS lookup failed for ${provider.domain}. Check your DNS configuration and try again.` };
     }
 
-    // Search TXT records for matching token
     const flatRecords = dnsResult.records.map((parts) => parts.join(""));
     const found = flatRecords.some((record) => record === provider.verification_token);
 
     if (found) {
-      yield* Effect.promise(() => internalQuery(
-        `UPDATE sso_providers
-         SET domain_verified = true, domain_verified_at = now(), domain_verification_status = 'verified', updated_at = now()
-         WHERE id = $1 AND org_id = $2`,
-        [providerId, orgId],
-      ));
+      yield* Effect.tryPromise({
+        try: () => internalQuery(
+          `UPDATE sso_providers
+           SET domain_verified = true, domain_verified_at = now(), domain_verification_status = 'verified', updated_at = now()
+           WHERE id = $1 AND org_id = $2`,
+          [providerId, orgId],
+        ),
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      }).pipe(Effect.catchAll((err) => {
+        log.error({ providerId, domain: provider.domain, err: err.message }, "DNS verification succeeded but DB update failed");
+        return Effect.fail(new SSOError("Domain verified via DNS but failed to persist — please retry.", "validation"));
+      }));
 
       log.info({ providerId, domain: provider.domain }, "SSO domain verified via DNS TXT record");
       return { status: "verified", message: "Domain verified successfully." };
     }
 
-    yield* Effect.promise(() => internalQuery(
-      `UPDATE sso_providers SET domain_verification_status = 'failed', updated_at = now() WHERE id = $1 AND org_id = $2`,
-      [providerId, orgId],
-    ));
+    yield* Effect.tryPromise({
+      try: () => internalQuery(
+        `UPDATE sso_providers SET domain_verification_status = 'failed', updated_at = now() WHERE id = $1 AND org_id = $2`,
+        [providerId, orgId],
+      ),
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    }).pipe(Effect.catchAll((err) => {
+      log.error({ providerId, err: err.message }, "Failed to persist domain verification failure status");
+      return Effect.void;
+    }));
 
     return {
       status: "failed",
@@ -287,6 +310,7 @@ export const verifyDomain = (
 
 /**
  * Check if a domain is available for SSO registration.
+ * Requires an internal database — returns unavailable with reason if not configured.
  */
 export const checkDomainAvailability = (
   domain: string,
@@ -301,13 +325,16 @@ export const checkDomainAvailability = (
     }
 
     if (!hasInternalDB()) {
-      return { available: true };
+      return { available: false, reason: "Domain availability check unavailable — internal database not configured." };
     }
 
-    const existing = yield* Effect.promise(() => internalQuery<{ id: string; org_id: string }>(
-      `SELECT id, org_id FROM sso_providers WHERE domain = $1`,
-      [normalized],
-    ));
+    const existing = yield* Effect.tryPromise({
+      try: () => internalQuery<{ id: string; org_id: string }>(
+        `SELECT id, org_id FROM sso_providers WHERE domain = $1`,
+        [normalized],
+      ),
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    });
 
     if (existing.length === 0) {
       return { available: true };
@@ -396,6 +423,9 @@ export const createSSOProvider = (
     const storedConfig = prepareConfigForStorage(input.type, input.config as unknown as Record<string, unknown>);
 
     // Generate verification token — provider cannot be enabled until domain is verified
+    if (input.enabled) {
+      log.info({ orgId, domain }, "SSO provider create requested enabled=true — overriding to false (domain verification required)");
+    }
     const verificationToken = generateVerificationToken();
 
     const rows = yield* Effect.promise(() => internalQuery<SSOProviderRow>(

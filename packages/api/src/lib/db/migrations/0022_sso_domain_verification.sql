@@ -14,3 +14,10 @@ DO $$ BEGIN
     CHECK (domain_verification_status IN ('pending', 'verified', 'failed'));
 EXCEPTION WHEN duplicate_object THEN NULL;
 END $$;
+
+-- Prevent enabling a provider with an unverified domain (TOCTOU race guard)
+DO $$ BEGIN
+  ALTER TABLE sso_providers ADD CONSTRAINT chk_enabled_requires_verified
+    CHECK (NOT enabled OR domain_verified);
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;

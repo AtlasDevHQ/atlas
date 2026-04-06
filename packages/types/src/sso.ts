@@ -55,8 +55,8 @@ interface SSOProviderBase {
   domainVerified: boolean;
   /** Timestamp when domain was verified, or null if not yet verified. */
   domainVerifiedAt: string | null;
-  /** Domain verification status: "pending", "verified", or "failed". */
-  domainVerificationStatus: string;
+  /** Domain verification status — constrained by database CHECK constraint. */
+  domainVerificationStatus: "pending" | "verified" | "failed";
 }
 
 export interface SSOSamlProvider extends SSOProviderBase {

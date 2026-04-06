@@ -559,6 +559,7 @@ export const ssoProviders = pgTable(
   (t) => [
     check("chk_sso_type", sql`type IN ('saml', 'oidc')`),
     check("chk_domain_verification_status", sql`domain_verification_status IN ('pending', 'verified', 'failed')`),
+    check("chk_enabled_requires_verified", sql`NOT enabled OR domain_verified`),
     index("idx_sso_providers_org").on(t.orgId),
     uniqueIndex("idx_sso_providers_domain").on(t.domain),
     index("idx_sso_providers_enabled").on(t.orgId, t.enabled).where(sql`enabled = true`),

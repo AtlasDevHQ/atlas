@@ -54,7 +54,7 @@ const SSOProviderSummarySchema = z.object({
   verificationToken: z.string().nullable(),
   domainVerified: z.boolean(),
   domainVerifiedAt: z.string().nullable(),
-  domainVerificationStatus: z.string(),
+  domainVerificationStatus: z.enum(["pending", "verified", "failed"]),
 }).passthrough();
 
 const SSOProviderDetailSchema = z.object({
@@ -71,7 +71,7 @@ const SSOProviderDetailSchema = z.object({
   verificationToken: z.string().nullable(),
   domainVerified: z.boolean(),
   domainVerifiedAt: z.string().nullable(),
-  domainVerificationStatus: z.string(),
+  domainVerificationStatus: z.enum(["pending", "verified", "failed"]),
 }).passthrough();
 
 const VerifyDomainResponseSchema = z.object({
@@ -212,7 +212,8 @@ const createProviderRoute = createRoute({
   tags: ["Admin — SSO"],
   summary: "Create SSO provider",
   description:
-    "Creates a new SSO provider for the admin's active organization. Requires type, issuer, domain, and config.",
+    "Creates a new SSO provider for the admin's active organization. Requires type, issuer, domain, and config. " +
+    "The provider is always created with enabled=false — domain ownership must be verified via DNS TXT record before the provider can be enabled.",
   request: {
     body: {
       required: true,
@@ -267,7 +268,9 @@ const updateProviderRoute = createRoute({
   tags: ["Admin — SSO"],
   summary: "Update SSO provider",
   description:
-    "Updates an existing SSO provider. All fields are optional — only provided fields are updated.",
+    "Updates an existing SSO provider. All fields are optional — only provided fields are updated. " +
+    "If the domain is changed, verification status is reset to 'pending', a new verification token is generated, and the provider is automatically disabled. " +
+    "Enabling a provider requires a verified domain.",
   request: {
     params: ProviderIdParamSchema,
     body: {
@@ -461,7 +464,9 @@ const verifyDomainRoute = createRoute({
   tags: ["Admin — SSO"],
   summary: "Verify SSO provider domain",
   description:
-    "Triggers a DNS TXT record lookup to verify domain ownership for the SSO provider.",
+    "Triggers a DNS TXT record lookup to verify domain ownership for the SSO provider. " +
+    "Returns status 'verified' if the expected TXT record is found, 'failed' otherwise. " +
+    "If the domain is already verified, returns immediately without performing a DNS lookup.",
   request: {
     params: ProviderIdParamSchema,
   },

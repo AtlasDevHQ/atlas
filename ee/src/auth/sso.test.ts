@@ -1,6 +1,13 @@
-import { describe, it, expect, beforeEach, mock } from "bun:test";
+import { describe, it, expect, beforeEach, mock, type Mock } from "bun:test";
 import { Effect } from "effect";
 import { createEEMock, EnterpriseError } from "../__mocks__/internal";
+
+// Mock DNS for verifyDomain tests
+const mockResolveTxt: Mock<(domain: string) => Promise<string[][]>> = mock(async () => []);
+mock.module("node:dns", () => ({
+  default: { promises: { resolveTxt: mockResolveTxt } },
+  promises: { resolveTxt: mockResolveTxt },
+}));
 
 // ── Mocks ───────────────────────────────────────────────────────────
 
@@ -42,6 +49,9 @@ const {
   isSSOEnforced,
   isSSOEnforcedForDomain,
   SSOEnforcementError,
+  generateVerificationToken,
+  verifyDomain,
+  checkDomainAvailability,
 } = await import("./sso");
 
 // ── Helpers ─────────────────────────────────────────────────────────
@@ -614,5 +624,195 @@ describe("isSSOEnforcedForDomain", () => {
     const result = await run(isSSOEnforcedForDomain("acme.com"));
     expect(result).not.toBeNull();
     expect(result!.enforced).toBe(false);
+  });
+});
+
+// ── Domain Verification Tests ──────────────────────────────────────
+
+describe("generateVerificationToken", () => {
+  it("returns token in atlas-verify=<uuid> format", () => {
+    const token = generateVerificationToken();
+    expect(token).toMatch(/^atlas-verify=[0-9a-f-]{36}$/);
+  });
+
+  it("generates unique tokens on each call", () => {
+    const a = generateVerificationToken();
+    const b = generateVerificationToken();
+    expect(a).not.toBe(b);
+  });
+});
+
+describe("verifyDomain", () => {
+  beforeEach(() => {
+    ee.reset();
+    mockResolveTxt.mockReset();
+    mockResolveTxt.mockResolvedValue([]);
+  });
+
+  it("returns verified when TXT record matches token", async () => {
+    // SELECT provider
+    ee.queueMockRows([{ ...sampleSamlRow, domain_verified: false, domain_verification_status: "pending" }]);
+    // UPDATE to verified
+    ee.queueMockRows([]);
+    mockResolveTxt.mockResolvedValue([["atlas-verify=test-uuid"]]);
+
+    const result = await run(verifyDomain("prov-1", "org-1"));
+    expect(result.status).toBe("verified");
+    expect(result.message).toContain("verified successfully");
+
+    // Verify DB was updated to verified
+    const updateQuery = ee.capturedQueries.find(q => q.sql.includes("domain_verified = true"));
+    expect(updateQuery).toBeDefined();
+  });
+
+  it("handles multi-part TXT records (RFC 7208 long records)", async () => {
+    ee.queueMockRows([{ ...sampleSamlRow, domain_verified: false, domain_verification_status: "pending" }]);
+    ee.queueMockRows([]);
+    // DNS can split long TXT records across multiple strings
+    mockResolveTxt.mockResolvedValue([["atlas-verify=", "test-uuid"]]);
+
+    const result = await run(verifyDomain("prov-1", "org-1"));
+    expect(result.status).toBe("verified");
+  });
+
+  it("returns failed when no matching TXT record found", async () => {
+    ee.queueMockRows([{ ...sampleSamlRow, domain_verified: false, domain_verification_status: "pending" }]);
+    ee.queueMockRows([]); // UPDATE to failed
+    mockResolveTxt.mockResolvedValue([["some-other-record"]]);
+
+    const result = await run(verifyDomain("prov-1", "org-1"));
+    expect(result.status).toBe("failed");
+    expect(result.message).toContain("No matching TXT record");
+
+    const updateQuery = ee.capturedQueries.find(q => q.sql.includes("domain_verification_status = 'failed'"));
+    expect(updateQuery).toBeDefined();
+  });
+
+  it("returns failed when DNS lookup times out", async () => {
+    ee.queueMockRows([{ ...sampleSamlRow, domain_verified: false, domain_verification_status: "pending" }]);
+    ee.queueMockRows([]); // UPDATE to failed
+    mockResolveTxt.mockRejectedValue(new Error("queryTxt ETIMEOUT acme.com"));
+
+    const result = await run(verifyDomain("prov-1", "org-1"));
+    expect(result.status).toBe("failed");
+    expect(result.message).toContain("DNS lookup failed");
+  });
+
+  it("returns verified immediately if domain already verified", async () => {
+    ee.queueMockRows([{ ...sampleSamlRow, domain_verified: true, domain_verification_status: "verified" }]);
+
+    const result = await run(verifyDomain("prov-1", "org-1"));
+    expect(result.status).toBe("verified");
+    expect(result.message).toContain("already verified");
+    // DNS should NOT have been called
+    expect(mockResolveTxt).not.toHaveBeenCalled();
+  });
+
+  it("throws not_found when provider does not exist", async () => {
+    ee.queueMockRows([]);
+    await expect(run(verifyDomain("nonexistent", "org-1"))).rejects.toThrow("not found");
+  });
+
+  it("throws validation when no verification token configured", async () => {
+    ee.queueMockRows([{ ...sampleSamlRow, verification_token: null, domain_verified: false }]);
+    await expect(run(verifyDomain("prov-1", "org-1"))).rejects.toThrow("No verification token");
+  });
+});
+
+describe("checkDomainAvailability", () => {
+  beforeEach(() => ee.reset());
+
+  it("returns available for unclaimed domain", async () => {
+    ee.queueMockRows([]);
+    const result = await run(checkDomainAvailability("newdomain.com", "org-1"));
+    expect(result.available).toBe(true);
+  });
+
+  it("returns unavailable when claimed by same org", async () => {
+    ee.queueMockRows([{ id: "prov-1", org_id: "org-1" }]);
+    const result = await run(checkDomainAvailability("acme.com", "org-1"));
+    expect(result.available).toBe(false);
+    expect(result.reason).toContain("your organization");
+  });
+
+  it("returns unavailable when claimed by another org", async () => {
+    ee.queueMockRows([{ id: "prov-2", org_id: "org-other" }]);
+    const result = await run(checkDomainAvailability("acme.com", "org-1"));
+    expect(result.available).toBe(false);
+    expect(result.reason).toContain("another organization");
+  });
+
+  it("returns unavailable for invalid domain format", async () => {
+    const result = await run(checkDomainAvailability("not-a-domain", "org-1"));
+    expect(result.available).toBe(false);
+    expect(result.reason).toContain("Invalid domain");
+  });
+
+  it("returns unavailable when no internal DB configured", async () => {
+    ee.setHasInternalDB(false);
+    const result = await run(checkDomainAvailability("acme.com", "org-1"));
+    expect(result.available).toBe(false);
+    expect(result.reason).toContain("internal database not configured");
+  });
+
+  it("throws when enterprise is disabled", async () => {
+    ee.setEnterpriseEnabled(false);
+    await expect(run(checkDomainAvailability("acme.com", "org-1"))).rejects.toThrow("Enterprise features");
+  });
+});
+
+// ── Enable guard in updateSSOProvider ──────────────────────────────
+
+describe("updateSSOProvider — enable guard", () => {
+  beforeEach(() => ee.reset());
+
+  it("blocks enabling when domain is not verified", async () => {
+    // getSSOProvider: returns provider with domain_verified=false
+    ee.queueMockRows([{ ...sampleOidcRow, domain_verified: false, domain_verification_status: "pending" }]);
+
+    await expect(run(updateSSOProvider("org-1", "prov-2", { enabled: true }))).rejects.toThrow(
+      "Cannot enable SSO provider until domain is verified",
+    );
+  });
+
+  it("allows enabling when domain is verified", async () => {
+    // getSSOProvider query
+    ee.queueMockRows([{ ...sampleSamlRow, domain_verified: true, domain_verification_status: "verified" }]);
+    // UPDATE RETURNING
+    ee.queueMockRows([{ ...sampleSamlRow, enabled: true }]);
+
+    const provider = await run(updateSSOProvider("org-1", "prov-1", { enabled: true }));
+    expect(provider.enabled).toBe(true);
+  });
+
+  it("allows disabling regardless of verification status", async () => {
+    // getSSOProvider query
+    ee.queueMockRows([{ ...sampleSamlRow, enabled: true, domain_verified: true }]);
+    // UPDATE RETURNING
+    ee.queueMockRows([{ ...sampleSamlRow, enabled: false }]);
+
+    const provider = await run(updateSSOProvider("org-1", "prov-1", { enabled: false }));
+    expect(provider.enabled).toBe(false);
+  });
+
+  it("resets verification when domain changes", async () => {
+    // getSSOProvider query
+    ee.queueMockRows([{ ...sampleSamlRow, domain_verified: true, domain_verification_status: "verified" }]);
+    // Domain clash check
+    ee.queueMockRows([]);
+    // UPDATE RETURNING
+    ee.queueMockRows([{ ...sampleSamlRow, domain: "newdomain.com", domain_verified: false, domain_verification_status: "pending", enabled: false }]);
+
+    const provider = await run(updateSSOProvider("org-1", "prov-1", { domain: "newdomain.com" }));
+    expect(provider.domain).toBe("newdomain.com");
+    expect(provider.domainVerified).toBe(false);
+    expect(provider.domainVerificationStatus).toBe("pending");
+
+    // Verify SQL includes verification reset
+    const updateQuery = ee.capturedQueries.find(q => q.sql.includes("UPDATE sso_providers"));
+    expect(updateQuery).toBeDefined();
+    expect(updateQuery!.sql).toContain("domain_verified = false");
+    expect(updateQuery!.sql).toContain("domain_verification_status = 'pending'");
+    expect(updateQuery!.sql).toContain("verification_token");
   });
 });

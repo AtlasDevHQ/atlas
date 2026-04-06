@@ -91,8 +91,8 @@ export async function emitLoginEvent(
     let alreadyLogged = false;
     try {
       const rows = await internalQuery<{ n: number }>(
-        `SELECT 1 AS n FROM usage_events WHERE user_id = $1 AND event_type = 'login' AND created_at >= $2 LIMIT 1`,
-        [userId, todayStart.toISOString()],
+        `SELECT 1 AS n FROM usage_events WHERE user_id = $1 AND workspace_id = $2 AND event_type = 'login' AND created_at >= $3 LIMIT 1`,
+        [userId, workspaceId, todayStart.toISOString()],
       );
       alreadyLogged = rows.length > 0;
     } catch (err) {

@@ -294,12 +294,12 @@ function TierCard({ tier, billing }: { tier: Tier; billing: BillingPeriod }) {
           : "border border-zinc-800/60 bg-zinc-900/30"
       }`}
     >
-      <div className="mb-1 flex items-center gap-2">
+      <div className="mb-1 flex flex-wrap items-center gap-x-2 gap-y-1">
         <span className="font-mono text-xs tracking-widest text-brand/80 uppercase">
           {tier.name}
         </span>
         {tier.badge && (
-          <span className="rounded-full border border-brand/20 bg-brand/10 px-2 py-0.5 font-mono text-[10px] font-medium tracking-wider text-brand uppercase">
+          <span className="shrink-0 rounded-full border border-brand/20 bg-brand/10 px-2 py-0.5 font-mono text-[10px] font-medium tracking-wider text-brand uppercase whitespace-nowrap">
             {tier.badge}
           </span>
         )}

@@ -333,10 +333,13 @@ billing.openapi(getBillingStatusRoute, async (c) => {
     const connectionCount = connectionRows[0]?.count ?? 0;
 
     // Per-seat pricing fields (new plan model, with fallbacks for old plans)
-    const pricePerSeat = (plan as Record<string, unknown>).pricePerSeat as number | undefined ?? null;
-    const tokenBudgetPerSeat = (plan as Record<string, unknown>).tokenBudgetPerSeat as number | undefined ?? null;
-    const overagePerQuery = (plan as Record<string, unknown>).overagePerQuery as number | undefined ?? null;
-    const defaultModel = (plan as Record<string, unknown>).defaultModel as string | undefined ?? null;
+    // Per-seat pricing fields — added by feat/per-seat-pricing PR.
+    // Single narrowing cast; returns undefined → null until that PR merges.
+    const planExt = plan as { pricePerSeat?: number; tokenBudgetPerSeat?: number; overagePerQuery?: number; defaultModel?: string };
+    const pricePerSeat = planExt.pricePerSeat ?? null;
+    const tokenBudgetPerSeat = planExt.tokenBudgetPerSeat ?? null;
+    const overagePerQuery = planExt.overagePerQuery ?? null;
+    const defaultModel = planExt.defaultModel ?? null;
 
     // Total token budget = per-seat budget * number of seats (null if unlimited or not configured)
     const totalTokenBudget = tokenBudgetPerSeat !== null ? tokenBudgetPerSeat * Math.max(seatCount, 1) : null;

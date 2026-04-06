@@ -109,9 +109,9 @@ function overageColor(status: string): string {
 }
 
 const MODEL_OPTIONS = [
-  { value: "haiku", label: "Haiku" },
-  { value: "sonnet", label: "Sonnet" },
-  { value: "opus", label: "Opus" },
+  { value: "claude-haiku-4-5", label: "Haiku 4.5 (fastest, lowest cost)" },
+  { value: "claude-sonnet-4-6", label: "Sonnet 4.6 (balanced)" },
+  { value: "claude-opus-4-6", label: "Opus 4.6 (most capable)" },
 ] as const;
 
 function formatCurrency(amount: number): string {

@@ -20,8 +20,8 @@ mock.module("@atlas/api/lib/logger", () => ({
 
 const { generateVerificationToken, verifyDnsTxt } = await import("./domain-verification");
 
-const run = <A, E>(effect: Effect.Effect<A, E>): Promise<A> =>
-  Effect.runPromise(effect as Effect.Effect<A, never>);
+const run = <A>(effect: Effect.Effect<A, never>): Promise<A> =>
+  Effect.runPromise(effect);
 
 describe("generateVerificationToken", () => {
   it("returns token in atlas-verify=<uuid> format", () => {
@@ -53,7 +53,9 @@ describe("verifyDnsTxt", () => {
 
     const result = await run(verifyDnsTxt("example.com", token));
     expect(result.ok).toBe(true);
-    expect(result.verified).toBe(true);
+    if (result.ok) {
+      expect(result.records).toEqual([token]);
+    }
   });
 
   it("handles multi-part TXT records (DNS 255-byte chunks)", async () => {
@@ -62,7 +64,9 @@ describe("verifyDnsTxt", () => {
 
     const result = await run(verifyDnsTxt("example.com", token));
     expect(result.ok).toBe(true);
-    expect(result.verified).toBe(true);
+    if (result.ok) {
+      expect(result.records).toEqual([token]);
+    }
   });
 
   it("returns no_match when token not found in records", async () => {
@@ -70,12 +74,11 @@ describe("verifyDnsTxt", () => {
 
     const result = await run(verifyDnsTxt("example.com", "atlas-verify=expected"));
     expect(result.ok).toBe(false);
-    expect(result.verified).toBe(false);
     if (!result.ok) {
       expect(result.reason).toBe("no_match");
       expect(result.message).toContain("No matching TXT record");
       expect(result.message).toContain("atlas-verify=expected");
-      expect(result.records).toBeDefined();
+      expect(result.records).toEqual(["some-other-record", "unrelated-txt"]);
     }
   });
 
@@ -84,10 +87,24 @@ describe("verifyDnsTxt", () => {
 
     const result = await run(verifyDnsTxt("example.com", "atlas-verify=test"));
     expect(result.ok).toBe(false);
-    expect(result.verified).toBe(false);
     if (!result.ok) {
       expect(result.reason).toBe("dns_error");
       expect(result.message).toContain("DNS lookup failed");
+      expect(result.records).toEqual([]);
+    }
+  });
+
+  it("returns timeout when DNS lookup exceeds deadline", async () => {
+    mockResolveTxt.mockImplementation(
+      () => new Promise((resolve) => setTimeout(() => resolve([]), 5_000)),
+    );
+
+    const result = await run(verifyDnsTxt("example.com", "atlas-verify=test", 50));
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe("timeout");
+      expect(result.message).toContain("timed out");
+      expect(result.records).toEqual([]);
     }
   });
 
@@ -96,9 +113,9 @@ describe("verifyDnsTxt", () => {
 
     const result = await run(verifyDnsTxt("example.com", "atlas-verify=test"));
     expect(result.ok).toBe(false);
-    expect(result.verified).toBe(false);
     if (!result.ok) {
       expect(result.reason).toBe("no_match");
+      expect(result.records).toEqual([]);
     }
   });
 
@@ -112,7 +129,9 @@ describe("verifyDnsTxt", () => {
 
     const result = await run(verifyDnsTxt("example.com", token));
     expect(result.ok).toBe(true);
-    expect(result.verified).toBe(true);
+    if (result.ok) {
+      expect(result.records).toContain(token);
+    }
   });
 
   it("includes domain in failure message", async () => {

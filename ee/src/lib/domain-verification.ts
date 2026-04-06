@@ -3,8 +3,7 @@
  *
  * Used by SSO domain verification (ee/src/auth/sso.ts) to prove domain
  * ownership via DNS TXT records. Custom domains (ee/src/platform/domains.ts)
- * use Railway's CNAME/cert verification instead, but could adopt this
- * utility for additional ownership proof in the future.
+ * use a separate Railway-based verification flow.
  *
  * Token format: `atlas-verify=<uuid>`
  * Verification: DNS TXT lookup with timeout, returns structured result.
@@ -19,23 +18,26 @@ const log = createLogger("ee:domain-verification");
 
 // ── Types ──────────────────────────────────────────────────────────
 
-export type DomainVerificationStatus = "pending" | "verified" | "failed";
-
 export interface DnsTxtResult {
   readonly ok: true;
-  readonly verified: true;
   readonly records: string[];
 }
 
 export interface DnsTxtFailure {
   readonly ok: false;
-  readonly verified: false;
   readonly reason: "dns_error" | "no_match" | "timeout";
   readonly message: string;
-  readonly records?: string[];
+  readonly records: string[];
 }
 
 export type DnsTxtVerificationResult = DnsTxtResult | DnsTxtFailure;
+
+// ── Typed timeout sentinel ─────────────────────────────────────────
+
+class DnsTimeoutError extends Error {
+  readonly _tag = "DnsTimeoutError";
+  constructor() { super("DNS lookup timed out"); }
+}
 
 // ── Token generation ───────────────────────────────────────────────
 
@@ -55,9 +57,10 @@ export function generateVerificationToken(): string {
 /**
  * Verify domain ownership by checking DNS TXT records for the expected token.
  *
- * Performs a DNS TXT lookup with a configurable timeout (default 10s).
- * TXT records are flattened (multi-part records joined) before comparison.
- * Returns a structured result — never throws.
+ * Performs a DNS TXT lookup with a configurable timeout via `timeoutMs`
+ * (default 10,000ms / 10s). TXT records are flattened (multi-part records
+ * joined) before comparison. Returns a structured result with the error
+ * encoded in the success channel (Effect error channel is `never`).
  */
 export const verifyDnsTxt = (
   domain: string,
@@ -71,25 +74,22 @@ export const verifyDnsTxt = (
     }).pipe(
       Effect.timeoutFail({
         duration: `${timeoutMs} millis`,
-        onTimeout: () => new Error("DNS lookup timed out"),
+        onTimeout: () => new DnsTimeoutError(),
       }),
       Effect.map((records) => ({ ok: true as const, records })),
       Effect.catchAll((err) => {
-        log.warn({ domain, err: err.message }, "DNS TXT lookup failed");
-        return Effect.succeed({
-          ok: false as const,
-          reason: err.message.includes("timed out") ? "timeout" as const : "dns_error" as const,
-          message: err.message,
-        });
+        const reason = err instanceof DnsTimeoutError ? "timeout" as const : "dns_error" as const;
+        log.warn({ domain, err: err.message, reason }, "DNS TXT lookup failed");
+        return Effect.succeed({ ok: false as const, reason, message: err.message });
       }),
     );
 
     if (!dnsResult.ok) {
       return {
         ok: false as const,
-        verified: false as const,
         reason: dnsResult.reason,
         message: `DNS lookup failed for ${domain}: ${dnsResult.message}`,
+        records: [] as string[],
       };
     }
 
@@ -100,14 +100,12 @@ export const verifyDnsTxt = (
     if (found) {
       return {
         ok: true as const,
-        verified: true as const,
         records: flatRecords,
       };
     }
 
     return {
       ok: false as const,
-      verified: false as const,
       reason: "no_match" as const,
       message: `No matching TXT record found. Add a TXT record with value "${expectedToken}" to ${domain}.`,
       records: flatRecords,

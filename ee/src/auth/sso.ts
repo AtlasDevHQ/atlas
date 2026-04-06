@@ -243,6 +243,7 @@ export const verifyDomain = (
     const dnsResult = yield* verifyDnsTxt(provider.domain, provider.verification_token);
 
     if (!dnsResult.ok) {
+      log.warn({ providerId, domain: provider.domain, reason: dnsResult.reason }, "SSO domain DNS verification failed");
       yield* Effect.tryPromise({
         try: () => internalQuery(
           `UPDATE sso_providers SET domain_verification_status = 'failed', updated_at = now() WHERE id = $1 AND org_id = $2`,

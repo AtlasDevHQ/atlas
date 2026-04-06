@@ -1014,9 +1014,34 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] Fix: dashboard route require crashes server startup (#1311, PR e3894e2b)
 - [x] Fix: org-scope connections table — composite PK (id, org_id) (#1330) — onboarding 409 for all orgs after first
 
-### Open
-- [ ] SSO auto-provisioning bypasses member limit check (#1323)
-- [ ] Fix admin-layout test — cannot resolve @/components/ui/sidebar (#1328)
+### Bug Fixes
+- [x] SSO auto-provisioning bypasses member limit check (#1323, PR #1339)
+- [x] Fix admin-layout test — cannot resolve @/components/ui/sidebar (#1328, 54bcd46f)
+
+### SaaS Infrastructure
+- [x] Add `atlas.config.ts` for SaaS deployment — dogfood own config (144a2bf1)
+- [x] Retry migration with backoff for serverless Postgres cold starts (1b541ff9)
+- [x] Migration 0020 — add baseline org columns before tier rename (f027b02e)
+- [x] Platform residency page — show not-configured state instead of error (65291d28)
+- [x] Simplify region IDs — `us`/`eu`/`apac` (fcab8ac5)
+- [x] Remove compliance badges — no security audits completed yet (43ad78c6)
+
+---
+
+## SSO Provider Management UI
+
+**Self-serve SAML/OIDC configuration for SaaS workspace admins.** PRD: #1331. DNS domain verification (shared infra with custom domains), test connection, provider CRUD UI.
+
+### Backend (complete)
+- [x] Domain verification backend — migration 0022, DNS TXT lookup, domain-check endpoint (#1332, PR #1340)
+- [x] Test connection endpoint — OIDC discovery + SAML cert validation (#1333, PR #1338)
+- [x] Fix: grandfather existing enabled providers in migration, DNS timeout (72f662e0)
+
+### Frontend (in progress)
+- [ ] Provider list UI — cards, status badges, SP metadata, enable/disable (#1334)
+- [ ] Create provider dialog — SAML/OIDC forms, domain check, cert upload (#1335)
+- [ ] Edit provider dialog — pre-filled forms, secret masking, domain reset (#1336)
+- [ ] Delete provider — domain confirmation, enforcement warning (#1337)
 
 ---
 

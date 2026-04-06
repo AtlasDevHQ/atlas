@@ -162,6 +162,7 @@ mock.module("@atlas/api/lib/slack/store", () => ({
 }));
 
 mock.module("@atlas/api/lib/email/store", () => ({
+  EMAIL_PROVIDERS: ["resend", "sendgrid", "postmark", "smtp", "ses"],
   getEmailInstallationByOrg: mock(async () => null),
   saveEmailInstallation: mock(async () => {}),
   deleteEmailInstallationByOrg: mock(async () => false),

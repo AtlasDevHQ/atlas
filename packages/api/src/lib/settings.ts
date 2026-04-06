@@ -19,6 +19,7 @@
 
 import { createLogger } from "@atlas/api/lib/logger";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
+import { EMAIL_PROVIDERS } from "@atlas/api/lib/integrations/types";
 
 const log = createLogger("settings");
 
@@ -322,7 +323,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     label: "Email Provider",
     description: "Platform default email provider",
     type: "select",
-    options: ["resend", "sendgrid", "postmark", "smtp", "ses"],
+    options: [...EMAIL_PROVIDERS],
     default: "resend",
     envVar: "ATLAS_EMAIL_PROVIDER",
     scope: "platform",

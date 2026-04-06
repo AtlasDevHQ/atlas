@@ -76,15 +76,17 @@ export async function executeEmailSend(
   const recipients = Array.isArray(params.to) ? params.to : [params.to];
 
   // Send to each recipient via the platform delivery chain
+  const messageIds: string[] = [];
   for (const recipient of recipients) {
     const result = await sendEmail({ to: recipient, subject: params.subject, html: params.body });
     if (!result.success) {
       log.error({ recipient, provider: result.provider, error: result.error }, "Email send failed");
       throw new Error(`Email delivery failed for ${recipient}: ${result.error}`);
     }
+    if (result.messageId) messageIds.push(result.messageId);
   }
 
-  return { id: "sent" };
+  return { id: messageIds[0] ?? "sent" };
 }
 
 // ---------------------------------------------------------------------------

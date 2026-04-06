@@ -13,6 +13,7 @@
 
 import { createLogger } from "@atlas/api/lib/logger";
 import { getSetting } from "@atlas/api/lib/settings";
+import { EMAIL_PROVIDERS, type EmailProvider } from "@atlas/api/lib/integrations/types";
 
 const log = createLogger("email-delivery");
 
@@ -22,10 +23,23 @@ export interface EmailMessage {
   html: string;
 }
 
+export type DeliveryProvider = EmailProvider | "webhook" | "log";
+
 export interface DeliveryResult {
   success: boolean;
-  provider: "sendgrid" | "postmark" | "smtp" | "ses" | "resend" | "webhook" | "log";
+  provider: DeliveryProvider;
+  messageId?: string;
   error?: string;
+}
+
+interface EmailTransport {
+  provider: EmailProvider;
+  senderAddress: string;
+  config: Record<string, unknown>;
+}
+
+function isEmailProvider(s: string): s is EmailProvider {
+  return (EMAIL_PROVIDERS as readonly string[]).includes(s);
 }
 
 /**
@@ -36,7 +50,7 @@ export interface DeliveryResult {
  */
 export async function getEmailTransport(
   orgId: string,
-): Promise<{ provider: string; senderAddress: string; config: Record<string, unknown> } | null> {
+): Promise<EmailTransport | null> {
   try {
     const { getEmailInstallationByOrg } = await import("@atlas/api/lib/email/store");
     const install = await getEmailInstallationByOrg(orgId);
@@ -60,9 +74,14 @@ export async function getEmailTransport(
  * Resolve the platform-level email provider from the settings registry.
  * Returns a transport-compatible object or null when no API key is available.
  */
-function getPlatformEmailConfig(): { provider: string; senderAddress: string; config: Record<string, unknown> } | null {
-  const provider = getSetting("ATLAS_EMAIL_PROVIDER");
-  if (!provider) return null;
+function getPlatformEmailConfig(): EmailTransport | null {
+  const raw = getSetting("ATLAS_EMAIL_PROVIDER");
+  if (!raw) return null;
+  if (!isEmailProvider(raw)) {
+    log.warn({ provider: raw }, "Unrecognized platform email provider — falling through to env-var chain");
+    return null;
+  }
+  const provider = raw;
 
   const fromAddress = getSetting("ATLAS_EMAIL_FROM") ?? "Atlas <noreply@useatlas.dev>";
 
@@ -100,8 +119,7 @@ function getPlatformEmailConfig(): { provider: string; senderAddress: string; co
       }
       return { provider, senderAddress: fromAddress, config: {} };
     default:
-      log.warn({ provider }, "Unrecognized platform email provider — falling through to env-var chain");
-      return null;
+      return null; // unreachable — isEmailProvider guard above
   }
 }
 
@@ -154,7 +172,7 @@ export async function sendEmail(message: EmailMessage, orgId?: string): Promise<
  */
 export async function sendEmailWithTransport(
   message: EmailMessage,
-  transport: { provider: string; senderAddress: string; config: Record<string, unknown> },
+  transport: EmailTransport,
 ): Promise<DeliveryResult> {
   return deliverViaTransport(message, transport);
 }
@@ -164,7 +182,7 @@ export async function sendEmailWithTransport(
  */
 async function deliverViaTransport(
   message: EmailMessage,
-  transport: { provider: string; senderAddress: string; config: Record<string, unknown> },
+  transport: EmailTransport,
 ): Promise<DeliveryResult> {
   const from = transport.senderAddress;
 
@@ -257,8 +275,9 @@ async function deliverResend(message: EmailMessage, from: string, apiKey?: strin
       return { success: false, provider: "resend", error };
     }
 
-    log.info({ to: message.to, subject: message.subject }, "Email sent via Resend");
-    return { success: true, provider: "resend" };
+    const data = await resp.json().catch(() => ({})) as { id?: string };
+    log.info({ to: message.to, subject: message.subject, messageId: data.id }, "Email sent via Resend");
+    return { success: true, provider: "resend", messageId: data.id };
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
     log.error({ to: message.to, err: error }, "Resend delivery error");

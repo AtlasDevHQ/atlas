@@ -35,7 +35,8 @@ import { Mail, Loader2, CheckCircle2, XCircle, RotateCcw, Eye, EyeOff } from "lu
 
 // ── Schemas ───────────────────────────────────────────────────────
 
-type EmailProvider = "resend" | "sendgrid" | "postmark" | "smtp" | "ses";
+const EMAIL_PROVIDER_OPTIONS = ["resend", "sendgrid", "postmark", "smtp", "ses"] as const;
+type EmailProvider = (typeof EMAIL_PROVIDER_OPTIONS)[number];
 
 interface TestResult {
   success: boolean;
@@ -44,7 +45,7 @@ interface TestResult {
 
 const EmailProviderConfigResponseSchema = z.object({
   config: z.object({
-    provider: z.enum(["resend", "sendgrid", "postmark", "smtp", "ses"]),
+    provider: z.enum(EMAIL_PROVIDER_OPTIONS),
     fromAddress: z.string(),
     apiKeyMasked: z.string().nullable(),
     source: z.enum(["override", "env", "default"]),
@@ -63,7 +64,7 @@ const PROVIDERS: { value: EmailProvider; label: string; description: string }[] 
 const NEEDS_API_KEY = new Set<EmailProvider>(["resend", "sendgrid", "postmark"]);
 
 const formSchema = z.object({
-  provider: z.enum(["resend", "sendgrid", "postmark", "smtp", "ses"]),
+  provider: z.enum(EMAIL_PROVIDER_OPTIONS),
   apiKey: z.string(),
   fromAddress: z.string(),
   recipientEmail: z.string(),

@@ -15,12 +15,17 @@ import { runEffect } from "@atlas/api/lib/effect/hono";
 import { RequestContext } from "@atlas/api/lib/effect/services";
 import { getSetting, setSetting, deleteSetting, getSettingsForAdmin } from "@atlas/api/lib/settings";
 import { sendEmail, sendEmailWithTransport } from "@atlas/api/lib/email/delivery";
+import { EMAIL_PROVIDERS, type EmailProvider } from "@atlas/api/lib/integrations/types";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createPlatformRouter } from "./admin-router";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+function isEmailProvider(s: string): s is EmailProvider {
+  return (EMAIL_PROVIDERS as readonly string[]).includes(s);
+}
 
 /** Map provider to its corresponding API key setting key. */
 function providerKeySettingKey(provider: string): string | null {
@@ -54,14 +59,14 @@ function resolveSource(key: string): "override" | "env" | "default" {
 // ---------------------------------------------------------------------------
 
 const EmailProviderConfigSchema = z.object({
-  provider: z.enum(["resend", "sendgrid", "postmark", "smtp", "ses"]),
+  provider: z.enum(EMAIL_PROVIDERS),
   fromAddress: z.string(),
   apiKeyMasked: z.string().nullable(),
   source: z.enum(["override", "env", "default"]),
 });
 
 const SetEmailProviderBodySchema = z.object({
-  provider: z.enum(["resend", "sendgrid", "postmark", "smtp", "ses"]).openapi({
+  provider: z.enum(EMAIL_PROVIDERS).openapi({
     description: "Email provider to use for platform email delivery.",
     example: "resend",
   }),
@@ -75,7 +80,7 @@ const SetEmailProviderBodySchema = z.object({
 });
 
 const TestEmailProviderBodySchema = z.object({
-  provider: z.enum(["resend", "sendgrid", "postmark", "smtp", "ses"]),
+  provider: z.enum(EMAIL_PROVIDERS),
   apiKey: z.string().min(1).optional().openapi({
     description: "Provider API key to test. Omit to test the currently saved key.",
   }),
@@ -171,14 +176,15 @@ const adminEmailProvider = createPlatformRouter();
 // GET / — get platform email provider configuration
 adminEmailProvider.openapi(getConfigRoute, async (c) => {
   return runEffect(c, Effect.sync(() => {
-    const provider = getSetting("ATLAS_EMAIL_PROVIDER") ?? "resend";
+    const raw = getSetting("ATLAS_EMAIL_PROVIDER") ?? "resend";
+    const provider: EmailProvider = isEmailProvider(raw) ? raw : "resend";
     const fromAddress = getSetting("ATLAS_EMAIL_FROM") ?? "Atlas <noreply@useatlas.dev>";
     const keySetting = providerKeySettingKey(provider);
     const apiKey = keySetting ? getSetting(keySetting) : undefined;
 
     return c.json({
       config: {
-        provider: provider as "resend" | "sendgrid" | "postmark" | "smtp" | "ses",
+        provider,
         fromAddress,
         apiKeyMasked: maskSecret(apiKey) ?? null,
         source: resolveSource("ATLAS_EMAIL_PROVIDER"),
@@ -226,13 +232,14 @@ adminEmailProvider.openapi(setConfigRoute, async (c) => {
     }
 
     // Read back for response
-    const provider = getSetting("ATLAS_EMAIL_PROVIDER") ?? "resend";
+    const rawProvider = getSetting("ATLAS_EMAIL_PROVIDER") ?? "resend";
+    const savedProvider: EmailProvider = isEmailProvider(rawProvider) ? rawProvider : "resend";
     const fromAddress = getSetting("ATLAS_EMAIL_FROM") ?? "Atlas <noreply@useatlas.dev>";
     const apiKey = keySetting ? getSetting(keySetting) : undefined;
 
     return c.json({
       config: {
-        provider: provider as "resend" | "sendgrid" | "postmark" | "smtp" | "ses",
+        provider: savedProvider,
         fromAddress,
         apiKeyMasked: maskSecret(apiKey) ?? null,
         source: "override" as const,

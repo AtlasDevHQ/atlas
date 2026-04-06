@@ -52,6 +52,7 @@ import {
   saveEmailInstallation,
   deleteEmailInstallationByOrg,
 } from "@atlas/api/lib/email/store";
+import { EMAIL_PROVIDERS } from "@atlas/api/lib/email/store";
 import type { EmailProvider, ProviderConfig } from "@atlas/api/lib/email/store";
 import { getConfig } from "@atlas/api/lib/config";
 import { createLogger } from "@atlas/api/lib/logger";
@@ -2155,7 +2156,7 @@ adminIntegrations.openapi(disconnectWhatsAppRoute, async (c) => {
 // Email routes (BYOT — SMTP, SendGrid, Postmark, SES, Resend)
 // ---------------------------------------------------------------------------
 
-const EmailProviderEnum = z.enum(["smtp", "sendgrid", "postmark", "ses", "resend"]);
+const EmailProviderEnum = z.enum(EMAIL_PROVIDERS);
 
 const SmtpConfigSchema = z.object({
   host: z.string().min(1),

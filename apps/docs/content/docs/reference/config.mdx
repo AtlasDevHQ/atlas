@@ -304,7 +304,7 @@ Auto-drain has a 30-second cooldown to prevent drain storms. Manual drain is ava
 
 ### Per-Org Pool Isolation
 
-For multi-tenant deployments, each organization can get its own isolated connection pool. This prevents noisy-neighbor issues where one org's heavy queries starve another org's connections.
+For multi-tenant deployments, each organization can get its own isolated connection pool. This prevents noisy-neighbor issues where one org's heavy queries starve another org's connections. The `pool.perOrg` field is optional — when omitted, all organizations share the global pool.
 
 ```typescript
 export default defineConfig({

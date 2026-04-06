@@ -30,10 +30,10 @@ The package has two entry points:
 import { AtlasChat, AtlasProvider } from "@useatlas/react";
 
 // Headless hooks only (smaller bundle, no UI components)
-import { AtlasProvider, useAtlasChat, useAtlasAuth } from "@useatlas/react/hooks";
+import { AtlasProvider, useAtlasChat, useAtlasAuth, useAtlasConversations } from "@useatlas/react/hooks";
 ```
 
-Both entry points export the same `AtlasProvider`. The main entry point (`@useatlas/react`) also exports the pre-built `AtlasChat` component. The hooks entry point (`@useatlas/react/hooks`) exports individual hooks for building custom UIs with a smaller bundle.
+Both entry points export the same `AtlasProvider`. The main entry point (`@useatlas/react`) also exports the pre-built `AtlasChat` component and `useConversations` (lower-level, takes explicit auth config). The hooks entry point (`@useatlas/react/hooks`) exports context-aware hooks (`useAtlasChat`, `useAtlasAuth`, `useAtlasConversations`) for building custom UIs with a smaller bundle.
 
 ---
 

@@ -35,6 +35,48 @@ import { adminAuth, requestContext, type AuthEnv } from "./middleware";
 const log = createLogger("billing");
 
 // ---------------------------------------------------------------------------
+// Portal rate limiter — 5 requests per workspace per hour (in-memory)
+// ---------------------------------------------------------------------------
+
+const PORTAL_RATE_LIMIT = 5;
+const PORTAL_WINDOW_MS = 60 * 60 * 1000; // 1 hour
+
+interface PortalRateEntry {
+  count: number;
+  resetAt: number;
+}
+
+const portalRateMap = new Map<string, PortalRateEntry>();
+
+/**
+ * Check whether a workspace has exceeded the portal session rate limit.
+ * Returns `{ allowed: true }` or `{ allowed: false, retryAfterSec }`.
+ */
+function checkPortalRateLimit(orgId: string): { allowed: true } | { allowed: false; retryAfterSec: number } {
+  const now = Date.now();
+  const entry = portalRateMap.get(orgId);
+
+  if (!entry || now >= entry.resetAt) {
+    // Window expired or first request — start fresh
+    portalRateMap.set(orgId, { count: 1, resetAt: now + PORTAL_WINDOW_MS });
+    return { allowed: true };
+  }
+
+  if (entry.count < PORTAL_RATE_LIMIT) {
+    entry.count++;
+    return { allowed: true };
+  }
+
+  const retryAfterSec = Math.ceil((entry.resetAt - now) / 1000);
+  return { allowed: false, retryAfterSec };
+}
+
+/** Reset portal rate limit state. For tests. */
+export function _resetPortalRateLimits(): void {
+  portalRateMap.clear();
+}
+
+// ---------------------------------------------------------------------------
 // Schemas
 // ---------------------------------------------------------------------------
 
@@ -321,6 +363,20 @@ billing.openapi(createPortalSessionRoute, async (c) => {
 
     if (!orgId) {
       return c.json({ error: "org_required", message: "No active organization." }, 400);
+    }
+
+    // Rate limit: max 5 portal sessions per workspace per hour
+    const rl = checkPortalRateLimit(orgId);
+    if (!rl.allowed) {
+      const minutes = Math.ceil(rl.retryAfterSec / 60);
+      return c.json(
+        {
+          error: "rate_limited",
+          message: `Too many portal requests. Try again in ${minutes} minute${minutes === 1 ? "" : "s"}.`,
+          retryAfter: rl.retryAfterSec,
+        },
+        { status: 429, headers: { "Retry-After": String(rl.retryAfterSec) } },
+      );
     }
 
     const workspace = yield* Effect.promise(() => getWorkspaceDetails(orgId));

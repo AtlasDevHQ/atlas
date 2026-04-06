@@ -146,7 +146,7 @@ mock.module("@atlas/api/lib/semantic", () => ({
 
 // --- Import billing routes ---
 
-import { billing } from "../routes/billing";
+import { billing, _resetPortalRateLimits } from "../routes/billing";
 import { OpenAPIHono } from "@hono/zod-openapi";
 
 const app = new OpenAPIHono();
@@ -161,6 +161,7 @@ function request(path: string, options?: RequestInit) {
 describe("billing routes", () => {
   beforeEach(() => {
     mockHasInternalDB = true;
+    _resetPortalRateLimits();
     mockAuthenticateRequest.mockImplementation(() =>
       Promise.resolve({
         authenticated: true,
@@ -253,6 +254,72 @@ describe("billing routes", () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
       const body = await res.json() as any;
       expect(body.error).toBe("no_customer");
+      delete process.env.STRIPE_SECRET_KEY;
+    });
+
+    it("returns 429 after 5 portal requests in the same window", async () => {
+      process.env.STRIPE_SECRET_KEY = "sk_test_fake";
+
+      // First 5 requests should succeed
+      for (let i = 0; i < 5; i++) {
+        const res = await request("/api/v1/billing/portal", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        });
+        expect(res.status).toBe(200);
+      }
+
+      // 6th request should be rate limited
+      const res = await request("/api/v1/billing/portal", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      expect(res.status).toBe(429);
+      expect(res.headers.get("Retry-After")).toBeTruthy();
+
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
+      const body = await res.json() as any;
+      expect(body.error).toBe("rate_limited");
+      expect(body.retryAfter).toBeGreaterThan(0);
+      expect(body.message).toContain("Too many portal requests");
+
+      delete process.env.STRIPE_SECRET_KEY;
+    });
+
+    it("rate limits are per-workspace", async () => {
+      process.env.STRIPE_SECRET_KEY = "sk_test_fake";
+
+      // Exhaust rate limit for org-1
+      for (let i = 0; i < 5; i++) {
+        const res = await request("/api/v1/billing/portal", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        });
+        expect(res.status).toBe(200);
+      }
+
+      // Switch to org-2 — should still be allowed
+      mockAuthenticateRequest.mockImplementation(() =>
+        Promise.resolve({
+          authenticated: true,
+          mode: "simple-key",
+          user: { id: "user-2", mode: "simple-key", label: "User 2", role: "admin", activeOrganizationId: "org-2" },
+        }),
+      );
+      mockGetWorkspaceDetails.mockImplementation(() =>
+        Promise.resolve({ ...mockWorkspace, id: "org-2", stripe_customer_id: "cus_test_456" }),
+      );
+
+      const res = await request("/api/v1/billing/portal", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      expect(res.status).toBe(200);
+
       delete process.env.STRIPE_SECRET_KEY;
     });
   });

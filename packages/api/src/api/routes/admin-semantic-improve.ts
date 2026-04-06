@@ -651,38 +651,24 @@ adminSemanticImprove.openapi(pendingCountRoute, async (c) =>
   }),
 );
 
-// GET /health
+// GET /health — let runHandler handle errors (no manual try/catch)
 adminSemanticImprove.openapi(healthScoreRoute, async (c) =>
   runHandler(c, "semantic-health-score", async () => {
-    const { requestId } = c.get("orgContext");
+    const { loadEntitiesFromDisk, loadGlossaryFromDisk } =
+      await import("@atlas/api/lib/semantic/expert/context-loader");
+    const { computeSemanticHealth } = await import("@atlas/api/lib/semantic/expert/health");
 
-    try {
-      const { loadEntitiesFromDisk, loadGlossaryFromDisk } =
-        await import("@atlas/api/lib/semantic/expert/context-loader");
-      const { computeSemanticHealth } = await import("@atlas/api/lib/semantic/expert/health");
+    const entities = await loadEntitiesFromDisk();
+    const glossary = await loadGlossaryFromDisk();
 
-      const entities = await loadEntitiesFromDisk();
-      const glossary = await loadGlossaryFromDisk();
+    const score = computeSemanticHealth({
+      profiles: [],
+      entities,
+      glossary,
+      auditPatterns: [],
+      rejectedKeys: new Set(),
+    });
 
-      const score = computeSemanticHealth({
-        profiles: [],
-        entities,
-        glossary,
-        auditPatterns: [],
-        rejectedKeys: new Set(),
-      });
-
-      return c.json(score, 200);
-    } catch (err) {
-      log.error(
-        { err: err instanceof Error ? err.message : String(err), requestId },
-        "Failed to compute semantic health score",
-      );
-      return c.json({
-        error: "health_error",
-        message: `Failed to compute health score: ${err instanceof Error ? err.message : String(err)}`,
-        requestId,
-      }, 500);
-    }
+    return c.json(score, 200);
   }),
 );

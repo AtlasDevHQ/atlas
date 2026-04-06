@@ -125,7 +125,7 @@ export async function runExpertSchedulerTick(): Promise<ExpertTickResult> {
             );
           } catch (applyErr) {
             log.warn(
-              { err: applyErr instanceof Error ? applyErr.message : String(applyErr), entity: proposal.entityName },
+              { err: applyErr instanceof Error ? applyErr : new Error(String(applyErr)), entity: proposal.entityName },
               "Failed to apply auto-approved amendment",
             );
             result.errors++;
@@ -135,7 +135,7 @@ export async function runExpertSchedulerTick(): Promise<ExpertTickResult> {
         }
       } catch (err) {
         log.warn(
-          { err: err instanceof Error ? err.message : String(err), entity: proposal.entityName },
+          { err: err instanceof Error ? err : new Error(String(err)), entity: proposal.entityName },
           "Failed to insert semantic amendment",
         );
         result.errors++;
@@ -148,7 +148,7 @@ export async function runExpertSchedulerTick(): Promise<ExpertTickResult> {
     );
   } catch (err) {
     log.error(
-      { err: err instanceof Error ? err.message : String(err) },
+      { err: err instanceof Error ? err : new Error(String(err)) },
       "Expert scheduler tick failed",
     );
     result.errors++;

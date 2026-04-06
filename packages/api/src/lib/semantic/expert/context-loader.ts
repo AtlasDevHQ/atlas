@@ -130,9 +130,9 @@ export async function loadAuditPatterns(): Promise<AuditPattern[]> {
       };
     });
   } catch (err) {
-    log.debug(
-      { err: err instanceof Error ? err.message : String(err) },
-      "Could not load audit patterns — internal DB unavailable",
+    log.warn(
+      { err: err instanceof Error ? err : new Error(String(err)) },
+      "Failed to load audit patterns from internal DB",
     );
     return [];
   }
@@ -172,9 +172,9 @@ export async function loadRejectedKeys(): Promise<Set<string>> {
       }
     }
   } catch (err) {
-    log.debug(
-      { err: err instanceof Error ? err.message : String(err) },
-      "Could not load rejected keys — internal DB unavailable",
+    log.warn(
+      { err: err instanceof Error ? err : new Error(String(err)) },
+      "Failed to load rejected keys from internal DB",
     );
   }
 

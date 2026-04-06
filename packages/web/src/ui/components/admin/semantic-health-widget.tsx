@@ -51,11 +51,27 @@ function ScoreBar({ label, value }: { label: string; value: number }) {
 }
 
 export function SemanticHealthWidget() {
-  const { data: score, loading } = useAdminFetch<SemanticHealthScore>(
+  const { data: score, loading, error, refetch } = useAdminFetch<SemanticHealthScore>(
     "/api/v1/admin/semantic-improve/health",
   );
 
-  if (loading || !score) return null;
+  if (loading) return null;
+
+  if (error || !score) {
+    return (
+      <Card className="mx-6 mb-4 shadow-none">
+        <CardContent className="flex items-center justify-between py-3 text-sm text-muted-foreground">
+          <span className="flex items-center gap-2">
+            <Activity className="size-4" />
+            Could not load semantic health score.
+          </span>
+          <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => refetch()}>
+            Retry
+          </Button>
+        </CardContent>
+      </Card>
+    );
+  }
 
   return (
     <Card className="mx-6 mb-4 shadow-none">

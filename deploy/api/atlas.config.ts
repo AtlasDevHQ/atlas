@@ -12,7 +12,7 @@
  *   - ATLAS_REGION_APAC_DB_URL
  */
 
-import { defineConfig } from "@atlas/api/lib/config";
+import { defineConfig } from "./packages/api/src/lib/config";
 
 export default defineConfig({
   // ── Datasource ──────────────────────────────────────────────────

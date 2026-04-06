@@ -628,12 +628,18 @@ export function makeSchedulerLive(
           }),
         ),
       );
-      // eslint-disable-next-line @typescript-eslint/no-require-imports
-      const { DASHBOARD_RATE_CLEANUP_INTERVAL_MS } = require("@atlas/api/api/routes/dashboards") as {
-        DASHBOARD_RATE_CLEANUP_INTERVAL_MS: number;
-      };
+      let dashboardCleanupIntervalMs = 60_000;
+      try {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const mod = require("@atlas/api/api/routes/dashboards") as {
+          DASHBOARD_RATE_CLEANUP_INTERVAL_MS: number;
+        };
+        dashboardCleanupIntervalMs = mod.DASHBOARD_RATE_CLEANUP_INTERVAL_MS;
+      } catch {
+        // intentionally ignored: use default interval if module can't be resolved
+      }
       const dashboardFiber = yield* Effect.fork(
-        dashboardTick.pipe(Effect.repeat(Schedule.spaced(Duration.millis(DASHBOARD_RATE_CLEANUP_INTERVAL_MS)))),
+        dashboardTick.pipe(Effect.repeat(Schedule.spaced(Duration.millis(dashboardCleanupIntervalMs)))),
       );
       yield* Effect.addFinalizer(() => Fiber.interrupt(dashboardFiber));
 

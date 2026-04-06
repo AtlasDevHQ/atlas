@@ -53,6 +53,7 @@ mock.module("@atlas/api/lib/billing/enforcement", () => ({
   },
   checkPlanLimits: async () => ({ allowed: true }),
   invalidatePlanCache: () => {},
+  buildMetricStatus: () => ({ metric: "queries", currentUsage: 0, limit: 1000, usagePercent: 0, status: "ok" }),
 }));
 
 mock.module("@atlas/api/lib/logger", () => ({

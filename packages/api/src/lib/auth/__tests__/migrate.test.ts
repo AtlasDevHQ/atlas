@@ -258,6 +258,7 @@ describe("migrateAuthTables", () => {
             { name: "0017_dashboards.sql" },
             { name: "0018_dashboard_refresh.sql" },
             { name: "0019_expert_amendments.sql" },
+            { name: "0020_plan_tier_rename.sql" },
           ],
         };
       }

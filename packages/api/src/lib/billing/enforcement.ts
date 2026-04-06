@@ -25,6 +25,7 @@ import { createLogger } from "@atlas/api/lib/logger";
 import {
   hasInternalDB,
   getWorkspaceDetails,
+  internalQuery,
   type WorkspaceRow,
 } from "@atlas/api/lib/db/internal";
 import { getCurrentPeriodUsage } from "@atlas/api/lib/metering";
@@ -191,7 +192,7 @@ export async function checkPlanLimits(
   }
 
   // Token budget check — budget scales with seat count
-  const totalBudget = computeTokenBudget(tier, seatCount);
+  const totalBudget = computeTokenBudget(tier, seatCount ?? 1);
   if (!isUnlimited(totalBudget)) {
     try {
       const usage = await getCurrentPeriodUsage(orgId);

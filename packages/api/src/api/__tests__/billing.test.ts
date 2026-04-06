@@ -112,6 +112,23 @@ mock.module("@atlas/api/lib/metering", () => ({
   getUsageBreakdown: async () => [],
 }));
 
+// --- Settings mock ---
+
+mock.module("@atlas/api/lib/settings", () => ({
+  getSettingLive: mock(() => Promise.resolve(undefined)),
+  getSetting: mock(() => undefined),
+  getSettingAuto: mock(() => undefined),
+  setSetting: mock(async () => {}),
+  deleteSetting: mock(async () => {}),
+  loadSettings: mock(async () => 0),
+  getSettingsForAdmin: mock(() => []),
+  getSettingsRegistry: mock(() => []),
+  getSettingDefinition: mock(() => undefined),
+  getAllSettingOverrides: mock(async () => []),
+  refreshSettingsTick: mock(async () => {}),
+  _resetSettingsCache: mock(() => {}),
+}));
+
 // --- Stripe mock ---
 
 mock.module("stripe", () => ({
@@ -178,6 +195,18 @@ describe("billing routes", () => {
 
   describe("GET /api/v1/billing", () => {
     it("returns billing status for workspace", async () => {
+      // Return seat count of 3 for member query, connection count of 2 for connections query
+      mockInternalQuery.mockImplementation((...args: unknown[]) => {
+        const sql = args[0];
+        if (typeof sql === "string" && sql.includes("member")) {
+          return Promise.resolve([{ count: 3 }]);
+        }
+        if (typeof sql === "string" && sql.includes("connections")) {
+          return Promise.resolve([{ count: 2 }]);
+        }
+        return Promise.resolve([]);
+      });
+
       const res = await request("/api/v1/billing");
       expect(res.status).toBe(200);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
@@ -186,8 +215,16 @@ describe("billing routes", () => {
       expect(body.plan.tier).toBe("starter");
       expect(body.plan.displayName).toBe("Starter");
       expect(body.plan.byot).toBe(false);
+      expect(body.plan.pricePerSeat).toBe(29);
       expect(body.limits.tokenBudgetPerSeat).toBeGreaterThan(0);
       expect(body.usage.queryCount).toBe(500);
+      // Per-seat pricing fields
+      expect(body.seats).toEqual({ count: 3, max: 10 });
+      expect(body.connections).toEqual({ count: 2, max: 1 });
+      expect(body.currentModel).toBe("claude-haiku-4-5"); // plan default since no setting override
+      expect(body.overagePerMillionTokens).toBe(1.0);
+      // Total token budget = tokenBudgetPerSeat * seatCount = 2M * 3 = 6M
+      expect(body.limits.totalTokenBudget).toBe(6_000_000);
     });
 
     it("returns 401 when unauthenticated", async () => {

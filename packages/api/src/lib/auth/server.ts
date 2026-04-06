@@ -503,7 +503,7 @@ export function getAuthInstance(): AuthInstance {
               if (!orgId) return; // No workspace context — skip
 
               const { emitLoginEvent } = await import("@atlas/api/lib/metering");
-              void emitLoginEvent(orgId, session.userId);
+              void emitLoginEvent(String(orgId), String(session.userId));
             } catch (err) {
               // intentionally best-effort — never block sign-in on metering
               log.debug(

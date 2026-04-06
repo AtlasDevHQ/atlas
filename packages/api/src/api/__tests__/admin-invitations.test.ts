@@ -243,9 +243,9 @@ describe("Admin routes — user invitations", () => {
 
   describe("POST /users/invite", () => {
     it("creates an invitation with valid email and role", async () => {
-      // Promise.all: check existing user + pending invitation → both empty
-      // Then INSERT → return new invitation
+      // Route order: member count → user check → pending check (Promise.all) → INSERT
       mockInternalQuery
+        .mockResolvedValueOnce([{ count: 0 }]) // member count for resource limit
         .mockResolvedValueOnce([]) // user check
         .mockResolvedValueOnce([]) // pending check
         .mockResolvedValueOnce([{ id: "inv-1", created_at: "2026-01-01T00:00:00Z" }]); // INSERT
@@ -300,8 +300,9 @@ describe("Admin routes — user invitations", () => {
     });
 
     it("rejects invitation when user already exists", async () => {
-      // Promise.all: user check returns existing, pending check returns empty
+      // Route order: member count → user check → pending check (Promise.all for user+pending)
       mockInternalQuery
+        .mockResolvedValueOnce([{ count: 0 }]) // member count for resource limit
         .mockResolvedValueOnce([{ id: "user-existing" }]) // user check
         .mockResolvedValueOnce([]); // pending check
 
@@ -317,8 +318,9 @@ describe("Admin routes — user invitations", () => {
     });
 
     it("rejects duplicate pending invitation", async () => {
-      // Promise.all: user check returns empty, pending check returns existing
+      // Route order: member count → user check → pending check (Promise.all for user+pending)
       mockInternalQuery
+        .mockResolvedValueOnce([{ count: 0 }]) // member count for resource limit
         .mockResolvedValueOnce([]) // user check
         .mockResolvedValueOnce([{ id: "inv-existing" }]); // pending check
 
@@ -335,6 +337,7 @@ describe("Admin routes — user invitations", () => {
 
     it("normalizes email to lowercase", async () => {
       mockInternalQuery
+        .mockResolvedValueOnce([{ count: 0 }]) // member count for resource limit
         .mockResolvedValueOnce([]) // user check
         .mockResolvedValueOnce([]) // pending check
         .mockImplementationOnce(async (_sql: string, params?: unknown[]) => {

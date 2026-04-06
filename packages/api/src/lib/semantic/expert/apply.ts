@@ -20,10 +20,13 @@ const log = createLogger("semantic-expert-apply");
  * 4. Invalidate caches and sync to disk
  */
 export async function applyAmendmentToEntity(
-  orgId: string,
+  orgId: string | null,
   result: AnalysisResult,
   requestId: string,
 ): Promise<void> {
+  // Self-hosted (null orgId) uses empty string as sentinel for global scope
+  const effectiveOrgId = orgId ?? "";
+
   const {
     getEntity,
     upsertEntity,
@@ -31,7 +34,7 @@ export async function applyAmendmentToEntity(
     generateChangeSummary,
   } = await import("@atlas/api/lib/semantic/entities");
 
-  const entity = await getEntity(orgId, "entity", result.entityName);
+  const entity = await getEntity(effectiveOrgId, "entity", result.entityName);
   if (!entity) {
     throw new Error(`Entity "${result.entityName}" not found for org ${orgId}`);
   }
@@ -49,16 +52,16 @@ export async function applyAmendmentToEntity(
   const newYaml = yaml.dump(updated, { lineWidth: 120, noRefs: true });
 
   // Upsert entity
-  await upsertEntity(orgId, "entity", result.entityName, newYaml, entity.connection_id ?? undefined);
+  await upsertEntity(effectiveOrgId, "entity", result.entityName, newYaml, entity.connection_id ?? undefined);
 
   // Create version snapshot
   try {
-    const refreshed = await getEntity(orgId, "entity", result.entityName);
+    const refreshed = await getEntity(effectiveOrgId, "entity", result.entityName);
     if (refreshed) {
       const changeSummary = await generateChangeSummary(entity.yaml_content, newYaml);
       const versionSummary = `Expert agent: ${result.rationale}${changeSummary ? ` (${changeSummary})` : ""}`;
       await createVersion(
-        refreshed.id, orgId, "entity", result.entityName, newYaml, versionSummary,
+        refreshed.id, effectiveOrgId, "entity", result.entityName, newYaml, versionSummary,
         "expert-agent", "Semantic Expert Agent",
       );
     }
@@ -71,12 +74,12 @@ export async function applyAmendmentToEntity(
 
   // Invalidate caches
   const { invalidateOrgWhitelist } = await import("@atlas/api/lib/semantic");
-  invalidateOrgWhitelist(orgId);
+  invalidateOrgWhitelist(effectiveOrgId);
 
   // Sync to disk (non-fatal)
   try {
     const { syncEntityToDisk } = await import("@atlas/api/lib/semantic/sync");
-    await syncEntityToDisk(orgId, result.entityName, "entity", newYaml);
+    await syncEntityToDisk(effectiveOrgId, result.entityName, "entity", newYaml);
   } catch (syncErr) {
     log.warn(
       { err: syncErr instanceof Error ? syncErr.message : String(syncErr), requestId, orgId, entity: result.entityName },

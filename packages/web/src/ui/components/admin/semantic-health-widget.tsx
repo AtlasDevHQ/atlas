@@ -1,7 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useAtlasConfig } from "@/ui/context";
+import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -52,27 +51,9 @@ function ScoreBar({ label, value }: { label: string; value: number }) {
 }
 
 export function SemanticHealthWidget() {
-  const { apiUrl, isCrossOrigin } = useAtlasConfig();
-  const [score, setScore] = useState<SemanticHealthScore | null>(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    let cancelled = false;
-    fetch(`${apiUrl}/api/v1/admin/semantic-improve/health`, {
-      credentials: isCrossOrigin ? "include" : "same-origin",
-    })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((data) => {
-        if (!cancelled && data && typeof data.overall === "number") {
-          setScore(data as SemanticHealthScore);
-        }
-      })
-      .catch(() => {
-        // intentionally ignored: health widget is non-critical
-      })
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
-  }, [apiUrl, isCrossOrigin]);
+  const { data: score, loading } = useAdminFetch<SemanticHealthScore>(
+    "/api/v1/admin/semantic-improve/health",
+  );
 
   if (loading || !score) return null;
 

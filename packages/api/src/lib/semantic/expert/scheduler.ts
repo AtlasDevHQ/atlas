@@ -6,7 +6,6 @@
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
-import type { AnalysisResult } from "./types";
 
 const log = createLogger("semantic-expert-scheduler");
 
@@ -94,10 +93,9 @@ export async function runExpertSchedulerTick(): Promise<ExpertTickResult> {
       return result;
     }
 
-    // 3. Get auto-approve threshold
-    const { getAutoApproveThreshold, insertSemanticAmendment } =
+    // 3. Insert proposals (insertSemanticAmendment handles auto-approve threshold)
+    const { insertSemanticAmendment } =
       await import("@atlas/api/lib/db/internal");
-    const threshold = getAutoApproveThreshold();
 
     // 4. Process each proposal
     for (const proposal of proposals) {
@@ -115,11 +113,11 @@ export async function runExpertSchedulerTick(): Promise<ExpertTickResult> {
           },
         });
 
-        if (status === "approved" && proposal.confidence >= threshold) {
+        if (status === "approved") {
           // Auto-apply
           try {
             const { applyAmendmentToEntity } = await import("./apply");
-            await applyAmendmentToEntity(null as unknown as string, proposal, `scheduled-${Date.now()}`);
+            await applyAmendmentToEntity(null, proposal, `scheduled-${Date.now()}`);
             result.autoApproved++;
             log.info(
               { entity: proposal.entityName, type: proposal.amendmentType, confidence: proposal.confidence },

@@ -138,8 +138,11 @@ export async function checkPlanLimits(
         [orgId],
       );
       seatCount = rows[0]?.count ?? 1;
-    } catch {
-      // intentionally best-effort: default to 1 seat if member count fails
+    } catch (err) {
+      log.warn(
+        { err: err instanceof Error ? err.message : String(err), orgId },
+        "Failed to query member count for plan enforcement — defaulting to 1 seat",
+      );
       seatCount = 1;
     }
   }

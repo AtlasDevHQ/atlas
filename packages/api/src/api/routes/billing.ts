@@ -288,7 +288,7 @@ billing.openapi(getBillingStatusRoute, async (c) => {
         `SELECT COUNT(*)::int AS count FROM member WHERE "organizationId" = $1`,
         [orgId],
       ).catch((err) => {
-        log.debug(
+        log.warn(
           { err: err instanceof Error ? err.message : String(err), orgId },
           "Failed to query member table for seat count — defaulting to 1",
         );
@@ -299,7 +299,7 @@ billing.openapi(getBillingStatusRoute, async (c) => {
         `SELECT COUNT(*)::int AS count FROM connections WHERE org_id = $1`,
         [orgId],
       ).catch((err) => {
-        log.debug(
+        log.warn(
           { err: err instanceof Error ? err.message : String(err), orgId },
           "Failed to query connections table — defaulting to 0",
         );
@@ -322,7 +322,13 @@ billing.openapi(getBillingStatusRoute, async (c) => {
         return [] as Array<{ stripeSubscriptionId: string; plan: string; status: string }>;
       }),
       // Current model setting (live read for accuracy)
-      getSettingLive("ATLAS_MODEL", orgId),
+      getSettingLive("ATLAS_MODEL", orgId).catch((err) => {
+        log.debug(
+          { err: err instanceof Error ? err.message : String(err), orgId },
+          "Failed to read ATLAS_MODEL setting — using plan default",
+        );
+        return undefined;
+      }),
     ]));
 
     const seatCount = Math.max(1, seatCountResult[0]?.count ?? 1);

@@ -426,7 +426,7 @@ function ResourceRow({
   href?: string;
 }) {
   const isUnlimited = max === null;
-  const percent = isUnlimited ? 0 : Math.round((count / max) * 100);
+  const percent = isUnlimited || max === 0 ? 0 : Math.round((count / max) * 100);
 
   return (
     <div className="space-y-2">

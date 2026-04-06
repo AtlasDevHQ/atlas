@@ -114,8 +114,10 @@ mock.module("@atlas/api/lib/metering", () => ({
 
 // --- Settings mock ---
 
+let mockSettingLiveValue: string | undefined = undefined;
+
 mock.module("@atlas/api/lib/settings", () => ({
-  getSettingLive: mock(() => Promise.resolve(undefined)),
+  getSettingLive: mock(() => Promise.resolve(mockSettingLiveValue)),
   getSetting: mock(() => undefined),
   getSettingAuto: mock(() => undefined),
   setSetting: mock(async () => {}),
@@ -178,6 +180,7 @@ function request(path: string, options?: RequestInit) {
 describe("billing routes", () => {
   beforeEach(() => {
     mockHasInternalDB = true;
+    mockSettingLiveValue = undefined;
     _resetPortalRateLimits();
     mockAuthenticateRequest.mockImplementation(() =>
       Promise.resolve({
@@ -225,6 +228,60 @@ describe("billing routes", () => {
       expect(body.overagePerMillionTokens).toBe(1.0);
       // Total token budget = tokenBudgetPerSeat * seatCount = 2M * 3 = 6M
       expect(body.limits.totalTokenBudget).toBe(6_000_000);
+    });
+
+    it("defaults seat count to 1 when member query fails", async () => {
+      mockInternalQuery.mockImplementation((...args: unknown[]) => {
+        const sql = args[0];
+        if (typeof sql === "string" && sql.includes("member")) {
+          return Promise.reject(new Error("relation does not exist"));
+        }
+        return Promise.resolve([]);
+      });
+
+      const res = await request("/api/v1/billing");
+      expect(res.status).toBe(200);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
+      const body = await res.json() as any;
+      expect(body.seats.count).toBe(1);
+      // Budget should be tokenBudgetPerSeat * 1 = 2M
+      expect(body.limits.totalTokenBudget).toBe(2_000_000);
+    });
+
+    it("defaults connection count to 0 when connections query fails", async () => {
+      mockInternalQuery.mockImplementation((...args: unknown[]) => {
+        const sql = args[0];
+        if (typeof sql === "string" && sql.includes("connections")) {
+          return Promise.reject(new Error("relation does not exist"));
+        }
+        if (typeof sql === "string" && sql.includes("member")) {
+          return Promise.resolve([{ count: 2 }]);
+        }
+        return Promise.resolve([]);
+      });
+
+      const res = await request("/api/v1/billing");
+      expect(res.status).toBe(200);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
+      const body = await res.json() as any;
+      expect(body.connections.count).toBe(0);
+    });
+
+    it("uses setting override for currentModel when available", async () => {
+      mockSettingLiveValue = "claude-opus-4-6";
+      mockInternalQuery.mockImplementation((...args: unknown[]) => {
+        const sql = args[0];
+        if (typeof sql === "string" && sql.includes("member")) {
+          return Promise.resolve([{ count: 1 }]);
+        }
+        return Promise.resolve([]);
+      });
+
+      const res = await request("/api/v1/billing");
+      expect(res.status).toBe(200);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
+      const body = await res.json() as any;
+      expect(body.currentModel).toBe("claude-opus-4-6");
     });
 
     it("returns 401 when unauthenticated", async () => {

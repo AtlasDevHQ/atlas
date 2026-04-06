@@ -579,7 +579,6 @@ adminConnections.openapi(createConnectionRoute, async (c) => runHandler(c, "crea
 adminConnections.openapi(updateConnectionRoute, async (c) => runHandler(c, "update connection", async () => {
   const { requestId, orgId } = c.get("orgContext");
   const authResult = c.get("authResult");
-  const isPlatformAdmin = authResult.user?.role === "platform_admin";
   const { id } = c.req.valid("param");
 
   if (!hasInternalDB()) {
@@ -591,11 +590,9 @@ adminConnections.openapi(updateConnectionRoute, async (c) => runHandler(c, "upda
   }
 
   // Check it exists in the DB and belongs to this org
-  const orgFilter = isPlatformAdmin ? "" : " AND org_id = $2";
-  const orgParams = isPlatformAdmin ? [id] : [id, orgId];
   const existing = await internalQuery<{ id: string; url: string; type: string; description: string | null; schema_name: string | null }>(
-    `SELECT id, url, type, description, schema_name FROM connections WHERE id = $1${orgFilter}`,
-    orgParams,
+    `SELECT id, url, type, description, schema_name FROM connections WHERE id = $1 AND org_id = $2`,
+    [id, orgId],
   );
 
   if (existing.length === 0) {
@@ -685,15 +682,10 @@ adminConnections.openapi(updateConnectionRoute, async (c) => runHandler(c, "upda
     return c.json({ error: "encryption_failed", message: encMsg, requestId }, 500);
   }
 
-  const updateOrgFilter = isPlatformAdmin ? "" : " AND org_id = $6";
-  const updateParams = isPlatformAdmin
-    ? [encryptedNewUrl, dbType, newDescription, newSchema, id]
-    : [encryptedNewUrl, dbType, newDescription, newSchema, id, orgId];
-
   try {
     await internalQuery(
-      `UPDATE connections SET url = $1, type = $2, description = $3, schema_name = $4, updated_at = NOW() WHERE id = $5${updateOrgFilter}`,
-      updateParams,
+      `UPDATE connections SET url = $1, type = $2, description = $3, schema_name = $4, updated_at = NOW() WHERE id = $5 AND org_id = $6`,
+      [encryptedNewUrl, dbType, newDescription, newSchema, id, orgId],
     );
   } catch (err) {
     let rollbackFailed = false;
@@ -725,7 +717,6 @@ adminConnections.openapi(updateConnectionRoute, async (c) => runHandler(c, "upda
 adminConnections.openapi(deleteConnectionRoute, async (c) => runHandler(c, "delete connection", async () => {
   const { requestId, orgId } = c.get("orgContext");
   const authResult = c.get("authResult");
-  const isPlatformAdmin = authResult.user?.role === "platform_admin";
   const { id } = c.req.valid("param");
 
   if (!hasInternalDB()) {
@@ -737,11 +728,9 @@ adminConnections.openapi(deleteConnectionRoute, async (c) => runHandler(c, "dele
   }
 
   // Must exist in the DB and belong to the org
-  const orgFilter = isPlatformAdmin ? "" : " AND org_id = $2";
-  const orgParams = isPlatformAdmin ? [id] : [id, orgId];
   const existing = await internalQuery<{ id: string }>(
-    `SELECT id FROM connections WHERE id = $1${orgFilter}`,
-    orgParams,
+    `SELECT id FROM connections WHERE id = $1 AND org_id = $2`,
+    [id, orgId],
   );
 
   if (existing.length === 0) {
@@ -775,8 +764,8 @@ adminConnections.openapi(deleteConnectionRoute, async (c) => runHandler(c, "dele
   // Remove from DB and registry
   try {
     await internalQuery(
-      `DELETE FROM connections WHERE id = $1${orgFilter}`,
-      orgParams,
+      `DELETE FROM connections WHERE id = $1 AND org_id = $2`,
+      [id, orgId],
     );
   } catch (err) {
     log.error({ err: err instanceof Error ? err.message : String(err), connectionId: id, requestId }, "Failed to delete connection from DB");
@@ -819,8 +808,8 @@ adminConnections.openapi(getConnectionRoute, async (c) => runHandler(c, "get con
   if (hasInternalDB()) {
     try {
       const rows = await internalQuery<{ url: string; schema_name: string | null }>(
-        "SELECT url, schema_name FROM connections WHERE id = $1",
-        [id],
+        "SELECT url, schema_name FROM connections WHERE id = $1 AND org_id = $2",
+        [id, orgId],
       );
       if (rows.length > 0) {
         managed = true;

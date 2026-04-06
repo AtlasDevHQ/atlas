@@ -416,17 +416,17 @@ describe("POST /api/v1/onboarding/complete", () => {
     mockInternalQuery.mockImplementation(async () => [{ id: "default" }]);
   });
 
-  it("returns 409 when connection ID belongs to another org", async () => {
-    mockInternalQuery.mockImplementation(async () => []);
+  it("succeeds even when another org has the same connection ID (composite PK)", async () => {
+    // With composite PK (id, org_id), upsert always returns a row for the current org
+    mockInternalQuery.mockImplementation(async () => [{ id: "default" }]);
     const res = await request("/api/v1/onboarding/complete", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ url: "postgresql://user:pass@localhost:5432/mydb" }),
     });
-    expect(res.status).toBe(409);
+    expect(res.status).toBe(201);
     const data = await json(res);
-    expect(data.error).toBe("conflict");
-    mockInternalQuery.mockImplementation(async () => [{ id: "default" }]);
+    expect(data.connectionId).toBe("default");
   });
 
   it("returns error on connection health check failure", async () => {

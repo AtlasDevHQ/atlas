@@ -205,10 +205,6 @@ const completeOnboardingRoute = createRoute({
       description: "Onboarding requires managed auth mode and DATABASE_URL",
       content: { "application/json": { schema: ErrorSchema } },
     },
-    409: {
-      description: "Connection ID already in use by another organization",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
     422: {
       description: "Validation error (invalid request body)",
       content: {
@@ -266,10 +262,6 @@ const useDemoRoute = createRoute({
     },
     404: {
       description: "Onboarding requires managed auth mode and DATABASE_URL",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
-    409: {
-      description: "Connection ID already in use by another organization",
       content: { "application/json": { schema: ErrorSchema } },
     },
     422: {
@@ -486,13 +478,12 @@ onboarding.openapi(
         return c.json({ error: "encryption_failed", message: "Failed to encrypt connection URL.", requestId }, 500);
       }
 
-      // Org-scoped upsert: only update if the existing row belongs to the same org
+      // Org-scoped upsert: composite PK (id, org_id) ensures each org has its own namespace
       const upsertResult = yield* Effect.tryPromise({
         try: () => internalQuery<{ id: string }>(
           `INSERT INTO connections (id, url, type, description, org_id)
            VALUES ($1, $2, $3, $4, $5)
-           ON CONFLICT (id) DO UPDATE SET url = $2, type = $3, org_id = $5, updated_at = NOW()
-           WHERE connections.org_id = $5 OR connections.org_id IS NULL
+           ON CONFLICT (id, org_id) DO UPDATE SET url = $2, type = $3, updated_at = NOW()
            RETURNING id`,
           [id, encryptedUrl, dbType, `${dbType} datasource`, orgId],
         ),
@@ -504,12 +495,6 @@ onboarding.openapi(
 
       if (upsertResult === null) {
         return c.json({ error: "internal_error", message: "Failed to save connection.", requestId }, 500);
-      }
-      if (upsertResult.length === 0) {
-        return c.json({
-          error: "conflict",
-          message: `Connection ID "${id}" is already in use by another organization.`,
-        }, 409);
       }
 
       // Register the connection in the runtime registry
@@ -613,8 +598,7 @@ onboarding.openapi(
         try: () => internalQuery<{ id: string }>(
           `INSERT INTO connections (id, url, type, description, org_id)
            VALUES ($1, $2, $3, $4, $5)
-           ON CONFLICT (id) DO UPDATE SET url = $2, type = $3, description = $4, org_id = $5, updated_at = NOW()
-           WHERE connections.org_id = $5 OR connections.org_id IS NULL
+           ON CONFLICT (id, org_id) DO UPDATE SET url = $2, type = $3, description = $4, updated_at = NOW()
            RETURNING id`,
           [id, encryptedUrl, dbType, `${demoLabel} — demo ${dbType} datasource`, orgId],
         ),
@@ -626,9 +610,6 @@ onboarding.openapi(
 
       if (upsertResult === null) {
         return c.json({ error: "internal_error", message: "Failed to save connection.", requestId }, 500);
-      }
-      if (upsertResult.length === 0) {
-        return c.json({ error: "conflict", message: "Connection ID 'default' is already in use by another organization." }, 409);
       }
 
       // Register in runtime

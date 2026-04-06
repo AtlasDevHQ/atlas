@@ -73,8 +73,11 @@ const PLAN_CACHE_TTL_MS = 60_000;
 /**
  * Get workspace details, using a short-lived cache to avoid querying
  * the internal DB on every request.
+ *
+ * Exported so that workspace status checks can reuse the same cache
+ * instead of making a separate DB query per request.
  */
-async function getCachedWorkspace(
+export async function getCachedWorkspace(
   orgId: string,
 ): Promise<WorkspaceRow | null> {
   const cached = planCache.get(orgId);

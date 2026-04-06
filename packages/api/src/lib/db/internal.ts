@@ -627,6 +627,10 @@ export async function migrateInternalDB(): Promise<void> {
  * Load admin-managed connections from the internal DB and register them
  * in the ConnectionRegistry. Idempotent — safe to call at startup.
  * Silently skips if no internal DB or the connections table doesn't exist yet.
+ *
+ * With composite PK (id, org_id), multiple orgs can share the same connection
+ * ID (e.g. "default"). DISTINCT ON (id) deduplicates so each base connection
+ * ID is registered once — org-specific pools are created lazily by getForOrg().
  */
 export async function loadSavedConnections(): Promise<number> {
   if (!hasInternalDB()) return 0;
@@ -636,10 +640,16 @@ export async function loadSavedConnections(): Promise<number> {
 
   try {
     type ConnRow = { id: string; url: string; type: string; description: string | null; schema_name: string | null };
-    const rows = await internalQuery<ConnRow>("SELECT id, url, type, description, schema_name FROM connections");
+    const rows = await internalQuery<ConnRow>(
+      "SELECT DISTINCT ON (id) id, url, type, description, schema_name FROM connections ORDER BY id, updated_at DESC, org_id ASC",
+    );
 
     let registered = 0;
     for (const row of rows) {
+      if (connections.has(row.id)) {
+        log.debug({ connectionId: row.id }, "Skipping already-registered connection — org-scoped pools resolve via getForOrg()");
+        continue;
+      }
       try {
         const url = decryptUrl(row.url);
         connections.register(row.id, {

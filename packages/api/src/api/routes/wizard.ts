@@ -814,8 +814,8 @@ async function resolveConnectionUrl(
       // Check internal DB first (it has the encrypted URL).
       if (hasInternalDB()) {
         const rows = await internalQuery<{ url: string; schema_name: string | null }>(
-          "SELECT url, schema_name FROM connections WHERE id = $1",
-          [connectionId],
+          "SELECT url, schema_name FROM connections WHERE id = $1 AND (org_id = $2 OR org_id = '__global__') ORDER BY CASE WHEN org_id = $2 THEN 0 ELSE 1 END LIMIT 1",
+          [connectionId, orgId ?? "__global__"],
         );
         if (rows.length > 0) {
           const url = decryptUrl(rows[0].url);
@@ -835,7 +835,7 @@ async function resolveConnectionUrl(
 
   // Second try: internal DB only (connection not in runtime registry)
   if (hasInternalDB()) {
-    const orgFilter = orgId ? " AND (org_id = $2 OR org_id IS NULL)" : "";
+    const orgFilter = orgId ? " AND (org_id = $2 OR org_id = '__global__') ORDER BY CASE WHEN org_id = $2 THEN 0 ELSE 1 END LIMIT 1" : "";
     const params: unknown[] = [connectionId];
     if (orgId) params.push(orgId);
 

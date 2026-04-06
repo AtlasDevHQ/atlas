@@ -441,9 +441,9 @@ describe("admin connections — org scoping", () => {
       expect(orgFilterCall).toBeUndefined();
     });
 
-    it("update succeeds for connection from any org", async () => {
+    it("update scopes by active org even for platform admin", async () => {
       setPlatformAdmin("org-alpha");
-      // Platform admin SELECT omits org_id filter
+      // Platform admin queries now always include org_id (composite PK scoping)
       mocks.mockInternalQuery.mockImplementation((sql: string) => {
         if (sql.includes("SELECT") && sql.includes("connections")) {
           return Promise.resolve([{
@@ -465,15 +465,15 @@ describe("admin connections — org scoping", () => {
 
       expect(res.status).toBe(200);
 
-      // Verify the SELECT did NOT include org_id filter
+      // Verify the SELECT includes org_id filter (composite PK scoping)
       const selectCall = mocks.mockInternalQuery.mock.calls.find(
         ([sql]) => typeof sql === "string" && sql.includes("SELECT") && sql.includes("connections"),
       );
       expect(selectCall).toBeDefined();
-      expect(selectCall![0]).not.toContain("org_id");
+      expect(selectCall![0]).toContain("org_id");
     });
 
-    it("delete succeeds for connection from any org", async () => {
+    it("delete scopes by active org even for platform admin", async () => {
       setPlatformAdmin("org-alpha");
       mocks.mockInternalQuery.mockImplementation((sql: string) => {
         if (sql.includes("SELECT") && sql.includes("connections")) {
@@ -490,6 +490,13 @@ describe("admin connections — org scoping", () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       expect(body.success).toBe(true);
+
+      // Verify DELETE includes org_id filter (composite PK scoping)
+      const deleteCall = mocks.mockInternalQuery.mock.calls.find(
+        ([sql]) => typeof sql === "string" && sql.includes("DELETE") && sql.includes("connections"),
+      );
+      expect(deleteCall).toBeDefined();
+      expect(deleteCall![0]).toContain("org_id");
     });
   });
 

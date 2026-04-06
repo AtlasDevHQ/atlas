@@ -243,17 +243,18 @@ export const scheduledTaskRuns = pgTable(
 export const connections = pgTable(
   "connections",
   {
-    id: text("id").primaryKey(),
+    id: text("id").notNull(),
     url: text("url").notNull(),
     type: text("type").notNull(),
     description: text("description"),
     schemaName: text("schema_name"),
     createdAt: timestamp("created_at", { withTimezone: true }).defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
-    // Org scoping
-    orgId: text("org_id"),
+    // Org scoping — composite PK with id
+    orgId: text("org_id").notNull().default("__global__"),
   },
   (t) => [
+    primaryKey({ columns: [t.id, t.orgId] }),
     index("idx_connections_org").on(t.orgId),
   ],
 );

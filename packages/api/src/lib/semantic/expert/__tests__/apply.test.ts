@@ -158,7 +158,7 @@ describe("applyAmendment", () => {
       name: "test",
     });
     // Force an invalid type to test the default case
-    (result as Record<string, unknown>).amendmentType = "remove_dimension";
+    (result as unknown as Record<string, unknown>).amendmentType = "remove_dimension";
     expect(() => applyAmendment(baseEntity, result)).toThrow("Unsupported amendment type");
   });
 

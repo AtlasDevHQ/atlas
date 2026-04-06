@@ -9,9 +9,8 @@
  */
 
 import { Effect } from "effect";
-import dns from "node:dns";
-import crypto from "node:crypto";
 import { EEError } from "../lib/errors";
+import { generateVerificationToken, verifyDnsTxt } from "../lib/domain-verification";
 import { requireEnterpriseEffect, EnterpriseError } from "../index";
 import { requireInternalDBEffect } from "../lib/db-guard";
 import {
@@ -201,14 +200,8 @@ export function validateProviderConfig(type: SSOProviderType, config: unknown): 
 
 // ── Domain verification ─────────────────────────────────────────────
 
-/**
- * Generate a DNS TXT verification token for domain ownership proof.
- * Returns a token in the format `atlas-verify=<uuid>` that the admin
- * must add as a TXT record on their domain.
- */
-export function generateVerificationToken(): string {
-  return `atlas-verify=${crypto.randomUUID()}`;
-}
+// Re-export for consumers that import from sso.ts
+export { generateVerificationToken } from "../lib/domain-verification";
 
 /**
  * Verify domain ownership by checking DNS TXT records for the verification token.
@@ -247,20 +240,7 @@ export const verifyDomain = (
       return { status: "verified", message: "Domain is already verified." };
     }
 
-    const dnsResult = yield* Effect.tryPromise({
-      try: () => dns.promises.resolveTxt(provider.domain),
-      catch: (err) => err instanceof Error ? err : new Error(String(err)),
-    }).pipe(
-      Effect.timeoutFail({
-        duration: "10 seconds",
-        onTimeout: () => new Error("DNS lookup timed out after 10s"),
-      }),
-      Effect.map((records) => ({ ok: true as const, records })),
-      Effect.catchAll((err) => {
-        log.warn({ providerId, domain: provider.domain, err: err.message }, "DNS TXT lookup failed");
-        return Effect.succeed({ ok: false as const, errMsg: err.message });
-      }),
-    );
+    const dnsResult = yield* verifyDnsTxt(provider.domain, provider.verification_token);
 
     if (!dnsResult.ok) {
       yield* Effect.tryPromise({
@@ -274,45 +254,29 @@ export const verifyDomain = (
         return Effect.void;
       }));
 
-      return { status: "failed", message: `DNS lookup failed for ${provider.domain}. Check your DNS configuration and try again.` };
-    }
-
-    const flatRecords = dnsResult.records.map((parts) => parts.join(""));
-    const found = flatRecords.some((record) => record === provider.verification_token);
-
-    if (found) {
-      yield* Effect.tryPromise({
-        try: () => internalQuery(
-          `UPDATE sso_providers
-           SET domain_verified = true, domain_verified_at = now(), domain_verification_status = 'verified', updated_at = now()
-           WHERE id = $1 AND org_id = $2`,
-          [providerId, orgId],
-        ),
-        catch: (err) => err instanceof Error ? err : new Error(String(err)),
-      }).pipe(Effect.catchAll((err) => {
-        log.error({ providerId, domain: provider.domain, err: err.message }, "DNS verification succeeded but DB update failed");
-        return Effect.fail(new SSOError("Domain verified via DNS but failed to persist — please retry.", "validation"));
-      }));
-
-      log.info({ providerId, domain: provider.domain }, "SSO domain verified via DNS TXT record");
-      return { status: "verified", message: "Domain verified successfully." };
+      return {
+        status: "failed",
+        message: dnsResult.reason === "no_match"
+          ? dnsResult.message
+          : `DNS lookup failed for ${provider.domain}. Check your DNS configuration and try again.`,
+      };
     }
 
     yield* Effect.tryPromise({
       try: () => internalQuery(
-        `UPDATE sso_providers SET domain_verification_status = 'failed', updated_at = now() WHERE id = $1 AND org_id = $2`,
+        `UPDATE sso_providers
+         SET domain_verified = true, domain_verified_at = now(), domain_verification_status = 'verified', updated_at = now()
+         WHERE id = $1 AND org_id = $2`,
         [providerId, orgId],
       ),
       catch: (err) => err instanceof Error ? err : new Error(String(err)),
     }).pipe(Effect.catchAll((err) => {
-      log.error({ providerId, err: err.message }, "Failed to persist domain verification failure status");
-      return Effect.void;
+      log.error({ providerId, domain: provider.domain, err: err.message }, "DNS verification succeeded but DB update failed");
+      return Effect.fail(new SSOError("Domain verified via DNS but failed to persist — please retry.", "validation"));
     }));
 
-    return {
-      status: "failed",
-      message: `No matching TXT record found. Add a TXT record with value "${provider.verification_token}" to ${provider.domain}.`,
-    };
+    log.info({ providerId, domain: provider.domain }, "SSO domain verified via DNS TXT record");
+    return { status: "verified", message: "Domain verified successfully." };
   });
 
 /**

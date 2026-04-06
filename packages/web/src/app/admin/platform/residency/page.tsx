@@ -88,6 +88,32 @@ function ResidencyPageContent() {
     }
   }
 
+  // 404 means enterprise residency is not configured — show a helpful message instead of an error
+  const isNotConfigured = regionsError?.status === 404;
+
+  if (isNotConfigured) {
+    return (
+      <div className="p-6 space-y-6">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">Data Residency</h1>
+          <p className="text-sm text-muted-foreground">
+            Manage region assignments for workspaces.
+          </p>
+        </div>
+        <Card>
+          <CardContent className="py-8 text-center">
+            <Globe className="mx-auto mb-3 size-10 text-muted-foreground" />
+            <h3 className="text-lg font-semibold">Not configured</h3>
+            <p className="mt-1 text-sm text-muted-foreground max-w-md mx-auto">
+              Data residency requires enterprise features and region configuration.
+              See the deployment documentation for setup instructions.
+            </p>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
   return (
     <AdminContentWrapper
       loading={regionsLoading}

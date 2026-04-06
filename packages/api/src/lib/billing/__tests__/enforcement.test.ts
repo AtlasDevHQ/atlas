@@ -416,10 +416,10 @@ describe("checkResourceLimit", () => {
     expect(result.allowed).toBe(true);
   });
 
-  it("allows when workspace details fetch fails (fail open)", async () => {
+  it("blocks when workspace details fetch fails (fail closed)", async () => {
     mockWorkspaceDetailsShouldThrow = true;
     const result = await checkResourceLimit("org-1", "members", 100);
-    expect(result.allowed).toBe(true);
+    expect(result.allowed).toBe(false);
   });
 
   // ── Free tier ─────────────────────────────────────────────────────

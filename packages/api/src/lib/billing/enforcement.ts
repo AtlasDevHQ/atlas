@@ -403,10 +403,10 @@ export async function checkResourceLimit(
   } catch (err) {
     log.error(
       { err: err instanceof Error ? err.message : String(err), orgId, resource },
-      "Failed to fetch workspace for resource limit check — allowing as precaution",
+      "Failed to fetch workspace for resource limit check — blocking as precaution",
     );
-    // Fail open: if we can't read the workspace, don't block the user
-    return { allowed: true };
+    // Fail closed: consistent with checkPlanLimits behavior per CLAUDE.md
+    return { allowed: false, errorMessage: "Unable to verify plan limits. Please try again." };
   }
 
   if (!workspace) {

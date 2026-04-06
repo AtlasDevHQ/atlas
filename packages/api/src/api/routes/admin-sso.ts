@@ -21,6 +21,8 @@ import {
   summarizeProvider,
   setSSOEnforcement,
   isSSOEnforced,
+  verifyDomain,
+  checkDomainAvailability,
   testSSOProvider,
   SSOError,
   SSOEnforcementError,
@@ -50,6 +52,10 @@ const SSOProviderSummarySchema = z.object({
   ssoEnforced: z.boolean(),
   createdAt: z.string(),
   updatedAt: z.string(),
+  verificationToken: z.string().nullable(),
+  domainVerified: z.boolean(),
+  domainVerifiedAt: z.string().nullable(),
+  domainVerificationStatus: z.enum(["pending", "verified", "failed"]),
 }).passthrough();
 
 const SSOProviderDetailSchema = z.object({
@@ -63,7 +69,21 @@ const SSOProviderDetailSchema = z.object({
   createdAt: z.string(),
   updatedAt: z.string(),
   config: z.record(z.string(), z.unknown()),
+  verificationToken: z.string().nullable(),
+  domainVerified: z.boolean(),
+  domainVerifiedAt: z.string().nullable(),
+  domainVerificationStatus: z.enum(["pending", "verified", "failed"]),
 }).passthrough();
+
+const VerifyDomainResponseSchema = z.object({
+  status: z.string(),
+  message: z.string(),
+});
+
+const DomainCheckResponseSchema = z.object({
+  available: z.boolean(),
+  reason: z.string().optional(),
+});
 
 const ProviderIdParamSchema = createIdParamSchema("prov_abc123");
 
@@ -227,7 +247,8 @@ const createProviderRoute = createRoute({
   tags: ["Admin — SSO"],
   summary: "Create SSO provider",
   description:
-    "Creates a new SSO provider for the admin's active organization. Requires type, issuer, domain, and config.",
+    "Creates a new SSO provider for the admin's active organization. Requires type, issuer, domain, and config. " +
+    "The provider is always created with enabled=false — domain ownership must be verified via DNS TXT record before the provider can be enabled.",
   request: {
     body: {
       required: true,
@@ -282,7 +303,9 @@ const updateProviderRoute = createRoute({
   tags: ["Admin — SSO"],
   summary: "Update SSO provider",
   description:
-    "Updates an existing SSO provider. All fields are optional — only provided fields are updated.",
+    "Updates an existing SSO provider. All fields are optional — only provided fields are updated. " +
+    "If the domain is changed, verification status is reset to 'pending', a new verification token is generated, and the provider is automatically disabled. " +
+    "Enabling a provider requires a verified domain.",
   request: {
     params: ProviderIdParamSchema,
     body: {
@@ -516,6 +539,92 @@ const setEnforcementRoute = createRoute({
   },
 });
 
+const verifyDomainRoute = createRoute({
+  method: "post",
+  path: "/providers/{id}/verify",
+  tags: ["Admin — SSO"],
+  summary: "Verify SSO provider domain",
+  description:
+    "Triggers a DNS TXT record lookup to verify domain ownership for the SSO provider. " +
+    "Returns status 'verified' if the expected TXT record is found, 'failed' otherwise. " +
+    "If the domain is already verified, returns immediately without performing a DNS lookup.",
+  request: {
+    params: ProviderIdParamSchema,
+  },
+  responses: {
+    200: {
+      description: "Verification result",
+      content: {
+        "application/json": { schema: VerifyDomainResponseSchema },
+      },
+    },
+    400: {
+      description: "Invalid provider ID or no active organization",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — admin role or enterprise license required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "SSO provider not found",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const domainCheckRoute = createRoute({
+  method: "get",
+  path: "/domain-check",
+  tags: ["Admin — SSO"],
+  summary: "Check domain availability",
+  description:
+    "Checks whether a domain is available for SSO registration.",
+  request: {
+    query: z.object({ domain: z.string() }),
+  },
+  responses: {
+    200: {
+      description: "Domain availability result",
+      content: {
+        "application/json": { schema: DomainCheckResponseSchema },
+      },
+    },
+    400: {
+      description: "Missing or invalid domain parameter",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — admin role or enterprise license required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
 // ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
@@ -636,6 +745,36 @@ adminSso.openapi(setEnforcementRoute, async (c) => {
     const result = yield* setSSOEnforcement(orgId!, enforced);
     return c.json(result, 200);
   }), { label: "set SSO enforcement", domainErrors: [ssoEnforcementDomainError, ssoDomainError] });
+});
+
+// POST /providers/:id/verify — trigger DNS verification
+adminSso.openapi(verifyDomainRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { orgId } = yield* AuthContext;
+    const { id: providerId } = c.req.valid("param");
+
+    if (!isValidId(providerId)) {
+      return c.json({ error: "bad_request", message: "Invalid provider ID." }, 400);
+    }
+
+    const result = yield* verifyDomain(providerId, orgId!);
+    return c.json(result, 200);
+  }), { label: "verify SSO domain", domainErrors: [ssoEnforcementDomainError, ssoDomainError] });
+});
+
+// GET /domain-check — check domain availability
+adminSso.openapi(domainCheckRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { orgId } = yield* AuthContext;
+    const { domain } = c.req.valid("query");
+
+    if (!domain) {
+      return c.json({ error: "bad_request", message: "Missing required query parameter: domain." }, 400);
+    }
+
+    const result = yield* checkDomainAvailability(domain, orgId!);
+    return c.json(result, 200);
+  }), { label: "check SSO domain availability", domainErrors: [ssoEnforcementDomainError, ssoDomainError] });
 });
 
 export { adminSso };

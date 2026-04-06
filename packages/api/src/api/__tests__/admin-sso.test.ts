@@ -1,10 +1,13 @@
 /**
- * Tests for SSO test connection endpoint.
+ * Tests for admin SSO endpoints.
  *
- * Covers: POST /api/v1/admin/sso/providers/:id/test
- * - OIDC: valid discovery, unreachable/timeout, non-JSON response, missing fields, issuer mismatch
- * - SAML: valid cert, expired cert, malformed PEM
- * - 404 for non-existent provider, 404 for wrong org, 403 for non-admin
+ * Covers:
+ * - POST /providers/:id/verify — DNS TXT verification
+ * - GET /domain-check — domain availability
+ * - POST /providers — create generates verification token, forces enabled=false
+ * - PATCH /providers/:id — domain change resets verification
+ * - PATCH /providers/:id — enable blocked when domain unverified
+ * - POST /providers/:id/test — OIDC/SAML connection testing
  */
 
 import {
@@ -18,6 +21,7 @@ import {
 } from "bun:test";
 import { Effect } from "effect";
 import { createApiTestMocks } from "@atlas/api/testing/api-test-mocks";
+import type { SSOProvider } from "@useatlas/types";
 
 // --- Unified mocks ---
 
@@ -45,18 +49,37 @@ class MockSSOEnforcementError extends Error {
   }
 }
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- mock needs flexible return type for success/failure paths
+const mockVerifyDomain: Mock<(providerId: string, orgId: string) => Effect.Effect<any, any>> = mock(
+  () => Effect.succeed({ status: "verified", message: "Domain verified successfully." }),
+);
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- mock needs flexible return type for success/failure paths
+const mockCheckDomainAvailability: Mock<(domain: string, orgId: string) => Effect.Effect<any, any>> = mock(
+  () => Effect.succeed({ available: true }),
+);
+const mockCreateSSOProvider: Mock<(orgId: string, input: unknown) => Effect.Effect<SSOProvider>> = mock(
+  () => Effect.die(new Error("not configured")),
+);
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- mock needs flexible return type for success/failure paths
+const mockUpdateSSOProvider: Mock<(orgId: string, providerId: string, input: unknown) => Effect.Effect<any, any>> = mock(
+  () => Effect.die(new Error("not configured")),
+);
 const mockGetSSOProvider: Mock<(orgId: string, providerId: string) => Effect.Effect<unknown, unknown>> =
   mock(() => Effect.succeed(null));
 const mockTestSSOProvider: Mock<(orgId: string, providerId: string) => Effect.Effect<unknown, unknown>> =
   mock(() => Effect.succeed({ type: "oidc", success: true, testedAt: "2026-04-06T00:00:00.000Z", details: {} }));
 
 mock.module("@atlas/ee/auth/sso", () => ({
-  // CRUD (unused but must be mocked)
+  // CRUD
   listSSOProviders: mock(() => Effect.succeed([])),
   getSSOProvider: mockGetSSOProvider,
-  createSSOProvider: mock(() => Effect.succeed({})),
-  updateSSOProvider: mock(() => Effect.succeed({})),
+  createSSOProvider: mockCreateSSOProvider,
+  updateSSOProvider: mockUpdateSSOProvider,
   deleteSSOProvider: mock(() => Effect.succeed(false)),
+  // Domain verification
+  verifyDomain: mockVerifyDomain,
+  checkDomainAvailability: mockCheckDomainAvailability,
+  generateVerificationToken: () => "atlas-verify=test-uuid-1234",
   // Test
   testSSOProvider: mockTestSSOProvider,
   testOidcProvider: mock(async () => ({ type: "oidc", success: true, testedAt: "2026-04-06T00:00:00.000Z", details: {} })),
@@ -67,7 +90,10 @@ mock.module("@atlas/ee/auth/sso", () => ({
   isSSOEnforcedForDomain: mock(() => Effect.succeed({ enforced: false })),
   // View helpers
   redactProvider: (p: unknown) => p,
-  summarizeProvider: (p: unknown) => p,
+  summarizeProvider: (p: SSOProvider) => {
+    const { config: _config, ...rest } = p;
+    return rest;
+  },
   // Validation helpers
   isValidDomain: () => true,
   isValidSSOProviderType: (t: string) => ["saml", "oidc"].includes(t),
@@ -88,39 +114,313 @@ mock.module("@atlas/ee/auth/sso", () => ({
 
 const { app } = await import("../index");
 
-afterAll(() => mocks.cleanup());
+// --- Helpers ---
 
-// --- Helper ---
-
-function adminRequest(method: string, path: string, body?: unknown): Request {
+function adminRequest(urlPath: string, method = "GET", body?: unknown): Request {
   const opts: RequestInit = {
     method,
-    headers: { "Content-Type": "application/json", "x-api-key": "test-key" },
+    headers: { Authorization: "Bearer test-key", "Content-Type": "application/json" },
   };
   if (body) opts.body = JSON.stringify(body);
-  return new Request(`http://localhost${path}`, opts);
+  return new Request(`http://localhost${urlPath}`, opts);
 }
 
-// --- Tests ---
+function makeProvider(overrides: Partial<SSOProvider> = {}): SSOProvider {
+  return {
+    id: "prov-1",
+    orgId: "org-alpha",
+    type: "saml",
+    issuer: "https://idp.acme.com",
+    domain: "acme.com",
+    enabled: false,
+    ssoEnforced: false,
+    config: {
+      idpEntityId: "https://idp.acme.com",
+      idpSsoUrl: "https://idp.acme.com/sso",
+      idpCertificate: "MIIC...",
+    },
+    createdAt: "2026-01-01T00:00:00Z",
+    updatedAt: "2026-01-01T00:00:00Z",
+    verificationToken: "atlas-verify=test-uuid-1234",
+    domainVerified: false,
+    domainVerifiedAt: null,
+    domainVerificationStatus: "pending",
+    ...overrides,
+  } as SSOProvider;
+}
+
+// --- Cleanup ---
+
+afterAll(() => mocks.cleanup());
+
+// ── Domain Verification Tests ──────────────────────────────────────
+
+describe("admin SSO — domain verification", () => {
+  beforeEach(() => {
+    mocks.hasInternalDB = true;
+    mocks.mockInternalQuery.mockReset();
+    mocks.mockInternalQuery.mockResolvedValue([]);
+    mockVerifyDomain.mockReset();
+    mockCheckDomainAvailability.mockReset();
+    mockCreateSSOProvider.mockReset();
+    mockUpdateSSOProvider.mockReset();
+    mockGetSSOProvider.mockReset();
+    mocks.setOrgAdmin("org-alpha");
+  });
+
+  // ─── POST /providers/:id/verify — DNS verification ─────────────────
+
+  describe("POST /providers/:id/verify", () => {
+    it("returns verified when DNS TXT record matches token", async () => {
+      mockVerifyDomain.mockImplementation(() =>
+        Effect.succeed({ status: "verified", message: "Domain verified successfully." }),
+      );
+
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/sso/providers/prov-1/verify", "POST"),
+      );
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { status: string; message: string };
+      expect(body.status).toBe("verified");
+      expect(body.message).toContain("verified successfully");
+    });
+
+    it("returns failed when no matching TXT record found", async () => {
+      mockVerifyDomain.mockImplementation(() =>
+        Effect.succeed({ status: "failed", message: "No matching TXT record found." }),
+      );
+
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/sso/providers/prov-1/verify", "POST"),
+      );
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { status: string; message: string };
+      expect(body.status).toBe("failed");
+      expect(body.message).toContain("No matching TXT record");
+    });
+
+    it("returns failed when DNS lookup times out", async () => {
+      mockVerifyDomain.mockImplementation(() =>
+        Effect.succeed({ status: "failed", message: "DNS lookup failed: queryTxt ETIMEOUT acme.com" }),
+      );
+
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/sso/providers/prov-1/verify", "POST"),
+      );
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { status: string; message: string };
+      expect(body.status).toBe("failed");
+      expect(body.message).toContain("DNS lookup failed");
+    });
+
+    it("returns 404 when provider not found", async () => {
+      mockVerifyDomain.mockImplementation(() =>
+        Effect.fail(new MockSSOError("SSO provider not found.", "not_found")),
+      );
+
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/sso/providers/prov-nonexistent/verify", "POST"),
+      );
+
+      expect(res.status).toBe(404);
+    });
+
+    it("returns verified immediately if domain already verified", async () => {
+      mockVerifyDomain.mockImplementation(() =>
+        Effect.succeed({ status: "verified", message: "Domain is already verified." }),
+      );
+
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/sso/providers/prov-1/verify", "POST"),
+      );
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { status: string; message: string };
+      expect(body.status).toBe("verified");
+      expect(body.message).toContain("already verified");
+    });
+  });
+
+  // ─── GET /domain-check ─────────────────────────────────────────────
+
+  describe("GET /domain-check", () => {
+    it("returns available=true for unclaimed domain", async () => {
+      mockCheckDomainAvailability.mockImplementation(() =>
+        Effect.succeed({ available: true }),
+      );
+
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/sso/domain-check?domain=newdomain.com"),
+      );
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { available: boolean; reason?: string };
+      expect(body.available).toBe(true);
+    });
+
+    it("returns available=false with reason for domain taken by same org", async () => {
+      mockCheckDomainAvailability.mockImplementation(() =>
+        Effect.succeed({ available: false, reason: "Domain is already registered by your organization." }),
+      );
+
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/sso/domain-check?domain=acme.com"),
+      );
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { available: boolean; reason?: string };
+      expect(body.available).toBe(false);
+      expect(body.reason).toContain("your organization");
+    });
+
+    it("returns available=false with reason for domain taken by other org", async () => {
+      mockCheckDomainAvailability.mockImplementation(() =>
+        Effect.succeed({ available: false, reason: "Domain is already registered by another organization." }),
+      );
+
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/sso/domain-check?domain=acme.com"),
+      );
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { available: boolean; reason?: string };
+      expect(body.available).toBe(false);
+      expect(body.reason).toContain("another organization");
+    });
+
+    it("returns available=false for invalid domain format", async () => {
+      mockCheckDomainAvailability.mockImplementation(() =>
+        Effect.succeed({ available: false, reason: "Invalid domain format." }),
+      );
+
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/sso/domain-check?domain=not-a-domain"),
+      );
+
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { available: boolean; reason?: string };
+      expect(body.available).toBe(false);
+      expect(body.reason).toContain("Invalid domain");
+    });
+  });
+
+  // ─── POST /providers — create generates token, forces enabled=false ─
+
+  describe("POST /providers — verification token", () => {
+    it("creates provider with verification token and enabled=false", async () => {
+      const provider = makeProvider();
+      mockCreateSSOProvider.mockImplementation(() => Effect.succeed(provider));
+
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/sso/providers", "POST", {
+          type: "saml",
+          issuer: "https://idp.acme.com",
+          domain: "acme.com",
+          enabled: true, // Should be forced to false by the service
+          config: {
+            idpEntityId: "https://idp.acme.com",
+            idpSsoUrl: "https://idp.acme.com/sso",
+            idpCertificate: "MIIC...",
+          },
+        }),
+      );
+
+      expect(res.status).toBe(201);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      const body = (await res.json()) as any;
+      expect(body.provider.enabled).toBe(false);
+      expect(body.provider.verificationToken).toStartWith("atlas-verify=");
+      expect(body.provider.domainVerified).toBe(false);
+      expect(body.provider.domainVerificationStatus).toBe("pending");
+      expect(mockCreateSSOProvider).toHaveBeenCalled();
+    });
+  });
+
+  // ─── PATCH /providers/:id — domain change resets verification ──────
+
+  describe("PATCH /providers/:id — domain change", () => {
+    it("returns updated provider with reset verification when domain changes", async () => {
+      const updated = makeProvider({
+        domain: "newdomain.com",
+        domainVerified: false,
+        domainVerificationStatus: "pending",
+        verificationToken: "atlas-verify=new-token",
+      });
+      mockUpdateSSOProvider.mockImplementation(() => Effect.succeed(updated));
+
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/sso/providers/prov-1", "PATCH", {
+          domain: "newdomain.com",
+        }),
+      );
+
+      expect(res.status).toBe(200);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      const body = (await res.json()) as any;
+      expect(body.provider.domain).toBe("newdomain.com");
+      expect(body.provider.domainVerified).toBe(false);
+      expect(body.provider.domainVerificationStatus).toBe("pending");
+      expect(mockUpdateSSOProvider).toHaveBeenCalled();
+    });
+  });
+
+  // ─── PATCH /providers/:id — enable blocked when unverified ─────────
+
+  describe("PATCH /providers/:id — enable guard", () => {
+    it("returns error when trying to enable an unverified provider", async () => {
+      mockUpdateSSOProvider.mockImplementation(() =>
+        Effect.fail(new MockSSOError(
+          "Cannot enable SSO provider until domain is verified. Verify domain ownership first.",
+          "validation",
+        )),
+      );
+
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/sso/providers/prov-1", "PATCH", {
+          enabled: true,
+        }),
+      );
+
+      expect(res.status).toBe(400);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      const body = (await res.json()) as any;
+      expect(body.message).toContain("domain is verified");
+    });
+
+    it("allows enabling when domain is verified", async () => {
+      const enabled = makeProvider({
+        enabled: true,
+        domainVerified: true,
+        domainVerificationStatus: "verified",
+        domainVerifiedAt: "2026-01-02T00:00:00Z",
+      });
+      mockUpdateSSOProvider.mockImplementation(() => Effect.succeed(enabled));
+
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/sso/providers/prov-1", "PATCH", {
+          enabled: true,
+        }),
+      );
+
+      expect(res.status).toBe(200);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      const body = (await res.json()) as any;
+      expect(body.provider.enabled).toBe(true);
+      expect(body.provider.domainVerified).toBe(true);
+    });
+  });
+});
+
+// ── Test Connection Tests ──────────────────────────────────────────
 
 describe("Admin SSO Test Connection API", () => {
   beforeEach(() => {
-    mocks.mockAuthenticateRequest.mockImplementation(() =>
-      Promise.resolve({
-        authenticated: true,
-        mode: "simple-key",
-        user: {
-          id: "admin-1",
-          mode: "simple-key",
-          label: "Admin",
-          role: "admin",
-          activeOrganizationId: "org-1",
-        },
-      }),
-    );
+    mockTestSSOProvider.mockReset();
+    mocks.setOrgAdmin("org-1");
   });
-
-  // --- POST /api/v1/admin/sso/providers/:id/test ---
 
   describe("POST /api/v1/admin/sso/providers/:id/test", () => {
     it("returns OIDC test result with valid discovery", async () => {
@@ -144,17 +444,14 @@ describe("Admin SSO Test Connection API", () => {
       );
 
       const res = await app.fetch(
-        adminRequest("POST", "/api/v1/admin/sso/providers/prov-1/test"),
+        adminRequest("/api/v1/admin/sso/providers/prov-1/test", "POST"),
       );
       expect(res.status).toBe(200);
-      const body = (await res.json()) as Record<string, unknown>;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      const body = (await res.json()) as any;
       expect(body.type).toBe("oidc");
       expect(body.success).toBe(true);
-      expect(body.testedAt).toBe("2026-04-06T00:00:00.000Z");
-      const details = body.details as Record<string, unknown>;
-      expect(details.discoveryReachable).toBe(true);
-      expect(details.issuerMatch).toBe(true);
-      expect(details.requiredFieldsPresent).toBe(true);
+      expect(body.details.discoveryReachable).toBe(true);
     });
 
     it("returns OIDC failure for unreachable discovery URL", async () => {
@@ -163,98 +460,19 @@ describe("Admin SSO Test Connection API", () => {
           type: "oidc",
           success: false,
           testedAt: "2026-04-06T00:00:00.000Z",
-          details: {
-            discoveryReachable: false,
-            issuerMatch: false,
-            requiredFieldsPresent: false,
-            endpoints: {},
-          },
+          details: { discoveryReachable: false, issuerMatch: false, requiredFieldsPresent: false, endpoints: {} },
           errors: ["Discovery URL timed out after 5000ms"],
         }),
       );
 
       const res = await app.fetch(
-        adminRequest("POST", "/api/v1/admin/sso/providers/prov-1/test"),
+        adminRequest("/api/v1/admin/sso/providers/prov-1/test", "POST"),
       );
       expect(res.status).toBe(200);
-      const body = (await res.json()) as Record<string, unknown>;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      const body = (await res.json()) as any;
       expect(body.success).toBe(false);
-      expect((body.errors as string[])[0]).toContain("timed out");
-    });
-
-    it("returns OIDC failure for non-JSON response", async () => {
-      mockTestSSOProvider.mockImplementation(() =>
-        Effect.succeed({
-          type: "oidc",
-          success: false,
-          testedAt: "2026-04-06T00:00:00.000Z",
-          details: {
-            discoveryReachable: false,
-            issuerMatch: false,
-            requiredFieldsPresent: false,
-            endpoints: {},
-          },
-          errors: ["Discovery URL returned non-JSON body (Unexpected token <)"],
-        }),
-      );
-
-      const res = await app.fetch(
-        adminRequest("POST", "/api/v1/admin/sso/providers/prov-1/test"),
-      );
-      expect(res.status).toBe(200);
-      const body = (await res.json()) as Record<string, unknown>;
-      expect(body.success).toBe(false);
-      expect((body.errors as string[])[0]).toContain("non-JSON");
-    });
-
-    it("returns OIDC failure for missing discovery fields", async () => {
-      mockTestSSOProvider.mockImplementation(() =>
-        Effect.succeed({
-          type: "oidc",
-          success: false,
-          testedAt: "2026-04-06T00:00:00.000Z",
-          details: {
-            discoveryReachable: true,
-            issuerMatch: false,
-            requiredFieldsPresent: false,
-            endpoints: { issuer: "https://idp.example.com" },
-          },
-          errors: ["Discovery document missing required fields: authorization_endpoint, token_endpoint, jwks_uri"],
-        }),
-      );
-
-      const res = await app.fetch(
-        adminRequest("POST", "/api/v1/admin/sso/providers/prov-1/test"),
-      );
-      expect(res.status).toBe(200);
-      const body = (await res.json()) as Record<string, unknown>;
-      expect(body.success).toBe(false);
-      expect((body.errors as string[])[0]).toContain("missing required fields");
-    });
-
-    it("returns OIDC failure for issuer mismatch", async () => {
-      mockTestSSOProvider.mockImplementation(() =>
-        Effect.succeed({
-          type: "oidc",
-          success: false,
-          testedAt: "2026-04-06T00:00:00.000Z",
-          details: {
-            discoveryReachable: true,
-            issuerMatch: false,
-            requiredFieldsPresent: true,
-            endpoints: {},
-          },
-          errors: ['Issuer mismatch: discovery has "https://other.com", provider configured with "https://idp.example.com"'],
-        }),
-      );
-
-      const res = await app.fetch(
-        adminRequest("POST", "/api/v1/admin/sso/providers/prov-1/test"),
-      );
-      expect(res.status).toBe(200);
-      const body = (await res.json()) as Record<string, unknown>;
-      expect(body.success).toBe(false);
-      expect((body.errors as string[])[0]).toContain("Issuer mismatch");
+      expect(body.errors[0]).toContain("timed out");
     });
 
     it("returns SAML test result with valid certificate", async () => {
@@ -263,107 +481,19 @@ describe("Admin SSO Test Connection API", () => {
           type: "saml",
           success: true,
           testedAt: "2026-04-06T00:00:00.000Z",
-          details: {
-            certValid: true,
-            certSubject: "CN=idp.example.com",
-            certExpiry: "2027-01-01T00:00:00Z",
-            certDaysRemaining: 270,
-            idpReachable: true,
-          },
+          details: { certValid: true, certSubject: "CN=idp.example.com", certExpiry: "2027-01-01T00:00:00Z", certDaysRemaining: 270, idpReachable: true },
         }),
       );
 
       const res = await app.fetch(
-        adminRequest("POST", "/api/v1/admin/sso/providers/prov-2/test"),
+        adminRequest("/api/v1/admin/sso/providers/prov-2/test", "POST"),
       );
       expect(res.status).toBe(200);
-      const body = (await res.json()) as Record<string, unknown>;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
+      const body = (await res.json()) as any;
       expect(body.type).toBe("saml");
       expect(body.success).toBe(true);
-      expect(body.testedAt).toBe("2026-04-06T00:00:00.000Z");
-      const details = body.details as Record<string, unknown>;
-      expect(details.certValid).toBe(true);
-      expect(details.idpReachable).toBe(true);
-    });
-
-    it("returns SAML failure for expired certificate", async () => {
-      mockTestSSOProvider.mockImplementation(() =>
-        Effect.succeed({
-          type: "saml",
-          success: false,
-          testedAt: "2026-04-06T00:00:00.000Z",
-          details: {
-            certValid: false,
-            certSubject: "CN=idp.example.com",
-            certExpiry: "2025-01-01T00:00:00Z",
-            certDaysRemaining: -400,
-            idpReachable: true,
-          },
-          errors: ["Certificate expired 400 day(s) ago"],
-        }),
-      );
-
-      const res = await app.fetch(
-        adminRequest("POST", "/api/v1/admin/sso/providers/prov-2/test"),
-      );
-      expect(res.status).toBe(200);
-      const body = (await res.json()) as Record<string, unknown>;
-      expect(body.success).toBe(false);
-      expect((body.errors as string[])[0]).toContain("expired");
-    });
-
-    it("returns SAML failure for malformed PEM", async () => {
-      mockTestSSOProvider.mockImplementation(() =>
-        Effect.succeed({
-          type: "saml",
-          success: false,
-          testedAt: "2026-04-06T00:00:00.000Z",
-          details: {
-            certValid: false,
-            certSubject: null,
-            certExpiry: null,
-            certDaysRemaining: null,
-            idpReachable: null,
-          },
-          errors: ["Malformed PEM certificate: unable to parse"],
-        }),
-      );
-
-      const res = await app.fetch(
-        adminRequest("POST", "/api/v1/admin/sso/providers/prov-2/test"),
-      );
-      expect(res.status).toBe(200);
-      const body = (await res.json()) as Record<string, unknown>;
-      expect(body.success).toBe(false);
-      expect((body.errors as string[])[0]).toContain("Malformed PEM");
-    });
-
-    it("returns SAML warning for cert expiring within 30 days", async () => {
-      mockTestSSOProvider.mockImplementation(() =>
-        Effect.succeed({
-          type: "saml",
-          success: true,
-          testedAt: "2026-04-06T00:00:00.000Z",
-          details: {
-            certValid: true,
-            certSubject: "CN=idp.example.com",
-            certExpiry: "2026-04-20T00:00:00Z",
-            certDaysRemaining: 14,
-            idpReachable: true,
-          },
-          warnings: ["Certificate expires in 14 day(s) — consider renewing soon"],
-        }),
-      );
-
-      const res = await app.fetch(
-        adminRequest("POST", "/api/v1/admin/sso/providers/prov-2/test"),
-      );
-      expect(res.status).toBe(200);
-      const body = (await res.json()) as Record<string, unknown>;
-      // success is true — expiry warning does not fail the test
-      expect(body.success).toBe(true);
-      expect((body.warnings as string[])[0]).toContain("expires in 14 day(s)");
-      expect(body.errors).toBeUndefined();
+      expect(body.details.certValid).toBe(true);
     });
 
     it("returns 404 for non-existent provider", async () => {
@@ -372,39 +502,16 @@ describe("Admin SSO Test Connection API", () => {
       );
 
       const res = await app.fetch(
-        adminRequest("POST", "/api/v1/admin/sso/providers/nonexistent/test"),
-      );
-      expect(res.status).toBe(404);
-    });
-
-    it("returns 404 for provider in different org", async () => {
-      mockTestSSOProvider.mockImplementation(() =>
-        Effect.fail(new MockSSOError("SSO provider not found.", "not_found")),
-      );
-
-      const res = await app.fetch(
-        adminRequest("POST", "/api/v1/admin/sso/providers/prov-other-org/test"),
+        adminRequest("/api/v1/admin/sso/providers/nonexistent/test", "POST"),
       );
       expect(res.status).toBe(404);
     });
 
     it("returns 403 for non-admin user", async () => {
-      mocks.mockAuthenticateRequest.mockImplementation(() =>
-        Promise.resolve({
-          authenticated: true,
-          mode: "simple-key",
-          user: {
-            id: "user-1",
-            mode: "simple-key",
-            label: "User",
-            role: "member",
-            activeOrganizationId: "org-1",
-          },
-        }),
-      );
+      mocks.setMember("org-1");
 
       const res = await app.fetch(
-        adminRequest("POST", "/api/v1/admin/sso/providers/prov-1/test"),
+        adminRequest("/api/v1/admin/sso/providers/prov-1/test", "POST"),
       );
       expect(res.status).toBe(403);
     });

@@ -49,6 +49,14 @@ interface SSOProviderBase {
   ssoEnforced: boolean;
   createdAt: string;
   updatedAt: string;
+  /** DNS TXT verification token (e.g. "atlas-verify=<uuid>"). */
+  verificationToken: string | null;
+  /** Whether domain ownership has been verified via DNS TXT record. */
+  domainVerified: boolean;
+  /** Timestamp when domain was verified, or null if not yet verified. */
+  domainVerifiedAt: string | null;
+  /** Domain verification status — constrained by database CHECK constraint. */
+  domainVerificationStatus: "pending" | "verified" | "failed";
 }
 
 export interface SSOSamlProvider extends SSOProviderBase {

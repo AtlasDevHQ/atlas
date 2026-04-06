@@ -280,10 +280,13 @@ Set these environment variables or configure through the admin Settings page und
 | Expert Scheduler | `ATLAS_EXPERT_SCHEDULER_ENABLED` | `false` | Enable periodic analysis |
 | Schedule Interval | `ATLAS_EXPERT_SCHEDULER_INTERVAL_HOURS` | `24` | Hours between runs |
 | Auto-Approve Threshold | `ATLAS_EXPERT_AUTO_APPROVE_THRESHOLD` | (disabled) | Proposals with confidence ≥ this value are auto-applied |
+| Auto-Approve Types | `ATLAS_EXPERT_AUTO_APPROVE_TYPES` | `update_description,add_dimension` | Comma-separated amendment types eligible for auto-approval. Types not in this list always queue for review |
 
 ### Auto-Approval
 
-When `ATLAS_EXPERT_AUTO_APPROVE_THRESHOLD` is set (e.g., `0.9`), proposals with confidence at or above that threshold are automatically applied without human review. Auto-applied amendments:
+When `ATLAS_EXPERT_AUTO_APPROVE_THRESHOLD` is set (e.g., `0.9`), proposals are auto-approved only if they meet **both** conditions: confidence at or above the threshold, **and** the amendment type is in the `ATLAS_EXPERT_AUTO_APPROVE_TYPES` list. By default only low-risk types (`update_description`, `add_dimension`) are eligible — higher-risk types like `add_join`, `add_measure`, and `update_dimension` always queue for human review regardless of confidence.
+
+Auto-applied amendments:
 
 - Are recorded in the semantic editor version history
 - Create a snapshot via `atlas migrate` (if available)

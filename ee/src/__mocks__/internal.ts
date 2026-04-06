@@ -126,6 +126,8 @@ export function createEEMock(overrides?: EEMockOverrides): EEMock {
     migrateInternalDB: async () => {},
     _resetPool: () => {},
     loadSavedConnections: async () => 0,
+    getAutoApproveThreshold: () => 2,
+    getAutoApproveTypes: () => new Set(["update_description", "add_dimension"]),
     ...overrides?.internalDB,
   };
 

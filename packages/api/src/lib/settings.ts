@@ -292,6 +292,16 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     envVar: "ATLAS_EXPERT_AUTO_APPROVE_THRESHOLD",
     scope: "workspace",
   },
+  {
+    key: "ATLAS_EXPERT_AUTO_APPROVE_TYPES",
+    section: "Intelligence",
+    label: "Auto-Approve Types",
+    description: "Comma-separated amendment types eligible for auto-approval. Others always queue for review.",
+    type: "string",
+    default: "update_description,add_dimension",
+    envVar: "ATLAS_EXPERT_AUTO_APPROVE_TYPES",
+    scope: "workspace",
+  },
 
   // Appearance
   {

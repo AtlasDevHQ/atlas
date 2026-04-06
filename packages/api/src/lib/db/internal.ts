@@ -743,6 +743,19 @@ export function getAutoApproveThreshold(): number {
   return parsed;
 }
 
+const DEFAULT_AUTO_APPROVE_TYPES = "update_description,add_dimension";
+
+/**
+ * Parse the comma-separated list of amendment types eligible for auto-approval.
+ * Returns a Set of trimmed, non-empty type strings.
+ */
+export function getAutoApproveTypes(): Set<string> {
+  const raw = process.env.ATLAS_EXPERT_AUTO_APPROVE_TYPES ?? DEFAULT_AUTO_APPROVE_TYPES;
+  return new Set(
+    raw.split(",").map((t) => t.trim()).filter(Boolean),
+  );
+}
+
 /**
  * Insert a semantic amendment proposal. Returns the new row's ID and resolved status.
  * Unlike insertLearnedPattern (fire-and-forget), this awaits the result.
@@ -755,7 +768,12 @@ export async function insertSemanticAmendment(amendment: {
   amendmentPayload: Record<string, unknown>;
 }): Promise<{ id: string; status: "approved" | "pending" }> {
   const threshold = getAutoApproveThreshold();
-  const status = amendment.confidence >= threshold ? "approved" : "pending";
+  const allowedTypes = getAutoApproveTypes();
+  const amendmentType = typeof amendment.amendmentPayload.amendmentType === "string"
+    ? amendment.amendmentPayload.amendmentType
+    : undefined;
+  const typeEligible = amendmentType !== undefined && allowedTypes.has(amendmentType);
+  const status = amendment.confidence >= threshold && typeEligible ? "approved" : "pending";
 
   const rows = await internalQuery<{ id: string }>(
     `INSERT INTO learned_patterns

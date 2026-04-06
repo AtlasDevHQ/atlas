@@ -259,6 +259,8 @@ export function createApiTestMocks(
     updateWorkspaceByot: mock(async () => true),
     setWorkspaceStripeCustomerId: mock(async () => true),
     setWorkspaceTrialEndsAt: mock(async () => true),
+    getAutoApproveThreshold: mock(() => 2),
+    getAutoApproveTypes: mock(() => new Set(["update_description", "add_dimension"])),
     insertSemanticAmendment: mock(async () => ({ id: "mock-amendment-id", status: "pending" as const })),
     getPendingAmendmentCount: mock(async () => 0),
   };

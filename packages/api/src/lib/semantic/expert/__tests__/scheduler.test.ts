@@ -12,6 +12,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   internalQuery: async () => [],
   internalExecute: () => {},
   getAutoApproveThreshold: () => 2, // disabled
+  getAutoApproveTypes: () => new Set(["update_description", "add_dimension"]),
   insertSemanticAmendment: mock(async () => ({ id: "test-id", status: "pending" as const })),
   getPendingAmendmentCount: mock(async () => 0),
   getApprovedPatterns: async () => [],

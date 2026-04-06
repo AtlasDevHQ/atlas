@@ -166,7 +166,8 @@ ATLAS_DEMO_DATA=true
 | `ATLAS_AGENT_MAX_STEPS` | `25` | Maximum tool-call steps per agent run. Range: 1–100. Increase for complex multi-step queries; decrease to limit token spend |
 | `ATLAS_EXPERT_SCHEDULER_ENABLED` | `false` | Enable periodic semantic layer analysis. When true, the expert engine runs on a schedule and proposes improvements automatically |
 | `ATLAS_EXPERT_SCHEDULER_INTERVAL_HOURS` | `24` | Hours between scheduled expert analysis runs |
-| `ATLAS_EXPERT_AUTO_APPROVE_THRESHOLD` | _(disabled)_ | Auto-approve proposals with confidence ≥ this value (e.g. `0.9`). Leave empty to require manual review for all proposals |
+| `ATLAS_EXPERT_AUTO_APPROVE_THRESHOLD` | _(disabled)_ | Auto-approve proposals with confidence ≥ this value and an eligible amendment type (e.g. `0.9`). Leave empty to require manual review for all proposals |
+| `ATLAS_EXPERT_AUTO_APPROVE_TYPES` | `update_description,add_dimension` | Comma-separated amendment types eligible for auto-approval. Types not in this list always queue for review |
 
 ---
 

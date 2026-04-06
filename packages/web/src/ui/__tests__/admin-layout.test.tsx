@@ -1,4 +1,5 @@
 import { describe, expect, test, mock, beforeEach, afterEach } from "bun:test";
+import React from "react";
 
 // Track the session value returned by useSession
 let mockSession: {
@@ -26,7 +27,7 @@ mock.module("next/link", () => ({
 
 // Mock shadcn sidebar — complex component with deep dependency chain (radix-ui, hooks, etc.)
 mock.module("@/components/ui/sidebar", () => {
-  const React = require("react");
+
   return {
     SidebarProvider: ({ children }: { children: React.ReactNode }) => React.createElement("div", { "data-testid": "sidebar-provider" }, children),
     SidebarInset: ({ children }: { children: React.ReactNode }) => React.createElement("main", null, children),
@@ -49,7 +50,7 @@ mock.module("@/components/ui/sidebar", () => {
 
 // Mock shadcn separator
 mock.module("@/components/ui/separator", () => {
-  const React = require("react");
+
   return { Separator: () => React.createElement("hr") };
 });
 

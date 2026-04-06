@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { ChevronsUpDown, Check, Building2, AlertCircle } from "lucide-react";
+import { ChevronsUpDown, Check, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,

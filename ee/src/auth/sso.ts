@@ -251,6 +251,10 @@ export const verifyDomain = (
       try: () => dns.promises.resolveTxt(provider.domain),
       catch: (err) => err instanceof Error ? err : new Error(String(err)),
     }).pipe(
+      Effect.timeoutFail({
+        duration: "10 seconds",
+        onTimeout: () => new Error("DNS lookup timed out after 10s"),
+      }),
       Effect.map((records) => ({ ok: true as const, records })),
       Effect.catchAll((err) => {
         log.warn({ providerId, domain: provider.domain, err: err.message }, "DNS TXT lookup failed");

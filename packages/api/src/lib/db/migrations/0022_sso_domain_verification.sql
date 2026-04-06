@@ -9,6 +9,15 @@ ALTER TABLE sso_providers ADD COLUMN IF NOT EXISTS domain_verified BOOLEAN NOT N
 ALTER TABLE sso_providers ADD COLUMN IF NOT EXISTS domain_verified_at TIMESTAMPTZ;
 ALTER TABLE sso_providers ADD COLUMN IF NOT EXISTS domain_verification_status TEXT NOT NULL DEFAULT 'pending';
 
+-- Grandfather existing enabled providers as verified — they were created
+-- before domain verification existed, so their domain ownership was
+-- implicitly trusted via the admin API.
+UPDATE sso_providers
+SET domain_verified = true,
+    domain_verified_at = now(),
+    domain_verification_status = 'verified'
+WHERE enabled = true;
+
 DO $$ BEGIN
   ALTER TABLE sso_providers ADD CONSTRAINT chk_domain_verification_status
     CHECK (domain_verification_status IN ('pending', 'verified', 'failed'));

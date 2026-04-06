@@ -784,6 +784,27 @@ export async function insertSemanticAmendment(amendment: {
 }
 
 /**
+ * Count pending semantic amendment proposals for an org.
+ * Returns 0 when no internal DB is available.
+ */
+export async function getPendingAmendmentCount(orgId: string | null): Promise<number> {
+  if (!hasInternalDB()) return 0;
+
+  const rows = await internalQuery<{ count: string }>(
+    orgId
+      ? `SELECT COUNT(*)::text AS count FROM learned_patterns
+         WHERE type = 'semantic_amendment' AND status = 'pending'
+         AND (org_id = $1 OR org_id IS NULL)`
+      : `SELECT COUNT(*)::text AS count FROM learned_patterns
+         WHERE type = 'semantic_amendment' AND status = 'pending'
+         AND org_id IS NULL`,
+    orgId ? [orgId] : [],
+  );
+
+  return parseInt(rows[0]?.count ?? "0", 10);
+}
+
+/**
  * Increment repetition_count by 1 and increase confidence by 0.1 (capped at 1.0).
  * When sourceFingerprint is provided, appends it to source_queries (capped at 100 entries).
  * Fire-and-forget — errors are logged, never thrown.

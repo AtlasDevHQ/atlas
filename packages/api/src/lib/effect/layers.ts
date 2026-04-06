@@ -438,6 +438,48 @@ export function makeSchedulerLive(
         log.debug("Onboarding email scheduler not started — feature disabled");
       }
 
+      // ── Periodic fiber: semantic expert scheduler (#1269) ──────────
+      const expertEnabled = yield* Effect.try({
+        try: () => {
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
+          const { isExpertSchedulerEnabled } = require("@atlas/api/lib/semantic/expert/scheduler") as {
+            isExpertSchedulerEnabled: () => boolean;
+          };
+          return isExpertSchedulerEnabled();
+        },
+        catch: (err) => {
+          log.debug({ err: err instanceof Error ? err.message : String(err) }, "Expert scheduler module not available — skipping");
+          return false;
+        },
+      }).pipe(Effect.catchAll(() => Effect.succeed(false)));
+
+      if (expertEnabled) {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        const { getExpertSchedulerIntervalMs } = require("@atlas/api/lib/semantic/expert/scheduler") as {
+          getExpertSchedulerIntervalMs: () => number;
+        };
+        const expertTick = Effect.tryPromise({
+          try: async () => {
+            const { runExpertSchedulerTick } = await import("@atlas/api/lib/semantic/expert/scheduler");
+            await runExpertSchedulerTick();
+          },
+          catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+        }).pipe(
+          Effect.catchAll((err) =>
+            Effect.sync(() => {
+              log.warn({ err: err instanceof Error ? err.message : String(err) }, "Expert scheduler tick failed");
+            }),
+          ),
+        );
+        const expertFiber = yield* Effect.fork(
+          expertTick.pipe(Effect.repeat(Schedule.spaced(Duration.millis(getExpertSchedulerIntervalMs())))),
+        );
+        yield* Effect.addFinalizer(() => Fiber.interrupt(expertFiber));
+        log.info({ intervalMs: getExpertSchedulerIntervalMs() }, "Semantic expert scheduler started");
+      } else {
+        log.debug("Semantic expert scheduler not started — feature disabled");
+      }
+
       // Start audit purge scheduler (enterprise — no-op when ee module not installed)
       yield* Effect.tryPromise({
         try: async () => {

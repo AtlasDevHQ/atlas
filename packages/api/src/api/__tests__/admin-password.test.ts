@@ -102,6 +102,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   getWorkspaceRegion: mock(async () => null),
   setWorkspaceRegion: mock(async () => {}),
   insertSemanticAmendment: mock(async () => "mock-amendment-id"),
+  getPendingAmendmentCount: mock(async () => 0),
 }));
 
 mock.module("@atlas/api/lib/cache", () => ({

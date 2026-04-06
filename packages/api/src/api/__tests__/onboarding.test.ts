@@ -89,6 +89,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   _resetEncryptionKeyCache: () => {},
   setWorkspaceRegion: mock(async () => {}),
   insertSemanticAmendment: mock(async () => "mock-amendment-id"),
+  getPendingAmendmentCount: mock(async () => 0),
 }));
 
 mock.module("@atlas/api/lib/semantic", () => ({

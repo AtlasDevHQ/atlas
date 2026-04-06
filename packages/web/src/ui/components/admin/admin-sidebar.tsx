@@ -2,8 +2,10 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useEffect, useState } from "react";
 import { useUserRole } from "@/ui/hooks/use-platform-admin-guard";
 import { useBranding } from "@/ui/hooks/use-branding";
+import { useAtlasConfig } from "@/ui/context";
 import type { LucideIcon } from "lucide-react";
 import {
   ArrowLeft,
@@ -50,6 +52,8 @@ interface NavSubItem {
   exact?: boolean;
   /** When set, only users with this role see this item. */
   requiredRole?: "platform_admin";
+  /** When set, shows a numeric badge next to the label. */
+  badge?: number;
 }
 
 interface NavGroup {
@@ -147,10 +151,39 @@ const navGroups: NavGroup[] = [
 // Component
 // ---------------------------------------------------------------------------
 
+function usePendingAmendmentCount(): number {
+  const { apiUrl, isCrossOrigin } = useAtlasConfig();
+  const [count, setCount] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    const fetchCount = () => {
+      fetch(`${apiUrl}/api/v1/admin/semantic-improve/pending-count`, {
+        credentials: isCrossOrigin ? "include" : "same-origin",
+      })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((data) => {
+          if (!cancelled && data && typeof data.count === "number") {
+            setCount(data.count);
+          }
+        })
+        .catch(() => {
+          // intentionally ignored: badge is non-critical
+        });
+    };
+    fetchCount();
+    const interval = setInterval(fetchCount, 60_000);
+    return () => { cancelled = true; clearInterval(interval); };
+  }, [apiUrl, isCrossOrigin]);
+
+  return count;
+}
+
 export function AdminSidebar() {
   const pathname = usePathname();
   const userRole = useUserRole();
   const { branding } = useBranding();
+  const pendingCount = usePendingAmendmentCount();
 
   function isSubItemActive(item: NavSubItem) {
     if (item.exact) return pathname === item.href;
@@ -165,9 +198,13 @@ export function AdminSidebar() {
     .filter((group) => !group.requiredRole || group.requiredRole === userRole)
     .map((group) => ({
       ...group,
-      items: group.items.filter(
-        (item) => !item.requiredRole || item.requiredRole === userRole,
-      ),
+      items: group.items
+        .filter((item) => !item.requiredRole || item.requiredRole === userRole)
+        .map((item) =>
+          item.href === "/admin/semantic/improve" && pendingCount > 0
+            ? { ...item, badge: pendingCount }
+            : item,
+        ),
     }))
     .filter((group) => group.items.length > 0);
 
@@ -253,6 +290,11 @@ export function AdminSidebar() {
                           <SidebarMenuSubButton asChild isActive={isSubItemActive(item)}>
                             <Link href={item.href}>
                               <span>{item.label}</span>
+                              {item.badge != null && item.badge > 0 && (
+                                <span className="ml-auto inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-medium text-primary-foreground">
+                                  {item.badge > 99 ? "99+" : item.badge}
+                                </span>
+                              )}
                             </Link>
                           </SidebarMenuSubButton>
                         </SidebarMenuSubItem>

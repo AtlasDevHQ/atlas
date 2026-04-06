@@ -148,6 +148,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   getWorkspaceRegion: () => Promise.resolve(null),
   setWorkspaceRegion: () => Promise.resolve({ assigned: true }),
   insertSemanticAmendment: mock(async () => "mock-amendment-id"),
+  getPendingAmendmentCount: mock(async () => 0),
 }));
 
 // --- EE residency mock ---

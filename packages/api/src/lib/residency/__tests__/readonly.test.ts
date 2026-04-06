@@ -28,6 +28,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   getWorkspaceRegion: () => Promise.resolve(null),
   setWorkspaceRegion: () => Promise.resolve({ assigned: true }),
   insertSemanticAmendment: async () => "mock-amendment-id",
+  getPendingAmendmentCount: async () => 0,
 }));
 
 // ── Import after mocks ──────────────────────────────────────────────

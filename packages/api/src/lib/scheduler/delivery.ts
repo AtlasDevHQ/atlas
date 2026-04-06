@@ -101,23 +101,19 @@ function deliverToEmail(
   return Effect.gen(function* () {
     const { subject, body } = formatEmailReport(task, result);
 
-    const resendKey = process.env.RESEND_API_KEY;
-    if (!resendKey) {
-      log.warn({ taskId: task.id, recipient: recipient.address }, "RESEND_API_KEY not set — email delivery skipped");
-      return yield* Effect.fail(
-        new DeliveryError({ message: "RESEND_API_KEY not set", channel: "email", recipient: recipient.address, permanent: true }),
-      );
-    }
-
-    const fromAddress = process.env.ATLAS_EMAIL_FROM ?? "Atlas <noreply@useatlas.dev>";
-
-    const resp = yield* Effect.tryPromise({
-      try: () =>
-        fetch("https://api.resend.com/emails", {
-          method: "POST",
-          headers: { "Content-Type": "application/json", Authorization: `Bearer ${resendKey}` },
-          body: JSON.stringify({ from: fromAddress, to: [recipient.address], subject, html: body }),
+    const { sendEmail } = yield* Effect.tryPromise({
+      try: () => import("@atlas/api/lib/email/delivery"),
+      catch: (err) =>
+        new DeliveryError({
+          message: `Failed to load email delivery: ${err instanceof Error ? err.message : String(err)}`,
+          channel: "email",
+          recipient: recipient.address,
+          permanent: false,
         }),
+    });
+
+    const deliveryResult = yield* Effect.tryPromise({
+      try: () => sendEmail({ to: recipient.address, subject, html: body }),
       catch: (err) =>
         new DeliveryError({
           message: err instanceof Error ? err.message : String(err),
@@ -127,23 +123,22 @@ function deliverToEmail(
         }),
     });
 
-    if (!resp.ok) {
-      const text = yield* Effect.promise(() => resp.text().catch(() => ""));
+    if (!deliveryResult.success) {
       log.error(
-        { taskId: task.id, recipient: recipient.address, status: resp.status, body: text.slice(0, 200) },
+        { taskId: task.id, recipient: recipient.address, provider: deliveryResult.provider, error: deliveryResult.error },
         "Email delivery failed",
       );
       return yield* Effect.fail(
         new DeliveryError({
-          message: `HTTP ${resp.status}`,
+          message: deliveryResult.error ?? "Email delivery failed",
           channel: "email",
           recipient: recipient.address,
-          permanent: isHttpPermanent(resp.status),
+          permanent: deliveryResult.provider === "log",
         }),
       );
     }
 
-    log.info({ taskId: task.id, recipient: recipient.address }, "Email delivered");
+    log.info({ taskId: task.id, recipient: recipient.address, provider: deliveryResult.provider }, "Email delivered");
   });
 }
 

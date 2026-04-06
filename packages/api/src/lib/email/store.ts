@@ -19,6 +19,7 @@ export type {
   SendGridConfig,
   PostmarkConfig,
   SesConfig,
+  ResendConfig,
 } from "@atlas/api/lib/integrations/types";
 
 const log = createLogger("email-store");

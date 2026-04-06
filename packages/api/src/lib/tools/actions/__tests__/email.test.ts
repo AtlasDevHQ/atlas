@@ -26,12 +26,24 @@ mock.module("@atlas/api/lib/logger", () => ({
   }),
 }));
 
+// Mock the delivery module — sendEmail is now the core of executeEmailSend
+let mockSendEmailResult = { success: true, provider: "resend", error: undefined as string | undefined };
+
+mock.module("@atlas/api/lib/email/delivery", () => ({
+  sendEmail: async (message: { to: string; subject: string; html: string }) => {
+    lastSendEmailCall = message;
+    return mockSendEmailResult;
+  },
+}));
+
+let lastSendEmailCall: { to: string; subject: string; html: string } | null = null;
+
 const { executeEmailSend, sendEmailReport } = await import(
   "@atlas/api/lib/tools/actions/email"
 );
 
 // ---------------------------------------------------------------------------
-// Env snapshot + fetch mock
+// Env snapshot
 // ---------------------------------------------------------------------------
 
 const ENV_KEYS = [
@@ -41,33 +53,15 @@ const ENV_KEYS = [
 ] as const;
 
 const saved: Record<string, string | undefined> = {};
-const originalFetch = globalThis.fetch;
-
-let capturedFetchUrl = "";
-let capturedFetchInit: RequestInit | undefined;
-
-function installFetchMock(
-  response: { status: number; body: unknown },
-) {
-  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
-    capturedFetchUrl = typeof input === "string" ? input : (input as Request).url;
-    capturedFetchInit = init;
-    return new Response(JSON.stringify(response.body), {
-      status: response.status,
-      headers: { "Content-Type": "application/json" },
-    });
-  }) as typeof globalThis.fetch;
-}
 
 beforeEach(() => {
   for (const key of ENV_KEYS) saved[key] = process.env[key];
   lastHandleActionCall = null;
-  capturedFetchUrl = "";
-  capturedFetchInit = undefined;
+  lastSendEmailCall = null;
+  mockSendEmailResult = { success: true, provider: "resend", error: undefined };
 });
 
 afterEach(() => {
-  globalThis.fetch = originalFetch;
   for (const key of ENV_KEYS) {
     if (saved[key] !== undefined) process.env[key] = saved[key];
     else delete process.env[key];
@@ -91,8 +85,8 @@ describe("sendEmailReport — metadata", () => {
     expect(sendEmailReport.defaultApproval).toBe("admin-only");
   });
 
-  it("requires RESEND_API_KEY", () => {
-    expect(sendEmailReport.requiredCredentials).toEqual(["RESEND_API_KEY"]);
+  it("has empty requiredCredentials (credentials resolved via platform settings)", () => {
+    expect(sendEmailReport.requiredCredentials).toEqual([]);
   });
 
   it("has a name", () => {
@@ -105,12 +99,37 @@ describe("sendEmailReport — metadata", () => {
 });
 
 // ---------------------------------------------------------------------------
-// executeEmailSend — raw API call
+// executeEmailSend — delegates to sendEmail()
 // ---------------------------------------------------------------------------
 
 describe("executeEmailSend", () => {
-  it("throws when RESEND_API_KEY is missing", async () => {
-    delete process.env.RESEND_API_KEY;
+  it("delegates to sendEmail for each recipient", async () => {
+    const result = await executeEmailSend({
+      to: ["alice@example.com", "bob@example.com"],
+      subject: "Weekly Report",
+      body: "<h1>Report</h1><p>Data here</p>",
+    });
+
+    // sendEmail is called for each recipient — lastSendEmailCall is the last one
+    expect(lastSendEmailCall).not.toBeNull();
+    expect(lastSendEmailCall!.subject).toBe("Weekly Report");
+    expect(lastSendEmailCall!.html).toBe("<h1>Report</h1><p>Data here</p>");
+    expect(result.id).toBe("sent");
+  });
+
+  it("normalizes string recipient to individual calls", async () => {
+    await executeEmailSend({
+      to: "single@example.com",
+      subject: "Test",
+      body: "<p>Hello</p>",
+    });
+
+    expect(lastSendEmailCall).not.toBeNull();
+    expect(lastSendEmailCall!.to).toBe("single@example.com");
+  });
+
+  it("throws when sendEmail returns failure", async () => {
+    mockSendEmailResult = { success: false, provider: "log", error: "No email provider configured" };
 
     await expect(
       executeEmailSend({
@@ -118,100 +137,23 @@ describe("executeEmailSend", () => {
         subject: "Test",
         body: "<p>Hello</p>",
       }),
-    ).rejects.toThrow("Missing RESEND_API_KEY");
+    ).rejects.toThrow("Email delivery failed");
   });
 
-  it("calls Resend API with correct params", async () => {
-    process.env.RESEND_API_KEY = "re_test_123";
-    process.env.ATLAS_EMAIL_FROM = "Reports <reports@company.com>";
+  it("includes recipient in error message on failure", async () => {
+    mockSendEmailResult = { success: false, provider: "resend", error: "Resend API returned 422" };
 
-    installFetchMock({ status: 200, body: { id: "email-id-123" } });
-
-    const result = await executeEmailSend({
-      to: ["alice@example.com", "bob@example.com"],
-      subject: "Weekly Report",
-      body: "<h1>Report</h1><p>Data here</p>",
-    });
-
-    expect(capturedFetchUrl).toBe("https://api.resend.com/emails");
-    expect(capturedFetchInit?.method).toBe("POST");
-
-    // Check auth header
-    expect(
-      (capturedFetchInit?.headers as Record<string, string>)?.Authorization,
-    ).toBe("Bearer re_test_123");
-
-    // Check body
-    const body = JSON.parse(capturedFetchInit?.body as string);
-    expect(body.from).toBe("Reports <reports@company.com>");
-    expect(body.to).toEqual(["alice@example.com", "bob@example.com"]);
-    expect(body.subject).toBe("Weekly Report");
-    expect(body.html).toBe("<h1>Report</h1><p>Data here</p>");
-
-    expect(result.id).toBe("email-id-123");
-  });
-
-  it("uses default from address when ATLAS_EMAIL_FROM is not set", async () => {
-    process.env.RESEND_API_KEY = "re_test_123";
-    delete process.env.ATLAS_EMAIL_FROM;
-
-    installFetchMock({ status: 200, body: { id: "email-id-456" } });
-
-    await executeEmailSend({
-      to: "user@example.com",
-      subject: "Test",
-      body: "<p>Hello</p>",
-    });
-
-    const body = JSON.parse(capturedFetchInit?.body as string);
-    expect(body.from).toContain("Atlas");
-  });
-
-  it("normalizes string recipient to array", async () => {
-    process.env.RESEND_API_KEY = "re_test_123";
-
-    installFetchMock({ status: 200, body: { id: "email-id-789" } });
-
-    await executeEmailSend({
-      to: "single@example.com",
-      subject: "Test",
-      body: "<p>Hello</p>",
-    });
-
-    const body = JSON.parse(capturedFetchInit?.body as string);
-    expect(body.to).toEqual(["single@example.com"]);
-  });
-
-  it("throws on API error without exposing API key", async () => {
-    process.env.RESEND_API_KEY = "re_secret_key_123";
-
-    installFetchMock({
-      status: 422,
-      body: { message: "Invalid recipient address" },
-    });
-
-    try {
-      await executeEmailSend({
+    await expect(
+      executeEmailSend({
         to: "user@example.com",
         subject: "Test",
         body: "<p>Hello</p>",
-      });
-      expect(true).toBe(false); // should not reach here
-    } catch (err) {
-      const message = (err as Error).message;
-      expect(message).toContain("Resend API error");
-      expect(message).toContain("Invalid recipient");
-      // Must not contain secrets
-      expect(message).not.toContain("re_secret_key_123");
-    }
+      }),
+    ).rejects.toThrow("user@example.com");
   });
 
-  it("handles non-JSON error responses", async () => {
-    process.env.RESEND_API_KEY = "re_test_123";
-
-    globalThis.fetch = (async () => {
-      return new Response("Internal Server Error", { status: 500 });
-    }) as unknown as typeof globalThis.fetch;
+  it("includes delivery error detail in thrown message", async () => {
+    mockSendEmailResult = { success: false, provider: "resend", error: "HTTP 500" };
 
     await expect(
       executeEmailSend({ to: "user@example.com", subject: "Test", body: "<p>Hi</p>" }),

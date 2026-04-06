@@ -14,6 +14,7 @@ import { detectAuthMode } from "@atlas/api/lib/auth/detect";
 import type { AtlasRole } from "@atlas/api/lib/auth/types";
 import { ATLAS_ROLES } from "@atlas/api/lib/auth/types";
 import { runHandler } from "@atlas/api/lib/effect/hono";
+import { checkResourceLimit } from "@atlas/api/lib/billing/enforcement";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 
 const log = createLogger("admin-invitations");
@@ -152,6 +153,22 @@ export function registerInvitationRoutes(
 
     if (!isValidRole(role)) {
       return c.json({ error: "invalid_request", message: `Invalid role. Must be one of: ${ATLAS_ROLES.join(", ")}`, requestId }, 400);
+    }
+
+    // Enforce plan member limit before proceeding.
+    // Count includes current members + pending invitations to prevent over-provisioning.
+    // Note: TOCTOU race is acceptable — admin invitation is low-frequency.
+    const memberCountRows = await internalQuery<{ count: number }>(
+      `SELECT (
+        (SELECT COUNT(*)::int FROM member WHERE "organizationId" = $1) +
+        (SELECT COUNT(*)::int FROM invitation WHERE "organizationId" = $1 AND status = 'pending' AND "expiresAt" > now())
+      ) as count`,
+      [orgId],
+    );
+    const memberCount = memberCountRows[0]?.count ?? 0;
+    const resourceCheck = await checkResourceLimit(orgId, "members", memberCount);
+    if (!resourceCheck.allowed) {
+      return c.json({ error: "plan_limit_exceeded", message: resourceCheck.errorMessage, requestId }, 429);
     }
 
     // Check for existing user and pending invitation (scoped to org) in parallel

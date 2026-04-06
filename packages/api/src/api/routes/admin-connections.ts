@@ -13,6 +13,7 @@ import { hasInternalDB, internalQuery, encryptUrl, decryptUrl } from "@atlas/api
 import { maskConnectionUrl } from "@atlas/api/lib/security";
 import { _resetWhitelists } from "@atlas/api/lib/semantic";
 import { runHandler } from "@atlas/api/lib/effect/hono";
+import { checkResourceLimit } from "@atlas/api/lib/billing/enforcement";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 
@@ -476,6 +477,17 @@ adminConnections.openapi(createConnectionRoute, async (c) => runHandler(c, "crea
 
   if (!hasInternalDB()) {
     return c.json({ error: "not_available", message: "Connection management requires an internal database (DATABASE_URL).", requestId }, 404);
+  }
+
+  // Enforce plan connection limit before proceeding
+  const connCountRows = await internalQuery<{ count: number }>(
+    `SELECT COUNT(*)::int as count FROM connections WHERE org_id = $1`,
+    [orgId],
+  );
+  const connCount = connCountRows[0]?.count ?? 0;
+  const resourceCheck = await checkResourceLimit(orgId, "connections", connCount);
+  if (!resourceCheck.allowed) {
+    return c.json({ error: "plan_limit_exceeded", message: resourceCheck.errorMessage, requestId }, 429);
   }
 
   const body = await c.req.json().catch((err: unknown) => {

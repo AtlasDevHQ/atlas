@@ -369,3 +369,82 @@ function isTrialExpired(workspace: WorkspaceRow): boolean {
 
   return new Date(workspace.trial_ends_at) < new Date();
 }
+
+// ---------------------------------------------------------------------------
+// Resource limit enforcement (members, connections)
+// ---------------------------------------------------------------------------
+
+export type ResourceLimitResult =
+  | { allowed: true }
+  | { allowed: false; errorMessage: string; limit: number };
+
+/**
+ * Check whether adding one more resource (member or connection) would
+ * exceed the plan's limit for the given workspace.
+ *
+ * Returns `{ allowed: true }` when the resource can be created, or
+ * `{ allowed: false, errorMessage, limit }` when the plan cap has been
+ * reached.
+ *
+ * Enforcement is skipped (always allowed) when:
+ * - No internal DB is configured (self-hosted without managed auth)
+ * - No orgId is provided
+ * - The workspace is on the "free" or "enterprise" tier (unlimited)
+ */
+export async function checkResourceLimit(
+  orgId: string | undefined,
+  resource: "members" | "connections",
+  currentCount: number,
+): Promise<ResourceLimitResult> {
+  if (!orgId || !hasInternalDB()) {
+    return { allowed: true };
+  }
+
+  let workspace: WorkspaceRow | null;
+  try {
+    workspace = await getCachedWorkspace(orgId);
+  } catch (err) {
+    log.error(
+      { err: err instanceof Error ? err.message : String(err), orgId, resource },
+      "Failed to fetch workspace for resource limit check — blocking as precaution",
+    );
+    // Fail closed: consistent with checkPlanLimits behavior per CLAUDE.md
+    return { allowed: false, errorMessage: "Unable to verify plan limits. Please try again." };
+  }
+
+  if (!workspace) {
+    return { allowed: true };
+  }
+
+  const { plan_tier: tier } = workspace;
+
+  // Free (self-hosted) and enterprise — no resource limits
+  if (tier === "free" || tier === "enterprise") {
+    return { allowed: true };
+  }
+
+  const limits = getPlanLimits(tier);
+  const cap = resource === "members" ? limits.maxMembers : limits.maxConnections;
+
+  if (isUnlimited(cap)) {
+    return { allowed: true };
+  }
+
+  if (currentCount >= cap) {
+    const resourceLabel = resource === "members" ? "members" : "connections";
+    log.warn(
+      { orgId, resource, currentCount, limit: cap, tier },
+      "Workspace at or over %s limit (%d/%d) — blocking resource creation",
+      resourceLabel,
+      currentCount,
+      cap,
+    );
+    return {
+      allowed: false,
+      errorMessage: `Your ${tier} plan allows up to ${cap} ${resourceLabel}. Upgrade to add more.`,
+      limit: cap,
+    };
+  }
+
+  return { allowed: true };
+}

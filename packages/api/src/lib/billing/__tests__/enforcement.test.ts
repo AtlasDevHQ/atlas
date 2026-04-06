@@ -63,7 +63,7 @@ mock.module("@atlas/api/lib/logger", () => ({
 
 // --- Import under test ---
 
-import { checkPlanLimits, invalidatePlanCache, type PlanCheckResult } from "@atlas/api/lib/billing/enforcement";
+import { checkPlanLimits, checkResourceLimit, invalidatePlanCache, type PlanCheckResult, type ResourceLimitResult } from "@atlas/api/lib/billing/enforcement";
 
 /** Narrow a denied result for type-safe assertion access. */
 function expectDenied(result: PlanCheckResult): Extract<PlanCheckResult, { allowed: false }> {
@@ -376,5 +376,170 @@ describe("billing/enforcement", () => {
     const result = await checkPlanLimits("org-1");
     expect(result.allowed).toBe(true);
     // After invalidation, it should have re-fetched and gotten "free" tier
+  });
+});
+
+// ===========================================================================
+// checkResourceLimit — member / connection plan enforcement
+// ===========================================================================
+
+/** Narrow a denied resource limit result for type-safe assertion access. */
+function expectResourceDenied(result: ResourceLimitResult): Extract<ResourceLimitResult, { allowed: false }> {
+  expect(result.allowed).toBe(false);
+  return result as Extract<ResourceLimitResult, { allowed: false }>;
+}
+
+describe("checkResourceLimit", () => {
+  beforeEach(() => {
+    mockHasInternalDB = true;
+    mockWorkspaceDetailsShouldThrow = false;
+    mockWorkspace = null;
+    invalidatePlanCache();
+  });
+
+  // ── Pass-through cases ────────────────────────────────────────────
+
+  it("allows when no orgId provided", async () => {
+    const result = await checkResourceLimit(undefined, "members", 100);
+    expect(result.allowed).toBe(true);
+  });
+
+  it("allows when no internal DB", async () => {
+    mockHasInternalDB = false;
+    const result = await checkResourceLimit("org-1", "members", 100);
+    expect(result.allowed).toBe(true);
+  });
+
+  it("allows when workspace not found", async () => {
+    mockWorkspace = null;
+    const result = await checkResourceLimit("org-1", "members", 100);
+    expect(result.allowed).toBe(true);
+  });
+
+  it("blocks when workspace details fetch fails (fail closed)", async () => {
+    mockWorkspaceDetailsShouldThrow = true;
+    const result = await checkResourceLimit("org-1", "members", 100);
+    expect(result.allowed).toBe(false);
+  });
+
+  // ── Free tier ─────────────────────────────────────────────────────
+
+  it("allows free tier unconditionally (members)", async () => {
+    mockWorkspace = makeWorkspace({ plan_tier: "free" });
+    const result = await checkResourceLimit("org-1", "members", 9999);
+    expect(result.allowed).toBe(true);
+  });
+
+  it("allows free tier unconditionally (connections)", async () => {
+    mockWorkspace = makeWorkspace({ plan_tier: "free" });
+    const result = await checkResourceLimit("org-1", "connections", 9999);
+    expect(result.allowed).toBe(true);
+  });
+
+  // ── Enterprise tier ───────────────────────────────────────────────
+
+  it("allows enterprise tier unconditionally (members)", async () => {
+    mockWorkspace = makeWorkspace({ plan_tier: "enterprise" });
+    const result = await checkResourceLimit("org-1", "members", 9999);
+    expect(result.allowed).toBe(true);
+  });
+
+  it("allows enterprise tier unconditionally (connections)", async () => {
+    mockWorkspace = makeWorkspace({ plan_tier: "enterprise" });
+    const result = await checkResourceLimit("org-1", "connections", 9999);
+    expect(result.allowed).toBe(true);
+  });
+
+  // ── Team tier — under limit ───────────────────────────────────────
+
+  it("allows team tier under member limit", async () => {
+    mockWorkspace = makeWorkspace({ plan_tier: "team" });
+    // Team plan maxMembers = 25
+    const result = await checkResourceLimit("org-1", "members", 10);
+    expect(result.allowed).toBe(true);
+  });
+
+  it("allows team tier under connection limit", async () => {
+    mockWorkspace = makeWorkspace({ plan_tier: "team" });
+    // Team plan maxConnections = 5
+    const result = await checkResourceLimit("org-1", "connections", 3);
+    expect(result.allowed).toBe(true);
+  });
+
+  // ── Team tier — at limit ──────────────────────────────────────────
+
+  it("blocks team tier at member limit", async () => {
+    mockWorkspace = makeWorkspace({ plan_tier: "team" });
+    // Team plan maxMembers = 25
+    const denied = expectResourceDenied(
+      await checkResourceLimit("org-1", "members", 25),
+    );
+    expect(denied.limit).toBe(25);
+    expect(denied.errorMessage).toContain("25 members");
+    expect(denied.errorMessage).toContain("Upgrade");
+  });
+
+  it("blocks team tier at connection limit", async () => {
+    mockWorkspace = makeWorkspace({ plan_tier: "team" });
+    // Team plan maxConnections = 5
+    const denied = expectResourceDenied(
+      await checkResourceLimit("org-1", "connections", 5),
+    );
+    expect(denied.limit).toBe(5);
+    expect(denied.errorMessage).toContain("5 connections");
+    expect(denied.errorMessage).toContain("Upgrade");
+  });
+
+  // ── Team tier — over limit ────────────────────────────────────────
+
+  it("blocks team tier over member limit", async () => {
+    mockWorkspace = makeWorkspace({ plan_tier: "team" });
+    const denied = expectResourceDenied(
+      await checkResourceLimit("org-1", "members", 30),
+    );
+    expect(denied.limit).toBe(25);
+    expect(denied.errorMessage).toContain("25 members");
+  });
+
+  it("blocks team tier over connection limit", async () => {
+    mockWorkspace = makeWorkspace({ plan_tier: "team" });
+    const denied = expectResourceDenied(
+      await checkResourceLimit("org-1", "connections", 8),
+    );
+    expect(denied.limit).toBe(5);
+    expect(denied.errorMessage).toContain("5 connections");
+  });
+
+  // ── Trial tier — same limits as team ──────────────────────────────
+
+  it("blocks trial tier at member limit", async () => {
+    const futureDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    mockWorkspace = makeWorkspace({ plan_tier: "trial", trial_ends_at: futureDate });
+    const denied = expectResourceDenied(
+      await checkResourceLimit("org-1", "members", 25),
+    );
+    expect(denied.limit).toBe(25);
+    expect(denied.errorMessage).toContain("trial");
+  });
+
+  it("allows trial tier under member limit", async () => {
+    const futureDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    mockWorkspace = makeWorkspace({ plan_tier: "trial", trial_ends_at: futureDate });
+    const result = await checkResourceLimit("org-1", "members", 10);
+    expect(result.allowed).toBe(true);
+  });
+
+  // ── Edge: count exactly one below limit ───────────────────────────
+
+  it("allows team tier one below member limit", async () => {
+    mockWorkspace = makeWorkspace({ plan_tier: "team" });
+    const result = await checkResourceLimit("org-1", "members", 24);
+    expect(result.allowed).toBe(true);
+  });
+
+  it("allows team tier one below connection limit", async () => {
+    mockWorkspace = makeWorkspace({ plan_tier: "team" });
+    const result = await checkResourceLimit("org-1", "connections", 4);
+    expect(result.allowed).toBe(true);
   });
 });

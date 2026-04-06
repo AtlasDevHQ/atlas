@@ -10,6 +10,7 @@ import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 import type { EmailInstallationWithSecret, EmailProvider, ProviderConfig } from "@atlas/api/lib/integrations/types";
 
+export { EMAIL_PROVIDERS } from "@atlas/api/lib/integrations/types";
 export type {
   EmailInstallation,
   EmailInstallationWithSecret,
@@ -19,6 +20,7 @@ export type {
   SendGridConfig,
   PostmarkConfig,
   SesConfig,
+  ResendConfig,
 } from "@atlas/api/lib/integrations/types";
 
 const log = createLogger("email-store");

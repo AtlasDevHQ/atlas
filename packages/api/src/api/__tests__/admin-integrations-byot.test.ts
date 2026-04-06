@@ -238,6 +238,7 @@ const mockDeleteEmailInstallationByOrg: Mock<(...args: unknown[]) => Promise<boo
 );
 
 mock.module("@atlas/api/lib/email/store", () => ({
+  EMAIL_PROVIDERS: ["resend", "sendgrid", "postmark", "smtp", "ses"],
   getEmailInstallationByOrg: mockGetEmailInstallationByOrg,
   saveEmailInstallation: mockSaveEmailInstallation,
   deleteEmailInstallationByOrg: mockDeleteEmailInstallationByOrg,

@@ -52,6 +52,7 @@ import {
   saveEmailInstallation,
   deleteEmailInstallationByOrg,
 } from "@atlas/api/lib/email/store";
+import { EMAIL_PROVIDERS } from "@atlas/api/lib/email/store";
 import type { EmailProvider, ProviderConfig } from "@atlas/api/lib/email/store";
 import { getConfig } from "@atlas/api/lib/config";
 import { createLogger } from "@atlas/api/lib/logger";
@@ -2152,10 +2153,10 @@ adminIntegrations.openapi(disconnectWhatsAppRoute, async (c) => {
 });
 
 // ---------------------------------------------------------------------------
-// Email routes (BYOT-only — SMTP, SendGrid, Postmark, SES)
+// Email routes (BYOT — SMTP, SendGrid, Postmark, SES, Resend)
 // ---------------------------------------------------------------------------
 
-const EmailProviderEnum = z.enum(["smtp", "sendgrid", "postmark", "ses"]);
+const EmailProviderEnum = z.enum(EMAIL_PROVIDERS);
 
 const SmtpConfigSchema = z.object({
   host: z.string().min(1),
@@ -2179,6 +2180,10 @@ const SesConfigSchema = z.object({
   secretAccessKey: z.string().min(1),
 });
 
+const ResendConfigSchema = z.object({
+  apiKey: z.string().min(1),
+});
+
 const connectEmailRoute = createRoute({
   method: "post",
   path: "/email",
@@ -2197,7 +2202,7 @@ const connectEmailRoute = createRoute({
               .string()
               .email()
               .openapi({ description: "Sender email address (From header)" }),
-            config: z.union([SmtpConfigSchema, SendGridConfigSchema, PostmarkConfigSchema, SesConfigSchema])
+            config: z.union([SmtpConfigSchema, SendGridConfigSchema, PostmarkConfigSchema, SesConfigSchema, ResendConfigSchema])
               .openapi({ description: "Provider-specific configuration" }),
           }),
         },
@@ -2512,6 +2517,8 @@ async function sendTestEmail(
       return sendPostmarkTestEmail(config, install.sender_address, recipientEmail, subject, html);
     case "ses":
       return sendSesTestEmail(config, install.sender_address, recipientEmail, subject, html);
+    case "resend":
+      return sendResendTestEmail(config, install.sender_address, recipientEmail, subject, html);
     default:
       return { success: false, error: `Unknown provider: ${install.provider}` };
   }
@@ -2657,6 +2664,37 @@ async function sendSesTestEmail(
     if (!res.ok) {
       const text = await res.text().catch(() => "");
       return { success: false, error: `SES webhook error (${res.status}): ${text.slice(0, 200)}` };
+    }
+    return { success: true };
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+async function sendResendTestEmail(
+  config: Record<string, unknown>,
+  from: string,
+  to: string,
+  subject: string,
+  html: string,
+): Promise<TestEmailResult> {
+  const apiKey = config.apiKey;
+  if (typeof apiKey !== "string") return { success: false, error: "Missing Resend API key" };
+
+  try {
+    const res = await fetch("https://api.resend.com/emails", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({ from, to: [to], subject, html }),
+      signal: AbortSignal.timeout(15_000),
+    });
+
+    if (!res.ok) {
+      const text = await res.text().catch(() => "");
+      return { success: false, error: `Resend API error (${res.status}): ${text.slice(0, 200)}` };
     }
     return { success: true };
   } catch (err) {

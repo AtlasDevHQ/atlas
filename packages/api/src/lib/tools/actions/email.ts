@@ -1,8 +1,8 @@
 /**
- * Email action — send reports via Resend.
+ * Email action — send reports via the platform email provider.
  *
  * Exports:
- * - executeEmailSend(params) — raw Resend SDK call
+ * - executeEmailSend(params) — send email via the platform delivery chain
  * - sendEmailReport — AtlasAction for the agent tool registry
  */
 
@@ -55,7 +55,7 @@ function validateAllowedDomains(
 }
 
 // ---------------------------------------------------------------------------
-// Raw Resend API call
+// Email send via platform delivery chain
 // ---------------------------------------------------------------------------
 
 export interface EmailSendParams {
@@ -71,61 +71,22 @@ export interface EmailSendResult {
 export async function executeEmailSend(
   params: EmailSendParams,
 ): Promise<EmailSendResult> {
-  const apiKey = process.env.RESEND_API_KEY;
-  if (!apiKey) {
-    log.error("Missing RESEND_API_KEY");
-    throw new Error("Missing RESEND_API_KEY. Set it to send emails via Resend.");
-  }
+  const { sendEmail } = await import("@atlas/api/lib/email/delivery");
 
-  const fromAddress =
-    process.env.ATLAS_EMAIL_FROM ?? "Atlas <atlas@notifications.useatlas.dev>";
   const recipients = Array.isArray(params.to) ? params.to : [params.to];
 
-  const response = await fetch("https://api.resend.com/emails", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      from: fromAddress,
-      to: recipients,
-      subject: params.subject,
-      html: params.body,
-    }),
-  });
-
-  if (!response.ok) {
-    let detail: string;
-    try {
-      const errorBody = (await response.json()) as { message?: string };
-      detail = errorBody.message ?? `HTTP ${response.status}`;
-    } catch {
-      // intentionally ignored: JSON parse failed, fall through to text() attempt
-      try {
-        const text = await response.text();
-        detail = text ? `HTTP ${response.status}: ${text.slice(0, 200)}` : `HTTP ${response.status}`;
-      } catch {
-        // intentionally ignored: body may already be consumed
-        detail = `HTTP ${response.status}`;
-      }
+  // Send to each recipient via the platform delivery chain
+  const messageIds: string[] = [];
+  for (const recipient of recipients) {
+    const result = await sendEmail({ to: recipient, subject: params.subject, html: params.body });
+    if (!result.success) {
+      log.error({ recipient, provider: result.provider, error: result.error }, "Email send failed");
+      throw new Error(`Email delivery failed for ${recipient}: ${result.error}`);
     }
-    log.error({ status: response.status, detail }, "Resend API request failed");
-    throw new Error(`Resend API error: ${detail}`);
+    if (result.messageId) messageIds.push(result.messageId);
   }
 
-  let data: { id?: string };
-  try {
-    data = (await response.json()) as { id?: string };
-  } catch (err) {
-    log.error({ err }, "Failed to parse Resend API success response");
-    throw new Error("Resend API returned unparseable response after success status", { cause: err });
-  }
-
-  if (!data.id) {
-    log.warn("Resend API returned success but no email ID — email may have been sent");
-  }
-  return { id: data.id ?? "unknown" };
+  return { id: messageIds[0] ?? "sent" };
 }
 
 // ---------------------------------------------------------------------------
@@ -146,7 +107,7 @@ export const sendEmailReport: AtlasAction = {
   actionType: "email:send",
   reversible: false,
   defaultApproval: "admin-only",
-  requiredCredentials: ["RESEND_API_KEY"],
+  requiredCredentials: [],
 
   tool: tool({
     description:

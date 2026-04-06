@@ -210,37 +210,27 @@ export function registerInvitationRoutes(
     const baseUrl = resolveBaseUrl(c.req.raw);
     const inviteUrl = `${baseUrl}/?invite=${token}`;
 
-    // Attempt email delivery via Resend if configured
+    // Attempt email delivery via the platform email provider
     let emailSent = false;
     let emailError: string | undefined;
-    const resendKey = process.env.RESEND_API_KEY;
-    if (resendKey) {
-      try {
-        const fromAddr = process.env.ATLAS_EMAIL_FROM ?? "Atlas <noreply@useatlas.dev>";
-        const res = await fetch("https://api.resend.com/emails", {
-          method: "POST",
-          headers: { Authorization: `Bearer ${resendKey}`, "Content-Type": "application/json" },
-          body: JSON.stringify({
-            from: fromAddr,
-            to: [email],
-            subject: "You've been invited to Atlas",
-            html: `<p>You've been invited to join Atlas as <strong>${role}</strong>.</p>
+    try {
+      const { sendEmail } = await import("@atlas/api/lib/email/delivery");
+      const result = await sendEmail({
+        to: email,
+        subject: "You've been invited to Atlas",
+        html: `<p>You've been invited to join Atlas as <strong>${role}</strong>.</p>
 <p><a href="${inviteUrl}">Accept invitation</a></p>
 <p>This invitation expires on ${expiresAt.toLocaleDateString()}.</p>
 <p>If you didn't expect this invitation, you can safely ignore this email.</p>`,
-          }),
-        });
-        emailSent = res.ok;
-        if (!res.ok) {
-          // intentionally ignored: best-effort error body extraction for logging
-          const errorBody = await res.text().catch(() => "");
-          emailError = `Delivery failed (HTTP ${res.status})`;
-          log.error({ status: res.status, email, responseBody: errorBody }, "Failed to send invite email via Resend");
-        }
-      } catch (err) {
-        emailError = err instanceof Error ? err.message : "Network error";
-        log.error({ err: err instanceof Error ? err.message : String(err), email }, "Resend email delivery failed");
+      });
+      emailSent = result.success;
+      if (!result.success) {
+        emailError = result.error ?? "Email delivery failed";
+        log.error({ email, provider: result.provider, error: result.error }, "Failed to send invite email");
       }
+    } catch (err) {
+      emailError = err instanceof Error ? err.message : "Network error";
+      log.error({ err: err instanceof Error ? err.message : String(err), email }, "Invite email delivery failed");
     }
 
     log.info({ requestId, invitationId: invitation.id, email, role, emailSent, orgId, actorId: authResult.user?.id }, "User invited");

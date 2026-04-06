@@ -125,6 +125,7 @@ const navGroups: NavGroup[] = [
     items: [
       { href: "/admin/plugins", label: "Plugins" },
       { href: "/admin/integrations", label: "Integrations" },
+      { href: "/admin/email-provider", label: "Email Provider", requiredRole: "platform_admin" },
       { href: "/admin/billing", label: "Billing" },
       { href: "/admin/branding", label: "Branding" },
       { href: "/admin/custom-domain", label: "Custom Domain" },

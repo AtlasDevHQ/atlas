@@ -2099,6 +2099,7 @@ function EmailCard({
     sendgrid: "SendGrid",
     postmark: "Postmark",
     ses: "Amazon SES",
+    resend: "Resend",
   };
 
   return (
@@ -2184,7 +2185,7 @@ function EmailCard({
 
 // -- Email Connect Form --
 
-type EmailProviderKey = "smtp" | "sendgrid" | "postmark" | "ses";
+type EmailProviderKey = "smtp" | "sendgrid" | "postmark" | "ses" | "resend";
 
 function EmailConnectForm({
   onConnect,
@@ -2216,6 +2217,9 @@ function EmailConnectForm({
   const [sesAccessKeyId, setSesAccessKeyId] = useState("");
   const [sesSecretAccessKey, setSesSecretAccessKey] = useState("");
 
+  // Resend fields
+  const [resendApiKey, setResendApiKey] = useState("");
+
   function buildConfig(): Record<string, unknown> | null {
     switch (provider) {
       case "smtp":
@@ -2230,6 +2234,9 @@ function EmailConnectForm({
       case "ses":
         if (!sesRegion || !sesAccessKeyId || !sesSecretAccessKey) return null;
         return { region: sesRegion, accessKeyId: sesAccessKeyId, secretAccessKey: sesSecretAccessKey };
+      case "resend":
+        if (!resendApiKey) return null;
+        return { apiKey: resendApiKey };
       default:
         return null;
     }
@@ -2261,6 +2268,7 @@ function EmailConnectForm({
             <SelectItem value="sendgrid">SendGrid</SelectItem>
             <SelectItem value="postmark">Postmark</SelectItem>
             <SelectItem value="ses">Amazon SES</SelectItem>
+            <SelectItem value="resend">Resend</SelectItem>
           </SelectContent>
         </Select>
       </div>
@@ -2345,6 +2353,19 @@ function EmailConnectForm({
             <Input id="ses-secret-key" type="password" placeholder="Secret key" value={sesSecretAccessKey} onChange={(e) => setSesSecretAccessKey(e.target.value)} disabled={connecting} />
           </div>
         </>
+      )}
+
+      {provider === "resend" && (
+        <div className="space-y-1.5">
+          <label htmlFor="resend-api-key" className="text-sm font-medium">API Key</label>
+          <p className="text-xs text-muted-foreground">
+            From your{" "}
+            <a href="https://resend.com/api-keys" target="_blank" rel="noopener noreferrer" className="underline underline-offset-2">
+              Resend dashboard
+            </a>
+          </p>
+          <Input id="resend-api-key" type="password" placeholder="re_..." value={resendApiKey} onChange={(e) => setResendApiKey(e.target.value)} disabled={connecting} />
+        </div>
       )}
 
       {error && (

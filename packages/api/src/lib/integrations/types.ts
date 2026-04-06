@@ -129,7 +129,8 @@ export interface WhatsAppInstallationWithSecret extends WhatsAppInstallation {
 // Email
 // ---------------------------------------------------------------------------
 
-export type EmailProvider = "smtp" | "sendgrid" | "postmark" | "ses";
+export const EMAIL_PROVIDERS = ["resend", "sendgrid", "postmark", "smtp", "ses"] as const;
+export type EmailProvider = (typeof EMAIL_PROVIDERS)[number];
 
 export interface SmtpConfig {
   host: string;
@@ -153,7 +154,11 @@ export interface SesConfig {
   secretAccessKey: string;
 }
 
-export type ProviderConfig = SmtpConfig | SendGridConfig | PostmarkConfig | SesConfig;
+export interface ResendConfig {
+  apiKey: string;
+}
+
+export type ProviderConfig = SmtpConfig | SendGridConfig | PostmarkConfig | SesConfig | ResendConfig;
 
 export interface EmailInstallation extends BaseInstallation {
   config_id: string;

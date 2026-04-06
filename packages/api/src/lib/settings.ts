@@ -19,6 +19,7 @@
 
 import { createLogger } from "@atlas/api/lib/logger";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
+import { EMAIL_PROVIDERS } from "@atlas/api/lib/integrations/types";
 
 const log = createLogger("settings");
 
@@ -313,6 +314,64 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     default: "oklch(0.759 0.148 167.71)",
     envVar: "ATLAS_BRAND_COLOR",
     scope: "platform",
+  },
+
+  // Email
+  {
+    key: "ATLAS_EMAIL_PROVIDER",
+    section: "Email",
+    label: "Email Provider",
+    description: "Platform default email provider",
+    type: "select",
+    options: [...EMAIL_PROVIDERS],
+    default: "resend",
+    envVar: "ATLAS_EMAIL_PROVIDER",
+    scope: "platform",
+    saasVisible: false,
+  },
+  {
+    key: "RESEND_API_KEY",
+    section: "Email",
+    label: "Resend API Key",
+    description: "API key for the Resend email provider",
+    type: "string",
+    secret: true,
+    envVar: "RESEND_API_KEY",
+    scope: "platform",
+    saasVisible: false,
+  },
+  {
+    key: "SENDGRID_API_KEY",
+    section: "Email",
+    label: "SendGrid API Key",
+    description: "API key for the SendGrid email provider",
+    type: "string",
+    secret: true,
+    envVar: "SENDGRID_API_KEY",
+    scope: "platform",
+    saasVisible: false,
+  },
+  {
+    key: "POSTMARK_SERVER_TOKEN",
+    section: "Email",
+    label: "Postmark Server Token",
+    description: "Server token for the Postmark email provider",
+    type: "string",
+    secret: true,
+    envVar: "POSTMARK_SERVER_TOKEN",
+    scope: "platform",
+    saasVisible: false,
+  },
+  {
+    key: "ATLAS_EMAIL_FROM",
+    section: "Email",
+    label: "From Address",
+    description: "Default sender address for platform emails",
+    type: "string",
+    default: "Atlas <noreply@useatlas.dev>",
+    envVar: "ATLAS_EMAIL_FROM",
+    scope: "platform",
+    saasVisible: false,
   },
 
   // Secrets (read-only)

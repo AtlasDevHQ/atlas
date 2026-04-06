@@ -266,3 +266,49 @@ The web interactive mode uses these admin API endpoints:
 ### Integration with Version History
 
 Approved amendments are recorded in the semantic editor's version history with `author: "Semantic Expert Agent"`. You can view and rollback expert-agent changes from the entity's History tab in the semantic editor.
+
+## Scheduled Improvements (Phase 4)
+
+The expert agent can run on a schedule, automatically analyzing your semantic layer and proposing improvements without manual intervention.
+
+### Enabling the Scheduler
+
+Set these environment variables or configure through the admin Settings page under **Intelligence**:
+
+| Setting | Env var | Default | Description |
+|---------|---------|---------|-------------|
+| Expert Scheduler | `ATLAS_EXPERT_SCHEDULER_ENABLED` | `false` | Enable periodic analysis |
+| Schedule Interval | `ATLAS_EXPERT_SCHEDULER_INTERVAL_HOURS` | `24` | Hours between runs |
+| Auto-Approve Threshold | `ATLAS_EXPERT_AUTO_APPROVE_THRESHOLD` | (disabled) | Proposals with confidence ≥ this value are auto-applied |
+
+### Auto-Approval
+
+When `ATLAS_EXPERT_AUTO_APPROVE_THRESHOLD` is set (e.g., `0.9`), proposals with confidence at or above that threshold are automatically applied without human review. Auto-applied amendments:
+
+- Are recorded in the semantic editor version history
+- Create a snapshot via `atlas migrate` (if available)
+- Are logged at info level for audit trail
+
+**Recommendation:** Start with a high threshold (0.9+) and only for low-risk amendment types like description improvements.
+
+### Notification Badge
+
+When scheduled runs produce proposals that need human review (below the auto-approve threshold), a numeric badge appears on the **Improve Layer** item in the admin sidebar. The badge updates every 60 seconds.
+
+### Health Score Widget
+
+The semantic editor page shows a health score widget with four sub-scores:
+
+- **Coverage** — fraction of database columns represented as dimensions
+- **Descriptions** — fraction of dimensions with meaningful (non-auto-generated) descriptions
+- **Measures** — fraction of entities with at least one measure defined
+- **Joins** — fraction of detected foreign key relationships captured as entity joins
+
+The overall score is a weighted average. Use this to track your semantic layer quality over time.
+
+### Additional API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/v1/admin/semantic-improve/pending-count` | Count of pending proposals |
+| `GET` | `/api/v1/admin/semantic-improve/health` | Semantic layer health score |

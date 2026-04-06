@@ -576,3 +576,99 @@ adminSemanticImprove.openapi(rejectProposalRoute, async (c) =>
     return c.json({ ok: true, proposalIndex, decision: "rejected" }, 200);
   }),
 );
+
+// ---------------------------------------------------------------------------
+// Pending count + health score routes
+// ---------------------------------------------------------------------------
+
+const pendingCountRoute = createRoute({
+  method: "get",
+  path: "/pending-count",
+  tags: ["Admin — Semantic Improve"],
+  summary: "Count pending semantic amendment proposals",
+  description: "Returns the number of pending proposals awaiting review for the current org.",
+  responses: {
+    200: {
+      description: "Pending count",
+      content: { "application/json": { schema: z.object({ count: z.number() }) } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const healthScoreRoute = createRoute({
+  method: "get",
+  path: "/health",
+  tags: ["Admin — Semantic Improve"],
+  summary: "Semantic layer health score",
+  description: "Computes and returns a health score for the current semantic layer based on coverage, descriptions, measures, and joins.",
+  responses: {
+    200: {
+      description: "Health score",
+      content: {
+        "application/json": {
+          schema: z.object({
+            overall: z.number(),
+            coverage: z.number(),
+            descriptionQuality: z.number(),
+            measureCoverage: z.number(),
+            joinCoverage: z.number(),
+            entityCount: z.number(),
+            dimensionCount: z.number(),
+            measureCount: z.number(),
+            glossaryTermCount: z.number(),
+          }),
+        },
+      },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+// GET /pending-count
+adminSemanticImprove.openapi(pendingCountRoute, async (c) =>
+  runHandler(c, "pending-amendment-count", async () => {
+    const { orgId } = c.get("orgContext");
+
+    const { getPendingAmendmentCount } = await import("@atlas/api/lib/db/internal");
+    const count = await getPendingAmendmentCount(orgId);
+
+    return c.json({ count }, 200);
+  }),
+);
+
+// GET /health — let runHandler handle errors (no manual try/catch)
+adminSemanticImprove.openapi(healthScoreRoute, async (c) =>
+  runHandler(c, "semantic-health-score", async () => {
+    const { loadEntitiesFromDisk, loadGlossaryFromDisk } =
+      await import("@atlas/api/lib/semantic/expert/context-loader");
+    const { computeSemanticHealth } = await import("@atlas/api/lib/semantic/expert/health");
+
+    const entities = await loadEntitiesFromDisk();
+    const glossary = await loadGlossaryFromDisk();
+
+    const score = computeSemanticHealth({
+      profiles: [],
+      entities,
+      glossary,
+      auditPatterns: [],
+      rejectedKeys: new Set(),
+    });
+
+    return c.json(score, 200);
+  }),
+);

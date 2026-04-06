@@ -967,6 +967,18 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] Route tests for session and proposal endpoints
 - [x] Docs updated — web UI section in semantic-expert.mdx
 
+### Phase 4: Scheduled Improvements
+- [x] Effect fiber in SchedulerLayer — periodic expert analysis tick (#1269, PR #1306)
+- [x] Auto-approval policy via `ATLAS_EXPERT_AUTO_APPROVE_THRESHOLD` setting
+- [x] 3 new workspace-scoped settings in Intelligence section
+- [x] Context loader (`context-loader.ts`) — disk-based semantic layer reading for scheduled mode
+- [x] Health score computation (`health.ts`) — coverage, descriptions, measures, joins sub-scores
+- [x] `GET /pending-count` and `GET /health` API endpoints
+- [x] Notification badge on admin sidebar "Improve Layer" item (60s polling)
+- [x] SemanticHealthWidget on semantic editor page with progress bars
+- [x] 16 new tests (7 health + 9 scheduler)
+- [x] Docs updated — scheduled mode section in semantic-expert.mdx + .env.example
+
 ---
 
 ## MCP Prompt Templates

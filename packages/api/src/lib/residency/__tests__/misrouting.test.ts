@@ -41,6 +41,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   makeInternalDBLive: () => {},
   createInternalDBTestLayer: () => {},
   insertSemanticAmendment: async () => "mock-amendment-id",
+  getPendingAmendmentCount: async () => 0,
 }));
 
 let mockConfig: Record<string, unknown> | null = null;

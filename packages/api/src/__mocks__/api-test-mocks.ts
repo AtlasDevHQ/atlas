@@ -259,7 +259,8 @@ export function createApiTestMocks(
     updateWorkspaceByot: mock(async () => true),
     setWorkspaceStripeCustomerId: mock(async () => true),
     setWorkspaceTrialEndsAt: mock(async () => true),
-    insertSemanticAmendment: mock(async () => "mock-amendment-id"),
+    insertSemanticAmendment: mock(async () => ({ id: "mock-amendment-id", status: "pending" as const })),
+    getPendingAmendmentCount: mock(async () => 0),
   };
 
   mock.module("@atlas/api/lib/db/internal", () => ({

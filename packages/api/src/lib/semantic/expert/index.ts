@@ -24,6 +24,15 @@ export type {
   AuditPattern,
 } from "./types";
 export { ANALYSIS_CATEGORIES } from "./types";
+export { computeSemanticHealth } from "./health";
+export type { SemanticHealthScore } from "./health";
+export {
+  isExpertSchedulerEnabled,
+  getExpertSchedulerIntervalMs,
+  runExpertSchedulerTick,
+  DEFAULT_EXPERT_SCHEDULER_INTERVAL_MS,
+} from "./scheduler";
+export type { ExpertTickResult } from "./scheduler";
 export {
   createSession,
   nextProposal,

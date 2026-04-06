@@ -261,6 +261,38 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     saasVisible: false,
   },
 
+  // Semantic Expert
+  {
+    key: "ATLAS_EXPERT_SCHEDULER_ENABLED",
+    section: "Intelligence",
+    label: "Expert Scheduler",
+    description: "Enable periodic semantic layer analysis (runs the improvement engine automatically)",
+    type: "boolean",
+    default: "false",
+    envVar: "ATLAS_EXPERT_SCHEDULER_ENABLED",
+    scope: "workspace",
+  },
+  {
+    key: "ATLAS_EXPERT_SCHEDULER_INTERVAL_HOURS",
+    section: "Intelligence",
+    label: "Expert Schedule Interval",
+    description: "Hours between scheduled expert analysis runs",
+    type: "number",
+    default: "24",
+    envVar: "ATLAS_EXPERT_SCHEDULER_INTERVAL_HOURS",
+    scope: "workspace",
+  },
+  {
+    key: "ATLAS_EXPERT_AUTO_APPROVE_THRESHOLD",
+    section: "Intelligence",
+    label: "Auto-Approve Threshold",
+    description: "Proposals with confidence >= this value are auto-applied (leave empty to disable)",
+    type: "string",
+    default: "",
+    envVar: "ATLAS_EXPERT_AUTO_APPROVE_THRESHOLD",
+    scope: "workspace",
+  },
+
   // Appearance
   {
     key: "ATLAS_BRAND_COLOR",

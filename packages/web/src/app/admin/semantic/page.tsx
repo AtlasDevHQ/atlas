@@ -39,6 +39,7 @@ import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { useDeployMode } from "@/ui/hooks/use-deploy-mode";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { EntityVersionHistory } from "@/ui/components/admin/entity-version-history";
+import { SemanticHealthWidget } from "@/ui/components/admin/semantic-health-widget";
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -587,6 +588,8 @@ export default function SemanticPage() {
           </div>
         </div>
       </div>
+
+      {!loading && entities.length > 0 && <SemanticHealthWidget />}
 
       <AdminContentWrapper
         loading={loading}

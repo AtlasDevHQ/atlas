@@ -12,6 +12,7 @@ import { describe, it, expect, beforeEach, mock, type Mock } from "bun:test";
 // ---------------------------------------------------------------------------
 
 let mockEnterpriseEnabled = true;
+let mockHasInternalDB = true;
 
 mock.module("@atlas/ee/index", () => ({
   isEnterpriseEnabled: () => mockEnterpriseEnabled,
@@ -32,7 +33,7 @@ const mockDbQuery: Mock<(sql: string, params?: unknown[]) => Promise<void>> = mo
 );
 
 mock.module("@atlas/api/lib/db/internal", () => ({
-  hasInternalDB: () => true,
+  hasInternalDB: () => mockHasInternalDB,
   internalQuery: mockInternalQuery,
   internalExecute: mock(() => {}),
   getInternalDB: () => ({ query: mockDbQuery }),
@@ -89,18 +90,21 @@ mock.module("@atlas/api/lib/billing/enforcement", () => ({
   severityOf: () => 0,
 }));
 
+const mockLogWarn: Mock<(...args: unknown[]) => void> = mock(() => {});
+const mockLogInfo: Mock<(...args: unknown[]) => void> = mock(() => {});
+
 mock.module("@atlas/api/lib/logger", () => ({
   createLogger: () => ({
-    info: () => {},
-    warn: () => {},
-    error: () => {},
-    debug: () => {},
+    info: mockLogInfo,
+    warn: mockLogWarn,
+    error: mock(() => {}),
+    debug: mock(() => {}),
   }),
   getLogger: () => ({
-    info: () => {},
-    warn: () => {},
-    error: () => {},
-    debug: () => {},
+    info: mockLogInfo,
+    warn: mockLogWarn,
+    error: mock(() => {}),
+    debug: mock(() => {}),
   }),
   withRequestContext: (_ctx: unknown, fn: () => unknown) => fn(),
   getRequestContext: () => undefined,
@@ -142,9 +146,12 @@ function setupQueryResponses(opts: {
 describe("_autoProvisionSsoMember", () => {
   beforeEach(() => {
     mockEnterpriseEnabled = true;
+    mockHasInternalDB = true;
     mockInternalQuery.mockReset();
     mockDbQuery.mockReset();
     mockCheckResourceLimit.mockReset();
+    mockLogWarn.mockReset();
+    mockLogInfo.mockReset();
     mockCheckResourceLimit.mockImplementation(async () => ({ allowed: true }));
     mockDbQuery.mockImplementation(async () => {});
   });
@@ -159,6 +166,9 @@ describe("_autoProvisionSsoMember", () => {
     const insertCall = mockDbQuery.mock.calls[0];
     expect(insertCall[0]).toContain("INSERT INTO member");
     expect(insertCall[1]).toEqual(["org-1", "user-1"]);
+    // Should log success
+    expect(mockLogInfo).toHaveBeenCalled();
+    expect(mockLogInfo.mock.calls[0][0]).toMatchObject({ userId: "user-1", orgId: "org-1" });
   });
 
   it("skips provisioning when org is at member limit", async () => {
@@ -173,6 +183,9 @@ describe("_autoProvisionSsoMember", () => {
 
     expect(mockCheckResourceLimit).toHaveBeenCalledWith("org-1", "seats", 10);
     expect(mockDbQuery).not.toHaveBeenCalled();
+    // Should log warning with limit details
+    expect(mockLogWarn).toHaveBeenCalled();
+    expect(mockLogWarn.mock.calls[0][0]).toMatchObject({ orgId: "org-1", limit: 10 });
   });
 
   it("does not block user signup when limit reached — function resolves without throwing", async () => {
@@ -196,6 +209,8 @@ describe("_autoProvisionSsoMember", () => {
 
     // Should still insert the member (fail open)
     expect(mockDbQuery).toHaveBeenCalledTimes(1);
+    // Should log warning about the failure
+    expect(mockLogWarn).toHaveBeenCalled();
   });
 
   it("fails open when checkResourceLimit returns limit=0 (infra error)", async () => {
@@ -210,6 +225,9 @@ describe("_autoProvisionSsoMember", () => {
 
     // limit=0 is the infra-error sentinel — should still insert (fail open)
     expect(mockDbQuery).toHaveBeenCalledTimes(1);
+    // Should log warning about infra error
+    expect(mockLogWarn).toHaveBeenCalled();
+    expect(mockLogWarn.mock.calls[0][0]).toMatchObject({ userId: "user-9", orgId: "org-1" });
   });
 
   it("skips when no SSO provider matches the domain", async () => {
@@ -246,6 +264,22 @@ describe("_autoProvisionSsoMember", () => {
     expect(mockDbQuery).not.toHaveBeenCalled();
   });
 
+  it("skips when no internal DB (self-hosted without managed auth)", async () => {
+    mockHasInternalDB = false;
+
+    await _autoProvisionSsoMember({ id: "user-11", email: "kate@acme.com" });
+
+    expect(mockInternalQuery).not.toHaveBeenCalled();
+    expect(mockDbQuery).not.toHaveBeenCalled();
+  });
+
+  it("skips when email has no domain part", async () => {
+    await _autoProvisionSsoMember({ id: "user-12", email: "nodomain" });
+
+    expect(mockInternalQuery).not.toHaveBeenCalled();
+    expect(mockDbQuery).not.toHaveBeenCalled();
+  });
+
   it("catches INSERT failure without blocking signup (outer catch)", async () => {
     setupQueryResponses({ ssoProvider: { org_id: "org-1" }, memberCount: 1 });
     mockDbQuery.mockImplementation(async () => {
@@ -255,5 +289,9 @@ describe("_autoProvisionSsoMember", () => {
     await expect(
       _autoProvisionSsoMember({ id: "user-10", email: "jack@acme.com" }),
     ).resolves.toBeUndefined();
+
+    // Should log warning with email context
+    expect(mockLogWarn).toHaveBeenCalled();
+    expect(mockLogWarn.mock.calls[0][0]).toMatchObject({ userId: "user-10", email: "jack@acme.com" });
   });
 });

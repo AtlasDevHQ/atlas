@@ -393,7 +393,7 @@ export async function _autoProvisionSsoMember(user: { id: string; email: string 
       // exceptions from checkResourceLimit. Fail open: blocking SSO login
       // is worse than transient over-provisioning.
       log.warn(
-        { err: err instanceof Error ? err.message : String(err), userId: user.id, orgId },
+        { err: err instanceof Error ? err.message : String(err), errName: err instanceof Error ? err.name : "unknown", userId: user.id, orgId },
         "SSO auto-provisioning: member limit check failed — allowing provisioning",
       );
     }

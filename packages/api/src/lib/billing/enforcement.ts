@@ -122,11 +122,25 @@ export function invalidatePlanCache(orgId?: string): void {
  */
 export async function checkPlanLimits(
   orgId: string | undefined,
-  seatCount = 1,
+  seatCount?: number,
 ): Promise<PlanCheckResult> {
   // Self-hosted / no org — no enforcement
   if (!orgId || !hasInternalDB()) {
     return { allowed: true };
+  }
+
+  // Fetch seat count from member table if not provided
+  if (seatCount === undefined) {
+    try {
+      const rows = await internalQuery<{ count: number }>(
+        `SELECT COUNT(*)::int as count FROM member WHERE "organizationId" = $1`,
+        [orgId],
+      );
+      seatCount = rows[0]?.count ?? 1;
+    } catch {
+      // intentionally best-effort: default to 1 seat if member count fails
+      seatCount = 1;
+    }
   }
 
   let workspace: WorkspaceRow | null;
@@ -418,7 +432,9 @@ export async function checkResourceLimit(
   }
 
   if (currentCount >= cap) {
-    const resourceLabel = resource === "seats" ? "seats" : "connections";
+    const resourceLabel = resource === "seats"
+      ? (cap === 1 ? "seat" : "seats")
+      : (cap === 1 ? "connection" : "connections");
     log.warn(
       { orgId, resource, currentCount, limit: cap, tier },
       "Workspace at or over %s limit (%d/%d) — blocking resource creation",

@@ -7,7 +7,8 @@
 import { describe, it, expect, beforeEach, mock, type Mock } from "bun:test";
 
 // ---------------------------------------------------------------------------
-// Mocks — must be declared before importing the module under test
+// Mocks — must be declared before importing the module under test.
+// All named exports mocked per CLAUDE.md ("mock every named export").
 // ---------------------------------------------------------------------------
 
 let mockEnterpriseEnabled = true;
@@ -62,6 +63,17 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   setWorkspaceRegion: async () => {},
   insertSemanticAmendment: async () => "mock-amendment-id",
   getPendingAmendmentCount: async () => 0,
+  findPatternBySQL: async () => null,
+  insertLearnedPattern: () => {},
+  incrementPatternCount: () => {},
+  getAutoApproveThreshold: () => 3,
+  getAutoApproveTypes: () => new Set(),
+  makeInternalDBLive: () => {},
+  createInternalDBTestLayer: () => {},
+  updateWorkspaceByot: async () => {},
+  setWorkspaceStripeCustomerId: async () => {},
+  setWorkspaceTrialEndsAt: async () => {},
+  InternalDB: {},
 }));
 
 const mockCheckResourceLimit: Mock<(orgId: string | undefined, resource: string, count: number) => Promise<{ allowed: boolean; errorMessage?: string; limit?: number }>> = mock(
@@ -84,6 +96,16 @@ mock.module("@atlas/api/lib/logger", () => ({
     error: () => {},
     debug: () => {},
   }),
+  getLogger: () => ({
+    info: () => {},
+    warn: () => {},
+    error: () => {},
+    debug: () => {},
+  }),
+  withRequestContext: (_ctx: unknown, fn: () => unknown) => fn(),
+  getRequestContext: () => undefined,
+  redactPaths: [],
+  setLogLevel: () => false,
 }));
 
 // Import the function under test AFTER mocks are set up
@@ -132,9 +154,7 @@ describe("_autoProvisionSsoMember", () => {
 
     await _autoProvisionSsoMember({ id: "user-1", email: "alice@acme.com" });
 
-    // Should have checked resource limit
     expect(mockCheckResourceLimit).toHaveBeenCalledWith("org-1", "seats", 3);
-    // Should have inserted member row
     expect(mockDbQuery).toHaveBeenCalledTimes(1);
     const insertCall = mockDbQuery.mock.calls[0];
     expect(insertCall[0]).toContain("INSERT INTO member");
@@ -151,9 +171,7 @@ describe("_autoProvisionSsoMember", () => {
 
     await _autoProvisionSsoMember({ id: "user-2", email: "bob@acme.com" });
 
-    // Should have checked the limit
     expect(mockCheckResourceLimit).toHaveBeenCalledWith("org-1", "seats", 10);
-    // Should NOT have inserted a member row
     expect(mockDbQuery).not.toHaveBeenCalled();
   });
 
@@ -165,7 +183,6 @@ describe("_autoProvisionSsoMember", () => {
       limit: 5,
     }));
 
-    // Should resolve (not reject) — user account creation is not blocked
     await expect(_autoProvisionSsoMember({ id: "user-3", email: "carol@acme.com" })).resolves.toBeUndefined();
   });
 
@@ -178,6 +195,20 @@ describe("_autoProvisionSsoMember", () => {
     await _autoProvisionSsoMember({ id: "user-4", email: "dave@acme.com" });
 
     // Should still insert the member (fail open)
+    expect(mockDbQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails open when checkResourceLimit returns limit=0 (infra error)", async () => {
+    setupQueryResponses({ ssoProvider: { org_id: "org-1" }, memberCount: 5 });
+    mockCheckResourceLimit.mockImplementation(async () => ({
+      allowed: false,
+      errorMessage: "Unable to verify plan limits. Please try again.",
+      limit: 0,
+    }));
+
+    await _autoProvisionSsoMember({ id: "user-9", email: "iris@acme.com" });
+
+    // limit=0 is the infra-error sentinel — should still insert (fail open)
     expect(mockDbQuery).toHaveBeenCalledTimes(1);
   });
 
@@ -213,5 +244,16 @@ describe("_autoProvisionSsoMember", () => {
 
     expect(mockInternalQuery).not.toHaveBeenCalled();
     expect(mockDbQuery).not.toHaveBeenCalled();
+  });
+
+  it("catches INSERT failure without blocking signup (outer catch)", async () => {
+    setupQueryResponses({ ssoProvider: { org_id: "org-1" }, memberCount: 1 });
+    mockDbQuery.mockImplementation(async () => {
+      throw new Error("connection reset");
+    });
+
+    await expect(
+      _autoProvisionSsoMember({ id: "user-10", email: "jack@acme.com" }),
+    ).resolves.toBeUndefined();
   });
 });

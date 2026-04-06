@@ -331,7 +331,8 @@ let _instance: AuthInstance | null = null;
 
 /**
  * SSO domain-based auto-provisioning: if the user's email domain matches an
- * enabled SSO provider, auto-add them to that org (unless at member limit).
+ * enabled SSO provider, auto-add them to that org (respecting the member seat
+ * limit, failing open on billing infrastructure errors).
  *
  * @internal — exported for testing.
  */
@@ -357,7 +358,10 @@ export async function _autoProvisionSsoMember(user: { id: string; email: string 
     );
     if (existing.length > 0) return;
 
-    // Check member limit before auto-provisioning
+    // Check member limit before auto-provisioning.
+    // Note: check-then-act is not atomic. Under concurrent signups the member
+    // limit can be briefly exceeded by a small margin. Acceptable for a billing
+    // soft-limit — reconciliation catches overages at next check.
     try {
       const memberRows = await internalQuery<{ count: number }>(
         `SELECT COUNT(*)::int as count FROM member WHERE "organizationId" = $1`,
@@ -366,17 +370,28 @@ export async function _autoProvisionSsoMember(user: { id: string; email: string 
       const currentCount = memberRows[0]?.count ?? 0;
       const limitCheck = await checkResourceLimit(orgId, "seats", currentCount);
       if (!limitCheck.allowed) {
-        log.warn(
-          { userId: user.id, email: user.email, domain, orgId, limit: limitCheck.limit },
-          "SSO auto-provisioning skipped — organization at member limit (%d/%d)",
-          currentCount,
-          limitCheck.limit,
-        );
-        return;
+        // checkResourceLimit fails closed on infra errors (returns
+        // allowed: false, limit: 0). Detect this sentinel and fail open —
+        // blocking SSO login is worse than transient over-provisioning.
+        if (limitCheck.limit === 0) {
+          log.warn(
+            { userId: user.id, orgId },
+            "SSO auto-provisioning: billing check returned limit=0 (infra error?) — allowing provisioning",
+          );
+        } else {
+          log.warn(
+            { userId: user.id, email: user.email, domain, orgId, limit: limitCheck.limit },
+            "SSO auto-provisioning skipped — organization at member limit (%d/%d)",
+            currentCount,
+            limitCheck.limit,
+          );
+          return;
+        }
       }
     } catch (err) {
-      // Fail open: if billing check errors, allow provisioning rather
-      // than blocking the user from joining their org.
+      // Handles unexpected failures in the COUNT query or unanticipated
+      // exceptions from checkResourceLimit. Fail open: blocking SSO login
+      // is worse than transient over-provisioning.
       log.warn(
         { err: err instanceof Error ? err.message : String(err), userId: user.id, orgId },
         "SSO auto-provisioning: member limit check failed — allowing provisioning",
@@ -396,7 +411,7 @@ export async function _autoProvisionSsoMember(user: { id: string; email: string 
     );
   } catch (err) {
     log.warn(
-      { err: err instanceof Error ? err.message : String(err), userId: user.id },
+      { err: err instanceof Error ? err.message : String(err), userId: user.id, email: user.email },
       "SSO auto-provisioning failed — user created but not auto-joined to org",
     );
   }

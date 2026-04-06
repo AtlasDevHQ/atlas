@@ -7131,31 +7131,6 @@
               }
             }
           },
-          "409": {
-            "description": "Connection ID already in use by another organization",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "requestId": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error",
-                    "message"
-                  ]
-                }
-              }
-            }
-          },
           "422": {
             "description": "Validation error (invalid request body)",
             "content": {
@@ -7311,31 +7286,6 @@
           },
           "404": {
             "description": "Onboarding requires managed auth mode and DATABASE_URL",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "requestId": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error",
-                    "message"
-                  ]
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Connection ID already in use by another organization",
             "content": {
               "application/json": {
                 "schema": {
@@ -14139,7 +14089,7 @@
                 "properties": {
                   "planTier": {
                     "type": "string",
-                    "example": "team"
+                    "example": "starter"
                   }
                 },
                 "required": [
@@ -19093,19 +19043,19 @@
                     "limits": {
                       "type": "object",
                       "properties": {
-                        "queriesPerMonth": {
+                        "tokenBudgetPerSeat": {
                           "type": [
                             "number",
                             "null"
                           ]
                         },
-                        "tokensPerMonth": {
+                        "totalTokenBudget": {
                           "type": [
                             "number",
                             "null"
                           ]
                         },
-                        "maxMembers": {
+                        "maxSeats": {
                           "type": [
                             "number",
                             "null"
@@ -19119,9 +19069,9 @@
                         }
                       },
                       "required": [
-                        "queriesPerMonth",
-                        "tokensPerMonth",
-                        "maxMembers",
+                        "tokenBudgetPerSeat",
+                        "totalTokenBudget",
+                        "maxSeats",
                         "maxConnections"
                       ]
                     },
@@ -19736,6 +19686,29 @@
                           },
                           "updatedAt": {
                             "type": "string"
+                          },
+                          "verificationToken": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "domainVerified": {
+                            "type": "boolean"
+                          },
+                          "domainVerifiedAt": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "domainVerificationStatus": {
+                            "type": "string",
+                            "enum": [
+                              "pending",
+                              "verified",
+                              "failed"
+                            ]
                           }
                         },
                         "required": [
@@ -19747,7 +19720,11 @@
                           "enabled",
                           "ssoEnforced",
                           "createdAt",
-                          "updatedAt"
+                          "updatedAt",
+                          "verificationToken",
+                          "domainVerified",
+                          "domainVerifiedAt",
+                          "domainVerificationStatus"
                         ],
                         "additionalProperties": {}
                       }
@@ -19880,7 +19857,7 @@
           "Admin — SSO"
         ],
         "summary": "Create SSO provider",
-        "description": "Creates a new SSO provider for the admin's active organization. Requires type, issuer, domain, and config.",
+        "description": "Creates a new SSO provider for the admin's active organization. Requires type, issuer, domain, and config. The provider is always created with enabled=false — domain ownership must be verified via DNS TXT record before the provider can be enabled.",
         "requestBody": {
           "required": true,
           "content": {
@@ -19964,6 +19941,29 @@
                         "config": {
                           "type": "object",
                           "additionalProperties": {}
+                        },
+                        "verificationToken": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "domainVerified": {
+                          "type": "boolean"
+                        },
+                        "domainVerifiedAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "domainVerificationStatus": {
+                          "type": "string",
+                          "enum": [
+                            "pending",
+                            "verified",
+                            "failed"
+                          ]
                         }
                       },
                       "required": [
@@ -19976,7 +19976,11 @@
                         "ssoEnforced",
                         "createdAt",
                         "updatedAt",
-                        "config"
+                        "config",
+                        "verificationToken",
+                        "domainVerified",
+                        "domainVerifiedAt",
+                        "domainVerificationStatus"
                       ],
                       "additionalProperties": {}
                     }
@@ -20190,6 +20194,29 @@
                         "config": {
                           "type": "object",
                           "additionalProperties": {}
+                        },
+                        "verificationToken": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "domainVerified": {
+                          "type": "boolean"
+                        },
+                        "domainVerifiedAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "domainVerificationStatus": {
+                          "type": "string",
+                          "enum": [
+                            "pending",
+                            "verified",
+                            "failed"
+                          ]
                         }
                       },
                       "required": [
@@ -20202,7 +20229,11 @@
                         "ssoEnforced",
                         "createdAt",
                         "updatedAt",
-                        "config"
+                        "config",
+                        "verificationToken",
+                        "domainVerified",
+                        "domainVerifiedAt",
+                        "domainVerificationStatus"
                       ],
                       "additionalProperties": {}
                     }
@@ -20330,7 +20361,7 @@
           "Admin — SSO"
         ],
         "summary": "Update SSO provider",
-        "description": "Updates an existing SSO provider. All fields are optional — only provided fields are updated.",
+        "description": "Updates an existing SSO provider. All fields are optional — only provided fields are updated. If the domain is changed, verification status is reset to 'pending', a new verification token is generated, and the provider is automatically disabled. Enabling a provider requires a verified domain.",
         "parameters": [
           {
             "schema": {
@@ -20414,6 +20445,29 @@
                         "config": {
                           "type": "object",
                           "additionalProperties": {}
+                        },
+                        "verificationToken": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "domainVerified": {
+                          "type": "boolean"
+                        },
+                        "domainVerifiedAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "domainVerificationStatus": {
+                          "type": "string",
+                          "enum": [
+                            "pending",
+                            "verified",
+                            "failed"
+                          ]
                         }
                       },
                       "required": [
@@ -20426,7 +20480,11 @@
                         "ssoEnforced",
                         "createdAt",
                         "updatedAt",
-                        "config"
+                        "config",
+                        "verificationToken",
+                        "domainVerified",
+                        "domainVerifiedAt",
+                        "domainVerificationStatus"
                       ],
                       "additionalProperties": {}
                     }
@@ -20722,6 +20780,285 @@
           }
         },
         "operationId": "deleteAdminSsoProvidersById"
+      }
+    },
+    "/api/v1/admin/sso/providers/{id}/test": {
+      "post": {
+        "tags": [
+          "Admin — SSO"
+        ],
+        "summary": "Test SSO provider connection",
+        "description": "Tests an SSO provider's configuration by validating connectivity and config. For OIDC: fetches the discovery document and validates required fields. For SAML: parses the X.509 certificate and checks IdP reachability.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "example": "prov_abc123"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Test result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "enum": [
+                            "oidc"
+                          ]
+                        },
+                        "success": {
+                          "type": "boolean"
+                        },
+                        "testedAt": {
+                          "type": "string"
+                        },
+                        "details": {
+                          "type": "object",
+                          "properties": {
+                            "discoveryReachable": {
+                              "type": "boolean"
+                            },
+                            "issuerMatch": {
+                              "type": "boolean"
+                            },
+                            "requiredFieldsPresent": {
+                              "type": "boolean"
+                            },
+                            "endpoints": {
+                              "type": "object",
+                              "additionalProperties": {
+                                "type": "string"
+                              }
+                            }
+                          },
+                          "required": [
+                            "discoveryReachable",
+                            "issuerMatch",
+                            "requiredFieldsPresent",
+                            "endpoints"
+                          ]
+                        },
+                        "errors": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "warnings": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "success",
+                        "testedAt",
+                        "details"
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "type": {
+                          "type": "string",
+                          "enum": [
+                            "saml"
+                          ]
+                        },
+                        "success": {
+                          "type": "boolean"
+                        },
+                        "testedAt": {
+                          "type": "string"
+                        },
+                        "details": {
+                          "type": "object",
+                          "properties": {
+                            "certValid": {
+                              "type": "boolean"
+                            },
+                            "certSubject": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "certExpiry": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "certDaysRemaining": {
+                              "type": [
+                                "number",
+                                "null"
+                              ]
+                            },
+                            "idpReachable": {
+                              "type": [
+                                "boolean",
+                                "null"
+                              ]
+                            }
+                          },
+                          "required": [
+                            "certValid",
+                            "certSubject",
+                            "certExpiry",
+                            "certDaysRemaining",
+                            "idpReachable"
+                          ]
+                        },
+                        "errors": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "warnings": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "required": [
+                        "type",
+                        "success",
+                        "testedAt",
+                        "details"
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid provider ID or no active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — admin role or enterprise license required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "SSO provider not found or internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postAdminSsoProvidersByIdTest"
       }
     },
     "/api/v1/admin/sso/enforcement": {
@@ -21022,6 +21359,287 @@
           }
         },
         "operationId": "putAdminSsoEnforcement"
+      }
+    },
+    "/api/v1/admin/sso/providers/{id}/verify": {
+      "post": {
+        "tags": [
+          "Admin — SSO"
+        ],
+        "summary": "Verify SSO provider domain",
+        "description": "Triggers a DNS TXT record lookup to verify domain ownership for the SSO provider. Returns status 'verified' if the expected TXT record is found, 'failed' otherwise. If the domain is already verified, returns immediately without performing a DNS lookup.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "example": "prov_abc123"
+            },
+            "required": true,
+            "name": "id",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Verification result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid provider ID or no active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — admin role or enterprise license required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "SSO provider not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postAdminSsoProvidersByIdVerify"
+      }
+    },
+    "/api/v1/admin/sso/domain-check": {
+      "get": {
+        "tags": [
+          "Admin — SSO"
+        ],
+        "summary": "Check domain availability",
+        "description": "Checks whether a domain is available for SSO registration.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "domain",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Domain availability result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "available": {
+                      "type": "boolean"
+                    },
+                    "reason": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "available"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid domain parameter",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — admin role or enterprise license required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getAdminSsoDomainCheck"
       }
     },
     "/api/v1/admin/scim": {
@@ -25084,6 +25702,605 @@
           }
         },
         "operationId": "postAdminModelConfigTest"
+      }
+    },
+    "/api/v1/admin/email-provider": {
+      "get": {
+        "tags": [
+          "Admin — Email Provider"
+        ],
+        "summary": "Get platform email provider configuration",
+        "description": "Returns the platform's email provider configuration. Shows source: override (DB), env, or default.",
+        "responses": {
+          "200": {
+            "description": "Platform email provider configuration",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "config": {
+                      "type": "object",
+                      "properties": {
+                        "provider": {
+                          "type": "string",
+                          "enum": [
+                            "resend",
+                            "sendgrid",
+                            "postmark",
+                            "smtp",
+                            "ses"
+                          ]
+                        },
+                        "fromAddress": {
+                          "type": "string"
+                        },
+                        "apiKeyMasked": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "source": {
+                          "type": "string",
+                          "enum": [
+                            "override",
+                            "env",
+                            "default"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "provider",
+                        "fromAddress",
+                        "apiKeyMasked",
+                        "source"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "config"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — platform admin required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getAdminEmailProvider"
+      },
+      "put": {
+        "tags": [
+          "Admin — Email Provider"
+        ],
+        "summary": "Set platform email provider configuration",
+        "description": "Configures the platform-level email provider. Stores as a settings override in the internal database.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "provider": {
+                    "type": "string",
+                    "enum": [
+                      "resend",
+                      "sendgrid",
+                      "postmark",
+                      "smtp",
+                      "ses"
+                    ],
+                    "description": "Email provider to use for platform email delivery.",
+                    "example": "resend"
+                  },
+                  "apiKey": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Provider API key. Omit to keep existing key on update."
+                  },
+                  "fromAddress": {
+                    "type": "string",
+                    "description": "Sender address for platform emails.",
+                    "example": "Atlas <noreply@useatlas.dev>"
+                  }
+                },
+                "required": [
+                  "provider"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Email provider configuration saved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "config": {
+                      "type": "object",
+                      "properties": {
+                        "provider": {
+                          "type": "string",
+                          "enum": [
+                            "resend",
+                            "sendgrid",
+                            "postmark",
+                            "smtp",
+                            "ses"
+                          ]
+                        },
+                        "fromAddress": {
+                          "type": "string"
+                        },
+                        "apiKeyMasked": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "source": {
+                          "type": "string",
+                          "enum": [
+                            "override",
+                            "env",
+                            "default"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "provider",
+                        "fromAddress",
+                        "apiKeyMasked",
+                        "source"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "config"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid configuration",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — platform admin required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "putAdminEmailProvider"
+      },
+      "delete": {
+        "tags": [
+          "Admin — Email Provider"
+        ],
+        "summary": "Reset platform email provider to defaults",
+        "description": "Removes DB overrides for email provider settings. Falls back to environment variables, then defaults.",
+        "responses": {
+          "200": {
+            "description": "Configuration reset to defaults",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — platform admin required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "deleteAdminEmailProvider"
+      }
+    },
+    "/api/v1/admin/email-provider/test": {
+      "post": {
+        "tags": [
+          "Admin — Email Provider"
+        ],
+        "summary": "Test email provider configuration",
+        "description": "Sends a test email using the provided credentials. Does not save the configuration.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "provider": {
+                    "type": "string",
+                    "enum": [
+                      "resend",
+                      "sendgrid",
+                      "postmark",
+                      "smtp",
+                      "ses"
+                    ]
+                  },
+                  "apiKey": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Provider API key to test. Omit to test the currently saved key."
+                  },
+                  "fromAddress": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "recipientEmail": {
+                    "type": "string",
+                    "format": "email"
+                  }
+                },
+                "required": [
+                  "provider",
+                  "fromAddress",
+                  "recipientEmail"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Test result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "success": {
+                      "type": "boolean"
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "success",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid configuration",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — platform admin required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postAdminEmailProviderTest"
       }
     },
     "/api/v1/admin/approval/expire": {
@@ -32557,9 +33774,10 @@
                   "provider": {
                     "type": "string",
                     "enum": [
-                      "smtp",
+                      "resend",
                       "sendgrid",
                       "postmark",
+                      "smtp",
                       "ses"
                     ],
                     "description": "Email provider type"
@@ -32647,6 +33865,18 @@
                           "region",
                           "accessKeyId",
                           "secretAccessKey"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "apiKey": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "apiKey"
                         ]
                       }
                     ],
@@ -44154,8 +45384,9 @@
                             "enum": [
                               "free",
                               "trial",
-                              "team",
-                              "enterprise"
+                              "starter",
+                              "pro",
+                              "business"
                             ]
                           },
                           "byot": {
@@ -44362,8 +45593,9 @@
                           "enum": [
                             "free",
                             "trial",
-                            "team",
-                            "enterprise"
+                            "starter",
+                            "pro",
+                            "business"
                           ]
                         },
                         "byot": {
@@ -45004,11 +46236,12 @@
                     "enum": [
                       "free",
                       "trial",
-                      "team",
-                      "enterprise"
+                      "starter",
+                      "pro",
+                      "business"
                     ],
                     "description": "The new plan tier for the workspace.",
-                    "example": "team"
+                    "example": "starter"
                   }
                 },
                 "required": [
@@ -45299,8 +46532,9 @@
                             "enum": [
                               "free",
                               "trial",
-                              "team",
-                              "enterprise"
+                              "starter",
+                              "pro",
+                              "business"
                             ]
                           },
                           "metric": {
@@ -49143,10 +50377,11 @@
                     "enum": [
                       "free",
                       "trial",
-                      "team",
-                      "enterprise"
+                      "starter",
+                      "pro",
+                      "business"
                     ],
-                    "default": "team"
+                    "default": "starter"
                   },
                   "enabled": {
                     "type": "boolean",
@@ -49412,8 +50647,9 @@
                     "enum": [
                       "free",
                       "trial",
-                      "team",
-                      "enterprise"
+                      "starter",
+                      "pro",
+                      "business"
                     ]
                   },
                   "enabled": {
@@ -51432,6 +52668,9 @@
     },
     {
       "name": "Admin — Data Residency"
+    },
+    {
+      "name": "Admin — Email Provider"
     },
     {
       "name": "Admin — IP Allowlist"

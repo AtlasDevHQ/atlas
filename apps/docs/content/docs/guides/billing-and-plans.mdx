@@ -1,40 +1,58 @@
 ---
 title: Billing & Plans
-description: Plan tiers, usage limits, overage handling, Stripe setup, and the usage dashboard.
+description: Per-seat pricing tiers, token budgets, overage handling, Stripe setup, and the billing dashboard.
 icon: CreditCard
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-Atlas uses a tiered billing model. SaaS workspaces on [app.useatlas.dev](https://app.useatlas.dev) start with a 14-day trial, then require a paid plan. Self-hosted deployments are free with no enforcement. Billing includes automatic usage metering and graceful overage handling.
+Atlas uses per-seat billing. SaaS workspaces on [app.useatlas.dev](https://app.useatlas.dev) start with a 14-day trial, then require a paid plan. Self-hosted deployments are free with no enforcement. Billing includes automatic usage metering, per-seat token budgets, and graceful overage handling.
 
 <Callout type="info" title="SaaS">
-On [app.useatlas.dev](https://app.useatlas.dev), billing is fully managed. View your usage, manage your plan, and update payment methods from the admin dashboard — no Stripe setup required on your end.
+On [app.useatlas.dev](https://app.useatlas.dev), billing is fully managed. View your usage, manage your plan, and update payment methods from **Admin > Billing** — no Stripe setup required on your end.
 </Callout>
 
 <Callout title="Self-hosted prerequisites">
 - Internal database configured (`DATABASE_URL`) — required for usage tracking
 - `STRIPE_SECRET_KEY` set — enables billing routes and Stripe integration
-- Admin role required for the usage dashboard
+- Admin role required for the billing dashboard
 </Callout>
 
 ---
 
 ## Plan Tiers
 
-| | Trial | Team | Enterprise | Self-Hosted |
+| | Starter | Pro | Business | Self-Hosted |
 |---|---|---|---|---|
-| **Queries / month** | 10,000 | 10,000 | Unlimited | Unlimited |
-| **Tokens / month** | 5,000,000 | 5,000,000 | Unlimited | Unlimited |
-| **Members** | 25 | 25 | Unlimited | Unlimited |
-| **Datasource connections** | 5 | 5 | Unlimited | Unlimited |
-| **Duration** | 14 days | — | — | — |
-| **Stripe required** | No | Yes | Yes | No |
+| **Price** | $29 / seat / mo | $59 / seat / mo | $99 / seat / mo | Free |
+| **Token budget** | 2M / seat / mo | 5M / seat / mo | 15M / seat / mo | Unlimited |
+| **Max seats** | 10 | 25 | Unlimited | Unlimited |
+| **Datasource connections** | 1 | 3 | Unlimited | Unlimited |
+| **Default model** | claude-haiku-4-5 | claude-sonnet-4-6 | claude-sonnet-4-6 | BYOK |
+| **Custom domain** | — | ✓ | ✓ | N/A |
+| **SSO / SCIM** | — | — | ✓ | N/A |
+| **Data residency** | — | — | ✓ | N/A |
+| **SLA** | — | — | 99.9% | N/A |
 
-- **Trial** — Auto-assigned on SaaS signup. Same limits as Team. Expires after 14 days, then queries are blocked until the workspace upgrades.
-- **Team** — Standard paid tier. Monthly or annual billing via Stripe.
-- **Enterprise** — Custom contracts. No metered limits. Includes SSO, SCIM, and priority support.
-- **Self-Hosted** (free) — No billing enforcement. All features available, no Stripe needed.
+Annual billing is available for Starter and Pro (pay for 10 months, get 12).
+
+- **Trial** — Auto-assigned on SaaS signup. Same limits as Starter (10 seats, 1 connection, 2M tokens/seat). Expires after 14 days, then queries are blocked until the workspace upgrades.
+- **Starter** — Entry paid tier. Per-seat billing via Stripe.
+- **Pro** — Higher token budgets, more connections, custom domain support.
+- **Business** — Unlimited seats and connections. Includes SSO, SCIM, data residency, and SLA.
+- **Self-Hosted** (free) — No billing enforcement. All features available, no Stripe needed. Uses your own API keys (BYOK).
+
+### Per-Seat Token Budgets
+
+Token budgets scale with your team size. Each seat adds its tier's allocation to your workspace total:
+
+| Plan | 5 seats | 10 seats | 25 seats |
+|------|---------|----------|----------|
+| **Starter** | 10M tokens | 20M tokens | — (max 10) |
+| **Pro** | 25M tokens | 50M tokens | 125M tokens |
+| **Business** | 75M tokens | 150M tokens | 375M tokens |
+
+The budget is computed dynamically from your actual member count — no manual configuration needed.
 
 ---
 
@@ -42,9 +60,11 @@ On [app.useatlas.dev](https://app.useatlas.dev), billing is fully managed. View 
 
 BYOT lets workspaces supply their own LLM API keys instead of using Atlas-provided tokens. When enabled:
 
-- The workspace is billed at a lower rate on the Team plan (BYOT is a configuration flag, not a separate Stripe product)
-- Token usage is still metered for analytics, but token limits are not enforced
+- Token limits are **not enforced** — usage is unlimited when using your own keys
+- Token usage is still metered for analytics
+- Available on all paid plans (Starter, Pro, Business)
 - Admin or owner role is required to toggle BYOT
+- Self-hosted deployments use BYOT by default
 
 Toggle via the billing API:
 
@@ -57,18 +77,18 @@ curl -X POST https://your-atlas.example.com/api/v1/billing/byot \
 
 ---
 
-## Usage Dashboard
+## Billing Dashboard
 
-The admin usage dashboard is available at **Admin > Usage** (`/admin/usage`). It shows:
+The admin billing dashboard is available at **Admin > Billing** (`/admin/billing`). It shows:
 
-- **Query count** — total SQL queries executed this billing period, with progress bar toward limit
-- **Token count** — total LLM tokens consumed, with progress bar toward limit
-- **Active users** — unique users who logged in this period (requires login event instrumentation; may show 0 if not yet configured)
-- **Current plan** — tier name and trial expiry date (if applicable)
-- **Daily usage chart** — queries and tokens over the last 30 days
-- **Per-user breakdown** — sortable table of usage by individual user (top 50)
-
-If the workspace has a Stripe subscription, a **Manage Plan** button opens the Stripe Customer Portal for self-service plan changes.
+- **Current plan** — tier name, per-seat price, and trial expiry date (if applicable)
+- **Token usage** — total LLM tokens consumed vs. computed budget, with progress bar
+- **Seat usage** — actual member count vs. tier maximum
+- **Connection usage** — datasource connections vs. tier limit
+- **Overage status** — current enforcement tier (ok / warning / soft limit / hard limit)
+- **Default model** — current LLM model with override capability
+- **BYOT toggle** — enable/disable bring-your-own-token (admin/owner only)
+- **Stripe portal link** — self-service plan changes, payment methods, invoices
 
 ### API Endpoints
 
@@ -78,16 +98,24 @@ Usage data is also available programmatically via the admin API. See [Usage Mete
 
 ## Overage Handling
 
-Atlas uses a 4-tier degradation model instead of a hard cutoff. Enforcement runs before every agent execution, checking query and token usage against plan limits.
+Atlas uses a 4-tier degradation model instead of a hard cutoff. Enforcement runs before every agent execution, checking token usage against the workspace's computed budget.
 
 | Tier | Usage | Behavior |
 |------|-------|----------|
 | **OK** | 0–79% | No warning. Request proceeds normally |
 | **Warning** | 80–99% | Request proceeds. Warning metadata attached to the response |
 | **Soft limit** | 100–109% | 10% grace buffer. Request allowed with overage warning |
-| **Hard limit** | 110%+ | Request blocked with HTTP 429. Upgrade CTA in error message |
+| **Hard limit** | 110%+ | Request blocked with HTTP 429. Upgrade or add-seats CTA in error message |
 
-The worst status across all metered dimensions (queries and tokens) determines the outcome. For example, if token usage is at 85% (warning) and query usage is at 105% (soft limit), the soft limit behavior applies.
+When usage exceeds the included budget, overage charges apply per plan:
+
+| Plan | Overage rate |
+|------|-------------|
+| **Starter** | $1.00 / 1M tokens |
+| **Pro** | $0.80 / 1M tokens |
+| **Business** | $0.60 / 1M tokens |
+
+To avoid overages entirely, enable [BYOT](#byot-bring-your-own-token) and use your own API keys.
 
 ### Enforcement Skipped
 
@@ -95,7 +123,8 @@ Billing enforcement is skipped entirely when:
 
 - No internal database is configured (self-hosted without managed auth)
 - The user is not in an organization
-- The workspace is on the **free** or **enterprise** tier
+- The workspace has BYOT enabled
+- The workspace is on the **free** (self-hosted) tier
 
 ### Trial Expiry
 
@@ -118,23 +147,39 @@ Workspaces with a Stripe subscription can access the Stripe Customer Portal for 
 
 Available features depend on your [Stripe Customer Portal configuration](https://docs.stripe.com/customer-management/activate-no-code-customer-portal).
 
-Access via the **Manage Plan** button on the usage dashboard, or programmatically:
+Access via the **Manage Plan** button on the billing dashboard, or programmatically:
 
 ```bash
 curl -X POST https://your-atlas.example.com/api/v1/billing/portal \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <token>" \
-  -d '{ "returnUrl": "https://your-atlas.example.com/admin/usage" }'
+  -d '{ "returnUrl": "https://your-atlas.example.com/admin/billing" }'
 ```
 
 The response contains a `url` field — redirect the user to this URL to open the portal.
 
 ---
 
+## Stripe Webhook Handling
+
+Atlas handles Stripe subscription lifecycle events via the Better Auth Stripe plugin:
+
+| Event | Behavior |
+|-------|----------|
+| Subscription complete | Activates the subscription and sets the workspace plan tier |
+| Subscription updated | Syncs plan tier changes (upgrades/downgrades) and invalidates the plan cache |
+| Subscription canceled | Downgrades the workspace to free tier |
+| Subscription deleted | Downgrades the workspace to free tier |
+| `invoice.payment_failed` | Logs the failure; auto-suspends the workspace after 3+ consecutive failures |
+
+Plan tier changes take effect immediately — the plan cache is invalidated on webhook receipt so the next request reads fresh data from the database.
+
+---
+
 ## Stripe Setup (Self-Hosted)
 
 <Callout type="info" title="SaaS">
-On [app.useatlas.dev](https://app.useatlas.dev), Stripe is pre-configured. Skip this section — manage your subscription from **Admin > Usage** instead.
+On [app.useatlas.dev](https://app.useatlas.dev), Stripe is pre-configured. Skip this section — manage your subscription from **Admin > Billing** instead.
 </Callout>
 
 Set these environment variables to enable billing:
@@ -143,9 +188,11 @@ Set these environment variables to enable billing:
 |----------|-------------|
 | `STRIPE_SECRET_KEY` | Stripe secret key (test or live). Enables billing routes when set |
 | `STRIPE_WEBHOOK_SECRET` | Stripe webhook signing secret for verifying events |
-| `STRIPE_TEAM_PRICE_ID` | Price ID for the Team plan (monthly) |
-| `STRIPE_TEAM_ANNUAL_PRICE_ID` | Price ID for the Team plan (annual discount) |
-| `STRIPE_ENTERPRISE_PRICE_ID` | Price ID for the Enterprise plan |
+| `STRIPE_STARTER_PRICE_ID` | Price ID for the Starter plan (monthly) |
+| `STRIPE_STARTER_ANNUAL_PRICE_ID` | Price ID for the Starter plan (annual) |
+| `STRIPE_PRO_PRICE_ID` | Price ID for the Pro plan (monthly) |
+| `STRIPE_PRO_ANNUAL_PRICE_ID` | Price ID for the Pro plan (annual) |
+| `STRIPE_BUSINESS_PRICE_ID` | Price ID for the Business plan |
 
 When `STRIPE_SECRET_KEY` is set:
 
@@ -181,7 +228,7 @@ To run Atlas without any billing:
 
 1. Omit all `STRIPE_*` environment variables
 2. The billing routes will not mount
-3. The usage dashboard still works for monitoring (if `DATABASE_URL` is configured) but shows "Unlimited" for all limits
+3. The billing dashboard still works for monitoring (if `DATABASE_URL` is configured) but shows "Unlimited" for all limits
 
 ---
 
@@ -196,9 +243,14 @@ To run Atlas without any billing:
 
 ### Plan not syncing after payment
 
-- Stripe webhook events update the workspace tier. Check that webhooks are being received (see above)
-- The plan cache has a 60-second TTL — changes may take up to a minute to propagate
+- The `customer.subscription.updated` webhook updates the workspace tier and invalidates the plan cache — changes take effect on the next request
+- If the webhook is arriving but the plan isn't updating, check that `resolvePlanTierFromPriceId()` can map your Stripe price IDs to Atlas tiers — verify the `STRIPE_*_PRICE_ID` environment variables match your Stripe dashboard
 - Call `GET /api/v1/billing` to check the current billing status for the workspace
+
+### Workspace suspended after payment failure
+
+- After 3+ consecutive `invoice.payment_failed` events, the workspace is auto-suspended
+- Update the payment method in the Stripe Customer Portal, then contact support to reactivate
 
 ### Usage not updating
 
@@ -217,5 +269,5 @@ To run Atlas without any billing:
 
 - [Usage Metering](/guides/usage-metering) — Detailed metering API and aggregation
 - [Environment Variables](/reference/environment-variables) — Full variable reference including Stripe config
-- [Enterprise SSO](/guides/enterprise-sso) — SAML/OIDC single sign-on (Enterprise tier)
+- [Enterprise SSO](/guides/enterprise-sso) — SAML/OIDC single sign-on (Business tier)
 - [Stripe Docs](https://docs.stripe.com) — Stripe API and dashboard reference

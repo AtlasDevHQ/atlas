@@ -82,11 +82,39 @@ const UpdateSSOProviderBodySchema = z.object({
   config: z.record(z.string(), z.unknown()).optional(),
 });
 
-const SSOTestResultSchema = z.object({
-  success: z.boolean(),
-  details: z.record(z.string(), z.unknown()),
-  errors: z.array(z.string()).optional(),
+const SSOOidcTestDetailsSchema = z.object({
+  discoveryReachable: z.boolean(),
+  issuerMatch: z.boolean(),
+  requiredFieldsPresent: z.boolean(),
+  endpoints: z.record(z.string(), z.string()),
 });
+
+const SSOSamlTestDetailsSchema = z.object({
+  certValid: z.boolean(),
+  certSubject: z.string().nullable(),
+  certExpiry: z.string().nullable(),
+  certDaysRemaining: z.number().nullable(),
+  idpReachable: z.boolean().nullable(),
+});
+
+const SSOTestResultSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("oidc"),
+    success: z.boolean(),
+    testedAt: z.string(),
+    details: SSOOidcTestDetailsSchema,
+    errors: z.array(z.string()).optional(),
+    warnings: z.array(z.string()).optional(),
+  }),
+  z.object({
+    type: z.literal("saml"),
+    success: z.boolean(),
+    testedAt: z.string(),
+    details: SSOSamlTestDetailsSchema,
+    errors: z.array(z.string()).optional(),
+    warnings: z.array(z.string()).optional(),
+  }),
+]);
 
 const SSOEnforcementBodySchema = z.object({
   enforced: z.boolean(),

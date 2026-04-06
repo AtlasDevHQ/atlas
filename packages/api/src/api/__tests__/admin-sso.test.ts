@@ -2,9 +2,9 @@
  * Tests for SSO test connection endpoint.
  *
  * Covers: POST /api/v1/admin/sso/providers/:id/test
- * - OIDC: valid discovery, invalid JSON, missing fields, issuer mismatch, timeout
- * - SAML: valid cert, expired cert, malformed PEM, IdP reachability
- * - 404 for non-existent provider, 404 for wrong org
+ * - OIDC: valid discovery, unreachable/timeout, non-JSON response, missing fields, issuer mismatch
+ * - SAML: valid cert, expired cert, malformed PEM
+ * - 404 for non-existent provider, 404 for wrong org, 403 for non-admin
  */
 
 import {
@@ -48,7 +48,7 @@ class MockSSOEnforcementError extends Error {
 const mockGetSSOProvider: Mock<(orgId: string, providerId: string) => Effect.Effect<unknown, unknown>> =
   mock(() => Effect.succeed(null));
 const mockTestSSOProvider: Mock<(orgId: string, providerId: string) => Effect.Effect<unknown, unknown>> =
-  mock(() => Effect.succeed({ success: true, details: {} }));
+  mock(() => Effect.succeed({ type: "oidc", success: true, testedAt: "2026-04-06T00:00:00.000Z", details: {} }));
 
 mock.module("@atlas/ee/auth/sso", () => ({
   // CRUD (unused but must be mocked)
@@ -59,8 +59,8 @@ mock.module("@atlas/ee/auth/sso", () => ({
   deleteSSOProvider: mock(() => Effect.succeed(false)),
   // Test
   testSSOProvider: mockTestSSOProvider,
-  testOidcProvider: mock(async () => ({ success: true, details: {} })),
-  testSamlProvider: mock(async () => ({ success: true, details: {} })),
+  testOidcProvider: mock(async () => ({ type: "oidc", success: true, testedAt: "2026-04-06T00:00:00.000Z", details: {} })),
+  testSamlProvider: mock(async () => ({ type: "saml", success: true, testedAt: "2026-04-06T00:00:00.000Z", details: {} })),
   // Enforcement
   setSSOEnforcement: mock(() => Effect.succeed({ enforced: false, orgId: "org-1" })),
   isSSOEnforced: mock(() => Effect.succeed({ enforced: false })),
@@ -126,7 +126,9 @@ describe("Admin SSO Test Connection API", () => {
     it("returns OIDC test result with valid discovery", async () => {
       mockTestSSOProvider.mockImplementation(() =>
         Effect.succeed({
+          type: "oidc",
           success: true,
+          testedAt: "2026-04-06T00:00:00.000Z",
           details: {
             discoveryReachable: true,
             issuerMatch: true,
@@ -146,7 +148,9 @@ describe("Admin SSO Test Connection API", () => {
       );
       expect(res.status).toBe(200);
       const body = (await res.json()) as Record<string, unknown>;
+      expect(body.type).toBe("oidc");
       expect(body.success).toBe(true);
+      expect(body.testedAt).toBe("2026-04-06T00:00:00.000Z");
       const details = body.details as Record<string, unknown>;
       expect(details.discoveryReachable).toBe(true);
       expect(details.issuerMatch).toBe(true);
@@ -156,7 +160,9 @@ describe("Admin SSO Test Connection API", () => {
     it("returns OIDC failure for unreachable discovery URL", async () => {
       mockTestSSOProvider.mockImplementation(() =>
         Effect.succeed({
+          type: "oidc",
           success: false,
+          testedAt: "2026-04-06T00:00:00.000Z",
           details: {
             discoveryReachable: false,
             issuerMatch: false,
@@ -179,14 +185,16 @@ describe("Admin SSO Test Connection API", () => {
     it("returns OIDC failure for non-JSON response", async () => {
       mockTestSSOProvider.mockImplementation(() =>
         Effect.succeed({
+          type: "oidc",
           success: false,
+          testedAt: "2026-04-06T00:00:00.000Z",
           details: {
             discoveryReachable: false,
             issuerMatch: false,
             requiredFieldsPresent: false,
             endpoints: {},
           },
-          errors: ["Discovery URL returned non-JSON body"],
+          errors: ["Discovery URL returned non-JSON body (Unexpected token <)"],
         }),
       );
 
@@ -202,7 +210,9 @@ describe("Admin SSO Test Connection API", () => {
     it("returns OIDC failure for missing discovery fields", async () => {
       mockTestSSOProvider.mockImplementation(() =>
         Effect.succeed({
+          type: "oidc",
           success: false,
+          testedAt: "2026-04-06T00:00:00.000Z",
           details: {
             discoveryReachable: true,
             issuerMatch: false,
@@ -225,7 +235,9 @@ describe("Admin SSO Test Connection API", () => {
     it("returns OIDC failure for issuer mismatch", async () => {
       mockTestSSOProvider.mockImplementation(() =>
         Effect.succeed({
+          type: "oidc",
           success: false,
+          testedAt: "2026-04-06T00:00:00.000Z",
           details: {
             discoveryReachable: true,
             issuerMatch: false,
@@ -248,7 +260,9 @@ describe("Admin SSO Test Connection API", () => {
     it("returns SAML test result with valid certificate", async () => {
       mockTestSSOProvider.mockImplementation(() =>
         Effect.succeed({
+          type: "saml",
           success: true,
+          testedAt: "2026-04-06T00:00:00.000Z",
           details: {
             certValid: true,
             certSubject: "CN=idp.example.com",
@@ -264,7 +278,9 @@ describe("Admin SSO Test Connection API", () => {
       );
       expect(res.status).toBe(200);
       const body = (await res.json()) as Record<string, unknown>;
+      expect(body.type).toBe("saml");
       expect(body.success).toBe(true);
+      expect(body.testedAt).toBe("2026-04-06T00:00:00.000Z");
       const details = body.details as Record<string, unknown>;
       expect(details.certValid).toBe(true);
       expect(details.idpReachable).toBe(true);
@@ -273,7 +289,9 @@ describe("Admin SSO Test Connection API", () => {
     it("returns SAML failure for expired certificate", async () => {
       mockTestSSOProvider.mockImplementation(() =>
         Effect.succeed({
+          type: "saml",
           success: false,
+          testedAt: "2026-04-06T00:00:00.000Z",
           details: {
             certValid: false,
             certSubject: "CN=idp.example.com",
@@ -297,7 +315,9 @@ describe("Admin SSO Test Connection API", () => {
     it("returns SAML failure for malformed PEM", async () => {
       mockTestSSOProvider.mockImplementation(() =>
         Effect.succeed({
+          type: "saml",
           success: false,
+          testedAt: "2026-04-06T00:00:00.000Z",
           details: {
             certValid: false,
             certSubject: null,
@@ -316,6 +336,34 @@ describe("Admin SSO Test Connection API", () => {
       const body = (await res.json()) as Record<string, unknown>;
       expect(body.success).toBe(false);
       expect((body.errors as string[])[0]).toContain("Malformed PEM");
+    });
+
+    it("returns SAML warning for cert expiring within 30 days", async () => {
+      mockTestSSOProvider.mockImplementation(() =>
+        Effect.succeed({
+          type: "saml",
+          success: true,
+          testedAt: "2026-04-06T00:00:00.000Z",
+          details: {
+            certValid: true,
+            certSubject: "CN=idp.example.com",
+            certExpiry: "2026-04-20T00:00:00Z",
+            certDaysRemaining: 14,
+            idpReachable: true,
+          },
+          warnings: ["Certificate expires in 14 day(s) — consider renewing soon"],
+        }),
+      );
+
+      const res = await app.fetch(
+        adminRequest("POST", "/api/v1/admin/sso/providers/prov-2/test"),
+      );
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as Record<string, unknown>;
+      // success is true — expiry warning does not fail the test
+      expect(body.success).toBe(true);
+      expect((body.warnings as string[])[0]).toContain("expires in 14 day(s)");
+      expect(body.errors).toBeUndefined();
     });
 
     it("returns 404 for non-existent provider", async () => {

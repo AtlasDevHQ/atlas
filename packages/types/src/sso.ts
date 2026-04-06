@@ -82,3 +82,27 @@ export interface SSOProviderListResponse {
   providers: SSOProvider[];
   total: number;
 }
+
+// ── Test connection result ─────────────────────────────────────────
+
+/** OIDC-specific test details from discovery document validation. */
+export interface SSOOidcTestDetails {
+  discoveryReachable: boolean;
+  issuerMatch: boolean;
+  requiredFieldsPresent: boolean;
+  endpoints: Record<string, string>;
+}
+
+/** SAML-specific test details from certificate and IdP validation. */
+export interface SSOSamlTestDetails {
+  certValid: boolean;
+  certSubject: string | null;
+  certExpiry: string | null;
+  certDaysRemaining: number | null;
+  idpReachable: boolean | null;
+}
+
+/** Discriminated union for SSO provider test results. */
+export type SSOTestResult =
+  | { type: "oidc"; success: boolean; testedAt: string; details: SSOOidcTestDetails; errors?: string[]; warnings?: string[] }
+  | { type: "saml"; success: boolean; testedAt: string; details: SSOSamlTestDetails; errors?: string[]; warnings?: string[] };

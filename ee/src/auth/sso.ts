@@ -24,6 +24,9 @@ import type {
   SSOProviderType,
   SSOSamlConfig,
   SSOOidcConfig,
+  SSOTestResult,
+  SSOOidcTestDetails,
+  SSOSamlTestDetails,
   CreateSSOProviderRequest,
   UpdateSSOProviderRequest,
 } from "@useatlas/types";
@@ -401,20 +404,26 @@ export const findProviderByDomain = (emailDomain: string): Effect.Effect<SSOProv
     return rows[0] ? rowToProvider(rows[0]) : null;
   });
 
-/**
- * Extract the domain part from an email address.
- * Returns null for invalid addresses.
- */
 // ── Test connection ─────────────────────────────────────────────────
 
-/** Structured result from testing an SSO provider's connectivity/config. */
-export interface SSOTestResult {
-  success: boolean;
-  details: Record<string, unknown>;
-  errors?: string[];
-}
+// Re-export wire types so route modules can import from ee/auth/sso
+export type { SSOTestResult, SSOOidcTestDetails, SSOSamlTestDetails } from "@useatlas/types";
 
 const TEST_TIMEOUT_MS = 5_000;
+
+/**
+ * Validate that a URL is HTTPS (or HTTP in dev) before making outbound requests.
+ * Blocks non-HTTP(S) schemes to prevent SSRF via file://, data://, etc.
+ */
+function validateTestUrl(url: string): string | null {
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol === "https:" || parsed.protocol === "http:") return null;
+    return `URL has unsupported protocol: ${parsed.protocol}`;
+  } catch {
+    return `Not a valid URL: "${url}"`;
+  }
+}
 
 /**
  * Test an OIDC provider by fetching its discovery document and validating
@@ -422,40 +431,59 @@ const TEST_TIMEOUT_MS = 5_000;
  */
 export async function testOidcProvider(provider: SSOProvider & { type: "oidc" }): Promise<SSOTestResult> {
   const errors: string[] = [];
-  const details: Record<string, unknown> = {
+  const warnings: string[] = [];
+  const details: SSOOidcTestDetails = {
     discoveryReachable: false,
     issuerMatch: false,
     requiredFieldsPresent: false,
     endpoints: {},
   };
 
+  // Validate URL scheme before outbound request
+  const urlError = validateTestUrl(provider.config.discoveryUrl);
+  if (urlError) {
+    errors.push(`Discovery URL: ${urlError}`);
+    return { type: "oidc", success: false, testedAt: new Date().toISOString(), details, errors };
+  }
+
   let discoveryJson: Record<string, unknown>;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), TEST_TIMEOUT_MS);
   try {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), TEST_TIMEOUT_MS);
     const res = await fetch(provider.config.discoveryUrl, { signal: controller.signal });
     clearTimeout(timer);
 
     if (!res.ok) {
       errors.push(`Discovery URL returned HTTP ${res.status}`);
-      return { success: false, details, errors };
+      return { type: "oidc", success: false, testedAt: new Date().toISOString(), details, errors };
     }
 
     const contentType = res.headers.get("content-type") ?? "";
-    const text = await res.text();
+
+    let text: string;
+    try {
+      text = await res.text();
+    } catch (bodyErr) {
+      details.discoveryReachable = true;
+      errors.push(`Discovery URL reachable but body could not be read: ${bodyErr instanceof Error ? bodyErr.message : String(bodyErr)}`);
+      return { type: "oidc", success: false, testedAt: new Date().toISOString(), details, errors };
+    }
+
     try {
       discoveryJson = JSON.parse(text) as Record<string, unknown>;
-    } catch {
-      errors.push("Discovery URL returned non-JSON body" + (contentType ? ` (content-type: ${contentType})` : ""));
-      return { success: false, details, errors };
+    } catch (parseErr) {
+      const reason = parseErr instanceof Error ? parseErr.message : String(parseErr);
+      errors.push(`Discovery URL returned non-JSON body (${reason})` + (contentType ? ` (content-type: ${contentType})` : ""));
+      return { type: "oidc", success: false, testedAt: new Date().toISOString(), details, errors };
     }
   } catch (err) {
+    clearTimeout(timer);
     if (err instanceof DOMException && err.name === "AbortError") {
       errors.push(`Discovery URL timed out after ${TEST_TIMEOUT_MS}ms`);
     } else {
       errors.push(`Failed to reach discovery URL: ${err instanceof Error ? err.message : String(err)}`);
     }
-    return { success: false, details, errors };
+    return { type: "oidc", success: false, testedAt: new Date().toISOString(), details, errors };
   }
 
   details.discoveryReachable = true;
@@ -470,7 +498,7 @@ export async function testOidcProvider(provider: SSOProvider & { type: "oidc" })
 
   // Populate endpoints from discovery
   details.endpoints = Object.fromEntries(
-    requiredFields.filter((f) => typeof discoveryJson[f] === "string").map((f) => [f, discoveryJson[f]]),
+    requiredFields.filter((f) => typeof discoveryJson[f] === "string").map((f) => [f, discoveryJson[f] as string]),
   );
 
   // Check issuer match
@@ -481,16 +509,24 @@ export async function testOidcProvider(provider: SSOProvider & { type: "oidc" })
     }
   }
 
-  return { success: errors.length === 0, details, errors: errors.length > 0 ? errors : undefined };
+  return {
+    type: "oidc",
+    success: errors.length === 0,
+    testedAt: new Date().toISOString(),
+    details,
+    errors: errors.length > 0 ? errors : undefined,
+    warnings: warnings.length > 0 ? warnings : undefined,
+  };
 }
 
 /**
- * Test a SAML provider by parsing its X.509 certificate and optionally
- * checking the IdP SSO URL reachability.
+ * Test a SAML provider by parsing its X.509 certificate and checking
+ * the IdP SSO URL reachability.
  */
 export async function testSamlProvider(provider: SSOProvider & { type: "saml" }): Promise<SSOTestResult> {
   const errors: string[] = [];
-  const details: Record<string, unknown> = {
+  const warnings: string[] = [];
+  const details: SSOSamlTestDetails = {
     certValid: false,
     certSubject: null,
     certExpiry: null,
@@ -507,50 +543,70 @@ export async function testSamlProvider(provider: SSOProvider & { type: "saml" })
     details.certExpiry = cert.validTo;
 
     const expiryDate = new Date(cert.validTo);
-    const now = new Date();
-    const daysRemaining = Math.floor((expiryDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
-    details.certDaysRemaining = daysRemaining;
+    if (isNaN(expiryDate.getTime())) {
+      errors.push(`Could not parse certificate expiry date: "${cert.validTo}"`);
+    } else {
+      const now = new Date();
+      const daysRemaining = Math.floor((expiryDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+      details.certDaysRemaining = daysRemaining;
 
-    if (daysRemaining < 0) {
-      errors.push(`Certificate expired ${Math.abs(daysRemaining)} day(s) ago`);
-      details.certValid = false;
-    } else if (daysRemaining < 30) {
-      errors.push(`Certificate expires in ${daysRemaining} day(s) — consider renewing soon`);
+      if (daysRemaining < 0) {
+        errors.push(`Certificate expired ${Math.abs(daysRemaining)} day(s) ago`);
+        details.certValid = false;
+      } else if (daysRemaining < 30) {
+        // Expiry warning — cert is still valid, so this is a warning not an error
+        warnings.push(`Certificate expires in ${daysRemaining} day(s) — consider renewing soon`);
+      }
     }
   } catch (err) {
     details.certValid = false;
     errors.push(`Malformed PEM certificate: ${err instanceof Error ? err.message : String(err)}`);
   }
 
-  // Check IdP SSO URL reachability
-  try {
+  // Check IdP SSO URL reachability (validate URL scheme first)
+  const idpUrlError = validateTestUrl(provider.config.idpSsoUrl);
+  if (idpUrlError) {
+    details.idpReachable = false;
+    errors.push(`IdP SSO URL: ${idpUrlError}`);
+  } else {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), TEST_TIMEOUT_MS);
-    const res = await fetch(provider.config.idpSsoUrl, { method: "HEAD", signal: controller.signal });
-    clearTimeout(timer);
-    // Any response (even 4xx) means the server is reachable
-    details.idpReachable = true;
-    // Some IdPs return 405 for HEAD — that's still "reachable"
-    if (res.status >= 500) {
-      errors.push(`IdP SSO URL returned server error (HTTP ${res.status})`);
-    }
-  } catch (err) {
-    details.idpReachable = false;
-    if (err instanceof DOMException && err.name === "AbortError") {
-      errors.push(`IdP SSO URL timed out after ${TEST_TIMEOUT_MS}ms`);
-    } else {
-      errors.push(`IdP SSO URL unreachable: ${err instanceof Error ? err.message : String(err)}`);
+    try {
+      const res = await fetch(provider.config.idpSsoUrl, { method: "HEAD", signal: controller.signal });
+      clearTimeout(timer);
+      // Any response (even 4xx) means the server is reachable.
+      // Some IdPs return 405 for HEAD — that's still "reachable".
+      details.idpReachable = true;
+      if (res.status >= 500) {
+        errors.push(`IdP SSO URL returned server error (HTTP ${res.status})`);
+      }
+    } catch (err) {
+      clearTimeout(timer);
+      details.idpReachable = false;
+      if (err instanceof DOMException && err.name === "AbortError") {
+        errors.push(`IdP SSO URL timed out after ${TEST_TIMEOUT_MS}ms`);
+      } else {
+        errors.push(`IdP SSO URL unreachable: ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
   }
 
-  // Success if cert is valid (warnings about expiry < 30 days don't fail the test)
-  const certIsValid = details.certValid === true;
-  return { success: certIsValid, details, errors: errors.length > 0 ? errors : undefined };
+  // Success is determined solely by certificate validity — expiry warnings (< 30 days)
+  // and IdP reachability failures do not fail the test.
+  return {
+    type: "saml",
+    success: details.certValid,
+    testedAt: new Date().toISOString(),
+    details,
+    errors: errors.length > 0 ? errors : undefined,
+    warnings: warnings.length > 0 ? warnings : undefined,
+  };
 }
 
 /**
- * Test an SSO provider's configuration. Dispatches to OIDC or SAML test
- * based on provider type.
+ * Test an SSO provider's configuration. Requires enterprise license.
+ * Looks up the provider by org + ID (fails with SSOError if not found),
+ * then dispatches to the OIDC or SAML test based on provider type.
  */
 export const testSSOProvider = (
   orgId: string,
@@ -565,13 +621,29 @@ export const testSSOProvider = (
     }
 
     if (provider.type === "oidc") {
-      return yield* Effect.promise(() => testOidcProvider(provider));
+      return yield* Effect.tryPromise({
+        try: () => testOidcProvider(provider),
+        catch: (err) => new SSOError(
+          `OIDC test failed unexpectedly: ${err instanceof Error ? err.message : String(err)}`,
+          "validation",
+        ),
+      });
     }
-    return yield* Effect.promise(() => testSamlProvider(provider));
+    return yield* Effect.tryPromise({
+      try: () => testSamlProvider(provider),
+      catch: (err) => new SSOError(
+        `SAML test failed unexpectedly: ${err instanceof Error ? err.message : String(err)}`,
+        "validation",
+      ),
+    });
   });
 
 // ── Domain matching ─────────────────────────────────────────────────
 
+/**
+ * Extract the domain part from an email address.
+ * Returns null for invalid addresses.
+ */
 export function extractEmailDomain(email: string): string | null {
   const at = email.lastIndexOf("@");
   if (at < 1 || at === email.length - 1) return null;

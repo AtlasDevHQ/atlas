@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, mock } from "bun:test";
 import { Effect } from "effect";
-import { createEEMock, EnterpriseError } from "../__mocks__/internal";
+import { createEEMock } from "../__mocks__/internal";
 
 // ── Mocks ──────────────────────────────────────────────────────────
 

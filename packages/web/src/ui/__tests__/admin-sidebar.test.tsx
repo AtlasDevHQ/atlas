@@ -1,5 +1,5 @@
 import { describe, expect, test, mock } from "bun:test";
-import type React from "react";
+import React from "react";
 import type { ReactNode } from "react";
 
 // Mock next/navigation — must mock ALL named exports used
@@ -26,7 +26,7 @@ mock.module("@/ui/hooks/use-branding", () => ({
 
 // Mock shadcn sidebar — complex component with deep dependency chain (radix-ui, hooks, etc.)
 mock.module("@/components/ui/sidebar", () => {
-  const React = require("react");
+
   return {
     SidebarProvider: ({ children }: { children: React.ReactNode }) => React.createElement("div", { "data-testid": "sidebar-provider" }, children),
     SidebarInset: ({ children }: { children: React.ReactNode }) => React.createElement("main", null, children),
@@ -49,7 +49,7 @@ mock.module("@/components/ui/sidebar", () => {
 
 // Mock shadcn separator
 mock.module("@/components/ui/separator", () => {
-  const React = require("react");
+
   return { Separator: () => React.createElement("hr") };
 });
 

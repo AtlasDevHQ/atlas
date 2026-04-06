@@ -15,6 +15,7 @@ import { connections, getDB } from "@atlas/api/lib/db/connection";
 import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
 import { validateSQL } from "@atlas/api/lib/tools/sql";
 import type { AmendmentPayload, AmendmentType } from "@useatlas/types";
+import { getSemanticRoot } from "@atlas/api/lib/semantic/files";
 
 const log = createLogger("tool:propose-amendment");
 
@@ -177,10 +178,8 @@ The amendment object should match the YAML structure for that type (e.g., { name
   }) => {
     try {
       // Load current entity YAML
-      const semanticDir = process.env.ATLAS_SEMANTIC_DIR ?? "semantic";
       const entityPath = path.join(
-        process.cwd(),
-        semanticDir,
+        getSemanticRoot(),
         "entities",
         `${entityName}.yml`,
       );

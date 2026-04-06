@@ -74,17 +74,17 @@ export default defineConfig({
     strictRouting: false,
     regions: {
       "us-west": {
-        label: "US West (Oregon)",
+        label: "United States",
         databaseUrl: process.env.ATLAS_REGION_US_DB_URL ?? process.env.DATABASE_URL!,
         apiUrl: "https://api.useatlas.dev",
       },
       "eu-west": {
-        label: "EU West (Netherlands)",
+        label: "Europe",
         databaseUrl: process.env.ATLAS_REGION_EU_DB_URL!,
         apiUrl: "https://api-eu.useatlas.dev",
       },
       "apac-southeast": {
-        label: "Asia Pacific (Singapore)",
+        label: "Asia Pacific",
         databaseUrl: process.env.ATLAS_REGION_APAC_DB_URL!,
         apiUrl: "https://api-apac.useatlas.dev",
       },

@@ -259,6 +259,7 @@ export function createApiTestMocks(
     updateWorkspaceByot: mock(async () => true),
     setWorkspaceStripeCustomerId: mock(async () => true),
     setWorkspaceTrialEndsAt: mock(async () => true),
+    insertSemanticAmendment: mock(async () => "mock-amendment-id"),
   };
 
   mock.module("@atlas/api/lib/db/internal", () => ({

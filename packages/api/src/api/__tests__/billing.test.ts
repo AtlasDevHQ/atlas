@@ -89,6 +89,8 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   setWorkspaceTrialEndsAt: mock(() => Promise.resolve(true)),
   _resetPool: () => {},
   _resetCircuitBreaker: () => {},
+  setWorkspaceRegion: mock(async () => {}),
+  insertSemanticAmendment: mock(async () => "mock-amendment-id"),
 }));
 
 // --- Metering mock ---

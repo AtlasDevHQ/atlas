@@ -1,0 +1,578 @@
+/**
+ * Admin semantic expert improvement routes.
+ *
+ * Mounted under /api/v1/admin/semantic-improve via admin.route().
+ * Provides streaming chat endpoint for the semantic expert agent,
+ * session management, and proposal approval/rejection.
+ */
+
+import { createRoute, z } from "@hono/zod-openapi";
+import {
+  createUIMessageStream,
+  createUIMessageStreamResponse,
+  type UIMessage,
+} from "ai";
+import { createLogger } from "@atlas/api/lib/logger";
+import { runHandler } from "@atlas/api/lib/effect/hono";
+import { runAgent } from "@atlas/api/lib/agent";
+import { buildExpertRegistry } from "@atlas/api/lib/tools/expert-registry";
+import {
+  createSession,
+  recordDecision,
+  getSessionSummary,
+  buildSessionContext,
+  type SessionState,
+  type AnalysisResult,
+} from "@atlas/api/lib/semantic/expert";
+import { ErrorSchema, AuthErrorSchema, createParamSchema } from "./shared-schemas";
+import { createAdminRouter, requireOrgContext } from "./admin-router";
+
+const log = createLogger("admin-semantic-improve");
+
+// ---------------------------------------------------------------------------
+// In-memory session store (per-process; sufficient for single-instance deploy)
+// ---------------------------------------------------------------------------
+
+interface StoredSession {
+  id: string;
+  orgId: string;
+  state: SessionState;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+const sessions = new Map<string, StoredSession>();
+
+function generateId(): string {
+  return crypto.randomUUID();
+}
+
+// ---------------------------------------------------------------------------
+// Zod schemas
+// ---------------------------------------------------------------------------
+
+const ChatRequestSchema = z.object({
+  messages: z.array(
+    z.object({
+      role: z.enum(["user", "assistant", "system"]),
+      parts: z.array(z.object({ type: z.string() }).passthrough()),
+      id: z.string(),
+    }),
+  ).min(1),
+  sessionId: z.string().uuid().optional(),
+});
+
+const SessionSummarySchema = z.object({
+  id: z.string(),
+  total: z.number(),
+  accepted: z.number(),
+  rejected: z.number(),
+  skipped: z.number(),
+  remaining: z.number(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+
+const ProposalSchema = z.object({
+  index: z.number(),
+  entityName: z.string(),
+  category: z.string(),
+  amendmentType: z.string(),
+  amendment: z.record(z.string(), z.unknown()),
+  rationale: z.string(),
+  testQuery: z.string().optional(),
+  confidence: z.number(),
+  impact: z.number(),
+  score: z.number(),
+  decision: z.enum(["accepted", "rejected", "skipped"]).nullable(),
+});
+
+const SessionDetailSchema = z.object({
+  session: SessionSummarySchema,
+  proposals: z.array(ProposalSchema),
+});
+
+const ApproveRejectResponseSchema = z.object({
+  ok: z.boolean(),
+  proposalIndex: z.number(),
+  decision: z.string(),
+});
+
+// ---------------------------------------------------------------------------
+// Route definitions
+// ---------------------------------------------------------------------------
+
+const chatStreamRoute = createRoute({
+  method: "post",
+  path: "/chat",
+  tags: ["Admin — Semantic Improve"],
+  summary: "Chat with the semantic expert agent (streaming)",
+  description:
+    "Sends a conversation to the semantic expert agent and streams the response. " +
+    "Uses the 5 expert tools (profileTable, checkDataDistribution, searchAuditLog, proposeAmendment, validateProposal) " +
+    "plus standard explore and executeSQL.",
+  request: {
+    body: {
+      content: { "application/json": { schema: ChatRequestSchema } },
+      required: true,
+    },
+  },
+  responses: {
+    200: {
+      description: "SSE stream using the Vercel AI SDK UI message stream protocol.",
+      content: { "text/event-stream": { schema: z.string() } },
+    },
+    400: {
+      description: "Bad request",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const listSessionsRoute = createRoute({
+  method: "get",
+  path: "/sessions",
+  tags: ["Admin — Semantic Improve"],
+  summary: "List improvement sessions",
+  description: "Returns all improvement sessions for the current org.",
+  responses: {
+    200: {
+      description: "Session list",
+      content: { "application/json": { schema: z.object({ sessions: z.array(SessionSummarySchema) }) } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const getSessionRoute = createRoute({
+  method: "get",
+  path: "/sessions/{id}",
+  tags: ["Admin — Semantic Improve"],
+  summary: "Get session with proposals",
+  description: "Returns a session with its ranked proposals and review status.",
+  request: {
+    params: createParamSchema("id", "550e8400-e29b-41d4-a716-446655440000"),
+  },
+  responses: {
+    200: {
+      description: "Session detail",
+      content: { "application/json": { schema: SessionDetailSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Session not found",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const approveProposalRoute = createRoute({
+  method: "post",
+  path: "/proposals/{id}/approve",
+  tags: ["Admin — Semantic Improve"],
+  summary: "Approve a proposal",
+  description: "Applies the YAML amendment and records it in version history.",
+  request: {
+    params: createParamSchema("id", "0"),
+  },
+  responses: {
+    200: {
+      description: "Proposal approved",
+      content: { "application/json": { schema: ApproveRejectResponseSchema } },
+    },
+    400: {
+      description: "Bad request",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Proposal or session not found",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    409: {
+      description: "Proposal already reviewed",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const rejectProposalRoute = createRoute({
+  method: "post",
+  path: "/proposals/{id}/reject",
+  tags: ["Admin — Semantic Improve"],
+  summary: "Reject a proposal",
+  description: "Marks the proposal as rejected so the agent will not re-suggest it.",
+  request: {
+    params: createParamSchema("id", "0"),
+  },
+  responses: {
+    200: {
+      description: "Proposal rejected",
+      content: { "application/json": { schema: ApproveRejectResponseSchema } },
+    },
+    400: {
+      description: "Bad request",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Proposal or session not found",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    409: {
+      description: "Proposal already reviewed",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function sessionToSummary(stored: StoredSession): z.infer<typeof SessionSummarySchema> {
+  const summary = getSessionSummary(stored.state);
+  return {
+    id: stored.id,
+    ...summary,
+    createdAt: stored.createdAt.toISOString(),
+    updatedAt: stored.updatedAt.toISOString(),
+  };
+}
+
+function proposalToJson(
+  result: AnalysisResult,
+  index: number,
+  decision: "accepted" | "rejected" | "skipped" | null,
+): z.infer<typeof ProposalSchema> {
+  return {
+    index,
+    entityName: result.entityName,
+    category: result.category,
+    amendmentType: result.amendmentType,
+    amendment: result.amendment,
+    rationale: result.rationale,
+    testQuery: result.testQuery,
+    confidence: result.confidence,
+    impact: result.impact,
+    score: result.score,
+    decision,
+  };
+}
+
+/** Find the session that contains a proposal at the given index. */
+function findSessionForProposal(
+  orgId: string,
+  proposalIndex: number,
+  sessionId?: string,
+): { stored: StoredSession; proposal: AnalysisResult } | null {
+  // If sessionId is specified, look only in that session
+  if (sessionId) {
+    const stored = sessions.get(sessionId);
+    if (!stored || stored.orgId !== orgId) return null;
+    const proposal = stored.state.proposals[proposalIndex];
+    if (!proposal) return null;
+    return { stored, proposal };
+  }
+
+  // Otherwise find the most recent session for this org
+  let latest: StoredSession | null = null;
+  for (const s of sessions.values()) {
+    if (s.orgId !== orgId) continue;
+    if (!latest || s.updatedAt > latest.updatedAt) latest = s;
+  }
+  if (!latest) return null;
+  const proposal = latest.state.proposals[proposalIndex];
+  if (!proposal) return null;
+  return { stored: latest, proposal };
+}
+
+/**
+ * Advance the session to the target proposal and record the decision.
+ * Returns false if the proposal was already reviewed (currentIndex past it).
+ */
+function advanceAndRecord(
+  stored: StoredSession,
+  proposalIndex: number,
+  decision: "accepted" | "rejected" | "skipped",
+): boolean {
+  if (stored.state.currentIndex > proposalIndex) {
+    return false;
+  }
+  while (stored.state.currentIndex < proposalIndex) {
+    recordDecision(stored.state, "skipped");
+  }
+  if (stored.state.currentIndex === proposalIndex) {
+    recordDecision(stored.state, decision);
+  }
+  stored.updatedAt = new Date();
+  return true;
+}
+
+// ---------------------------------------------------------------------------
+// Router
+// ---------------------------------------------------------------------------
+
+export const adminSemanticImprove = createAdminRouter();
+adminSemanticImprove.use(requireOrgContext());
+
+// POST /chat — streaming expert agent conversation
+adminSemanticImprove.openapi(chatStreamRoute, async (c) =>
+  runHandler(c, "semantic-improve-chat", async () => {
+    const { requestId, orgId } = c.get("orgContext");
+    const body = c.req.valid("json");
+    const messages = body.messages as UIMessage[];
+
+    // Get or create session
+    let sessionId = body.sessionId;
+    let stored = sessionId ? sessions.get(sessionId) : undefined;
+
+    if (stored && stored.orgId !== orgId) {
+      return c.json({ error: "not_found", message: "Session not found.", requestId }, 404);
+    }
+
+    // Build the expert tool registry
+    const expertRegistry = buildExpertRegistry();
+
+    // Add session context to the system prompt if resuming
+    const sessionContext = stored ? buildSessionContext(stored.state) : "";
+    const sessionSystemMessage = sessionContext
+      ? `\n\n## Improvement Session Context\n${sessionContext}`
+      : "";
+
+    // Build a system prefix for the expert agent
+    const expertSystemPrefix = `You are the Atlas Semantic Expert Agent. You analyze and improve the semantic layer by examining data distributions, identifying gaps, and proposing validated amendments.
+
+## Your Goal
+Analyze the semantic layer and propose improvements. For each finding:
+1. Explain what you found and why it matters
+2. Use your tools to gather evidence (profile tables, check distributions, search audit log)
+3. Propose a specific amendment with a clear rationale and test query
+4. Wait for the user to approve or reject before moving on
+
+## Available Tools
+- profileTable: Examine table structure, cardinality, null rates, sample values
+- checkDataDistribution: Analyze a column's value distribution
+- searchAuditLog: Find query patterns from actual usage
+- proposeAmendment: Propose a structured YAML change with rationale and confidence
+- validateProposal: Dry-run validate a proposed amendment
+- explore: Read semantic YAML files
+- executeSQL: Run test queries to validate proposals
+
+## Guidelines
+- Start with the highest-impact improvements first
+- Always gather evidence before proposing changes
+- Set confidence based on evidence strength
+- Include test queries to validate amendments
+- If the user asks about a specific table or area, focus there${sessionSystemMessage}`;
+
+    try {
+      const agentResult = await runAgent({
+        messages,
+        tools: expertRegistry,
+        maxSteps: 15,
+        warnings: [expertSystemPrefix],
+      });
+
+      // Create session if not existing
+      if (!stored) {
+        sessionId = generateId();
+        stored = {
+          id: sessionId,
+          orgId,
+          state: createSession([]),
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        };
+        sessions.set(sessionId, stored);
+      }
+      stored.updatedAt = new Date();
+
+      const stream = createUIMessageStream({
+        execute: ({ writer }) => {
+          writer.merge(agentResult.toUIMessageStream());
+        },
+        onError: (error) => {
+          log.error(
+            { err: error instanceof Error ? error : new Error(String(error)), requestId },
+            "Semantic improve stream error",
+          );
+          return `An error occurred while analyzing the semantic layer (ref: ${requestId.slice(0, 8)}). Try again.`;
+        },
+      });
+
+      return createUIMessageStreamResponse({
+        stream,
+        headers: {
+          "X-Accel-Buffering": "no",
+          "Cache-Control": "no-cache, no-transform",
+          ...(sessionId ? { "x-session-id": sessionId } : {}),
+        },
+      });
+    } catch (err) {
+      log.error(
+        { err: err instanceof Error ? err.message : String(err), requestId },
+        "Failed to start semantic improve agent",
+      );
+      return c.json(
+        {
+          error: "agent_error",
+          message: `Failed to start the semantic expert agent: ${err instanceof Error ? err.message : String(err)}`,
+          requestId,
+        },
+        500,
+      );
+    }
+  }),
+);
+
+// GET /sessions — list improvement sessions
+adminSemanticImprove.openapi(listSessionsRoute, async (c) =>
+  runHandler(c, "list-improve-sessions", async () => {
+    const { orgId } = c.get("orgContext");
+
+    const orgSessions: z.infer<typeof SessionSummarySchema>[] = [];
+    for (const stored of sessions.values()) {
+      if (stored.orgId !== orgId) continue;
+      orgSessions.push(sessionToSummary(stored));
+    }
+
+    // Sort newest first
+    orgSessions.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+
+    return c.json({ sessions: orgSessions }, 200);
+  }),
+);
+
+// GET /sessions/:id — get session with proposals
+adminSemanticImprove.openapi(getSessionRoute, async (c) =>
+  runHandler(c, "get-improve-session", async () => {
+    const { requestId, orgId } = c.get("orgContext");
+    const { id } = c.req.valid("param");
+
+    const stored = sessions.get(id);
+    if (!stored || stored.orgId !== orgId) {
+      return c.json({ error: "not_found", message: "Session not found.", requestId }, 404);
+    }
+
+    const proposals = stored.state.proposals.map((p, i) => {
+      const reviewed = stored.state.reviewed.find((r) => r.result === p);
+      return proposalToJson(p, i, reviewed?.decision ?? null);
+    });
+
+    return c.json({
+      session: sessionToSummary(stored),
+      proposals,
+    }, 200);
+  }),
+);
+
+// POST /proposals/:id/approve — approve a proposal
+adminSemanticImprove.openapi(approveProposalRoute, async (c) =>
+  runHandler(c, "approve-improve-proposal", async () => {
+    const { requestId, orgId } = c.get("orgContext");
+    const { id: rawId } = c.req.valid("param");
+    const proposalIndex = parseInt(rawId, 10);
+
+    if (!Number.isFinite(proposalIndex) || proposalIndex < 0) {
+      return c.json({ error: "invalid_id", message: "Proposal ID must be a non-negative integer (the proposal index).", requestId }, 400);
+    }
+
+    const match = findSessionForProposal(orgId, proposalIndex);
+    if (!match) {
+      return c.json({ error: "not_found", message: "Proposal not found. Start an improvement session first.", requestId }, 404);
+    }
+
+    const { stored, proposal } = match;
+
+    // Check if already reviewed
+    if (stored.state.currentIndex > proposalIndex) {
+      return c.json({ error: "already_reviewed", message: `Proposal ${proposalIndex} has already been reviewed.`, requestId }, 409);
+    }
+
+    // Apply the amendment to YAML
+    try {
+      const { applyAmendmentToEntity } = await import("@atlas/api/lib/semantic/expert/apply");
+      await applyAmendmentToEntity(orgId, proposal, requestId);
+    } catch (err) {
+      log.error(
+        { err: err instanceof Error ? err.message : String(err), requestId, orgId },
+        "Failed to apply amendment",
+      );
+      return c.json({
+        error: "apply_failed",
+        message: `Failed to apply amendment: ${err instanceof Error ? err.message : String(err)}`,
+        requestId,
+      }, 500);
+    }
+
+    // Record decision in session state (separate from YAML apply)
+    advanceAndRecord(stored, proposalIndex, "accepted");
+
+    log.info({ requestId, orgId, proposalIndex, entity: proposal.entityName }, "Proposal approved");
+    return c.json({ ok: true, proposalIndex, decision: "accepted" }, 200);
+  }),
+);
+
+// POST /proposals/:id/reject — reject a proposal
+adminSemanticImprove.openapi(rejectProposalRoute, async (c) =>
+  runHandler(c, "reject-improve-proposal", async () => {
+    const { requestId, orgId } = c.get("orgContext");
+    const { id: rawId } = c.req.valid("param");
+    const proposalIndex = parseInt(rawId, 10);
+
+    if (!Number.isFinite(proposalIndex) || proposalIndex < 0) {
+      return c.json({ error: "invalid_id", message: "Proposal ID must be a non-negative integer (the proposal index).", requestId }, 400);
+    }
+
+    const match = findSessionForProposal(orgId, proposalIndex);
+    if (!match) {
+      return c.json({ error: "not_found", message: "Proposal not found. Start an improvement session first.", requestId }, 404);
+    }
+
+    if (match.stored.state.currentIndex > proposalIndex) {
+      return c.json({ error: "already_reviewed", message: `Proposal ${proposalIndex} has already been reviewed.`, requestId }, 409);
+    }
+
+    advanceAndRecord(match.stored, proposalIndex, "rejected");
+
+    log.info({ requestId, orgId, proposalIndex }, "Proposal rejected");
+    return c.json({ ok: true, proposalIndex, decision: "rejected" }, 200);
+  }),
+);

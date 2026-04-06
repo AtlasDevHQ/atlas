@@ -13,6 +13,8 @@ let mockHasInternalDB = true;
 mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => mockHasInternalDB,
   internalQuery: async () => [],
+  setWorkspaceRegion: async () => {},
+  insertSemanticAmendment: async () => "mock-amendment-id",
 }));
 
 mock.module("@atlas/api/lib/auth/middleware", () => ({

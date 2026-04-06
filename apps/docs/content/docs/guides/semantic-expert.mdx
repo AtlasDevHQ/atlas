@@ -227,6 +227,42 @@ Snapshots are stored in `semantic/.history/` as JSON files. Each snapshot captur
 
 See the [CLI reference](/docs/reference/cli#migrate) for the full `atlas migrate` documentation.
 
-## What's Next
+## Web Interactive Mode
 
-Phase 3 will add a **web interactive mode** in the admin UI with rich diff previews and one-click approval.
+The admin UI includes a dedicated improvement page with a split-view layout: a chat panel on the left for conversing with the expert agent, and a proposals panel on the right showing pending changes with approve/reject buttons.
+
+### Getting Started
+
+1. Navigate to **Admin > Semantic Layer** and click the **Improve** button in the header, or go directly to **Admin > Data > Improve Layer** in the sidebar
+2. Click **Run Analysis** for autonomous mode, or type a message to guide the agent toward specific areas (e.g., "Focus on the orders table" or "Check for missing joins")
+3. The agent will analyze your semantic layer and present proposals as they're identified
+
+### Proposal Cards
+
+Each proposal appears as a card showing:
+
+- **Entity name** and amendment type badge
+- **Rationale** explaining why the change improves the semantic layer
+- **Amendment preview** with the structured data that will be added/modified
+- **Confidence score** (color-coded: green ≥80%, yellow ≥50%, red <50%)
+- **Approve / Reject** buttons
+
+### Session Persistence
+
+Improvement sessions are preserved across page navigations. The session ID is tracked in the `x-session-id` response header from the streaming endpoint. When you return to the improve page, the agent maintains context about which proposals have been reviewed.
+
+### API Endpoints
+
+The web interactive mode uses these admin API endpoints:
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/v1/admin/semantic-improve/chat` | Streaming chat with the expert agent |
+| `GET` | `/api/v1/admin/semantic-improve/sessions` | List improvement sessions |
+| `GET` | `/api/v1/admin/semantic-improve/sessions/:id` | Get session with proposals |
+| `POST` | `/api/v1/admin/semantic-improve/proposals/:id/approve` | Apply a proposal |
+| `POST` | `/api/v1/admin/semantic-improve/proposals/:id/reject` | Reject a proposal |
+
+### Integration with Version History
+
+Approved amendments are recorded in the semantic editor's version history with `author: "Semantic Expert Agent"`. You can view and rollback expert-agent changes from the entity's History tab in the semantic editor.

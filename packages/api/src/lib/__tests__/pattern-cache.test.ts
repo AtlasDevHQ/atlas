@@ -41,6 +41,8 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   findPatternBySQL: async () => null,
   insertLearnedPattern: () => {},
   incrementPatternCount: () => {},
+  setWorkspaceRegion: mock(async () => {}),
+  insertSemanticAmendment: mock(async () => "mock-amendment-id"),
 }));
 
 mock.module("@atlas/api/lib/config", () => ({

@@ -146,6 +146,8 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   }),
   internalQuery: (_sql: string, _params?: unknown[]) => Promise.resolve(findQueryResult(_sql)),
   internalExecute: () => {},
+  setWorkspaceRegion: mock(async () => {}),
+  insertSemanticAmendment: mock(async () => "mock-amendment-id"),
 }));
 
 mock.module("@atlas/api/lib/logger", () => ({

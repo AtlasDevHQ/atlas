@@ -10,6 +10,8 @@ import {
 mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => false,
   internalQuery: () => Promise.reject(new Error("should not be called")),
+  setWorkspaceRegion: async () => {},
+  insertSemanticAmendment: async () => "mock-amendment-id",
 }));
 
 // Mock logger to suppress output

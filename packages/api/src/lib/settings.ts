@@ -286,7 +286,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     key: "ATLAS_EXPERT_AUTO_APPROVE_THRESHOLD",
     section: "Intelligence",
     label: "Auto-Approve Threshold",
-    description: "Proposals with confidence >= this value are auto-applied (leave empty to disable)",
+    description: "Proposals with confidence >= this value and an eligible amendment type are auto-applied (leave empty to disable)",
     type: "string",
     default: "",
     envVar: "ATLAS_EXPERT_AUTO_APPROVE_THRESHOLD",

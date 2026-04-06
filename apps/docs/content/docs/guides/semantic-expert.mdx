@@ -107,7 +107,7 @@ By default, all proposals require manual review. To auto-approve high-confidence
 ATLAS_EXPERT_AUTO_APPROVE_THRESHOLD=0.9
 ```
 
-Proposals with `confidence >= 0.9` will be automatically approved and applied. Set to any value above 1.0 to disable (the default behavior).
+Proposals with `confidence >= 0.9` whose amendment type is in `ATLAS_EXPERT_AUTO_APPROVE_TYPES` will be automatically approved and applied. By default, only `update_description` and `add_dimension` are eligible. Set the threshold to any value above 1.0 to disable (the default behavior).
 
 <Callout type="warn">
   Auto-approval is powerful but should be used carefully. Start with a high threshold (0.9+) and monitor the results before lowering it.
@@ -279,7 +279,7 @@ Set these environment variables or configure through the admin Settings page und
 |---------|---------|---------|-------------|
 | Expert Scheduler | `ATLAS_EXPERT_SCHEDULER_ENABLED` | `false` | Enable periodic analysis |
 | Schedule Interval | `ATLAS_EXPERT_SCHEDULER_INTERVAL_HOURS` | `24` | Hours between runs |
-| Auto-Approve Threshold | `ATLAS_EXPERT_AUTO_APPROVE_THRESHOLD` | (disabled) | Proposals with confidence ≥ this value are auto-applied |
+| Auto-Approve Threshold | `ATLAS_EXPERT_AUTO_APPROVE_THRESHOLD` | (disabled) | Proposals with confidence ≥ this value and an eligible type are auto-applied |
 | Auto-Approve Types | `ATLAS_EXPERT_AUTO_APPROVE_TYPES` | `update_description,add_dimension` | Comma-separated amendment types eligible for auto-approval. Types not in this list always queue for review |
 
 ### Auto-Approval
@@ -296,7 +296,7 @@ Auto-applied amendments:
 
 ### Notification Badge
 
-When scheduled runs produce proposals that need human review (below the auto-approve threshold), a numeric badge appears on the **Improve Layer** item in the admin sidebar. The badge updates every 60 seconds.
+When scheduled runs produce proposals that need human review (not eligible for auto-approval), a numeric badge appears on the **Improve Layer** item in the admin sidebar. The badge updates every 60 seconds.
 
 ### Health Score Widget
 

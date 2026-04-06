@@ -745,19 +745,34 @@ export function getAutoApproveThreshold(): number {
 
 const DEFAULT_AUTO_APPROVE_TYPES = "update_description,add_dimension";
 
+/** Valid amendment type names from @useatlas/types, used for env var validation. */
+const VALID_AMENDMENT_TYPES: ReadonlySet<string> = new Set([
+  "add_dimension", "add_measure", "add_join", "add_query_pattern",
+  "update_description", "update_dimension", "add_glossary_term", "add_virtual_dimension",
+]);
+
 /**
  * Parse the comma-separated list of amendment types eligible for auto-approval.
- * Returns a Set of trimmed, non-empty type strings.
+ * Defaults to `update_description,add_dimension` when `ATLAS_EXPERT_AUTO_APPROVE_TYPES` is not set.
+ * Unrecognized type names are logged and ignored.
  */
 export function getAutoApproveTypes(): Set<string> {
   const raw = process.env.ATLAS_EXPERT_AUTO_APPROVE_TYPES ?? DEFAULT_AUTO_APPROVE_TYPES;
-  return new Set(
-    raw.split(",").map((t) => t.trim()).filter(Boolean),
-  );
+  const tokens = raw.split(",").map((t) => t.trim()).filter(Boolean);
+  const result = new Set<string>();
+  for (const t of tokens) {
+    if (VALID_AMENDMENT_TYPES.has(t)) {
+      result.add(t);
+    } else {
+      log.warn({ type: t }, "ATLAS_EXPERT_AUTO_APPROVE_TYPES contains unrecognized type — ignoring");
+    }
+  }
+  return result;
 }
 
 /**
- * Insert a semantic amendment proposal. Returns the new row's ID and resolved status.
+ * Insert a semantic amendment proposal. Status is "approved" only when confidence
+ * meets the threshold AND the amendment type is in the eligible set; otherwise "pending".
  * Unlike insertLearnedPattern (fire-and-forget), this awaits the result.
  */
 export async function insertSemanticAmendment(amendment: {
@@ -769,11 +784,26 @@ export async function insertSemanticAmendment(amendment: {
 }): Promise<{ id: string; status: "approved" | "pending" }> {
   const threshold = getAutoApproveThreshold();
   const allowedTypes = getAutoApproveTypes();
-  const amendmentType = typeof amendment.amendmentPayload.amendmentType === "string"
-    ? amendment.amendmentPayload.amendmentType
-    : undefined;
+  const rawType = amendment.amendmentPayload.amendmentType;
+  const amendmentType = typeof rawType === "string" ? rawType : undefined;
+
+  if (amendmentType === undefined) {
+    log.warn(
+      { entity: amendment.sourceEntity, payloadKeys: Object.keys(amendment.amendmentPayload) },
+      "amendmentPayload.amendmentType is missing or not a string — amendment will not be eligible for auto-approval",
+    );
+  }
+
+  const meetsThreshold = amendment.confidence >= threshold;
   const typeEligible = amendmentType !== undefined && allowedTypes.has(amendmentType);
-  const status = amendment.confidence >= threshold && typeEligible ? "approved" : "pending";
+  const status = meetsThreshold && typeEligible ? "approved" : "pending";
+
+  if (meetsThreshold && !typeEligible) {
+    log.debug(
+      { entity: amendment.sourceEntity, amendmentType, confidence: amendment.confidence },
+      "Amendment meets confidence threshold but type is not in auto-approve list — queuing for review",
+    );
+  }
 
   const rows = await internalQuery<{ id: string }>(
     `INSERT INTO learned_patterns

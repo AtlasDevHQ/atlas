@@ -24,6 +24,40 @@ mock.module("next/link", () => ({
   ),
 }));
 
+// Mock shadcn sidebar — complex component with deep dependency chain (radix-ui, hooks, etc.)
+mock.module("@/components/ui/sidebar", () => {
+  const React = require("react");
+  return {
+    SidebarProvider: ({ children }: { children: React.ReactNode }) => React.createElement("div", { "data-testid": "sidebar-provider" }, children),
+    SidebarInset: ({ children }: { children: React.ReactNode }) => React.createElement("main", null, children),
+    SidebarTrigger: () => React.createElement("button", { "data-testid": "sidebar-trigger" }),
+    Sidebar: ({ children }: { children: React.ReactNode }) => React.createElement("nav", null, children),
+    SidebarContent: ({ children }: { children: React.ReactNode }) => React.createElement("div", null, children),
+    SidebarFooter: ({ children }: { children: React.ReactNode }) => React.createElement("div", null, children),
+    SidebarHeader: ({ children }: { children: React.ReactNode }) => React.createElement("div", null, children),
+    SidebarGroup: ({ children }: { children: React.ReactNode }) => React.createElement("div", null, children),
+    SidebarGroupLabel: ({ children }: { children: React.ReactNode }) => React.createElement("span", null, children),
+    SidebarGroupContent: ({ children }: { children: React.ReactNode }) => React.createElement("div", null, children),
+    SidebarMenu: ({ children }: { children: React.ReactNode }) => React.createElement("ul", null, children),
+    SidebarMenuItem: ({ children }: { children: React.ReactNode }) => React.createElement("li", null, children),
+    SidebarMenuButton: ({ children }: { children: React.ReactNode }) => React.createElement("button", null, children),
+    SidebarMenuBadge: ({ children }: { children: React.ReactNode }) => React.createElement("span", null, children),
+    SidebarRail: () => React.createElement("div"),
+    useSidebar: () => ({ open: true, setOpen: () => {}, toggleSidebar: () => {}, isMobile: false, state: "expanded" }),
+  };
+});
+
+// Mock shadcn separator
+mock.module("@/components/ui/separator", () => {
+  const React = require("react");
+  return { Separator: () => React.createElement("hr") };
+});
+
+// Mock useBranding — no custom branding by default
+mock.module("@/ui/hooks/use-branding", () => ({
+  useBranding: () => ({ branding: null, loading: false }),
+}));
+
 import { render, fireEvent, waitFor, cleanup } from "@testing-library/react";
 import type React from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -122,14 +156,23 @@ describe("AdminLayout", () => {
 
   test("calls signOut when sign-in-as-different-user button is clicked", async () => {
     mockDeniedFetch();
-    mockSession = { data: { user: { email: "user@test.com", role: "member" } } };
-    const { container } = renderLayout();
-    await waitFor(() => {
-      expect(container.querySelector("button")).not.toBeNull();
+    // Stub window.location.assign to prevent navigation errors in test
+    const originalLocation = window.location;
+    Object.defineProperty(window, "location", {
+      value: { ...originalLocation, assign: () => {} },
+      writable: true,
+      configurable: true,
     });
-    const button = container.querySelector("button")!;
-    fireEvent.click(button);
-    expect(mockSignOut).toHaveBeenCalledTimes(1);
+    mockSession = { data: { user: { email: "user@test.com", role: "member" } } };
+    const { getByText } = renderLayout();
+    await waitFor(() => {
+      getByText("Sign in as a different user");
+    });
+    fireEvent.click(getByText("Sign in as a different user"));
+    await waitFor(() => {
+      expect(mockSignOut).toHaveBeenCalledTimes(1);
+    });
+    Object.defineProperty(window, "location", { value: originalLocation, writable: true, configurable: true });
   });
 
   test("renders children for admin users", async () => {

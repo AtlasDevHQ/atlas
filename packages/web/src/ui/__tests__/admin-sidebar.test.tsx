@@ -24,6 +24,35 @@ mock.module("@/ui/hooks/use-branding", () => ({
   useBranding: () => ({ branding: null, loading: false }),
 }));
 
+// Mock shadcn sidebar — complex component with deep dependency chain (radix-ui, hooks, etc.)
+mock.module("@/components/ui/sidebar", () => {
+  const React = require("react");
+  return {
+    SidebarProvider: ({ children }: { children: React.ReactNode }) => React.createElement("div", { "data-testid": "sidebar-provider" }, children),
+    SidebarInset: ({ children }: { children: React.ReactNode }) => React.createElement("main", null, children),
+    SidebarTrigger: () => React.createElement("button", { "data-testid": "sidebar-trigger" }),
+    Sidebar: ({ children }: { children: React.ReactNode }) => React.createElement("nav", null, children),
+    SidebarContent: ({ children }: { children: React.ReactNode }) => React.createElement("div", null, children),
+    SidebarFooter: ({ children }: { children: React.ReactNode }) => React.createElement("div", null, children),
+    SidebarHeader: ({ children }: { children: React.ReactNode }) => React.createElement("div", null, children),
+    SidebarGroup: ({ children }: { children: React.ReactNode }) => React.createElement("div", null, children),
+    SidebarGroupLabel: ({ children }: { children: React.ReactNode }) => React.createElement("span", null, children),
+    SidebarGroupContent: ({ children }: { children: React.ReactNode }) => React.createElement("div", null, children),
+    SidebarMenu: ({ children }: { children: React.ReactNode }) => React.createElement("ul", null, children),
+    SidebarMenuItem: ({ children }: { children: React.ReactNode }) => React.createElement("li", null, children),
+    SidebarMenuButton: ({ children }: { children: React.ReactNode }) => React.createElement("button", null, children),
+    SidebarMenuBadge: ({ children }: { children: React.ReactNode }) => React.createElement("span", null, children),
+    SidebarRail: () => React.createElement("div"),
+    useSidebar: () => ({ open: true, setOpen: () => {}, toggleSidebar: () => {}, isMobile: false, state: "expanded" }),
+  };
+});
+
+// Mock shadcn separator
+mock.module("@/components/ui/separator", () => {
+  const React = require("react");
+  return { Separator: () => React.createElement("hr") };
+});
+
 import { render } from "@testing-library/react";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { AtlasProvider, type AtlasAuthClient } from "../context";

@@ -46,12 +46,11 @@ export function getExpertSchedulerIntervalMs(): number {
 /**
  * Run a single tick of the expert scheduler.
  *
- * 1. Loads semantic layer entities + glossary from file system
- * 2. Fetches rejected keys from internal DB
- * 3. Loads cached profiles from last `atlas init` or `atlas improve` run
- * 4. Runs analysis engine with cached profiles
- * 5. For proposals above auto-approve threshold, applies them
- * 6. Inserts remaining proposals as pending
+ * 1. Loads semantic layer entities, glossary, audit patterns, and rejected keys
+ * 2. Loads cached profiles from last `atlas init` or `atlas improve` run
+ * 3. Runs analysis engine with cached profiles
+ * 4. Inserts each proposal (status resolved by auto-approve threshold)
+ * 5. For proposals marked approved, applies the amendment to YAML
  */
 export async function runExpertSchedulerTick(): Promise<ExpertTickResult> {
   const result: ExpertTickResult = {
@@ -97,7 +96,7 @@ export async function runExpertSchedulerTick(): Promise<ExpertTickResult> {
       return result;
     }
 
-    // 4. Insert proposals (insertSemanticAmendment handles auto-approve threshold)
+    // 4. Insert proposals — insertSemanticAmendment resolves status (approved/pending) based on threshold
     const { insertSemanticAmendment } =
       await import("@atlas/api/lib/db/internal");
 

@@ -287,7 +287,7 @@ Scheduled mode uses cached database profiles from the last `atlas init` or `atla
 
 - Profiles are cached automatically after profiling completes in `atlas init` and `atlas improve`
 - The cache is stored at `{semanticRoot}/.expert-cache/profiles.json`
-- If no cache exists, scheduled analysis gracefully degrades to description/glossary/query-pattern analysis only
+- If no cache exists, scheduled analysis gracefully degrades to analysis categories that do not require database profiling data
 - If the cache is older than 7 days, a warning is logged — run `atlas improve` periodically to keep it fresh
 
 ### Auto-Approval

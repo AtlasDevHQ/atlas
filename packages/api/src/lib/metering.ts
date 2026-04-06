@@ -25,9 +25,8 @@ const log = createLogger("metering");
 // Event types
 // ---------------------------------------------------------------------------
 
-// NOTE: "login" events are not yet emitted — active_users will be 0
-// until auth hooks emit login events. Query and token events are
-// emitted from the agent loop's onFinish callback.
+// Query and token events are emitted from the agent loop's onFinish callback.
+// Login events are emitted from the Better Auth session.create hook in auth/server.ts.
 export type UsageEventType = "query" | "token" | "login";
 
 export interface UsageEvent {
@@ -64,6 +63,61 @@ export function logUsageEvent(event: UsageEvent): void {
       event.metadata ? JSON.stringify(event.metadata) : null,
     ],
   );
+}
+
+// ---------------------------------------------------------------------------
+// Login event (deduplicated, once per user per day)
+// ---------------------------------------------------------------------------
+
+/**
+ * Emit a login usage event, deduplicated to once per user per UTC day.
+ * Fire-and-forget — never blocks or fails the caller. Called from the
+ * Better Auth session.create hook in auth/server.ts.
+ *
+ * @param workspaceId - Active organization ID (skip if null)
+ * @param userId - The user who signed in
+ */
+export async function emitLoginEvent(
+  workspaceId: string,
+  userId: string,
+): Promise<void> {
+  if (!hasInternalDB()) return;
+
+  try {
+    // Check if a login event already exists for this user today (UTC)
+    const todayStart = new Date();
+    todayStart.setUTCHours(0, 0, 0, 0);
+
+    let alreadyLogged = false;
+    try {
+      const rows = await internalQuery<{ n: number }>(
+        `SELECT 1 AS n FROM usage_events WHERE user_id = $1 AND workspace_id = $2 AND event_type = 'login' AND created_at >= $3 LIMIT 1`,
+        [userId, workspaceId, todayStart.toISOString()],
+      );
+      alreadyLogged = rows.length > 0;
+    } catch (err) {
+      // Dedup check failed — emit anyway (best-effort)
+      log.warn(
+        { err: err instanceof Error ? err.message : String(err), userId },
+        "Login dedup check failed — emitting event anyway",
+      );
+    }
+
+    if (alreadyLogged) return;
+
+    logUsageEvent({
+      workspaceId,
+      userId,
+      eventType: "login",
+      quantity: 1,
+    });
+  } catch (err) {
+    // intentionally best-effort — never block sign-in on metering
+    log.warn(
+      { err: err instanceof Error ? err.message : String(err), userId },
+      "Failed to emit login event",
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------

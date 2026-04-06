@@ -382,6 +382,42 @@ export function getAuthInstance(): AuthInstance {
               );
             }
           },
+          after: async (session) => {
+            // Emit a login usage event for active-user tracking.
+            // Fire-and-forget — never blocks or fails sign-in.
+            try {
+              let orgId = session.activeOrganizationId;
+
+              // The `before` hook may have set activeOrganizationId but
+              // Better Auth may not propagate the mutation to `after`.
+              // Fall back to querying the member table for single-org users.
+              if (!orgId) {
+                try {
+                  const { internalQuery, hasInternalDB } = await import("@atlas/api/lib/db/internal");
+                  if (hasInternalDB()) {
+                    const rows = await internalQuery<{ organizationId: string }>(
+                      `SELECT "organizationId" FROM member WHERE "userId" = $1 LIMIT 2`,
+                      [session.userId],
+                    );
+                    if (rows.length === 1) orgId = rows[0].organizationId;
+                  }
+                } catch {
+                  // intentionally best-effort — skip if lookup fails
+                }
+              }
+
+              if (!orgId) return; // No workspace context — skip
+
+              const { emitLoginEvent } = await import("@atlas/api/lib/metering");
+              void emitLoginEvent(orgId, session.userId);
+            } catch (err) {
+              // intentionally best-effort — never block sign-in on metering
+              log.debug(
+                { err: err instanceof Error ? err.message : String(err), userId: session.userId },
+                "Login event emission skipped",
+              );
+            }
+          },
         },
       },
       user: {

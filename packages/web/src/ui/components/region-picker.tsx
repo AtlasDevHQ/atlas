@@ -6,29 +6,19 @@ import { cn } from "@/lib/utils";
 import type { RegionPickerItem } from "@/ui/lib/types";
 import { Check, MapPin } from "lucide-react";
 
-// ── Compliance Badge ───────────────────────────────────────────
-
-function getComplianceLabel(regionId: string): string | null {
-  const lower = regionId.toLowerCase();
-  if (/(?:^|[-_])eu(?:[-_]|$)/.test(lower)) return "GDPR compliant";
-  if (/(?:^|[-_])us(?:[-_]|$)/.test(lower)) return "SOC 2 compliant";
-  return null;
-}
+// ── Compliance Badge (placeholder) ────────────────────────────
+// Same security controls apply to all regions. When specific
+// compliance certifications are obtained (SOC 2, GDPR, etc.),
+// add region-specific badges here.
 
 export function ComplianceBadge({
-  regionId,
-  className,
+  regionId: _regionId,
+  className: _className,
 }: {
   regionId: string;
   className?: string;
 }) {
-  const label = getComplianceLabel(regionId);
-  if (!label) return null;
-  return (
-    <Badge variant="secondary" className={cn("text-xs", className)}>
-      {label}
-    </Badge>
-  );
+  return null;
 }
 
 // ── Region Card Grid ───────────────────────────────────────────

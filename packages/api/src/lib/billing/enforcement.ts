@@ -5,17 +5,20 @@
  * Returns { allowed: true } (with optional warning) when the request
  * should proceed, or { allowed: false, ... } to block it.
  *
+ * Token budgets are per-seat: total budget = tokenBudgetPerSeat * seatCount.
+ *
  * Degradation tiers:
- * - **OK (0–79%):** No warning, request proceeds normally.
- * - **Warning (80–99%):** Request proceeds, warning metadata attached.
- * - **Soft limit (100–109%):** 10% grace buffer. Request proceeds with
+ * - **OK (0-79%):** No warning, request proceeds normally.
+ * - **Warning (80-99%):** Request proceeds, warning metadata attached.
+ * - **Soft limit (100-109%):** 10% grace buffer. Request proceeds with
  *   overage warning. Structured log emitted.
  * - **Hard limit (110%+):** Request blocked with 429, upgrade CTA.
  *
  * Enforcement is skipped entirely when:
  * - No internal DB is configured (self-hosted without managed auth)
  * - No orgId is provided (user not in an org)
- * - The workspace is on the "free" or "enterprise" tier
+ * - The workspace is on the "free" tier
+ * - The workspace has BYOT enabled (unlimited when bringing own keys)
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
@@ -25,7 +28,7 @@ import {
   type WorkspaceRow,
 } from "@atlas/api/lib/db/internal";
 import { getCurrentPeriodUsage } from "@atlas/api/lib/metering";
-import { getPlanLimits, isUnlimited, TRIAL_DAYS } from "./plans";
+import { computeTokenBudget, getPlanLimits, isUnlimited, TRIAL_DAYS } from "./plans";
 import type { OverageStatus, PlanLimitStatus } from "@useatlas/types";
 
 const log = createLogger("billing:enforcement");
@@ -110,16 +113,34 @@ export function invalidatePlanCache(orgId?: string): void {
 /**
  * Check if the workspace's current usage is within its plan limits.
  *
+ * @param orgId - The organization/workspace ID.
+ * @param seatCount - Number of seats (members) in the org. Defaults to 1.
+ *
  * Returns `{ allowed: true }` (with optional `warning`) when the request
  * may proceed. Returns `{ allowed: false, ... }` when the workspace has
  * exceeded its hard limit or its trial has expired.
  */
 export async function checkPlanLimits(
   orgId: string | undefined,
+  seatCount?: number,
 ): Promise<PlanCheckResult> {
   // Self-hosted / no org — no enforcement
   if (!orgId || !hasInternalDB()) {
     return { allowed: true };
+  }
+
+  // Fetch seat count from member table if not provided
+  if (seatCount === undefined) {
+    try {
+      const rows = await internalQuery<{ count: number }>(
+        `SELECT COUNT(*)::int as count FROM member WHERE "organizationId" = $1`,
+        [orgId],
+      );
+      seatCount = rows[0]?.count ?? 1;
+    } catch {
+      // intentionally best-effort: default to 1 seat if member count fails
+      seatCount = 1;
+    }
   }
 
   let workspace: WorkspaceRow | null;
@@ -143,10 +164,15 @@ export async function checkPlanLimits(
     return { allowed: true };
   }
 
-  const { plan_tier: tier } = workspace;
+  const { plan_tier: tier, byot } = workspace;
 
-  // Free (self-hosted) and enterprise — no limits enforced
-  if (tier === "free" || tier === "enterprise") {
+  // Free (self-hosted) — no limits enforced
+  if (tier === "free") {
+    return { allowed: true };
+  }
+
+  // BYOT workspaces skip token enforcement (unlimited when bringing own keys)
+  if (byot) {
     return { allowed: true };
   }
 
@@ -164,12 +190,12 @@ export async function checkPlanLimits(
     }
   }
 
-  // Usage limit check (trial + team)
-  const limits = getPlanLimits(tier);
-  if (!isUnlimited(limits.queriesPerMonth) || !isUnlimited(limits.tokensPerMonth)) {
+  // Token budget check — budget scales with seat count
+  const totalBudget = computeTokenBudget(tier, seatCount);
+  if (!isUnlimited(totalBudget)) {
     try {
       const usage = await getCurrentPeriodUsage(orgId);
-      return evaluateUsage(orgId, usage, limits);
+      return evaluateUsage(orgId, usage.tokenCount, totalBudget);
     } catch (err) {
       // If we can't read usage, allow the request — metering is best-effort.
       // Surface the degradation as a warning so clients know enforcement is impaired.
@@ -198,116 +224,90 @@ export async function checkPlanLimits(
 
 function evaluateUsage(
   orgId: string,
-  usage: { queryCount: number; tokenCount: number },
-  limits: { queriesPerMonth: number; tokensPerMonth: number },
+  tokenCount: number,
+  tokenBudget: number,
 ): PlanCheckResult {
-  const metrics: PlanLimitStatus[] = [];
-
-  // Evaluate each metered dimension
-  if (!isUnlimited(limits.queriesPerMonth)) {
-    metrics.push(
-      buildMetricStatus("queries", usage.queryCount, limits.queriesPerMonth),
-    );
-  }
-  if (!isUnlimited(limits.tokensPerMonth)) {
-    metrics.push(
-      buildMetricStatus("tokens", usage.tokenCount, limits.tokensPerMonth),
-    );
-  }
-
-  // Find the worst status across all metrics
-  const worst = metrics.reduce<PlanLimitStatus | undefined>(
-    (prev, cur) =>
-      !prev || severityOf(cur.status) > severityOf(prev.status) ? cur : prev,
-    undefined,
-  );
-
-  if (!worst) {
-    return { allowed: true };
-  }
+  const metric = buildMetricStatus("tokens", tokenCount, tokenBudget);
 
   // Hard limit — block the request
-  if (worst.status === "hard_limit") {
-    const graceUsed = worst.usagePercent - 100;
+  if (metric.status === "hard_limit") {
+    const graceUsed = metric.usagePercent - 100;
     log.warn(
       {
         orgId,
-        metric: worst.metric,
-        currentUsage: worst.currentUsage,
-        limit: worst.limit,
-        usagePercent: worst.usagePercent,
+        metric: metric.metric,
+        currentUsage: metric.currentUsage,
+        limit: metric.limit,
+        usagePercent: metric.usagePercent,
         threshold: "hard_limit",
       },
-      "Workspace exceeded hard limit (%d%% of %s limit) — blocking request",
-      worst.usagePercent,
-      worst.metric,
+      "Workspace exceeded hard limit (%d%% of token budget) — blocking request",
+      metric.usagePercent,
     );
     return {
       allowed: false,
       errorCode: "plan_limit_exceeded",
       errorMessage:
-        `You have exceeded your plan's ${worst.metric} limit ` +
-        `(${worst.currentUsage.toLocaleString()} / ${worst.limit.toLocaleString()}). ` +
+        `You have exceeded your plan's token budget ` +
+        `(${metric.currentUsage.toLocaleString()} / ${metric.limit.toLocaleString()} tokens). ` +
         `The 10% grace buffer has been used (${graceUsed.toFixed(0)}% over). ` +
-        `Upgrade your plan or wait until the next billing period.`,
+        `Upgrade your plan, add seats, or wait until the next billing period.`,
       httpStatus: 429,
       usage: {
-        currentUsage: worst.currentUsage,
-        limit: worst.limit,
-        metric: worst.metric,
+        currentUsage: metric.currentUsage,
+        limit: metric.limit,
+        metric: metric.metric,
       },
     };
   }
 
-  // Soft limit (100–109%) — allow with overage warning
-  if (worst.status === "soft_limit") {
+  // Soft limit (100-109%) — allow with overage warning
+  if (metric.status === "soft_limit") {
     log.warn(
       {
         orgId,
-        metric: worst.metric,
-        currentUsage: worst.currentUsage,
-        limit: worst.limit,
-        usagePercent: worst.usagePercent,
+        metric: metric.metric,
+        currentUsage: metric.currentUsage,
+        limit: metric.limit,
+        usagePercent: metric.usagePercent,
         threshold: "soft_limit",
       },
-      "Workspace in grace buffer (%d%% of %s limit) — allowing with warning",
-      worst.usagePercent,
-      worst.metric,
+      "Workspace in grace buffer (%d%% of token budget) — allowing with warning",
+      metric.usagePercent,
     );
     return {
       allowed: true,
       warning: {
         code: "plan_limit_warning",
         message:
-          `You have exceeded your plan's ${worst.metric} limit ` +
-          `(${worst.currentUsage.toLocaleString()} / ${worst.limit.toLocaleString()}). ` +
-          `You are in a 10% grace period. Upgrade to avoid service interruption.`,
-        metrics,
+          `You have exceeded your plan's token budget ` +
+          `(${metric.currentUsage.toLocaleString()} / ${metric.limit.toLocaleString()} tokens). ` +
+          `You are in a 10% grace period. Upgrade or add seats to avoid service interruption.`,
+        metrics: [metric],
       },
     };
   }
 
-  // Warning (80–99%) — allow with usage warning
-  if (worst.status === "warning") {
+  // Warning (80-99%) — allow with usage warning
+  if (metric.status === "warning") {
     log.info(
       {
         orgId,
-        metric: worst.metric,
-        usagePercent: worst.usagePercent,
+        metric: metric.metric,
+        usagePercent: metric.usagePercent,
         threshold: "warning",
       },
-      "Workspace approaching plan limit (%d%% of %s limit)",
-      worst.usagePercent,
-      worst.metric,
+      "Workspace approaching token budget (%d%%)",
+      metric.usagePercent,
     );
     return {
       allowed: true,
       warning: {
         code: "plan_limit_warning",
         message:
-          `You are approaching your plan's ${worst.metric} limit ` +
-          `(${worst.usagePercent}% used: ${worst.currentUsage.toLocaleString()} / ${worst.limit.toLocaleString()}).`,
-        metrics,
+          `You are approaching your plan's token budget ` +
+          `(${metric.usagePercent}% used: ${metric.currentUsage.toLocaleString()} / ${metric.limit.toLocaleString()} tokens).`,
+        metrics: [metric],
       },
     };
   }
@@ -321,7 +321,7 @@ function evaluateUsage(
 // ---------------------------------------------------------------------------
 
 export function buildMetricStatus(
-  metric: "queries" | "tokens",
+  metric: "tokens",
   currentUsage: number,
   limit: number,
 ): PlanLimitStatus {
@@ -355,7 +355,8 @@ const SEVERITY_ORDER: Record<OverageStatus, number> = {
   hard_limit: 3,
 };
 
-function severityOf(status: OverageStatus): number {
+/** Exported for tests. */
+export function severityOf(status: OverageStatus): number {
   return SEVERITY_ORDER[status];
 }
 
@@ -371,7 +372,7 @@ function isTrialExpired(workspace: WorkspaceRow): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// Resource limit enforcement (members, connections)
+// Resource limit enforcement (seats, connections)
 // ---------------------------------------------------------------------------
 
 export type ResourceLimitResult =
@@ -379,7 +380,7 @@ export type ResourceLimitResult =
   | { allowed: false; errorMessage: string; limit: number };
 
 /**
- * Check whether adding one more resource (member or connection) would
+ * Check whether adding one more resource (seat or connection) would
  * exceed the plan's limit for the given workspace.
  *
  * Returns `{ allowed: true }` when the resource can be created, or
@@ -389,11 +390,11 @@ export type ResourceLimitResult =
  * Enforcement is skipped (always allowed) when:
  * - No internal DB is configured (self-hosted without managed auth)
  * - No orgId is provided
- * - The workspace is on the "free" or "enterprise" tier (unlimited)
+ * - The workspace is on the "free" tier (unlimited)
  */
 export async function checkResourceLimit(
   orgId: string | undefined,
-  resource: "members" | "connections",
+  resource: "seats" | "connections",
   currentCount: number,
 ): Promise<ResourceLimitResult> {
   if (!orgId || !hasInternalDB()) {
@@ -409,7 +410,7 @@ export async function checkResourceLimit(
       "Failed to fetch workspace for resource limit check — blocking as precaution",
     );
     // Fail closed: consistent with checkPlanLimits behavior per CLAUDE.md
-    return { allowed: false, errorMessage: "Unable to verify plan limits. Please try again." };
+    return { allowed: false, errorMessage: "Unable to verify plan limits. Please try again.", limit: 0 };
   }
 
   if (!workspace) {
@@ -418,20 +419,22 @@ export async function checkResourceLimit(
 
   const { plan_tier: tier } = workspace;
 
-  // Free (self-hosted) and enterprise — no resource limits
-  if (tier === "free" || tier === "enterprise") {
+  // Free (self-hosted) — no resource limits
+  if (tier === "free") {
     return { allowed: true };
   }
 
   const limits = getPlanLimits(tier);
-  const cap = resource === "members" ? limits.maxMembers : limits.maxConnections;
+  const cap = resource === "seats" ? limits.maxSeats : limits.maxConnections;
 
   if (isUnlimited(cap)) {
     return { allowed: true };
   }
 
   if (currentCount >= cap) {
-    const resourceLabel = resource === "members" ? "members" : "connections";
+    const resourceLabel = resource === "seats"
+      ? (cap === 1 ? "seat" : "seats")
+      : (cap === 1 ? "connection" : "connections");
     log.warn(
       { orgId, resource, currentCount, limit: cap, tier },
       "Workspace at or over %s limit (%d/%d) — blocking resource creation",
@@ -448,3 +451,4 @@ export async function checkResourceLimit(
 
   return { allowed: true };
 }
+

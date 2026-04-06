@@ -22,7 +22,6 @@ import { useDataTable } from "@/hooks/use-data-table";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import {
   BarChart3,
-  MessageSquare,
   Coins,
   Users,
   TrendingUp,
@@ -139,15 +138,9 @@ export default function UsageDashboardPage() {
             {/* Usage metrics with progress toward limits */}
             <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
               <UsageMetricCard
-                title="Queries"
-                used={data.current.queryCount}
-                limit={data.limits.queriesPerMonth}
-                icon={<MessageSquare className="size-4" />}
-              />
-              <UsageMetricCard
-                title="Tokens"
+                title="Token Budget"
                 used={data.current.tokenCount}
-                limit={data.limits.tokensPerMonth}
+                limit={data.limits.totalTokenBudget}
                 icon={<Coins className="size-4" />}
               />
               <StatCard
@@ -155,8 +148,8 @@ export default function UsageDashboardPage() {
                 value={data.current.activeUsers.toLocaleString()}
                 icon={<Users className="size-4" />}
                 description={
-                  data.limits.maxMembers !== null
-                    ? `of ${formatNumber(data.limits.maxMembers)} allowed`
+                  data.limits.maxSeats !== null
+                    ? `of ${formatNumber(data.limits.maxSeats)} seats`
                     : "Unlimited"
                 }
               />

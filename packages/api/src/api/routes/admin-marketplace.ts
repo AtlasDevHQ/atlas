@@ -41,8 +41,9 @@ type PluginType = (typeof PLUGIN_TYPES)[number];
 const PLAN_RANK: Record<PlanTier, number> = {
   free: 0,
   trial: 1,
-  team: 2,
-  enterprise: 3,
+  starter: 1,
+  pro: 2,
+  business: 3,
 };
 
 function isPlanEligible(workspacePlan: string, requiredPlan: string): boolean {
@@ -81,7 +82,7 @@ const CreateCatalogBodySchema = z.object({
   npmPackage: z.string().max(200).optional(),
   iconUrl: z.string().url().max(500).optional(),
   configSchema: z.unknown().optional(),
-  minPlan: z.enum(PLAN_TIERS).default("team"),
+  minPlan: z.enum(PLAN_TIERS).default("starter"),
   enabled: z.boolean().default(true),
 });
 
@@ -529,7 +530,7 @@ async function getWorkspacePlan(orgId: string): Promise<string> {
     "SELECT plan_tier FROM organization WHERE id = $1",
     [orgId],
   );
-  return rows[0]?.plan_tier ?? "team";
+  return rows[0]?.plan_tier ?? "starter";
 }
 
 // GET /available — catalog entries available to this workspace

@@ -103,7 +103,7 @@ const NoisyNeighborSchema = z.object({
 const ChangePlanBodySchema = z.object({
   planTier: z.enum(PLAN_TIERS).openapi({
     description: "The new plan tier for the workspace.",
-    example: "team",
+    example: "starter",
   }),
 });
 

@@ -217,7 +217,7 @@ const sampleCatalogRow = {
   npm_package: "@useatlas/bigquery",
   icon_url: null,
   config_schema: null,
-  min_plan: "team",
+  min_plan: "starter",
   enabled: true,
   created_at: now,
   updated_at: now,
@@ -365,10 +365,10 @@ describe("Workspace Plugin Marketplace", () => {
 
   describe("GET /marketplace/available", () => {
     it("lists available plugins filtered by plan", async () => {
-      setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "team" }]);
+      setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "starter" }]);
       setQueryResult("SELECT * FROM plugin_catalog WHERE enabled", [
         sampleCatalogRow,
-        { ...sampleCatalogRow, id: "cat-2", slug: "enterprise-only", min_plan: "enterprise" },
+        { ...sampleCatalogRow, id: "cat-2", slug: "enterprise-only", min_plan: "business" },
       ]);
       setQueryResult("SELECT catalog_id, id, config FROM workspace_plugins", []);
 
@@ -383,7 +383,7 @@ describe("Workspace Plugin Marketplace", () => {
     });
 
     it("marks installed plugins", async () => {
-      setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "team" }]);
+      setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "starter" }]);
       setQueryResult("SELECT * FROM plugin_catalog WHERE enabled", [sampleCatalogRow]);
       setQueryResult("SELECT catalog_id, id, config FROM workspace_plugins", [
         { catalog_id: "cat-1", id: "inst-1", config: { host: "localhost" } },
@@ -402,7 +402,7 @@ describe("Workspace Plugin Marketplace", () => {
   describe("POST /marketplace/install", () => {
     it("installs a plugin", async () => {
       setQueryResult("SELECT * FROM plugin_catalog WHERE id", [sampleCatalogRow]);
-      setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "team" }]);
+      setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "starter" }]);
       setQueryResult("SELECT id FROM workspace_plugins WHERE workspace_id", []);
       setQueryResult("INSERT INTO workspace_plugins", [{
         id: "inst-1",
@@ -432,9 +432,9 @@ describe("Workspace Plugin Marketplace", () => {
 
     it("rejects when plan is insufficient", async () => {
       setQueryResult("SELECT * FROM plugin_catalog WHERE id", [
-        { ...sampleCatalogRow, min_plan: "enterprise" },
+        { ...sampleCatalogRow, min_plan: "business" },
       ]);
-      setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "team" }]);
+      setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "starter" }]);
       setQueryResult("SELECT id FROM workspace_plugins WHERE workspace_id", []);
 
       const app = buildWorkspaceApp();
@@ -450,7 +450,7 @@ describe("Workspace Plugin Marketplace", () => {
 
     it("returns 409 when already installed", async () => {
       setQueryResult("SELECT * FROM plugin_catalog WHERE id", [sampleCatalogRow]);
-      setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "team" }]);
+      setQueryResult("SELECT plan_tier FROM organization", [{ plan_tier: "starter" }]);
       setQueryResult("SELECT id FROM workspace_plugins WHERE workspace_id", [{ id: "inst-1" }]);
 
       const app = buildWorkspaceApp();

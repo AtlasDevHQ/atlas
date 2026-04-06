@@ -55,7 +55,7 @@ const mockWorkspace = {
   name: "Test Org",
   slug: "test-org",
   workspace_status: "active",
-  plan_tier: "team",
+  plan_tier: "starter",
   byot: false,
   stripe_customer_id: "cus_test_123",
   trial_ends_at: null,
@@ -183,10 +183,10 @@ describe("billing routes", () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test assertions on response shape
       const body = await res.json() as any;
       expect(body.workspaceId).toBe("org-1");
-      expect(body.plan.tier).toBe("team");
-      expect(body.plan.displayName).toBe("Team");
+      expect(body.plan.tier).toBe("starter");
+      expect(body.plan.displayName).toBe("Starter");
       expect(body.plan.byot).toBe(false);
-      expect(body.limits.queriesPerMonth).toBeGreaterThan(0);
+      expect(body.limits.tokenBudgetPerSeat).toBeGreaterThan(0);
       expect(body.usage.queryCount).toBe(500);
     });
 

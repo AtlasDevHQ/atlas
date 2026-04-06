@@ -166,7 +166,7 @@ export function registerInvitationRoutes(
       [orgId],
     );
     const memberCount = memberCountRows[0]?.count ?? 0;
-    const resourceCheck = await checkResourceLimit(orgId, "members", memberCount);
+    const resourceCheck = await checkResourceLimit(orgId, "seats", memberCount);
     if (!resourceCheck.allowed) {
       return c.json({ error: "plan_limit_exceeded", message: resourceCheck.errorMessage, requestId }, 429);
     }

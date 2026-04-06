@@ -49,11 +49,11 @@ mock.module("@atlas/api/lib/billing/enforcement", () => ({
   getCachedWorkspace: async (orgId: string) => {
     if (mockGetCachedWorkspaceShouldThrow) throw new Error("connection refused");
     if (mockWorkspaceStatus === null) return null;
-    return { id: orgId, name: "Test Org", slug: "test-org", workspace_status: mockWorkspaceStatus, plan_tier: "team", byot: false, stripe_customer_id: null, trial_ends_at: null, suspended_at: null, deleted_at: null, region: null, region_assigned_at: null, createdAt: new Date().toISOString() };
+    return { id: orgId, name: "Test Org", slug: "test-org", workspace_status: mockWorkspaceStatus, plan_tier: "starter", byot: false, stripe_customer_id: null, trial_ends_at: null, suspended_at: null, deleted_at: null, region: null, region_assigned_at: null, createdAt: new Date().toISOString() };
   },
   checkPlanLimits: async () => ({ allowed: true }),
   invalidatePlanCache: () => {},
-  buildMetricStatus: () => ({ metric: "queries", currentUsage: 0, limit: 1000, usagePercent: 0, status: "ok" }),
+  buildMetricStatus: () => ({ metric: "tokens", currentUsage: 0, limit: 2_000_000, usagePercent: 0, status: "ok" }),
 }));
 
 mock.module("@atlas/api/lib/logger", () => ({

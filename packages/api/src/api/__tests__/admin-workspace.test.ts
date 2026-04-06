@@ -453,19 +453,19 @@ describe("Workspace Lifecycle", () => {
   // --- Plan Tier ---
 
   describe("PATCH /api/v1/admin/organizations/:id/plan", () => {
-    it("updates plan tier to team", async () => {
+    it("updates plan tier to starter", async () => {
       const res = await app.fetch(
-        adminRequest("PATCH", "/api/v1/admin/organizations/org-1/plan", { planTier: "team" }),
+        adminRequest("PATCH", "/api/v1/admin/organizations/org-1/plan", { planTier: "starter" }),
       );
       expect(res.status).toBe(200);
       const json = await res.json() as Record<string, unknown>;
-      expect(json.message).toContain("team");
-      expect((json.organization as Record<string, unknown>).plan_tier).toBe("team");
+      expect(json.message).toContain("starter");
+      expect((json.organization as Record<string, unknown>).plan_tier).toBe("starter");
     });
 
-    it("updates plan tier to enterprise", async () => {
+    it("updates plan tier to business", async () => {
       const res = await app.fetch(
-        adminRequest("PATCH", "/api/v1/admin/organizations/org-1/plan", { planTier: "enterprise" }),
+        adminRequest("PATCH", "/api/v1/admin/organizations/org-1/plan", { planTier: "business" }),
       );
       expect(res.status).toBe(200);
     });
@@ -487,14 +487,14 @@ describe("Workspace Lifecycle", () => {
     it("returns 409 for deleted workspace", async () => {
       workspaceState.workspace_status = "deleted";
       const res = await app.fetch(
-        adminRequest("PATCH", "/api/v1/admin/organizations/org-1/plan", { planTier: "team" }),
+        adminRequest("PATCH", "/api/v1/admin/organizations/org-1/plan", { planTier: "starter" }),
       );
       expect(res.status).toBe(409);
     });
 
     it("returns 404 for non-existent org", async () => {
       const res = await app.fetch(
-        adminRequest("PATCH", "/api/v1/admin/organizations/org-missing/plan", { planTier: "team" }),
+        adminRequest("PATCH", "/api/v1/admin/organizations/org-missing/plan", { planTier: "starter" }),
       );
       expect(res.status).toBe(404);
     });
@@ -514,7 +514,7 @@ describe("Workspace Lifecycle", () => {
             metadata: null,
             createdAt: "2026-01-01T00:00:00Z",
             workspace_status: "suspended",
-            plan_tier: "team",
+            plan_tier: "starter",
             suspended_at: "2026-01-15T00:00:00Z",
             deleted_at: null,
           }];
@@ -529,7 +529,7 @@ describe("Workspace Lifecycle", () => {
       expect(res.status).toBe(200);
       const json = await res.json() as { organizations: Array<Record<string, unknown>> };
       expect(json.organizations[0].workspaceStatus).toBe("suspended");
-      expect(json.organizations[0].planTier).toBe("team");
+      expect(json.organizations[0].planTier).toBe("starter");
       expect(json.organizations[0].suspendedAt).toBeTruthy();
 
       // Restore default mock

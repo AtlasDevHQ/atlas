@@ -113,10 +113,12 @@ function planBadge(tier: PlanTier) {
       return <Badge variant="secondary">Free</Badge>;
     case "trial":
       return <Badge variant="outline" className="border-blue-500 text-blue-600">Trial</Badge>;
-    case "team":
-      return <Badge variant="outline" className="border-purple-500 text-purple-600">Team</Badge>;
-    case "enterprise":
-      return <Badge variant="outline" className="border-amber-500 text-amber-600">Enterprise</Badge>;
+    case "starter":
+      return <Badge variant="outline" className="border-green-500 text-green-600">Starter</Badge>;
+    case "pro":
+      return <Badge variant="outline" className="border-purple-500 text-purple-600">Pro</Badge>;
+    case "business":
+      return <Badge variant="outline" className="border-amber-500 text-amber-600">Business</Badge>;
   }
 }
 
@@ -352,8 +354,9 @@ function PlatformPageContent() {
                 <SelectItem value="all">All plans</SelectItem>
                 <SelectItem value="free">Free</SelectItem>
                 <SelectItem value="trial">Trial</SelectItem>
-                <SelectItem value="team">Team</SelectItem>
-                <SelectItem value="enterprise">Enterprise</SelectItem>
+                <SelectItem value="starter">Starter</SelectItem>
+                <SelectItem value="pro">Pro</SelectItem>
+                <SelectItem value="business">Business</SelectItem>
               </SelectContent>
             </Select>
           </div>
@@ -698,8 +701,9 @@ function PlatformPageContent() {
             <SelectContent>
               <SelectItem value="free">Free</SelectItem>
               <SelectItem value="trial">Trial</SelectItem>
-              <SelectItem value="team">Team</SelectItem>
-              <SelectItem value="enterprise">Enterprise</SelectItem>
+              <SelectItem value="starter">Starter</SelectItem>
+              <SelectItem value="pro">Pro</SelectItem>
+              <SelectItem value="business">Business</SelectItem>
             </SelectContent>
           </Select>
           <DialogFooter>

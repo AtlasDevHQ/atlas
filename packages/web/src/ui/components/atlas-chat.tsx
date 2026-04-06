@@ -21,7 +21,7 @@ import { ShareDialog } from "./chat/share-dialog";
 import { ConversationSidebar } from "./conversations/conversation-sidebar";
 import { ChangePasswordDialog } from "./admin/change-password-dialog";
 import { usePasswordStatus } from "@/ui/hooks/use-password-status";
-import { Sun, Moon, Monitor, Star, TableProperties, BookOpen } from "lucide-react";
+import { Sun, Moon, Monitor, Star, TableProperties, BookOpen, Send } from "lucide-react";
 import { SchemaExplorer } from "./schema-explorer/schema-explorer";
 import { PromptLibrary } from "./chat/prompt-library";
 import {
@@ -494,7 +494,7 @@ export function AtlasChat() {
                             key={prompt}
                             variant="outline"
                             onClick={() => handleSend(prompt)}
-                            className="h-auto whitespace-normal justify-start rounded-lg bg-zinc-50 px-3 py-2.5 text-left text-sm text-zinc-500 hover:text-zinc-800 dark:bg-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-200"
+                            className="h-auto whitespace-normal justify-start rounded-lg px-3 py-2.5 text-left text-sm"
                           >
                             {prompt}
                           </Button>
@@ -654,11 +654,13 @@ export function AtlasChat() {
                   />
                   <Button
                     type="submit"
+                    size="icon"
                     disabled={isLoading}
                     aria-disabled={!isLoading && !input.trim() ? true : undefined}
-                    className="shrink-0 px-5"
+                    aria-label="Send"
+                    className="size-10 shrink-0"
                   >
-                    Ask
+                    <Send className="size-4" />
                   </Button>
                 </form>
               </ActionAuthProvider>

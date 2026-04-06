@@ -30,7 +30,7 @@ import { DataTableToolbar } from "@/components/data-table/data-table-toolbar";
 import { getConnectionColumns } from "./columns";
 import { useDataTable } from "@/hooks/use-data-table";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Cable, Loader2, Plus, Pencil, Trash2, Eye, EyeOff, Activity, ChevronDown, ChevronUp, Droplets } from "lucide-react";
+import { Cable, Loader2, Plus, Pencil, Trash2, Eye, EyeOff, Activity, ChevronDown, ChevronUp, Droplets, Check, X } from "lucide-react";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
@@ -576,6 +576,8 @@ export default function ConnectionsPage() {
 
   const testMutation = useAdminMutation<ConnectionHealth>({ method: "POST" });
   const [mutationError, setMutationError] = useState<string | null>(null);
+  const [testStatus, setTestStatus] = useState<Record<string, "success" | "error">>({});
+  const testTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
   // Dialog state
   const [formOpen, setFormOpen] = useState(false);
@@ -609,9 +611,17 @@ export default function ConnectionsPage() {
               disabled={testMutation.isMutating(conn.id)}
               onClick={() => testConnection(conn.id)}
               aria-label={testMutation.isMutating(conn.id) ? `Testing connection ${conn.id}…` : undefined}
+              className={cn(
+                testStatus[conn.id] === "success" && "border-green-500 text-green-600 dark:text-green-400",
+                testStatus[conn.id] === "error" && "border-destructive text-destructive",
+              )}
             >
               {testMutation.isMutating(conn.id) ? (
                 <Loader2 className="size-3.5 animate-spin" />
+              ) : testStatus[conn.id] === "success" ? (
+                <><Check className="mr-1 size-3.5" /> OK</>
+              ) : testStatus[conn.id] === "error" ? (
+                <><X className="mr-1 size-3.5" /> Fail</>
               ) : (
                 "Test"
               )}
@@ -661,6 +671,10 @@ export default function ConnectionsPage() {
 
   async function testConnection(id: string) {
     setMutationError(null);
+    // Clear any previous timer for this connection
+    if (testTimers.current[id]) clearTimeout(testTimers.current[id]);
+    setTestStatus((prev) => { const next = { ...prev }; delete next[id]; return next; });
+
     const result = await testMutation.mutate({
       path: `/api/v1/admin/connections/${encodeURIComponent(id)}/test`,
       itemId: id,
@@ -672,6 +686,13 @@ export default function ConnectionsPage() {
         );
       },
     });
+
+    const status = result.ok ? "success" : "error";
+    setTestStatus((prev) => ({ ...prev, [id]: status }));
+    testTimers.current[id] = setTimeout(() => {
+      setTestStatus((prev) => { const next = { ...prev }; delete next[id]; return next; });
+    }, 3000);
+
     if (!result.ok) {
       setMutationError(`Connection test failed for "${id}"`);
     }

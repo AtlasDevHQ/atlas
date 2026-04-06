@@ -540,7 +540,7 @@ export default function LearnedPatternsPage() {
                 </SheetDescription>
               </SheetHeader>
 
-              <div className="mt-6 space-y-6">
+              <div className="space-y-6 px-4">
                 {/* SQL or Diff */}
                 {detailPattern.type === "semantic_amendment" && detailPattern.amendmentPayload ? (
                   <div className="space-y-2">

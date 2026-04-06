@@ -40,6 +40,7 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import { OrgSwitcher } from "@/ui/components/org-switcher";
 
 // ---------------------------------------------------------------------------
 // Nav data
@@ -246,6 +247,10 @@ export function AdminSidebar() {
           </SidebarMenuItem>
         </SidebarMenu>
       </SidebarHeader>
+
+      <div className="border-b px-2 py-2">
+        <OrgSwitcher />
+      </div>
 
       <SidebarContent>
         {/* Overview — always visible, no group wrapper */}

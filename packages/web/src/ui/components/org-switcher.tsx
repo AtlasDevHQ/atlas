@@ -50,6 +50,9 @@ export function OrgSwitcher() {
   }, [session.data?.user]);
 
   const activeOrg = orgs.find((o) => o.id === activeOrgId);
+  // Fall back to session metadata for the active org name when the list hasn't loaded
+  const sessionOrgName = (session.data?.session as Record<string, unknown> | undefined)?.activeOrganizationName as string | undefined;
+  const displayName = activeOrg?.name ?? sessionOrgName ?? "Workspace";
 
   async function switchOrg(orgId: string) {
     setSwitchError(null);
@@ -62,8 +65,28 @@ export function OrgSwitcher() {
     }
   }
 
-  // Don't render if no session or no orgs
-  if (!session.data?.user || (orgs.length <= 1 && !loading)) return null;
+  // Don't render until we have something to show
+  if (!session.data?.user) return null;
+  if (loading) return null;
+  if (orgs.length === 0 && !activeOrgId) return null;
+
+  const canSwitch = orgs.length > 1;
+
+  const orgLabel = (
+    <div className="flex w-full items-center gap-2 px-3 py-2">
+      <div className="bg-primary/10 flex size-6 items-center justify-center rounded text-xs font-semibold">
+        {displayName.charAt(0).toUpperCase()}
+      </div>
+      <span className="flex-1 truncate text-sm font-medium">
+        {displayName}
+      </span>
+      {canSwitch && <ChevronsUpDown className="size-4 shrink-0 opacity-50" />}
+    </div>
+  );
+
+  if (!canSwitch) {
+    return <div>{orgLabel}</div>;
+  }
 
   return (
     <div>
@@ -71,15 +94,9 @@ export function OrgSwitcher() {
         <DropdownMenuTrigger asChild>
           <Button
             variant="ghost"
-            className="w-full justify-start gap-2 px-3 py-2 text-left"
+            className="w-full justify-start gap-0 p-0 text-left"
           >
-            <div className="bg-primary/10 flex size-6 items-center justify-center rounded text-xs font-semibold">
-              {activeOrg?.name.charAt(0).toUpperCase() ?? <Building2 className="size-3.5" />}
-            </div>
-            <span className="flex-1 truncate text-sm font-medium">
-              {activeOrg?.name ?? "Select organization"}
-            </span>
-            <ChevronsUpDown className="size-4 shrink-0 opacity-50" />
+            {orgLabel}
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent className="w-56" align="start">

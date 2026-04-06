@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { cn } from "@/lib/utils";
 import { useTourContext } from "./guided-tour";
+import { OrgSwitcher } from "@/ui/components/org-switcher";
 
 interface NavBarProps {
   /** Whether the current user has admin role. */
@@ -77,26 +78,29 @@ export function NavBar({ isAdmin }: NavBarProps) {
         })}
       </div>
 
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            className="text-zinc-400 hover:text-zinc-600 dark:text-zinc-500 dark:hover:text-zinc-300"
-            aria-label="Help menu"
-          >
-            <CircleHelp className="size-4" />
-          </Button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="end">
-          <DropdownMenuItem
-            onClick={() => tourContext?.startTour()}
-            disabled={!tourContext}
-          >
-            Replay guided tour
-          </DropdownMenuItem>
-        </DropdownMenuContent>
-      </DropdownMenu>
+      <div className="flex items-center gap-1">
+        <OrgSwitcher />
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon-xs"
+              className="text-zinc-400 hover:text-zinc-600 dark:text-zinc-500 dark:hover:text-zinc-300"
+              aria-label="Help menu"
+            >
+              <CircleHelp className="size-4" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem
+              onClick={() => tourContext?.startTour()}
+              disabled={!tourContext}
+            >
+              Replay guided tour
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
     </nav>
   );
 }

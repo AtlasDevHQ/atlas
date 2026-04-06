@@ -45,7 +45,7 @@ export function EntityDetail({ entity }: { entity: EntityData }) {
         {/* Dimensions */}
         <section>
           <h3 className="mb-3 text-sm font-semibold">Dimensions ({dimensions.length})</h3>
-          <div className="rounded-md border">
+          <div className="overflow-hidden rounded-md border">
             <Table>
               <TableHeader>
                 <TableRow>
@@ -126,7 +126,7 @@ export function EntityDetail({ entity }: { entity: EntityData }) {
         {measures.length > 0 && (
           <section>
             <h3 className="mb-3 text-sm font-semibold">Measures ({measures.length})</h3>
-            <div className="rounded-md border">
+            <div className="overflow-hidden rounded-md border">
               <Table>
                 <TableHeader>
                   <TableRow>

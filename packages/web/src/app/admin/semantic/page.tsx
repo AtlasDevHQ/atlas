@@ -626,7 +626,7 @@ export default function SemanticPage() {
         <div className="flex flex-1 flex-col overflow-hidden">
           {/* View toggle bar — only shown when a file is selected */}
           {selection && !detailError && (
-            <div className="flex items-center justify-between border-b px-4 py-2">
+            <div className="flex h-[41px] items-center justify-between border-b px-4">
               {/* Edit/delete actions (SaaS mode, entity selected) */}
               <div className="flex items-center gap-1.5">
                 {isSaas && selection.type === "entity" && selectedEntity && (

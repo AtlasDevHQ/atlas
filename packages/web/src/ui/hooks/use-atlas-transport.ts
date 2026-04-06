@@ -7,6 +7,10 @@ import { applyBrandColor, OKLCH_RE } from "./use-dark-mode";
 
 const API_KEY_STORAGE_KEY = "atlas-api-key";
 
+// Module-level cache — survives client-side navigation (component unmount/remount).
+let _cachedAuthMode: AuthMode | null = null;
+let _cachedBrandColor: string | null = null;
+
 export interface UseAtlasTransportOptions {
   apiUrl: string;
   isCrossOrigin: boolean;
@@ -43,9 +47,18 @@ export function useAtlasTransport(
   const conversationIdRef = useRef<string | null>(null);
   conversationIdRef.current = getConversationIdRef.current();
 
-  // --- Auth state ---
-  const [authMode, setAuthMode] = useState<AuthMode | null>(null);
+  // --- Auth state (seed from module cache to avoid flash on client-side nav) ---
+  const [authMode, setAuthModeState] = useState<AuthMode | null>(_cachedAuthMode);
   const [healthWarning, setHealthWarning] = useState("");
+
+  // Reapply cached brand color on mount so it doesn't flash to default
+  useEffect(() => {
+    if (_cachedBrandColor) applyBrandColor(_cachedBrandColor);
+  }, []);
+  const setAuthMode = useCallback((mode: AuthMode) => {
+    _cachedAuthMode = mode;
+    setAuthModeState(mode);
+  }, []);
   const [apiKey, setApiKeyState] = useState("");
 
   // Load API key from sessionStorage on mount
@@ -86,8 +99,9 @@ export function useAtlasTransport(
     [isCrossOrigin],
   );
 
-  // --- Health check with retry ---
+  // --- Health check with retry (skip if cached from prior mount) ---
   useEffect(() => {
+    if (_cachedAuthMode !== null) return;
     let cancelled = false;
 
     async function fetchHealth(attempt: number): Promise<void> {
@@ -148,6 +162,7 @@ export function useAtlasTransport(
             typeof data?.brandColor === "string" &&
             OKLCH_RE.test(data.brandColor.trim())
           ) {
+            _cachedBrandColor = data.brandColor;
             applyBrandColor(data.brandColor);
           }
         }

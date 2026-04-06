@@ -98,7 +98,7 @@ export function SemanticFileTree({
 }: SemanticFileTreeProps) {
   return (
     <div className={cn("flex flex-col", className)}>
-      <div className="border-b px-4 py-3">
+      <div className="flex h-[41px] items-center border-b px-4">
         <div className="flex items-center gap-2">
           <Folder className="size-4 text-muted-foreground" />
           <span className="text-sm font-semibold">semantic/</span>

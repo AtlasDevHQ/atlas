@@ -21,8 +21,8 @@ export function NotebookInputBar({ value, onChange, onSubmit, disabled }: InputB
 
   return (
     <div className="sticky bottom-0 border-t border-zinc-200 bg-white/80 px-4 py-3 backdrop-blur-sm dark:border-zinc-800 dark:bg-zinc-950/80">
-      <div className="mx-auto flex max-w-5xl items-end gap-2">
-        <div className="flex min-w-0 flex-1 flex-col gap-1">
+      <div className="mx-auto max-w-5xl space-y-1">
+        <div className="flex items-end gap-2">
           <Textarea
             value={value}
             onChange={(e) => onChange(e.target.value)}
@@ -30,19 +30,19 @@ export function NotebookInputBar({ value, onChange, onSubmit, disabled }: InputB
             placeholder="Ask a question to add a new cell..."
             disabled={disabled}
             rows={1}
-            className="min-h-[40px] flex-1 resize-none"
+            className="min-h-[40px] min-w-0 flex-1 resize-none"
           />
-          <span className="text-xs text-zinc-500">Enter to send, Shift+Enter for newline</span>
+          <Button
+            size="icon"
+            onClick={onSubmit}
+            disabled={disabled || !value.trim()}
+            aria-label="Send"
+            className="size-10 shrink-0"
+          >
+            <Send className="size-4" />
+          </Button>
         </div>
-        <Button
-          size="icon"
-          onClick={onSubmit}
-          disabled={disabled || !value.trim()}
-          aria-label="Send"
-          className="size-10 shrink-0"
-        >
-          <Send className="size-4" />
-        </Button>
+        <span className="text-xs text-muted-foreground">Enter to send, Shift+Enter for newline</span>
       </div>
     </div>
   );

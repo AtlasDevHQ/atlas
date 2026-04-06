@@ -601,7 +601,7 @@ export default function PromptsPage() {
                 </SheetDescription>
               </SheetHeader>
 
-              <div className="mt-6 space-y-6">
+              <div className="space-y-6 px-4">
                 {/* Metadata */}
                 <div className="grid grid-cols-2 gap-4 text-sm">
                   <div className="space-y-1">

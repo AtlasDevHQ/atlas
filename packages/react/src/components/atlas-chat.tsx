@@ -20,7 +20,7 @@ import { FollowUpChips } from "./chat/follow-up-chips";
 import { ConversationSidebar } from "./conversations/conversation-sidebar";
 import { ChangePasswordDialog } from "./admin/change-password-dialog";
 import { useHealthQuery } from "../hooks/use-health-query";
-import { Sun, Moon, Monitor, Star, TableProperties } from "lucide-react";
+import { Sun, Moon, Monitor, Star, TableProperties, Send } from "lucide-react";
 import { SchemaExplorer } from "./schema-explorer/schema-explorer";
 import {
   DropdownMenu,
@@ -469,7 +469,10 @@ function AtlasChatInner({
     setMobileMenuOpen(false);
   }
 
-  if (!authResolved || (isManaged && managedSession.isPending)) {
+  // Only show blank screen on initial load — skip on client-side nav
+  // when session data is already cached from a previous page.
+  const hasSessionData = !!managedSession.data?.user;
+  if (!authResolved && !hasSessionData) {
     return (
       <DarkModeContext.Provider value={dark}>
         <div className="atlas-root flex h-dvh items-center justify-center bg-white dark:bg-zinc-950" />
@@ -598,7 +601,7 @@ function AtlasChatInner({
                             key={prompt}
                             variant="outline"
                             onClick={() => handleSend(prompt)}
-                            className="h-auto whitespace-normal justify-start rounded-lg bg-zinc-50 px-3 py-2.5 text-left text-sm text-zinc-500 hover:text-zinc-800 dark:bg-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-200"
+                            className="h-auto whitespace-normal justify-start rounded-lg px-3 py-2.5 text-left text-sm"
                           >
                             {prompt}
                           </Button>
@@ -737,11 +740,13 @@ function AtlasChatInner({
                   />
                   <Button
                     type="submit"
+                    size="icon"
                     disabled={isLoading || healthFailed}
                     aria-disabled={!(isLoading || healthFailed) && !input.trim() ? true : undefined}
-                    className="shrink-0 px-5"
+                    aria-label="Send"
+                    className="size-10 shrink-0"
                   >
-                    Ask
+                    <Send className="size-4" />
                   </Button>
                 </form>
               {brandingVisible && <PoweredByAtlas />}

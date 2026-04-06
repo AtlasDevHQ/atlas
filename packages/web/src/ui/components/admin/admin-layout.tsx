@@ -36,8 +36,9 @@ export function AdminLayout({ children }: { children: ReactNode }) {
     adminCheck = data.allowed ? "allowed" : "denied";
   }
 
-  // Loading session (proxy already handled unauthenticated)
-  if (session.isPending || adminCheck === "pending") {
+  // Loading session — only show loading on hard navigation (no cached session).
+  // On client-side nav, session.data persists so we skip the flash.
+  if (!session.data?.user && (session.isPending || adminCheck === "pending")) {
     return (
       <main id="main" tabIndex={-1} className="flex h-dvh items-center justify-center">
         <LoadingState message="Checking access..." />

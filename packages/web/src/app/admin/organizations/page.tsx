@@ -310,7 +310,7 @@ export default function OrganizationsPage() {
               <LoadingState message="Loading..." />
             </div>
           ) : selectedOrg ? (
-            <div className="mt-6 space-y-6">
+            <div className="space-y-6 px-4">
               {/* Members */}
               <div className="space-y-3">
                 <h3 className="flex items-center gap-2 text-sm font-semibold">

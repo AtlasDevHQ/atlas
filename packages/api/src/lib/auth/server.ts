@@ -382,6 +382,26 @@ export function getAuthInstance(): AuthInstance {
               );
             }
           },
+          after: async (session) => {
+            // Emit a login usage event for active-user tracking.
+            // Fire-and-forget — never blocks or fails sign-in.
+            try {
+              const orgId = session.activeOrganizationId;
+              if (!orgId) return; // No workspace context — skip
+
+              const { emitLoginEvent } = await import("@atlas/api/lib/metering");
+              // Intentionally not awaited within the try — emitLoginEvent
+              // handles its own errors internally. We do await here only to
+              // catch dynamic import failures.
+              void emitLoginEvent(orgId, session.userId);
+            } catch (err) {
+              // intentionally best-effort — never block sign-in on metering
+              log.debug(
+                { err: err instanceof Error ? err.message : String(err), userId: session.userId },
+                "Login event emission skipped",
+              );
+            }
+          },
         },
       },
       user: {

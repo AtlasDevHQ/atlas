@@ -979,6 +979,10 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] 16 new tests (7 health + 9 scheduler)
 - [x] Docs updated — scheduled mode section in semantic-expert.mdx + .env.example
 
+### Follow-ups
+- [x] Restrict auto-approval to low-risk amendment types — `ATLAS_EXPERT_AUTO_APPROVE_TYPES` setting (#1308, PR #1310)
+- [x] Cache profiler output for scheduled expert ticks — `profile-cache.ts`, CLI writes cache after profiling (#1307, PR #1309)
+
 ---
 
 ## MCP Prompt Templates
@@ -994,22 +998,21 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 _Untracked ideas. Create issues when committing to work._
 
 ### Expand Reach (build when demand signals appear)
-- Python SDK — `pip install useatlas`, thin HTTP wrapper around Atlas API. Build when a Python user asks for it, not before
-- MongoDB datasource plugin — `@useatlas/mongodb`. Uses aggregation pipeline instead of SQL. Requires custom validation hook (0.6.0)
-- GraphQL datasource plugin — needs custom validation like MongoDB
+- ~~Python SDK~~ — **closed** (#1181). No demand signal. Reopen when a Python user asks
+- ~~MongoDB + GraphQL datasource plugins~~ — **closed** (#1182). Non-SQL needs major architecture work. No demand signal
 - ~~Multi-seed selection in `create-atlas`~~ — **shipped** (#1188). Interactive seed picker (simple/cybersec/ecommerce), `--seed` flag, seed data restructured into `seeds/<name>/`
 
 ### Competitive Positioning
-- Benchmark participation — publish Spider/BIRD results for credibility. Better after `atlas learn` exists (0.7.0)
+- ~~Benchmark participation~~ — **closed** (#1183). Lower priority post-launch. Revisit if needed for credibility
 - ~~"Powered by Atlas" badge on embedded widgets~~ — **shipped** (PR #1265). Opt-out badge on @useatlas/react and script tag widget
-- OSI (Open Semantic Interchange) compatibility — align YAML format with emerging standard (dbt + Cube + Snowflake + ThoughtSpot)
+- ~~OSI (Open Semantic Interchange) compatibility~~ — **closed** (#1184). Standard isn't stable yet. Adopt when it solidifies
 
 ### Product Extensions
 - ~~Dashboard persistence~~ — **shipped** (#1246, PRs #1253–#1258). DB schema + CRUD API, add-to-dashboard from chat, list/view pages with DnD reorder, sharing + public view, auto-refresh via scheduler, AI-driven card suggestions
 - Voice input / natural language voice queries — wait for Web Speech API maturity
-- Multi-agent collaboration — specialist agents per domain with coordinator routing
+- Multi-agent collaboration — specialist agents per domain with coordinator routing (#1178, deferred)
 - ~~`atlas migrate`~~ — **shipped** (#1185, PR #1303). Snapshot, diff, log, rollback, auto-snapshot on `atlas improve` and `atlas init`
-- A/B testing for agent prompts — compare system prompt variants on identical queries
+- ~~A/B testing for agent prompts~~ — **closed** (#1186). Needs replay infra, eval metrics, comparison UI. No demand signal
 
 ### MCP Enhancements
 - WebSocket transport — enables real-time bidirectional communication
@@ -1017,5 +1020,5 @@ _Untracked ideas. Create issues when committing to work._
 - Resource subscriptions — notify connected clients when semantic layer changes
 
 ### Plugin Ecosystem
-- Agent error recovery hooks — plugin hook for custom fallback behavior when tools fail
-- Streaming action approval — SDK method for real-time action approval workflows
+- ~~Agent error recovery hooks~~ — **closed** (#1187). Speculative. Build when plugin authors request specific hooks
+- ~~Streaming action approval~~ — **closed** (#1187). Same — build on demand

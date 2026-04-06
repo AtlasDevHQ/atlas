@@ -63,28 +63,37 @@ export type DemoDataset = "simple" | "cybersec" | "ecommerce";
 
 export const DEMO_DATASETS: Record<
   DemoDataset,
-  { pg: string; label: string }
+  { pg: string; semanticDir: string; label: string }
 > = {
   simple: {
-    pg: "demo.sql",
+    pg: "seeds/simple/seed.sql",
+    semanticDir: "seeds/simple/semantic",
     label: "Demo data loaded: 50 companies, ~200 people, 80 accounts",
   },
   cybersec: {
-    pg: "cybersec.sql",
+    pg: "seeds/cybersec/seed.sql",
+    semanticDir: "seeds/cybersec/semantic",
     label:
       "Cybersec demo loaded: 62 tables, ~500K rows (Sentinel Security SaaS)",
   },
   ecommerce: {
-    pg: "ecommerce.sql",
+    pg: "seeds/ecommerce/seed.sql",
+    semanticDir: "seeds/ecommerce/semantic",
     label:
       "E-commerce demo loaded: 52 tables, ~480K rows (NovaMart DTC brand)",
   },
 };
 
 export function parseDemoArg(args: string[]): DemoDataset | null {
-  if (!args.includes("--demo")) return null;
-  const next = getFlag(args, "--demo");
-  if (!next || next.startsWith("--")) return "simple"; // bare --demo → backward compatible default
+  const hasDemo = args.includes("--demo");
+  const hasSeed = args.includes("--seed");
+  if (!hasDemo && !hasSeed) return null;
+  if (hasDemo && hasSeed) {
+    throw new Error("Cannot use both --demo and --seed. They are aliases — pick one.");
+  }
+  const flag = hasDemo ? "--demo" : "--seed";
+  const next = getFlag(args, flag);
+  if (!next || next.startsWith("--")) return "simple"; // bare flag → backward compatible default
   if (next in DEMO_DATASETS) return next as DemoDataset;
   throw new Error(
     `Unknown demo dataset "${next}". Available: ${Object.keys(DEMO_DATASETS).join(", ")}`,
@@ -604,16 +613,23 @@ async function profileDatasource(
     }
   }
 
-  // For --demo simple, overlay hand-crafted semantic files with richer descriptions
-  if (demoDataset === "simple") {
-    const demoSemanticDir = path.resolve(
+  // Overlay hand-crafted semantic files with richer descriptions for demo datasets
+  if (demoDataset) {
+    const meta = DEMO_DATASETS[demoDataset];
+    const curatedSemanticDir = path.resolve(
       import.meta.dir,
       "../../data",
-      "demo-semantic",
+      meta.semanticDir,
     );
-    if (fs.existsSync(demoSemanticDir)) {
-      console.log(`\nApplying curated demo semantic layer...\n`);
-      copyDirRecursive(demoSemanticDir, outputBase);
+    if (fs.existsSync(curatedSemanticDir)) {
+      console.log(`\nApplying curated ${demoDataset} semantic layer...\n`);
+      copyDirRecursive(curatedSemanticDir, outputBase);
+    } else {
+      console.warn(
+        `\nWarning: Curated semantic layer for "${demoDataset}" not found at ${curatedSemanticDir}.` +
+        `\nThe auto-profiled semantic layer will be used, which may have less descriptive metadata.` +
+        `\nThis usually indicates an incomplete package installation — try reinstalling @atlas/cli.\n`,
+      );
     }
   }
 

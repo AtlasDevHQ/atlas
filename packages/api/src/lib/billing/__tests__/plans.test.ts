@@ -9,6 +9,7 @@ import {
   getPlanLimits,
   isUnlimited,
   getStripePlans,
+  resolvePlanTierFromPriceId,
 } from "@atlas/api/lib/billing/plans";
 
 describe("billing/plans", () => {
@@ -116,6 +117,48 @@ describe("billing/plans", () => {
       const plans = getStripePlans();
       expect(plans.length).toBe(2);
       expect(plans.map((p) => p.name)).toEqual(["team", "enterprise"]);
+    });
+  });
+
+  describe("resolvePlanTierFromPriceId", () => {
+    function cleanStripeEnv() {
+      delete process.env.STRIPE_TEAM_PRICE_ID;
+      delete process.env.STRIPE_TEAM_ANNUAL_PRICE_ID;
+      delete process.env.STRIPE_ENTERPRISE_PRICE_ID;
+    }
+    beforeEach(cleanStripeEnv);
+    afterEach(cleanStripeEnv);
+
+    it("returns null when no price IDs are configured", () => {
+      expect(resolvePlanTierFromPriceId("price_unknown")).toBeNull();
+    });
+
+    it("resolves team monthly price ID", () => {
+      process.env.STRIPE_TEAM_PRICE_ID = "price_team_monthly";
+      expect(resolvePlanTierFromPriceId("price_team_monthly")).toBe("team");
+    });
+
+    it("resolves team annual price ID", () => {
+      process.env.STRIPE_TEAM_PRICE_ID = "price_team_monthly";
+      process.env.STRIPE_TEAM_ANNUAL_PRICE_ID = "price_team_annual";
+      expect(resolvePlanTierFromPriceId("price_team_annual")).toBe("team");
+    });
+
+    it("resolves enterprise price ID", () => {
+      process.env.STRIPE_ENTERPRISE_PRICE_ID = "price_ent_001";
+      expect(resolvePlanTierFromPriceId("price_ent_001")).toBe("enterprise");
+    });
+
+    it("returns null for unrecognized price ID", () => {
+      process.env.STRIPE_TEAM_PRICE_ID = "price_team_monthly";
+      process.env.STRIPE_ENTERPRISE_PRICE_ID = "price_ent_001";
+      expect(resolvePlanTierFromPriceId("price_unknown_999")).toBeNull();
+    });
+
+    it("does not match team annual price when only monthly is set", () => {
+      process.env.STRIPE_TEAM_PRICE_ID = "price_team_monthly";
+      // STRIPE_TEAM_ANNUAL_PRICE_ID is not set
+      expect(resolvePlanTierFromPriceId("price_team_annual")).toBeNull();
     });
   });
 });

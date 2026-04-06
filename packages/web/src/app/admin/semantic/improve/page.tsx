@@ -2,7 +2,8 @@
 
 import { useState, useRef, useMemo } from "react";
 import { useChat, type UIMessage } from "@ai-sdk/react";
-import { DefaultChatTransport } from "ai";
+import { DefaultChatTransport, isToolUIPart, getToolName } from "ai";
+import { getToolArgs } from "@/ui/lib/helpers";
 import { useAtlasConfig } from "@/ui/context";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
@@ -178,9 +179,12 @@ function extractProposals(messages: UIMessage[]): Proposal[] {
   for (const msg of messages) {
     if (msg.role !== "assistant") continue;
     for (const part of msg.parts) {
-      if (part.type === "tool-invocation" && part.toolInvocation.toolName === "proposeAmendment") {
-        const args = part.toolInvocation.args as Record<string, unknown> | undefined;
-        if (args) {
+      if (isToolUIPart(part)) {
+        let name: string;
+        try { name = getToolName(part as Parameters<typeof getToolName>[0]); } catch { continue; }
+        if (name !== "proposeAmendment") continue;
+        const args = getToolArgs(part);
+        if (args.entityName) {
           proposals.push({
             index: idx++,
             entityName: String(args.entityName ?? "unknown"),
@@ -327,7 +331,7 @@ export default function SemanticImprovePage() {
 
       {/* Split view */}
       <div className="flex-1 overflow-hidden">
-        <ResizablePanelGroup direction="horizontal">
+        <ResizablePanelGroup orientation="horizontal">
           {/* Chat panel */}
           <ResizablePanel defaultSize={55} minSize={35}>
             <div className="flex h-full flex-col">
@@ -362,14 +366,16 @@ export default function SemanticImprovePage() {
                           if (part.type === "text") {
                             return <p key={i} className="whitespace-pre-wrap">{part.text}</p>;
                           }
-                          if (part.type === "tool-invocation") {
-                            const { toolName, state } = part.toolInvocation;
+                          if (isToolUIPart(part)) {
+                            let toolName = "tool";
+                            try { toolName = getToolName(part as Parameters<typeof getToolName>[0]); } catch { /* intentionally ignored: unknown tool */ }
+                            const state = (part as Record<string, unknown>).state;
                             return (
                               <div key={i} className="my-1 text-xs text-muted-foreground">
                                 <Badge variant="outline" className="text-[10px]">
                                   {toolName}
                                 </Badge>
-                                {state === "result" && (
+                                {state === "output-available" && (
                                   <span className="ml-1 text-green-600 dark:text-green-400">done</span>
                                 )}
                                 {state === "call" && (

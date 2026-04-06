@@ -905,6 +905,34 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] Publish @useatlas/types 0.0.7 — SEMANTIC_TYPES + profiler exports
 - [x] Fix Effect/Turbopack serverExternalPackages conflict in templates
 - [x] Docs: fix stale AtlasUIProvider references in react.mdx (#1292, #1293)
+- [x] Publish @useatlas/types 0.0.8 + @useatlas/react 0.0.6 — auth types in types, AtlasProvider consolidation in react (#1302)
+- [x] Fix: cast user.role in dashboard pages — CI type-check regression from #1298 (#1300)
+
+---
+
+## Semantic Layer Versioning
+
+**`atlas migrate` CLI** — snapshot, diff, log, rollback for the semantic layer. Auto-snapshots on `atlas improve` and `atlas init`.
+
+- [x] Snapshot library (`packages/cli/lib/migrate/snapshot.ts`) — capture, restore, diff semantic layer state (#1185, PR #1303)
+- [x] CLI commands: `atlas migrate status`, `snapshot`, `diff`, `log`, `rollback` (#1185, PR #1303)
+- [x] Auto-snapshot integration with `atlas improve` and `atlas init`
+- [x] 626-line test suite for snapshot operations
+- [x] Docs updated — CLI reference + semantic expert guide
+
+---
+
+## Multi-Seed Selection
+
+**`create-atlas` seed picker** — choose demo dataset (simple/cybersec/ecommerce) during scaffolding.
+
+- [x] Seed data restructured into `packages/cli/data/seeds/<name>/` (#1188, PR #1304)
+- [x] Interactive seed picker + `--seed` flag for non-interactive mode
+- [x] Ecommerce seed dataset with 14 entities and semantic layer
+- [x] `pruneSeedData()` removes unselected seeds from scaffolded project
+- [x] Backward-compat symlinks for Docker image paths
+- [x] 316-line test suite for seed selection
+- [x] Onboarding route updated for new seed path layout
 
 ---
 

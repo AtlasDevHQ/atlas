@@ -993,6 +993,33 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 
 ---
 
+## Per-Seat Pricing & Billing Hardening
+
+**Transition from flat-rate to per-seat pricing model.** 4 tiers (Starter/Pro/Business/Enterprise) with model-aware token budgets, overage handling, and Stripe webhook hardening.
+
+### Pricing Model
+- [x] Per-seat pricing with model-aware token budgets (#1327, PR #1327)
+- [x] Update pricing page to per-seat model with 4 tiers (#1325)
+- [x] Billing admin page for per-seat pricing (#1326, PR #1329)
+
+### Billing Hardening
+- [x] Enforce member and connection limits per plan tier (#1314, PR #1320)
+- [x] Add missing Stripe webhook handlers — payment failures + plan changes (#1312, #1313, PR #1322)
+- [x] Rate limit Stripe portal session endpoint (#1317, PR #1321)
+- [x] Use cached workspace data for suspension check (#1315, PR #1319)
+- [x] Emit login events for active user tracking (#1316, PR #1318)
+
+### Infrastructure
+- [x] Platform email provider — first-class Resend integration with admin UI (#1324)
+- [x] Fix: dashboard route require crashes server startup (#1311, PR e3894e2b)
+- [x] Fix: org-scope connections table — composite PK (id, org_id) (#1330) — onboarding 409 for all orgs after first
+
+### Open
+- [ ] SSO auto-provisioning bypasses member limit check (#1323)
+- [ ] Fix admin-layout test — cannot resolve @/components/ui/sidebar (#1328)
+
+---
+
 ## Ideas / Backlog
 
 _Untracked ideas. Create issues when committing to work._

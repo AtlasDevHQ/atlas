@@ -165,7 +165,9 @@ For SAML providers, the test:
 
 - Parses the X.509 certificate from the configured `idpCertificate` (PEM format)
 - Validates the certificate is not expired and extracts subject and expiry details
-- Checks that the IdP SSO URL is reachable (HEAD request)
+- Checks that the IdP SSO URL is reachable (HEAD request) — reported in the response but does not affect overall success
+
+The overall test success is determined by certificate validity alone. IdP reachability failures appear in the `errors` array but do not fail the test.
 
 **Response (200):**
 

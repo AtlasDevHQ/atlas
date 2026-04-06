@@ -1,6 +1,6 @@
 ---
 title: Billing & Plans
-description: Per-seat pricing tiers, token budgets, overage handling, Stripe setup, and the usage dashboard.
+description: Per-seat pricing tiers, token budgets, overage handling, Stripe setup, and the billing dashboard.
 icon: CreditCard
 ---
 
@@ -77,7 +77,7 @@ curl -X POST https://your-atlas.example.com/api/v1/billing/byot \
 
 ---
 
-## Usage Dashboard
+## Billing Dashboard
 
 The admin billing dashboard is available at **Admin > Billing** (`/admin/billing`). It shows:
 
@@ -162,15 +162,17 @@ The response contains a `url` field — redirect the user to this URL to open th
 
 ## Stripe Webhook Handling
 
-Atlas handles three Stripe webhook events for subscription lifecycle management:
+Atlas handles Stripe subscription lifecycle events via the Better Auth Stripe plugin:
 
 | Event | Behavior |
 |-------|----------|
-| `checkout.session.completed` | Activates the subscription and sets the workspace plan tier |
-| `customer.subscription.updated` | Syncs plan tier changes (upgrades/downgrades) and invalidates the plan cache |
+| Subscription complete | Activates the subscription and sets the workspace plan tier |
+| Subscription updated | Syncs plan tier changes (upgrades/downgrades) and invalidates the plan cache |
+| Subscription canceled | Downgrades the workspace to free tier |
+| Subscription deleted | Downgrades the workspace to free tier |
 | `invoice.payment_failed` | Logs the failure; auto-suspends the workspace after 3+ consecutive failures |
 
-Plan tier changes from Stripe take effect immediately — the plan cache is invalidated on webhook receipt so the next request reads fresh data from the database.
+Plan tier changes take effect immediately — the plan cache is invalidated on webhook receipt so the next request reads fresh data from the database.
 
 ---
 

@@ -19,12 +19,12 @@ import { apiKey } from "@better-auth/api-key";
 import { scim } from "@better-auth/scim";
 import { stripe as stripePlugin } from "@better-auth/stripe";
 import Stripe from "stripe";
-import { getInternalDB, hasInternalDB, internalQuery, updateWorkspacePlanTier, type PlanTier } from "@atlas/api/lib/db/internal";
+import { getInternalDB, hasInternalDB, internalQuery, updateWorkspacePlanTier, updateWorkspaceStatus, type PlanTier } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 import { isEnterpriseEnabled } from "@atlas/ee/index";
 import { ac, owner as ownerRole, admin as adminRole, member as memberRole } from "@atlas/api/lib/auth/org-permissions";
 import { adminAccessControl, adminRole as adminUserRole, platformAdminRole } from "@atlas/api/lib/auth/admin-permissions";
-import { getStripePlans } from "@atlas/api/lib/billing/plans";
+import { getStripePlans, resolvePlanTierFromPriceId } from "@atlas/api/lib/billing/plans";
 import { invalidatePlanCache } from "@atlas/api/lib/billing/enforcement";
 
 /**
@@ -61,6 +61,7 @@ function buildSocialProviders(): Record<string, { clientId: string; clientSecret
 }
 
 const log = createLogger("auth:server");
+const billingLog = createLogger("billing");
 
 /**
  * Build the Better Auth plugins array.
@@ -185,6 +186,45 @@ function buildPlugins() {
                   }
                 }
               },
+              async onSubscriptionUpdate({ event, subscription }) {
+                const orgId = subscription.referenceId;
+                if (!orgId) return;
+
+                // Resolve the new plan tier from the Stripe subscription's price ID
+                const stripeSubscription = event.data.object as Stripe.Subscription;
+                const priceId = stripeSubscription.items?.data?.[0]?.price?.id;
+                if (!priceId) {
+                  billingLog.warn(
+                    { orgId, subscriptionId: subscription.id },
+                    "Subscription updated but no price ID found on Stripe subscription items — skipping plan sync",
+                  );
+                  return;
+                }
+
+                const newTier = resolvePlanTierFromPriceId(priceId);
+                if (!newTier) {
+                  billingLog.warn(
+                    { orgId, priceId },
+                    "Subscription updated with unrecognized price ID — cannot map to Atlas plan tier",
+                  );
+                  return;
+                }
+
+                try {
+                  await updateWorkspacePlanTier(orgId, newTier);
+                  invalidatePlanCache(orgId);
+                  billingLog.info(
+                    { orgId, newTier, priceId },
+                    "Subscription updated — plan tier synced",
+                  );
+                } catch (err) {
+                  billingLog.error(
+                    { err: err instanceof Error ? err.message : String(err), orgId, newTier, priceId },
+                    "Failed to sync plan tier on subscription update — Stripe will retry webhook",
+                  );
+                  throw err;
+                }
+              },
               async onSubscriptionDeleted({ subscription }) {
                 const orgId = subscription.referenceId;
                 if (orgId) {
@@ -201,6 +241,60 @@ function buildPlugins() {
                   }
                 }
               },
+            },
+            async onEvent(event: Stripe.Event) {
+              if (event.type === "invoice.payment_failed") {
+                const invoice = event.data.object as Stripe.Invoice;
+                const customerId = typeof invoice.customer === "string"
+                  ? invoice.customer
+                  : invoice.customer?.id;
+                // In Stripe API 2025+, subscription lives under parent.subscription_details
+                const parentSub = invoice.parent?.subscription_details?.subscription;
+                const subscriptionId = typeof parentSub === "string"
+                  ? parentSub
+                  : parentSub?.id;
+                const attemptCount = invoice.attempt_count ?? 0;
+
+                billingLog.warn(
+                  { customerId, subscriptionId, attemptCount, invoiceId: invoice.id },
+                  "Invoice payment failed (attempt %d)",
+                  attemptCount,
+                );
+
+                // After 3+ failed attempts, suspend the workspace.
+                // Stripe typically retries 3 times over ~3 weeks with Smart Retries.
+                if (attemptCount >= 3 && subscriptionId) {
+                  try {
+                    // Look up the org by subscription's referenceId in Better Auth's subscription table
+                    const rows = await internalQuery<{ referenceId: string }>(
+                      `SELECT "referenceId" FROM subscription WHERE "stripeSubscriptionId" = $1 LIMIT 1`,
+                      [subscriptionId],
+                    );
+                    const orgId = rows[0]?.referenceId;
+                    if (orgId) {
+                      await updateWorkspaceStatus(orgId, "suspended");
+                      invalidatePlanCache(orgId);
+                      billingLog.warn(
+                        { orgId, subscriptionId, attemptCount },
+                        "Workspace suspended after %d failed payment attempts",
+                        attemptCount,
+                      );
+                    } else {
+                      billingLog.warn(
+                        { subscriptionId },
+                        "Cannot suspend workspace — no subscription found for Stripe subscription ID",
+                      );
+                    }
+                  } catch (err) {
+                    billingLog.error(
+                      { err: err instanceof Error ? err.message : String(err), subscriptionId, attemptCount },
+                      "Failed to suspend workspace after repeated payment failures",
+                    );
+                    // Do not re-throw — the onEvent handler should not cause Stripe to retry
+                    // the entire webhook. The payment failure is already recorded by Stripe.
+                  }
+                }
+              }
             },
           }),
         );

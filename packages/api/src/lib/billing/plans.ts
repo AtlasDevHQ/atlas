@@ -153,3 +153,23 @@ export function getStripePlans(): Array<{
 
   return plans;
 }
+
+/**
+ * Resolve a Stripe price ID back to an Atlas PlanTier.
+ *
+ * Checks both monthly and annual price IDs from environment variables.
+ * Returns null if the price ID doesn't match any configured plan.
+ */
+export function resolvePlanTierFromPriceId(priceId: string): PlanTier | null {
+  const teamPriceId = process.env.STRIPE_TEAM_PRICE_ID;
+  const teamAnnualPriceId = process.env.STRIPE_TEAM_ANNUAL_PRICE_ID;
+  const enterprisePriceId = process.env.STRIPE_ENTERPRISE_PRICE_ID;
+
+  if (teamPriceId && (priceId === teamPriceId || (teamAnnualPriceId && priceId === teamAnnualPriceId))) {
+    return "team";
+  }
+  if (enterprisePriceId && priceId === enterprisePriceId) {
+    return "enterprise";
+  }
+  return null;
+}

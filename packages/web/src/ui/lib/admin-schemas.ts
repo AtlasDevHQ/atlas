@@ -510,6 +510,16 @@ export const BillingStatusSchema = z.object({
     periodStart: z.string(),
     periodEnd: z.string(),
   }),
+  seats: z.object({
+    count: z.number(),
+    max: z.number().nullable(),
+  }).optional(),
+  connections: z.object({
+    count: z.number(),
+    max: z.number().nullable(),
+  }).optional(),
+  currentModel: z.string().optional(),
+  overagePerMillionTokens: z.number().optional(),
   subscription: z.object({
     stripeSubscriptionId: z.string(),
     plan: z.string(),

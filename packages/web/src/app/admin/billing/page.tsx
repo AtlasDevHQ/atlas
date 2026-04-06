@@ -6,6 +6,13 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
 import { Switch } from "@/components/ui/switch";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
@@ -21,7 +28,10 @@ import {
   Database,
   Coins,
   ServerOff,
+  Bot,
+  DollarSign,
 } from "lucide-react";
+import Link from "next/link";
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -50,6 +60,16 @@ interface BillingStatus {
     periodStart: string;
     periodEnd: string;
   };
+  seats?: {
+    count: number;
+    max: number | null;
+  };
+  connections?: {
+    count: number;
+    max: number | null;
+  };
+  currentModel?: string;
+  overagePerMillionTokens?: number;
   subscription: {
     stripeSubscriptionId: string;
     plan: string;
@@ -64,6 +84,7 @@ function tierVariant(tier: string): "default" | "secondary" | "outline" {
     case "business":
       return "default";
     case "pro":
+    case "starter":
       return "secondary";
     default:
       return "outline";
@@ -73,13 +94,21 @@ function tierVariant(tier: string): "default" | "secondary" | "outline" {
 function overageColor(status: string): string {
   switch (status) {
     case "exceeded":
+    case "hard_limit":
       return "text-destructive";
     case "warning":
+    case "soft_limit":
       return "text-amber-600 dark:text-amber-400";
     default:
       return "text-muted-foreground";
   }
 }
+
+const MODEL_OPTIONS = [
+  { value: "claude-haiku-4-5", label: "Haiku 4.5 \u2014 fastest, lowest cost" },
+  { value: "claude-sonnet-4-6", label: "Sonnet 4.6 \u2014 balanced" },
+  { value: "claude-opus-4-6", label: "Opus 4.6 \u2014 most capable" },
+] as const;
 
 // ── Component ─────────────────────────────────────────────────────
 
@@ -125,12 +154,22 @@ export default function BillingPage() {
             <div className="space-y-6">
               <div className="grid gap-6 lg:grid-cols-2">
                 <PlanCard data={data} />
-                <PortalCard data={data} />
+                <TokenUsageCard data={data} />
               </div>
 
-              <UsageLimitsCard data={data} />
+              <div className="grid gap-6 lg:grid-cols-2">
+                <ModelCard data={data} onSaved={refetch} />
+                <ResourcesCard data={data} />
+              </div>
 
-              <ByotCard data={data} onToggled={refetch} />
+              {(data.overagePerMillionTokens ?? 0) > 0 && (
+                <OverageCard data={data} />
+              )}
+
+              <div className="grid gap-6 lg:grid-cols-2">
+                <PortalCard data={data} />
+                <ByotCard data={data} onToggled={refetch} />
+              </div>
             </div>
           )}
         </AdminContentWrapper>
@@ -174,7 +213,9 @@ function SelfHostedCard() {
 // ── Plan card ─────────────────────────────────────────────────────
 
 function PlanCard({ data }: { data: BillingStatus }) {
-  const { plan, subscription } = data;
+  const { plan, usage } = data;
+  const seatCount = data.seats?.count ?? usage.seatCount;
+  const totalMonthly = plan.pricePerSeat * seatCount;
 
   return (
     <Card className="shadow-none">
@@ -196,20 +237,245 @@ function PlanCard({ data }: { data: BillingStatus }) {
           )}
         </div>
 
+        {plan.pricePerSeat > 0 && (
+          <p className="text-sm text-muted-foreground">
+            ${plan.pricePerSeat}/seat/mo &times; {seatCount} {seatCount === 1 ? "seat" : "seats"} = <span className="font-semibold text-foreground">${totalMonthly}/mo</span>
+          </p>
+        )}
+
         {plan.tier === "trial" && plan.trialEndsAt && (
           <p className="text-sm text-muted-foreground">
             Trial ends {formatDate(plan.trialEndsAt)}
           </p>
         )}
 
-        {subscription && (
+        {data.subscription && (
           <p className="text-sm text-muted-foreground">
             Subscription status:{" "}
-            <Badge variant={subscription.status === "active" ? "secondary" : "outline"} className="ml-1 text-xs">
-              {subscription.status}
+            <Badge variant={data.subscription.status === "active" ? "secondary" : "outline"} className="ml-1 text-xs">
+              {data.subscription.status}
             </Badge>
           </p>
         )}
+      </CardContent>
+    </Card>
+  );
+}
+
+// ── Token usage card ────────────────────────────────────────────
+
+function TokenUsageCard({ data }: { data: BillingStatus }) {
+  const { usage, limits, plan } = data;
+
+  if (plan.byot) {
+    return (
+      <Card className="shadow-none">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <Coins className="size-4" />
+            Token Usage
+          </CardTitle>
+          <CardDescription>
+            Current billing period: {formatDate(usage.periodStart)} – {formatDate(usage.periodEnd)}
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="flex items-center gap-2 rounded-md border border-violet-200 bg-violet-50 px-4 py-3 dark:border-violet-800 dark:bg-violet-950/30">
+            <Zap className="size-4 text-violet-600 dark:text-violet-400" />
+            <span className="text-sm font-medium text-violet-700 dark:text-violet-300">
+              Unlimited — using your own API key
+            </span>
+          </div>
+          <p className="mt-3 text-sm text-muted-foreground">
+            Tokens used this period: {formatNumber(usage.tokenCount)}
+          </p>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  return (
+    <Card className="shadow-none">
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-base">
+          <Coins className="size-4" />
+          Token Usage
+        </CardTitle>
+        <CardDescription>
+          Current billing period: {formatDate(usage.periodStart)} – {formatDate(usage.periodEnd)}
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        <div className="flex items-center justify-between text-sm">
+          <span className="font-medium">Token Budget</span>
+          <span className={`font-medium ${overageColor(usage.tokenOverageStatus)}`}>
+            {limits.totalTokenBudget !== null
+              ? `${formatNumber(usage.tokenCount)} / ${formatNumber(limits.totalTokenBudget)}`
+              : formatNumber(usage.tokenCount)}
+          </span>
+        </div>
+        {limits.totalTokenBudget !== null && (
+          <Progress value={Math.min(usage.tokenUsagePercent, 100)} className="h-2" />
+        )}
+        {limits.totalTokenBudget === null && (
+          <Badge variant="outline" className="text-xs">Unlimited</Badge>
+        )}
+        {limits.tokenBudgetPerSeat !== null && (
+          <p className="text-xs text-muted-foreground">
+            {formatNumber(limits.tokenBudgetPerSeat)} tokens/seat &times; {data.seats?.count ?? usage.seatCount} seats
+          </p>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+// ── Model card ──────────────────────────────────────────────────
+
+function ModelCard({ data, onSaved }: { data: BillingStatus; onSaved: () => void }) {
+  const currentModel = data.currentModel ?? data.plan.defaultModel ?? "default";
+
+  const { mutate, saving, error } = useAdminMutation({
+    path: "/api/v1/admin/settings/ATLAS_MODEL",
+    method: "PUT",
+    invalidates: onSaved,
+  });
+
+  async function handleModelChange(value: string) {
+    await mutate({ body: { value } });
+  }
+
+  return (
+    <Card className="shadow-none">
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-base">
+          <Bot className="size-4" />
+          AI Model
+        </CardTitle>
+        <CardDescription>
+          Select the default model for this workspace.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-3">
+        {error && <ErrorBanner message={error} />}
+        <Select value={currentModel} onValueChange={handleModelChange} disabled={saving}>
+          <SelectTrigger aria-label="AI Model">
+            <SelectValue placeholder="Select a model" />
+          </SelectTrigger>
+          <SelectContent>
+            {MODEL_OPTIONS.map((opt) => (
+              <SelectItem key={opt.value} value={opt.value}>
+                {opt.label}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        {saving && (
+          <p className="text-xs text-muted-foreground">Saving...</p>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+// ── Resources card ──────────────────────────────────────────────
+
+function ResourcesCard({ data }: { data: BillingStatus }) {
+  const seats = data.seats ?? { count: data.usage.seatCount, max: data.limits.maxSeats };
+  const connections = data.connections ?? { count: 0, max: data.limits.maxConnections };
+
+  return (
+    <Card className="shadow-none">
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-base">
+          <Users className="size-4" />
+          Resources
+        </CardTitle>
+        <CardDescription>Seat and connection usage vs plan limits.</CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-5">
+        <ResourceRow
+          label="Seats"
+          icon={<Users className="size-4" />}
+          count={seats.count}
+          max={seats.max}
+          href="/admin/users"
+        />
+        <ResourceRow
+          label="Connections"
+          icon={<Database className="size-4" />}
+          count={connections.count}
+          max={connections.max}
+        />
+      </CardContent>
+    </Card>
+  );
+}
+
+function ResourceRow({
+  label,
+  icon,
+  count,
+  max,
+  href,
+}: {
+  label: string;
+  icon: React.ReactNode;
+  count: number;
+  max: number | null;
+  href?: string;
+}) {
+  const isUnlimited = max === null;
+  const percent = isUnlimited || max === 0 ? 0 : Math.round((count / max) * 100);
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2 text-sm font-medium">
+          <span className="text-muted-foreground">{icon}</span>
+          {href ? (
+            <Link href={href} className="underline-offset-4 hover:underline">
+              {label}
+            </Link>
+          ) : (
+            label
+          )}
+        </div>
+        {isUnlimited ? (
+          <Badge variant="outline" className="text-xs">Unlimited</Badge>
+        ) : (
+          <span className="text-sm font-medium">
+            {count} / {max}
+          </span>
+        )}
+      </div>
+      {!isUnlimited && (
+        <Progress value={Math.min(percent, 100)} className="h-2" />
+      )}
+    </div>
+  );
+}
+
+// ── Overage card ────────────────────────────────────────────────
+
+function OverageCard({ data }: { data: BillingStatus }) {
+  const rate = data.overagePerMillionTokens ?? 0;
+
+  return (
+    <Card className="shadow-none">
+      <CardHeader>
+        <CardTitle className="flex items-center gap-2 text-base">
+          <DollarSign className="size-4" />
+          Overage Pricing
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        <p className="text-sm text-muted-foreground">
+          Usage beyond your included token budget is billed at{" "}
+          <span className="font-semibold text-foreground">
+            ${rate.toFixed(2)}/million tokens
+          </span>.
+        </p>
       </CardContent>
     </Card>
   );
@@ -283,107 +549,6 @@ function PortalCard({ data }: { data: BillingStatus }) {
         )}
       </CardContent>
     </Card>
-  );
-}
-
-// ── Usage vs limits card ──────────────────────────────────────────
-
-function UsageLimitsCard({ data }: { data: BillingStatus }) {
-  const { usage, limits } = data;
-
-  return (
-    <Card className="shadow-none">
-      <CardHeader>
-        <CardTitle className="text-base">Usage vs Limits</CardTitle>
-        <CardDescription>
-          Current billing period: {formatDate(usage.periodStart)} – {formatDate(usage.periodEnd)}
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
-        <div className="grid gap-6 sm:grid-cols-2">
-          <UsageRow
-            label="Token Budget"
-            icon={<Coins className="size-4" />}
-            used={usage.tokenCount}
-            limit={limits.totalTokenBudget}
-            percent={usage.tokenUsagePercent}
-            status={usage.tokenOverageStatus}
-          />
-          <UsageRow
-            label="Seats"
-            icon={<Users className="size-4" />}
-            used={usage.seatCount}
-            limit={limits.maxSeats}
-          />
-          <UsageRow
-            label="Connections"
-            icon={<Database className="size-4" />}
-            limit={limits.maxConnections}
-          />
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
-function UsageRow({
-  label,
-  icon,
-  used,
-  limit,
-  percent,
-  status,
-}: {
-  label: string;
-  icon: React.ReactNode;
-  used?: number;
-  limit: number | null;
-  percent?: number;
-  status?: string;
-}) {
-  const isUnlimited = limit === null;
-
-  return (
-    <div className="space-y-2">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2 text-sm font-medium">
-          <span className="text-muted-foreground">{icon}</span>
-          {label}
-        </div>
-        <UsageValue used={used} limit={limit} isUnlimited={isUnlimited} status={status} />
-      </div>
-      {!isUnlimited && percent !== undefined && (
-        <Progress value={Math.min(percent, 100)} className="h-2" />
-      )}
-    </div>
-  );
-}
-
-function UsageValue({
-  used,
-  limit,
-  isUnlimited,
-  status,
-}: {
-  used?: number;
-  limit: number | null;
-  isUnlimited: boolean;
-  status?: string;
-}) {
-  if (isUnlimited) {
-    return <Badge variant="outline" className="text-xs">Unlimited</Badge>;
-  }
-  if (used !== undefined) {
-    return (
-      <span className={`text-sm font-medium ${overageColor(status ?? "ok")}`}>
-        {formatNumber(used)} / {formatNumber(limit!)}
-      </span>
-    );
-  }
-  return (
-    <span className="text-sm text-muted-foreground">
-      Limit: {formatNumber(limit!)}
-    </span>
   );
 }
 

@@ -25,6 +25,7 @@ import { createLogger } from "@atlas/api/lib/logger";
 import {
   hasInternalDB,
   getWorkspaceDetails,
+  internalQuery,
   type WorkspaceRow,
 } from "@atlas/api/lib/db/internal";
 import { getCurrentPeriodUsage } from "@atlas/api/lib/metering";
@@ -137,8 +138,11 @@ export async function checkPlanLimits(
         [orgId],
       );
       seatCount = rows[0]?.count ?? 1;
-    } catch {
-      // intentionally best-effort: default to 1 seat if member count fails
+    } catch (err) {
+      log.warn(
+        { err: err instanceof Error ? err.message : String(err), orgId },
+        "Failed to query member count for plan enforcement — defaulting to 1 seat",
+      );
       seatCount = 1;
     }
   }
@@ -191,7 +195,7 @@ export async function checkPlanLimits(
   }
 
   // Token budget check — budget scales with seat count
-  const totalBudget = computeTokenBudget(tier, seatCount);
+  const totalBudget = computeTokenBudget(tier, seatCount ?? 1);
   if (!isUnlimited(totalBudget)) {
     try {
       const usage = await getCurrentPeriodUsage(orgId);

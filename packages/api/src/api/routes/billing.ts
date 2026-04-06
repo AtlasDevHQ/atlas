@@ -29,6 +29,7 @@ import {
 import { getCurrentPeriodUsage } from "@atlas/api/lib/metering";
 import { getPlanDefinition, getPlanLimits, computeTokenBudget, isUnlimited } from "@atlas/api/lib/billing/plans";
 import { buildMetricStatus } from "@atlas/api/lib/billing/enforcement";
+import { getSettingLive } from "@atlas/api/lib/settings";
 import { ErrorSchema } from "./shared-schemas";
 import { adminAuth, requestContext, type AuthEnv } from "./middleware";
 
@@ -280,32 +281,62 @@ billing.openapi(getBillingStatusRoute, async (c) => {
     const plan = getPlanDefinition(workspace.plan_tier);
     const limits = getPlanLimits(workspace.plan_tier);
 
-    // Fetch active subscription from Better Auth's subscription table (if exists)
-    let subscription: { stripeSubscriptionId: string; plan: string; status: string } | null = null;
-    const subResult = yield* Effect.tryPromise({
-      try: () => internalQuery<{
+    // Fetch seat count, connection count, subscription, and current model in parallel
+    const [seatCountResult, connectionCountResult, subResult, currentModelSetting] = yield* Effect.promise(() => Promise.all([
+      // Actual member count from Better Auth's member table
+      internalQuery<{ count: number }>(
+        `SELECT COUNT(*)::int AS count FROM member WHERE "organizationId" = $1`,
+        [orgId],
+      ).catch((err) => {
+        log.warn(
+          { err: err instanceof Error ? err.message : String(err), orgId },
+          "Failed to query member table for seat count — defaulting to 1",
+        );
+        return [{ count: 1 }] as Array<{ count: number }>;
+      }),
+      // Connection count for this workspace
+      internalQuery<{ count: number }>(
+        `SELECT COUNT(*)::int AS count FROM connections WHERE org_id = $1`,
+        [orgId],
+      ).catch((err) => {
+        log.warn(
+          { err: err instanceof Error ? err.message : String(err), orgId },
+          "Failed to query connections table — defaulting to 0",
+        );
+        return [{ count: 0 }] as Array<{ count: number }>;
+      }),
+      // Active subscription from Better Auth's subscription table
+      internalQuery<{
         stripeSubscriptionId: string;
         plan: string;
         status: string;
       }>(
         `SELECT "stripeSubscriptionId", plan, status FROM subscription WHERE "referenceId" = $1 AND status IN ('active', 'trialing') LIMIT 1`,
         [orgId],
-      ),
-      catch: (err) => err instanceof Error ? err : new Error(String(err)),
-    }).pipe(Effect.catchAll((err) => {
-      // Subscription table may not exist if Stripe plugin hasn't run migrations yet.
-      log.debug(
-        { err: err.message, orgId },
-        "Failed to query subscription table — may not exist yet",
-      );
-      return Effect.succeed([] as Array<{ stripeSubscriptionId: string; plan: string; status: string }>);
-    }));
-    if (subResult.length > 0) {
-      subscription = subResult[0];
-    }
+      ).catch((err) => {
+        // Subscription table may not exist if Stripe plugin hasn't run migrations yet.
+        log.debug(
+          { err: err instanceof Error ? err.message : String(err), orgId },
+          "Failed to query subscription table — may not exist yet",
+        );
+        return [] as Array<{ stripeSubscriptionId: string; plan: string; status: string }>;
+      }),
+      // Current model setting (live read for accuracy)
+      getSettingLive("ATLAS_MODEL", orgId).catch((err) => {
+        log.debug(
+          { err: err instanceof Error ? err.message : String(err), orgId },
+          "Failed to read ATLAS_MODEL setting — using plan default",
+        );
+        return undefined;
+      }),
+    ]));
 
-    // Compute per-seat token budget (scales with active users as a proxy for seat count)
-    const seatCount = Math.max(1, usage.activeUsers);
+    const seatCount = Math.max(1, seatCountResult[0]?.count ?? 1);
+    const connectionCount = connectionCountResult[0]?.count ?? 0;
+    const subscription = subResult.length > 0 ? subResult[0] : null;
+    const currentModel = currentModelSetting || plan.defaultModel || "default";
+
+    // Compute per-seat token budget (scales with actual seat count)
     const totalTokenBudget = computeTokenBudget(workspace.plan_tier, seatCount);
     const tokenLimit = isUnlimited(totalTokenBudget) ? null : totalTokenBudget;
 
@@ -338,6 +369,16 @@ billing.openapi(getBillingStatusRoute, async (c) => {
         periodStart: usage.periodStart,
         periodEnd: usage.periodEnd,
       },
+      seats: {
+        count: seatCount,
+        max: isUnlimited(limits.maxSeats) ? null : limits.maxSeats,
+      },
+      connections: {
+        count: connectionCount,
+        max: isUnlimited(limits.maxConnections) ? null : limits.maxConnections,
+      },
+      currentModel,
+      overagePerMillionTokens: plan.overagePerMillionTokens,
       subscription: subscription ? {
         stripeSubscriptionId: subscription.stripeSubscriptionId,
         plan: subscription.plan,

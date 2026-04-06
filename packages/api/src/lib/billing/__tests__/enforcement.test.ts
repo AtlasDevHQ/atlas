@@ -518,7 +518,7 @@ describe("checkResourceLimit", () => {
       await checkResourceLimit("org-1", "connections", 1),
     );
     expect(denied.limit).toBe(1);
-    expect(denied.errorMessage).toContain("1 connections");
+    expect(denied.errorMessage).toContain("1 connection");
     expect(denied.errorMessage).toContain("Upgrade");
   });
 

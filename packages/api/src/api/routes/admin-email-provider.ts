@@ -13,8 +13,8 @@ import { createRoute, z } from "@hono/zod-openapi";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { RequestContext } from "@atlas/api/lib/effect/services";
-import { getSetting, setSetting, deleteSetting, getSettingDefinition } from "@atlas/api/lib/settings";
-import { sendEmail } from "@atlas/api/lib/email/delivery";
+import { getSetting, setSetting, deleteSetting, getSettingsForAdmin } from "@atlas/api/lib/settings";
+import { sendEmail, sendEmailWithTransport } from "@atlas/api/lib/email/delivery";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createPlatformRouter } from "./admin-router";
 
@@ -39,16 +39,13 @@ function maskSecret(value: string | undefined): string | undefined {
   return `${value.slice(0, 4)}••••${value.slice(-4)}`;
 }
 
-/** Determine the source of a setting value. */
+/** Determine the source of a setting value using the authoritative settings resolution. */
 function resolveSource(key: string): "override" | "env" | "default" {
-  const def = getSettingDefinition(key);
-  // If the setting has a DB override, it's "override"
-  // getSetting resolves through the chain — check if env var exists
-  const dbValue = getSetting(key);
-  const envValue = process.env[def?.envVar ?? key];
-
-  if (dbValue && dbValue !== envValue && dbValue !== def?.default) return "override";
-  if (envValue !== undefined) return "env";
+  const allSettings = getSettingsForAdmin(undefined, true);
+  const setting = allSettings.find((s) => s.key === key);
+  if (!setting) return "default";
+  if (setting.source === "override") return "override";
+  if (setting.source === "env") return "env";
   return "default";
 }
 
@@ -79,7 +76,9 @@ const SetEmailProviderBodySchema = z.object({
 
 const TestEmailProviderBodySchema = z.object({
   provider: z.enum(["resend", "sendgrid", "postmark", "smtp", "ses"]),
-  apiKey: z.string().min(1),
+  apiKey: z.string().min(1).optional().openapi({
+    description: "Provider API key to test. Omit to test the currently saved key.",
+  }),
   fromAddress: z.string().min(1),
   recipientEmail: z.string().email(),
 });
@@ -251,11 +250,10 @@ adminEmailProvider.openapi(deleteConfigRoute, async (c) => {
       return c.json({ error: "not_available", message: "No internal database configured.", requestId }, 404);
     }
 
-    // Delete all email-related setting overrides
+    // Delete all email-related setting overrides.
+    // deleteSetting() does not throw when no override exists (DELETE matching 0 rows is not an error).
     const keys = ["ATLAS_EMAIL_PROVIDER", "RESEND_API_KEY", "SENDGRID_API_KEY", "POSTMARK_SERVER_TOKEN", "ATLAS_EMAIL_FROM"];
-    yield* Effect.forEach(keys, (key) => Effect.promise(() => deleteSetting(key).catch(() => {
-      // intentionally ignored: key may not have an override
-    })));
+    yield* Effect.forEach(keys, (key) => Effect.promise(() => deleteSetting(key)));
 
     return c.json({ message: "Email provider configuration reset to defaults." }, 200);
   }), { label: "delete platform email config" });
@@ -267,16 +265,36 @@ adminEmailProvider.openapi(testConfigRoute, async (c) => {
     yield* RequestContext;
     const body = c.req.valid("json");
 
-    // Send a test email using the currently configured platform delivery chain.
-    // The saved settings (or env vars) are used — the test validates the live config.
-    const result = yield* Effect.tryPromise({
-      try: () => sendEmail({
-        to: body.recipientEmail,
-        subject: "Atlas Email Provider Test",
-        html: "<p>This is a test email from Atlas to verify your email provider configuration.</p><p>If you received this email, your configuration is working correctly.</p>",
-      }),
-      catch: (err) => new Error(err instanceof Error ? err.message : String(err)),
-    });
+    const testMessage = {
+      to: body.recipientEmail,
+      subject: "Atlas Email Provider Test",
+      html: "<p>This is a test email from Atlas to verify your email provider configuration.</p><p>If you received this email, your configuration is working correctly.</p>",
+    };
+
+    // Use provided credentials when available; fall back to saved/live config
+    const testApiKey = body.apiKey;
+    let result;
+    if (testApiKey) {
+      // Build transport from provided credentials — tests before save
+      const config: Record<string, unknown> = {};
+      if (body.provider === "resend" || body.provider === "sendgrid") config.apiKey = testApiKey;
+      if (body.provider === "postmark") config.serverToken = testApiKey;
+
+      result = yield* Effect.tryPromise({
+        try: () => sendEmailWithTransport(testMessage, {
+          provider: body.provider,
+          senderAddress: body.fromAddress,
+          config,
+        }),
+        catch: (err) => new Error(err instanceof Error ? err.message : String(err)),
+      });
+    } else {
+      // No new credentials — test the saved platform config
+      result = yield* Effect.tryPromise({
+        try: () => sendEmail(testMessage),
+        catch: (err) => new Error(err instanceof Error ? err.message : String(err)),
+      });
+    }
 
     if (result.success) {
       return c.json({ success: true, message: `Test email sent successfully via ${result.provider}.` }, 200);

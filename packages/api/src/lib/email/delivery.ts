@@ -69,25 +69,38 @@ function getPlatformEmailConfig(): { provider: string; senderAddress: string; co
   switch (provider) {
     case "resend": {
       const apiKey = getSetting("RESEND_API_KEY");
-      if (!apiKey) return null;
+      if (!apiKey) {
+        log.warn({ provider }, "Platform email provider is resend but RESEND_API_KEY is not set — falling through");
+        return null;
+      }
       return { provider: "resend", senderAddress: fromAddress, config: { apiKey } };
     }
     case "sendgrid": {
       const apiKey = getSetting("SENDGRID_API_KEY");
-      if (!apiKey) return null;
+      if (!apiKey) {
+        log.warn({ provider }, "Platform email provider is sendgrid but SENDGRID_API_KEY is not set — falling through");
+        return null;
+      }
       return { provider: "sendgrid", senderAddress: fromAddress, config: { apiKey } };
     }
     case "postmark": {
       const serverToken = getSetting("POSTMARK_SERVER_TOKEN");
-      if (!serverToken) return null;
+      if (!serverToken) {
+        log.warn({ provider }, "Platform email provider is postmark but POSTMARK_SERVER_TOKEN is not set — falling through");
+        return null;
+      }
       return { provider: "postmark", senderAddress: fromAddress, config: { serverToken } };
     }
     case "smtp":
     case "ses":
       // SMTP/SES at platform level still require the ATLAS_SMTP_URL bridge
-      if (!process.env.ATLAS_SMTP_URL) return null;
+      if (!process.env.ATLAS_SMTP_URL) {
+        log.warn({ provider }, "Platform email provider requires ATLAS_SMTP_URL bridge — falling through");
+        return null;
+      }
       return { provider, senderAddress: fromAddress, config: {} };
     default:
+      log.warn({ provider }, "Unrecognized platform email provider — falling through to env-var chain");
       return null;
   }
 }
@@ -133,6 +146,17 @@ export async function sendEmail(message: EmailMessage, orgId?: string): Promise<
     "Email delivery skipped — no email provider configured",
   );
   return { success: false, provider: "log", error: "No email delivery backend configured (configure a platform email provider or set RESEND_API_KEY)" };
+}
+
+/**
+ * Send an email using explicit transport credentials.
+ * Used by the admin test endpoint to validate credentials before saving.
+ */
+export async function sendEmailWithTransport(
+  message: EmailMessage,
+  transport: { provider: string; senderAddress: string; config: Record<string, unknown> },
+): Promise<DeliveryResult> {
+  return deliverViaTransport(message, transport);
 }
 
 /**
@@ -189,6 +213,7 @@ async function deliverWebhook(message: EmailMessage, from: string): Promise<Deli
         subject: message.subject,
         html: message.html,
       }),
+      signal: AbortSignal.timeout(15_000),
     });
 
     if (!resp.ok) {
@@ -222,6 +247,7 @@ async function deliverResend(message: EmailMessage, from: string, apiKey?: strin
         subject: message.subject,
         html: message.html,
       }),
+      signal: AbortSignal.timeout(15_000),
     });
 
     if (!resp.ok) {

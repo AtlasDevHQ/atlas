@@ -181,10 +181,11 @@ export default function EmailProviderPage() {
 
     const body: Record<string, string> = {
       provider: values.provider,
-      apiKey: values.apiKey || "use-existing",
       fromAddress: values.fromAddress.trim() || existingConfig?.fromAddress || "Atlas <noreply@useatlas.dev>",
       recipientEmail: values.recipientEmail.trim(),
     };
+    // Only include apiKey when the user entered new credentials — omit to test saved config
+    if (values.apiKey) body.apiKey = values.apiKey;
 
     const result = await testMutate({ body });
     if (result.ok && result.data) {

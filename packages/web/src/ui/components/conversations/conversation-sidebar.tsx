@@ -7,7 +7,6 @@ import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { Conversation } from "../../lib/types";
 import { ConversationList } from "./conversation-list";
-import { ErrorBoundary } from "../error-boundary";
 
 type SidebarFilter = "all" | "saved";
 

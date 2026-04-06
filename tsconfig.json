@@ -14,5 +14,5 @@
     "jsx": "react-jsx",
     "incremental": true
   },
-  "exclude": ["node_modules", "create-atlas", "packages/web", "packages/react", "examples/docker/scripts", "examples/nextjs-standalone", "apps/www", "apps/docs", "plugins/obsidian", "scripts"]
+  "exclude": ["node_modules", "create-atlas", "packages/web", "packages/react", "examples/docker/scripts", "examples/nextjs-standalone", "apps/www", "apps/docs", "plugins/obsidian", "scripts", "deploy"]
 }

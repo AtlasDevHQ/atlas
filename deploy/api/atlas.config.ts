@@ -12,7 +12,7 @@
  *   - ATLAS_REGION_APAC_DB_URL
  */
 
-import { defineConfig } from "@atlas/api/lib/config";
+import { defineConfig } from "./packages/api/src/lib/config";
 
 export default defineConfig({
   // ── Datasource ──────────────────────────────────────────────────
@@ -70,21 +70,21 @@ export default defineConfig({
 
   // ── Data Residency ──────────────────────────────────────────────
   residency: {
-    defaultRegion: "us-west",
+    defaultRegion: "us",
     strictRouting: false,
     regions: {
-      "us-west": {
-        label: "US West (Oregon)",
+      "us": {
+        label: "United States",
         databaseUrl: process.env.ATLAS_REGION_US_DB_URL ?? process.env.DATABASE_URL!,
         apiUrl: "https://api.useatlas.dev",
       },
-      "eu-west": {
-        label: "EU West (Netherlands)",
+      "eu": {
+        label: "Europe",
         databaseUrl: process.env.ATLAS_REGION_EU_DB_URL!,
         apiUrl: "https://api-eu.useatlas.dev",
       },
-      "apac-southeast": {
-        label: "Asia Pacific (Singapore)",
+      "apac": {
+        label: "Asia Pacific",
         databaseUrl: process.env.ATLAS_REGION_APAC_DB_URL!,
         apiUrl: "https://api-apac.useatlas.dev",
       },

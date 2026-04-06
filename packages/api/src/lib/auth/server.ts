@@ -25,7 +25,7 @@ import { isEnterpriseEnabled } from "@atlas/ee/index";
 import { ac, owner as ownerRole, admin as adminRole, member as memberRole } from "@atlas/api/lib/auth/org-permissions";
 import { adminAccessControl, adminRole as adminUserRole, platformAdminRole } from "@atlas/api/lib/auth/admin-permissions";
 import { getStripePlans, resolvePlanTierFromPriceId } from "@atlas/api/lib/billing/plans";
-import { invalidatePlanCache } from "@atlas/api/lib/billing/enforcement";
+import { invalidatePlanCache, checkResourceLimit } from "@atlas/api/lib/billing/enforcement";
 
 /**
  * Build the socialProviders config from environment variables.
@@ -329,6 +329,94 @@ type AuthInstance = ReturnType<typeof betterAuth>;
 
 let _instance: AuthInstance | null = null;
 
+/**
+ * SSO domain-based auto-provisioning: if the user's email domain matches an
+ * enabled SSO provider, auto-add them to that org (respecting the member seat
+ * limit, failing open on billing infrastructure errors).
+ *
+ * @internal — exported for testing.
+ */
+export async function _autoProvisionSsoMember(user: { id: string; email: string | null }): Promise<void> {
+  try {
+    if (!isEnterpriseEnabled() || !hasInternalDB() || !user.email) return;
+
+    const domain = user.email.split("@")[1]?.toLowerCase();
+    if (!domain) return;
+
+    const providers = await internalQuery<{ org_id: string }>(
+      `SELECT org_id FROM sso_providers WHERE domain = $1 AND enabled = true LIMIT 1`,
+      [domain],
+    );
+    if (providers.length === 0) return;
+
+    const orgId = providers[0].org_id;
+
+    // Check if already a member (idempotent)
+    const existing = await internalQuery<{ id: string }>(
+      `SELECT id FROM member WHERE "userId" = $1 AND "organizationId" = $2 LIMIT 1`,
+      [user.id, orgId],
+    );
+    if (existing.length > 0) return;
+
+    // Check member limit before auto-provisioning.
+    // Note: check-then-act is not atomic. Under concurrent signups the member
+    // limit can be briefly exceeded by a small margin. Acceptable for a billing
+    // soft-limit — reconciliation catches overages at next check.
+    try {
+      const memberRows = await internalQuery<{ count: number }>(
+        `SELECT COUNT(*)::int as count FROM member WHERE "organizationId" = $1`,
+        [orgId],
+      );
+      const currentCount = memberRows[0]?.count ?? 0;
+      const limitCheck = await checkResourceLimit(orgId, "seats", currentCount);
+      if (!limitCheck.allowed) {
+        // checkResourceLimit fails closed on infra errors (returns
+        // allowed: false, limit: 0). Detect this sentinel and fail open —
+        // blocking SSO login is worse than transient over-provisioning.
+        if (limitCheck.limit === 0) {
+          log.warn(
+            { userId: user.id, orgId },
+            "SSO auto-provisioning: billing check returned limit=0 (infra error?) — allowing provisioning",
+          );
+        } else {
+          log.warn(
+            { userId: user.id, email: user.email, domain, orgId, limit: limitCheck.limit },
+            "SSO auto-provisioning skipped — organization at member limit (%d/%d)",
+            currentCount,
+            limitCheck.limit,
+          );
+          return;
+        }
+      }
+    } catch (err) {
+      // Handles unexpected failures in the COUNT query or unanticipated
+      // exceptions from checkResourceLimit. Fail open: blocking SSO login
+      // is worse than transient over-provisioning.
+      log.warn(
+        { err: err instanceof Error ? err.message : String(err), errName: err instanceof Error ? err.name : "unknown", userId: user.id, orgId },
+        "SSO auto-provisioning: member limit check failed — allowing provisioning",
+      );
+    }
+
+    // Auto-add as member
+    await getInternalDB().query(
+      `INSERT INTO member (id, "organizationId", "userId", role, "createdAt")
+       VALUES (gen_random_uuid(), $1, $2, 'member', now())`,
+      [orgId, user.id],
+    );
+
+    log.info(
+      { userId: user.id, email: user.email, domain, orgId },
+      "SSO auto-provisioning: user added to organization via domain match",
+    );
+  } catch (err) {
+    log.warn(
+      { err: err instanceof Error ? err.message : String(err), userId: user.id, email: user.email },
+      "SSO auto-provisioning failed — user created but not auto-joined to org",
+    );
+  }
+}
+
 export function getAuthInstance(): AuthInstance {
   if (_instance) return _instance;
 
@@ -566,47 +654,7 @@ export function getAuthInstance(): AuthInstance {
               }, 2000);
             }
 
-            // Domain-based SSO auto-provisioning: if the user's email domain
-            // matches an enabled SSO provider, auto-add them to that org.
-            try {
-              if (!isEnterpriseEnabled() || !hasInternalDB() || !user.email) return;
-
-              const domain = user.email.split("@")[1]?.toLowerCase();
-              if (!domain) return;
-
-              const providers = await internalQuery<{ org_id: string }>(
-                `SELECT org_id FROM sso_providers WHERE domain = $1 AND enabled = true LIMIT 1`,
-                [domain],
-              );
-              if (providers.length === 0) return;
-
-              const orgId = providers[0].org_id;
-
-              // Check if already a member (idempotent)
-              const existing = await internalQuery<{ id: string }>(
-                `SELECT id FROM member WHERE "userId" = $1 AND "organizationId" = $2 LIMIT 1`,
-                [user.id, orgId],
-              );
-              if (existing.length > 0) return;
-
-              // Auto-add as member — awaited so failures are caught by the
-              // surrounding try/catch and logged as warnings.
-              await getInternalDB().query(
-                `INSERT INTO member (id, "organizationId", "userId", role, "createdAt")
-                 VALUES (gen_random_uuid(), $1, $2, 'member', now())`,
-                [orgId, user.id],
-              );
-
-              log.info(
-                { userId: user.id, email: user.email, domain, orgId },
-                "SSO auto-provisioning: user added to organization via domain match",
-              );
-            } catch (err) {
-              log.warn(
-                { err: err instanceof Error ? err.message : String(err), userId: user.id },
-                "SSO auto-provisioning failed — user created but not auto-joined to org",
-              );
-            }
+            await _autoProvisionSsoMember(user);
           },
         },
       },

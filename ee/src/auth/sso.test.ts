@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, mock, type Mock } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach, mock, type Mock } from "bun:test";
 import { Effect } from "effect";
 import { createEEMock, EnterpriseError } from "../__mocks__/internal";
 
@@ -48,6 +48,9 @@ const {
   setSSOEnforcement,
   isSSOEnforced,
   isSSOEnforcedForDomain,
+  testSSOProvider,
+  testOidcProvider,
+  testSamlProvider,
   SSOEnforcementError,
   generateVerificationToken,
   verifyDomain,
@@ -627,7 +630,7 @@ describe("isSSOEnforcedForDomain", () => {
   });
 });
 
-// ── Domain Verification Tests ──────────────────────────────────────
+// -- Domain Verification Tests --
 
 describe("generateVerificationToken", () => {
   it("returns token in atlas-verify=<uuid> format", () => {
@@ -814,5 +817,292 @@ describe("updateSSOProvider — enable guard", () => {
     expect(updateQuery!.sql).toContain("domain_verified = false");
     expect(updateQuery!.sql).toContain("domain_verification_status = 'pending'");
     expect(updateQuery!.sql).toContain("verification_token");
+  });
+});
+
+// ── Test Connection Unit Tests ─────────────────────────────────────
+
+import type { SSOOidcProvider, SSOSamlProvider, SSOOidcTestDetails, SSOSamlTestDetails } from "@useatlas/types";
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- test mock needs to bypass fetch.preconnect type
+const mockFetch = (fn: (...args: any[]) => Promise<Response>) => {
+  globalThis.fetch = mock(fn) as unknown as typeof fetch;
+};
+
+const oidcProvider: SSOOidcProvider = {
+  id: "prov-oidc",
+  orgId: "org-1",
+  type: "oidc",
+  issuer: "https://idp.example.com",
+  domain: "example.com",
+  enabled: true,
+  ssoEnforced: false,
+  createdAt: "2026-01-01T00:00:00Z",
+  updatedAt: "2026-01-01T00:00:00Z",
+  verificationToken: "atlas-verify=test-oidc",
+  domainVerified: true,
+  domainVerifiedAt: "2026-01-01T00:00:00Z",
+  domainVerificationStatus: "verified",
+  config: {
+    clientId: "client-1",
+    clientSecret: "secret-1",
+    discoveryUrl: "https://idp.example.com/.well-known/openid-configuration",
+  },
+};
+
+const validDiscoveryDoc = {
+  issuer: "https://idp.example.com",
+  authorization_endpoint: "https://idp.example.com/auth",
+  token_endpoint: "https://idp.example.com/token",
+  jwks_uri: "https://idp.example.com/jwks",
+};
+
+describe("testOidcProvider", () => {
+  const originalFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it("succeeds with valid discovery document", async () => {
+    mockFetch(async () =>
+      new Response(JSON.stringify(validDiscoveryDoc), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      }),
+    );
+
+    const result = await testOidcProvider(oidcProvider);
+    expect(result.type).toBe("oidc");
+    expect(result.success).toBe(true);
+    expect(result.testedAt).toBeDefined();
+    const details = result.details as SSOOidcTestDetails;
+    expect(details.discoveryReachable).toBe(true);
+    expect(details.issuerMatch).toBe(true);
+    expect(details.requiredFieldsPresent).toBe(true);
+    expect(details.endpoints.issuer).toBe("https://idp.example.com");
+    expect(result.errors).toBeUndefined();
+  });
+
+  it("fails for non-200 HTTP response", async () => {
+    mockFetch(async () => new Response("", { status: 500 }));
+
+    const result = await testOidcProvider(oidcProvider);
+    expect(result.success).toBe(false);
+    expect(result.errors![0]).toContain("HTTP 500");
+  });
+
+  it("fails for non-JSON body and includes parse reason", async () => {
+    mockFetch(async () =>
+      new Response("<html>Not Found</html>", {
+        status: 200,
+        headers: { "content-type": "text/html" },
+      }),
+    );
+
+    const result = await testOidcProvider(oidcProvider);
+    expect(result.success).toBe(false);
+    const details = result.details as SSOOidcTestDetails;
+    expect(details.discoveryReachable).toBe(false);
+    expect(result.errors![0]).toContain("non-JSON body");
+    expect(result.errors![0]).toContain("content-type: text/html");
+  });
+
+  it("fails when required fields are missing", async () => {
+    mockFetch(async () =>
+      new Response(JSON.stringify({ issuer: "https://idp.example.com" }), { status: 200 }),
+    );
+
+    const result = await testOidcProvider(oidcProvider);
+    expect(result.success).toBe(false);
+    const details = result.details as SSOOidcTestDetails;
+    expect(details.discoveryReachable).toBe(true);
+    expect(details.requiredFieldsPresent).toBe(false);
+    expect(result.errors![0]).toContain("authorization_endpoint");
+    expect(result.errors![0]).toContain("token_endpoint");
+    expect(result.errors![0]).toContain("jwks_uri");
+  });
+
+  it("fails when issuer does not match", async () => {
+    mockFetch(async () =>
+      new Response(JSON.stringify({ ...validDiscoveryDoc, issuer: "https://other.com" }), { status: 200 }),
+    );
+
+    const result = await testOidcProvider(oidcProvider);
+    expect(result.success).toBe(false);
+    const details = result.details as SSOOidcTestDetails;
+    expect(details.issuerMatch).toBe(false);
+    expect(result.errors![0]).toContain("Issuer mismatch");
+  });
+
+  it("fails on fetch timeout (AbortError)", async () => {
+    mockFetch(async () => {
+      throw new DOMException("The operation was aborted", "AbortError");
+    });
+
+    const result = await testOidcProvider(oidcProvider);
+    expect(result.success).toBe(false);
+    expect(result.errors![0]).toContain("timed out");
+  });
+
+  it("fails on network error", async () => {
+    mockFetch(async () => {
+      throw new Error("getaddrinfo ENOTFOUND");
+    });
+
+    const result = await testOidcProvider(oidcProvider);
+    expect(result.success).toBe(false);
+    expect(result.errors![0]).toContain("Failed to reach");
+    expect(result.errors![0]).toContain("ENOTFOUND");
+  });
+
+  it("rejects non-HTTPS URL", async () => {
+    const badProvider: SSOOidcProvider = {
+      ...oidcProvider,
+      config: { ...oidcProvider.config, discoveryUrl: "file:///etc/passwd" },
+    };
+
+    const result = await testOidcProvider(badProvider);
+    expect(result.success).toBe(false);
+    expect(result.errors![0]).toContain("unsupported protocol");
+  });
+});
+
+// ── SAML cert fixture ──────────────────────────────────────────────
+
+// Self-signed cert generated for testing (valid 2026-04-06 to 2030-04-05)
+const VALID_SELF_SIGNED_CERT = `-----BEGIN CERTIFICATE-----
+MIIDFzCCAf+gAwIBAgIUQCSGvDJthfMZ0SHEJaVbZ6eF2n4wDQYJKoZIhvcNAQEL
+BQAwGzEZMBcGA1UEAwwQdGVzdC5leGFtcGxlLmNvbTAeFw0yNjA0MDYyMjQ4MzJa
+Fw0zMDA0MDUyMjQ4MzJaMBsxGTAXBgNVBAMMEHRlc3QuZXhhbXBsZS5jb20wggEi
+MA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQDeePGI8U+2eqhqRJ0NUUqoWQJ3
+EXC+JVPfP14xUZBIkfbzqXGF1p4h60MGN9rHrWMI7fW+Dwgu3wEGC3vVpLpHKxNw
+EpftRQk6tTJRqPmHuPB0+modGUObN4EPoYQC7Pj7Wv1+DO4bQNDcjTPbjifcNK1p
+a96gv9jx4LY9eTwEW826sQujayPeCqTteDJsR4J7H1CWxODzoqOXUpPo/xB08re+
+RS71Rav6XScupLKWL3iKyCCnwunCp5RI5f0pba+0V8Z0kEy8rZ3oKVHteabYCNYw
+c7vq0IexhFyPL2/YqxRpuywwzNXTzNxI74jVpD50bwDrW/BXg/5FyNTC5Ua9AgMB
+AAGjUzBRMB0GA1UdDgQWBBQACdVF4IUgb1bLZlEigwx6UPAkgDAfBgNVHSMEGDAW
+gBQACdVF4IUgb1bLZlEigwx6UPAkgDAPBgNVHRMBAf8EBTADAQH/MA0GCSqGSIb3
+DQEBCwUAA4IBAQACKkWx5gimQXs7flQzALHnE8ej7UerSRN+DUAfmCxlLVZC/LPP
+9OC2T7oUfWRyHz0C8XVHzJvuDpHWN8WtbIpk4JDkEQBysvskP3Yl2xrD7SbvprDG
+XHIOvK/MEYMivJn41pNyVKGcvTB/A4879fCnJ8gKZMi2kUVCUK9CidcL0l68zdGd
+1qe5xpSJ6d6y+6t8pf3cK6uJLkSQ5YzQq2OvTGNJ/m2BmmbxbB6FGLSPGg/6zZU2
+gibJD2n7auzsYMABf9T8LASCtwi4Y0Gf1TB4pCUcG7Jutk148FG4emKtJwYxZKkB
+ByTeG8DfNTXzmBOR0LDHC+Z4uBHXPiVCbSAs
+-----END CERTIFICATE-----`;
+
+const samlProvider: SSOSamlProvider = {
+  id: "prov-saml",
+  orgId: "org-1",
+  type: "saml",
+  issuer: "https://idp.example.com",
+  domain: "example.com",
+  enabled: true,
+  ssoEnforced: false,
+  createdAt: "2026-01-01T00:00:00Z",
+  updatedAt: "2026-01-01T00:00:00Z",
+  verificationToken: "atlas-verify=test-saml",
+  domainVerified: true,
+  domainVerifiedAt: "2026-01-01T00:00:00Z",
+  domainVerificationStatus: "verified",
+  config: {
+    idpEntityId: "https://idp.example.com",
+    idpSsoUrl: "https://idp.example.com/sso",
+    idpCertificate: VALID_SELF_SIGNED_CERT,
+  },
+};
+
+describe("testSamlProvider", () => {
+  const originalFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  it("succeeds with valid cert and reachable IdP", async () => {
+    mockFetch(async () => new Response("", { status: 200 }));
+
+    const result = await testSamlProvider(samlProvider);
+    const d = result.details as SSOSamlTestDetails;
+    expect(result.type).toBe("saml");
+    expect(result.success).toBe(true);
+    expect(result.testedAt).toBeDefined();
+    expect(d.certValid).toBe(true);
+    expect(d.certSubject).toContain("test.example.com");
+    expect(d.certExpiry).toBeDefined();
+    expect(typeof d.certDaysRemaining).toBe("number");
+    expect(d.idpReachable).toBe(true);
+  });
+
+  it("fails with malformed PEM", async () => {
+    mockFetch(async () => new Response("", { status: 200 }));
+    const badProvider: SSOSamlProvider = {
+      ...samlProvider,
+      config: { ...samlProvider.config, idpCertificate: "NOT A CERT" },
+    };
+
+    const result = await testSamlProvider(badProvider);
+    const d = result.details as SSOSamlTestDetails;
+    expect(result.success).toBe(false);
+    expect(d.certValid).toBe(false);
+    expect(result.errors![0]).toContain("Malformed PEM");
+  });
+
+  it("reports unreachable IdP with timeout", async () => {
+    mockFetch(async () => {
+      throw new DOMException("The operation was aborted", "AbortError");
+    });
+
+    const result = await testSamlProvider(samlProvider);
+    const d = result.details as SSOSamlTestDetails;
+    // Cert is still valid — only IdP is unreachable
+    expect(result.success).toBe(true);
+    expect(d.idpReachable).toBe(false);
+    expect(result.errors![0]).toContain("timed out");
+  });
+
+  it("reports IdP server error (5xx)", async () => {
+    mockFetch(async () => new Response("", { status: 503 }));
+
+    const result = await testSamlProvider(samlProvider);
+    const d = result.details as SSOSamlTestDetails;
+    expect(result.success).toBe(true);
+    expect(d.idpReachable).toBe(true);
+    expect(result.errors![0]).toContain("server error");
+    expect(result.errors![0]).toContain("503");
+  });
+
+  it("treats 405 (HEAD not supported) as reachable without error", async () => {
+    mockFetch(async () => new Response("", { status: 405 }));
+
+    const result = await testSamlProvider(samlProvider);
+    const d = result.details as SSOSamlTestDetails;
+    expect(result.success).toBe(true);
+    expect(d.idpReachable).toBe(true);
+    expect(result.errors).toBeUndefined();
+  });
+
+  it("rejects non-HTTPS IdP URL", async () => {
+    const badProvider: SSOSamlProvider = {
+      ...samlProvider,
+      config: { ...samlProvider.config, idpSsoUrl: "ftp://internal.server/sso" },
+    };
+
+    const result = await testSamlProvider(badProvider);
+    const d = result.details as SSOSamlTestDetails;
+    expect(d.idpReachable).toBe(false);
+    expect(result.errors!.find(e => e.includes("unsupported protocol"))).toBeDefined();
+  });
+});
+
+describe("testSSOProvider (Effect wrapper)", () => {
+  beforeEach(() => ee.reset());
+
+  it("throws when enterprise is disabled", async () => {
+    ee.setEnterpriseEnabled(false);
+    await expect(run(testSSOProvider("org-1", "prov-1"))).rejects.toThrow("Enterprise features");
+  });
+
+  it("throws SSOError when provider not found", async () => {
+    ee.queueMockRows([]);
+    await expect(run(testSSOProvider("org-1", "nonexistent"))).rejects.toThrow("not found");
   });
 });

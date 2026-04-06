@@ -108,6 +108,7 @@ COPY --from=builder --chown=atlas:atlas /app/packages/cli/data/demo.sql ./data/d
 COPY --from=builder --chown=atlas:atlas /app/packages/cli/data/cybersec.sql ./data/cybersec.sql
 COPY --from=builder --chown=atlas:atlas /app/packages/cli/data/ecommerce.sql ./data/ecommerce.sql
 COPY --chown=atlas:atlas examples/docker/scripts/seed-demo.ts ./scripts/seed-demo.ts
+COPY --chown=atlas:atlas deploy/api/atlas.config.ts ./atlas.config.ts
 COPY --chown=atlas:atlas deploy/api/scripts/start.sh ./scripts/start.sh
 # pg is installed in packages/api/node_modules (not hoisted to root).
 # seed-demo.ts runs from /app/scripts/ and needs pg — symlink it so

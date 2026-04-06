@@ -1,20 +1,20 @@
 ---
 title: Enterprise SSO
-description: Configure SAML or OIDC single sign-on with domain-based auto-provisioning.
+description: Configure SAML or OIDC single sign-on with domain verification and auto-provisioning.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-Atlas supports enterprise SSO via SAML 2.0 and OpenID Connect (OIDC). Admins register identity providers through the admin API, map email domains to providers, and users are auto-provisioned on first login.
+Atlas supports enterprise SSO via SAML 2.0 and OpenID Connect (OIDC). Admins register identity providers through the admin API, verify domain ownership via DNS, test the connection, and enable the provider. Users with matching email domains are auto-provisioned on first login.
 
 <Callout type="info" title="SaaS Feature">
-  Enterprise SSO is available on [app.useatlas.dev](https://app.useatlas.dev) Enterprise plans. Self-hosted deployments do not include enterprise features.
+  Enterprise SSO is available on [app.useatlas.dev](https://app.useatlas.dev) Business plans. Self-hosted deployments do not include enterprise features.
 </Callout>
 
 <Callout title="Prerequisites">
 - [Managed auth](/deployment/authentication#managed-auth) enabled
 - Internal database configured (`DATABASE_URL`)
-- Active Enterprise plan on [app.useatlas.dev](https://app.useatlas.dev)
+- Active Business plan on [app.useatlas.dev](https://app.useatlas.dev)
 - Admin role required for all SSO management endpoints
 </Callout>
 
@@ -22,12 +22,192 @@ Atlas supports enterprise SSO via SAML 2.0 and OpenID Connect (OIDC). Admins reg
 
 ## How It Works
 
-1. An admin registers an SSO provider (SAML or OIDC) via the admin API
+1. An admin registers an SSO provider (SAML or OIDC) via the admin API — the provider starts in **pending** state
 2. The provider is linked to an email domain (e.g., `acme.com`)
-3. When a user with that email domain signs in, Atlas routes them to the configured IdP
-4. On successful IdP authentication, the user is auto-provisioned into the workspace
+3. The admin adds a DNS TXT record to **verify domain ownership**
+4. The admin runs a **test connection** to validate the IdP configuration
+5. Once the domain is verified, the admin **enables** the provider
+6. When a user with that email domain signs in, Atlas routes them to the configured IdP
+7. On successful IdP authentication, the user is auto-provisioned into the workspace
 
 Each organization can have multiple SSO providers, each mapped to a different email domain. Domain uniqueness is enforced globally — no two providers across any organization can claim the same domain.
+
+<Callout type="warn">
+A provider **cannot be enabled until its domain is verified**. This is enforced at the database level — attempts to enable an unverified provider will fail.
+</Callout>
+
+---
+
+## Domain Verification
+
+Before an SSO provider can be enabled, the admin must prove ownership of the email domain by adding a DNS TXT record.
+
+### Verification Flow
+
+1. **Create the provider** — the API returns a `verificationToken` (format: `atlas-verify=<uuid>`)
+2. **Add a DNS TXT record** — create a TXT record on your domain with the token value:
+   ```
+   acme.com    TXT    "atlas-verify=550e8400-e29b-41d4-a716-446655440000"
+   ```
+3. **Trigger verification** — call the verify endpoint
+4. Atlas performs a DNS TXT lookup and checks for an exact match
+5. On success, the domain status moves to `verified` and the provider can be enabled
+
+### Verification Statuses
+
+| Status | Meaning |
+|--------|---------|
+| `pending` | Provider created, awaiting DNS verification |
+| `verified` | DNS TXT record matched — provider can be enabled |
+| `failed` | DNS lookup failed or TXT record not found |
+
+### Verify a Domain
+
+```bash
+curl -X POST https://your-atlas.example.com/api/v1/admin/sso/providers/<provider-id>/verify \
+  -H "Authorization: Bearer <admin-token>"
+```
+
+**Response (200) — success:**
+
+```json
+{
+  "status": "verified",
+  "message": "Domain verified successfully."
+}
+```
+
+**Response (200) — not found:**
+
+```json
+{
+  "status": "failed",
+  "message": "No matching TXT record found. Add a TXT record with value \"atlas-verify=550e8400-...\" to acme.com."
+}
+```
+
+If the domain is already verified, the endpoint returns immediately without performing a DNS lookup.
+
+<Callout type="info">
+DNS propagation can take up to 48 hours depending on your DNS provider. If verification fails, wait a few minutes and retry. Use `dig TXT acme.com` to confirm the record is visible before triggering verification.
+</Callout>
+
+### Check Domain Availability
+
+Before registering a provider, you can check whether a domain is available:
+
+```bash
+curl "https://your-atlas.example.com/api/v1/admin/sso/domain-check?domain=acme.com" \
+  -H "Authorization: Bearer <admin-token>"
+```
+
+**Response (200):**
+
+```json
+{
+  "available": true
+}
+```
+
+If the domain is already claimed:
+
+```json
+{
+  "available": false,
+  "reason": "Domain is already registered by another organization."
+}
+```
+
+---
+
+## Test Connection
+
+Before enabling a provider, validate that its configuration is correct by running a test connection. The test checks different things depending on the provider type.
+
+```bash
+curl -X POST https://your-atlas.example.com/api/v1/admin/sso/providers/<provider-id>/test \
+  -H "Authorization: Bearer <admin-token>"
+```
+
+### OIDC Test
+
+For OIDC providers, the test:
+
+- Fetches the OpenID Connect discovery document from the configured `discoveryUrl`
+- Validates that the discovery endpoint is reachable (HTTP 2xx)
+- Checks that required fields are present: `issuer`, `authorization_endpoint`, `token_endpoint`, `jwks_uri`
+- Verifies that the issuer in the discovery document matches the configured issuer
+
+**Response (200):**
+
+```json
+{
+  "type": "oidc",
+  "success": true,
+  "testedAt": "2026-04-06T12:00:00.000Z",
+  "details": {
+    "discoveryReachable": true,
+    "issuerMatch": true,
+    "requiredFieldsPresent": true,
+    "endpoints": {
+      "issuer": "https://accounts.google.com",
+      "authorization_endpoint": "https://accounts.google.com/o/oauth2/v2/auth",
+      "token_endpoint": "https://oauth2.googleapis.com/token",
+      "jwks_uri": "https://www.googleapis.com/oauth2/v3/certs"
+    }
+  }
+}
+```
+
+### SAML Test
+
+For SAML providers, the test:
+
+- Parses the X.509 certificate from the configured `idpCertificate` (PEM format)
+- Validates the certificate is not expired and extracts subject and expiry details
+- Checks that the IdP SSO URL is reachable (HEAD request)
+
+**Response (200):**
+
+```json
+{
+  "type": "saml",
+  "success": true,
+  "testedAt": "2026-04-06T12:00:00.000Z",
+  "details": {
+    "certValid": true,
+    "certSubject": "CN=idp.acme.com",
+    "certExpiry": "2027-06-15T00:00:00.000Z",
+    "certDaysRemaining": 435,
+    "idpReachable": true
+  }
+}
+```
+
+### Test Failures
+
+When validation fails, the response includes `errors` and optionally `warnings`:
+
+```json
+{
+  "type": "saml",
+  "success": false,
+  "testedAt": "2026-04-06T12:00:00.000Z",
+  "details": {
+    "certValid": false,
+    "certSubject": null,
+    "certExpiry": null,
+    "certDaysRemaining": null,
+    "idpReachable": null
+  },
+  "errors": ["Certificate is malformed or cannot be parsed."],
+  "warnings": []
+}
+```
+
+<Callout type="info">
+SAML certificates expiring within 30 days produce a **warning** (the test still passes). Expired certificates produce an **error** (the test fails). Plan certificate rotations ahead of time.
+</Callout>
 
 ---
 
@@ -58,13 +238,21 @@ curl -X POST https://your-atlas.example.com/api/v1/admin/sso/providers \
     "type": "saml",
     "issuer": "https://idp.acme.com",
     "domain": "acme.com",
-    "enabled": true,
     "config": {
       "idpEntityId": "https://idp.acme.com/entity",
       "idpSsoUrl": "https://idp.acme.com/sso",
       "idpCertificate": "-----BEGIN CERTIFICATE-----\nMIIC...\n-----END CERTIFICATE-----"
     }
   }'
+```
+
+The provider is created in **pending** state with `enabled: false`. The response includes a `verificationToken` — add this as a DNS TXT record on `acme.com`, then call the [verify endpoint](#verify-a-domain). Once verified, [test the connection](#test-connection), then enable the provider:
+
+```bash
+curl -X PATCH https://your-atlas.example.com/api/v1/admin/sso/providers/<provider-id> \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <admin-token>" \
+  -d '{ "enabled": true }'
 ```
 
 ---
@@ -89,7 +277,6 @@ curl -X POST https://your-atlas.example.com/api/v1/admin/sso/providers \
     "type": "oidc",
     "issuer": "https://accounts.google.com",
     "domain": "acme.com",
-    "enabled": true,
     "config": {
       "clientId": "your-client-id",
       "clientSecret": "your-client-secret",
@@ -98,8 +285,10 @@ curl -X POST https://your-atlas.example.com/api/v1/admin/sso/providers \
   }'
 ```
 
+The provider is created in **pending** state. Follow the same verification flow: add the DNS TXT record, [verify the domain](#verify-a-domain), [test the connection](#test-connection), then enable.
+
 <Callout type="info">
-Client secrets are encrypted at rest using `BETTER_AUTH_SECRET` or `ATLAS_ENCRYPTION_KEY`. They are never returned in API responses — the provider detail endpoint redacts secret fields. The `enabled` field defaults to `false` if omitted — providers must be explicitly enabled.
+Client secrets are encrypted at rest using `BETTER_AUTH_SECRET` or `ATLAS_ENCRYPTION_KEY`. They are never returned in API responses — the provider detail endpoint redacts secret fields.
 </Callout>
 
 ---
@@ -115,6 +304,9 @@ All SSO endpoints require the `admin` role and an active enterprise license. The
 | `POST` | `/providers` | Register a new SSO provider |
 | `PATCH` | `/providers/:id` | Update a provider (partial config merge) |
 | `DELETE` | `/providers/:id` | Delete a provider |
+| `POST` | `/providers/:id/verify` | Trigger DNS domain verification |
+| `POST` | `/providers/:id/test` | Test provider connection (OIDC or SAML) |
+| `GET` | `/domain-check` | Check if a domain is available |
 | `GET` | `/enforcement` | Get SSO enforcement status |
 | `PUT` | `/enforcement` | Enable or disable SSO enforcement |
 
@@ -124,6 +316,7 @@ All SSO endpoints require the `admin` role and an active enterprise license. The
 |--------|------|------|
 | 400 | `validation` | Invalid config fields, malformed domain |
 | 400 | `no_provider` | Trying to enable enforcement with no active SSO provider |
+| 400 | `domain_not_verified` | Trying to enable a provider whose domain is not verified |
 | 403 | `enterprise_required` | Enterprise license not active |
 | 404 | `not_found` | Provider ID doesn't exist |
 | 409 | `conflict` | Domain already claimed by another SSO provider |
@@ -213,7 +406,7 @@ curl -X PUT https://your-atlas.example.com/api/v1/admin/sso/enforcement \
 ```
 
 <Callout type="warn">
-**Before enabling enforcement**, ensure at least one SSO provider is configured and enabled for your organization. Atlas will reject the request with a `400` error (`no_provider`) if no active provider exists:
+**Before enabling enforcement**, ensure at least one SSO provider is configured, verified, and enabled for your organization. Atlas will reject the request with a `400` error (`no_provider`) if no active provider exists:
 
 ```json
 {

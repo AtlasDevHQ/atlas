@@ -492,10 +492,18 @@ export const BillingStatusSchema = z.object({
     displayName: z.string(),
     byot: z.boolean(),
     trialEndsAt: z.string().nullable(),
+    pricePerSeat: z.number().nullable().optional(),
+    defaultModel: z.string().nullable().optional(),
   }),
+  seats: z.object({
+    count: z.number(),
+    max: z.number().nullable(),
+  }).optional(),
   limits: z.object({
     queriesPerMonth: z.number().nullable(),
     tokensPerMonth: z.number().nullable(),
+    tokenBudgetPerSeat: z.number().nullable().optional(),
+    totalTokenBudget: z.number().nullable().optional(),
     maxMembers: z.number().nullable(),
     maxConnections: z.number().nullable(),
   }),
@@ -509,6 +517,12 @@ export const BillingStatusSchema = z.object({
     periodStart: z.string(),
     periodEnd: z.string(),
   }),
+  connections: z.object({
+    count: z.number(),
+    max: z.number().nullable(),
+  }).optional(),
+  currentModel: z.string().optional(),
+  overagePerQuery: z.number().nullable().optional(),
   subscription: z.object({
     stripeSubscriptionId: z.string(),
     plan: z.string(),

@@ -29,6 +29,7 @@ import {
 import { getCurrentPeriodUsage } from "@atlas/api/lib/metering";
 import { getPlanDefinition, getPlanLimits, isUnlimited } from "@atlas/api/lib/billing/plans";
 import { buildMetricStatus } from "@atlas/api/lib/billing/enforcement";
+import { getSetting } from "@atlas/api/lib/settings";
 import { ErrorSchema } from "./shared-schemas";
 import { adminAuth, requestContext, type AuthEnv } from "./middleware";
 
@@ -304,9 +305,48 @@ billing.openapi(getBillingStatusRoute, async (c) => {
       subscription = subResult[0];
     }
 
+    // Fetch seat count (org members) and connection count
+    const [seatRows, connectionRows] = yield* Effect.tryPromise({
+      try: () => Promise.all([
+        internalQuery<{ count: number }>(
+          `SELECT COUNT(*)::int AS count FROM member WHERE "organizationId" = $1`,
+          [orgId],
+        ),
+        internalQuery<{ count: number }>(
+          `SELECT COUNT(*)::int AS count FROM connections WHERE org_id = $1`,
+          [orgId],
+        ),
+      ]),
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    }).pipe(Effect.catchAll((err) => {
+      log.debug(
+        { err: err.message, orgId },
+        "Failed to query seat/connection counts — defaulting to 0",
+      );
+      return Effect.succeed([
+        [{ count: 0 }] as Array<{ count: number }>,
+        [{ count: 0 }] as Array<{ count: number }>,
+      ] as const);
+    }));
+
+    const seatCount = seatRows[0]?.count ?? 0;
+    const connectionCount = connectionRows[0]?.count ?? 0;
+
+    // Per-seat pricing fields (new plan model, with fallbacks for old plans)
+    const pricePerSeat = (plan as Record<string, unknown>).pricePerSeat as number | undefined ?? null;
+    const tokenBudgetPerSeat = (plan as Record<string, unknown>).tokenBudgetPerSeat as number | undefined ?? null;
+    const overagePerQuery = (plan as Record<string, unknown>).overagePerQuery as number | undefined ?? null;
+    const defaultModel = (plan as Record<string, unknown>).defaultModel as string | undefined ?? null;
+
+    // Total token budget = per-seat budget * number of seats (null if unlimited or not configured)
+    const totalTokenBudget = tokenBudgetPerSeat !== null ? tokenBudgetPerSeat * Math.max(seatCount, 1) : null;
+
+    // Current model: workspace setting > plan default > fallback
+    const currentModel = getSetting("ATLAS_MODEL", orgId) ?? defaultModel ?? "default";
+
     // Compute overage status for each metered dimension (reuses shared thresholds from enforcement)
     const queryLimit = isUnlimited(limits.queriesPerMonth) ? null : limits.queriesPerMonth;
-    const tokenLimit = isUnlimited(limits.tokensPerMonth) ? null : limits.tokensPerMonth;
+    const tokenLimit = totalTokenBudget ?? (isUnlimited(limits.tokensPerMonth) ? null : limits.tokensPerMonth);
 
     const queryOverage = queryLimit !== null
       ? buildMetricStatus("queries", usage.queryCount, queryLimit)
@@ -322,10 +362,18 @@ billing.openapi(getBillingStatusRoute, async (c) => {
         displayName: plan.displayName,
         byot: workspace.byot,
         trialEndsAt: workspace.trial_ends_at,
+        pricePerSeat,
+        defaultModel,
+      },
+      seats: {
+        count: seatCount,
+        max: isUnlimited(limits.maxMembers) ? null : limits.maxMembers,
       },
       limits: {
         queriesPerMonth: queryLimit,
         tokensPerMonth: tokenLimit,
+        tokenBudgetPerSeat,
+        totalTokenBudget,
         maxMembers: isUnlimited(limits.maxMembers) ? null : limits.maxMembers,
         maxConnections: isUnlimited(limits.maxConnections) ? null : limits.maxConnections,
       },
@@ -339,6 +387,12 @@ billing.openapi(getBillingStatusRoute, async (c) => {
         periodStart: usage.periodStart,
         periodEnd: usage.periodEnd,
       },
+      connections: {
+        count: connectionCount,
+        max: isUnlimited(limits.maxConnections) ? null : limits.maxConnections,
+      },
+      currentModel,
+      overagePerQuery,
       subscription: subscription ? {
         stripeSubscriptionId: subscription.stripeSubscriptionId,
         plan: subscription.plan,

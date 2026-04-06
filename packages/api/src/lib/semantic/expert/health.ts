@@ -9,7 +9,6 @@ import type { AnalysisContext, ParsedEntity } from "./types";
 import {
   findCoverageGaps,
   findDescriptionIssues,
-  findMissingMeasures,
   findMissingJoins,
 } from "./categories";
 

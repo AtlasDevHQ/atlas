@@ -13,7 +13,7 @@ export type OverageStatus = "ok" | "warning" | "soft_limit" | "hard_limit";
  */
 export interface PlanLimitStatus {
   /** Which metric this status applies to. */
-  metric: "queries" | "tokens";
+  metric: "tokens";
   /** Current usage count for the billing period. */
   currentUsage: number;
   /** Plan limit for the billing period. -1 = unlimited. */

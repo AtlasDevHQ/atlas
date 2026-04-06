@@ -355,7 +355,7 @@ DO $$ BEGIN
 
     ALTER TABLE organization DROP CONSTRAINT IF EXISTS chk_plan_tier;
     BEGIN
-      ALTER TABLE organization ADD CONSTRAINT chk_plan_tier CHECK (plan_tier IN ('free', 'trial', 'team', 'enterprise'));
+      ALTER TABLE organization ADD CONSTRAINT chk_plan_tier CHECK (plan_tier IN ('free', 'trial', 'starter', 'pro', 'business'));
     EXCEPTION WHEN duplicate_object THEN NULL;
     END;
 

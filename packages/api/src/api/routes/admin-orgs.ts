@@ -130,7 +130,7 @@ const ConflictErrorSchema = z.object({
 });
 
 const UpdatePlanBodySchema = z.object({
-  planTier: z.string().openapi({ example: "team" }),
+  planTier: z.string().openapi({ example: "starter" }),
 });
 
 // ---------------------------------------------------------------------------
@@ -680,7 +680,7 @@ adminOrgs.openapi(getOrgStatusRoute, async (c) => {
 });
 
 // PATCH /:id/plan
-const VALID_PLAN_TIERS = new Set<PlanTier>(["free", "trial", "team", "enterprise"]);
+const VALID_PLAN_TIERS = new Set<PlanTier>(["free", "trial", "starter", "pro", "business"]);
 
 adminOrgs.openapi(updatePlanRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {

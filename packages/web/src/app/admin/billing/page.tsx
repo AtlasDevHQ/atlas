@@ -19,7 +19,6 @@ import {
   Zap,
   Users,
   Database,
-  MessageSquare,
   Coins,
   ServerOff,
 } from "lucide-react";
@@ -31,21 +30,22 @@ interface BillingStatus {
   plan: {
     tier: string;
     displayName: string;
+    pricePerSeat: number;
+    defaultModel: string;
     byot: boolean;
     trialEndsAt: string | null;
   };
   limits: {
-    queriesPerMonth: number | null;
-    tokensPerMonth: number | null;
-    maxMembers: number | null;
+    tokenBudgetPerSeat: number | null;
+    totalTokenBudget: number | null;
+    maxSeats: number | null;
     maxConnections: number | null;
   };
   usage: {
     queryCount: number;
     tokenCount: number;
-    queryUsagePercent: number;
+    seatCount: number;
     tokenUsagePercent: number;
-    queryOverageStatus: string;
     tokenOverageStatus: string;
     periodStart: string;
     periodEnd: string;
@@ -61,9 +61,9 @@ interface BillingStatus {
 
 function tierVariant(tier: string): "default" | "secondary" | "outline" {
   switch (tier) {
-    case "enterprise":
+    case "business":
       return "default";
-    case "team":
+    case "pro":
       return "secondary";
     default:
       return "outline";
@@ -302,25 +302,18 @@ function UsageLimitsCard({ data }: { data: BillingStatus }) {
       <CardContent>
         <div className="grid gap-6 sm:grid-cols-2">
           <UsageRow
-            label="Queries"
-            icon={<MessageSquare className="size-4" />}
-            used={usage.queryCount}
-            limit={limits.queriesPerMonth}
-            percent={usage.queryUsagePercent}
-            status={usage.queryOverageStatus}
-          />
-          <UsageRow
-            label="Tokens"
+            label="Token Budget"
             icon={<Coins className="size-4" />}
             used={usage.tokenCount}
-            limit={limits.tokensPerMonth}
+            limit={limits.totalTokenBudget}
             percent={usage.tokenUsagePercent}
             status={usage.tokenOverageStatus}
           />
           <UsageRow
-            label="Members"
+            label="Seats"
             icon={<Users className="size-4" />}
-            limit={limits.maxMembers}
+            used={usage.seatCount}
+            limit={limits.maxSeats}
           />
           <UsageRow
             label="Connections"

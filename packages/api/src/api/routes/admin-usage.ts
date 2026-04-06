@@ -18,7 +18,7 @@ import {
   getUsageBreakdown,
   aggregateUsageSummary,
 } from "@atlas/api/lib/metering";
-import { getPlanDefinition, getPlanLimits, isUnlimited } from "@atlas/api/lib/billing/plans";
+import { getPlanDefinition, getPlanLimits, computeTokenBudget, isUnlimited } from "@atlas/api/lib/billing/plans";
 import { ErrorSchema, AuthErrorSchema, parsePagination } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 
@@ -77,9 +77,9 @@ const SummaryResponseSchema = z.object({
     trialEndsAt: z.string().nullable(),
   }),
   limits: z.object({
-    queriesPerMonth: z.number().nullable(),
-    tokensPerMonth: z.number().nullable(),
-    maxMembers: z.number().nullable(),
+    tokenBudgetPerSeat: z.number().nullable(),
+    totalTokenBudget: z.number().nullable(),
+    maxSeats: z.number().nullable(),
     maxConnections: z.number().nullable(),
   }),
   history: z.array(UsageSummaryRowSchema),
@@ -229,6 +229,8 @@ adminUsage.openapi(getUsageSummaryRoute, async (c) => {
     const planTier = workspace?.plan_tier ?? "free";
     const plan = getPlanDefinition(planTier);
     const limits = getPlanLimits(planTier);
+    const seatCount = Math.max(1, usage.activeUsers);
+    const totalTokenBudget = computeTokenBudget(planTier, seatCount);
 
     return c.json({
       workspaceId: orgId!,
@@ -245,9 +247,9 @@ adminUsage.openapi(getUsageSummaryRoute, async (c) => {
         trialEndsAt: workspace?.trial_ends_at ?? null,
       },
       limits: {
-        queriesPerMonth: isUnlimited(limits.queriesPerMonth) ? null : limits.queriesPerMonth,
-        tokensPerMonth: isUnlimited(limits.tokensPerMonth) ? null : limits.tokensPerMonth,
-        maxMembers: isUnlimited(limits.maxMembers) ? null : limits.maxMembers,
+        tokenBudgetPerSeat: isUnlimited(limits.tokenBudgetPerSeat) ? null : limits.tokenBudgetPerSeat,
+        totalTokenBudget: isUnlimited(totalTokenBudget) ? null : totalTokenBudget,
+        maxSeats: isUnlimited(limits.maxSeats) ? null : limits.maxSeats,
         maxConnections: isUnlimited(limits.maxConnections) ? null : limits.maxConnections,
       },
       history: history.toReversed(),

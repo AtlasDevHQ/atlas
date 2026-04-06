@@ -139,7 +139,7 @@ const verifyDomainRoute = createRoute({
 
 /**
  * Check whether the workspace is allowed to use custom domains.
- * Allowed tiers: "enterprise" (SaaS) and "free" (self-hosted, which has no plan limits).
+ * Allowed tiers: "pro", "business" (SaaS) and "free" (self-hosted, which has no plan limits).
  * Also allows access when no internal DB is configured (self-hosted without managed billing).
  *
  * Fails closed: if the DB query fails, returns a 500 error rather than allowing access.
@@ -177,13 +177,13 @@ async function checkPlanGate(
   }
 
   const tier = workspace.plan_tier;
-  if (tier === "enterprise" || tier === "free") {
+  if (tier === "free" || tier === "pro" || tier === "business") {
     return null;
   }
 
   return {
     error: "plan_required",
-    message: "Custom domains require an Enterprise plan. Upgrade your workspace to enable this feature.",
+    message: "Custom domains require a Pro or Business plan. Upgrade your workspace to enable this feature.",
     requestId,
     status: 403,
   };

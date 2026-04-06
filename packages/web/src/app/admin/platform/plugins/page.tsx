@@ -147,7 +147,7 @@ function CatalogFormDialog({
       })(),
       minPlan: (PLAN_TIERS as readonly string[]).includes(entry?.minPlan ?? "")
         ? (entry!.minPlan as CatalogFormValues["minPlan"])
-        : "team",
+        : "starter",
       enabled: entry?.enabled ?? true,
     },
   });

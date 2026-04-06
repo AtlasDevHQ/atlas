@@ -27,7 +27,7 @@ import {
   internalQuery,
 } from "@atlas/api/lib/db/internal";
 import { getCurrentPeriodUsage } from "@atlas/api/lib/metering";
-import { getPlanDefinition, getPlanLimits, isUnlimited } from "@atlas/api/lib/billing/plans";
+import { getPlanDefinition, getPlanLimits, computeTokenBudget, isUnlimited } from "@atlas/api/lib/billing/plans";
 import { buildMetricStatus } from "@atlas/api/lib/billing/enforcement";
 import { ErrorSchema } from "./shared-schemas";
 import { adminAuth, requestContext, type AuthEnv } from "./middleware";
@@ -304,13 +304,11 @@ billing.openapi(getBillingStatusRoute, async (c) => {
       subscription = subResult[0];
     }
 
-    // Compute overage status for each metered dimension (reuses shared thresholds from enforcement)
-    const queryLimit = isUnlimited(limits.queriesPerMonth) ? null : limits.queriesPerMonth;
-    const tokenLimit = isUnlimited(limits.tokensPerMonth) ? null : limits.tokensPerMonth;
+    // Compute per-seat token budget (scales with active users as a proxy for seat count)
+    const seatCount = Math.max(1, usage.activeUsers);
+    const totalTokenBudget = computeTokenBudget(workspace.plan_tier, seatCount);
+    const tokenLimit = isUnlimited(totalTokenBudget) ? null : totalTokenBudget;
 
-    const queryOverage = queryLimit !== null
-      ? buildMetricStatus("queries", usage.queryCount, queryLimit)
-      : { usagePercent: 0, status: "ok" as const };
     const tokenOverage = tokenLimit !== null
       ? buildMetricStatus("tokens", usage.tokenCount, tokenLimit)
       : { usagePercent: 0, status: "ok" as const };
@@ -320,21 +318,22 @@ billing.openapi(getBillingStatusRoute, async (c) => {
       plan: {
         tier: workspace.plan_tier,
         displayName: plan.displayName,
+        pricePerSeat: plan.pricePerSeat,
+        defaultModel: plan.defaultModel,
         byot: workspace.byot,
         trialEndsAt: workspace.trial_ends_at,
       },
       limits: {
-        queriesPerMonth: queryLimit,
-        tokensPerMonth: tokenLimit,
-        maxMembers: isUnlimited(limits.maxMembers) ? null : limits.maxMembers,
+        tokenBudgetPerSeat: isUnlimited(limits.tokenBudgetPerSeat) ? null : limits.tokenBudgetPerSeat,
+        totalTokenBudget: tokenLimit,
+        maxSeats: isUnlimited(limits.maxSeats) ? null : limits.maxSeats,
         maxConnections: isUnlimited(limits.maxConnections) ? null : limits.maxConnections,
       },
       usage: {
         queryCount: usage.queryCount,
         tokenCount: usage.tokenCount,
-        queryUsagePercent: queryOverage.usagePercent,
+        seatCount,
         tokenUsagePercent: tokenOverage.usagePercent,
-        queryOverageStatus: queryOverage.status,
         tokenOverageStatus: tokenOverage.status,
         periodStart: usage.periodStart,
         periodEnd: usage.periodEnd,

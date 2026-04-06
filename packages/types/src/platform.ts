@@ -16,7 +16,7 @@ export type DeployModeSetting = "saas" | "self-hosted" | "auto";
 export const WORKSPACE_STATUSES = ["active", "suspended", "deleted"] as const;
 export type WorkspaceStatus = (typeof WORKSPACE_STATUSES)[number];
 
-export const PLAN_TIERS = ["free", "trial", "team", "enterprise"] as const;
+export const PLAN_TIERS = ["free", "trial", "starter", "pro", "business"] as const;
 export type PlanTier = (typeof PLAN_TIERS)[number];
 
 export const NOISY_NEIGHBOR_METRICS = ["queries", "tokens", "storage"] as const;

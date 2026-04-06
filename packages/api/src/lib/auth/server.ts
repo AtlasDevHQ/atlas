@@ -156,7 +156,7 @@ function buildPlugins() {
               plans: getStripePlans(),
               async onSubscriptionComplete({ subscription, plan }) {
                 const orgId = subscription.referenceId;
-                if (orgId && (plan.name === "team" || plan.name === "enterprise")) {
+                if (orgId && (plan.name === "starter" || plan.name === "pro" || plan.name === "business")) {
                   try {
                     await updateWorkspacePlanTier(orgId, plan.name as PlanTier);
                     invalidatePlanCache(orgId);

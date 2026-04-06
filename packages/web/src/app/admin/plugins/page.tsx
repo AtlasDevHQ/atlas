@@ -982,9 +982,9 @@ function AvailableTab({
                   <Badge variant="outline" className="text-[10px]">
                     {plugin.type}
                   </Badge>
-                  {plugin.minPlan === "enterprise" && (
+                  {plugin.minPlan === "business" && (
                     <Badge variant="secondary" className="text-[10px]">
-                      Enterprise
+                      Business
                     </Badge>
                   )}
                 </CardTitle>

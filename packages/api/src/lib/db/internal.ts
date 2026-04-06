@@ -1086,7 +1086,7 @@ export async function getAuditLogQueries(
 // ── Workspace lifecycle helpers (0.9.0) ─────────────────────────────
 
 export type WorkspaceStatus = "active" | "suspended" | "deleted";
-export type PlanTier = "free" | "trial" | "team" | "enterprise";
+export type PlanTier = "free" | "trial" | "starter" | "pro" | "business";
 
 export interface WorkspaceRow {
   id: string;

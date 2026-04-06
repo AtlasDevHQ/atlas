@@ -1028,6 +1028,8 @@ describe("testSamlProvider", () => {
     expect(d.certValid).toBe(true);
     expect(d.certSubject).toContain("test.example.com");
     expect(d.certExpiry).toBeDefined();
+    // certExpiry should be ISO 8601 format, not raw X509 validTo string
+    expect(d.certExpiry).toMatch(/^\d{4}-\d{2}-\d{2}T/);
     expect(typeof d.certDaysRemaining).toBe("number");
     expect(d.idpReachable).toBe(true);
   });

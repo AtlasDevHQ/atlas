@@ -614,6 +614,7 @@ function validateTestUrl(url: string): string | null {
     if (parsed.protocol === "https:" || parsed.protocol === "http:") return null;
     return `URL has unsupported protocol: ${parsed.protocol}`;
   } catch {
+    // intentionally ignored: new URL() throws on malformed input — returned as validation error
     return `Not a valid URL: "${url}"`;
   }
 }
@@ -733,12 +734,13 @@ export async function testSamlProvider(provider: SSOProvider & { type: "saml" })
     const cert = new X509Certificate(provider.config.idpCertificate);
     details.certValid = true;
     details.certSubject = cert.subject;
-    details.certExpiry = cert.validTo;
 
     const expiryDate = new Date(cert.validTo);
     if (isNaN(expiryDate.getTime())) {
+      details.certExpiry = cert.validTo; // fallback to raw string if unparseable
       errors.push(`Could not parse certificate expiry date: "${cert.validTo}"`);
     } else {
+      details.certExpiry = expiryDate.toISOString();
       const now = new Date();
       const daysRemaining = Math.floor((expiryDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
       details.certDaysRemaining = daysRemaining;

@@ -8,6 +8,8 @@
  */
 
 import { Effect } from "effect";
+import dns from "node:dns";
+import crypto from "node:crypto";
 import { EEError } from "../lib/errors";
 import { requireEnterpriseEffect, EnterpriseError } from "../index";
 import { requireInternalDBEffect } from "../lib/db-guard";
@@ -52,6 +54,10 @@ interface SSOProviderRow {
   config: string | Record<string, unknown>;
   created_at: string;
   updated_at: string;
+  verification_token: string | null;
+  domain_verified: boolean;
+  domain_verified_at: string | null;
+  domain_verification_status: string;
   // Index signature required by internalQuery<T extends Record<string, unknown>>
   [key: string]: unknown;
 }
@@ -95,6 +101,10 @@ function rowToProvider(row: SSOProviderRow): SSOProvider {
     ssoEnforced: row.sso_enforced ?? false,
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
+    verificationToken: row.verification_token ?? null,
+    domainVerified: row.domain_verified ?? false,
+    domainVerifiedAt: row.domain_verified_at ? String(row.domain_verified_at) : null,
+    domainVerificationStatus: row.domain_verification_status ?? "pending",
   };
 
   if (row.type === "saml") {
@@ -185,6 +195,131 @@ export function validateProviderConfig(type: SSOProviderType, config: unknown): 
   return null;
 }
 
+// ── Domain verification ─────────────────────────────────────────────
+
+/**
+ * Generate a DNS TXT verification token for domain ownership proof.
+ */
+export function generateVerificationToken(): string {
+  return `atlas-verify=${crypto.randomUUID()}`;
+}
+
+/**
+ * Verify domain ownership by checking DNS TXT records for the verification token.
+ * Updates the provider's verification status in the database.
+ */
+export const verifyDomain = (
+  providerId: string,
+  orgId: string,
+): Effect.Effect<{ status: string; message: string }, SSOError | EnterpriseError | Error> =>
+  Effect.gen(function* () {
+    yield* requireEnterpriseEffect("sso");
+    yield* requireInternalDBEffect("SSO domain verification");
+
+    // Fetch provider
+    const rows = yield* Effect.promise(() => internalQuery<SSOProviderRow>(
+      `SELECT id, org_id, type, issuer, domain, enabled, sso_enforced, config, created_at, updated_at, verification_token, domain_verified, domain_verified_at, domain_verification_status
+       FROM sso_providers
+       WHERE id = $1 AND org_id = $2`,
+      [providerId, orgId],
+    ));
+
+    if (rows.length === 0) {
+      return yield* Effect.fail(new SSOError("SSO provider not found.", "not_found"));
+    }
+
+    const provider = rows[0];
+    if (!provider.verification_token) {
+      return yield* Effect.fail(new SSOError("No verification token configured for this provider.", "validation"));
+    }
+
+    if (provider.domain_verified) {
+      return { status: "verified", message: "Domain is already verified." };
+    }
+
+    // DNS TXT lookup via Effect.tryPromise
+    const dnsResult = yield* Effect.tryPromise({
+      try: () => dns.promises.resolveTxt(provider.domain),
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    }).pipe(
+      Effect.map((records) => ({ ok: true as const, records })),
+      Effect.catchAll((err) => {
+        log.warn({ providerId, domain: provider.domain, err: err.message }, "DNS TXT lookup failed");
+        return Effect.succeed({ ok: false as const, errMsg: err.message });
+      }),
+    );
+
+    if (!dnsResult.ok) {
+      yield* Effect.promise(() => internalQuery(
+        `UPDATE sso_providers SET domain_verification_status = 'failed', updated_at = now() WHERE id = $1 AND org_id = $2`,
+        [providerId, orgId],
+      ));
+
+      return { status: "failed", message: `DNS lookup failed: ${dnsResult.errMsg}` };
+    }
+
+    // Search TXT records for matching token
+    const flatRecords = dnsResult.records.map((parts) => parts.join(""));
+    const found = flatRecords.some((record) => record === provider.verification_token);
+
+    if (found) {
+      yield* Effect.promise(() => internalQuery(
+        `UPDATE sso_providers
+         SET domain_verified = true, domain_verified_at = now(), domain_verification_status = 'verified', updated_at = now()
+         WHERE id = $1 AND org_id = $2`,
+        [providerId, orgId],
+      ));
+
+      log.info({ providerId, domain: provider.domain }, "SSO domain verified via DNS TXT record");
+      return { status: "verified", message: "Domain verified successfully." };
+    }
+
+    yield* Effect.promise(() => internalQuery(
+      `UPDATE sso_providers SET domain_verification_status = 'failed', updated_at = now() WHERE id = $1 AND org_id = $2`,
+      [providerId, orgId],
+    ));
+
+    return {
+      status: "failed",
+      message: `No matching TXT record found. Add a TXT record with value "${provider.verification_token}" to ${provider.domain}.`,
+    };
+  });
+
+/**
+ * Check if a domain is available for SSO registration.
+ */
+export const checkDomainAvailability = (
+  domain: string,
+  orgId: string,
+): Effect.Effect<{ available: boolean; reason?: string }, SSOError | EnterpriseError | Error> =>
+  Effect.gen(function* () {
+    yield* requireEnterpriseEffect("sso");
+
+    const normalized = normalizeDomain(domain);
+    if (!isValidDomain(normalized)) {
+      return { available: false, reason: "Invalid domain format." };
+    }
+
+    if (!hasInternalDB()) {
+      return { available: true };
+    }
+
+    const existing = yield* Effect.promise(() => internalQuery<{ id: string; org_id: string }>(
+      `SELECT id, org_id FROM sso_providers WHERE domain = $1`,
+      [normalized],
+    ));
+
+    if (existing.length === 0) {
+      return { available: true };
+    }
+
+    if (existing[0].org_id === orgId) {
+      return { available: false, reason: "Domain is already registered by your organization." };
+    }
+
+    return { available: false, reason: "Domain is already registered by another organization." };
+  });
+
 // ── CRUD ────────────────────────────────────────────────────────────
 
 /**
@@ -196,7 +331,7 @@ export const listSSOProviders = (orgId: string): Effect.Effect<SSOProvider[], En
     if (!hasInternalDB()) return [];
 
     const rows = yield* Effect.promise(() => internalQuery<SSOProviderRow>(
-      `SELECT id, org_id, type, issuer, domain, enabled, sso_enforced, config, created_at, updated_at
+      `SELECT id, org_id, type, issuer, domain, enabled, sso_enforced, config, created_at, updated_at, verification_token, domain_verified, domain_verified_at, domain_verification_status
        FROM sso_providers
        WHERE org_id = $1
        ORDER BY created_at ASC`,
@@ -214,7 +349,7 @@ export const getSSOProvider = (orgId: string, providerId: string): Effect.Effect
     if (!hasInternalDB()) return null;
 
     const rows = yield* Effect.promise(() => internalQuery<SSOProviderRow>(
-      `SELECT id, org_id, type, issuer, domain, enabled, sso_enforced, config, created_at, updated_at
+      `SELECT id, org_id, type, issuer, domain, enabled, sso_enforced, config, created_at, updated_at, verification_token, domain_verified, domain_verified_at, domain_verification_status
        FROM sso_providers
        WHERE id = $1 AND org_id = $2`,
       [providerId, orgId],
@@ -260,16 +395,19 @@ export const createSSOProvider = (
 
     const storedConfig = prepareConfigForStorage(input.type, input.config as unknown as Record<string, unknown>);
 
+    // Generate verification token — provider cannot be enabled until domain is verified
+    const verificationToken = generateVerificationToken();
+
     const rows = yield* Effect.promise(() => internalQuery<SSOProviderRow>(
-      `INSERT INTO sso_providers (org_id, type, issuer, domain, enabled, config)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       RETURNING id, org_id, type, issuer, domain, enabled, sso_enforced, config, created_at, updated_at`,
-      [orgId, input.type, input.issuer, domain, input.enabled ?? false, JSON.stringify(storedConfig)],
+      `INSERT INTO sso_providers (org_id, type, issuer, domain, enabled, config, verification_token, domain_verified, domain_verification_status)
+       VALUES ($1, $2, $3, $4, false, $5, $6, false, 'pending')
+       RETURNING id, org_id, type, issuer, domain, enabled, sso_enforced, config, created_at, updated_at, verification_token, domain_verified, domain_verified_at, domain_verification_status`,
+      [orgId, input.type, input.issuer, domain, JSON.stringify(storedConfig), verificationToken],
     ));
 
     if (!rows[0]) return yield* Effect.die(new Error("Failed to create SSO provider — no row returned."));
 
-    log.info({ orgId, type: input.type, domain, issuer: input.issuer }, "SSO provider created");
+    log.info({ orgId, type: input.type, domain, issuer: input.issuer }, "SSO provider created (pending domain verification)");
     return rowToProvider(rows[0]);
   });
 
@@ -299,6 +437,7 @@ export const updateSSOProvider = (
       params.push(input.issuer);
     }
 
+    let domainChanged = false;
     if (input.domain !== undefined) {
       const domain = normalizeDomain(input.domain);
       if (!isValidDomain(domain)) {
@@ -314,9 +453,29 @@ export const updateSSOProvider = (
       }
       sets.push(`domain = $${paramIdx++}`);
       params.push(domain);
+
+      // Domain changed — reset verification
+      if (domain !== existing.domain) {
+        domainChanged = true;
+        const newToken = generateVerificationToken();
+        sets.push(`verification_token = $${paramIdx++}`);
+        params.push(newToken);
+        sets.push(`domain_verified = false`);
+        sets.push(`domain_verified_at = NULL`);
+        sets.push(`domain_verification_status = 'pending'`);
+        // Force disable when domain changes
+        sets.push(`enabled = false`);
+      }
     }
 
-    if (input.enabled !== undefined) {
+    if (input.enabled !== undefined && !domainChanged) {
+      // Block enabling when domain is not verified
+      if (input.enabled && !existing.domainVerified) {
+        return yield* Effect.fail(new SSOError(
+          "Cannot enable SSO provider until domain is verified. Verify domain ownership first.",
+          "validation",
+        ));
+      }
       sets.push(`enabled = $${paramIdx++}`);
       params.push(input.enabled);
     }
@@ -343,7 +502,7 @@ export const updateSSOProvider = (
     const rows = yield* Effect.promise(() => internalQuery<SSOProviderRow>(
       `UPDATE sso_providers SET ${sets.join(", ")}
        WHERE id = $${paramIdx++} AND org_id = $${paramIdx}
-       RETURNING id, org_id, type, issuer, domain, enabled, sso_enforced, config, created_at, updated_at`,
+       RETURNING id, org_id, type, issuer, domain, enabled, sso_enforced, config, created_at, updated_at, verification_token, domain_verified, domain_verified_at, domain_verification_status`,
       params,
     ));
 
@@ -391,7 +550,7 @@ export const findProviderByDomain = (emailDomain: string): Effect.Effect<SSOProv
 
     const domain = normalizeDomain(emailDomain);
     const rows = yield* Effect.promise(() => internalQuery<SSOProviderRow>(
-      `SELECT id, org_id, type, issuer, domain, enabled, sso_enforced, config, created_at, updated_at
+      `SELECT id, org_id, type, issuer, domain, enabled, sso_enforced, config, created_at, updated_at, verification_token, domain_verified, domain_verified_at, domain_verification_status
        FROM sso_providers
        WHERE domain = $1 AND enabled = true
        LIMIT 1`,
@@ -435,7 +594,7 @@ export const isSSOEnforced = (orgId: string): Effect.Effect<{
     if (!hasInternalDB()) return null;
 
     const rows = yield* Effect.promise(() => internalQuery<SSOProviderRow>(
-      `SELECT id, org_id, type, issuer, domain, enabled, sso_enforced, config, created_at, updated_at
+      `SELECT id, org_id, type, issuer, domain, enabled, sso_enforced, config, created_at, updated_at, verification_token, domain_verified, domain_verified_at, domain_verification_status
        FROM sso_providers
        WHERE org_id = $1 AND enabled = true AND sso_enforced = true
        LIMIT 1`,
@@ -475,7 +634,7 @@ export const isSSOEnforcedForDomain = (emailDomain: string): Effect.Effect<{
 
     const domain = normalizeDomain(emailDomain);
     const rows = yield* Effect.promise(() => internalQuery<SSOProviderRow>(
-      `SELECT id, org_id, type, issuer, domain, enabled, sso_enforced, config, created_at, updated_at
+      `SELECT id, org_id, type, issuer, domain, enabled, sso_enforced, config, created_at, updated_at, verification_token, domain_verified, domain_verified_at, domain_verification_status
        FROM sso_providers
        WHERE domain = $1 AND enabled = true AND sso_enforced = true
        LIMIT 1`,

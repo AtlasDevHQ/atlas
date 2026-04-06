@@ -65,6 +65,10 @@ const sampleSamlRow = {
   }),
   created_at: "2026-03-19T00:00:00Z",
   updated_at: "2026-03-19T00:00:00Z",
+  verification_token: "atlas-verify=test-uuid",
+  domain_verified: true,
+  domain_verified_at: "2026-03-19T00:00:00Z",
+  domain_verification_status: "verified",
 };
 
 const sampleOidcRow = {
@@ -82,6 +86,10 @@ const sampleOidcRow = {
   }),
   created_at: "2026-03-19T00:00:00Z",
   updated_at: "2026-03-19T00:00:00Z",
+  verification_token: "atlas-verify=test-uuid-2",
+  domain_verified: false,
+  domain_verified_at: null,
+  domain_verification_status: "pending",
 };
 
 // ── Tests ───────────────────────────────────────────────────────────
@@ -444,9 +452,10 @@ describe("OIDC encryption round-trip", () => {
     }));
 
     // The INSERT query params should contain the encrypted secret
+    // Params: [orgId, type, issuer, domain, config_json, verificationToken]
     const insertQuery = ee.capturedQueries.find(q => q.sql.includes("INSERT INTO sso_providers"));
     expect(insertQuery).toBeDefined();
-    const configParam = insertQuery!.params[5] as string;
+    const configParam = insertQuery!.params[4] as string;
     expect(configParam).toContain("encrypted:secret-456");
   });
 

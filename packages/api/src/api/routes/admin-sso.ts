@@ -21,6 +21,8 @@ import {
   summarizeProvider,
   setSSOEnforcement,
   isSSOEnforced,
+  verifyDomain,
+  checkDomainAvailability,
   SSOError,
   SSOEnforcementError,
 } from "@atlas/ee/auth/sso";
@@ -49,6 +51,10 @@ const SSOProviderSummarySchema = z.object({
   ssoEnforced: z.boolean(),
   createdAt: z.string(),
   updatedAt: z.string(),
+  verificationToken: z.string().nullable(),
+  domainVerified: z.boolean(),
+  domainVerifiedAt: z.string().nullable(),
+  domainVerificationStatus: z.string(),
 }).passthrough();
 
 const SSOProviderDetailSchema = z.object({
@@ -62,7 +68,21 @@ const SSOProviderDetailSchema = z.object({
   createdAt: z.string(),
   updatedAt: z.string(),
   config: z.record(z.string(), z.unknown()),
+  verificationToken: z.string().nullable(),
+  domainVerified: z.boolean(),
+  domainVerifiedAt: z.string().nullable(),
+  domainVerificationStatus: z.string(),
 }).passthrough();
+
+const VerifyDomainResponseSchema = z.object({
+  status: z.string(),
+  message: z.string(),
+});
+
+const DomainCheckResponseSchema = z.object({
+  available: z.boolean(),
+  reason: z.string().optional(),
+});
 
 const ProviderIdParamSchema = createIdParamSchema("prov_abc123");
 
@@ -435,6 +455,90 @@ const setEnforcementRoute = createRoute({
   },
 });
 
+const verifyDomainRoute = createRoute({
+  method: "post",
+  path: "/providers/{id}/verify",
+  tags: ["Admin — SSO"],
+  summary: "Verify SSO provider domain",
+  description:
+    "Triggers a DNS TXT record lookup to verify domain ownership for the SSO provider.",
+  request: {
+    params: ProviderIdParamSchema,
+  },
+  responses: {
+    200: {
+      description: "Verification result",
+      content: {
+        "application/json": { schema: VerifyDomainResponseSchema },
+      },
+    },
+    400: {
+      description: "Invalid provider ID or no active organization",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — admin role or enterprise license required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "SSO provider not found",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const domainCheckRoute = createRoute({
+  method: "get",
+  path: "/domain-check",
+  tags: ["Admin — SSO"],
+  summary: "Check domain availability",
+  description:
+    "Checks whether a domain is available for SSO registration.",
+  request: {
+    query: z.object({ domain: z.string() }),
+  },
+  responses: {
+    200: {
+      description: "Domain availability result",
+      content: {
+        "application/json": { schema: DomainCheckResponseSchema },
+      },
+    },
+    400: {
+      description: "Missing or invalid domain parameter",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — admin role or enterprise license required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
 // ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
@@ -540,6 +644,36 @@ adminSso.openapi(setEnforcementRoute, async (c) => {
     const result = yield* setSSOEnforcement(orgId!, enforced);
     return c.json(result, 200);
   }), { label: "set SSO enforcement", domainErrors: [ssoEnforcementDomainError, ssoDomainError] });
+});
+
+// POST /providers/:id/verify — trigger DNS verification
+adminSso.openapi(verifyDomainRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { orgId } = yield* AuthContext;
+    const { id: providerId } = c.req.valid("param");
+
+    if (!isValidId(providerId)) {
+      return c.json({ error: "bad_request", message: "Invalid provider ID." }, 400);
+    }
+
+    const result = yield* verifyDomain(providerId, orgId!);
+    return c.json(result, 200);
+  }), { label: "verify SSO domain", domainErrors: [ssoEnforcementDomainError, ssoDomainError] });
+});
+
+// GET /domain-check — check domain availability
+adminSso.openapi(domainCheckRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { orgId } = yield* AuthContext;
+    const { domain } = c.req.valid("query");
+
+    if (!domain) {
+      return c.json({ error: "bad_request", message: "Missing required query parameter: domain." }, 400);
+    }
+
+    const result = yield* checkDomainAvailability(domain, orgId!);
+    return c.json(result, 200);
+  }), { label: "check SSO domain availability", domainErrors: [ssoEnforcementDomainError, ssoDomainError] });
 });
 
 export { adminSso };

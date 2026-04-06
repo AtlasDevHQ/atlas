@@ -159,6 +159,10 @@ export async function handleImprove(args: string[]): Promise<void> {
 
   console.log(`  Profiled ${pc.bold(String(profiles.length))} tables`);
 
+  // Cache profiles for the scheduled expert
+  const { cacheProfiles } = await import("@atlas/api/lib/semantic/expert/profile-cache");
+  cacheProfiles(profiles);
+
   // 3. Fetch audit log patterns (if internal DB available)
   const auditPatterns: AuditPattern[] = [];
   const rejectedKeys = new Set<string>();

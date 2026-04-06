@@ -48,9 +48,10 @@ export function getExpertSchedulerIntervalMs(): number {
  *
  * 1. Loads semantic layer entities + glossary from file system
  * 2. Fetches rejected keys from internal DB
- * 3. Runs analysis engine (without DB profiling — uses empty profiles)
- * 4. For proposals above auto-approve threshold, applies them
- * 5. Inserts remaining proposals as pending
+ * 3. Loads cached profiles from last `atlas init` or `atlas improve` run
+ * 4. Runs analysis engine with cached profiles
+ * 5. For proposals above auto-approve threshold, applies them
+ * 6. Inserts remaining proposals as pending
  */
 export async function runExpertSchedulerTick(): Promise<ExpertTickResult> {
   const result: ExpertTickResult = {
@@ -75,11 +76,14 @@ export async function runExpertSchedulerTick(): Promise<ExpertTickResult> {
       return result;
     }
 
-    // 2. Run analysis (no profiles in scheduled mode — focuses on
-    //    description quality, glossary gaps, query patterns, etc.)
+    // 2. Load cached profiles (from last `atlas init` or `atlas improve` run)
+    const { loadCachedProfiles } = await import("./profile-cache");
+    const profiles = loadCachedProfiles();
+
+    // 3. Run analysis
     const { analyzeSemanticLayer } = await import("./analyzer");
     const proposals = analyzeSemanticLayer({
-      profiles: [],
+      profiles,
       entities,
       glossary,
       auditPatterns,
@@ -93,11 +97,11 @@ export async function runExpertSchedulerTick(): Promise<ExpertTickResult> {
       return result;
     }
 
-    // 3. Insert proposals (insertSemanticAmendment handles auto-approve threshold)
+    // 4. Insert proposals (insertSemanticAmendment handles auto-approve threshold)
     const { insertSemanticAmendment } =
       await import("@atlas/api/lib/db/internal");
 
-    // 4. Process each proposal
+    // 5. Process each proposal
     for (const proposal of proposals) {
       try {
         const { status } = await insertSemanticAmendment({

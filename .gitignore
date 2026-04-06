@@ -10,6 +10,7 @@ tsconfig.tsbuildinfo
 !.claude/settings.json
 !.claude/research/
 /semantic/
+.expert-cache/
 create-atlas/templates/*/semantic/
 create-atlas/templates/*/bin/
 create-atlas/templates/*/data/

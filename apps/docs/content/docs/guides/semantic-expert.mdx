@@ -281,6 +281,15 @@ Set these environment variables or configure through the admin Settings page und
 | Schedule Interval | `ATLAS_EXPERT_SCHEDULER_INTERVAL_HOURS` | `24` | Hours between runs |
 | Auto-Approve Threshold | `ATLAS_EXPERT_AUTO_APPROVE_THRESHOLD` | (disabled) | Proposals with confidence ≥ this value are auto-applied |
 
+### Cached Profiles
+
+Scheduled mode uses cached database profiles from the last `atlas init` or `atlas improve` run. This means the highest-value analysis categories (coverage gaps, missing measures, missing joins) that depend on actual DB profiling are included in scheduled analysis.
+
+- Profiles are cached automatically after profiling completes in `atlas init` and `atlas improve`
+- The cache is stored at `{semanticRoot}/.expert-cache/profiles.json`
+- If no cache exists, scheduled analysis gracefully degrades to description/glossary/query-pattern analysis only
+- If the cache is older than 7 days, a warning is logged — run `atlas improve` periodically to keep it fresh
+
 ### Auto-Approval
 
 When `ATLAS_EXPERT_AUTO_APPROVE_THRESHOLD` is set (e.g., `0.9`), proposals with confidence at or above that threshold are automatically applied without human review. Auto-applied amendments:

@@ -476,6 +476,10 @@ async function profileDatasource(
   // Run profiler heuristics
   profiles = analyzeTableProfiles(profiles);
 
+  // Cache profiles for the scheduled expert
+  const { cacheProfiles } = await import("@atlas/api/lib/semantic/expert/profile-cache");
+  cacheProfiles(profiles);
+
   const tableCount = profiles.filter((p) => !isViewLike(p)).length;
   const viewCount = profiles.filter((p) => isView(p)).length;
   const matviewCount = profiles.filter((p) => isMatView(p)).length;
@@ -843,6 +847,10 @@ export async function handleInit(args: string[]): Promise<void> {
 
     // Run profiler heuristics
     profiles = analyzeTableProfiles(profiles);
+
+    // Cache profiles for the scheduled expert
+    const { cacheProfiles: cacheDuckProfiles } = await import("@atlas/api/lib/semantic/expert/profile-cache");
+    cacheDuckProfiles(profiles);
 
     console.log(`\nFound ${profiles.length} table(s):\n`);
     for (const p of profiles) {

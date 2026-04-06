@@ -32,6 +32,7 @@ export {
   runExpertSchedulerTick,
   DEFAULT_EXPERT_SCHEDULER_INTERVAL_MS,
 } from "./scheduler";
+export { cacheProfiles, loadCachedProfiles, invalidateProfileCache } from "./profile-cache";
 export type { ExpertTickResult } from "./scheduler";
 export {
   createSession,

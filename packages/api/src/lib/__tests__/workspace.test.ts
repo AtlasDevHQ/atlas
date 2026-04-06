@@ -6,14 +6,12 @@ import { describe, it, expect, mock, beforeEach } from "bun:test";
 
 let mockHasInternalDB = true;
 let mockWorkspaceStatus: string | null = "active";
-let mockGetWorkspaceStatusShouldThrow = false;
+let mockGetCachedWorkspaceShouldThrow = false;
 
 mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => mockHasInternalDB,
-  getWorkspaceStatus: async () => {
-    if (mockGetWorkspaceStatusShouldThrow) throw new Error("connection refused");
-    return mockWorkspaceStatus;
-  },
+  getWorkspaceStatus: async () => mockWorkspaceStatus,
+  getWorkspaceDetails: async () => null,
   internalQuery: async () => [],
   internalExecute: () => {},
   getInternalDB: () => ({}),
@@ -37,7 +35,6 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   incrementSuggestionClick: () => {},
   deleteSuggestion: async () => false,
   getAuditLogQueries: async () => [],
-  getWorkspaceDetails: async () => null,
   updateWorkspaceStatus: async () => true,
   updateWorkspacePlanTier: async () => true,
   cascadeWorkspaceDelete: async () => ({ conversations: 0, semanticEntities: 0, learnedPatterns: 0, suggestions: 0, scheduledTasks: 0, settings: 0 }),
@@ -46,6 +43,16 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   setWorkspaceRegion: async () => {},
   insertSemanticAmendment: async () => "mock-amendment-id",
   getPendingAmendmentCount: async () => 0,
+}));
+
+mock.module("@atlas/api/lib/billing/enforcement", () => ({
+  getCachedWorkspace: async (orgId: string) => {
+    if (mockGetCachedWorkspaceShouldThrow) throw new Error("connection refused");
+    if (mockWorkspaceStatus === null) return null;
+    return { id: orgId, name: "Test Org", slug: "test-org", workspace_status: mockWorkspaceStatus, plan_tier: "team", byot: false, stripe_customer_id: null, trial_ends_at: null, suspended_at: null, deleted_at: null, region: null, region_assigned_at: null, createdAt: new Date().toISOString() };
+  },
+  checkPlanLimits: async () => ({ allowed: true }),
+  invalidatePlanCache: () => {},
 }));
 
 mock.module("@atlas/api/lib/logger", () => ({
@@ -63,7 +70,7 @@ describe("checkWorkspaceStatus", () => {
   beforeEach(() => {
     mockHasInternalDB = true;
     mockWorkspaceStatus = "active";
-    mockGetWorkspaceStatusShouldThrow = false;
+    mockGetCachedWorkspaceShouldThrow = false;
   });
 
   it("allows when no orgId", async () => {
@@ -90,6 +97,8 @@ describe("checkWorkspaceStatus", () => {
     expect(result.allowed).toBe(false);
     expect(result.httpStatus).toBe(403);
     expect(result.errorCode).toBe("workspace_suspended");
+    expect(result.errorMessage).toContain("suspended");
+    expect(result.errorMessage).toContain("payment method");
   });
 
   it("blocks deleted workspaces with 404", async () => {
@@ -100,14 +109,14 @@ describe("checkWorkspaceStatus", () => {
     expect(result.errorCode).toBe("workspace_deleted");
   });
 
-  it("allows when workspace status is null (pre-migration)", async () => {
+  it("allows when workspace is null (pre-migration org)", async () => {
     mockWorkspaceStatus = null;
     const result = await checkWorkspaceStatus("org-1");
     expect(result.allowed).toBe(true);
   });
 
   it("blocks on DB error (fail-closed)", async () => {
-    mockGetWorkspaceStatusShouldThrow = true;
+    mockGetCachedWorkspaceShouldThrow = true;
     const result = await checkWorkspaceStatus("org-1");
     expect(result.allowed).toBe(false);
     expect(result.httpStatus).toBe(503);

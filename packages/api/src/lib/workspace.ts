@@ -5,6 +5,9 @@
  * and blocks requests when the workspace is suspended or deleted.
  * Called after authentication in request-processing routes (chat, query).
  *
+ * Uses the cached workspace data from the plan enforcement module so
+ * that workspace status checks don't trigger a separate DB query.
+ *
  * - Suspended workspaces: 403 with clear reactivation message
  * - Deleted workspaces: 404 (workspace no longer exists)
  * - Active or no org: pass through
@@ -13,7 +16,8 @@
  */
 
 import { createLogger } from "@atlas/api/lib/logger";
-import { hasInternalDB, getWorkspaceStatus, type WorkspaceStatus } from "@atlas/api/lib/db/internal";
+import { hasInternalDB, type WorkspaceStatus } from "@atlas/api/lib/db/internal";
+import { getCachedWorkspace } from "@atlas/api/lib/billing/enforcement";
 
 const log = createLogger("workspace");
 
@@ -27,6 +31,9 @@ export interface WorkspaceCheckResult {
 
 /**
  * Check if the workspace is allowed to make requests.
+ *
+ * Uses the same cached workspace data as plan enforcement to avoid
+ * a separate DB query per request.
  *
  * Returns `{ allowed: true }` when:
  * - No internal DB is configured (self-hosted, no org management)
@@ -43,7 +50,8 @@ export async function checkWorkspaceStatus(orgId: string | undefined): Promise<W
 
   let status: WorkspaceStatus | null;
   try {
-    status = await getWorkspaceStatus(orgId);
+    const workspace = await getCachedWorkspace(orgId);
+    status = workspace?.workspace_status ?? null;
   } catch (err) {
     log.error(
       { err: err instanceof Error ? err.message : String(err), orgId },
@@ -72,7 +80,7 @@ export async function checkWorkspaceStatus(orgId: string | undefined): Promise<W
         allowed: false,
         status,
         errorCode: "workspace_suspended",
-        errorMessage: "This workspace is suspended. Contact your administrator to reactivate it.",
+        errorMessage: "This workspace has been suspended. Please update your payment method or contact support.",
         httpStatus: 403,
       };
 

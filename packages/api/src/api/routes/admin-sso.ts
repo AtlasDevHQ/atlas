@@ -21,6 +21,7 @@ import {
   summarizeProvider,
   setSSOEnforcement,
   isSSOEnforced,
+  testSSOProvider,
   SSOError,
   SSOEnforcementError,
 } from "@atlas/ee/auth/sso";
@@ -80,6 +81,40 @@ const UpdateSSOProviderBodySchema = z.object({
   enabled: z.boolean().optional(),
   config: z.record(z.string(), z.unknown()).optional(),
 });
+
+const SSOOidcTestDetailsSchema = z.object({
+  discoveryReachable: z.boolean(),
+  issuerMatch: z.boolean(),
+  requiredFieldsPresent: z.boolean(),
+  endpoints: z.record(z.string(), z.string()),
+});
+
+const SSOSamlTestDetailsSchema = z.object({
+  certValid: z.boolean(),
+  certSubject: z.string().nullable(),
+  certExpiry: z.string().nullable(),
+  certDaysRemaining: z.number().nullable(),
+  idpReachable: z.boolean().nullable(),
+});
+
+const SSOTestResultSchema = z.discriminatedUnion("type", [
+  z.object({
+    type: z.literal("oidc"),
+    success: z.boolean(),
+    testedAt: z.string(),
+    details: SSOOidcTestDetailsSchema,
+    errors: z.array(z.string()).optional(),
+    warnings: z.array(z.string()).optional(),
+  }),
+  z.object({
+    type: z.literal("saml"),
+    success: z.boolean(),
+    testedAt: z.string(),
+    details: SSOSamlTestDetailsSchema,
+    errors: z.array(z.string()).optional(),
+    warnings: z.array(z.string()).optional(),
+  }),
+]);
 
 const SSOEnforcementBodySchema = z.object({
   enforced: z.boolean(),
@@ -343,6 +378,52 @@ const deleteProviderRoute = createRoute({
   },
 });
 
+const testProviderRoute = createRoute({
+  method: "post",
+  path: "/providers/{id}/test",
+  tags: ["Admin — SSO"],
+  summary: "Test SSO provider connection",
+  description:
+    "Tests an SSO provider's configuration by validating connectivity and config. " +
+    "For OIDC: fetches the discovery document and validates required fields. " +
+    "For SAML: parses the X.509 certificate and checks IdP reachability.",
+  request: {
+    params: ProviderIdParamSchema,
+  },
+  responses: {
+    200: {
+      description: "Test result",
+      content: {
+        "application/json": { schema: SSOTestResultSchema },
+      },
+    },
+    400: {
+      description: "Invalid provider ID or no active organization",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — admin role or enterprise license required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "SSO provider not found or internal database not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
 const getEnforcementRoute = createRoute({
   method: "get",
   path: "/enforcement",
@@ -519,6 +600,21 @@ adminSso.openapi(deleteProviderRoute, async (c) => {
     }
     return c.json({ message: "SSO provider deleted." }, 200);
   }), { label: "delete SSO provider", domainErrors: [ssoEnforcementDomainError, ssoDomainError] });
+});
+
+// POST /providers/:id/test — test SSO provider connection
+adminSso.openapi(testProviderRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { orgId } = yield* AuthContext;
+    const { id: providerId } = c.req.valid("param");
+
+    if (!isValidId(providerId)) {
+      return c.json({ error: "bad_request", message: "Invalid provider ID." }, 400);
+    }
+
+    const result = yield* testSSOProvider(orgId!, providerId);
+    return c.json(result, 200);
+  }), { label: "test SSO provider", domainErrors: [ssoEnforcementDomainError, ssoDomainError] });
 });
 
 // GET /enforcement — get SSO enforcement status

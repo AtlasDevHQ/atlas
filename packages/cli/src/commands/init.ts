@@ -476,6 +476,15 @@ async function profileDatasource(
   // Run profiler heuristics
   profiles = analyzeTableProfiles(profiles);
 
+  // Cache profiles for the scheduled expert
+  try {
+    const { cacheProfiles } = await import("@atlas/api/lib/semantic/expert/profile-cache");
+    cacheProfiles(profiles);
+    console.log(pc.dim(`  Cached ${profiles.length} profile(s) for scheduled expert`));
+  } catch (err) {
+    console.warn(pc.yellow(`  Warning: Could not cache profiles: ${err instanceof Error ? err.message : String(err)}`));
+  }
+
   const tableCount = profiles.filter((p) => !isViewLike(p)).length;
   const viewCount = profiles.filter((p) => isView(p)).length;
   const matviewCount = profiles.filter((p) => isMatView(p)).length;
@@ -843,6 +852,15 @@ export async function handleInit(args: string[]): Promise<void> {
 
     // Run profiler heuristics
     profiles = analyzeTableProfiles(profiles);
+
+    // Cache profiles for the scheduled expert
+    try {
+      const { cacheProfiles: cacheDuckProfiles } = await import("@atlas/api/lib/semantic/expert/profile-cache");
+      cacheDuckProfiles(profiles);
+      console.log(pc.dim(`  Cached ${profiles.length} profile(s) for scheduled expert`));
+    } catch (err) {
+      console.warn(pc.yellow(`  Warning: Could not cache profiles: ${err instanceof Error ? err.message : String(err)}`));
+    }
 
     console.log(`\nFound ${profiles.length} table(s):\n`);
     for (const p of profiles) {

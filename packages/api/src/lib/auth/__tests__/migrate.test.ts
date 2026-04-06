@@ -200,15 +200,18 @@ describe("migrateAuthTables", () => {
 
   it("does not throw when internal DB migration fails", async () => {
     process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/atlas";
+    process.env.ATLAS_MIGRATION_RETRIES = "1"; // disable retries for fast test
     const { pool } = createTrackingPool({ shouldThrow: true });
     _resetPool(pool);
 
     // Should resolve without throwing
     await expect(migrateAuthTables()).resolves.toBeUndefined();
+    delete process.env.ATLAS_MIGRATION_RETRIES;
   });
 
   it("getMigrationError returns error message after internal DB failure", async () => {
     process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/atlas";
+    process.env.ATLAS_MIGRATION_RETRIES = "1"; // disable retries for fast test
     const { pool } = createTrackingPool({ shouldThrow: true });
     _resetPool(pool);
 
@@ -217,6 +220,7 @@ describe("migrateAuthTables", () => {
     const err = getMigrationError();
     expect(err).toBeString();
     expect(err).toContain("migration failed");
+    delete process.env.ATLAS_MIGRATION_RETRIES;
   });
 
   it("getMigrationError returns null on success", async () => {

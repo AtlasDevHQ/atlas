@@ -602,6 +602,10 @@ function warnIfSharedDatabase(): void {
  *
  * Replaces the old imperative DDL approach (152 individual pool.query calls)
  * with a file-based migration runner tracked in `__atlas_migrations`. See #978.
+ *
+ * Retries up to 5 times with exponential backoff (1s, 2s, 4s, 8s, 16s) to
+ * handle serverless Postgres cold starts on Railway where the DB may take
+ * several seconds to wake up.
  */
 export async function migrateInternalDB(): Promise<void> {
   // Warn when DATABASE_URL and ATLAS_DATASOURCE_URL resolve to the same
@@ -613,7 +617,25 @@ export async function migrateInternalDB(): Promise<void> {
   const pool = getInternalDB();
 
   const { runMigrations, runSeeds } = await import("@atlas/api/lib/db/migrate");
-  await runMigrations(pool);
+
+  // Retry with backoff for serverless Postgres cold starts (Railway).
+  // Set ATLAS_MIGRATION_RETRIES=0 to disable retries (e.g. in tests).
+  const maxRetries = parseInt(process.env.ATLAS_MIGRATION_RETRIES ?? "5", 10);
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      await runMigrations(pool);
+      break;
+    } catch (err) {
+      if (attempt === maxRetries) throw err;
+      const delayMs = 1000 * 2 ** (attempt - 1); // 1s, 2s, 4s, 8s, 16s
+      log.warn(
+        { attempt, maxRetries, delayMs, err: err instanceof Error ? err.message : String(err) },
+        "Migration failed — retrying (serverless DB may be cold-starting)",
+      );
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+
   await runSeeds(pool);
 
   log.info("Internal DB migration complete");

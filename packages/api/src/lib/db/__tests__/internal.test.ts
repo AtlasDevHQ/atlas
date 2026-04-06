@@ -243,12 +243,14 @@ describe("internal DB module", () => {
 
     it("propagates migration errors", async () => {
       process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/atlas";
+      process.env.ATLAS_MIGRATION_RETRIES = "1"; // disable retries for fast test
       const { pool } = createMockPool();
       pool._setError(new Error("permission denied"));
       _resetPool(pool);
 
       // Error may be thrown directly or wrapped by the migration runner
       await expect(migrateInternalDB()).rejects.toThrow();
+      delete process.env.ATLAS_MIGRATION_RETRIES;
     });
   });
 

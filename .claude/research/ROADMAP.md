@@ -957,7 +957,7 @@ _Untracked ideas. Create issues when committing to work._
 - Python SDK — `pip install useatlas`, thin HTTP wrapper around Atlas API. Build when a Python user asks for it, not before
 - MongoDB datasource plugin — `@useatlas/mongodb`. Uses aggregation pipeline instead of SQL. Requires custom validation hook (0.6.0)
 - GraphQL datasource plugin — needs custom validation like MongoDB
-- Multi-seed selection in `create-atlas` (choose demo type: cybersec, ecommerce, devops)
+- ~~Multi-seed selection in `create-atlas`~~ — **shipped** (#1188). Interactive seed picker (simple/cybersec/ecommerce), `--seed` flag, seed data restructured into `seeds/<name>/`
 
 ### Competitive Positioning
 - Benchmark participation — publish Spider/BIRD results for credibility. Better after `atlas learn` exists (0.7.0)
@@ -968,7 +968,7 @@ _Untracked ideas. Create issues when committing to work._
 - ~~Dashboard persistence~~ — **shipped** (#1246, PRs #1253–#1258). DB schema + CRUD API, add-to-dashboard from chat, list/view pages with DnD reorder, sharing + public view, auto-refresh via scheduler, AI-driven card suggestions
 - Voice input / natural language voice queries — wait for Web Speech API maturity
 - Multi-agent collaboration — specialist agents per domain with coordinator routing
-- `atlas migrate` — semantic layer versioning and migration tracking
+- ~~`atlas migrate`~~ — **shipped** (#1185, PR #1303). Snapshot, diff, log, rollback, auto-snapshot on `atlas improve` and `atlas init`
 - A/B testing for agent prompts — compare system prompt variants on identical queries
 
 ### MCP Enhancements

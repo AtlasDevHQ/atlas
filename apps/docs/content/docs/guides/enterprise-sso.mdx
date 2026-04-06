@@ -202,7 +202,7 @@ When validation fails, the response includes `errors` and optionally `warnings`:
     "certDaysRemaining": null,
     "idpReachable": null
   },
-  "errors": ["Certificate is malformed or cannot be parsed."],
+  "errors": ["Malformed PEM certificate: no start line"],
   "warnings": []
 }
 ```
@@ -316,9 +316,8 @@ All SSO endpoints require the `admin` role and an active enterprise license. The
 
 | Status | Code | When |
 |--------|------|------|
-| 400 | `validation` | Invalid config fields, malformed domain |
+| 400 | `validation` | Invalid config fields, malformed domain, or enabling a provider whose domain is not verified |
 | 400 | `no_provider` | Trying to enable enforcement with no active SSO provider |
-| 400 | `domain_not_verified` | Trying to enable a provider whose domain is not verified |
 | 403 | `enterprise_required` | Enterprise license not active |
 | 404 | `not_found` | Provider ID doesn't exist |
 | 409 | `conflict` | Domain already claimed by another SSO provider |

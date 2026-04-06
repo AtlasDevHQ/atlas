@@ -496,6 +496,10 @@ onboarding.openapi(
       if (upsertResult === null) {
         return c.json({ error: "internal_error", message: "Failed to save connection.", requestId }, 500);
       }
+      if (upsertResult.length === 0) {
+        log.error({ connectionId: id, orgId, requestId }, "Connection upsert returned 0 rows — data may not have been persisted");
+        return c.json({ error: "internal_error", message: "Failed to save connection — database did not confirm the write.", requestId }, 500);
+      }
 
       // Register the connection in the runtime registry
       try {
@@ -610,6 +614,10 @@ onboarding.openapi(
 
       if (upsertResult === null) {
         return c.json({ error: "internal_error", message: "Failed to save connection.", requestId }, 500);
+      }
+      if (upsertResult.length === 0) {
+        log.error({ connectionId: id, orgId, requestId }, "Demo connection upsert returned 0 rows — data may not have been persisted");
+        return c.json({ error: "internal_error", message: "Failed to save connection — database did not confirm the write.", requestId }, 500);
       }
 
       // Register in runtime

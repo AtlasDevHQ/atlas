@@ -473,7 +473,7 @@ describe("admin connections — org scoping", () => {
       expect(selectCall![0]).toContain("org_id");
     });
 
-    it("delete succeeds for connection from any org", async () => {
+    it("delete scopes by active org even for platform admin", async () => {
       setPlatformAdmin("org-alpha");
       mocks.mockInternalQuery.mockImplementation((sql: string) => {
         if (sql.includes("SELECT") && sql.includes("connections")) {
@@ -490,6 +490,13 @@ describe("admin connections — org scoping", () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- test convenience
       const body = (await res.json()) as any;
       expect(body.success).toBe(true);
+
+      // Verify DELETE includes org_id filter (composite PK scoping)
+      const deleteCall = mocks.mockInternalQuery.mock.calls.find(
+        ([sql]) => typeof sql === "string" && sql.includes("DELETE") && sql.includes("connections"),
+      );
+      expect(deleteCall).toBeDefined();
+      expect(deleteCall![0]).toContain("org_id");
     });
   });
 

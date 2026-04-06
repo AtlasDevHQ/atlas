@@ -641,12 +641,15 @@ export async function loadSavedConnections(): Promise<number> {
   try {
     type ConnRow = { id: string; url: string; type: string; description: string | null; schema_name: string | null };
     const rows = await internalQuery<ConnRow>(
-      "SELECT DISTINCT ON (id) id, url, type, description, schema_name FROM connections ORDER BY id, updated_at DESC",
+      "SELECT DISTINCT ON (id) id, url, type, description, schema_name FROM connections ORDER BY id, updated_at DESC, org_id ASC",
     );
 
     let registered = 0;
     for (const row of rows) {
-      if (connections.has(row.id)) continue;
+      if (connections.has(row.id)) {
+        log.debug({ connectionId: row.id }, "Skipping already-registered connection — org-scoped pools resolve via getForOrg()");
+        continue;
+      }
       try {
         const url = decryptUrl(row.url);
         connections.register(row.id, {

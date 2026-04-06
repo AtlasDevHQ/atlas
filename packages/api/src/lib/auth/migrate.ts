@@ -263,7 +263,7 @@ async function seedDemoData(orgId: string): Promise<void> {
     await internalQuery(
       `INSERT INTO connections (id, url, type, description, org_id)
        VALUES ($1, $2, $3, $4, $5)
-       ON CONFLICT (id) DO UPDATE SET url = $2, type = $3, org_id = $5, updated_at = NOW()`,
+       ON CONFLICT (id, org_id) DO UPDATE SET url = $2, type = $3, updated_at = NOW()`,
       ["default", encryptedUrl, dbType, `Demo ${dbType} datasource`, orgId],
     );
 

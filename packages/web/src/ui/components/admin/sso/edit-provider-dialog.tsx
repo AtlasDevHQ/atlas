@@ -94,12 +94,12 @@ function EditProviderDialogInner({
   );
 
   const currentSchema = provider.type === "oidc" ? editOidcFormSchema : editSamlFormSchema;
-  const form = useForm<EditProviderForm>({
+  // useForm without generic — discriminated union types cause Resolver/Control inference issues.
+  // Zod schema still validates at runtime. handleSubmit callback casts to EditProviderForm.
+  const form = useForm({
     resolver: zodResolver(currentSchema),
-    defaultValues: { type: provider.type, domain: "", issuer: "" } as EditProviderForm,
+    defaultValues: { type: provider.type as "saml" | "oidc", domain: "", issuer: "" },
   });
-  // react-hook-form Control<Union> doesn't narrow for FormField — extract as FieldValues
-  const formControl = form.control as unknown as import("react-hook-form").Control;
 
   const { mutate: updateProvider, saving, error: updateError, clearError, reset: resetMutation } = useAdminMutation<{ provider: SSOProviderDetail }>({
     method: "PATCH",
@@ -168,7 +168,8 @@ function EditProviderDialogInner({
     e.target.value = "";
   }
 
-  async function handleSubmit(values: EditProviderForm) {
+  async function handleSubmit(raw: Record<string, unknown>) {
+    const values = raw as EditProviderForm;
     clearError();
 
     const config = values.type === "saml"
@@ -266,7 +267,7 @@ function EditProviderDialogInner({
 
             {/* Domain */}
             <FormField
-              control={formControl}
+              control={form.control}
               name="domain"
               render={({ field }) => (
                 <FormItem>
@@ -281,7 +282,7 @@ function EditProviderDialogInner({
 
             {/* Issuer */}
             <FormField
-              control={formControl}
+              control={form.control}
               name="issuer"
               render={({ field }) => (
                 <FormItem>
@@ -298,7 +299,7 @@ function EditProviderDialogInner({
             {provider.type === "saml" && (
               <>
                 <FormField
-                  control={formControl}
+                  control={form.control}
                   name={"idpEntityId" as never}
                   render={({ field }) => (
                     <FormItem>
@@ -311,7 +312,7 @@ function EditProviderDialogInner({
                   )}
                 />
                 <FormField
-                  control={formControl}
+                  control={form.control}
                   name={"idpSsoUrl" as never}
                   render={({ field }) => (
                     <FormItem>
@@ -324,7 +325,7 @@ function EditProviderDialogInner({
                   )}
                 />
                 <FormField
-                  control={formControl}
+                  control={form.control}
                   name={"idpCertificate" as never}
                   render={({ field }) => (
                     <FormItem>
@@ -364,7 +365,7 @@ function EditProviderDialogInner({
             {provider.type === "oidc" && (
               <>
                 <FormField
-                  control={formControl}
+                  control={form.control}
                   name={"clientId" as never}
                   render={({ field }) => (
                     <FormItem>
@@ -377,7 +378,7 @@ function EditProviderDialogInner({
                   )}
                 />
                 <FormField
-                  control={formControl}
+                  control={form.control}
                   name={"clientSecret" as never}
                   render={({ field }) => (
                     <FormItem>
@@ -409,7 +410,7 @@ function EditProviderDialogInner({
                   )}
                 />
                 <FormField
-                  control={formControl}
+                  control={form.control}
                   name={"discoveryUrl" as never}
                   render={({ field }) => (
                     <FormItem>

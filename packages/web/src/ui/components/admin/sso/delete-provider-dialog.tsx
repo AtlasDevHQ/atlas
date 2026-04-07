@@ -92,6 +92,7 @@ export function DeleteProviderDialog({
         )}
 
         {/* Provider details */}
+        {provider && (
         <div className="rounded-md border px-4 py-3 space-y-1">
           <div className="flex items-center gap-2">
             <Badge variant="secondary" className="text-[10px] uppercase font-mono">
@@ -101,6 +102,7 @@ export function DeleteProviderDialog({
           </div>
           <p className="text-xs text-muted-foreground truncate">{provider.issuer}</p>
         </div>
+        )}
 
         {/* Enforcement warning */}
         {isLastEnabledWithEnforcement && (
@@ -114,6 +116,7 @@ export function DeleteProviderDialog({
         )}
 
         {/* Domain confirmation */}
+        {provider && (
         <div className="space-y-2">
           <p className="text-sm">
             Type <strong>{provider.domain}</strong> to confirm deletion:
@@ -125,6 +128,7 @@ export function DeleteProviderDialog({
             autoComplete="off"
           />
         </div>
+        )}
 
         <AlertDialogFooter>
           <Button

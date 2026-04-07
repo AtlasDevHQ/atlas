@@ -57,9 +57,83 @@ The workspaces tab lists all organizations with sortable columns and filters for
 | Suspend | `POST /api/v1/platform/workspaces/:id/suspend` | Block all access |
 | Unsuspend | `POST /api/v1/platform/workspaces/:id/unsuspend` | Restore access |
 | Delete | `DELETE /api/v1/platform/workspaces/:id` | Soft-delete + cascade cleanup |
+| Purge | `POST /api/v1/platform/workspaces/:id/purge` | GDPR hard delete (permanent) |
 | Change plan | `PATCH /api/v1/platform/workspaces/:id/plan` | Update plan tier |
 
 All actions require confirmation dialogs in the UI. Delete cascades to conversations, semantic entities, learned patterns, suggestions, and scheduled tasks.
+
+### GDPR Workspace Purge
+
+<Callout type="warn">
+Purging a workspace is **irreversible**. All data is permanently removed in a single transaction — there is no undo, no backup recovery, and no way to restore the workspace after purging.
+</Callout>
+
+The purge action permanently removes **all** data for a workspace to satisfy GDPR right-to-erasure (Article 17) requests. It deletes every row across all tables scoped to the workspace, including:
+
+- Conversations, messages, and audit logs
+- Connections, settings, and plugin configurations
+- Semantic entities, learned patterns, and query suggestions
+- Scheduled tasks and task run history
+- Integration installations (Slack, Teams, Discord, Telegram, etc.)
+- Usage events, SLA metrics, and abuse events
+- Custom domains, sandbox credentials, and region migrations
+- SSO providers, IP allowlists, custom roles, and approval workflows
+- Workspace branding, onboarding emails, and PII classifications
+- Members, invitations, and the organization record itself
+- **Orphaned users** — users with no remaining workspace memberships are also deleted (sessions, accounts, and user record)
+
+All operations run in a single database transaction — either everything is purged or nothing changes.
+
+#### Prerequisites
+
+The workspace **must be soft-deleted first** using the Delete action (`DELETE /api/v1/platform/workspaces/:id`). Attempting to purge an active or suspended workspace returns a `409 Conflict` error:
+
+```
+Workspace must be soft-deleted before purging. Delete the workspace first, then purge.
+```
+
+#### Confirmation
+
+In the platform admin UI, the purge button appears only on workspaces with `deleted` status. Clicking it opens a confirmation dialog that requires you to **type the workspace name** to proceed. This prevents accidental purges.
+
+#### API Reference
+
+```
+POST /api/v1/platform/workspaces/:id/purge
+```
+
+**Auth:** Requires `platform_admin` role.
+
+**Responses:**
+
+| Status | Description |
+|--------|-------------|
+| `200` | Workspace purged successfully |
+| `401` | Authentication required |
+| `403` | Platform admin role required |
+| `404` | Workspace not found or internal database not configured |
+| `409` | Workspace must be soft-deleted first |
+| `500` | Internal server error (includes `requestId` for log correlation) |
+
+**Success response:**
+
+```json
+{
+  "message": "Workspace permanently purged. All data has been irreversibly removed.",
+  "workspaceId": "org_abc123",
+  "purged": {
+    "auditLog": 1250,
+    "conversations": 84,
+    "messages": 3201,
+    "connections": 3,
+    "members": 12,
+    "organization": 1
+  },
+  "totalRows": 4551
+}
+```
+
+The `purged` object contains row counts for each table, useful for audit purposes. The example above is abbreviated — the actual response includes a key for every table deleted (approximately 50 entries). The `totalRows` field is the sum of all deleted rows.
 
 ## Noisy Neighbor Detection
 
@@ -82,6 +156,7 @@ All endpoints are gated on `user.role === "platform_admin"`. In no-auth mode (lo
 | `POST` | `/api/v1/platform/workspaces/:id/suspend` | Suspend workspace |
 | `POST` | `/api/v1/platform/workspaces/:id/unsuspend` | Unsuspend workspace |
 | `DELETE` | `/api/v1/platform/workspaces/:id` | Delete workspace |
+| `POST` | `/api/v1/platform/workspaces/:id/purge` | GDPR hard delete (permanent) |
 | `PATCH` | `/api/v1/platform/workspaces/:id/plan` | Change plan tier |
 | `GET` | `/api/v1/platform/stats` | Platform-wide statistics |
 | `GET` | `/api/v1/platform/noisy-neighbors` | Noisy neighbor detection |

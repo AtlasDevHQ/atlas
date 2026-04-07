@@ -34,14 +34,8 @@ interface UptimeTier {
 
 const UPTIME_TIERS: UptimeTier[] = [
   {
-    plan: "Team",
+    plan: "Business",
     target: "99.9%",
-    measurement: "Regular intervals, excluding scheduled maintenance",
-    credit: "10x credit for downtime exceeding SLA",
-  },
-  {
-    plan: "Enterprise",
-    target: "99.95%",
     measurement: "Regular intervals, excluding scheduled maintenance",
     credit: "10x credit for downtime exceeding SLA",
   },
@@ -88,18 +82,25 @@ const SUPPORT_TIERS: SupportTier[] = [
     channels: "GitHub Discussions",
   },
   {
-    plan: "Team",
+    plan: "Starter",
     critical: "24h (business hours)",
     high: "24h (business hours)",
     normal: "24h (business hours)",
     channels: "Email",
   },
   {
-    plan: "Enterprise",
+    plan: "Pro",
+    critical: "12h",
+    high: "24h",
+    normal: "24h",
+    channels: "Priority email",
+  },
+  {
+    plan: "Business",
     critical: "4h",
     high: "8h",
     normal: "24h",
-    channels: "Dedicated Slack, email, phone",
+    channels: "Priority + Slack",
   },
 ];
 
@@ -457,8 +458,8 @@ export default function SLAPage() {
           Questions about our SLA?
         </h2>
         <p className="mx-auto mb-8 max-w-xl text-zinc-400">
-          For Enterprise customers, SLA terms are included in your contract.
-          For questions about Team plan SLA coverage, reach out to support.
+          For Business customers, SLA terms are included in your subscription.
+          For questions about plan-specific SLA coverage, reach out to support.
         </p>
         <div className="flex flex-wrap items-center justify-center gap-4">
           <a

@@ -174,7 +174,7 @@ const SECTIONS: Section[] = [
     content: (
       <>
         <p>
-          Atlas Cloud supports configurable data residency for Enterprise
+          Atlas Cloud supports configurable data residency for Business plan
           customers. You may select the region where your data is stored and
           processed:
         </p>
@@ -191,13 +191,13 @@ const SECTIONS: Section[] = [
           </li>
           <li>
             <strong>Migration.</strong> Region migration is supported for
-            Enterprise customers via our migration tooling, with planned
+            Business plan customers via our migration tooling, with planned
             downtime coordinated in advance.
           </li>
         </ul>
         <p>
-          For standard (non-Enterprise) plans, data is processed in the US
-          region by default.
+          For Starter and Pro plans, data is processed in the US region by
+          default.
         </p>
       </>
     ),
@@ -224,7 +224,7 @@ const SECTIONS: Section[] = [
         </p>
         <ul>
           <li>Role-based access control (RBAC) with configurable custom roles.</li>
-          <li>SSO and SCIM provisioning for Enterprise customers.</li>
+          <li>SSO and SCIM provisioning for Business plan customers.</li>
           <li>IP allowlisting for workspace access restriction.</li>
           <li>Multi-factor authentication support.</li>
         </ul>
@@ -399,7 +399,7 @@ const SECTIONS: Section[] = [
           </li>
           <li>
             Data residency controls that keep data within the selected region
-            (Enterprise).
+            (Business plan).
           </li>
           <li>
             Transfer impact assessments for each subprocessor.

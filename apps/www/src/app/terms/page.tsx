@@ -64,7 +64,7 @@ const SECTIONS: Section[] = [
             >
               app.useatlas.dev
             </a>
-            . These Terms apply primarily to Atlas Cloud. Enterprise features are
+            . These Terms apply primarily to Atlas Cloud. Business-tier features are
             available under a separate{" "}
             <a
               href="https://github.com/AtlasDevHQ/atlas/blob/main/ee/LICENSE"
@@ -160,12 +160,12 @@ const SECTIONS: Section[] = [
     content: (
       <>
         <p>
-          Atlas Cloud offers Team and Enterprise plans billed through Stripe. The
-          self-hosted version is free and always will be.
+          Atlas Cloud offers Starter, Pro, and Business plans billed through Stripe.
+          The self-hosted version is free and always will be.
         </p>
         <ul>
           <li>
-            <strong>Trial.</strong> The Team plan includes a 14-day free trial. No
+            <strong>Trial.</strong> All paid plans include a 14-day free trial. No
             credit card is required to start. Free trial accounts are provided
             without any service level commitment, support obligation, or
             liability on our part — see Sections 8 and 9.
@@ -213,7 +213,7 @@ const SECTIONS: Section[] = [
             execution.
           </li>
           <li>
-            <strong>Data residency.</strong> Enterprise customers can choose their
+            <strong>Data residency.</strong> Business plan customers can choose their
             data residency region. Query data is processed in the selected region
             and does not leave it.
           </li>
@@ -269,7 +269,7 @@ const SECTIONS: Section[] = [
         </p>
         <p>
           <strong>Atlas software.</strong> The core Atlas platform is licensed
-          under AGPL-3.0. Enterprise features in the <code>/ee</code> directory
+          under AGPL-3.0. Business-tier features in the <code>/ee</code> directory
           are licensed under a separate commercial license. Atlas Cloud&apos;s
           hosted infrastructure and proprietary service components remain the
           property of Atlas DevHQ.
@@ -303,8 +303,8 @@ const SECTIONS: Section[] = [
             communicated in advance.
           </li>
           <li>
-            Enterprise customers may negotiate SLA terms with guaranteed uptime
-            and response times.
+            Business plan customers receive SLA commitments with guaranteed
+            uptime and response times.
           </li>
           <li>
             We are not liable for downtime caused by third-party services

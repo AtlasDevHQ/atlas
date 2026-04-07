@@ -282,7 +282,7 @@ $ cd my-app && bun run dev
           </a>{" "}
           is the managed option for teams that don&apos;t want to run
           infrastructure. It starts with a 14-day free trial (no credit card),
-          then Team and Enterprise tiers.{" "}
+          then Starter, Pro, and Business tiers.{" "}
           <a href="/pricing" className="text-brand hover:underline">
             See pricing
           </a>.

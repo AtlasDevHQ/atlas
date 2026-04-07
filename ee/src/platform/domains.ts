@@ -118,6 +118,15 @@ function rowToDomain(row: Record<string, unknown>): CustomDomain {
   };
 }
 
+/**
+ * Redact the verification token from a CustomDomain before returning in API responses.
+ * Returns the full token only when `includeToken` is true (used at registration time).
+ */
+export function redactDomain(domain: CustomDomain, includeToken = false): CustomDomain {
+  if (includeToken || !domain.verificationToken) return domain;
+  return { ...domain, verificationToken: domain.verificationToken.slice(0, 13) + "..." };
+}
+
 // ── Railway GraphQL client ──────────────────────────────────────────
 
 interface RailwayConfig {

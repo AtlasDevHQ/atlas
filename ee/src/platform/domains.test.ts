@@ -67,6 +67,7 @@ const {
   deleteDomain,
   resolveWorkspaceByHost,
   _resetHostCache,
+  redactDomain,
   DomainError,
 } = await import("./domains");
 
@@ -649,6 +650,41 @@ describe("domains", () => {
       const result = await run(hasVerifiedCustomDomain("org-1", "data.acme.com"));
       expect(result).toBe(false);
       expect(ee.capturedQueries).toHaveLength(0); // No DB query
+    });
+  });
+
+  describe("redactDomain", () => {
+    const fakeDomain = {
+      id: "dom-1",
+      workspaceId: "org-1",
+      domain: "data.acme.com",
+      status: "pending" as const,
+      railwayDomainId: null,
+      cnameTarget: null,
+      certificateStatus: null,
+      verificationToken: "atlas-verify=abcdef-1234-5678-9012",
+      domainVerified: false,
+      domainVerifiedAt: null,
+      domainVerificationStatus: "pending" as const,
+      createdAt: "2026-04-06T00:00:00Z",
+      verifiedAt: null,
+    };
+
+    it("masks verification token by default", () => {
+      const result = redactDomain(fakeDomain);
+      expect(result.verificationToken).toBe("atlas-verify=...");
+      expect(result.verificationToken).not.toContain("abcdef");
+    });
+
+    it("includes full token when includeToken is true", () => {
+      const result = redactDomain(fakeDomain, true);
+      expect(result.verificationToken).toBe("atlas-verify=abcdef-1234-5678-9012");
+    });
+
+    it("returns domain as-is when token is null", () => {
+      const noToken = { ...fakeDomain, verificationToken: null };
+      const result = redactDomain(noToken);
+      expect(result.verificationToken).toBeNull();
     });
   });
 

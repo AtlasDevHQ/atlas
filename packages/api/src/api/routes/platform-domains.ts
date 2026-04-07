@@ -150,7 +150,7 @@ platformDomains.openapi(listDomainsRoute, async (c) => {
     }
 
     const domains = yield* mod.listAllDomains();
-    return c.json({ domains }, 200);
+    return c.json({ domains: domains.map((d) => mod.redactDomain(d)) }, 200);
   }), { label: "list domains", domainErrors: [customDomainError] });
 });
 
@@ -168,7 +168,7 @@ platformDomains.openapi(registerDomainRoute, async (c) => {
 
     const domain = yield* mod.registerDomain(body.workspaceId, body.domain);
     log.info({ workspaceId: body.workspaceId, domain: body.domain, requestId }, "Custom domain registered");
-    return c.json(domain, 201);
+    return c.json(mod.redactDomain(domain, true), 201);
   }), { label: "register domain", domainErrors: [customDomainError] });
 });
 
@@ -185,7 +185,7 @@ platformDomains.openapi(verifyDomainRoute, async (c) => {
     }
 
     const domain = yield* mod.verifyDomain(domainId);
-    return c.json(domain, 200);
+    return c.json(mod.redactDomain(domain), 200);
   }), { label: "verify domain", domainErrors: [customDomainError] });
 });
 

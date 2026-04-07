@@ -261,7 +261,7 @@ adminDomains.openapi(getDomainRoute, async (c) => {
     }
 
     const domains = yield* mod.listDomains(orgId);
-    return c.json({ domain: domains[0] ?? null }, 200);
+    return c.json({ domain: domains[0] ? mod.redactDomain(domains[0]) : null }, 200);
   }), { label: "get workspace domain", domainErrors: [customDomainError] });
 });
 
@@ -303,7 +303,8 @@ adminDomains.openapi(addDomainRoute, async (c) => {
 
     const domain = yield* mod.registerDomain(orgId, body.domain);
     log.info({ orgId, domain: body.domain, requestId }, "Workspace custom domain registered");
-    return c.json(domain, 201);
+    // Return full token on registration so admin can set up the DNS TXT record
+    return c.json(mod.redactDomain(domain, true), 201);
   }), { label: "add workspace domain", domainErrors: [customDomainError] });
 });
 
@@ -329,7 +330,7 @@ adminDomains.openapi(verifyDomainRoute, async (c) => {
     }
 
     const domain = yield* mod.verifyDomain(domains[0].id);
-    return c.json(domain, 200);
+    return c.json(mod.redactDomain(domain), 200);
   }), { label: "verify workspace domain", domainErrors: [customDomainError] });
 });
 
@@ -354,7 +355,7 @@ adminDomains.openapi(verifyDnsTxtRoute, async (c) => {
     }
 
     const domain = yield* mod.verifyDomainDnsTxt(domains[0].id);
-    return c.json(domain, 200);
+    return c.json(mod.redactDomain(domain), 200);
   }), { label: "verify domain DNS TXT", domainErrors: [customDomainError] });
 });
 

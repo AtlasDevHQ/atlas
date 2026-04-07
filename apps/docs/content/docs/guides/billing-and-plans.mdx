@@ -43,15 +43,15 @@ Annual billing is available for Starter and Pro (pay for 10 months, get 12).
 - **Business** — Unlimited seats and connections. Includes SSO, SCIM, data residency, and SLA.
 - **Self-Hosted** (free) — No billing enforcement. All features available, no Stripe needed. Uses your own API keys (BYOK).
 
-### Per-Seat Query Budgets
+### Per-Seat Token Budgets
 
-Query budgets scale with your team size. Each seat adds its tier's allocation to your workspace total. The per-query cost adjusts automatically based on the model — a more expensive model uses more budget per query, a cheaper one uses less.
+Token budgets scale with your team size. Each seat adds its tier's token allocation to your workspace total. The actual query cost varies by model — a more capable model uses more tokens per query than a smaller one.
 
-| Plan | 5 seats | 10 seats | 25 seats |
-|------|---------|----------|----------|
-| **Starter** | ~500 queries | ~1,000 queries | — (max 10) |
-| **Pro** | ~1,250 queries | ~2,500 queries | ~6,250 queries |
-| **Business** | ~3,750 queries | ~7,500 queries | ~18,750 queries |
+| Plan | Token budget per seat | 5 seats | 10 seats |
+|------|----------------------|---------|----------|
+| **Starter** | 2M tokens | 10M tokens | 20M tokens (max 10 seats) |
+| **Pro** | 5M tokens | 25M tokens | 50M tokens |
+| **Business** | 15M tokens | 75M tokens | 150M tokens |
 
 The budget is computed dynamically from your actual member count — no manual configuration needed.
 
@@ -108,13 +108,11 @@ Atlas uses a 4-tier degradation model instead of a hard cutoff. Enforcement runs
 | **Soft limit** | 100–109% | 10% grace buffer. Request allowed with overage warning |
 | **Hard limit** | 110%+ | Request blocked with HTTP 429. Upgrade or add-seats CTA in error message |
 
-When usage exceeds the included budget, overage charges apply per plan:
+When usage exceeds the included token budget, overage charges apply at a flat rate across all paid plans:
 
-| Plan | Overage rate |
+| Rate | Description |
 |------|-------------|
-| **Starter** | $0.10 / query |
-| **Pro** | $0.08 / query |
-| **Business** | $0.06 / query |
+| **$1.00 / 1M tokens** | Applies to Starter, Pro, and Business plans equally |
 
 To avoid overages entirely, enable [BYOT](#byot-bring-your-own-token) and use your own API keys.
 

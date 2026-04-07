@@ -525,7 +525,7 @@ Manage workspaces (organizations) across the platform:
 - **Suspend** — Block all queries for a workspace. Drains the org's connection pools immediately. Use this for billing holds, abuse prevention, or maintenance windows
 - **Activate** — Reactivate a suspended workspace. Queries resume immediately
 - **Delete** — Soft-delete with cascading cleanup: drain pools, flush caches, cascade database cleanup, mark as deleted. This is not reversible from the UI
-- **Change plan** — Set a workspace's plan tier: `free`, `team`, or `enterprise`
+- **Change plan** — Set a workspace's plan tier: `free`, `trial`, `starter`, `pro`, or `business`
 
 ### Health Status
 
@@ -653,8 +653,8 @@ Once submitted, a migration progresses through these phases:
 
 **Route:** `/admin/custom-domain`
 
-<Callout type="info" title="Enterprise Feature">
-Custom domains require an Enterprise plan on [app.useatlas.dev](https://app.useatlas.dev). The page shows an upgrade prompt if your workspace is on a lower plan.
+<Callout type="info" title="Pro+ Feature">
+Custom domains are available on the Pro and Business plans on [app.useatlas.dev](https://app.useatlas.dev). The page shows an upgrade prompt if your workspace is on a lower plan.
 </Callout>
 
 Serve Atlas from your own domain (e.g. `data.acme.com`) with automatic TLS certificate provisioning.

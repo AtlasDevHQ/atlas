@@ -25,4 +25,7 @@ ENV SEMANTIC_DIR=/semantic
 
 USER sandbox
 
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+  CMD bun -e "try { const r = await fetch('http://localhost:' + (process.env.PORT || 8080) + '/health'); if(!r.ok){console.error(r.status); process.exit(1)} } catch(e) { console.error(e.message); process.exit(1) }"
+
 CMD ["bun", "run", "server.ts"]

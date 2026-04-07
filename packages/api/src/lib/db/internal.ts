@@ -1419,6 +1419,7 @@ export interface HardDeleteResult {
   // Data tables (org_id)
   auditLog: number;
   conversations: number;
+  messages: number;
   slackInstallations: number;
   slackThreads: number;
   actionLog: number;
@@ -1471,6 +1472,7 @@ export interface HardDeleteResult {
   workspacePlugins: number;
   // Better Auth tables
   members: number;
+  betterAuthInvitations: number;
   orphanedUsers: number;
   organization: number;
 }
@@ -1496,12 +1498,26 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
   try {
     await client.query("BEGIN");
 
+    // Lock the organization row and verify it is still in "deleted" status.
+    // Prevents a race where another admin reactivates the workspace between
+    // the route handler's pre-check and this transaction.
+    const statusCheck = await client.query(
+      `SELECT workspace_status FROM organization WHERE id = $1 FOR UPDATE`,
+      [orgId],
+    );
+    const status = (statusCheck.rows[0] as Record<string, unknown> | undefined)?.workspace_status;
+    if (statusCheck.rows.length === 0 || status !== "deleted") {
+      await client.query("ROLLBACK");
+      throw new Error("Workspace is not in deleted status — purge aborted");
+    }
+
     // del() executes a DELETE with RETURNING 1 to count affected rows
     const del = async (sql: string, params: unknown[] = [orgId]) => {
       const result = await client.query(sql + " RETURNING 1", params);
       return result.rows.length;
     };
-    // delRaw() for statements where we can't append RETURNING (subqueries, etc.)
+    // delRaw() for statements that already include RETURNING 1 in the SQL
+    // (used when subqueries make naive append break syntax)
     const delRaw = async (sql: string, params: unknown[] = [orgId]) => {
       const result = await client.query(sql, params);
       return result.rows.length;
@@ -1509,14 +1525,14 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
 
     // ── Phase 1: Child tables with FK dependencies (delete children first) ──
 
-    // slack_threads references conversations — delete before conversations
+    // slack_threads uses conversation_id (no FK constraint) — delete before conversations to avoid orphans
     const slackThreads = await delRaw(
       `DELETE FROM slack_threads WHERE conversation_id IN (SELECT id FROM conversations WHERE org_id = $1) RETURNING 1`,
     );
 
-    // messages cascade from conversations via FK onDelete cascade, but
-    // explicitly deleting ensures no orphans if FK is missing in older migrations
-    await delRaw(`DELETE FROM messages WHERE conversation_id IN (SELECT id FROM conversations WHERE org_id = $1) RETURNING 1`);
+    // messages cascade from conversations via FK (schema.ts:107), but we delete
+    // explicitly as a GDPR completeness guarantee — older deployments may predate the FK
+    const messages = await delRaw(`DELETE FROM messages WHERE conversation_id IN (SELECT id FROM conversations WHERE org_id = $1) RETURNING 1`);
 
     // scheduled_task_runs references scheduled_tasks via FK cascade
     const scheduledTaskRuns = await delRaw(
@@ -1611,7 +1627,7 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
     const members = await del(`DELETE FROM member WHERE "organizationId" = $1`);
 
     // Delete Better Auth invitations for this org
-    await del(`DELETE FROM invitation WHERE "organizationId" = $1`);
+    const betterAuthInvitations = await del(`DELETE FROM invitation WHERE "organizationId" = $1`);
 
     // Clean up orphaned users — sessions, accounts, onboarding, email prefs, then user
     let orphanedUsers = 0;
@@ -1648,6 +1664,7 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
     return {
       auditLog,
       conversations,
+      messages,
       slackInstallations,
       slackThreads,
       actionLog,
@@ -1697,12 +1714,16 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
       regionMigrations,
       workspacePlugins,
       members,
+      betterAuthInvitations,
       orphanedUsers,
       organization,
     };
   } catch (err) {
-    await client.query("ROLLBACK").catch(() => {
-      // intentionally ignored: ROLLBACK failure after a failed transaction is non-actionable
+    await client.query("ROLLBACK").catch((rollbackErr) => {
+      log.warn(
+        { err: rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr), orgId },
+        "ROLLBACK failed after purge transaction error — verify data integrity",
+      );
     });
     throw err;
   } finally {

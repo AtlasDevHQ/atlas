@@ -159,7 +159,7 @@ const SECTIONS: Section[] = [
           </li>
           <li>
             <strong>Audit logs.</strong> Retained according to your plan&apos;s
-            audit retention policy (configurable for Enterprise).
+            audit retention policy (configurable on the Business plan).
           </li>
           <li>
             <strong>Account data.</strong> Retained while your account is active.
@@ -231,7 +231,7 @@ const SECTIONS: Section[] = [
           </table>
         </div>
         <p>
-          Enterprise customers with data residency requirements can choose their
+          Business plan customers with data residency requirements can choose their
           deployment region. We will notify you of changes to our subprocessor
           list at least 30 days in advance.
         </p>
@@ -372,15 +372,15 @@ const SECTIONS: Section[] = [
         <ul>
           <li>Encryption in transit (TLS 1.2+) and at rest (AES-256).</li>
           <li>
-            Role-based access control (RBAC) with configurable custom roles for
-            Enterprise.
+            Role-based access control (RBAC) with configurable custom roles on
+            the Business plan.
           </li>
           <li>
             SQL validation through a 4-layer pipeline to prevent injection and
             unauthorized data access.
           </li>
           <li>
-            IP allowlisting and SSO/SCIM integration for Enterprise customers.
+            IP allowlisting and SSO/SCIM integration for Business plan customers.
           </li>
           <li>Audit logging of all administrative and data access events.</li>
           <li>

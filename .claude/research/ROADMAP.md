@@ -1037,11 +1037,23 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] Test connection endpoint — OIDC discovery + SAML cert validation (#1333, PR #1338)
 - [x] Fix: grandfather existing enabled providers in migration, DNS timeout (72f662e0)
 
-### Frontend (in progress)
-- [ ] Provider list UI — cards, status badges, SP metadata, enable/disable (#1334)
-- [ ] Create provider dialog — SAML/OIDC forms, domain check, cert upload (#1335)
-- [ ] Edit provider dialog — pre-filled forms, secret masking, domain reset (#1336)
-- [ ] Delete provider — domain confirmation, enforcement warning (#1337)
+### Frontend (complete)
+- [x] Provider list UI — cards, status badges, SP metadata, enable/disable (#1334, PR #1349)
+- [x] Create provider dialog — SAML/OIDC forms, domain check, cert upload (#1335, PR #1349)
+- [x] Edit provider dialog — pre-filled forms, secret masking, domain reset (#1336, PR #1349)
+- [x] Delete provider — domain confirmation, enforcement warning (#1337, PR #1349)
+
+### Refactors
+- [x] Extract shared DNS domain verification utility (`ee/src/lib/domain-verification.ts`) (#1341, PR #1346)
+
+### Docs
+- [x] Billing docs — per-seat pricing, model-aware token budgets, overage handling (#1342, PR #1347)
+- [x] OpenAPI spec regen — 3 new SSO endpoints + many new API groups (#1343, PR #1347)
+- [x] SSO docs — domain verification flow, test connection, updated creation examples (#1344, PR #1347)
+
+### Follow-ups
+- [ ] Custom domains could adopt DNS TXT verification for domain ownership (#1345)
+- [ ] Docker template data/.gitkeep missing (#1348)
 
 ---
 

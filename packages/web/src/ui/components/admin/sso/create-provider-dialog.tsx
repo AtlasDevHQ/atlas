@@ -65,7 +65,7 @@ export function CreateProviderDialog({
   const [testing, setTesting] = useState(false);
   const [copied, setCopied] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const debounceRef = useRef<ReturnType<typeof setTimeout>>();
+  const debounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   const currentSchema = providerType === "saml" ? samlFormSchema : oidcFormSchema;
   // useForm without generic — discriminated union types cause Control<Union> inference issues.

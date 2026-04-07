@@ -625,9 +625,12 @@ Stripe billing integration for SaaS deployments. Self-hosted deployments do not 
 |----------|---------|-------------|
 | `STRIPE_SECRET_KEY` | — | Stripe secret key (test or live). Enables billing routes and Better Auth Stripe plugin when set |
 | `STRIPE_WEBHOOK_SECRET` | — | Stripe webhook signing secret for verifying webhook events |
-| `STRIPE_TEAM_PRICE_ID` | — | Stripe Price ID for the Team plan (monthly) |
-| `STRIPE_TEAM_ANNUAL_PRICE_ID` | — | Stripe Price ID for the Team plan (annual discount) |
-| `STRIPE_ENTERPRISE_PRICE_ID` | — | Stripe Price ID for the Enterprise plan |
+| `STRIPE_STARTER_PRICE_ID` | — | Stripe Price ID for the Starter plan (monthly, $29/seat) |
+| `STRIPE_STARTER_ANNUAL_PRICE_ID` | — | Stripe Price ID for the Starter plan (annual) |
+| `STRIPE_PRO_PRICE_ID` | — | Stripe Price ID for the Pro plan (monthly, $59/seat) |
+| `STRIPE_PRO_ANNUAL_PRICE_ID` | — | Stripe Price ID for the Pro plan (annual) |
+| `STRIPE_BUSINESS_PRICE_ID` | — | Stripe Price ID for the Business plan (monthly, $99/seat) |
+| `STRIPE_BUSINESS_ANNUAL_PRICE_ID` | — | Stripe Price ID for the Business plan (annual) |
 
 When `STRIPE_SECRET_KEY` is set, billing routes are mounted at `/api/v1/billing` and the Better Auth Stripe plugin handles checkout, webhooks, and subscription lifecycle at `/api/auth/stripe/*`.
 

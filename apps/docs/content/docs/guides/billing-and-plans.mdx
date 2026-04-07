@@ -1,12 +1,12 @@
 ---
 title: Billing & Plans
-description: Per-seat pricing tiers, token budgets, overage handling, Stripe setup, and the billing dashboard.
+description: Per-seat pricing tiers, query budgets, overage handling, Stripe setup, and the billing dashboard.
 icon: CreditCard
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-Atlas uses per-seat billing. SaaS workspaces on [app.useatlas.dev](https://app.useatlas.dev) start with a 14-day trial, then require a paid plan. Self-hosted deployments are free with no enforcement. Billing includes automatic usage metering, per-seat token budgets, and graceful overage handling.
+Atlas uses per-seat billing. SaaS workspaces on [app.useatlas.dev](https://app.useatlas.dev) start with a 14-day trial, then require a paid plan. Self-hosted deployments are free with no enforcement. Billing includes automatic usage metering, per-seat query budgets, and graceful overage handling.
 
 <Callout type="info" title="SaaS">
 On [app.useatlas.dev](https://app.useatlas.dev), billing is fully managed. View your usage, manage your plan, and update payment methods from **Admin > Billing** — no Stripe setup required on your end.
@@ -25,9 +25,10 @@ On [app.useatlas.dev](https://app.useatlas.dev), billing is fully managed. View 
 | | Starter | Pro | Business | Self-Hosted |
 |---|---|---|---|---|
 | **Price** | $29 / seat / mo | $59 / seat / mo | $99 / seat / mo | Free |
-| **Token budget** | 2M / seat / mo | 5M / seat / mo | 15M / seat / mo | Unlimited |
+| **AI queries / seat / mo** | ~100 | ~250 | ~750 | Unlimited |
 | **Max seats** | 10 | 25 | Unlimited | Unlimited |
 | **Datasource connections** | 1 | 3 | Unlimited | Unlimited |
+| **Extra connections** | +$10/mo each | +$10/mo each | Included | N/A |
 | **Default model** | claude-haiku-4-5 | claude-sonnet-4-6 | claude-sonnet-4-6 | BYOK |
 | **Custom domain** | — | ✓ | ✓ | N/A |
 | **SSO / SCIM** | — | — | ✓ | N/A |
@@ -36,21 +37,21 @@ On [app.useatlas.dev](https://app.useatlas.dev), billing is fully managed. View 
 
 Annual billing is available for Starter and Pro (pay for 10 months, get 12).
 
-- **Trial** — Auto-assigned on SaaS signup. Same limits as Starter (10 seats, 1 connection, 2M tokens/seat). Expires after 14 days, then queries are blocked until the workspace upgrades.
+- **Trial** — Auto-assigned on SaaS signup. Same limits as Starter (10 seats, 1 connection, ~100 queries/seat). Expires after 14 days, then queries are blocked until the workspace upgrades.
 - **Starter** — Entry paid tier. Per-seat billing via Stripe.
-- **Pro** — Higher token budgets, more connections, custom domain support.
+- **Pro** — Higher query budgets, more connections, custom domain support.
 - **Business** — Unlimited seats and connections. Includes SSO, SCIM, data residency, and SLA.
 - **Self-Hosted** (free) — No billing enforcement. All features available, no Stripe needed. Uses your own API keys (BYOK).
 
-### Per-Seat Token Budgets
+### Per-Seat Query Budgets
 
-Token budgets scale with your team size. Each seat adds its tier's allocation to your workspace total:
+Query budgets scale with your team size. Each seat adds its tier's allocation to your workspace total. The per-query cost adjusts automatically based on the model — a more expensive model uses more budget per query, a cheaper one uses less.
 
 | Plan | 5 seats | 10 seats | 25 seats |
 |------|---------|----------|----------|
-| **Starter** | 10M tokens | 20M tokens | — (max 10) |
-| **Pro** | 25M tokens | 50M tokens | 125M tokens |
-| **Business** | 75M tokens | 150M tokens | 375M tokens |
+| **Starter** | ~500 queries | ~1,000 queries | — (max 10) |
+| **Pro** | ~1,250 queries | ~2,500 queries | ~6,250 queries |
+| **Business** | ~3,750 queries | ~7,500 queries | ~18,750 queries |
 
 The budget is computed dynamically from your actual member count — no manual configuration needed.
 
@@ -60,8 +61,8 @@ The budget is computed dynamically from your actual member count — no manual c
 
 BYOT lets workspaces supply their own LLM API keys instead of using Atlas-provided tokens. When enabled:
 
-- Token limits are **not enforced** — usage is unlimited when using your own keys
-- Token usage is still metered for analytics
+- Query limits are **not enforced** — usage is unlimited when using your own keys
+- Query usage is still metered for analytics
 - Available on all paid plans (Starter, Pro, Business)
 - Admin or owner role is required to toggle BYOT
 - Self-hosted deployments use BYOT by default
@@ -82,7 +83,7 @@ curl -X POST https://your-atlas.example.com/api/v1/billing/byot \
 The admin billing dashboard is available at **Admin > Billing** (`/admin/billing`). It shows:
 
 - **Current plan** — tier name, per-seat price, and trial expiry date (if applicable)
-- **Token usage** — total LLM tokens consumed vs. computed budget, with progress bar
+- **Query usage** — AI queries consumed vs. computed budget, with progress bar
 - **Seat usage** — actual member count vs. tier maximum
 - **Connection usage** — datasource connections vs. tier limit
 - **Overage status** — current enforcement tier (ok / warning / soft limit / hard limit)
@@ -98,7 +99,7 @@ Usage data is also available programmatically via the admin API. See [Usage Mete
 
 ## Overage Handling
 
-Atlas uses a 4-tier degradation model instead of a hard cutoff. Enforcement runs before every agent execution, checking token usage against the workspace's computed budget.
+Atlas uses a 4-tier degradation model instead of a hard cutoff. Enforcement runs before every agent execution, checking query usage against the workspace's computed budget.
 
 | Tier | Usage | Behavior |
 |------|-------|----------|
@@ -111,9 +112,9 @@ When usage exceeds the included budget, overage charges apply per plan:
 
 | Plan | Overage rate |
 |------|-------------|
-| **Starter** | $1.00 / 1M tokens |
-| **Pro** | $0.80 / 1M tokens |
-| **Business** | $0.60 / 1M tokens |
+| **Starter** | $0.10 / query |
+| **Pro** | $0.08 / query |
+| **Business** | $0.06 / query |
 
 To avoid overages entirely, enable [BYOT](#byot-bring-your-own-token) and use your own API keys.
 
@@ -222,7 +223,7 @@ The webhook signing secret (`STRIPE_WEBHOOK_SECRET`) must match the secret shown
 
 ## Self-Hosted Deployments
 
-Self-hosted Atlas has **no billing enforcement**. The `free` tier is assigned by default with unlimited queries, tokens, members, and connections. No Stripe configuration is needed.
+Self-hosted Atlas has **no billing enforcement**. The `free` tier is assigned by default with unlimited queries, members, and connections. No Stripe configuration is needed.
 
 To run Atlas without any billing:
 

@@ -86,7 +86,14 @@ curl -X POST https://your-atlas.example.com/api/v1/admin/sso/providers/<provider
 }
 ```
 
-If the domain is already verified, the endpoint returns immediately without performing a DNS lookup.
+If the domain is already verified, the endpoint returns immediately without performing a DNS lookup:
+
+```json
+{
+  "status": "verified",
+  "message": "Domain is already verified."
+}
+```
 
 <Callout type="info">
 DNS propagation can take up to 48 hours depending on your DNS provider. If verification fails, wait a few minutes and retry. Use `dig TXT acme.com` to confirm the record is visible before triggering verification.
@@ -167,7 +174,7 @@ For SAML providers, the test:
 - Validates the certificate is not expired and extracts subject and expiry details
 - Checks that the IdP SSO URL is reachable (HEAD request) — reported in the response but does not affect overall success
 
-The overall test success is determined by certificate validity alone. IdP reachability failures appear in the `errors` array but do not fail the test.
+The `success` field is determined by certificate validity alone. IdP reachability failures are reported in the `errors` array but do not affect `success`.
 
 **Response (200):**
 
@@ -318,7 +325,8 @@ All SSO endpoints require the `admin` role and an active enterprise license. The
 |--------|------|------|
 | 400 | `validation` | Invalid config fields, malformed domain, or enabling a provider whose domain is not verified |
 | 400 | `no_provider` | Trying to enable enforcement with no active SSO provider |
-| 403 | `enterprise_required` | Enterprise license not active |
+| 400 | `not_enterprise` | Enforcement requires an enterprise license |
+| 403 | `enterprise_required` | Enterprise license not active (all SSO endpoints) |
 | 404 | `not_found` | Provider ID doesn't exist |
 | 409 | `conflict` | Domain already claimed by another SSO provider |
 

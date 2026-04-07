@@ -205,16 +205,19 @@ function EditProviderDialogInner({
     setTesting(true);
     setTestResult(null);
     setTestError(null);
-    const result = await testProviderConn({
-      path: `/api/v1/admin/sso/providers/${provider.id}/test`,
-      method: "POST",
-    });
-    if (result.ok && result.data) {
-      setTestResult(result.data);
-    } else if (!result.ok) {
-      setTestError(result.error);
+    try {
+      const result = await testProviderConn({
+        path: `/api/v1/admin/sso/providers/${provider.id}/test`,
+        method: "POST",
+      });
+      if (result.ok && result.data) {
+        setTestResult(result.data);
+      } else if (!result.ok) {
+        setTestError(result.error);
+      }
+    } finally {
+      setTesting(false);
     }
-    setTesting(false);
   }
 
   return (
@@ -240,7 +243,7 @@ function EditProviderDialogInner({
         )}
 
         {detailError && (
-          <ErrorBanner message={detailError.message ?? "Failed to load provider details"} />
+          <ErrorBanner message={detailError.message} />
         )}
 
         {!detailLoading && !detailError && detail && (

@@ -282,6 +282,18 @@ try {
   );
 }
 
+// Platform admin action log routes — cross-tenant action audit.
+try {
+  const { platformActions } = await import("./routes/platform-actions");
+  app.route("/api/v1/platform/actions", platformActions);
+  log.info("Platform action log routes enabled");
+} catch (err) {
+  log.error(
+    { err: err instanceof Error ? err : new Error(String(err)) },
+    "Failed to load platform action log routes",
+  );
+}
+
 // Platform SLA monitoring routes — enterprise-gated, platform_admin role.
 try {
   const { platformSLA } = await import("./routes/platform-sla");

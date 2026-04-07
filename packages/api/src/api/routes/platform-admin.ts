@@ -21,6 +21,7 @@ import { createRoute, z } from "@hono/zod-openapi";
 import { createPlatformRouter } from "./admin-router";
 import { Effect } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
+import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import {
   RequestContext,
@@ -536,6 +537,14 @@ platformAdmin.openapi(suspendWorkspaceRoute, async (c) => {
 
     yield* Effect.promise(() => updateWorkspaceStatus(workspaceId, "suspended"));
     log.info({ workspaceId, requestId }, "Workspace suspended by platform admin");
+
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.workspace.suspend,
+      targetType: "workspace",
+      targetId: workspaceId,
+      scope: "platform",
+      ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+    });
 
     return c.json({ message: "Workspace suspended.", workspaceId }, 200);
   }), { label: "suspend workspace" });

@@ -143,6 +143,7 @@ const navGroups: NavGroup[] = [
     requiredRole: "platform_admin",
     items: [
       { href: "/admin/platform", label: "Overview", exact: true },
+      { href: "/admin/platform/actions", label: "Action Log" },
       { href: "/admin/platform/sla", label: "SLA Monitoring" },
       { href: "/admin/platform/backups", label: "Backups" },
       { href: "/admin/platform/residency", label: "Data Residency" },

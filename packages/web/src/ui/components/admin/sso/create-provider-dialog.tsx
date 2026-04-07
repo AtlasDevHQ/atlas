@@ -61,6 +61,7 @@ export function CreateProviderDialog({
   const [createdProvider, setCreatedProvider] = useState<SSOProviderDetail | null>(null);
   const [domainCheckQuery, setDomainCheckQuery] = useState("");
   const [testResult, setTestResult] = useState<SSOTestResult | null>(null);
+  const [testError, setTestError] = useState<string | null>(null);
   const [testing, setTesting] = useState(false);
   const [copied, setCopied] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -75,7 +76,7 @@ export function CreateProviderDialog({
   });
 
   // Domain availability check
-  const { data: domainCheck, loading: domainChecking } = useAdminFetch(
+  const { data: domainCheck, loading: domainChecking, error: domainCheckError } = useAdminFetch(
     `/api/v1/admin/sso/domain-check?domain=${encodeURIComponent(domainCheckQuery)}`,
     {
       schema: DomainCheckResponseSchema,
@@ -96,6 +97,7 @@ export function CreateProviderDialog({
       setStep("form");
       setCreatedProvider(null);
       setTestResult(null);
+      setTestError(null);
       setTesting(false);
       setDomainCheckQuery("");
       setCopied(false);
@@ -111,7 +113,7 @@ export function CreateProviderDialog({
   // Debounced domain check
   function handleDomainChange(value: string) {
     if (debounceRef.current) clearTimeout(debounceRef.current);
-    if (value.length >= 3 && /^[a-z0-9.-]+\.[a-z]{2,}$/i.test(value)) {
+    if (value.length >= 3 && /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/i.test(value)) {
       debounceRef.current = setTimeout(() => setDomainCheckQuery(value), 300);
     } else {
       setDomainCheckQuery("");
@@ -144,6 +146,10 @@ export function CreateProviderDialog({
     };
     reader.onerror = () => {
       console.debug("File read failed:", reader.error instanceof Error ? reader.error.message : String(reader.error));
+      form.setError("idpCertificate" as never, {
+        type: "manual",
+        message: "Failed to read file. Try pasting the certificate text directly.",
+      } as never);
     };
     reader.readAsText(file);
     // Reset input so the same file can be re-selected
@@ -185,12 +191,15 @@ export function CreateProviderDialog({
     if (!createdProvider) return;
     setTesting(true);
     setTestResult(null);
+    setTestError(null);
     const result = await testProvider({
       path: `/api/v1/admin/sso/providers/${createdProvider.id}/test`,
       method: "POST",
     });
     if (result.ok && result.data) {
       setTestResult(result.data);
+    } else if (!result.ok) {
+      setTestError(result.error);
     }
     setTesting(false);
   }
@@ -253,6 +262,8 @@ export function CreateProviderDialog({
                             <div className="absolute right-2 top-1/2 -translate-y-1/2">
                               {domainChecking ? (
                                 <Loader2 className="size-4 animate-spin text-muted-foreground" />
+                              ) : domainCheckError ? (
+                                <XCircle className="size-4 text-red-500" />
                               ) : domainCheck?.available ? (
                                 <CheckCircle2 className="size-4 text-emerald-500" />
                               ) : (
@@ -262,7 +273,10 @@ export function CreateProviderDialog({
                           )}
                         </div>
                       </FormControl>
-                      {showDomainStatus && !domainChecking && domainCheck && !domainCheck.available && (
+                      {showDomainStatus && !domainChecking && domainCheckError && (
+                        <p className="text-xs text-red-500">Could not check domain availability</p>
+                      )}
+                      {showDomainStatus && !domainChecking && !domainCheckError && domainCheck && !domainCheck.available && (
                         <p className="text-xs text-red-500">{domainCheck.reason ?? "Domain unavailable"}</p>
                       )}
                       <FormDescription>
@@ -483,6 +497,13 @@ export function CreateProviderDialog({
                   )}
                   Test Connection
                 </Button>
+
+                {testError && (
+                  <div className="rounded-md border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs text-red-700 dark:text-red-300">
+                    <p className="font-medium">Test failed</p>
+                    <p className="mt-1">{testError}</p>
+                  </div>
+                )}
 
                 {testResult && (
                   <div className={`rounded-md border px-3 py-2 text-xs ${

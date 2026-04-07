@@ -58,15 +58,16 @@ export function EditProviderDialog({
 }: EditProviderDialogProps) {
   const [showSecret, setShowSecret] = useState(false);
   const [testResult, setTestResult] = useState<SSOTestResult | null>(null);
+  const [testError, setTestError] = useState<string | null>(null);
   const [testing, setTesting] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Fetch full provider detail (includes config)
-  const { data: detail } = useAdminFetch(
-    provider ? `/api/v1/admin/sso/providers/${provider.id}` : "",
+  const { data: detail, loading: detailLoading, error: detailError } = useAdminFetch(
+    `/api/v1/admin/sso/providers/${provider.id}`,
     {
-      schema: SSOProviderDetailSchema.transform((d) => d),
-      deps: [provider?.id],
+      schema: SSOProviderDetailSchema,
+      deps: [provider.id],
     },
   );
 
@@ -113,6 +114,7 @@ export function EditProviderDialog({
     if (open) {
       setShowSecret(false);
       setTestResult(null);
+      setTestError(null);
       setTesting(false);
       resetMutation();
     }
@@ -133,6 +135,10 @@ export function EditProviderDialog({
     };
     reader.onerror = () => {
       console.debug("File read failed:", reader.error instanceof Error ? reader.error.message : String(reader.error));
+      form.setError("idpCertificate" as never, {
+        type: "manual",
+        message: "Failed to read file. Try pasting the certificate text directly.",
+      } as never);
     };
     reader.readAsText(file);
     e.target.value = "";
@@ -175,17 +181,18 @@ export function EditProviderDialog({
     if (!provider) return;
     setTesting(true);
     setTestResult(null);
+    setTestError(null);
     const result = await testProviderConn({
       path: `/api/v1/admin/sso/providers/${provider.id}/test`,
       method: "POST",
     });
     if (result.ok && result.data) {
       setTestResult(result.data);
+    } else if (!result.ok) {
+      setTestError(result.error);
     }
     setTesting(false);
   }
-
-  if (!provider) return null;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -203,7 +210,18 @@ export function EditProviderDialog({
 
         {updateError && <ErrorBanner message={updateError} onRetry={clearError} />}
 
-        {/* Domain change warning */}
+        {detailLoading && (
+          <div className="flex justify-center py-8">
+            <Loader2 className="size-6 animate-spin text-muted-foreground" />
+          </div>
+        )}
+
+        {detailError && (
+          <ErrorBanner message={detailError.message ?? "Failed to load provider details"} />
+        )}
+
+        {!detailLoading && !detailError && detail && (
+          <>
         {domainChanged && (
           <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-4 py-3">
             <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-400" />
@@ -402,6 +420,13 @@ export function EditProviderDialog({
                 Test Connection
               </Button>
 
+              {testError && (
+                <div className="rounded-md border border-red-500/30 bg-red-500/5 px-3 py-2 text-xs text-red-700 dark:text-red-300">
+                  <p className="font-medium">Test failed</p>
+                  <p className="mt-1">{testError}</p>
+                </div>
+              )}
+
               {testResult && (
                 <div className={`rounded-md border px-3 py-2 text-xs ${
                   testResult.success
@@ -437,6 +462,8 @@ export function EditProviderDialog({
             </DialogFooter>
           </form>
         </Form>
+          </>
+        )}
       </DialogContent>
     </Dialog>
   );

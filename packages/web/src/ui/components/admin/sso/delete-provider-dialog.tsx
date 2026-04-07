@@ -37,7 +37,7 @@ export function DeleteProviderDialog({
     method: "DELETE",
   });
 
-  const { mutate: disableEnforcement } = useAdminMutation({
+  const { mutate: disableEnforcement, error: enforcementError } = useAdminMutation({
     path: "/api/v1/admin/sso/enforcement",
     method: "PUT",
   });
@@ -76,8 +76,6 @@ export function DeleteProviderDialog({
     }
   }
 
-  if (!provider) return null;
-
   return (
     <AlertDialog open={open} onOpenChange={onOpenChange}>
       <AlertDialogContent>
@@ -89,7 +87,9 @@ export function DeleteProviderDialog({
           </AlertDialogDescription>
         </AlertDialogHeader>
 
-        {deleteError && <ErrorBanner message={deleteError} onRetry={clearError} />}
+        {(deleteError ?? enforcementError) && (
+          <ErrorBanner message={deleteError ?? enforcementError ?? ""} onRetry={clearError} />
+        )}
 
         {/* Provider details */}
         <div className="rounded-md border px-4 py-3 space-y-1">

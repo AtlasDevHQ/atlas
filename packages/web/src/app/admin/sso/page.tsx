@@ -55,11 +55,11 @@ export default function SSOPage() {
     invalidates: [refetchProviders, refetchEnforcement],
   });
 
-  const { mutate: mutateProvider, isMutating } = useAdminMutation({
+  const { mutate: mutateProvider, isMutating, error: toggleError, clearError: clearToggleError } = useAdminMutation({
     method: "PATCH",
   });
 
-  const { mutate: verifyDomainMutation, isMutating: isVerifying } = useAdminMutation({
+  const { mutate: verifyDomainMutation, isMutating: isVerifying, error: verifyError, clearError: clearVerifyError } = useAdminMutation({
     method: "POST",
   });
 
@@ -127,6 +127,12 @@ export default function SSOPage() {
         <div>
           {enforcementMutationError && (
             <ErrorBanner message={enforcementMutationError} onRetry={clearEnforcementError} />
+          )}
+          {toggleError && (
+            <ErrorBanner message={toggleError} onRetry={clearToggleError} />
+          )}
+          {verifyError && (
+            <ErrorBanner message={verifyError} onRetry={clearVerifyError} />
           )}
           <AdminContentWrapper
             loading={loading}
@@ -234,6 +240,9 @@ export default function SSOPage() {
               authentication as a break-glass escape.
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {enforcementMutationError && (
+            <ErrorBanner message={enforcementMutationError} onRetry={clearEnforcementError} />
+          )}
           <AlertDialogFooter>
             <AlertDialogCancel disabled={enforcementSaving}>Cancel</AlertDialogCancel>
             <AlertDialogAction
@@ -248,22 +257,27 @@ export default function SSOPage() {
         </AlertDialogContent>
       </AlertDialog>
 
-      {/* Create/Edit/Delete Dialogs */}
-      <CreateProviderDialog
-        open={createOpen}
-        onOpenChange={setCreateOpen}
-      />
-      <EditProviderDialog
-        open={editProvider !== null}
-        onOpenChange={(open) => { if (!open) setEditProvider(null); }}
-        provider={editProvider}
-      />
-      <DeleteProviderDialog
-        open={deleteProvider !== null}
-        onOpenChange={(open) => { if (!open) setDeleteProvider(null); }}
-        provider={deleteProvider}
-        isLastEnabledWithEnforcement={deleteProvider ? isLastEnabledWithEnforcement(deleteProvider) : false}
-      />
+      {createOpen && (
+        <CreateProviderDialog
+          open={createOpen}
+          onOpenChange={setCreateOpen}
+        />
+      )}
+      {editProvider && (
+        <EditProviderDialog
+          open={true}
+          onOpenChange={(open) => { if (!open) setEditProvider(null); }}
+          provider={editProvider}
+        />
+      )}
+      {deleteProvider && (
+        <DeleteProviderDialog
+          open={true}
+          onOpenChange={(open) => { if (!open) setDeleteProvider(null); }}
+          provider={deleteProvider}
+          isLastEnabledWithEnforcement={isLastEnabledWithEnforcement(deleteProvider)}
+        />
+      )}
     </div>
   );
 }

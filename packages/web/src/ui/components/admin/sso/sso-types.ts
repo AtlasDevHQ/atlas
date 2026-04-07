@@ -66,7 +66,7 @@ const PEM_PREFIX = "-----BEGIN CERTIFICATE-----";
 
 export const samlFormSchema = z.object({
   type: z.literal("saml"),
-  domain: z.string().min(1, "Domain is required").regex(/^[a-z0-9.-]+\.[a-z]{2,}$/i, "Enter a valid domain (e.g. acme.com)"),
+  domain: z.string().min(1, "Domain is required").regex(/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/i, "Enter a valid domain (e.g. acme.com)"),
   issuer: z.string().min(1, "Issuer URL is required").url("Enter a valid URL"),
   idpEntityId: z.string().min(1, "IdP Entity ID is required"),
   idpSsoUrl: z.string().min(1, "IdP SSO URL is required").url("Enter a valid URL"),
@@ -78,7 +78,7 @@ export const samlFormSchema = z.object({
 
 export const oidcFormSchema = z.object({
   type: z.literal("oidc"),
-  domain: z.string().min(1, "Domain is required").regex(/^[a-z0-9.-]+\.[a-z]{2,}$/i, "Enter a valid domain (e.g. acme.com)"),
+  domain: z.string().min(1, "Domain is required").regex(/^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/i, "Enter a valid domain (e.g. acme.com)"),
   issuer: z.string().min(1, "Issuer URL is required").url("Enter a valid URL"),
   clientId: z.string().min(1, "Client ID is required"),
   clientSecret: z.string().min(1, "Client Secret is required"),
@@ -88,7 +88,7 @@ export const oidcFormSchema = z.object({
 export const createProviderSchema = z.discriminatedUnion("type", [samlFormSchema, oidcFormSchema]);
 export type CreateProviderForm = z.infer<typeof createProviderSchema>;
 
-/** Edit schema: same as create but clientSecret is optional (blank = keep existing). */
+/** Edit schemas: SAML is identical to create. OIDC makes clientSecret optional (blank = keep existing). */
 export const editSamlFormSchema = samlFormSchema;
 export const editOidcFormSchema = oidcFormSchema.extend({
   clientSecret: z.string().optional().default(""),

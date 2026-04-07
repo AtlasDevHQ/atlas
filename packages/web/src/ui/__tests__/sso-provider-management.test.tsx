@@ -318,6 +318,63 @@ describe("ProviderCard", () => {
     );
     expect(container.textContent).not.toContain("SP Metadata");
   });
+
+  test("toggle is disabled when domain not verified and provider disabled", () => {
+    const provider = makeProvider({ domainVerificationStatus: "pending", enabled: false });
+    const { container } = renderWrapped(
+      <ProviderCard
+        provider={provider}
+        onEdit={noop}
+        onDelete={noop}
+        onToggleEnabled={noop}
+        onVerifyDomain={noop}
+        isToggling={false}
+        isVerifying={false}
+      />,
+    );
+    const switchEl = container.querySelector('[role="switch"]');
+    expect(switchEl).not.toBeNull();
+    expect(switchEl!.getAttribute("aria-checked")).toBe("false");
+    expect(switchEl!.hasAttribute("disabled") || switchEl!.getAttribute("data-disabled") !== null).toBe(true);
+  });
+
+  test("toggle is enabled when domain is verified", () => {
+    const provider = makeProvider({ domainVerificationStatus: "verified", domainVerified: true, enabled: false });
+    const { container } = renderWrapped(
+      <ProviderCard
+        provider={provider}
+        onEdit={noop}
+        onDelete={noop}
+        onToggleEnabled={noop}
+        onVerifyDomain={noop}
+        isToggling={false}
+        isVerifying={false}
+      />,
+    );
+    const switchEl = container.querySelector('[role="switch"]');
+    expect(switchEl).not.toBeNull();
+    expect(switchEl!.hasAttribute("disabled")).toBe(false);
+  });
+
+  test("hides DNS TXT record when domain is verified", () => {
+    const provider = makeProvider({
+      domainVerificationStatus: "verified",
+      domainVerified: true,
+      verificationToken: "atlas-verify-xyz",
+    });
+    const { container } = renderWrapped(
+      <ProviderCard
+        provider={provider}
+        onEdit={noop}
+        onDelete={noop}
+        onToggleEnabled={noop}
+        onVerifyDomain={noop}
+        isToggling={false}
+        isVerifying={false}
+      />,
+    );
+    expect(container.textContent).not.toContain("atlas-verify-xyz");
+  });
 });
 
 // ── Delete Provider Dialog ────────────────────────────────────────
@@ -464,5 +521,78 @@ describe("DeleteProviderDialog", () => {
     await waitFor(() => {
       expect(onOpenChange).toHaveBeenCalledWith(false);
     });
+  });
+
+  test("disables enforcement before deleting last enabled provider", async () => {
+    const onOpenChange = mock(() => {});
+    let callCount = 0;
+    const fetchMock = mock(() => {
+      callCount++;
+      // First call = PUT enforcement, second call = DELETE provider
+      return Promise.resolve(new Response(
+        JSON.stringify(callCount === 1 ? { enforced: false, orgId: "org_test1" } : { message: "deleted" }),
+        { status: 200 },
+      ));
+    }) as unknown as typeof fetch;
+    globalThis.fetch = fetchMock;
+
+    const provider = makeProvider({ enabled: true });
+    renderWrapped(
+      <DeleteProviderDialog
+        open={true}
+        onOpenChange={onOpenChange}
+        provider={provider}
+        isLastEnabledWithEnforcement={true}
+      />,
+    );
+
+    const input = document.querySelector("input");
+    fireEvent.change(input!, { target: { value: "example.com" } });
+
+    const deleteButton = Array.from(document.querySelectorAll("button")).find(
+      (b) => b.textContent?.includes("Delete Provider"),
+    );
+    fireEvent.click(deleteButton!);
+
+    await waitFor(() => {
+      expect(onOpenChange).toHaveBeenCalledWith(false);
+      // Should have made 2 API calls: enforcement disable + delete
+      expect((fetchMock as unknown as ReturnType<typeof mock>).mock.calls.length).toBe(2);
+    });
+  });
+
+  test("does not delete when enforcement disable fails", async () => {
+    const onOpenChange = mock(() => {});
+    const fetchMock = mock(() =>
+      // Enforcement disable fails
+      Promise.resolve(new Response(JSON.stringify({ error: "forbidden", message: "Cannot disable" }), { status: 403 })),
+    ) as unknown as typeof fetch;
+    globalThis.fetch = fetchMock;
+
+    const provider = makeProvider({ enabled: true });
+    renderWrapped(
+      <DeleteProviderDialog
+        open={true}
+        onOpenChange={onOpenChange}
+        provider={provider}
+        isLastEnabledWithEnforcement={true}
+      />,
+    );
+
+    const input = document.querySelector("input");
+    fireEvent.change(input!, { target: { value: "example.com" } });
+
+    const deleteButton = Array.from(document.querySelectorAll("button")).find(
+      (b) => b.textContent?.includes("Delete Provider"),
+    );
+    fireEvent.click(deleteButton!);
+
+    // Wait for the API call to complete
+    await waitFor(() => {
+      expect((fetchMock as unknown as ReturnType<typeof mock>).mock.calls.length).toBe(1);
+    });
+
+    // Dialog should NOT have closed (delete was not attempted)
+    expect(onOpenChange).not.toHaveBeenCalledWith(false);
   });
 });

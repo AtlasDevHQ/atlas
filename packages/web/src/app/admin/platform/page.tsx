@@ -167,7 +167,8 @@ function PlatformPageContent() {
   );
 
   // Confirmation dialog
-  const [confirmAction, setConfirmAction] = useState<{ type: "suspend" | "unsuspend" | "delete"; workspace: PlatformWorkspace } | null>(null);
+  const [confirmAction, setConfirmAction] = useState<{ type: "suspend" | "unsuspend" | "delete" | "purge"; workspace: PlatformWorkspace } | null>(null);
+  const [purgeConfirmName, setPurgeConfirmName] = useState("");
   const inProgress = useInProgressSet();
   const { mutate: actionMutate, error: actionError, clearError: clearActionError } = useAdminMutation({
     invalidates: refetchWorkspaces,
@@ -214,7 +215,7 @@ function PlatformPageContent() {
 
   // ── Actions ──────────────────────────────────────────────────────
 
-  async function executeAction(type: "suspend" | "unsuspend" | "delete", workspaceId: string) {
+  async function executeAction(type: "suspend" | "unsuspend" | "delete" | "purge", workspaceId: string) {
     clearActionError();
     inProgress.start(workspaceId);
 
@@ -226,6 +227,7 @@ function PlatformPageContent() {
     const result = await actionMutate({ path, method });
     if (result.ok) {
       setConfirmAction(null);
+      setPurgeConfirmName("");
     }
     inProgress.stop(workspaceId);
   }
@@ -466,6 +468,18 @@ function PlatformPageContent() {
                                 <Trash2 className="size-4" />
                               </Button>
                             )}
+                            {ws.status === "deleted" && (
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                onClick={() => setConfirmAction({ type: "purge", workspace: ws })}
+                                title="Purge all data (GDPR)"
+                                disabled={inProgress.has(ws.id)}
+                                className="text-destructive hover:text-destructive"
+                              >
+                                {inProgress.has(ws.id) ? <Loader2 className="size-4 animate-spin" /> : <Trash2 className="size-4" />}
+                              </Button>
+                            )}
                           </div>
                         </TableCell>
                       </TableRow>
@@ -645,27 +659,44 @@ function PlatformPageContent() {
       </Dialog>
 
       {/* ── Confirm Action Dialog ────────────────────────────────── */}
-      <Dialog open={!!confirmAction} onOpenChange={(open) => { if (!open) { setConfirmAction(null); clearActionError(); } }}>
+      <Dialog open={!!confirmAction} onOpenChange={(open) => { if (!open) { setConfirmAction(null); clearActionError(); setPurgeConfirmName(""); } }}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>
               {confirmAction?.type === "suspend" && "Suspend Workspace"}
               {confirmAction?.type === "unsuspend" && "Unsuspend Workspace"}
               {confirmAction?.type === "delete" && "Delete Workspace"}
+              {confirmAction?.type === "purge" && "Purge All Data (GDPR)"}
             </DialogTitle>
             <DialogDescription>
               {confirmAction?.type === "suspend" && `This will suspend "${confirmAction.workspace.name}", preventing all user access until reactivated.`}
               {confirmAction?.type === "unsuspend" && `This will reactivate "${confirmAction.workspace.name}", restoring user access.`}
               {confirmAction?.type === "delete" && `This will permanently delete "${confirmAction.workspace.name}" and cascade-remove all conversations, semantic entities, learned patterns, suggestions, and scheduled tasks. This action cannot be undone.`}
+              {confirmAction?.type === "purge" && `This will permanently and irreversibly remove ALL data for "${confirmAction.workspace.name}" — conversations, messages, audit logs, integrations, connections, members, and orphaned user accounts. This cannot be undone.`}
             </DialogDescription>
           </DialogHeader>
+          {confirmAction?.type === "purge" && (
+            <div className="space-y-2">
+              <p className="text-sm text-muted-foreground">
+                Type <span className="font-mono font-semibold text-foreground">{confirmAction.workspace.name}</span> to confirm.
+              </p>
+              <Input
+                value={purgeConfirmName}
+                onChange={(e) => setPurgeConfirmName(e.target.value)}
+                placeholder="Workspace name"
+              />
+            </div>
+          )}
           {actionError && <ErrorBanner message={actionError} />}
           <DialogFooter>
-            <Button variant="outline" onClick={() => { setConfirmAction(null); clearActionError(); }}>Cancel</Button>
+            <Button variant="outline" onClick={() => { setConfirmAction(null); clearActionError(); setPurgeConfirmName(""); }}>Cancel</Button>
             <Button
-              variant={confirmAction?.type === "delete" ? "destructive" : "default"}
+              variant={confirmAction?.type === "delete" || confirmAction?.type === "purge" ? "destructive" : "default"}
               onClick={() => confirmAction && executeAction(confirmAction.type, confirmAction.workspace.id)}
-              disabled={confirmAction ? inProgress.has(confirmAction.workspace.id) : false}
+              disabled={
+                (confirmAction ? inProgress.has(confirmAction.workspace.id) : false) ||
+                (confirmAction?.type === "purge" && purgeConfirmName !== confirmAction.workspace.name)
+              }
             >
               {confirmAction && inProgress.has(confirmAction.workspace.id) ? (
                 <><Loader2 className="mr-2 size-4 animate-spin" />Processing...</>
@@ -674,6 +705,7 @@ function PlatformPageContent() {
                   {confirmAction?.type === "suspend" && "Suspend"}
                   {confirmAction?.type === "unsuspend" && "Unsuspend"}
                   {confirmAction?.type === "delete" && "Delete"}
+                  {confirmAction?.type === "purge" && "Purge All Data"}
                 </>
               )}
             </Button>

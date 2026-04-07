@@ -113,7 +113,7 @@ const PLANS: Record<PlanTier, PlanDefinition> = {
     displayName: "Pro",
     pricePerSeat: 59,
     defaultModel: "claude-sonnet-4-6",
-    overagePerMillionTokens: 0.8,
+    overagePerMillionTokens: 1.0,
     limits: {
       tokenBudgetPerSeat: 5_000_000,
       maxSeats: 25,
@@ -131,7 +131,7 @@ const PLANS: Record<PlanTier, PlanDefinition> = {
     displayName: "Business",
     pricePerSeat: 99,
     defaultModel: "claude-sonnet-4-6",
-    overagePerMillionTokens: 0.6,
+    overagePerMillionTokens: 1.0,
     limits: {
       tokenBudgetPerSeat: 15_000_000,
       maxSeats: UNLIMITED,
@@ -217,6 +217,7 @@ export function getStripePlans(): Array<{
         seats: PLANS.pro.limits.maxSeats,
         connections: PLANS.pro.limits.maxConnections,
       },
+      freeTrial: { days: TRIAL_DAYS },
     });
   }
 
@@ -225,11 +226,13 @@ export function getStripePlans(): Array<{
     plans.push({
       name: "business",
       priceId: businessPriceId,
+      annualDiscountPriceId: process.env.STRIPE_BUSINESS_ANNUAL_PRICE_ID,
       limits: {
         tokenBudgetPerSeat: PLANS.business.limits.tokenBudgetPerSeat,
         seats: UNLIMITED,
         connections: UNLIMITED,
       },
+      freeTrial: { days: TRIAL_DAYS },
     });
   }
 
@@ -248,6 +251,7 @@ export function resolvePlanTierFromPriceId(priceId: string): PlanTier | null {
   const proPriceId = process.env.STRIPE_PRO_PRICE_ID;
   const proAnnualPriceId = process.env.STRIPE_PRO_ANNUAL_PRICE_ID;
   const businessPriceId = process.env.STRIPE_BUSINESS_PRICE_ID;
+  const businessAnnualPriceId = process.env.STRIPE_BUSINESS_ANNUAL_PRICE_ID;
 
   if (starterPriceId && (priceId === starterPriceId || (starterAnnualPriceId && priceId === starterAnnualPriceId))) {
     return "starter";
@@ -255,7 +259,7 @@ export function resolvePlanTierFromPriceId(priceId: string): PlanTier | null {
   if (proPriceId && (priceId === proPriceId || (proAnnualPriceId && priceId === proAnnualPriceId))) {
     return "pro";
   }
-  if (businessPriceId && priceId === businessPriceId) {
+  if (businessPriceId && (priceId === businessPriceId || (businessAnnualPriceId && priceId === businessAnnualPriceId))) {
     return "business";
   }
   return null;

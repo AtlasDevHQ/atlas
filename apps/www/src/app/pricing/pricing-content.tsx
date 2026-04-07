@@ -136,7 +136,7 @@ const COMPARISON: ComparisonRow[] = [
   { feature: "Database connections", selfHosted: "Unlimited", starter: "1", pro: "3", business: "Unlimited" },
   { feature: "Extra connections", selfHosted: false, starter: "+$10/mo each", pro: "+$10/mo each", business: "Included" },
   { feature: "Chat integrations", selfHosted: "Config-based", starter: "1 platform", pro: "3 platforms", business: "All 8" },
-  { feature: "Overage rate", selfHosted: false, starter: "$0.10/query", pro: "$0.08/query", business: "$0.06/query" },
+  { feature: "Overage rate", selfHosted: false, starter: "$0.10/query", pro: "$0.10/query", business: "$0.10/query" },
   // Enterprise features
   { feature: "Custom domain", selfHosted: false, starter: false, pro: true, business: true },
   { feature: "SSO & SCIM", selfHosted: false, starter: false, pro: false, business: true },
@@ -164,7 +164,7 @@ const FAQS: FAQ[] = [
   {
     question: "What happens when I hit my query limit?",
     answer:
-      "You'll get warnings as you approach your limit. You have a 10% grace buffer beyond your included budget, and additional queries in that range are billed at your plan's overage rate ($0.10, $0.08, or $0.06 per query). To avoid overages entirely, switch to BYOK at any time — your own API key means unlimited queries.",
+      "You'll get warnings as you approach your limit. You have a 10% grace buffer beyond your included budget, and additional queries in that range are billed at $0.10 per query. To avoid overages entirely, switch to BYOK at any time — your own API key means unlimited queries.",
   },
   {
     question: "Is there a free option?",

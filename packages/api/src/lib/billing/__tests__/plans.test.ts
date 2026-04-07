@@ -93,10 +93,10 @@ describe("billing/plans", () => {
       expect(business.features.sla).toBe("99.9%");
     });
 
-    it("overage rates decrease with higher tiers", () => {
+    it("overage rate is flat across all paid tiers", () => {
       expect(getPlanDefinition("starter").overagePerMillionTokens).toBe(1.0);
-      expect(getPlanDefinition("pro").overagePerMillionTokens).toBe(0.8);
-      expect(getPlanDefinition("business").overagePerMillionTokens).toBe(0.6);
+      expect(getPlanDefinition("pro").overagePerMillionTokens).toBe(1.0);
+      expect(getPlanDefinition("business").overagePerMillionTokens).toBe(1.0);
     });
   });
 
@@ -180,7 +180,7 @@ describe("billing/plans", () => {
       expect(plans.length).toBe(1);
       expect(plans[0].name).toBe("pro");
       expect(plans[0].priceId).toBe("price_pro_789");
-      expect(plans[0].freeTrial).toBeUndefined();
+      expect(plans[0].freeTrial).toEqual({ days: 14 });
     });
 
     it("includes business plan when STRIPE_BUSINESS_PRICE_ID is set", () => {
@@ -189,7 +189,7 @@ describe("billing/plans", () => {
       expect(plans.length).toBe(1);
       expect(plans[0].name).toBe("business");
       expect(plans[0].priceId).toBe("price_biz_789");
-      expect(plans[0].freeTrial).toBeUndefined();
+      expect(plans[0].freeTrial).toEqual({ days: 14 });
     });
 
     it("includes all plans when all price IDs are set", () => {

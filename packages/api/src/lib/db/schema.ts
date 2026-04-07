@@ -1260,3 +1260,36 @@ export const sandboxCredentials = pgTable(
     index("idx_sandbox_credentials_org").on(t.orgId),
   ],
 );
+
+// ---------------------------------------------------------------------------
+// Admin action audit log
+// ---------------------------------------------------------------------------
+
+export const adminActionLog = pgTable(
+  "admin_action_log",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    timestamp: timestamp("timestamp", { withTimezone: true }).notNull().defaultNow(),
+    actorId: text("actor_id").notNull(),
+    actorEmail: text("actor_email").notNull(),
+    scope: text("scope").notNull().default("workspace"),
+    orgId: text("org_id"),
+    actionType: text("action_type").notNull(),
+    targetType: text("target_type").notNull(),
+    targetId: text("target_id").notNull(),
+    status: text("status").notNull().default("success"),
+    metadata: jsonb("metadata"),
+    ipAddress: text("ip_address"),
+    requestId: text("request_id").notNull(),
+  },
+  (t) => [
+    index("idx_admin_action_log_timestamp").on(t.timestamp),
+    index("idx_admin_action_log_actor_id").on(t.actorId),
+    index("idx_admin_action_log_org_id").on(t.orgId),
+    index("idx_admin_action_log_action_type").on(t.actionType),
+    index("idx_admin_action_log_target_type").on(t.targetType),
+    index("idx_admin_action_log_org_ts").on(t.orgId, t.timestamp),
+    check("chk_admin_action_scope", sql`scope IN ('platform', 'workspace')`),
+    check("chk_admin_action_status", sql`status IN ('success', 'failure')`),
+  ],
+);

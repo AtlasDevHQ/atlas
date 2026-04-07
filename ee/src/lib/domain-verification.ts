@@ -1,12 +1,15 @@
 /**
  * Shared DNS TXT domain verification utility.
  *
- * Used by SSO domain verification (ee/src/auth/sso.ts) to prove domain
- * ownership via DNS TXT records. Custom domains (ee/src/platform/domains.ts)
- * use a separate Railway-based verification flow.
+ * Used by both SSO domain verification (ee/src/auth/sso.ts) and custom
+ * domain ownership verification (ee/src/platform/domains.ts) to prove
+ * domain ownership via DNS TXT records. Custom domains also use Railway's
+ * CNAME-based verification for DNS routing — DNS TXT is additive,
+ * proving ownership independently.
  *
  * Token format: `atlas-verify=<uuid>`
- * Verification: DNS TXT lookup with timeout, returns structured result.
+ * Verification: DNS TXT lookup on the domain itself (not a subdomain),
+ * with configurable timeout. Returns structured result.
  */
 
 import { Effect } from "effect";

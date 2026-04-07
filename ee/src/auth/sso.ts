@@ -411,14 +411,20 @@ export const createSSOProvider = (
       return verified;
     }).pipe(
       Effect.catchAll((err) => {
-        log.debug({ err: err instanceof Error ? err.message : String(err) }, "Cross-domain verification unavailable — skipping");
+        // Distinguish import failures (expected in AGPL builds) from runtime errors
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg.includes("Cannot find module") || msg.includes("MODULE_NOT_FOUND")) {
+          log.debug({ err: msg }, "Cross-domain verification unavailable — domains module not present");
+        } else {
+          log.warn({ orgId, domain, err: msg }, "Cross-domain auto-verification failed — SSO domain will require manual verification");
+        }
         return Effect.succeed(false);
       }),
     );
 
     const rows = yield* Effect.promise(() => internalQuery<SSOProviderRow>(
       `INSERT INTO sso_providers (org_id, type, issuer, domain, enabled, config, verification_token, domain_verified, domain_verified_at, domain_verification_status)
-       VALUES ($1, $2, $3, $4, false, $5, $6, $7, ${autoVerified ? "now()" : "NULL"}, $8)
+       VALUES ($1, $2, $3, $4, false, $5, $6, $7, CASE WHEN $7 = true THEN now() ELSE NULL END, $8)
        RETURNING id, org_id, type, issuer, domain, enabled, sso_enforced, config, created_at, updated_at, verification_token, domain_verified, domain_verified_at, domain_verification_status`,
       [orgId, input.type, input.issuer, domain, JSON.stringify(storedConfig), verificationToken, autoVerified, autoVerified ? "verified" : "pending"],
     ));

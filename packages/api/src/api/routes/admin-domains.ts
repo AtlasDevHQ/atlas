@@ -139,7 +139,7 @@ const verifyDnsTxtRoute = createRoute({
   path: "/verify-dns",
   tags: ["Admin — Custom Domain"],
   summary: "Verify domain ownership via DNS TXT",
-  description: "Checks DNS TXT records for the workspace's custom domain verification token. Proves domain ownership independently from Railway CNAME verification.",
+  description: "Checks DNS TXT records for the workspace's custom domain verification token. Proves domain ownership independently from Railway CNAME verification. On successful verification, also auto-verifies any pending SSO provider for the same domain in the same workspace.",
   responses: {
     200: {
       description: "DNS TXT verification result",

@@ -40,8 +40,6 @@ export const DomainCheckResponseSchema = z.object({
   reason: z.string().optional(),
 });
 
-export const DomainDnsTxtVerifyResponseSchema = CustomDomainSchema;
-
 export const customDomainError = domainError(DomainError, {
   no_internal_db: 503,
   invalid_domain: 400,

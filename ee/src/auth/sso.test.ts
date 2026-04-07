@@ -274,6 +274,40 @@ describe("createSSOProvider", () => {
     expect(provider.domain).toBe("acme.com");
   });
 
+  it("auto-verifies domain when workspace has verified custom domain", async () => {
+    // Domain uniqueness check
+    ee.queueMockRows([]);
+    // Cross-domain: hasVerifiedCustomDomain check — returns a match
+    ee.queueMockRows([{ id: "dom-1" }]);
+    // INSERT RETURNING (with auto-verified fields)
+    ee.queueMockRows([{
+      ...sampleSamlRow,
+      domain_verified: true,
+      domain_verified_at: "2026-04-06T12:00:00Z",
+      domain_verification_status: "verified",
+    }]);
+
+    const provider = await run(createSSOProvider("org-1", {
+      type: "saml",
+      issuer: "https://idp.acme.com",
+      domain: "acme.com",
+      config: {
+        idpEntityId: "https://idp.acme.com",
+        idpSsoUrl: "https://idp.acme.com/sso",
+        idpCertificate: "-----BEGIN CERTIFICATE-----\nMIIC...\n-----END CERTIFICATE-----",
+      },
+    }));
+
+    expect(provider.domainVerified).toBe(true);
+    expect(provider.domainVerificationStatus).toBe("verified");
+
+    // Verify INSERT params include autoVerified=true and status="verified"
+    const insertQuery = ee.capturedQueries.find((q) => q.sql.includes("INSERT INTO sso_providers"));
+    expect(insertQuery).toBeDefined();
+    expect(insertQuery!.params[6]).toBe(true); // autoVerified
+    expect(insertQuery!.params[7]).toBe("verified"); // status
+  });
+
   it("rejects invalid domain", async () => {
     await expect(run(createSSOProvider("org-1", {
       type: "saml",

@@ -91,10 +91,15 @@ function rowToDomain(row: Record<string, unknown>): CustomDomain {
     );
   }
 
+  // Default to "pending" for pre-migration rows that lack the column
   const verificationStatusRaw = row.domain_verification_status != null ? String(row.domain_verification_status) : "pending";
-  const domainVerificationStatus: DomainVerificationStatus = DOMAIN_VERIFICATION_STATUSES.includes(verificationStatusRaw as DomainVerificationStatus)
-    ? (verificationStatusRaw as DomainVerificationStatus)
-    : "pending";
+  if (!DOMAIN_VERIFICATION_STATUSES.includes(verificationStatusRaw as DomainVerificationStatus)) {
+    throw new DomainError(
+      `rowToDomain: unexpected domain_verification_status "${verificationStatusRaw}" — expected one of ${DOMAIN_VERIFICATION_STATUSES.join(", ")}`,
+      "data_integrity",
+    );
+  }
+  const domainVerificationStatus = verificationStatusRaw as DomainVerificationStatus;
 
   return {
     id: String(id),
@@ -540,10 +545,13 @@ export const verifyDomainDnsTxt = (domainId: string): Effect.Effect<CustomDomain
   Effect.gen(function* () {
     yield* requireDB();
 
-    const rows = yield* Effect.promise(() => internalQuery<Record<string, unknown>>(
-      `SELECT * FROM custom_domains WHERE id = $1`,
-      [domainId],
-    ));
+    const rows = yield* Effect.tryPromise({
+      try: () => internalQuery<Record<string, unknown>>(
+        `SELECT * FROM custom_domains WHERE id = $1`,
+        [domainId],
+      ),
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    });
 
     if (rows.length === 0) {
       return yield* Effect.fail(new DomainError(
@@ -580,12 +588,8 @@ export const verifyDomainDnsTxt = (domainId: string): Effect.Effect<CustomDomain
         return Effect.void;
       }));
 
-      // Return updated record with failed status
-      const failedRows = yield* Effect.promise(() => internalQuery<Record<string, unknown>>(
-        `SELECT * FROM custom_domains WHERE id = $1`,
-        [domainId],
-      ));
-      return rowToDomain(failedRows[0]);
+      // Return record reflecting actual DNS result, even if the persist failed
+      return { ...record, domainVerificationStatus: "failed" as const };
     }
 
     // DNS TXT verified — update status
@@ -607,10 +611,21 @@ export const verifyDomainDnsTxt = (domainId: string): Effect.Effect<CustomDomain
     // Cross-domain: auto-verify SSO provider for the same domain + workspace
     yield* autoVerifySSODomain(record.workspaceId, record.domain);
 
-    const updatedRows = yield* Effect.promise(() => internalQuery<Record<string, unknown>>(
-      `SELECT * FROM custom_domains WHERE id = $1`,
-      [domainId],
-    ));
+    const updatedRows = yield* Effect.tryPromise({
+      try: () => internalQuery<Record<string, unknown>>(
+        `SELECT * FROM custom_domains WHERE id = $1`,
+        [domainId],
+      ),
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    });
+
+    if (updatedRows.length === 0) {
+      return yield* Effect.fail(new DomainError(
+        `Domain "${domainId}" was deleted during verification.`,
+        "domain_not_found",
+      ));
+    }
+
     return rowToDomain(updatedRows[0]);
   });
 
@@ -630,10 +645,13 @@ export const checkDomainAvailability = (
       return { available: false, reason: "Invalid domain format." };
     }
 
-    const existing = yield* Effect.promise(() => internalQuery<{ id: string; workspace_id: string }>(
-      `SELECT id, workspace_id FROM custom_domains WHERE domain = $1`,
-      [normalized],
-    ));
+    const existing = yield* Effect.tryPromise({
+      try: () => internalQuery<{ id: string; workspace_id: string }>(
+        `SELECT id, workspace_id FROM custom_domains WHERE domain = $1`,
+        [normalized],
+      ),
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    });
 
     if (existing.length === 0) {
       return { available: true };
@@ -648,58 +666,59 @@ export const checkDomainAvailability = (
 
 /**
  * Cross-domain auto-verification: when a custom domain is verified,
- * auto-mark any SSO provider for the same domain in the same workspace as verified.
+ * auto-mark any unverified SSO provider for the same domain in the same workspace as verified.
+ * Logs a warning on failure — domain verification still succeeds.
  */
 const autoVerifySSODomain = (workspaceId: string, domain: string): Effect.Effect<void> =>
   Effect.gen(function* () {
     if (!hasInternalDB()) return;
 
-    yield* Effect.promise(async () => {
-      try {
-        const updated = await internalQuery(
-          `UPDATE sso_providers
-           SET domain_verified = true, domain_verified_at = now(), domain_verification_status = 'verified', updated_at = now()
-           WHERE org_id = $1 AND LOWER(domain) = $2 AND domain_verified = false`,
-          [workspaceId, domain.toLowerCase()],
-        );
+    yield* Effect.tryPromise({
+      try: () => internalQuery(
+        `UPDATE sso_providers
+         SET domain_verified = true, domain_verified_at = now(), domain_verification_status = 'verified', updated_at = now()
+         WHERE org_id = $1 AND LOWER(domain) = $2 AND domain_verified = false`,
+        [workspaceId, domain.toLowerCase()],
+      ),
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    }).pipe(
+      Effect.tap((updated) => {
         if (Array.isArray(updated) && updated.length > 0) {
           log.info({ workspaceId, domain }, "Cross-domain: auto-verified SSO provider via custom domain verification");
         }
-      } catch (err) {
+        return Effect.void;
+      }),
+      Effect.catchAll((err) => {
         log.warn(
-          { workspaceId, domain, err: err instanceof Error ? err.message : String(err) },
+          { workspaceId, domain, err: err.message },
           "Cross-domain SSO auto-verification failed — SSO domain must be verified separately",
         );
-      }
-    });
+        return Effect.void;
+      }),
+    );
   });
 
 /**
  * Check if the workspace has a verified custom domain for the given domain.
  * Used by SSO provider creation to auto-verify domains.
+ * Returns false if the internal DB is not configured.
+ * Propagates DB errors through the Effect error channel.
  */
 export const hasVerifiedCustomDomain = (
   workspaceId: string,
   domain: string,
-): Effect.Effect<boolean> =>
+): Effect.Effect<boolean, Error> =>
   Effect.gen(function* () {
     if (!hasInternalDB()) return false;
 
-    return yield* Effect.promise(async () => {
-      try {
-        const rows = await internalQuery<{ id: string }>(
-          `SELECT id FROM custom_domains WHERE workspace_id = $1 AND LOWER(domain) = $2 AND domain_verified = true LIMIT 1`,
-          [workspaceId, domain.toLowerCase()],
-        );
-        return rows.length > 0;
-      } catch (err) {
-        log.warn(
-          { workspaceId, domain, err: err instanceof Error ? err.message : String(err) },
-          "Failed to check verified custom domain — returning false",
-        );
-        return false;
-      }
+    const rows = yield* Effect.tryPromise({
+      try: () => internalQuery<{ id: string }>(
+        `SELECT id FROM custom_domains WHERE workspace_id = $1 AND LOWER(domain) = $2 AND domain_verified = true LIMIT 1`,
+        [workspaceId, domain.toLowerCase()],
+      ),
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
     });
+    return rows.length > 0;
   });
 
 /**

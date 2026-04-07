@@ -64,7 +64,7 @@ const SECTIONS: Section[] = [
             >
               app.useatlas.dev
             </a>
-            . These Terms apply primarily to Atlas Cloud. Business-tier features are
+            . These Terms apply primarily to Atlas Cloud. Additional features are
             available under a separate{" "}
             <a
               href="https://github.com/AtlasDevHQ/atlas/blob/main/ee/LICENSE"
@@ -269,7 +269,7 @@ const SECTIONS: Section[] = [
         </p>
         <p>
           <strong>Atlas software.</strong> The core Atlas platform is licensed
-          under AGPL-3.0. Business-tier features in the <code>/ee</code> directory
+          under AGPL-3.0. Additional features in the <code>/ee</code> directory
           are licensed under a separate commercial license. Atlas Cloud&apos;s
           hosted infrastructure and proprietary service components remain the
           property of Atlas DevHQ.

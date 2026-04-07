@@ -257,7 +257,7 @@ Settings are split into two pages by scope:
 
 Per-workspace configuration — query limits, agent behavior, sandbox backend, and session policies. Workspace admins can edit these settings for their own workspace. Changes apply only to the current workspace.
 
-- **Sections** — Query Limits, Rate Limiting, Sessions, Sandbox, Agent
+- **Sections** — Query Limits, Rate Limiting, Sessions, Sandbox, Agent, Intelligence
 - **Source badges** — Each setting shows where its current value comes from:
   - **workspace override** (purple) — value saved per-workspace in the internal database
   - **override** (blue) — value saved as a platform-level override
@@ -277,6 +277,10 @@ Per-workspace configuration — query limits, agent behavior, sandbox backend, a
 | Sandbox | `ATLAS_SANDBOX_BACKEND` | Sandbox backend for explore/Python tool isolation |
 | Sandbox | `ATLAS_SANDBOX_URL` | Custom sidecar service URL (sidecar backend only) |
 | Agent | `ATLAS_AGENT_MAX_STEPS` | Maximum tool-call steps per agent run (1–100, default: 25) |
+| Intelligence | `ATLAS_EXPERT_SCHEDULER_ENABLED` | Enable periodic semantic layer analysis (default: false) |
+| Intelligence | `ATLAS_EXPERT_SCHEDULER_INTERVAL_HOURS` | Hours between scheduled expert analysis runs (default: 24) |
+| Intelligence | `ATLAS_EXPERT_AUTO_APPROVE_THRESHOLD` | Auto-approve proposals above this confidence (empty = disabled) |
+| Intelligence | `ATLAS_EXPERT_AUTO_APPROVE_TYPES` | Comma-separated amendment types eligible for auto-approval |
 
 See [Workspace Settings](/guides/workspace-settings) for the full guide.
 
@@ -285,12 +289,12 @@ See [Workspace Settings](/guides/workspace-settings) for the full guide.
 **Route:** `/admin/platform/settings`
 
 <Callout type="info">
-Requires the `platform_admin` role. In self-hosted mode, all admins see this page.
+Requires the `platform_admin` role. In self-hosted deployments, the first user to sign up is automatically assigned `platform_admin`.
 </Callout>
 
 Global settings that affect all workspaces — security policies, LLM provider, deploy mode, branding, and secrets. Only platform admins can access this page. Changes here apply across every workspace.
 
-- **Sections** — Security, Platform, Agent, Appearance, Secrets
+- **Sections** — Security, Platform, Agent, Email, Appearance, Secrets
 - **Brand color** — A dedicated card lets you preview and set the primary brand color in oklch format, with a live color swatch. Changes apply immediately
 - **Live vs Restart** — Settings marked **Live** take effect immediately. Settings marked **Requires restart** need a server restart (self-hosted only — on **app.useatlas.dev**, most settings are hot-reloadable)
 - **Secrets** — Sensitive settings (API keys, database URLs) are masked and read-only. Manage these via environment variables
@@ -306,6 +310,11 @@ Global settings that affect all workspaces — security policies, LLM provider, 
 | Agent | `ATLAS_PROVIDER` | LLM provider selection |
 | Agent | `ATLAS_MODEL` | Model ID override |
 | Agent | `ATLAS_LOG_LEVEL` | Application log level |
+| Email | `ATLAS_EMAIL_PROVIDER` | Platform default email provider |
+| Email | `RESEND_API_KEY` | Resend API key (masked, read-only) |
+| Email | `SENDGRID_API_KEY` | SendGrid API key (masked, read-only) |
+| Email | `POSTMARK_SERVER_TOKEN` | Postmark server token (masked, read-only) |
+| Email | `ATLAS_EMAIL_FROM` | Default sender address for platform emails |
 | Appearance | `ATLAS_BRAND_COLOR` | Primary brand color in oklch format |
 | Secrets | `ANTHROPIC_API_KEY` | Anthropic provider API key (masked, read-only) |
 | Secrets | `OPENAI_API_KEY` | OpenAI provider API key (masked, read-only) |

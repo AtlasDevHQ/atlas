@@ -113,6 +113,7 @@ POST /api/v1/platform/workspaces/:id/purge
 | `403` | Platform admin role required |
 | `404` | Workspace not found or internal database not configured |
 | `409` | Workspace must be soft-deleted first |
+| `500` | Internal server error (includes `requestId` for log correlation) |
 
 **Success response:**
 
@@ -132,7 +133,7 @@ POST /api/v1/platform/workspaces/:id/purge
 }
 ```
 
-The `purged` object contains row counts for each table, useful for audit purposes. The `totalRows` field is the sum of all deleted rows.
+The `purged` object contains row counts for each table, useful for audit purposes. The example above is abbreviated — the actual response includes a key for every table deleted (approximately 50 entries). The `totalRows` field is the sum of all deleted rows.
 
 ## Noisy Neighbor Detection
 

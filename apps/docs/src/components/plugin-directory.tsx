@@ -144,6 +144,38 @@ const plugins: Plugin[] = [
     description:
       "Slack bot integration with slash commands, threaded conversations, and OAuth.",
   },
+  {
+    name: "Chat",
+    href: "/plugins/interactions/chat",
+    type: "interaction",
+    package: "@useatlas/chat",
+    description:
+      "Unified interaction layer for Slack, Teams, Discord, Google Chat, Telegram, GitHub, Linear, WhatsApp, and more.",
+  },
+  {
+    name: "Teams",
+    href: "/plugins/interactions/teams",
+    type: "interaction",
+    package: "@useatlas/teams",
+    description:
+      "Microsoft Teams interaction plugin with bot framework and adaptive cards.",
+  },
+  {
+    name: "Email Digest",
+    href: "/plugins/interactions/email-digest",
+    type: "interaction",
+    package: "@useatlas/email-digest",
+    description:
+      "Scheduled metric summary subscriptions delivered via email digest.",
+  },
+  {
+    name: "Webhook",
+    href: "/plugins/interactions/webhook",
+    type: "interaction",
+    package: "@useatlas/webhook",
+    description:
+      "Webhook interaction plugin for Zapier, Make, and n8n integrations.",
+  },
   // Actions
   {
     name: "Email",

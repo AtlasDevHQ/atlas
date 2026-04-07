@@ -95,7 +95,7 @@ const listFlaggedRoute = createRoute({
 
 const reinstateRoute = createRoute({
   method: "post",
-  path: "/:workspaceId/reinstate",
+  path: "/{workspaceId}/reinstate",
   tags: ["Admin — Abuse Prevention"],
   summary: "Reinstate a suspended workspace",
   description: "SaaS only. Manually re-enable a workspace that was suspended or throttled due to abuse detection.",

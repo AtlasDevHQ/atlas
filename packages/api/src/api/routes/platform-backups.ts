@@ -96,7 +96,7 @@ const createBackupRoute = createRoute({
 
 const verifyBackupRoute = createRoute({
   method: "post",
-  path: "/:id/verify",
+  path: "/{id}/verify",
   tags: ["Platform Admin — Backups"],
   summary: "Verify backup integrity",
   description: "SaaS only. Decompress and validate the pg_dump header of a backup file.",
@@ -115,7 +115,7 @@ const verifyBackupRoute = createRoute({
 
 const requestRestoreRoute = createRoute({
   method: "post",
-  path: "/:id/restore",
+  path: "/{id}/restore",
   tags: ["Platform Admin — Backups"],
   summary: "Request backup restore",
   description: "SaaS only. Returns a confirmation token that must be passed to the confirm endpoint. The confirm step creates a pre-restore backup automatically before restoring.",
@@ -134,7 +134,7 @@ const requestRestoreRoute = createRoute({
 
 const confirmRestoreRoute = createRoute({
   method: "post",
-  path: "/:id/restore/confirm",
+  path: "/{id}/restore/confirm",
   tags: ["Platform Admin — Backups"],
   summary: "Confirm and execute restore",
   description: "SaaS only. Execute the restore operation using the confirmation token from the request endpoint.",

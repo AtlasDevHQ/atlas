@@ -157,7 +157,7 @@ const createRuleRoute = createRoute({
 
 const updateRuleRoute = createRoute({
   method: "put",
-  path: "/rules/:id",
+  path: "/rules/{id}",
   tags: ["Admin — Approval Workflows"],
   summary: "Update approval rule",
   description: "Update an existing approval rule.",
@@ -174,7 +174,7 @@ const updateRuleRoute = createRoute({
 
 const deleteRuleRoute = createRoute({
   method: "delete",
-  path: "/rules/:id",
+  path: "/rules/{id}",
   tags: ["Admin — Approval Workflows"],
   summary: "Delete approval rule",
   description: "Delete an approval rule. Pending requests referencing this rule are not affected.",
@@ -209,7 +209,7 @@ const listQueueRoute = createRoute({
 
 const getQueueItemRoute = createRoute({
   method: "get",
-  path: "/queue/:id",
+  path: "/queue/{id}",
   tags: ["Admin — Approval Workflows"],
   summary: "Get approval request",
   description: "Returns a single approval request by ID.",
@@ -228,7 +228,7 @@ const getQueueItemRoute = createRoute({
 
 const reviewRoute = createRoute({
   method: "post",
-  path: "/queue/:id",
+  path: "/queue/{id}",
   tags: ["Admin — Approval Workflows"],
   summary: "Review approval request",
   description: "Approve or deny a pending approval request.",

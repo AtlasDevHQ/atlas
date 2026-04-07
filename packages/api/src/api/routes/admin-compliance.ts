@@ -98,7 +98,7 @@ const listRoute = createRoute({
 
 const updateRoute = createRoute({
   method: "put",
-  path: "/classifications/:id",
+  path: "/classifications/{id}",
   tags: ["Admin — Compliance"],
   summary: "Update a PII classification",
   request: {
@@ -116,7 +116,7 @@ const updateRoute = createRoute({
 
 const deleteRoute = createRoute({
   method: "delete",
-  path: "/classifications/:id",
+  path: "/classifications/{id}",
   tags: ["Admin — Compliance"],
   summary: "Delete a PII classification",
   responses: {

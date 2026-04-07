@@ -26884,7 +26884,7 @@
         "operationId": "postAdminApprovalRules"
       }
     },
-    "/api/v1/admin/approval/rules/:id": {
+    "/api/v1/admin/approval/rules/{id}": {
       "put": {
         "tags": [
           "Admin — Approval Workflows"
@@ -27448,7 +27448,7 @@
         "operationId": "getAdminApprovalQueue"
       }
     },
-    "/api/v1/admin/approval/queue/:id": {
+    "/api/v1/admin/approval/queue/{id}": {
       "get": {
         "tags": [
           "Admin — Approval Workflows"
@@ -28184,7 +28184,7 @@
         "operationId": "getAdminComplianceClassifications"
       }
     },
-    "/api/v1/admin/compliance/classifications/:id": {
+    "/api/v1/admin/compliance/classifications/{id}": {
       "put": {
         "tags": [
           "Admin — Compliance"
@@ -29763,6 +29763,29 @@
                             null
                           ]
                         },
+                        "verificationToken": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "domainVerified": {
+                          "type": "boolean"
+                        },
+                        "domainVerifiedAt": {
+                          "type": [
+                            "string",
+                            "null"
+                          ]
+                        },
+                        "domainVerificationStatus": {
+                          "type": "string",
+                          "enum": [
+                            "pending",
+                            "verified",
+                            "failed"
+                          ]
+                        },
                         "createdAt": {
                           "type": "string"
                         },
@@ -29781,6 +29804,10 @@
                         "railwayDomainId",
                         "cnameTarget",
                         "certificateStatus",
+                        "verificationToken",
+                        "domainVerified",
+                        "domainVerifiedAt",
+                        "domainVerificationStatus",
                         "createdAt",
                         "verifiedAt"
                       ]
@@ -29994,6 +30021,29 @@
                         null
                       ]
                     },
+                    "verificationToken": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "domainVerified": {
+                      "type": "boolean"
+                    },
+                    "domainVerifiedAt": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "domainVerificationStatus": {
+                      "type": "string",
+                      "enum": [
+                        "pending",
+                        "verified",
+                        "failed"
+                      ]
+                    },
                     "createdAt": {
                       "type": "string"
                     },
@@ -30012,6 +30062,10 @@
                     "railwayDomainId",
                     "cnameTarget",
                     "certificateStatus",
+                    "verificationToken",
+                    "domainVerified",
+                    "domainVerifiedAt",
+                    "domainVerificationStatus",
                     "createdAt",
                     "verifiedAt"
                   ]
@@ -30390,6 +30444,29 @@
                         null
                       ]
                     },
+                    "verificationToken": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "domainVerified": {
+                      "type": "boolean"
+                    },
+                    "domainVerifiedAt": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "domainVerificationStatus": {
+                      "type": "string",
+                      "enum": [
+                        "pending",
+                        "verified",
+                        "failed"
+                      ]
+                    },
                     "createdAt": {
                       "type": "string"
                     },
@@ -30408,6 +30485,10 @@
                     "railwayDomainId",
                     "cnameTarget",
                     "certificateStatus",
+                    "verificationToken",
+                    "domainVerified",
+                    "domainVerifiedAt",
+                    "domainVerificationStatus",
                     "createdAt",
                     "verifiedAt"
                   ]
@@ -30539,6 +30620,405 @@
           }
         },
         "operationId": "postAdminDomainVerify"
+      }
+    },
+    "/api/v1/admin/domain/verify-dns": {
+      "post": {
+        "tags": [
+          "Admin — Custom Domain"
+        ],
+        "summary": "Verify domain ownership via DNS TXT",
+        "description": "Checks DNS TXT records for the workspace's custom domain verification token. Proves domain ownership independently from Railway CNAME verification. On successful verification, also auto-verifies any pending SSO provider for the same domain in the same workspace.",
+        "responses": {
+          "200": {
+            "description": "DNS TXT verification result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "workspaceId": {
+                      "type": "string"
+                    },
+                    "domain": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "pending",
+                        "verified",
+                        "failed"
+                      ]
+                    },
+                    "railwayDomainId": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "cnameTarget": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "certificateStatus": {
+                      "type": [
+                        "string",
+                        "null"
+                      ],
+                      "enum": [
+                        "PENDING",
+                        "ISSUED",
+                        "FAILED",
+                        null
+                      ]
+                    },
+                    "verificationToken": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "domainVerified": {
+                      "type": "boolean"
+                    },
+                    "domainVerifiedAt": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "domainVerificationStatus": {
+                      "type": "string",
+                      "enum": [
+                        "pending",
+                        "verified",
+                        "failed"
+                      ]
+                    },
+                    "createdAt": {
+                      "type": "string"
+                    },
+                    "verifiedAt": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "workspaceId",
+                    "domain",
+                    "status",
+                    "railwayDomainId",
+                    "cnameTarget",
+                    "certificateStatus",
+                    "verificationToken",
+                    "domainVerified",
+                    "domainVerifiedAt",
+                    "domainVerificationStatus",
+                    "createdAt",
+                    "verifiedAt"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "No active organization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No custom domain configured or enterprise features not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Internal database or Railway not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postAdminDomainVerifyDns"
+      }
+    },
+    "/api/v1/admin/domain/domain-check": {
+      "get": {
+        "tags": [
+          "Admin — Custom Domain"
+        ],
+        "summary": "Check domain availability",
+        "description": "Checks whether a domain is available for custom domain registration (not already claimed by another workspace).",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string"
+            },
+            "required": true,
+            "name": "domain",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Domain availability result",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "available": {
+                      "type": "boolean"
+                    },
+                    "reason": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "available"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or invalid domain parameter",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Enterprise features not available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getAdminDomainDomainCheck"
       }
     },
     "/api/v1/admin/onboarding-emails": {
@@ -31030,7 +31510,7 @@
         "operationId": "getAdminAbuse"
       }
     },
-    "/api/v1/admin/abuse/:workspaceId/reinstate": {
+    "/api/v1/admin/abuse/{workspaceId}/reinstate": {
       "post": {
         "tags": [
           "Admin — Abuse Prevention"
@@ -45553,7 +46033,7 @@
         "operationId": "getPlatformWorkspaces"
       }
     },
-    "/api/v1/platform/workspaces/:id": {
+    "/api/v1/platform/workspaces/{id}": {
       "get": {
         "tags": [
           "Platform Admin"
@@ -45955,7 +46435,7 @@
         "operationId": "deletePlatformWorkspacesById"
       }
     },
-    "/api/v1/platform/workspaces/:id/suspend": {
+    "/api/v1/platform/workspaces/{id}/suspend": {
       "post": {
         "tags": [
           "Platform Admin"
@@ -46086,7 +46566,7 @@
         "operationId": "postPlatformWorkspacesByIdSuspend"
       }
     },
-    "/api/v1/platform/workspaces/:id/unsuspend": {
+    "/api/v1/platform/workspaces/{id}/unsuspend": {
       "post": {
         "tags": [
           "Platform Admin"
@@ -46217,7 +46697,149 @@
         "operationId": "postPlatformWorkspacesByIdUnsuspend"
       }
     },
-    "/api/v1/platform/workspaces/:id/plan": {
+    "/api/v1/platform/workspaces/{id}/purge": {
+      "post": {
+        "tags": [
+          "Platform Admin"
+        ],
+        "summary": "Purge workspace (GDPR hard delete)",
+        "description": "SaaS only. Permanently removes ALL data for a workspace — conversations, messages, audit logs, integrations, members, and orphaned users. The workspace must already be soft-deleted. This action is irreversible.",
+        "responses": {
+          "200": {
+            "description": "Workspace purged",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "message": {
+                      "type": "string"
+                    },
+                    "workspaceId": {
+                      "type": "string"
+                    },
+                    "purged": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "number"
+                      }
+                    },
+                    "totalRows": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "message",
+                    "workspaceId",
+                    "purged",
+                    "totalRows"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Platform admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Workspace not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Workspace must be soft-deleted first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postPlatformWorkspacesByIdPurge"
+      }
+    },
+    "/api/v1/platform/workspaces/{id}/plan": {
       "patch": {
         "tags": [
           "Platform Admin"
@@ -46670,6 +47292,223 @@
         "operationId": "getPlatformNoisyNeighbors"
       }
     },
+    "/api/v1/platform/actions": {
+      "get": {
+        "tags": [
+          "Platform Admin"
+        ],
+        "summary": "List admin action log",
+        "description": "SaaS only. Returns a paginated list of all admin action log entries across the platform.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500,
+              "default": 50
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0,
+              "default": 0
+            },
+            "required": false,
+            "name": "offset",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Admin action log entries",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "actions": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "timestamp": {
+                            "type": "string"
+                          },
+                          "actorId": {
+                            "type": "string"
+                          },
+                          "actorEmail": {
+                            "type": "string"
+                          },
+                          "scope": {
+                            "type": "string",
+                            "enum": [
+                              "platform",
+                              "workspace"
+                            ]
+                          },
+                          "orgId": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "actionType": {
+                            "type": "string"
+                          },
+                          "targetType": {
+                            "type": "string"
+                          },
+                          "targetId": {
+                            "type": "string"
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "success",
+                              "failure"
+                            ]
+                          },
+                          "metadata": {
+                            "type": [
+                              "object",
+                              "null"
+                            ],
+                            "additionalProperties": {}
+                          },
+                          "ipAddress": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "requestId": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "timestamp",
+                          "actorId",
+                          "actorEmail",
+                          "scope",
+                          "orgId",
+                          "actionType",
+                          "targetType",
+                          "targetId",
+                          "status",
+                          "metadata",
+                          "ipAddress",
+                          "requestId"
+                        ]
+                      }
+                    },
+                    "total": {
+                      "type": "number"
+                    },
+                    "limit": {
+                      "type": "number"
+                    },
+                    "offset": {
+                      "type": "number"
+                    }
+                  },
+                  "required": [
+                    "actions",
+                    "total",
+                    "limit",
+                    "offset"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Platform admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getPlatformActions"
+      }
+    },
     "/api/v1/platform/sla": {
       "get": {
         "tags": [
@@ -46835,7 +47674,7 @@
         "operationId": "getPlatformSla"
       }
     },
-    "/api/v1/platform/sla/:workspaceId": {
+    "/api/v1/platform/sla/{workspaceId}": {
       "get": {
         "tags": [
           "Platform Admin — SLA"
@@ -47471,7 +48310,7 @@
         "operationId": "putPlatformSlaThresholds"
       }
     },
-    "/api/v1/platform/sla/alerts/:alertId/acknowledge": {
+    "/api/v1/platform/sla/alerts/{alertId}/acknowledge": {
       "post": {
         "tags": [
           "Platform Admin — SLA"
@@ -48074,7 +48913,7 @@
         "operationId": "postPlatformBackups"
       }
     },
-    "/api/v1/platform/backups/:id/verify": {
+    "/api/v1/platform/backups/{id}/verify": {
       "post": {
         "tags": [
           "Platform Admin — Backups"
@@ -48205,7 +49044,7 @@
         "operationId": "postPlatformBackupsByIdVerify"
       }
     },
-    "/api/v1/platform/backups/:id/restore": {
+    "/api/v1/platform/backups/{id}/restore": {
       "post": {
         "tags": [
           "Platform Admin — Backups"
@@ -48336,7 +49175,7 @@
         "operationId": "postPlatformBackupsByIdRestore"
       }
     },
-    "/api/v1/platform/backups/:id/restore/confirm": {
+    "/api/v1/platform/backups/{id}/restore/confirm": {
       "post": {
         "tags": [
           "Platform Admin — Backups"
@@ -48920,7 +49759,7 @@
         "operationId": "getPlatformResidencyRegions"
       }
     },
-    "/api/v1/platform/residency/workspaces/:id/region": {
+    "/api/v1/platform/residency/workspaces/{id}/region": {
       "get": {
         "tags": [
           "Platform Admin — Residency"
@@ -49466,6 +50305,29 @@
                               null
                             ]
                           },
+                          "verificationToken": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "domainVerified": {
+                            "type": "boolean"
+                          },
+                          "domainVerifiedAt": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "domainVerificationStatus": {
+                            "type": "string",
+                            "enum": [
+                              "pending",
+                              "verified",
+                              "failed"
+                            ]
+                          },
                           "createdAt": {
                             "type": "string"
                           },
@@ -49484,6 +50346,10 @@
                           "railwayDomainId",
                           "cnameTarget",
                           "certificateStatus",
+                          "verificationToken",
+                          "domainVerified",
+                          "domainVerifiedAt",
+                          "domainVerificationStatus",
                           "createdAt",
                           "verifiedAt"
                         ]
@@ -49680,6 +50546,29 @@
                         null
                       ]
                     },
+                    "verificationToken": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "domainVerified": {
+                      "type": "boolean"
+                    },
+                    "domainVerifiedAt": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "domainVerificationStatus": {
+                      "type": "string",
+                      "enum": [
+                        "pending",
+                        "verified",
+                        "failed"
+                      ]
+                    },
                     "createdAt": {
                       "type": "string"
                     },
@@ -49698,6 +50587,10 @@
                     "railwayDomainId",
                     "cnameTarget",
                     "certificateStatus",
+                    "verificationToken",
+                    "domainVerified",
+                    "domainVerifiedAt",
+                    "domainVerificationStatus",
                     "createdAt",
                     "verifiedAt"
                   ]
@@ -49856,7 +50749,7 @@
         "operationId": "postPlatformDomains"
       }
     },
-    "/api/v1/platform/domains/:id/verify": {
+    "/api/v1/platform/domains/{id}/verify": {
       "post": {
         "tags": [
           "Platform Admin — Custom Domains"
@@ -49912,6 +50805,29 @@
                         null
                       ]
                     },
+                    "verificationToken": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "domainVerified": {
+                      "type": "boolean"
+                    },
+                    "domainVerifiedAt": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "domainVerificationStatus": {
+                      "type": "string",
+                      "enum": [
+                        "pending",
+                        "verified",
+                        "failed"
+                      ]
+                    },
                     "createdAt": {
                       "type": "string"
                     },
@@ -49930,6 +50846,10 @@
                     "railwayDomainId",
                     "cnameTarget",
                     "certificateStatus",
+                    "verificationToken",
+                    "domainVerified",
+                    "domainVerifiedAt",
+                    "domainVerificationStatus",
                     "createdAt",
                     "verifiedAt"
                   ]
@@ -50038,7 +50958,7 @@
         "operationId": "postPlatformDomainsByIdVerify"
       }
     },
-    "/api/v1/platform/domains/:id": {
+    "/api/v1/platform/domains/{id}": {
       "delete": {
         "tags": [
           "Platform Admin — Custom Domains"

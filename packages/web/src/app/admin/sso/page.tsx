@@ -1,10 +1,9 @@
 "use client";
 
 import { useState } from "react";
-import { z } from "zod";
-import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import {
   AlertDialog,
@@ -19,36 +18,26 @@ import {
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
+import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
-import { ShieldCheck, AlertTriangle, Loader2, Shield } from "lucide-react";
-
-// ── Schemas ───────────────────────────────────────────────────────
-
-const SSOProviderSummarySchema = z.object({
-  id: z.string(),
-  orgId: z.string(),
-  type: z.enum(["saml", "oidc"]),
-  issuer: z.string(),
-  domain: z.string(),
-  enabled: z.boolean(),
-  ssoEnforced: z.boolean(),
-  createdAt: z.string(),
-  updatedAt: z.string(),
-});
-const ProvidersResponseSchema = z.object({
-  providers: z.array(SSOProviderSummarySchema),
-  total: z.number(),
-});
-
-const EnforcementResponseSchema = z.object({
-  enforced: z.boolean(),
-  orgId: z.string(),
-});
+import { ShieldCheck, AlertTriangle, Loader2, Shield, Plus } from "lucide-react";
+import {
+  ProvidersResponseSchema,
+  EnforcementResponseSchema,
+  type SSOProviderSummary,
+} from "@/ui/components/admin/sso/sso-types";
+import { ProviderCard } from "@/ui/components/admin/sso/provider-card";
+import { CreateProviderDialog } from "@/ui/components/admin/sso/create-provider-dialog";
+import { EditProviderDialog } from "@/ui/components/admin/sso/edit-provider-dialog";
+import { DeleteProviderDialog } from "@/ui/components/admin/sso/delete-provider-dialog";
 
 // ── Main Page ─────────────────────────────────────────────────────
 
 export default function SSOPage() {
   const [confirmEnforce, setConfirmEnforce] = useState(false);
+  const [createOpen, setCreateOpen] = useState(false);
+  const [editProvider, setEditProvider] = useState<SSOProviderSummary | null>(null);
+  const [deleteProvider, setDeleteProvider] = useState<SSOProviderSummary | null>(null);
 
   const { data: providersData, loading: providersLoading, error: providersError, refetch: refetchProviders } =
     useAdminFetch("/api/v1/admin/sso/providers", {
@@ -60,10 +49,18 @@ export default function SSOPage() {
       schema: EnforcementResponseSchema,
     });
 
-  const { mutate, saving, error: mutationError, clearError: clearMutationError } = useAdminMutation({
+  const { mutate: mutateEnforcement, saving: enforcementSaving, error: enforcementMutationError, clearError: clearEnforcementError } = useAdminMutation({
     path: "/api/v1/admin/sso/enforcement",
     method: "PUT",
     invalidates: [refetchProviders, refetchEnforcement],
+  });
+
+  const { mutate: mutateProvider, isMutating, error: toggleError, clearError: clearToggleError } = useAdminMutation({
+    method: "PATCH",
+  });
+
+  const { mutate: verifyDomainMutation, isMutating: isVerifying, error: verifyError, clearError: clearVerifyError } = useAdminMutation({
+    method: "POST",
   });
 
   const loading = providersLoading || enforcementLoading;
@@ -81,25 +78,61 @@ export default function SSOPage() {
   }
 
   async function doSetEnforcement(value: boolean) {
-    const result = await mutate({ body: { enforced: value } });
+    const result = await mutateEnforcement({ body: { enforced: value } });
     if (result.ok) {
       setConfirmEnforce(false);
     }
   }
 
+  async function handleToggleEnabled(provider: SSOProviderSummary, enabled: boolean) {
+    await mutateProvider({
+      path: `/api/v1/admin/sso/providers/${provider.id}`,
+      body: { enabled },
+      itemId: `toggle-${provider.id}`,
+    });
+  }
+
+  async function handleVerifyDomain(provider: SSOProviderSummary) {
+    await verifyDomainMutation({
+      path: `/api/v1/admin/sso/providers/${provider.id}/verify`,
+      itemId: `verify-${provider.id}`,
+    });
+  }
+
+  // Check if deleting this provider would be the last enabled one
+  function isLastEnabledWithEnforcement(provider: SSOProviderSummary): boolean {
+    if (!enforced || !provider.enabled) return false;
+    const enabledCount = providers.filter((p) => p.enabled).length;
+    return enabledCount === 1;
+  }
+
   return (
     <div className="p-6">
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold tracking-tight">SSO</h1>
-        <p className="text-sm text-muted-foreground">
-          Manage single sign-on providers and enforcement
-        </p>
+      <div className="mb-6 flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold tracking-tight">SSO</h1>
+          <p className="text-sm text-muted-foreground">
+            Manage single sign-on providers and enforcement
+          </p>
+        </div>
+        {providers.length > 0 && (
+          <Button size="sm" onClick={() => setCreateOpen(true)}>
+            <Plus className="size-4" />
+            Add Provider
+          </Button>
+        )}
       </div>
 
       <ErrorBoundary>
         <div>
-          {mutationError && (
-            <ErrorBanner message={mutationError} onRetry={clearMutationError} />
+          {enforcementMutationError && (
+            <ErrorBanner message={enforcementMutationError} onRetry={clearEnforcementError} />
+          )}
+          {toggleError && (
+            <ErrorBanner message={toggleError} onRetry={clearToggleError} />
+          )}
+          {verifyError && (
+            <ErrorBanner message={verifyError} onRetry={clearVerifyError} />
           )}
           <AdminContentWrapper
             loading={loading}
@@ -108,8 +141,10 @@ export default function SSOPage() {
             onRetry={() => { refetchProviders(); refetchEnforcement(); }}
             loadingMessage="Loading SSO configuration..."
             emptyIcon={ShieldCheck}
-            emptyTitle="No SSO configured"
-            isEmpty={false}
+            emptyTitle="No SSO providers configured"
+            emptyDescription="Add your first SAML or OIDC provider to enable single sign-on for your workspace."
+            emptyAction={{ label: "Add SSO Provider", onClick: () => setCreateOpen(true) }}
+            isEmpty={providers.length === 0}
           >
             <div className="space-y-6">
               {/* Enforcement Card */}
@@ -134,12 +169,14 @@ export default function SSOPage() {
                     <Switch
                       checked={enforced}
                       onCheckedChange={handleToggleEnforcement}
-                      disabled={saving || (!enforced && !hasActiveProvider)}
+                      disabled={enforcementSaving || (!enforced && !hasActiveProvider)}
                     />
                     <span className="text-sm text-muted-foreground">
-                      {enforced ? "SSO enforcement is active" : "SSO enforcement is inactive"}
+                      {enforced
+                        ? `SSO enforcement is active — ${providers.filter((p) => p.enabled).length} provider${providers.filter((p) => p.enabled).length !== 1 ? "s" : ""} active`
+                        : "SSO enforcement is inactive"}
                     </span>
-                    {saving && <Loader2 className="size-3 animate-spin text-muted-foreground" />}
+                    {enforcementSaving && <Loader2 className="size-3 animate-spin text-muted-foreground" />}
                   </div>
 
                   {!hasActiveProvider && !enforced && (
@@ -147,7 +184,7 @@ export default function SSOPage() {
                       <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-400" />
                       <p className="text-sm text-amber-700 dark:text-amber-300">
                         You need at least one active (enabled) SSO provider before you can enforce SSO.
-                        Create a SAML or OIDC provider below.
+                        Add and verify a provider below.
                       </p>
                     </div>
                   )}
@@ -157,55 +194,34 @@ export default function SSOPage() {
               {/* Providers Card */}
               <Card className="shadow-none">
                 <CardHeader className="pb-2">
-                  <CardTitle className="flex items-center gap-2 text-base">
-                    <Shield className="size-4" />
-                    SSO Providers
-                    <Badge variant="outline" className="text-[10px] text-muted-foreground">
-                      {providers.length}
-                    </Badge>
-                  </CardTitle>
+                  <div className="flex items-center justify-between">
+                    <CardTitle className="flex items-center gap-2 text-base">
+                      <Shield className="size-4" />
+                      SSO Providers
+                      <Badge variant="outline" className="text-[10px] text-muted-foreground">
+                        {providers.length}
+                      </Badge>
+                    </CardTitle>
+                  </div>
                   <CardDescription>
-                    Identity providers configured for this workspace. Manage providers via the API.
+                    Identity providers configured for this workspace.
                   </CardDescription>
                 </CardHeader>
                 <CardContent>
-                  {providers.length === 0 ? (
-                    <div className="flex flex-col items-center justify-center py-8 text-center">
-                      <Shield className="mb-3 size-10 text-muted-foreground/50" />
-                      <p className="text-sm text-muted-foreground">
-                        No SSO providers configured.
-                      </p>
-                      <p className="text-xs text-muted-foreground mt-1">
-                        Use the Admin API to create SAML or OIDC providers.
-                      </p>
-                    </div>
-                  ) : (
-                    <div className="space-y-3">
-                      {providers.map((provider) => (
-                        <div
-                          key={provider.id}
-                          className="flex items-center justify-between rounded-md border px-4 py-3"
-                        >
-                          <div className="space-y-1">
-                            <div className="flex items-center gap-2">
-                              <span className="text-sm font-medium">{provider.domain}</span>
-                              <Badge variant="secondary" className="text-[10px] uppercase">
-                                {provider.type}
-                              </Badge>
-                              {provider.enabled ? (
-                                <Badge variant="default" className="text-[10px]">Enabled</Badge>
-                              ) : (
-                                <Badge variant="outline" className="text-[10px] text-muted-foreground">Disabled</Badge>
-                              )}
-                            </div>
-                            <p className="text-xs text-muted-foreground truncate max-w-md">
-                              {provider.issuer}
-                            </p>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
+                  <div className="space-y-3">
+                    {providers.map((provider) => (
+                      <ProviderCard
+                        key={provider.id}
+                        provider={provider}
+                        onEdit={setEditProvider}
+                        onDelete={setDeleteProvider}
+                        onToggleEnabled={handleToggleEnabled}
+                        onVerifyDomain={handleVerifyDomain}
+                        isToggling={isMutating(`toggle-${provider.id}`)}
+                        isVerifying={isVerifying(`verify-${provider.id}`)}
+                      />
+                    ))}
+                  </div>
                 </CardContent>
               </Card>
             </div>
@@ -224,19 +240,44 @@ export default function SSOPage() {
               authentication as a break-glass escape.
             </AlertDialogDescription>
           </AlertDialogHeader>
+          {enforcementMutationError && (
+            <ErrorBanner message={enforcementMutationError} onRetry={clearEnforcementError} />
+          )}
           <AlertDialogFooter>
-            <AlertDialogCancel disabled={saving}>Cancel</AlertDialogCancel>
+            <AlertDialogCancel disabled={enforcementSaving}>Cancel</AlertDialogCancel>
             <AlertDialogAction
               onClick={() => doSetEnforcement(true)}
-              disabled={saving}
+              disabled={enforcementSaving}
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
-              {saving && <Loader2 className="mr-1 size-3 animate-spin" />}
+              {enforcementSaving && <Loader2 className="mr-1 size-3 animate-spin" />}
               Enable Enforcement
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {createOpen && (
+        <CreateProviderDialog
+          open={createOpen}
+          onOpenChange={setCreateOpen}
+        />
+      )}
+      {editProvider && (
+        <EditProviderDialog
+          open={true}
+          onOpenChange={(open) => { if (!open) setEditProvider(null); }}
+          provider={editProvider}
+        />
+      )}
+      {deleteProvider && (
+        <DeleteProviderDialog
+          open={true}
+          onOpenChange={(open) => { if (!open) setDeleteProvider(null); }}
+          provider={deleteProvider}
+          isLastEnabledWithEnforcement={isLastEnabledWithEnforcement(deleteProvider)}
+        />
+      )}
     </div>
   );
 }

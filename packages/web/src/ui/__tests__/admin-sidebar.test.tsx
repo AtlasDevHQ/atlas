@@ -49,7 +49,7 @@ mock.module("@/components/ui/sidebar", () => {
     SidebarMenuBadge: ({ children }: { children: React.ReactNode }) => React.createElement("span", null, children),
     SidebarMenuSub: ({ children }: { children: React.ReactNode }) => React.createElement("ul", null, children),
     SidebarMenuSubItem: ({ children }: { children: React.ReactNode }) => React.createElement("li", null, children),
-    SidebarMenuSubButton: ({ children, asChild, ...rest }: { children: React.ReactNode; asChild?: boolean; isActive?: boolean }) => React.createElement("button", rest, children),
+    SidebarMenuSubButton: ({ children, asChild: _, ...rest }: { children: React.ReactNode; asChild?: boolean; isActive?: boolean }) => React.createElement("button", rest, children),
     SidebarRail: () => React.createElement("div"),
     useSidebar: () => ({ open: true, setOpen: () => {}, toggleSidebar: () => {}, isMobile: false, state: "expanded" }),
   };
@@ -58,7 +58,7 @@ mock.module("@/components/ui/sidebar", () => {
 // Mock shadcn collapsible
 mock.module("@/components/ui/collapsible", () => ({
   Collapsible: ({ children }: { children: React.ReactNode }) => React.createElement("div", null, children),
-  CollapsibleTrigger: ({ children, asChild }: { children: React.ReactNode; asChild?: boolean }) => React.createElement("div", null, children),
+  CollapsibleTrigger: ({ children }: { children: React.ReactNode; asChild?: boolean }) => React.createElement("div", null, children),
   CollapsibleContent: ({ children }: { children: React.ReactNode }) => React.createElement("div", null, children),
 }));
 

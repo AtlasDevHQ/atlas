@@ -60,6 +60,13 @@ const SettingsResponseSchema = z.object({
 // ── Source badge ───────────────────────────────────────────────────
 
 function SourceBadge({ source }: { source: "env" | "override" | "workspace-override" | "default" }) {
+  if (source === "workspace-override") {
+    return (
+      <Badge variant="default" className="bg-violet-600 text-[10px]">
+        workspace override
+      </Badge>
+    );
+  }
   if (source === "override") {
     return (
       <Badge variant="default" className="text-[10px]">
@@ -265,7 +272,7 @@ function SettingRow({
             Edit
           </Button>
         )}
-        {setting.source === "override" && manageable && (
+        {(setting.source === "override" || setting.source === "workspace-override") && manageable && (
           <Button
             variant="ghost"
             size="sm"
@@ -368,7 +375,7 @@ function BrandColorCard({
           </p>
         )}
 
-        {setting?.source === "override" && (
+        {(setting?.source === "override" || setting?.source === "workspace-override") && (
           <p className="text-xs text-muted-foreground">
             Default: <code className="rounded bg-muted px-1">{DEFAULT_BRAND_COLOR}</code>
           </p>
@@ -390,7 +397,7 @@ function BrandColorCard({
               {saving && <Loader2 className="mr-1 size-3 animate-spin" />}
               Save
             </Button>
-            {setting?.source === "override" && (
+            {(setting?.source === "override" || setting?.source === "workspace-override") && (
               <Button variant="outline" size="sm" onClick={handleReset} disabled={saving}>
                 <RotateCcw className="mr-1 size-3" />
                 Reset to default

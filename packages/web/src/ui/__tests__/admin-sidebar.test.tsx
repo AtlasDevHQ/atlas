@@ -24,6 +24,11 @@ mock.module("@/ui/hooks/use-branding", () => ({
   useBranding: () => ({ branding: null, loading: false }),
 }));
 
+// Mock useDeployMode — default to self-hosted
+mock.module("@/ui/hooks/use-deploy-mode", () => ({
+  useDeployMode: () => ({ deployMode: "self-hosted", loading: false }),
+}));
+
 // Mock shadcn sidebar — complex component with deep dependency chain (radix-ui, hooks, etc.)
 mock.module("@/components/ui/sidebar", () => {
 
@@ -42,10 +47,25 @@ mock.module("@/components/ui/sidebar", () => {
     SidebarMenuItem: ({ children }: { children: React.ReactNode }) => React.createElement("li", null, children),
     SidebarMenuButton: ({ children }: { children: React.ReactNode }) => React.createElement("button", null, children),
     SidebarMenuBadge: ({ children }: { children: React.ReactNode }) => React.createElement("span", null, children),
+    SidebarMenuSub: ({ children }: { children: React.ReactNode }) => React.createElement("ul", null, children),
+    SidebarMenuSubItem: ({ children }: { children: React.ReactNode }) => React.createElement("li", null, children),
+    SidebarMenuSubButton: ({ children, asChild, ...rest }: { children: React.ReactNode; asChild?: boolean; isActive?: boolean }) => React.createElement("button", rest, children),
     SidebarRail: () => React.createElement("div"),
     useSidebar: () => ({ open: true, setOpen: () => {}, toggleSidebar: () => {}, isMobile: false, state: "expanded" }),
   };
 });
+
+// Mock shadcn collapsible
+mock.module("@/components/ui/collapsible", () => ({
+  Collapsible: ({ children }: { children: React.ReactNode }) => React.createElement("div", null, children),
+  CollapsibleTrigger: ({ children, asChild }: { children: React.ReactNode; asChild?: boolean }) => React.createElement("div", null, children),
+  CollapsibleContent: ({ children }: { children: React.ReactNode }) => React.createElement("div", null, children),
+}));
+
+// Mock org-switcher
+mock.module("@/ui/components/org-switcher", () => ({
+  OrgSwitcher: () => React.createElement("div", { "data-testid": "org-switcher" }),
+}));
 
 // Mock shadcn separator
 mock.module("@/components/ui/separator", () => {

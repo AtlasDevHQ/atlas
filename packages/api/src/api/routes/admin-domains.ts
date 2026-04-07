@@ -21,6 +21,7 @@ import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 import {
   CustomDomainSchema,
+  DomainCheckResponseSchema,
   customDomainError,
   loadDomains,
 } from "./shared-domains";
@@ -130,6 +131,49 @@ const verifyDomainRoute = createRoute({
     404: { description: "No custom domain configured or enterprise features not available", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
     503: { description: "Internal database or Railway not configured", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const verifyDnsTxtRoute = createRoute({
+  method: "post",
+  path: "/verify-dns",
+  tags: ["Admin — Custom Domain"],
+  summary: "Verify domain ownership via DNS TXT",
+  description: "Checks DNS TXT records for the workspace's custom domain verification token. Proves domain ownership independently from Railway CNAME verification. On successful verification, also auto-verifies any pending SSO provider for the same domain in the same workspace.",
+  responses: {
+    200: {
+      description: "DNS TXT verification result",
+      content: { "application/json": { schema: CustomDomainSchema } },
+    },
+    400: { description: "No active organization", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "No custom domain configured or enterprise features not available", content: { "application/json": { schema: ErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+    503: { description: "Internal database or Railway not configured", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const domainCheckRoute = createRoute({
+  method: "get",
+  path: "/domain-check",
+  tags: ["Admin — Custom Domain"],
+  summary: "Check domain availability",
+  description: "Checks whether a domain is available for custom domain registration (not already claimed by another workspace).",
+  request: {
+    query: z.object({ domain: z.string() }),
+  },
+  responses: {
+    200: {
+      description: "Domain availability result",
+      content: { "application/json": { schema: DomainCheckResponseSchema } },
+    },
+    400: { description: "Missing or invalid domain parameter", content: { "application/json": { schema: ErrorSchema } } },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Enterprise features not available", content: { "application/json": { schema: ErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+    503: { description: "Internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
 
@@ -287,6 +331,56 @@ adminDomains.openapi(verifyDomainRoute, async (c) => {
     const domain = yield* mod.verifyDomain(domains[0].id);
     return c.json(domain, 200);
   }), { label: "verify workspace domain", domainErrors: [customDomainError] });
+});
+
+// POST /verify-dns — verify domain ownership via DNS TXT
+adminDomains.openapi(verifyDnsTxtRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { orgId } = yield* AuthContext;
+    const { requestId } = yield* RequestContext;
+
+    if (!orgId) {
+      return c.json({ error: "bad_request", message: "No active organization.", requestId }, 400);
+    }
+
+    const mod = yield* Effect.promise(() => loadDomains());
+    if (!mod) {
+      return c.json({ error: "not_available", message: "Custom domains require enterprise features to be enabled.", requestId }, 404);
+    }
+
+    const domains = yield* mod.listDomains(orgId);
+    if (domains.length === 0) {
+      return c.json({ error: "not_found", message: "No custom domain configured for this workspace.", requestId }, 404);
+    }
+
+    const domain = yield* mod.verifyDomainDnsTxt(domains[0].id);
+    return c.json(domain, 200);
+  }), { label: "verify domain DNS TXT", domainErrors: [customDomainError] });
+});
+
+// GET /domain-check — check domain availability
+adminDomains.openapi(domainCheckRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { orgId } = yield* AuthContext;
+    const { requestId } = yield* RequestContext;
+
+    if (!orgId) {
+      return c.json({ error: "bad_request", message: "No active organization.", requestId }, 400);
+    }
+
+    const mod = yield* Effect.promise(() => loadDomains());
+    if (!mod) {
+      return c.json({ error: "not_available", message: "Custom domains require enterprise features to be enabled.", requestId }, 404);
+    }
+
+    const { domain } = c.req.valid("query");
+    if (!domain) {
+      return c.json({ error: "bad_request", message: "Missing required query parameter: domain.", requestId }, 400);
+    }
+
+    const result = yield* mod.checkDomainAvailability(domain, orgId);
+    return c.json(result, 200);
+  }), { label: "check domain availability", domainErrors: [customDomainError] });
 });
 
 // DELETE / — remove workspace custom domain

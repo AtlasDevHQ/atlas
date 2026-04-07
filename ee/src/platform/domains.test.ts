@@ -24,6 +24,13 @@ mock.module("../lib/db-guard", () => ({
 mock.module("@atlas/api/lib/db/internal", () => ee.internalDBMock);
 mock.module("@atlas/api/lib/logger", () => ee.loggerMock);
 
+// Mock domain-verification module
+let mockDnsResult: { ok: boolean; reason?: string; message?: string; records: string[] } = { ok: true, records: [] };
+mock.module("../lib/domain-verification", () => ({
+  generateVerificationToken: () => "atlas-verify=test-uuid-1234",
+  verifyDnsTxt: () => Effect.succeed(mockDnsResult),
+}));
+
 // Mock Railway GraphQL API via global fetch
 const mockFetchResponses: Array<{ ok: boolean; status: number; json: unknown }> = [];
 let fetchCallCount = 0;
@@ -52,6 +59,9 @@ globalThis.fetch = async (input: string | URL | Request, init?: RequestInit) => 
 const {
   registerDomain,
   verifyDomain,
+  verifyDomainDnsTxt,
+  checkDomainAvailability,
+  hasVerifiedCustomDomain,
   listDomains,
   listAllDomains,
   deleteDomain,
@@ -71,6 +81,7 @@ function resetMocks() {
   mockFetchResponses.length = 0;
   fetchCallCount = 0;
   capturedFetches.length = 0;
+  mockDnsResult = { ok: true, records: ["atlas-verify=test-uuid-1234"] };
   _resetHostCache();
 
   // Set Railway env vars
@@ -98,6 +109,10 @@ function makeDomainRow(overrides: Partial<Record<string, unknown>> = {}) {
     railway_domain_id: "rw-abc",
     cname_target: "abc.up.railway.app",
     certificate_status: "PENDING",
+    verification_token: "atlas-verify=test-uuid-1234",
+    domain_verified: false,
+    domain_verified_at: null,
+    domain_verification_status: "pending",
     created_at: MOCK_NOW,
     verified_at: null,
     ...overrides,
@@ -145,7 +160,14 @@ describe("domains", () => {
       expect(result.railwayDomainId).toBe("rw-abc");
       expect(result.cnameTarget).toBe("abc.up.railway.app");
       expect(result.status).toBe("pending");
+      expect(result.verificationToken).toBe("atlas-verify=test-uuid-1234");
+      expect(result.domainVerified).toBe(false);
+      expect(result.domainVerificationStatus).toBe("pending");
       expect(capturedFetches).toHaveLength(2);
+
+      // Verify INSERT includes verification_token
+      const insertQuery = ee.capturedQueries.find((q) => q.sql.includes("INSERT"));
+      expect(insertQuery?.params).toContain("atlas-verify=test-uuid-1234");
     });
 
     it("rejects invalid domain format", async () => {
@@ -483,6 +505,150 @@ describe("domains", () => {
       const result2 = await run(resolveWorkspaceByHost("unknown.example.com"));
       expect(result2).toBeNull();
       expect(ee.capturedQueries).toHaveLength(1); // Only one DB query — negative cache worked
+    });
+  });
+
+  describe("verifyDomainDnsTxt", () => {
+    it("verifies domain via DNS TXT record", async () => {
+      // 1. SELECT domain
+      ee.queueMockRows([makeDomainRow()]);
+      // 2. UPDATE domain_verified = true
+      ee.queueMockRows([]);
+      // 3. Cross-domain: UPDATE sso_providers (auto-verify)
+      ee.queueMockRows([]);
+      // 4. SELECT updated domain
+      ee.queueMockRows([makeDomainRow({ domain_verified: true, domain_verified_at: MOCK_NOW, domain_verification_status: "verified" })]);
+
+      const result = await run(verifyDomainDnsTxt("dom-1"));
+      expect(result.domainVerified).toBe(true);
+      expect(result.domainVerificationStatus).toBe("verified");
+    });
+
+    it("returns existing record when already verified", async () => {
+      ee.queueMockRows([makeDomainRow({ domain_verified: true, domain_verified_at: MOCK_NOW, domain_verification_status: "verified" })]);
+
+      const result = await run(verifyDomainDnsTxt("dom-1"));
+      expect(result.domainVerified).toBe(true);
+      // Should not have made any further queries
+      expect(ee.capturedQueries).toHaveLength(1);
+    });
+
+    it("sets failed status when DNS TXT record not found", async () => {
+      mockDnsResult = { ok: false, reason: "no_match", message: "No matching TXT record found.", records: [] };
+      // 1. SELECT domain
+      ee.queueMockRows([makeDomainRow()]);
+      // 2. UPDATE failed status (best-effort persist)
+      ee.queueMockRows([]);
+
+      const result = await run(verifyDomainDnsTxt("dom-1"));
+      expect(result.domainVerificationStatus).toBe("failed");
+      expect(result.domainVerified).toBe(false);
+    });
+
+    it("throws for nonexistent domain", async () => {
+      ee.queueMockRows([]); // no results
+      await expect(run(verifyDomainDnsTxt("dom-999"))).rejects.toThrow("not found");
+    });
+
+    it("throws when domain has no verification token", async () => {
+      ee.queueMockRows([makeDomainRow({ verification_token: null })]);
+      await expect(run(verifyDomainDnsTxt("dom-1"))).rejects.toThrow("no verification token");
+    });
+
+    it("issues cross-domain SSO UPDATE on successful verification", async () => {
+      // 1. SELECT domain
+      ee.queueMockRows([makeDomainRow()]);
+      // 2. UPDATE domain_verified = true
+      ee.queueMockRows([]);
+      // 3. Cross-domain: UPDATE sso_providers
+      ee.queueMockRows([]);
+      // 4. SELECT updated domain
+      ee.queueMockRows([makeDomainRow({ domain_verified: true, domain_verified_at: MOCK_NOW, domain_verification_status: "verified" })]);
+
+      await run(verifyDomainDnsTxt("dom-1"));
+
+      // Verify the SSO UPDATE was issued with correct params
+      const ssoUpdate = ee.capturedQueries.find((q) => q.sql.includes("UPDATE sso_providers"));
+      expect(ssoUpdate).toBeDefined();
+      expect(ssoUpdate!.params?.[0]).toBe("org-1"); // workspace_id
+      expect(ssoUpdate!.params?.[1]).toBe("data.acme.com"); // domain (lowercased)
+    });
+
+    it("succeeds even when cross-domain SSO update fails", async () => {
+      // 1. SELECT domain
+      ee.queueMockRows([makeDomainRow()]);
+      // 2. UPDATE domain_verified = true
+      ee.queueMockRows([]);
+      // 3. Cross-domain SSO update — will fail (no rows queued, mock returns [])
+      ee.queueMockRows([]);
+      // 4. SELECT updated domain
+      ee.queueMockRows([makeDomainRow({ domain_verified: true, domain_verified_at: MOCK_NOW, domain_verification_status: "verified" })]);
+
+      // Should succeed even though SSO auto-verify is a no-op
+      const result = await run(verifyDomainDnsTxt("dom-1"));
+      expect(result.domainVerified).toBe(true);
+    });
+
+    it("throws when domain is deleted during verification", async () => {
+      // 1. SELECT domain
+      ee.queueMockRows([makeDomainRow()]);
+      // 2. UPDATE domain_verified = true
+      ee.queueMockRows([]);
+      // 3. Cross-domain SSO update
+      ee.queueMockRows([]);
+      // 4. SELECT updated domain — empty (deleted)
+      ee.queueMockRows([]);
+
+      await expect(run(verifyDomainDnsTxt("dom-1"))).rejects.toThrow("deleted during verification");
+    });
+  });
+
+  describe("checkDomainAvailability", () => {
+    it("returns available for unclaimed domain", async () => {
+      ee.queueMockRows([]); // no existing
+      const result = await run(checkDomainAvailability("new.example.com", "org-1"));
+      expect(result.available).toBe(true);
+    });
+
+    it("returns unavailable for domain claimed by same workspace", async () => {
+      ee.queueMockRows([{ id: "dom-1", workspace_id: "org-1" }]);
+      const result = await run(checkDomainAvailability("data.acme.com", "org-1"));
+      expect(result.available).toBe(false);
+      expect(result.reason).toContain("your workspace");
+    });
+
+    it("returns unavailable for domain claimed by another workspace", async () => {
+      ee.queueMockRows([{ id: "dom-1", workspace_id: "org-2" }]);
+      const result = await run(checkDomainAvailability("data.acme.com", "org-1"));
+      expect(result.available).toBe(false);
+      expect(result.reason).toContain("another workspace");
+    });
+
+    it("returns unavailable for invalid domain format", async () => {
+      const result = await run(checkDomainAvailability("not-a-domain", "org-1"));
+      expect(result.available).toBe(false);
+      expect(result.reason).toContain("Invalid domain");
+    });
+  });
+
+  describe("hasVerifiedCustomDomain", () => {
+    it("returns true when verified custom domain exists", async () => {
+      ee.queueMockRows([{ id: "dom-1" }]);
+      const result = await run(hasVerifiedCustomDomain("org-1", "data.acme.com"));
+      expect(result).toBe(true);
+    });
+
+    it("returns false when no verified custom domain exists", async () => {
+      ee.queueMockRows([]);
+      const result = await run(hasVerifiedCustomDomain("org-1", "data.acme.com"));
+      expect(result).toBe(false);
+    });
+
+    it("returns false when internal DB is not configured", async () => {
+      ee.setHasInternalDB(false);
+      const result = await run(hasVerifiedCustomDomain("org-1", "data.acme.com"));
+      expect(result).toBe(false);
+      expect(ee.capturedQueries).toHaveLength(0); // No DB query
     });
   });
 

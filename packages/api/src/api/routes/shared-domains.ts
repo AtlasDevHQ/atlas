@@ -23,6 +23,10 @@ export const CustomDomainSchema = z.object({
   railwayDomainId: z.string().nullable(),
   cnameTarget: z.string().nullable(),
   certificateStatus: z.enum(["PENDING", "ISSUED", "FAILED"]).nullable(),
+  verificationToken: z.string().nullable(),
+  domainVerified: z.boolean(),
+  domainVerifiedAt: z.string().nullable(),
+  domainVerificationStatus: z.enum(["pending", "verified", "failed"]),
   createdAt: z.string(),
   verifiedAt: z.string().nullable(),
 });
@@ -30,6 +34,11 @@ export const CustomDomainSchema = z.object({
 // ---------------------------------------------------------------------------
 // Error mapping
 // ---------------------------------------------------------------------------
+
+export const DomainCheckResponseSchema = z.object({
+  available: z.boolean(),
+  reason: z.string().optional(),
+});
 
 export const customDomainError = domainError(DomainError, {
   no_internal_db: 503,

@@ -400,16 +400,38 @@ export const createSSOProvider = (
     }
     const verificationToken = generateVerificationToken();
 
+    // Cross-domain: check if the workspace has a verified custom domain for this domain
+    const autoVerified = yield* Effect.gen(function* () {
+      const mod = yield* Effect.tryPromise({
+        try: () => import("../platform/domains"),
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      });
+      const verified = yield* mod.hasVerifiedCustomDomain(orgId, domain);
+      if (verified) log.info({ orgId, domain }, "SSO provider auto-verified via existing verified custom domain");
+      return verified;
+    }).pipe(
+      Effect.catchAll((err) => {
+        // Distinguish import failures (expected in AGPL builds) from runtime errors
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg.includes("Cannot find module") || msg.includes("MODULE_NOT_FOUND")) {
+          log.debug({ err: msg }, "Cross-domain verification unavailable — domains module not present");
+        } else {
+          log.warn({ orgId, domain, err: msg }, "Cross-domain auto-verification failed — SSO domain will require manual verification");
+        }
+        return Effect.succeed(false);
+      }),
+    );
+
     const rows = yield* Effect.promise(() => internalQuery<SSOProviderRow>(
-      `INSERT INTO sso_providers (org_id, type, issuer, domain, enabled, config, verification_token, domain_verified, domain_verification_status)
-       VALUES ($1, $2, $3, $4, false, $5, $6, false, 'pending')
+      `INSERT INTO sso_providers (org_id, type, issuer, domain, enabled, config, verification_token, domain_verified, domain_verified_at, domain_verification_status)
+       VALUES ($1, $2, $3, $4, false, $5, $6, $7, CASE WHEN $7 = true THEN now() ELSE NULL END, $8)
        RETURNING id, org_id, type, issuer, domain, enabled, sso_enforced, config, created_at, updated_at, verification_token, domain_verified, domain_verified_at, domain_verification_status`,
-      [orgId, input.type, input.issuer, domain, JSON.stringify(storedConfig), verificationToken],
+      [orgId, input.type, input.issuer, domain, JSON.stringify(storedConfig), verificationToken, autoVerified, autoVerified ? "verified" : "pending"],
     ));
 
     if (!rows[0]) return yield* Effect.die(new Error("Failed to create SSO provider — no row returned."));
 
-    log.info({ orgId, type: input.type, domain, issuer: input.issuer }, "SSO provider created (pending domain verification)");
+    log.info({ orgId, type: input.type, domain, issuer: input.issuer, autoVerified }, "SSO provider created");
     return rowToProvider(rows[0]);
   });
 

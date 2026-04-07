@@ -6,6 +6,8 @@
  * auto-provisioning maps email domains to organizations.
  */
 
+import type { DomainVerificationStatus } from "./domain";
+
 // ── Provider types ──────────────────────────────────────────────────
 
 export const SSO_PROVIDER_TYPES = ["saml", "oidc"] as const;
@@ -56,7 +58,7 @@ interface SSOProviderBase {
   /** Timestamp when domain was verified, or null if not yet verified. */
   domainVerifiedAt: string | null;
   /** Domain verification status — constrained by database CHECK constraint. */
-  domainVerificationStatus: "pending" | "verified" | "failed";
+  domainVerificationStatus: DomainVerificationStatus;
 }
 
 export interface SSOSamlProvider extends SSOProviderBase {

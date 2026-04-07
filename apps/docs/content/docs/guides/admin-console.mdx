@@ -249,56 +249,72 @@ Plugin enable/disable state and config overrides are stored in the internal data
 
 ## Settings
 
+Settings are split into two pages by scope:
+
+### Workspace Settings
+
 **Route:** `/admin/settings`
 
-Manage application configuration from the UI. Settings follow a three-tier resolution: **DB override > env var > default**.
+Per-workspace configuration — query limits, agent behavior, sandbox backend, and session policies. Workspace admins can edit these settings for their own workspace. Changes apply only to the current workspace.
 
-- **Grouped sections** — Query Limits, Rate Limiting, Security, Sessions, Sandbox, Platform, Agent, Appearance, Secrets
+- **Sections** — Query Limits, Rate Limiting, Sessions, Sandbox, Agent
 - **Source badges** — Each setting shows where its current value comes from:
-  - **override** (blue) — value saved in the internal database
-  - **workspace-override** (purple) — value saved per-workspace
+  - **workspace override** (purple) — value saved per-workspace in the internal database
+  - **override** (blue) — value saved as a platform-level override
   - **env** (green) — value from an environment variable
   - **default** (gray) — built-in default
 - **Edit** — Override any non-secret setting. Changes are saved to the internal database
-- **Live vs Restart** — Each setting shows whether changes take effect immediately (**Live**) or require a server restart (**Requires restart**). Query Limits, Rate Limiting, Sessions, Sandbox, and Appearance are live; Security, Platform, and Agent settings require a restart
-- **Reset** — Remove a DB override to revert to the environment variable or default value
+- **Live** — All workspace settings take effect immediately without a server restart
+- **Reset** — Remove an override to revert to the platform default, environment variable, or built-in default
+
+| Section | Setting | Description |
+|---------|---------|-------------|
+| Query Limits | `ATLAS_ROW_LIMIT` | Maximum rows returned per query (default: 1000) |
+| Query Limits | `ATLAS_QUERY_TIMEOUT` | Query timeout in ms (default: 30000) |
+| Rate Limiting | `ATLAS_RATE_LIMIT_RPM` | Max requests per minute per user (0 = disabled) |
+| Sessions | `ATLAS_SESSION_IDLE_TIMEOUT` | Seconds of inactivity before session invalidation (0 = disabled) |
+| Sessions | `ATLAS_SESSION_ABSOLUTE_TIMEOUT` | Maximum session lifetime in seconds (0 = disabled) |
+| Sandbox | `ATLAS_SANDBOX_BACKEND` | Sandbox backend for explore/Python tool isolation |
+| Sandbox | `ATLAS_SANDBOX_URL` | Custom sidecar service URL (sidecar backend only) |
+| Agent | `ATLAS_AGENT_MAX_STEPS` | Maximum tool-call steps per agent run (1–100, default: 25) |
+
+See [Workspace Settings](/guides/workspace-settings) for the full guide.
+
+### Platform Settings
+
+**Route:** `/admin/platform/settings`
+
+<Callout type="info">
+Requires the `platform_admin` role. In self-hosted mode, all admins see this page.
+</Callout>
+
+Global settings that affect all workspaces — security policies, LLM provider, deploy mode, branding, and secrets. Only platform admins can access this page. Changes here apply across every workspace.
+
+- **Sections** — Security, Platform, Agent, Appearance, Secrets
+- **Brand color** — A dedicated card lets you preview and set the primary brand color in oklch format, with a live color swatch. Changes apply immediately
+- **Live vs Restart** — Settings marked **Live** take effect immediately. Settings marked **Requires restart** need a server restart (self-hosted only — on **app.useatlas.dev**, most settings are hot-reloadable)
 - **Secrets** — Sensitive settings (API keys, database URLs) are masked and read-only. Manage these via environment variables
-- **SaaS mode** — Workspace admins only see settings marked as workspace-visible. Platform admins see all settings. The response includes a `deployMode` field and a `manageable` flag indicating whether settings can be persisted
+
+| Section | Setting | Description |
+|---------|---------|-------------|
+| Security | `ATLAS_RLS_ENABLED` | Enable row-level security |
+| Security | `ATLAS_RLS_COLUMN` | Column name for RLS filtering |
+| Security | `ATLAS_RLS_CLAIM` | JWT claim path for RLS value |
+| Security | `ATLAS_TABLE_WHITELIST` | Only allow semantic layer tables (default: true) |
+| Security | `ATLAS_CORS_ORIGIN` | Allowed CORS origin (default: *) |
+| Platform | `ATLAS_DEPLOY_MODE` | Deployment mode: auto, saas, or self-hosted |
+| Agent | `ATLAS_PROVIDER` | LLM provider selection |
+| Agent | `ATLAS_MODEL` | Model ID override |
+| Agent | `ATLAS_LOG_LEVEL` | Application log level |
+| Appearance | `ATLAS_BRAND_COLOR` | Primary brand color in oklch format |
+| Secrets | `ANTHROPIC_API_KEY` | Anthropic provider API key (masked, read-only) |
+| Secrets | `OPENAI_API_KEY` | OpenAI provider API key (masked, read-only) |
+| Secrets | `DATABASE_URL` | Internal database connection string (masked, read-only) |
+| Secrets | `ATLAS_DATASOURCE_URL` | Analytics datasource connection string (masked, read-only) |
 
 <Callout type="info">
-On **app.useatlas.dev** (SaaS mode), most settings are hot-reloadable — changes are picked up on the next request without a server restart. A few infrastructure settings (LLM provider, model) may still require redeployment to fully take effect. The restart requirement mainly applies to self-hosted deployments.
+Settings overrides require an internal database (`DATABASE_URL`). Without it, both settings pages are read-only — all values come from environment variables.
 </Callout>
-
-<Callout type="info">
-Settings overrides require an internal database (`DATABASE_URL`). Without it, the settings page is read-only — all values come from environment variables.
-</Callout>
-
-**Available settings:**
-
-| Section | Setting | Description | Scope |
-|---------|---------|-------------|-------|
-| Query Limits | `ATLAS_ROW_LIMIT` | Maximum rows returned per query (default: 1000) | workspace |
-| Query Limits | `ATLAS_QUERY_TIMEOUT` | Query timeout in ms (default: 30000) | workspace |
-| Rate Limiting | `ATLAS_RATE_LIMIT_RPM` | Max requests per minute per user (0 = disabled) | workspace |
-| Security | `ATLAS_RLS_ENABLED` | Enable row-level security | platform |
-| Security | `ATLAS_RLS_COLUMN` | Column name for RLS filtering | platform |
-| Security | `ATLAS_RLS_CLAIM` | JWT claim path for RLS value | platform |
-| Security | `ATLAS_TABLE_WHITELIST` | Only allow semantic layer tables (default: true) | platform |
-| Security | `ATLAS_CORS_ORIGIN` | Allowed CORS origin (default: *) | platform |
-| Sessions | `ATLAS_SESSION_IDLE_TIMEOUT` | Seconds of inactivity before session invalidation (0 = disabled) | workspace |
-| Sessions | `ATLAS_SESSION_ABSOLUTE_TIMEOUT` | Maximum session lifetime in seconds (0 = disabled) | workspace |
-| Sandbox | `ATLAS_SANDBOX_BACKEND` | Sandbox backend for explore/Python tool isolation | workspace |
-| Sandbox | `ATLAS_SANDBOX_URL` | Custom sidecar service URL (sidecar backend only) | workspace |
-| Platform | `ATLAS_DEPLOY_MODE` | Deployment mode: auto, saas, or self-hosted | platform |
-| Agent | `ATLAS_AGENT_MAX_STEPS` | Maximum tool-call steps per agent run (1–100, default: 25) | workspace |
-| Agent | `ATLAS_PROVIDER` | LLM provider selection | platform |
-| Agent | `ATLAS_MODEL` | Model ID override | platform |
-| Agent | `ATLAS_LOG_LEVEL` | Application log level | platform |
-| Appearance | `ATLAS_BRAND_COLOR` | Primary brand color in oklch format | platform |
-| Secrets | `ANTHROPIC_API_KEY` | Anthropic provider API key (masked, read-only) | platform |
-| Secrets | `OPENAI_API_KEY` | OpenAI provider API key (masked, read-only) | platform |
-| Secrets | `DATABASE_URL` | Internal database connection string (masked, read-only) | platform |
-| Secrets | `ATLAS_DATASOURCE_URL` | Analytics datasource connection string (masked, read-only) | platform |
 
 ---
 

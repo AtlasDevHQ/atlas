@@ -5,7 +5,11 @@ description: Configure workspace-level preferences for query behavior, agent lim
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-Workspace settings let admins configure how Atlas behaves for everyone in the workspace — query limits, agent behavior, display preferences, and safety controls. Changes take effect immediately for all workspace members.
+Workspace settings let admins configure how Atlas behaves for everyone in the workspace — query limits, agent behavior, sandbox backend, and session policies. Changes take effect immediately for all workspace members.
+
+<Callout type="info" title="Platform settings">
+  Global settings that affect all workspaces (security, LLM provider, deploy mode, branding) are managed separately on the [Platform Settings](/guides/admin-console#platform-settings) page at `/admin/platform/settings`. Only platform admins can access platform settings.
+</Callout>
 
 <Callout type="info" title="Hosted platform">
   On [app.useatlas.dev](https://app.useatlas.dev), workspace settings are managed entirely from the admin console. Self-hosted operators configure these via environment variables or `atlas.config.ts` — see [Configuration](/reference/config) and [Environment Variables](/reference/environment-variables).
@@ -19,7 +23,7 @@ Workspace settings let admins configure how Atlas behaves for everyone in the wo
 
 ## Accessing Settings
 
-Navigate to **Admin > Settings** (`/admin/settings`). The settings page is split into sections, each controlling a different aspect of workspace behavior.
+Navigate to **Admin > Settings** (`/admin/settings`). The page shows only workspace-scoped settings, grouped into sections that control different aspects of workspace behavior.
 
 ---
 

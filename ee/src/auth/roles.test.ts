@@ -531,7 +531,7 @@ describe("seedBuiltinRoles", () => {
 
 describe("RoleError", () => {
   it("has correct name and code", () => {
-    const err = new RoleError("test message", "not_found");
+    const err = new RoleError({ message: "test message", code: "not_found" });
     expect(err.name).toBe("RoleError");
     expect(err.code).toBe("not_found");
     expect(err.message).toBe("test message");

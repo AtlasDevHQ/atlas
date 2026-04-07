@@ -358,7 +358,7 @@ describe("applyMasking", () => {
 
 describe("ComplianceError", () => {
   it("has correct name and code", () => {
-    const err = new ComplianceError("test message", "validation");
+    const err = new ComplianceError({ message: "test message", code: "validation" });
     expect(err.name).toBe("ComplianceError");
     expect(err.code).toBe("validation");
     expect(err.message).toBe("test message");
@@ -368,7 +368,7 @@ describe("ComplianceError", () => {
 
   it("supports all error codes", () => {
     for (const code of ["validation", "not_found", "conflict"] as const) {
-      const err = new ComplianceError(`test ${code}`, code);
+      const err = new ComplianceError({ message: `test ${code}`, code });
       expect(err.code).toBe(code);
     }
   });

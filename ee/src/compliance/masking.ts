@@ -16,8 +16,7 @@
  * All exported functions return Effect — callers use `yield*` in Effect.gen.
  */
 
-import { Effect } from "effect";
-import { EEError } from "../lib/errors";
+import { Data, Effect } from "effect";
 import { isEnterpriseEnabled } from "../index";
 import { requireEnterpriseEffect, EnterpriseError } from "../index";
 import {
@@ -42,9 +41,10 @@ const log = createLogger("ee:compliance");
 
 export type ComplianceErrorCode = "validation" | "not_found" | "conflict";
 
-export class ComplianceError extends EEError<ComplianceErrorCode> {
-  readonly name = "ComplianceError";
-}
+export class ComplianceError extends Data.TaggedError("ComplianceError")<{
+  message: string;
+  code: ComplianceErrorCode;
+}> {}
 
 // ── Table management ────────────────────────────────────────────
 
@@ -169,7 +169,7 @@ export const savePIIClassification = (
   Effect.gen(function* () {
     yield* requireEnterpriseEffect("pii-detection");
     if (!(yield* ready())) {
-      return yield* Effect.fail(new ComplianceError("Internal database not available", "validation"));
+      return yield* Effect.fail(new ComplianceError({ message: "Internal database not available", code: "validation" }));
     }
 
     validateCategory(category);
@@ -194,7 +194,7 @@ export const updatePIIClassification = (
   Effect.gen(function* () {
     yield* requireEnterpriseEffect("pii-detection");
     if (!(yield* ready())) {
-      return yield* Effect.fail(new ComplianceError("Internal database not available", "validation"));
+      return yield* Effect.fail(new ComplianceError({ message: "Internal database not available", code: "validation" }));
     }
 
     if (updates.category) validateCategory(updates.category);
@@ -226,7 +226,7 @@ export const updatePIIClassification = (
     ));
 
     if (rows.length === 0) {
-      return yield* Effect.fail(new ComplianceError("PII classification not found", "not_found"));
+      return yield* Effect.fail(new ComplianceError({ message: "PII classification not found", code: "not_found" }));
     }
     return rowToClassification(rows[0]);
   });
@@ -238,7 +238,7 @@ export const deletePIIClassification = (
   Effect.gen(function* () {
     yield* requireEnterpriseEffect("pii-detection");
     if (!(yield* ready())) {
-      return yield* Effect.fail(new ComplianceError("Internal database not available", "validation"));
+      return yield* Effect.fail(new ComplianceError({ message: "Internal database not available", code: "validation" }));
     }
 
     const rows = yield* Effect.promise(() => internalQuery<{ id: string }>(
@@ -246,7 +246,7 @@ export const deletePIIClassification = (
       [orgId, id],
     ));
     if (rows.length === 0) {
-      return yield* Effect.fail(new ComplianceError("PII classification not found", "not_found"));
+      return yield* Effect.fail(new ComplianceError({ message: "PII classification not found", code: "not_found" }));
     }
   });
 
@@ -471,19 +471,13 @@ import { EMAIL_RE, SSN_RE, CREDIT_CARD_RE, PHONE_RE } from "./patterns";
 
 function validateCategory(category: string): asserts category is PIICategory {
   if (!(PII_CATEGORIES as readonly string[]).includes(category)) {
-    throw new ComplianceError(
-      `Invalid PII category "${category}". Must be one of: ${PII_CATEGORIES.join(", ")}`,
-      "validation",
-    );
+    throw new ComplianceError({ message: `Invalid PII category "${category}". Must be one of: ${PII_CATEGORIES.join(", ")}`, code: "validation" });
   }
 }
 
 function validateStrategy(strategy: string): asserts strategy is MaskingStrategy {
   if (!(MASKING_STRATEGIES as readonly string[]).includes(strategy)) {
-    throw new ComplianceError(
-      `Invalid masking strategy "${strategy}". Must be one of: ${MASKING_STRATEGIES.join(", ")}`,
-      "validation",
-    );
+    throw new ComplianceError({ message: `Invalid masking strategy "${strategy}". Must be one of: ${MASKING_STRATEGIES.join(", ")}`, code: "validation" });
   }
 }
 

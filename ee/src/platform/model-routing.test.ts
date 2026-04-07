@@ -253,7 +253,7 @@ describe("deleteWorkspaceModelConfig", () => {
 
 describe("ModelConfigError", () => {
   it("has the correct error code", () => {
-    const err = new ModelConfigError("test error", "validation");
+    const err = new ModelConfigError({ message: "test error", code: "validation" });
     expect(err.code).toBe("validation");
     expect(err.message).toBe("test error");
     expect(err.name).toBe("ModelConfigError");

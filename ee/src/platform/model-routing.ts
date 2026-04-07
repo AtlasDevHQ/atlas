@@ -9,8 +9,7 @@
  * All exported functions return Effect — callers use `yield*` in Effect.gen.
  */
 
-import { Effect } from "effect";
-import { EEError } from "../lib/errors";
+import { Data, Effect } from "effect";
 import { requireEnterpriseEffect, EnterpriseError } from "../index";
 import { requireInternalDBEffect } from "../lib/db-guard";
 import {
@@ -36,9 +35,10 @@ const log = createLogger("ee:model-routing");
 
 export type ModelConfigErrorCode = "validation" | "not_found" | "test_failed";
 
-export class ModelConfigError extends EEError<ModelConfigErrorCode> {
-  readonly name = "ModelConfigError";
-}
+export class ModelConfigError extends Data.TaggedError("ModelConfigError")<{
+  message: string;
+  code: ModelConfigErrorCode;
+}> {}
 
 // ── Internal row shape ──────────────────────────────────────────────
 
@@ -100,27 +100,21 @@ function rowToConfig(row: ModelConfigRow): WorkspaceModelConfig {
 
 function validateConfig(config: SetWorkspaceModelConfigRequest): Effect.Effect<void, ModelConfigError> {
   if (!isValidProvider(config.provider)) {
-    return Effect.fail(new ModelConfigError(
-      `Invalid provider "${config.provider}". Supported: ${MODEL_CONFIG_PROVIDERS.join(", ")}`,
-      "validation",
-    ));
+    return Effect.fail(new ModelConfigError({ message: `Invalid provider "${config.provider}". Supported: ${MODEL_CONFIG_PROVIDERS.join(", ")}`, code: "validation" }));
   }
 
   if (!config.model || config.model.trim().length === 0) {
-    return Effect.fail(new ModelConfigError("Model name is required.", "validation"));
+    return Effect.fail(new ModelConfigError({ message: "Model name is required.", code: "validation" }));
   }
 
   // apiKey is optional on update (preserves existing key when omitted)
   if (config.apiKey !== undefined && config.apiKey.trim().length === 0) {
-    return Effect.fail(new ModelConfigError("API key cannot be empty. Omit the field to keep the existing key.", "validation"));
+    return Effect.fail(new ModelConfigError({ message: "API key cannot be empty. Omit the field to keep the existing key.", code: "validation" }));
   }
 
   // Azure OpenAI and custom providers require a base URL
   if ((config.provider === "azure-openai" || config.provider === "custom") && !config.baseUrl) {
-    return Effect.fail(new ModelConfigError(
-      `Base URL is required for the "${config.provider}" provider.`,
-      "validation",
-    ));
+    return Effect.fail(new ModelConfigError({ message: `Base URL is required for the "${config.provider}" provider.`, code: "validation" }));
   }
 
   // Validate base URL format when provided
@@ -129,16 +123,10 @@ function validateConfig(config: SetWorkspaceModelConfigRequest): Effect.Effect<v
     try {
       parsed = new URL(config.baseUrl);
     } catch {
-      return Effect.fail(new ModelConfigError(
-        `Invalid base URL: "${config.baseUrl}". Must be a valid URL (e.g. https://api.example.com/v1).`,
-        "validation",
-      ));
+      return Effect.fail(new ModelConfigError({ message: `Invalid base URL: "${config.baseUrl}". Must be a valid URL (e.g. https://api.example.com/v1).`, code: "validation" }));
     }
     if (!["http:", "https:"].includes(parsed.protocol)) {
-      return Effect.fail(new ModelConfigError(
-        `Base URL must use http:// or https:// (got "${parsed.protocol}").`,
-        "validation",
-      ));
+      return Effect.fail(new ModelConfigError({ message: `Base URL must use http:// or https:// (got "${parsed.protocol}").`, code: "validation" }));
     }
   }
 

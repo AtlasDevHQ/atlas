@@ -11,8 +11,7 @@
  * All exported functions return Effect — callers use `yield*` in Effect.gen.
  */
 
-import { Effect } from "effect";
-import { EEError } from "../lib/errors";
+import { Data, Effect } from "effect";
 import { requireEnterpriseEffect, EnterpriseError } from "../index";
 import { requireInternalDBEffect } from "../lib/db-guard";
 import { internalQuery } from "@atlas/api/lib/db/internal";
@@ -31,13 +30,13 @@ const log = createLogger("ee:compliance-reports");
 
 function validateFilters(filters: ComplianceReportFilters): Effect.Effect<void, ReportError> {
   if (isNaN(Date.parse(filters.startDate))) {
-    return Effect.fail(new ReportError(`Invalid startDate: ${filters.startDate}`, "validation"));
+    return Effect.fail(new ReportError({ message: `Invalid startDate: ${filters.startDate}`, code: "validation" }));
   }
   if (isNaN(Date.parse(filters.endDate))) {
-    return Effect.fail(new ReportError(`Invalid endDate: ${filters.endDate}`, "validation"));
+    return Effect.fail(new ReportError({ message: `Invalid endDate: ${filters.endDate}`, code: "validation" }));
   }
   if (new Date(filters.startDate) > new Date(filters.endDate)) {
-    return Effect.fail(new ReportError("startDate must be before endDate", "validation"));
+    return Effect.fail(new ReportError({ message: "startDate must be before endDate", code: "validation" }));
   }
   return Effect.void;
 }
@@ -46,9 +45,10 @@ function validateFilters(filters: ComplianceReportFilters): Effect.Effect<void, 
 
 export type ReportErrorCode = "validation" | "not_available";
 
-export class ReportError extends EEError<ReportErrorCode> {
-  readonly name = "ReportError";
-}
+export class ReportError extends Data.TaggedError("ReportError")<{
+  message: string;
+  code: ReportErrorCode;
+}> {}
 
 // ── Data Access Report ──────────────────────────────────────────
 
@@ -69,7 +69,7 @@ export const generateDataAccessReport = (
 ): Effect.Effect<DataAccessReport, ReportError | EnterpriseError | Error> =>
   Effect.gen(function* () {
     yield* requireEnterpriseEffect("compliance");
-    yield* requireInternalDBEffect("compliance reports", () => new ReportError("Internal database not available", "not_available"));
+    yield* requireInternalDBEffect("compliance reports", () => new ReportError({ message: "Internal database not available", code: "not_available" }));
     yield* validateFilters(filters);
 
     const conditions: string[] = ["a.org_id = $1", "a.success = true"];
@@ -229,7 +229,7 @@ export const generateUserActivityReport = (
 ): Effect.Effect<UserActivityReport, ReportError | EnterpriseError | Error> =>
   Effect.gen(function* () {
     yield* requireEnterpriseEffect("compliance");
-    yield* requireInternalDBEffect("compliance reports", () => new ReportError("Internal database not available", "not_available"));
+    yield* requireInternalDBEffect("compliance reports", () => new ReportError({ message: "Internal database not available", code: "not_available" }));
     yield* validateFilters(filters);
 
     const conditions: string[] = ["a.org_id = $1", "a.success = true"];

@@ -235,7 +235,7 @@ describe("residency", () => {
 
   describe("ResidencyError", () => {
     it("has correct name and code", () => {
-      const err = new ResidencyError("test", "invalid_region");
+      const err = new ResidencyError({ message: "test", code: "invalid_region" });
       expect(err.name).toBe("ResidencyError");
       expect(err.code).toBe("invalid_region");
       expect(err.message).toBe("test");

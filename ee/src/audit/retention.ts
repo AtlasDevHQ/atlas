@@ -15,8 +15,7 @@
  *      deleted_at is older than the hard-delete delay
  */
 
-import { Effect } from "effect";
-import { EEError } from "../lib/errors";
+import { Data, Effect } from "effect";
 import { requireEnterpriseEffect, EnterpriseError } from "../index";
 import { requireInternalDBEffect } from "../lib/db-guard";
 import {
@@ -113,9 +112,10 @@ const MAX_EXPORT_ROWS = 50_000;
 
 export type RetentionErrorCode = "validation" | "not_found";
 
-export class RetentionError extends EEError<RetentionErrorCode> {
-  readonly name = "RetentionError";
-}
+export class RetentionError extends Data.TaggedError("RetentionError")<{
+  message: string;
+  code: RetentionErrorCode;
+}> {}
 
 // ── Row mapping ──────────────────────────────────────────────────────
 
@@ -169,19 +169,13 @@ export const setRetentionPolicy = (
     // Validate retention days
     if (input.retentionDays !== null) {
       if (!Number.isInteger(input.retentionDays) || input.retentionDays < MIN_RETENTION_DAYS) {
-        return yield* Effect.fail(new RetentionError(
-          `Retention period must be at least ${MIN_RETENTION_DAYS} days or null (unlimited). Got: ${input.retentionDays}.`,
-          "validation",
-        ));
+        return yield* Effect.fail(new RetentionError({ message: `Retention period must be at least ${MIN_RETENTION_DAYS} days or null (unlimited). Got: ${input.retentionDays}.`, code: "validation" }));
       }
     }
 
     const hardDeleteDelay = input.hardDeleteDelayDays ?? DEFAULT_HARD_DELETE_DELAY_DAYS;
     if (!Number.isInteger(hardDeleteDelay) || hardDeleteDelay < 0) {
-      return yield* Effect.fail(new RetentionError(
-        `Hard delete delay must be a non-negative integer. Got: ${hardDeleteDelay}.`,
-        "validation",
-      ));
+      return yield* Effect.fail(new RetentionError({ message: `Hard delete delay must be a non-negative integer. Got: ${hardDeleteDelay}.`, code: "validation" }));
     }
 
     const rows = yield* Effect.promise(() => internalQuery<RetentionConfigRow>(
@@ -359,10 +353,7 @@ export const exportAuditLog = (options: ExportOptions): Effect.Effect<{
 
     if (options.startDate) {
       if (isNaN(Date.parse(options.startDate))) {
-        return yield* Effect.fail(new RetentionError(
-          `Invalid start_date format: "${options.startDate}". Use ISO 8601 (e.g. 2026-01-01).`,
-          "validation",
-        ));
+        return yield* Effect.fail(new RetentionError({ message: `Invalid start_date format: "${options.startDate}". Use ISO 8601 (e.g. 2026-01-01).`, code: "validation" }));
       }
       conditions.push(`a.timestamp >= $${paramIdx++}`);
       params.push(options.startDate);
@@ -370,10 +361,7 @@ export const exportAuditLog = (options: ExportOptions): Effect.Effect<{
 
     if (options.endDate) {
       if (isNaN(Date.parse(options.endDate))) {
-        return yield* Effect.fail(new RetentionError(
-          `Invalid end_date format: "${options.endDate}". Use ISO 8601 (e.g. 2026-03-01).`,
-          "validation",
-        ));
+        return yield* Effect.fail(new RetentionError({ message: `Invalid end_date format: "${options.endDate}". Use ISO 8601 (e.g. 2026-03-01).`, code: "validation" }));
       }
       conditions.push(`a.timestamp <= $${paramIdx++}`);
       params.push(options.endDate);

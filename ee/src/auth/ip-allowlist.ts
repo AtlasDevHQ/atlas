@@ -9,9 +9,8 @@
  * Validation helpers do not require a license.
  */
 
-import { Effect } from "effect";
+import { Data, Effect } from "effect";
 import ipaddr from "ipaddr.js";
-import { EEError } from "../lib/errors";
 import { requireEnterpriseEffect, EnterpriseError } from "../index";
 import { requireInternalDBEffect } from "../lib/db-guard";
 import {
@@ -60,9 +59,10 @@ interface IPAllowlistRow {
 
 export type IPAllowlistErrorCode = "validation" | "conflict" | "not_found";
 
-export class IPAllowlistError extends EEError<IPAllowlistErrorCode> {
-  readonly name = "IPAllowlistError";
-}
+export class IPAllowlistError extends Data.TaggedError("IPAllowlistError")<{
+  message: string;
+  code: IPAllowlistErrorCode;
+}> {}
 
 // ── In-memory cache ──────────────────────────────────────────────────
 
@@ -244,10 +244,7 @@ export const addIPAllowlistEntry = (
     // Validate CIDR format
     const parsed = parseCIDR(cidr);
     if (!parsed) {
-      return yield* Effect.fail(new IPAllowlistError(
-        `Invalid CIDR notation: "${cidr}". Expected format: 10.0.0.0/8 (IPv4), 2001:db8::/32 (IPv6), or plain IP.`,
-        "validation",
-      ));
+      return yield* Effect.fail(new IPAllowlistError({ message: `Invalid CIDR notation: "${cidr}". Expected format: 10.0.0.0/8 (IPv4), 2001:db8::/32 (IPv6), or plain IP.`, code: "validation" }));
     }
 
     // Use normalized form for both storage and duplicate check
@@ -259,10 +256,7 @@ export const addIPAllowlistEntry = (
       [orgId, normalizedCidr],
     ));
     if (existing.length > 0) {
-      return yield* Effect.fail(new IPAllowlistError(
-        `CIDR range "${normalizedCidr}" is already in the allowlist.`,
-        "conflict",
-      ));
+      return yield* Effect.fail(new IPAllowlistError({ message: `CIDR range "${normalizedCidr}" is already in the allowlist.`, code: "conflict" }));
     }
 
     const rows = yield* Effect.promise(() => internalQuery<IPAllowlistRow>(

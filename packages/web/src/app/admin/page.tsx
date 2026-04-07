@@ -12,6 +12,7 @@ import {
   Shield,
 } from "lucide-react";
 import { useAtlasConfig } from "@/ui/context";
+import { useDeployMode } from "@/ui/hooks/use-deploy-mode";
 import { StatCard } from "@/ui/components/admin/stat-card";
 import { HealthBadge } from "@/ui/components/admin/health-badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -148,6 +149,7 @@ function ComponentCard({
 
 export default function AdminOverview() {
   const { apiUrl, isCrossOrigin } = useAtlasConfig();
+  const { deployMode } = useDeployMode();
   const [data, setData] = useState<OverviewData>(FALLBACK);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -352,12 +354,14 @@ export default function AdminOverview() {
               icon={<Database className="size-4" />}
               description="Tables & views in semantic layer"
             />
-            <StatCard
-              title="Plugins"
-              value={data.plugins}
-              icon={<Puzzle className="size-4" />}
-              description="Installed plugins"
-            />
+            {deployMode !== "saas" && (
+              <StatCard
+                title="Plugins"
+                value={data.plugins}
+                icon={<Puzzle className="size-4" />}
+                description="Installed plugins"
+              />
+            )}
           </>
         )}
       </div>

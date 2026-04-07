@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { useUserRole } from "@/ui/hooks/use-platform-admin-guard";
 import { useBranding } from "@/ui/hooks/use-branding";
+import { useDeployMode } from "@/ui/hooks/use-deploy-mode";
 import { useAtlasConfig } from "@/ui/context";
 import type { LucideIcon } from "lucide-react";
 import {
@@ -53,6 +54,8 @@ interface NavSubItem {
   exact?: boolean;
   /** When set, only users with this role see this item. */
   requiredRole?: "platform_admin";
+  /** When true, this item is hidden in SaaS deploy mode. */
+  selfHostedOnly?: boolean;
   /** When set, shows a numeric badge next to the label. */
   badge?: number;
 }
@@ -123,7 +126,7 @@ const navGroups: NavGroup[] = [
     title: "Configuration",
     icon: Settings,
     items: [
-      { href: "/admin/plugins", label: "Plugins" },
+      { href: "/admin/plugins", label: "Plugins", selfHostedOnly: true },
       { href: "/admin/integrations", label: "Integrations" },
       { href: "/admin/email-provider", label: "Email Provider", requiredRole: "platform_admin" },
       { href: "/admin/billing", label: "Billing" },
@@ -144,7 +147,7 @@ const navGroups: NavGroup[] = [
       { href: "/admin/platform/backups", label: "Backups" },
       { href: "/admin/platform/residency", label: "Data Residency" },
       { href: "/admin/platform/domains", label: "Custom Domains" },
-      { href: "/admin/platform/plugins", label: "Plugin Catalog" },
+      { href: "/admin/platform/plugins", label: "Plugin Catalog", selfHostedOnly: true },
     ],
   },
 ];
@@ -185,7 +188,9 @@ export function AdminSidebar() {
   const pathname = usePathname();
   const userRole = useUserRole();
   const { branding } = useBranding();
+  const { deployMode } = useDeployMode();
   const pendingCount = usePendingAmendmentCount();
+  const isSaas = deployMode === "saas";
 
   function isSubItemActive(item: NavSubItem) {
     if (item.exact) return pathname === item.href;
@@ -202,6 +207,7 @@ export function AdminSidebar() {
       ...group,
       items: group.items
         .filter((item) => !item.requiredRole || item.requiredRole === userRole)
+        .filter((item) => !item.selfHostedOnly || !isSaas)
         .map((item) =>
           item.href === "/admin/semantic/improve" && pendingCount > 0
             ? { ...item, badge: pendingCount }

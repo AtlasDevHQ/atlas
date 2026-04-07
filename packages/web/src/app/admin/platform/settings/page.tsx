@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { z } from "zod";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -24,11 +24,14 @@ import {
 import { Separator } from "@/components/ui/separator";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
+import { LoadingState } from "@/ui/components/admin/loading-state";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
+import { usePlatformAdminGuard } from "@/ui/hooks/use-platform-admin-guard";
 import { useDeployMode } from "@/ui/hooks/use-deploy-mode";
-import { Settings, Pencil, RotateCcw, Loader2, Info, Lock, RefreshCw } from "lucide-react";
+import { Settings, Pencil, RotateCcw, Loader2, Info, Lock, RefreshCw, Palette } from "lucide-react";
+import { DEFAULT_BRAND_COLOR, OKLCH_RE, applyBrandColor } from "@/ui/hooks/use-dark-mode";
 
 // ── Schemas ───────────────────────────────────────────────────────
 
@@ -218,16 +221,15 @@ function SettingRow({
   onEdit,
   onReset,
   resetting,
-  deployMode,
+  isSaas,
 }: {
   setting: SettingWithValue;
   manageable: boolean;
   onEdit: () => void;
   onReset: () => void;
   resetting: boolean;
-  deployMode: "saas" | "self-hosted";
+  isSaas: boolean;
 }) {
-  const isSaas = deployMode === "saas";
   const displayValue = setting.currentValue ?? (
     <span className="text-muted-foreground italic">not set</span>
   );
@@ -291,9 +293,136 @@ function SettingRow({
   );
 }
 
+// ── Brand Color Card ──────────────────────────────────────────────
+
+function BrandColorCard({
+  setting,
+  manageable,
+  onSaved,
+}: {
+  setting: SettingWithValue | undefined;
+  manageable: boolean;
+  onSaved: () => void;
+}) {
+  const currentValue = setting?.currentValue ?? DEFAULT_BRAND_COLOR;
+  const [value, setValue] = useState(currentValue);
+  const isValidOklch = OKLCH_RE.test(value.trim());
+
+  const { mutate, saving, error } = useAdminMutation({
+    path: `/api/v1/admin/settings/${encodeURIComponent("ATLAS_BRAND_COLOR")}`,
+    invalidates: onSaved,
+  });
+
+  const settingValue = setting?.currentValue;
+  const [prevSettingValue, setPrevSettingValue] = useState(settingValue);
+  if (settingValue !== prevSettingValue) {
+    setPrevSettingValue(settingValue);
+    setValue(settingValue ?? DEFAULT_BRAND_COLOR);
+  }
+
+  async function handleSave() {
+    const result = await mutate({
+      method: "PUT",
+      body: { value },
+    });
+    if (result.ok) {
+      applyBrandColor(value);
+    }
+  }
+
+  async function handleReset() {
+    const result = await mutate({ method: "DELETE" });
+    if (result.ok) {
+      setValue(DEFAULT_BRAND_COLOR);
+      applyBrandColor(DEFAULT_BRAND_COLOR);
+    }
+  }
+
+  return (
+    <Card className="shadow-none">
+      <CardHeader className="pb-2">
+        <CardTitle className="flex items-center gap-2 text-base">
+          <Palette className="size-4" />
+          Brand Color
+        </CardTitle>
+        <CardDescription>
+          Primary brand color used for theme tokens (primary, ring, sidebar). Changes apply immediately.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="flex items-center gap-4">
+          <div
+            className="size-10 rounded-md border"
+            style={{ backgroundColor: value }}
+          />
+          <div className="flex-1">
+            <Input
+              value={value}
+              onChange={(e) => {
+                setValue(e.target.value);
+                applyBrandColor(e.target.value);
+              }}
+              placeholder={DEFAULT_BRAND_COLOR}
+              disabled={!manageable}
+              className="font-mono text-sm"
+            />
+          </div>
+        </div>
+
+        {value && !isValidOklch && (
+          <p className="text-xs text-amber-600 dark:text-amber-400">
+            Value does not appear to be in oklch format. Expected: <code className="rounded bg-muted px-1">oklch(L C H)</code>
+          </p>
+        )}
+
+        {(setting?.source === "override" || setting?.source === "workspace-override") && (
+          <p className="text-xs text-muted-foreground">
+            Default: <code className="rounded bg-muted px-1">{DEFAULT_BRAND_COLOR}</code>
+          </p>
+        )}
+
+        {error && (
+          <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            {error}
+          </div>
+        )}
+
+        {manageable && (
+          <div className="flex gap-2">
+            <Button
+              size="sm"
+              onClick={handleSave}
+              disabled={saving || value === currentValue || !isValidOklch}
+            >
+              {saving && <Loader2 className="mr-1 size-3 animate-spin" />}
+              Save
+            </Button>
+            {(setting?.source === "override" || setting?.source === "workspace-override") && (
+              <Button variant="outline" size="sm" onClick={handleReset} disabled={saving}>
+                <RotateCcw className="mr-1 size-3" />
+                Reset to default
+              </Button>
+            )}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 // ── Main Page ─────────────────────────────────────────────────────
 
-export default function SettingsPage() {
+export default function PlatformSettingsPage() {
+  const { blocked } = usePlatformAdminGuard();
+  if (blocked) return <LoadingState message="Checking permissions..." />;
+  return (
+    <ErrorBoundary>
+      <PlatformSettingsContent />
+    </ErrorBoundary>
+  );
+}
+
+function PlatformSettingsContent() {
   const [editSetting, setEditSetting] = useState<SettingWithValue | null>(null);
   const { deployMode } = useDeployMode();
   const isSaas = deployMode === "saas";
@@ -312,13 +441,14 @@ export default function SettingsPage() {
   const settings = data?.settings ?? [];
   const manageable = data?.manageable ?? false;
 
-  // Only show workspace-scoped settings — platform settings live at /admin/platform/settings
-  const workspaceSections = new Map<string, SettingWithValue[]>();
+  // Only show platform-scoped settings
+  const brandColorSetting = settings.find((s) => s.key === "ATLAS_BRAND_COLOR");
+  const platformSections = new Map<string, SettingWithValue[]>();
   for (const s of settings) {
-    if (s.scope !== "workspace") continue;
-    const list = workspaceSections.get(s.section) ?? [];
+    if (s.scope !== "platform" || s.key === "ATLAS_BRAND_COLOR") continue;
+    const list = platformSections.get(s.section) ?? [];
     list.push(s);
-    workspaceSections.set(s.section, list);
+    platformSections.set(s.section, list);
   }
 
   async function handleReset(key: string) {
@@ -331,13 +461,12 @@ export default function SettingsPage() {
   return (
     <div className="p-6">
       <div className="mb-6">
-        <h1 className="text-2xl font-bold tracking-tight">Workspace Settings</h1>
+        <h1 className="text-2xl font-bold tracking-tight">Platform Settings</h1>
         <p className="text-sm text-muted-foreground">
-          Settings that apply to this workspace
+          Global settings managed by platform administrators. Changes affect all workspaces.
         </p>
       </div>
 
-      <ErrorBoundary>
       <div>
         {mutationError && (
           <ErrorBanner message={mutationError} onRetry={clearMutationError} />
@@ -346,12 +475,12 @@ export default function SettingsPage() {
         <AdminContentWrapper
           loading={loading}
           error={error}
-          feature="Settings"
+          feature="Platform Settings"
           onRetry={refetch}
           loadingMessage="Loading settings..."
           emptyIcon={Settings}
-          emptyTitle="No settings available"
-          isEmpty={workspaceSections.size === 0}
+          emptyTitle="No platform settings available"
+          isEmpty={platformSections.size === 0 && !brandColorSetting}
         >
           {!manageable && !isSaas && (
             <div className="mb-6 flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-4 py-3">
@@ -383,10 +512,20 @@ export default function SettingsPage() {
           )}
 
           <div className="space-y-4">
-            {Array.from(workspaceSections.entries()).map(([section, items]) => (
+            <BrandColorCard
+              setting={brandColorSetting}
+              manageable={manageable}
+              onSaved={refetch}
+            />
+            {Array.from(platformSections.entries()).map(([section, items]) => (
               <Card key={section} className="shadow-none">
                 <CardHeader className="pb-2">
                   <CardTitle className="text-base">{section}</CardTitle>
+                  {section === "Secrets" && (
+                    <CardDescription>
+                      Sensitive values are masked and read-only. Manage these via environment variables.
+                    </CardDescription>
+                  )}
                 </CardHeader>
                 <CardContent>
                   {items.map((setting, i) => (
@@ -398,7 +537,7 @@ export default function SettingsPage() {
                         onEdit={() => setEditSetting(setting)}
                         onReset={() => handleReset(setting.key)}
                         resetting={isMutating(setting.key)}
-                        deployMode={deployMode}
+                        isSaas={isSaas}
                       />
                     </div>
                   ))}
@@ -408,7 +547,6 @@ export default function SettingsPage() {
           </div>
         </AdminContentWrapper>
       </div>
-      </ErrorBoundary>
 
       {editSetting && (
         <EditDialog

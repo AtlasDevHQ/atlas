@@ -175,7 +175,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     scope: "workspace",
   },
 
-  // Sandbox
+  // Sandbox — managed via dedicated /admin/sandbox page in SaaS mode
   {
     key: "ATLAS_SANDBOX_BACKEND",
     section: "Sandbox",
@@ -186,6 +186,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     type: "string",
     envVar: "ATLAS_SANDBOX_BACKEND",
     scope: "workspace",
+    saasVisible: false,
   },
   {
     key: "ATLAS_SANDBOX_URL",
@@ -196,6 +197,7 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     type: "string",
     envVar: "ATLAS_SANDBOX_URL",
     scope: "workspace",
+    saasVisible: false,
   },
 
   // Platform

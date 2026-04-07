@@ -907,6 +907,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] Docs: fix stale AtlasUIProvider references in react.mdx (#1292, #1293)
 - [x] Publish @useatlas/types 0.0.8 + @useatlas/react 0.0.6 — auth types in types, AtlasProvider consolidation in react (#1302)
 - [x] Fix: cast user.role in dashboard pages — CI type-check regression from #1298 (#1300)
+- [x] Migrate MySQL connections to native `@effect/sql-mysql2` (#1290)
 
 ---
 
@@ -1052,8 +1053,48 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] SSO docs — domain verification flow, test connection, updated creation examples (#1344, PR #1347)
 
 ### Follow-ups
-- [ ] Custom domains could adopt DNS TXT verification for domain ownership (#1345)
-- [ ] Docker template data/.gitkeep missing (#1348)
+- [x] Custom domains could adopt DNS TXT verification for domain ownership (#1345, PR #1354)
+- [x] Docker template data/.gitkeep missing (#1348)
+
+---
+
+## SaaS Hardening & Compliance
+
+**Post-launch hardening.** GDPR compliance, settings architecture, error typing, billing fixes, package publishes.
+
+### Features
+- [x] GDPR workspace purge — hard delete all org data (#1359, PR #1360)
+- [x] Split Settings into workspace and platform pages (PR #1358)
+- [x] DNS TXT domain ownership verification for custom domains (PR #1354)
+
+### Refactors
+- [x] Migrate EE errors to Data.TaggedError (#1353, PR #1355)
+- [x] Extract shared DNS domain verification utility (#1341, PR #1346)
+- [x] Redact verification token from custom domain API responses (#1356, PR #1357)
+
+### Billing & Pricing
+- [x] Flat overage rate + Stripe plan fixes (PR #1362)
+- [x] Fix plan name consistency across www pages (PR #1361)
+
+### Packages
+- [x] Publish @useatlas/types 0.0.9 — domain verification exports
+- [x] Publish @useatlas/react 0.0.7 — consistent send button, no hardcoded colors
+
+### Docs
+- [x] Settings split + GDPR workspace purge docs (PR #1371)
+- [x] Billing per-seat pricing, SSO domain verification & test connection docs (PR #1347)
+
+---
+
+## Admin Action Audit
+
+**Persistent audit log for all admin mutations.** Track who changed what, when, and why across both platform and workspace admin operations. Parent: #1363.
+
+- [x] Tracer bullet — schema + logger + first mutation + platform list + UI (#1364, PR #1373)
+- [ ] Workspace admin read surface (#1365)
+- [ ] Filtering + CSV export (#1366)
+- [ ] Instrument all platform admin mutations (#1367)
+- [ ] Instrument all workspace admin mutations (#1368)
 
 ---
 

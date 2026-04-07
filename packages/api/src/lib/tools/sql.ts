@@ -38,6 +38,14 @@ import {
 
 const log = createLogger("sql");
 
+let whitelistWarned = false;
+function warnWhitelistDisabled() {
+  if (!whitelistWarned) {
+    log.warn("SQL table whitelist is disabled — all tables are queryable");
+    whitelistWarned = true;
+  }
+}
+
 const parser = new Parser();
 
 // ── Classification ──────────────────────────────────────────────────
@@ -281,7 +289,9 @@ export function validateSQL(sql: string, connectionId?: string): SQLValidationRe
 
   // 3. Table whitelist check — use getSettingAuto for SaaS hot-reload
   const whitelistSetting = getSettingAuto("ATLAS_TABLE_WHITELIST") ?? process.env.ATLAS_TABLE_WHITELIST;
-  if (whitelistSetting !== "false") {
+  if (whitelistSetting === "false") {
+    warnWhitelistDisabled();
+  } else {
     try {
       const tables = parser.tableList(trimmed, { database: parserDatabase(dbType, connectionId) });
       const orgId = getRequestContext()?.user?.activeOrganizationId;

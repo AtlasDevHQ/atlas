@@ -8,8 +8,7 @@
  * and domain-matching functions do not require a license.
  */
 
-import { Effect } from "effect";
-import { EEError } from "../lib/errors";
+import { Data, Effect } from "effect";
 import { generateVerificationToken, verifyDnsTxt } from "../lib/domain-verification";
 import { requireEnterpriseEffect, EnterpriseError } from "../index";
 import { requireInternalDBEffect } from "../lib/db-guard";
@@ -40,9 +39,10 @@ const log = createLogger("ee:sso");
 
 export type SSOErrorCode = "not_found" | "conflict" | "validation";
 
-export class SSOError extends EEError<SSOErrorCode> {
-  readonly name = "SSOError";
-}
+export class SSOError extends Data.TaggedError("SSOError")<{
+  message: string;
+  code: SSOErrorCode;
+}> {}
 
 // ── Internal row shape ──────────────────────────────────────────────
 
@@ -228,12 +228,12 @@ export const verifyDomain = (
     });
 
     if (rows.length === 0) {
-      return yield* Effect.fail(new SSOError("SSO provider not found.", "not_found"));
+      return yield* Effect.fail(new SSOError({ message: "SSO provider not found.", code: "not_found" }));
     }
 
     const provider = rows[0];
     if (!provider.verification_token) {
-      return yield* Effect.fail(new SSOError("No verification token configured for this provider.", "validation"));
+      return yield* Effect.fail(new SSOError({ message: "No verification token configured for this provider.", code: "validation" }));
     }
 
     if (provider.domain_verified) {
@@ -273,7 +273,7 @@ export const verifyDomain = (
       catch: (err) => err instanceof Error ? err : new Error(String(err)),
     }).pipe(Effect.catchAll((err) => {
       log.error({ providerId, domain: provider.domain, err: err.message }, "DNS verification succeeded but DB update failed");
-      return Effect.fail(new SSOError("Domain verified via DNS but failed to persist — please retry.", "validation"));
+      return Effect.fail(new SSOError({ message: "Domain verified via DNS but failed to persist — please retry.", code: "validation" }));
     }));
 
     log.info({ providerId, domain: provider.domain }, "SSO domain verified via DNS TXT record");
@@ -370,18 +370,18 @@ export const createSSOProvider = (
 
     // Validate type
     if (!isValidSSOProviderType(input.type)) {
-      return yield* Effect.fail(new SSOError(`Invalid SSO provider type: ${input.type}. Must be one of: ${SSO_PROVIDER_TYPES.join(", ")}`, "validation"));
+      return yield* Effect.fail(new SSOError({ message: `Invalid SSO provider type: ${input.type}. Must be one of: ${SSO_PROVIDER_TYPES.join(", ")}`, code: "validation" }));
     }
 
     // Validate domain
     const domain = normalizeDomain(input.domain);
     if (!isValidDomain(domain)) {
-      return yield* Effect.fail(new SSOError(`Invalid domain: ${input.domain}. Must be a valid domain name (e.g. "acme.com").`, "validation"));
+      return yield* Effect.fail(new SSOError({ message: `Invalid domain: ${input.domain}. Must be a valid domain name (e.g. "acme.com").`, code: "validation" }));
     }
 
     // Validate config
     const configError = validateProviderConfig(input.type, input.config);
-    if (configError) return yield* Effect.fail(new SSOError(configError, "validation"));
+    if (configError) return yield* Effect.fail(new SSOError({ message: configError, code: "validation" }));
 
     // Check domain uniqueness
     const existing = yield* Effect.promise(() => internalQuery<{ id: string; org_id: string }>(
@@ -389,7 +389,7 @@ export const createSSOProvider = (
       [domain],
     ));
     if (existing.length > 0) {
-      return yield* Effect.fail(new SSOError(`Domain "${domain}" is already registered by another SSO provider.`, "conflict"));
+      return yield* Effect.fail(new SSOError({ message: `Domain "${domain}" is already registered by another SSO provider.`, code: "conflict" }));
     }
 
     const storedConfig = prepareConfigForStorage(input.type, input.config as unknown as Record<string, unknown>);
@@ -449,7 +449,7 @@ export const updateSSOProvider = (
 
     // Fetch existing
     const existing = yield* getSSOProvider(orgId, providerId);
-    if (!existing) return yield* Effect.fail(new SSOError("SSO provider not found.", "not_found"));
+    if (!existing) return yield* Effect.fail(new SSOError({ message: "SSO provider not found.", code: "not_found" }));
 
     // Build update fields
     const sets: string[] = [];
@@ -465,7 +465,7 @@ export const updateSSOProvider = (
     if (input.domain !== undefined) {
       const domain = normalizeDomain(input.domain);
       if (!isValidDomain(domain)) {
-        return yield* Effect.fail(new SSOError(`Invalid domain: ${input.domain}. Must be a valid domain name.`, "validation"));
+        return yield* Effect.fail(new SSOError({ message: `Invalid domain: ${input.domain}. Must be a valid domain name.`, code: "validation" }));
       }
       // Check uniqueness (exclude current provider)
       const clash = yield* Effect.promise(() => internalQuery<{ id: string }>(
@@ -473,7 +473,7 @@ export const updateSSOProvider = (
         [domain, providerId],
       ));
       if (clash.length > 0) {
-        return yield* Effect.fail(new SSOError(`Domain "${domain}" is already registered by another SSO provider.`, "conflict"));
+        return yield* Effect.fail(new SSOError({ message: `Domain "${domain}" is already registered by another SSO provider.`, code: "conflict" }));
       }
       sets.push(`domain = $${paramIdx++}`);
       params.push(domain);
@@ -495,10 +495,7 @@ export const updateSSOProvider = (
     if (input.enabled !== undefined && !domainChanged) {
       // Block enabling when domain is not verified
       if (input.enabled && !existing.domainVerified) {
-        return yield* Effect.fail(new SSOError(
-          "Cannot enable SSO provider until domain is verified. Verify domain ownership first.",
-          "validation",
-        ));
+        return yield* Effect.fail(new SSOError({ message: "Cannot enable SSO provider until domain is verified. Verify domain ownership first.", code: "validation" }));
       }
       sets.push(`enabled = $${paramIdx++}`);
       params.push(input.enabled);
@@ -509,7 +506,7 @@ export const updateSSOProvider = (
       const merged = { ...(existing.config as unknown as Record<string, unknown>), ...input.config };
       // Re-validate full config
       const configError = validateProviderConfig(existing.type, merged);
-      if (configError) return yield* Effect.fail(new SSOError(configError, "validation"));
+      if (configError) return yield* Effect.fail(new SSOError({ message: configError, code: "validation" }));
 
       const storedConfig = prepareConfigForStorage(existing.type, merged);
       sets.push(`config = $${paramIdx++}`);
@@ -530,7 +527,7 @@ export const updateSSOProvider = (
       params,
     ));
 
-    if (!rows[0]) return yield* Effect.fail(new SSOError("SSO provider not found or update failed.", "not_found"));
+    if (!rows[0]) return yield* Effect.fail(new SSOError({ message: "SSO provider not found or update failed.", code: "not_found" }));
 
     log.info({ orgId, providerId }, "SSO provider updated");
     return rowToProvider(rows[0]);
@@ -799,24 +796,18 @@ export const testSSOProvider = (
 
     const provider = yield* getSSOProvider(orgId, providerId);
     if (!provider) {
-      return yield* Effect.fail(new SSOError("SSO provider not found.", "not_found"));
+      return yield* Effect.fail(new SSOError({ message: "SSO provider not found.", code: "not_found" }));
     }
 
     if (provider.type === "oidc") {
       return yield* Effect.tryPromise({
         try: () => testOidcProvider(provider),
-        catch: (err) => new SSOError(
-          `OIDC test failed unexpectedly: ${err instanceof Error ? err.message : String(err)}`,
-          "validation",
-        ),
+        catch: (err) => new SSOError({ message: `OIDC test failed unexpectedly: ${err instanceof Error ? err.message : String(err)}`, code: "validation" }),
       });
     }
     return yield* Effect.tryPromise({
       try: () => testSamlProvider(provider),
-      catch: (err) => new SSOError(
-        `SAML test failed unexpectedly: ${err instanceof Error ? err.message : String(err)}`,
-        "validation",
-      ),
+      catch: (err) => new SSOError({ message: `SAML test failed unexpectedly: ${err instanceof Error ? err.message : String(err)}`, code: "validation" }),
     });
   });
 
@@ -836,9 +827,10 @@ export function extractEmailDomain(email: string): string | null {
 
 export type SSOEnforcementErrorCode = "no_provider" | "not_enterprise";
 
-export class SSOEnforcementError extends EEError<SSOEnforcementErrorCode> {
-  readonly name = "SSOEnforcementError";
-}
+export class SSOEnforcementError extends Data.TaggedError("SSOEnforcementError")<{
+  message: string;
+  code: SSOEnforcementErrorCode;
+}> {}
 
 /**
  * Check whether SSO is enforced for the given organization.
@@ -936,10 +928,7 @@ export const setSSOEnforcement = (orgId: string, enforced: boolean): Effect.Effe
         [orgId],
       ));
       if (active.length === 0) {
-        return yield* Effect.fail(new SSOEnforcementError(
-          "Cannot enforce SSO without at least one active SSO provider. Create and enable a SAML or OIDC provider first.",
-          "no_provider",
-        ));
+        return yield* Effect.fail(new SSOEnforcementError({ message: "Cannot enforce SSO without at least one active SSO provider. Create and enable a SAML or OIDC provider first.", code: "no_provider" }));
       }
     }
 
@@ -950,10 +939,7 @@ export const setSSOEnforcement = (orgId: string, enforced: boolean): Effect.Effe
     ));
 
     if (enforced && updated.length === 0) {
-      return yield* Effect.fail(new SSOEnforcementError(
-        "No SSO providers were updated. Providers may have been deleted.",
-        "no_provider",
-      ));
+      return yield* Effect.fail(new SSOEnforcementError({ message: "No SSO providers were updated. Providers may have been deleted.", code: "no_provider" }));
     }
 
     log.info({ orgId, enforced }, "SSO enforcement %s", enforced ? "enabled" : "disabled");

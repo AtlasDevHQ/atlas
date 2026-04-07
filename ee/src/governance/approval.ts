@@ -17,8 +17,7 @@
  * a safe default (false, 0, or empty) while re-throwing unexpected errors.
  */
 
-import { Effect } from "effect";
-import { EEError } from "../lib/errors";
+import { Data, Effect } from "effect";
 import { requireEnterpriseEffect, EnterpriseError } from "../index";
 import { requireInternalDBEffect } from "../lib/db-guard";
 import {
@@ -42,9 +41,10 @@ const log = createLogger("ee:approval-workflows");
 
 export type ApprovalErrorCode = "validation" | "not_found" | "conflict" | "expired";
 
-export class ApprovalError extends EEError<ApprovalErrorCode> {
-  readonly name = "ApprovalError";
-}
+export class ApprovalError extends Data.TaggedError("ApprovalError")<{
+  message: string;
+  code: ApprovalErrorCode;
+}> {}
 
 // ── Internal row shapes ─────────────────────────────────────────────
 
@@ -156,24 +156,21 @@ function rowToRequest(row: ApprovalQueueRow): ApprovalRequest | null {
 
 function validateRuleInput(input: CreateApprovalRuleRequest): Effect.Effect<void, ApprovalError> {
   if (!input.name || input.name.trim().length === 0) {
-    return Effect.fail(new ApprovalError("Rule name is required.", "validation"));
+    return Effect.fail(new ApprovalError({ message: "Rule name is required.", code: "validation" }));
   }
   if (input.name.trim().length > 200) {
-    return Effect.fail(new ApprovalError("Rule name must be 200 characters or fewer.", "validation"));
+    return Effect.fail(new ApprovalError({ message: "Rule name must be 200 characters or fewer.", code: "validation" }));
   }
   if (!isValidRuleType(input.ruleType)) {
-    return Effect.fail(new ApprovalError(
-      `Invalid rule type "${input.ruleType}". Supported: ${APPROVAL_RULE_TYPES.join(", ")}`,
-      "validation",
-    ));
+    return Effect.fail(new ApprovalError({ message: `Invalid rule type "${input.ruleType}". Supported: ${APPROVAL_RULE_TYPES.join(", ")}`, code: "validation" }));
   }
   if (input.ruleType === "cost") {
     if (input.threshold == null || input.threshold <= 0) {
-      return Effect.fail(new ApprovalError("Cost rules require a positive threshold value.", "validation"));
+      return Effect.fail(new ApprovalError({ message: "Cost rules require a positive threshold value.", code: "validation" }));
     }
   } else {
     if (!input.pattern || input.pattern.trim().length === 0) {
-      return Effect.fail(new ApprovalError(`Pattern is required for "${input.ruleType}" rules.`, "validation"));
+      return Effect.fail(new ApprovalError({ message: `Pattern is required for "${input.ruleType}" rules.`, code: "validation" }));
     }
   }
   return Effect.void;
@@ -228,10 +225,7 @@ export const getApprovalRule = (orgId: string, ruleId: string): Effect.Effect<Ap
     const rule = rowToRule(rows[0]);
     if (!rule) {
       log.warn({ orgId, ruleId, ruleType: rows[0].rule_type }, "Approval rule found but has invalid rule_type — treating as corrupt");
-      return yield* Effect.fail(new ApprovalError(
-        `Approval rule "${ruleId}" exists but has an invalid type "${rows[0].rule_type}".`,
-        "validation",
-      ));
+      return yield* Effect.fail(new ApprovalError({ message: `Approval rule "${ruleId}" exists but has an invalid type "${rows[0].rule_type}".`, code: "validation" }));
     }
     return rule;
   });
@@ -243,7 +237,7 @@ export const createApprovalRule = (
 ): Effect.Effect<ApprovalRule, ApprovalError | EnterpriseError | Error> =>
   Effect.gen(function* () {
     yield* requireEnterpriseEffect("approval-workflows");
-    yield* requireInternalDBEffect("approval rules", () => new ApprovalError("Internal database required for approval rules.", "validation"));
+    yield* requireInternalDBEffect("approval rules", () => new ApprovalError({ message: "Internal database required for approval rules.", code: "validation" }));
 
     yield* validateRuleInput(input);
 
@@ -262,12 +256,12 @@ export const createApprovalRule = (
     ));
 
     if (rows.length === 0) {
-      return yield* Effect.fail(new ApprovalError("Failed to create approval rule.", "validation"));
+      return yield* Effect.fail(new ApprovalError({ message: "Failed to create approval rule.", code: "validation" }));
     }
 
     log.info({ orgId, ruleId: rows[0].id, ruleType: input.ruleType, pattern: input.pattern }, "Approval rule created");
     const rule = rowToRule(rows[0]);
-    if (!rule) return yield* Effect.fail(new ApprovalError(`Created rule has unexpected rule_type "${rows[0].rule_type}" after insert.`, "conflict"));
+    if (!rule) return yield* Effect.fail(new ApprovalError({ message: `Created rule has unexpected rule_type "${rows[0].rule_type}" after insert.`, code: "conflict" }));
     return rule;
   });
 
@@ -279,12 +273,12 @@ export const updateApprovalRule = (
 ): Effect.Effect<ApprovalRule, ApprovalError | EnterpriseError | Error> =>
   Effect.gen(function* () {
     yield* requireEnterpriseEffect("approval-workflows");
-    yield* requireInternalDBEffect("approval rules", () => new ApprovalError("Internal database required for approval rules.", "validation"));
+    yield* requireInternalDBEffect("approval rules", () => new ApprovalError({ message: "Internal database required for approval rules.", code: "validation" }));
 
     // Check the rule exists
     const existing = yield* getApprovalRule(orgId, ruleId);
     if (!existing) {
-      return yield* Effect.fail(new ApprovalError(`Approval rule "${ruleId}" not found.`, "not_found"));
+      return yield* Effect.fail(new ApprovalError({ message: `Approval rule "${ruleId}" not found.`, code: "not_found" }));
     }
 
     const sets: string[] = [];
@@ -293,7 +287,7 @@ export const updateApprovalRule = (
 
     if (input.name !== undefined) {
       if (input.name.trim().length === 0) {
-        return yield* Effect.fail(new ApprovalError("Rule name cannot be empty.", "validation"));
+        return yield* Effect.fail(new ApprovalError({ message: "Rule name cannot be empty.", code: "validation" }));
       }
       sets.push(`name = $${idx}`);
       params.push(input.name.trim());
@@ -327,12 +321,12 @@ export const updateApprovalRule = (
     ));
 
     if (rows.length === 0) {
-      return yield* Effect.fail(new ApprovalError(`Approval rule "${ruleId}" not found.`, "not_found"));
+      return yield* Effect.fail(new ApprovalError({ message: `Approval rule "${ruleId}" not found.`, code: "not_found" }));
     }
 
     log.info({ orgId, ruleId }, "Approval rule updated");
     const rule = rowToRule(rows[0]);
-    if (!rule) return yield* Effect.fail(new ApprovalError(`Updated rule has unexpected rule_type "${rows[0].rule_type}" after update.`, "conflict"));
+    if (!rule) return yield* Effect.fail(new ApprovalError({ message: `Updated rule has unexpected rule_type "${rows[0].rule_type}" after update.`, code: "conflict" }));
     return rule;
   });
 
@@ -441,7 +435,7 @@ export const createApprovalRequest = (opts: {
 }): Effect.Effect<ApprovalRequest, ApprovalError | EnterpriseError | Error> =>
   Effect.gen(function* () {
     yield* requireEnterpriseEffect("approval-workflows");
-    yield* requireInternalDBEffect("approval queue", () => new ApprovalError("Internal database required for approval queue.", "validation"));
+    yield* requireInternalDBEffect("approval queue", () => new ApprovalError({ message: "Internal database required for approval queue.", code: "validation" }));
 
     const expiryHours = getExpiryHours();
 
@@ -469,12 +463,12 @@ export const createApprovalRequest = (opts: {
     ));
 
     if (rows.length === 0) {
-      return yield* Effect.fail(new ApprovalError("Failed to create approval request.", "validation"));
+      return yield* Effect.fail(new ApprovalError({ message: "Failed to create approval request.", code: "validation" }));
     }
 
     log.info({ orgId: opts.orgId, requestId: rows[0].id, ruleId: opts.ruleId }, "Approval request created");
     const request = rowToRequest(rows[0]);
-    if (!request) return yield* Effect.fail(new ApprovalError(`Created request has unexpected status "${rows[0].status}" after insert.`, "conflict"));
+    if (!request) return yield* Effect.fail(new ApprovalError({ message: `Created request has unexpected status "${rows[0].status}" after insert.`, code: "conflict" }));
     return request;
   });
 
@@ -533,10 +527,7 @@ export const getApprovalRequest = (
     const request = rowToRequest(rows[0]);
     if (!request) {
       log.warn({ orgId, requestId, status: rows[0].status }, "Approval request found but has invalid status — treating as corrupt");
-      return yield* Effect.fail(new ApprovalError(
-        `Approval request "${requestId}" exists but has an invalid status "${rows[0].status}".`,
-        "validation",
-      ));
+      return yield* Effect.fail(new ApprovalError({ message: `Approval request "${requestId}" exists but has an invalid status "${rows[0].status}".`, code: "validation" }));
     }
     return request;
   });
@@ -552,27 +543,21 @@ export const reviewApprovalRequest = (
 ): Effect.Effect<ApprovalRequest, ApprovalError | EnterpriseError | Error> =>
   Effect.gen(function* () {
     yield* requireEnterpriseEffect("approval-workflows");
-    yield* requireInternalDBEffect("approval queue", () => new ApprovalError("Internal database required for approval queue.", "validation"));
+    yield* requireInternalDBEffect("approval queue", () => new ApprovalError({ message: "Internal database required for approval queue.", code: "validation" }));
 
     // Fetch the current request
     const existing = yield* getApprovalRequest(orgId, requestId);
     if (!existing) {
-      return yield* Effect.fail(new ApprovalError(`Approval request "${requestId}" not found.`, "not_found"));
+      return yield* Effect.fail(new ApprovalError({ message: `Approval request "${requestId}" not found.`, code: "not_found" }));
     }
 
     if (existing.status !== "pending") {
-      return yield* Effect.fail(new ApprovalError(
-        `Cannot ${action} request — current status is "${existing.status}".`,
-        "conflict",
-      ));
+      return yield* Effect.fail(new ApprovalError({ message: `Cannot ${action} request — current status is "${existing.status}".`, code: "conflict" }));
     }
 
     // Prevent self-approval — the requester cannot approve their own request
     if (existing.requesterId === reviewerId) {
-      return yield* Effect.fail(new ApprovalError(
-        "Cannot review your own approval request. A different admin must approve or deny it.",
-        "conflict",
-      ));
+      return yield* Effect.fail(new ApprovalError({ message: "Cannot review your own approval request. A different admin must approve or deny it.", code: "conflict" }));
     }
 
     // Check if expired
@@ -582,7 +567,7 @@ export const reviewApprovalRequest = (
         `UPDATE approval_queue SET status = 'expired' WHERE id = $1`,
         [requestId],
       ));
-      return yield* Effect.fail(new ApprovalError("Approval request has expired.", "expired"));
+      return yield* Effect.fail(new ApprovalError({ message: "Approval request has expired.", code: "expired" }));
     }
 
     const newStatus: ApprovalStatus = action === "approve" ? "approved" : "denied";
@@ -598,7 +583,7 @@ export const reviewApprovalRequest = (
     ));
 
     if (rows.length === 0) {
-      return yield* Effect.fail(new ApprovalError(`Approval request "${requestId}" not found or already reviewed.`, "conflict"));
+      return yield* Effect.fail(new ApprovalError({ message: `Approval request "${requestId}" not found or already reviewed.`, code: "conflict" }));
     }
 
     log.info(
@@ -606,7 +591,7 @@ export const reviewApprovalRequest = (
       `Approval request ${action === "approve" ? "approved" : "denied"}`,
     );
     const request = rowToRequest(rows[0]);
-    if (!request) return yield* Effect.fail(new ApprovalError(`Reviewed request has unexpected status "${rows[0].status}" after update.`, "conflict"));
+    if (!request) return yield* Effect.fail(new ApprovalError({ message: `Reviewed request has unexpected status "${rows[0].status}" after update.`, code: "conflict" }));
     return request;
   });
 

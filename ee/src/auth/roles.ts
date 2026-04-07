@@ -10,8 +10,7 @@
  * fall back to legacy admin/member role mapping.
  */
 
-import { Effect } from "effect";
-import { EEError } from "../lib/errors";
+import { Data, Effect } from "effect";
 import { requireEnterpriseEffect, EnterpriseError } from "../index";
 import { requireInternalDBEffect } from "../lib/db-guard";
 import {
@@ -100,9 +99,10 @@ interface CustomRoleRow {
 
 export type RoleErrorCode = "not_found" | "conflict" | "validation" | "builtin_protected";
 
-export class RoleError extends EEError<RoleErrorCode> {
-  readonly name = "RoleError";
-}
+export class RoleError extends Data.TaggedError("RoleError")<{
+  message: string;
+  code: RoleErrorCode;
+}> {}
 
 // ── Helpers ──────────────────────────────────────────────────────
 
@@ -317,25 +317,19 @@ export const createRole = (
     // Validate name
     const name = input.name.toLowerCase().trim();
     if (!isValidRoleName(name)) {
-      return yield* Effect.fail(new RoleError(
-        `Invalid role name: "${input.name}". Must start with a letter, contain only lowercase letters, numbers, hyphens, or underscores, and be 1-63 characters.`,
-        "validation",
-      ));
+      return yield* Effect.fail(new RoleError({ message: `Invalid role name: "${input.name}". Must start with a letter, contain only lowercase letters, numbers, hyphens, or underscores, and be 1-63 characters.`, code: "validation" }));
     }
 
     // Reject reserved legacy role names that would shadow built-in behavior
     const RESERVED_ROLE_NAMES = new Set(["member", "owner"]);
     if (RESERVED_ROLE_NAMES.has(name)) {
-      return yield* Effect.fail(new RoleError(`"${name}" is a reserved role name.`, "validation"));
+      return yield* Effect.fail(new RoleError({ message: `"${name}" is a reserved role name.`, code: "validation" }));
     }
 
     // Validate permissions
     const invalidPerms = input.permissions.filter((p) => !isValidPermission(p));
     if (invalidPerms.length > 0) {
-      return yield* Effect.fail(new RoleError(
-        `Invalid permissions: ${invalidPerms.join(", ")}. Valid permissions: ${PERMISSIONS.join(", ")}`,
-        "validation",
-      ));
+      return yield* Effect.fail(new RoleError({ message: `Invalid permissions: ${invalidPerms.join(", ")}. Valid permissions: ${PERMISSIONS.join(", ")}`, code: "validation" }));
     }
 
     // Check name uniqueness within org
@@ -344,7 +338,7 @@ export const createRole = (
       [orgId, name],
     ));
     if (existing.length > 0) {
-      return yield* Effect.fail(new RoleError(`Role "${name}" already exists in this organization.`, "conflict"));
+      return yield* Effect.fail(new RoleError({ message: `Role "${name}" already exists in this organization.`, code: "conflict" }));
     }
 
     const rows = yield* Effect.promise(() => internalQuery<CustomRoleRow>(
@@ -375,10 +369,10 @@ export const updateRole = (
 
     // Fetch existing
     const existing = yield* getRole(orgId, roleId);
-    if (!existing) return yield* Effect.fail(new RoleError("Role not found.", "not_found"));
+    if (!existing) return yield* Effect.fail(new RoleError({ message: "Role not found.", code: "not_found" }));
 
     if (existing.isBuiltin) {
-      return yield* Effect.fail(new RoleError("Built-in roles cannot be modified.", "builtin_protected"));
+      return yield* Effect.fail(new RoleError({ message: "Built-in roles cannot be modified.", code: "builtin_protected" }));
     }
 
     // Build update
@@ -394,10 +388,7 @@ export const updateRole = (
     if (input.permissions !== undefined) {
       const invalidPerms = input.permissions.filter((p) => !isValidPermission(p));
       if (invalidPerms.length > 0) {
-        return yield* Effect.fail(new RoleError(
-          `Invalid permissions: ${invalidPerms.join(", ")}. Valid permissions: ${PERMISSIONS.join(", ")}`,
-          "validation",
-        ));
+        return yield* Effect.fail(new RoleError({ message: `Invalid permissions: ${invalidPerms.join(", ")}. Valid permissions: ${PERMISSIONS.join(", ")}`, code: "validation" }));
       }
       sets.push(`permissions = $${paramIdx++}`);
       params.push(JSON.stringify(input.permissions));
@@ -417,7 +408,7 @@ export const updateRole = (
       params,
     ));
 
-    if (!rows[0]) return yield* Effect.fail(new RoleError("Role not found or update failed.", "not_found"));
+    if (!rows[0]) return yield* Effect.fail(new RoleError({ message: "Role not found or update failed.", code: "not_found" }));
 
     log.info({ orgId, roleId }, "Custom role updated");
     return rowToRole(rows[0]);
@@ -436,16 +427,13 @@ export const deleteRole = (orgId: string, roleId: string): Effect.Effect<boolean
     if (!role) return false;
 
     if (role.isBuiltin) {
-      return yield* Effect.fail(new RoleError("Built-in roles cannot be deleted.", "builtin_protected"));
+      return yield* Effect.fail(new RoleError({ message: "Built-in roles cannot be deleted.", code: "builtin_protected" }));
     }
 
     // Block deletion when role has active members
     const members = yield* listRoleMembers(orgId, roleId);
     if (members.length > 0) {
-      return yield* Effect.fail(new RoleError(
-        `Cannot delete role with ${members.length} active member(s). Reassign them first.`,
-        "validation",
-      ));
+      return yield* Effect.fail(new RoleError({ message: `Cannot delete role with ${members.length} active member(s). Reassign them first.`, code: "validation" }));
     }
 
     const pool = getInternalDB();
@@ -477,7 +465,7 @@ export const listRoleMembers = (
 
     // First get the role name
     const role = yield* getRole(orgId, roleId);
-    if (!role) return yield* Effect.fail(new RoleError("Role not found.", "not_found"));
+    if (!role) return yield* Effect.fail(new RoleError({ message: "Role not found.", code: "not_found" }));
 
     // Query Better Auth member table for users with this role in this org
     const rows = yield* Effect.promise(() => internalQuery<{
@@ -519,7 +507,7 @@ export const assignRole = (
       [orgId, roleName],
     ));
     if (roleRows.length === 0) {
-      return yield* Effect.fail(new RoleError(`Role "${roleName}" does not exist in this organization.`, "not_found"));
+      return yield* Effect.fail(new RoleError({ message: `Role "${roleName}" does not exist in this organization.`, code: "not_found" }));
     }
 
     // Update the member's role
@@ -531,7 +519,7 @@ export const assignRole = (
     ));
 
     if (result.length === 0) {
-      return yield* Effect.fail(new RoleError("User is not a member of this organization.", "not_found"));
+      return yield* Effect.fail(new RoleError({ message: "User is not a member of this organization.", code: "not_found" }));
     }
 
     log.info({ orgId, userId, roleName }, "Role assigned to user");

@@ -18,8 +18,7 @@
  * - RAILWAY_WEB_SERVICE_ID — Railway service ID for the web service
  */
 
-import { Effect } from "effect";
-import { EEError } from "../lib/errors";
+import { Data, Effect } from "effect";
 import { generateVerificationToken, verifyDnsTxt } from "../lib/domain-verification";
 import { requireInternalDBEffect } from "../lib/db-guard";
 import {
@@ -43,9 +42,10 @@ export type DomainErrorCode =
   | "railway_not_configured"
   | "data_integrity";
 
-export class DomainError extends EEError<DomainErrorCode> {
-  readonly name = "DomainError";
-}
+export class DomainError extends Data.TaggedError("DomainError")<{
+  message: string;
+  code: DomainErrorCode;
+}> {}
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
@@ -55,49 +55,37 @@ function isValidDomain(domain: string): boolean {
 }
 
 function requireDB(): Effect.Effect<void, DomainError | Error> {
-  return requireInternalDBEffect("custom domains", () => new DomainError("Internal database is required for custom domains.", "no_internal_db"));
+  return requireInternalDBEffect("custom domains", () => new DomainError({ message: "Internal database is required for custom domains.", code: "no_internal_db" }));
 }
 
 /** Coerce a DB value (Date or string) to an ISO 8601 string. Throws on null/undefined/unexpected types. */
 function toISOString(value: unknown, field: string): string {
   if (value instanceof Date) return value.toISOString();
   if (typeof value === "string" && value.length > 0) return value;
-  throw new DomainError(
-    `rowToDomain: expected Date or ISO string for "${field}", got ${value === null ? "null" : typeof value}`,
-    "data_integrity",
-  );
+  throw new DomainError({ message: `rowToDomain: expected Date or ISO string for "${field}", got ${value === null ? "null" : typeof value}`, code: "data_integrity" });
 }
 
 /** Map a DB row to a CustomDomain wire type. Validates status and certificate_status against known enums; other fields are defensively coerced. */
 function rowToDomain(row: Record<string, unknown>): CustomDomain {
   const id = row.id;
   if (id == null || String(id) === "") {
-    throw new DomainError(`rowToDomain: missing required field "id"`, "data_integrity");
+    throw new DomainError({ message: `rowToDomain: missing required field "id"`, code: "data_integrity" });
   }
 
   const status = String(row.status ?? "");
   if (!DOMAIN_STATUSES.includes(status as CustomDomain["status"])) {
-    throw new DomainError(
-      `rowToDomain: unexpected status "${status}" — expected one of ${DOMAIN_STATUSES.join(", ")}`,
-      "data_integrity",
-    );
+    throw new DomainError({ message: `rowToDomain: unexpected status "${status}" — expected one of ${DOMAIN_STATUSES.join(", ")}`, code: "data_integrity" });
   }
 
   const certRaw = row.certificate_status != null ? String(row.certificate_status) : null;
   if (certRaw != null && !CERTIFICATE_STATUSES.includes(certRaw as CertificateStatus)) {
-    throw new DomainError(
-      `rowToDomain: unexpected certificate_status "${certRaw}" — expected one of ${CERTIFICATE_STATUSES.join(", ")}`,
-      "data_integrity",
-    );
+    throw new DomainError({ message: `rowToDomain: unexpected certificate_status "${certRaw}" — expected one of ${CERTIFICATE_STATUSES.join(", ")}`, code: "data_integrity" });
   }
 
   // Default to "pending" for pre-migration rows that lack the column
   const verificationStatusRaw = row.domain_verification_status != null ? String(row.domain_verification_status) : "pending";
   if (!DOMAIN_VERIFICATION_STATUSES.includes(verificationStatusRaw as DomainVerificationStatus)) {
-    throw new DomainError(
-      `rowToDomain: unexpected domain_verification_status "${verificationStatusRaw}" — expected one of ${DOMAIN_VERIFICATION_STATUSES.join(", ")}`,
-      "data_integrity",
-    );
+    throw new DomainError({ message: `rowToDomain: unexpected domain_verification_status "${verificationStatusRaw}" — expected one of ${DOMAIN_VERIFICATION_STATUSES.join(", ")}`, code: "data_integrity" });
   }
   const domainVerificationStatus = verificationStatusRaw as DomainVerificationStatus;
 
@@ -143,10 +131,7 @@ function getRailwayConfig(): RailwayConfig {
   const serviceId = process.env.RAILWAY_WEB_SERVICE_ID;
 
   if (!token || !projectId || !environmentId || !serviceId) {
-    throw new DomainError(
-      "Railway API is not configured. Set RAILWAY_API_TOKEN, RAILWAY_PROJECT_ID, RAILWAY_ENVIRONMENT_ID, and RAILWAY_WEB_SERVICE_ID.",
-      "railway_not_configured",
-    );
+    throw new DomainError({ message: "Railway API is not configured. Set RAILWAY_API_TOKEN, RAILWAY_PROJECT_ID, RAILWAY_ENVIRONMENT_ID, and RAILWAY_WEB_SERVICE_ID.", code: "railway_not_configured" });
   }
 
   return { token, projectId, environmentId, serviceId };
@@ -174,20 +159,14 @@ const railwayGraphQL = <T>(
           { err: err instanceof Error ? err.message : String(err) },
           "Railway API network error — could not reach backboard.railway.com",
         );
-        return new DomainError(
-          "Could not reach Railway API. Check network connectivity and RAILWAY_API_TOKEN.",
-          "railway_error",
-        );
+        return new DomainError({ message: "Could not reach Railway API. Check network connectivity and RAILWAY_API_TOKEN.", code: "railway_error" });
       },
     });
 
     if (!response.ok) {
       const text = yield* Effect.promise(() => response.text());
       log.error({ status: response.status, body: text.slice(0, 500) }, "Railway API HTTP error");
-      return yield* Effect.fail(new DomainError(
-        `Railway API returned ${response.status}`,
-        "railway_error",
-      ));
+      return yield* Effect.fail(new DomainError({ message: `Railway API returned ${response.status}`, code: "railway_error" }));
     }
 
     const json = (yield* Effect.promise(() => response.json())) as { data?: T; errors?: Array<{ message: string }> };
@@ -195,11 +174,11 @@ const railwayGraphQL = <T>(
     if (json.errors && json.errors.length > 0) {
       const msg = json.errors.map((e) => e.message).join("; ");
       log.error({ errors: json.errors }, "Railway API GraphQL errors");
-      return yield* Effect.fail(new DomainError(`Railway API error: ${msg}`, "railway_error"));
+      return yield* Effect.fail(new DomainError({ message: `Railway API error: ${msg}`, code: "railway_error" }));
     }
 
     if (!json.data) {
-      return yield* Effect.fail(new DomainError("Railway API returned no data", "railway_error"));
+      return yield* Effect.fail(new DomainError({ message: "Railway API returned no data", code: "railway_error" }));
     }
 
     return json.data;
@@ -317,10 +296,7 @@ export const registerDomain = (
 
     const normalized = domain.toLowerCase().trim();
     if (!isValidDomain(normalized)) {
-      return yield* Effect.fail(new DomainError(
-        `Invalid domain "${domain}". Provide a valid hostname (e.g. data.example.com).`,
-        "invalid_domain",
-      ));
+      return yield* Effect.fail(new DomainError({ message: `Invalid domain "${domain}". Provide a valid hostname (e.g. data.example.com).`, code: "invalid_domain" }));
     }
 
     // Check for existing registration in our DB
@@ -329,10 +305,7 @@ export const registerDomain = (
       [normalized],
     ));
     if (existing.length > 0) {
-      return yield* Effect.fail(new DomainError(
-        `Domain "${normalized}" is already registered.`,
-        "duplicate_domain",
-      ));
+      return yield* Effect.fail(new DomainError({ message: `Domain "${normalized}" is already registered.`, code: "duplicate_domain" }));
     }
 
     const config = getRailwayConfig();
@@ -340,10 +313,7 @@ export const registerDomain = (
     // Check availability with Railway
     const availability = yield* checkDomainAvailable(config, normalized);
     if (!availability.available) {
-      return yield* Effect.fail(new DomainError(
-        `Domain "${normalized}" is not available: ${availability.message}`,
-        "duplicate_domain",
-      ));
+      return yield* Effect.fail(new DomainError({ message: `Domain "${normalized}" is not available: ${availability.message}`, code: "duplicate_domain" }));
     }
 
     // Create domain in Railway
@@ -402,19 +372,13 @@ export const verifyDomain = (domainId: string): Effect.Effect<CustomDomain, Doma
     ));
 
     if (rows.length === 0) {
-      return yield* Effect.fail(new DomainError(
-        `Domain with ID "${domainId}" not found.`,
-        "domain_not_found",
-      ));
+      return yield* Effect.fail(new DomainError({ message: `Domain with ID "${domainId}" not found.`, code: "domain_not_found" }));
     }
 
     const record = rowToDomain(rows[0]);
 
     if (!record.railwayDomainId) {
-      return yield* Effect.fail(new DomainError(
-        `Domain "${record.domain}" has no Railway domain ID — registration may have been incomplete.`,
-        "railway_error",
-      ));
+      return yield* Effect.fail(new DomainError({ message: `Domain "${record.domain}" has no Railway domain ID — registration may have been incomplete.`, code: "railway_error" }));
     }
 
     const config = getRailwayConfig();
@@ -446,10 +410,7 @@ export const verifyDomain = (domainId: string): Effect.Effect<CustomDomain, Doma
     ));
 
     if (updatedRows.length === 0) {
-      return yield* Effect.fail(new DomainError(
-        `Domain "${domainId}" was deleted during verification.`,
-        "domain_not_found",
-      ));
+      return yield* Effect.fail(new DomainError({ message: `Domain "${domainId}" was deleted during verification.`, code: "domain_not_found" }));
     }
 
     if (verified) {
@@ -506,10 +467,7 @@ export const deleteDomain = (domainId: string): Effect.Effect<void, DomainError 
     ));
 
     if (rows.length === 0) {
-      return yield* Effect.fail(new DomainError(
-        `Domain with ID "${domainId}" not found.`,
-        "domain_not_found",
-      ));
+      return yield* Effect.fail(new DomainError({ message: `Domain with ID "${domainId}" not found.`, code: "domain_not_found" }));
     }
 
     const record = rowToDomain(rows[0]);
@@ -563,19 +521,13 @@ export const verifyDomainDnsTxt = (domainId: string): Effect.Effect<CustomDomain
     });
 
     if (rows.length === 0) {
-      return yield* Effect.fail(new DomainError(
-        `Domain with ID "${domainId}" not found.`,
-        "domain_not_found",
-      ));
+      return yield* Effect.fail(new DomainError({ message: `Domain with ID "${domainId}" not found.`, code: "domain_not_found" }));
     }
 
     const record = rowToDomain(rows[0]);
 
     if (!record.verificationToken) {
-      return yield* Effect.fail(new DomainError(
-        `Domain "${record.domain}" has no verification token — it may have been created before DNS TXT verification was available.`,
-        "data_integrity",
-      ));
+      return yield* Effect.fail(new DomainError({ message: `Domain "${record.domain}" has no verification token — it may have been created before DNS TXT verification was available.`, code: "data_integrity" }));
     }
 
     if (record.domainVerified) {
@@ -612,7 +564,7 @@ export const verifyDomainDnsTxt = (domainId: string): Effect.Effect<CustomDomain
       catch: (err) => err instanceof Error ? err : new Error(String(err)),
     }).pipe(Effect.catchAll((err) => {
       log.error({ domainId, domain: record.domain, err: err.message }, "DNS TXT verification succeeded but DB update failed");
-      return Effect.fail(new DomainError("Domain verified via DNS but failed to persist — please retry.", "data_integrity"));
+      return Effect.fail(new DomainError({ message: "Domain verified via DNS but failed to persist — please retry.", code: "data_integrity" }));
     }));
 
     log.info({ domainId, domain: record.domain }, "Custom domain verified via DNS TXT record");
@@ -629,10 +581,7 @@ export const verifyDomainDnsTxt = (domainId: string): Effect.Effect<CustomDomain
     });
 
     if (updatedRows.length === 0) {
-      return yield* Effect.fail(new DomainError(
-        `Domain "${domainId}" was deleted during verification.`,
-        "domain_not_found",
-      ));
+      return yield* Effect.fail(new DomainError({ message: `Domain "${domainId}" was deleted during verification.`, code: "domain_not_found" }));
     }
 
     return rowToDomain(updatedRows[0]);

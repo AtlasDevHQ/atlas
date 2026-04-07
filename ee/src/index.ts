@@ -8,12 +8,9 @@
  *   requireEnterprise()         — throws EnterpriseError if not enabled (sync guard)
  *   requireEnterpriseEffect()   — Effect.fail(EnterpriseError) if not enabled (Effect guard)
  *   EnterpriseError             — typed error for instanceof checks
- *   EEError                     — abstract base class for all EE module errors (see lib/errors.ts)
  */
 
-import { Effect } from "effect";
-import { EEError } from "./lib/errors";
-export { EEError } from "./lib/errors";
+import { Data, Effect } from "effect";
 import { getConfig } from "@atlas/api/lib/config";
 
 /**
@@ -45,13 +42,15 @@ export function getEnterpriseLicenseKey(): string | undefined {
 
 /**
  * Typed error thrown when enterprise features are required but not available.
- * Extends `EEError<"enterprise_required">` — see `ee/src/lib/errors.ts`.
+ * Uses `Data.TaggedError("EnterpriseError")` for Effect equality + catchTag support.
  * Use `err instanceof EnterpriseError` instead of string matching on messages.
  */
-export class EnterpriseError extends EEError<"enterprise_required"> {
-  readonly name = "EnterpriseError";
+export class EnterpriseError extends Data.TaggedError("EnterpriseError")<{
+  message: string;
+  code: "enterprise_required";
+}> {
   constructor(message = "Enterprise features are not enabled") {
-    super(message, "enterprise_required");
+    super({ message, code: "enterprise_required" });
   }
 }
 

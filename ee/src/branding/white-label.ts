@@ -13,7 +13,7 @@
  * All exported functions return Effect — callers use `yield*` in Effect.gen.
  */
 
-import { Effect } from "effect";
+import { Data, Effect } from "effect";
 import { requireEnterpriseEffect, EnterpriseError } from "../index";
 import { requireInternalDBEffect } from "../lib/db-guard";
 import {
@@ -30,13 +30,12 @@ const log = createLogger("ee:branding");
 
 // ── Typed errors ────────────────────────────────────────────────────
 
-import { EEError } from "../lib/errors";
-
 export type BrandingErrorCode = "validation" | "not_found";
 
-export class BrandingError extends EEError<BrandingErrorCode> {
-  readonly name = "BrandingError";
-}
+export class BrandingError extends Data.TaggedError("BrandingError")<{
+  message: string;
+  code: BrandingErrorCode;
+}> {}
 
 // ── Internal row shape ──────────────────────────────────────────────
 
@@ -75,10 +74,7 @@ const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/;
 function validateBrandingInput(input: SetWorkspaceBrandingInput): Effect.Effect<void, BrandingError> {
   if (input.primaryColor != null && input.primaryColor !== "") {
     if (!HEX_COLOR_RE.test(input.primaryColor)) {
-      return Effect.fail(new BrandingError(
-        `Invalid primary color "${input.primaryColor}". Must be a 6-digit hex color (e.g. #FF5500).`,
-        "validation",
-      ));
+      return Effect.fail(new BrandingError({ message: `Invalid primary color "${input.primaryColor}". Must be a 6-digit hex color (e.g. #FF5500).`, code: "validation" }));
     }
   }
 
@@ -86,16 +82,10 @@ function validateBrandingInput(input: SetWorkspaceBrandingInput): Effect.Effect<
     try {
       const parsed = new URL(input.logoUrl);
       if (!["http:", "https:"].includes(parsed.protocol)) {
-        return Effect.fail(new BrandingError(
-          `Logo URL must use http:// or https:// (got "${parsed.protocol}").`,
-          "validation",
-        ));
+        return Effect.fail(new BrandingError({ message: `Logo URL must use http:// or https:// (got "${parsed.protocol}").`, code: "validation" }));
       }
     } catch { // intentionally caught: URL constructor throws TypeError for malformed URLs — converted to BrandingError
-      return Effect.fail(new BrandingError(
-        `Invalid logo URL: "${input.logoUrl}". Must be a valid URL.`,
-        "validation",
-      ));
+      return Effect.fail(new BrandingError({ message: `Invalid logo URL: "${input.logoUrl}". Must be a valid URL.`, code: "validation" }));
     }
   }
 
@@ -103,16 +93,10 @@ function validateBrandingInput(input: SetWorkspaceBrandingInput): Effect.Effect<
     try {
       const parsed = new URL(input.faviconUrl);
       if (!["http:", "https:"].includes(parsed.protocol)) {
-        return Effect.fail(new BrandingError(
-          `Favicon URL must use http:// or https:// (got "${parsed.protocol}").`,
-          "validation",
-        ));
+        return Effect.fail(new BrandingError({ message: `Favicon URL must use http:// or https:// (got "${parsed.protocol}").`, code: "validation" }));
       }
     } catch { // intentionally caught: URL constructor throws TypeError for malformed URLs — converted to BrandingError
-      return Effect.fail(new BrandingError(
-        `Invalid favicon URL: "${input.faviconUrl}". Must be a valid URL.`,
-        "validation",
-      ));
+      return Effect.fail(new BrandingError({ message: `Invalid favicon URL: "${input.faviconUrl}". Must be a valid URL.`, code: "validation" }));
     }
   }
 

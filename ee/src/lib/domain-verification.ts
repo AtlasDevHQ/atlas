@@ -12,7 +12,7 @@
  * with configurable timeout. Returns structured result.
  */
 
-import { Effect } from "effect";
+import { Data, Effect } from "effect";
 import dns from "node:dns";
 import crypto from "node:crypto";
 import { createLogger } from "@atlas/api/lib/logger";
@@ -37,10 +37,9 @@ export type DnsTxtVerificationResult = DnsTxtResult | DnsTxtFailure;
 
 // ── Typed timeout sentinel ─────────────────────────────────────────
 
-class DnsTimeoutError extends Error {
-  readonly _tag = "DnsTimeoutError";
-  constructor() { super("DNS lookup timed out"); }
-}
+class DnsTimeoutError extends Data.TaggedError("DnsTimeoutError")<{
+  message: string;
+}> {}
 
 // ── Token generation ───────────────────────────────────────────────
 
@@ -77,7 +76,7 @@ export const verifyDnsTxt = (
     }).pipe(
       Effect.timeoutFail({
         duration: `${timeoutMs} millis`,
-        onTimeout: () => new DnsTimeoutError(),
+        onTimeout: () => new DnsTimeoutError({ message: "DNS lookup timed out" }),
       }),
       Effect.map((records) => ({ ok: true as const, records })),
       Effect.catchAll((err) => {

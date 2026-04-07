@@ -21,7 +21,6 @@ mock.module("@atlas/ee/index", () => ({
   requireEnterprise: () => {},
   requireEnterpriseEffect: () => {},
   resolveDeployMode: () => "self-hosted",
-  EEError: class extends Error {},
 }));
 
 const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unknown[]>> = mock(

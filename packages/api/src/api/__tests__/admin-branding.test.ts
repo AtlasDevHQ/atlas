@@ -209,7 +209,7 @@ describe("PUT /api/v1/admin/branding", () => {
   });
 
   it("returns 400 on BrandingError validation", async () => {
-    mockEeError = new RealBrandingError("Invalid primary color", "validation");
+    mockEeError = new RealBrandingError({ message: "Invalid primary color", code: "validation" });
     const res = await request("PUT", { primaryColor: "bad" });
     expect(res.status).toBe(400);
     const json = await res.json() as { error: string };

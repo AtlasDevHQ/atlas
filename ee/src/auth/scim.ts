@@ -13,8 +13,7 @@
  * skips the gate, returning null when no mapping exists.
  */
 
-import { Effect } from "effect";
-import { EEError } from "../lib/errors";
+import { Data, Effect } from "effect";
 import { requireEnterpriseEffect, EnterpriseError } from "../index";
 import { requireInternalDBEffect } from "../lib/db-guard";
 import {
@@ -30,9 +29,10 @@ const log = createLogger("ee:scim");
 
 export type SCIMErrorCode = "not_found" | "conflict" | "validation";
 
-export class SCIMError extends EEError<SCIMErrorCode> {
-  readonly name = "SCIMError";
-}
+export class SCIMError extends Data.TaggedError("SCIMError")<{
+  message: string;
+  code: SCIMErrorCode;
+}> {}
 
 // ── Types ───────────────────────────────────────────────────────────
 
@@ -258,10 +258,7 @@ export const createGroupMapping = (
 
     // Validate group name
     if (!isValidScimGroupName(scimGroupName)) {
-      return yield* Effect.fail(new SCIMError(
-        `Invalid SCIM group name: "${scimGroupName}". Must be 1-255 characters, starting with alphanumeric.`,
-        "validation",
-      ));
+      return yield* Effect.fail(new SCIMError({ message: `Invalid SCIM group name: "${scimGroupName}". Must be 1-255 characters, starting with alphanumeric.`, code: "validation" }));
     }
 
     // Validate role exists in this org
@@ -270,10 +267,7 @@ export const createGroupMapping = (
       [orgId, roleName],
     ));
     if (roleRows.length === 0) {
-      return yield* Effect.fail(new SCIMError(
-        `Role "${roleName}" does not exist in this organization. Create the role first.`,
-        "not_found",
-      ));
+      return yield* Effect.fail(new SCIMError({ message: `Role "${roleName}" does not exist in this organization. Create the role first.`, code: "not_found" }));
     }
 
     // Check for duplicate mapping
@@ -282,10 +276,7 @@ export const createGroupMapping = (
       [orgId, scimGroupName],
     ));
     if (existing.length > 0) {
-      return yield* Effect.fail(new SCIMError(
-        `A mapping for SCIM group "${scimGroupName}" already exists in this organization.`,
-        "conflict",
-      ));
+      return yield* Effect.fail(new SCIMError({ message: `A mapping for SCIM group "${scimGroupName}" already exists in this organization.`, code: "conflict" }));
     }
 
     const rows = yield* Effect.promise(() => internalQuery<SCIMGroupMappingRow>(

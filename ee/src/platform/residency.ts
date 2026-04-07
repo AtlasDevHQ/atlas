@@ -11,8 +11,7 @@
  * All exported functions return Effect — callers use `yield*` in Effect.gen.
  */
 
-import { Effect } from "effect";
-import { EEError } from "../lib/errors";
+import { Data, Effect } from "effect";
 import { getConfig } from "@atlas/api/lib/config";
 import type { ResidencyConfig } from "@atlas/api/lib/config";
 import { requireInternalDBEffect } from "../lib/db-guard";
@@ -36,19 +35,17 @@ export type ResidencyErrorCode =
   | "workspace_not_found"
   | "no_internal_db";
 
-export class ResidencyError extends EEError<ResidencyErrorCode> {
-  readonly name = "ResidencyError";
-}
+export class ResidencyError extends Data.TaggedError("ResidencyError")<{
+  message: string;
+  code: ResidencyErrorCode;
+}> {}
 
 // ── Helpers ─────────────────────────────────────────────────────────
 
 function getResidencyConfig(): ResidencyConfig {
   const config = getConfig();
   if (!config?.residency) {
-    throw new ResidencyError(
-      "Data residency is not configured. Add a 'residency' section to atlas.config.ts with region definitions.",
-      "not_configured",
-    );
+    throw new ResidencyError({ message: "Data residency is not configured. Add a 'residency' section to atlas.config.ts with region definitions.", code: "not_configured" });
   }
   return config.residency;
 }
@@ -56,10 +53,7 @@ function getResidencyConfig(): ResidencyConfig {
 function getResidencyConfigEffect(): Effect.Effect<ResidencyConfig, ResidencyError> {
   const config = getConfig();
   if (!config?.residency) {
-    return Effect.fail(new ResidencyError(
-      "Data residency is not configured. Add a 'residency' section to atlas.config.ts with region definitions.",
-      "not_configured",
-    ));
+    return Effect.fail(new ResidencyError({ message: "Data residency is not configured. Add a 'residency' section to atlas.config.ts with region definitions.", code: "not_configured" }));
   }
   return Effect.succeed(config.residency);
 }
@@ -72,10 +66,7 @@ function isValidRegion(region: string, residency: ResidencyConfig): boolean {
 function toISOString(value: unknown, field: string): string {
   if (value instanceof Date) return value.toISOString();
   if (typeof value === "string" && value.length > 0) return value;
-  throw new ResidencyError(
-    `rowToWorkspaceRegion: expected Date or ISO string for "${field}", got ${value === null ? "null" : typeof value}`,
-    "not_configured",
-  );
+  throw new ResidencyError({ message: `rowToWorkspaceRegion: expected Date or ISO string for "${field}", got ${value === null ? "null" : typeof value}`, code: "not_configured" });
 }
 
 /** Map a DB row to a WorkspaceRegion wire type with defensive coercion. */
@@ -143,28 +134,19 @@ export const assignWorkspaceRegion = (
   Effect.gen(function* () {
     const residency = yield* getResidencyConfigEffect();
 
-    yield* requireInternalDBEffect("data residency", () => new ResidencyError("Internal database is required for data residency.", "no_internal_db"));
+    yield* requireInternalDBEffect("data residency", () => new ResidencyError({ message: "Internal database is required for data residency.", code: "no_internal_db" }));
 
     if (!isValidRegion(region, residency)) {
       const available = Object.keys(residency.regions).join(", ");
-      return yield* Effect.fail(new ResidencyError(
-        `Invalid region "${region}". Available regions: ${available}`,
-        "invalid_region",
-      ));
+      return yield* Effect.fail(new ResidencyError({ message: `Invalid region "${region}". Available regions: ${available}`, code: "invalid_region" }));
     }
 
     const result = yield* Effect.promise(() => setWorkspaceRegion(workspaceId, region));
     if (!result.assigned) {
       if (result.existing) {
-        return yield* Effect.fail(new ResidencyError(
-          `Workspace is already assigned to region "${result.existing}". Region cannot be changed after assignment.`,
-          "already_assigned",
-        ));
+        return yield* Effect.fail(new ResidencyError({ message: `Workspace is already assigned to region "${result.existing}". Region cannot be changed after assignment.`, code: "already_assigned" }));
       }
-      return yield* Effect.fail(new ResidencyError(
-        `Workspace "${workspaceId}" not found.`,
-        "workspace_not_found",
-      ));
+      return yield* Effect.fail(new ResidencyError({ message: `Workspace "${workspaceId}" not found.`, code: "workspace_not_found" }));
     }
 
     log.info({ workspaceId, region }, "Workspace assigned to region");
@@ -183,7 +165,7 @@ export const getWorkspaceRegionAssignment = (
   workspaceId: string,
 ): Effect.Effect<WorkspaceRegion | null, ResidencyError | Error> =>
   Effect.gen(function* () {
-    yield* requireInternalDBEffect("data residency", () => new ResidencyError("Internal database is required for data residency.", "no_internal_db"));
+    yield* requireInternalDBEffect("data residency", () => new ResidencyError({ message: "Internal database is required for data residency.", code: "no_internal_db" }));
 
     const rows = yield* Effect.promise(() => internalQuery<Record<string, unknown>>(
       `SELECT region, region_assigned_at FROM organization WHERE id = $1`,
@@ -239,7 +221,7 @@ export const resolveRegionDatabaseUrl = (
  */
 export const listWorkspaceRegions = (): Effect.Effect<WorkspaceRegion[], ResidencyError | Error> =>
   Effect.gen(function* () {
-    yield* requireInternalDBEffect("data residency", () => new ResidencyError("Internal database is required for data residency.", "no_internal_db"));
+    yield* requireInternalDBEffect("data residency", () => new ResidencyError({ message: "Internal database is required for data residency.", code: "no_internal_db" }));
 
     const rows = yield* Effect.promise(() => internalQuery<Record<string, unknown>>(
       `SELECT id, region, region_assigned_at FROM organization WHERE region IS NOT NULL ORDER BY region_assigned_at DESC`,

@@ -96,7 +96,7 @@ const registerDomainRoute = createRoute({
 
 const verifyDomainRoute = createRoute({
   method: "post",
-  path: "/:id/verify",
+  path: "/{id}/verify",
   tags: ["Platform Admin — Custom Domains"],
   summary: "Verify a custom domain",
   description: "SaaS only. Checks DNS propagation and TLS certificate status via Railway.",
@@ -115,7 +115,7 @@ const verifyDomainRoute = createRoute({
 
 const deleteDomainRoute = createRoute({
   method: "delete",
-  path: "/:id",
+  path: "/{id}",
   tags: ["Platform Admin — Custom Domains"],
   summary: "Delete a custom domain",
   description: "SaaS only. Removes a custom domain from both Railway and Atlas.",

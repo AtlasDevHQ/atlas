@@ -64,5 +64,9 @@ export {
   type ActionApprovalMode,
   type ValidateSQLResponse,
   type ValidationLayer,
+  type ActionStatus,
   type RollbackActionResponse,
+  type ListTablesResponse,
+  type TableInfo,
+  type TableColumn,
 } from "./client";

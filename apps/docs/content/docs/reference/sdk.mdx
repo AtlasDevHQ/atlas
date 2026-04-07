@@ -110,6 +110,43 @@ interface QueryResponse {
 
 ---
 
+## List Tables
+
+List all queryable tables from the semantic layer, including column details. Does not require admin role.
+
+```typescript
+const { tables } = await atlas.listTables();
+
+for (const table of tables) {
+  console.log(`${table.table}: ${table.description}`);
+  for (const col of table.columns) {
+    console.log(`  ${col.name} (${col.type}) — ${col.description}`);
+  }
+}
+```
+
+### Response
+
+```typescript
+interface ListTablesResponse {
+  tables: TableInfo[];
+}
+
+interface TableInfo {
+  table: string;
+  description: string;
+  columns: TableColumn[];
+}
+
+interface TableColumn {
+  name: string;
+  type: string;
+  description: string;
+}
+```
+
+---
+
 ## Chat
 
 Stream a chat response using the AI SDK UI Message Stream Protocol.
@@ -258,7 +295,7 @@ try {
 
 ## Conversations
 
-List, retrieve, star, and delete conversations.
+List, retrieve, star, share, and delete conversations.
 
 ```typescript
 // List conversations with pagination and optional filters
@@ -275,6 +312,13 @@ console.log(conversation.messages);
 // Pin important conversations for quick access
 await atlas.conversations.star("conversation-id");
 await atlas.conversations.unstar("conversation-id");
+
+// Generate a shareable link for a conversation
+const { token, url } = await atlas.conversations.share("conversation-id");
+console.log(`Share URL: ${url}`);
+
+// Revoke sharing for a conversation
+await atlas.conversations.unshare("conversation-id");
 
 // Permanently remove a conversation and all its messages
 await atlas.conversations.delete("conversation-id");
@@ -788,6 +832,9 @@ import type {
   // Query
   QueryOptions,
   QueryResponse,
+  ListTablesResponse,
+  TableInfo,
+  TableColumn,
 
   // Chat
   ChatMessage,

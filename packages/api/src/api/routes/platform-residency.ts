@@ -80,7 +80,7 @@ const listRegionsRoute = createRoute({
 
 const getWorkspaceRegionRoute = createRoute({
   method: "get",
-  path: "/workspaces/:id/region",
+  path: "/workspaces/{id}/region",
   tags: ["Platform Admin — Residency"],
   summary: "Get workspace region",
   description: "SaaS only. Returns the region assignment for a workspace.",
@@ -99,7 +99,7 @@ const getWorkspaceRegionRoute = createRoute({
 
 const assignRegionRoute = createRoute({
   method: "post",
-  path: "/workspaces/:id/region",
+  path: "/workspaces/{id}/region",
   tags: ["Platform Admin — Residency"],
   summary: "Assign region to workspace",
   description: "SaaS only. Assign a workspace to a geographic region. Region is immutable after assignment.",

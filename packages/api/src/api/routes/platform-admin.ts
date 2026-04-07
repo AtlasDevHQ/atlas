@@ -134,7 +134,7 @@ const listWorkspacesRoute = createRoute({
 
 const getWorkspaceRoute = createRoute({
   method: "get",
-  path: "/workspaces/:id",
+  path: "/workspaces/{id}",
   tags: ["Platform Admin"],
   summary: "Get workspace details",
   description: "SaaS only. Returns detailed workspace information including resource breakdown and user list.",
@@ -159,7 +159,7 @@ const getWorkspaceRoute = createRoute({
 
 const suspendWorkspaceRoute = createRoute({
   method: "post",
-  path: "/workspaces/:id/suspend",
+  path: "/workspaces/{id}/suspend",
   tags: ["Platform Admin"],
   summary: "Suspend a workspace",
   description: "SaaS only. Suspends a workspace, preventing all user access until reactivated.",
@@ -178,7 +178,7 @@ const suspendWorkspaceRoute = createRoute({
 
 const unsuspendWorkspaceRoute = createRoute({
   method: "post",
-  path: "/workspaces/:id/unsuspend",
+  path: "/workspaces/{id}/unsuspend",
   tags: ["Platform Admin"],
   summary: "Unsuspend a workspace",
   description: "SaaS only. Reactivates a suspended workspace, restoring user access.",
@@ -197,7 +197,7 @@ const unsuspendWorkspaceRoute = createRoute({
 
 const deleteWorkspaceRoute = createRoute({
   method: "delete",
-  path: "/workspaces/:id",
+  path: "/workspaces/{id}",
   tags: ["Platform Admin"],
   summary: "Delete a workspace",
   description: "SaaS only. Soft-deletes a workspace with cascading cleanup (conversations, semantic entities, learned patterns, suggestions, scheduled tasks).",
@@ -230,7 +230,7 @@ const deleteWorkspaceRoute = createRoute({
 
 const purgeWorkspaceRoute = createRoute({
   method: "post",
-  path: "/workspaces/:id/purge",
+  path: "/workspaces/{id}/purge",
   tags: ["Platform Admin"],
   summary: "Purge workspace (GDPR hard delete)",
   description: "SaaS only. Permanently removes ALL data for a workspace — conversations, messages, audit logs, integrations, members, and orphaned users. The workspace must already be soft-deleted. This action is irreversible.",
@@ -258,7 +258,7 @@ const purgeWorkspaceRoute = createRoute({
 
 const changePlanRoute = createRoute({
   method: "patch",
-  path: "/workspaces/:id/plan",
+  path: "/workspaces/{id}/plan",
   tags: ["Platform Admin"],
   summary: "Change workspace plan tier",
   description: "SaaS only. Updates the plan tier for a workspace (free, trial, team, enterprise).",

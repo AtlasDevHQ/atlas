@@ -102,7 +102,7 @@ const listSLARoute = createRoute({
 
 const getWorkspaceSLARoute = createRoute({
   method: "get",
-  path: "/:workspaceId",
+  path: "/{workspaceId}",
   tags: ["Platform Admin — SLA"],
   summary: "Per-workspace SLA detail",
   description: "SaaS only. Returns detailed SLA metrics with latency and error rate time-series for a single workspace.",
@@ -175,7 +175,7 @@ const getThresholdsRoute = createRoute({
 
 const acknowledgeAlertRoute = createRoute({
   method: "post",
-  path: "/alerts/:alertId/acknowledge",
+  path: "/alerts/{alertId}/acknowledge",
   tags: ["Platform Admin — SLA"],
   summary: "Acknowledge an alert",
   description: "SaaS only. Acknowledge a firing SLA alert.",

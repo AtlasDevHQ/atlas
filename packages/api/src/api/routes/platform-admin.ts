@@ -11,6 +11,7 @@
  * - POST   /workspaces/:id/suspend   — suspend a workspace
  * - POST   /workspaces/:id/unsuspend — reactivate a workspace
  * - DELETE /workspaces/:id      — delete with cascading cleanup
+ * - POST   /workspaces/:id/purge — GDPR hard delete (permanently remove all data)
  * - PATCH  /workspaces/:id/plan — change plan tier
  * - GET    /stats               — aggregate platform stats
  * - GET    /noisy-neighbors     — workspaces consuming disproportionate resources
@@ -31,6 +32,7 @@ import {
   updateWorkspaceStatus,
   updateWorkspacePlanTier,
   cascadeWorkspaceDelete,
+  hardDeleteWorkspace,
   type WorkspaceRow,
   type PlanTier,
   type WorkspaceStatus,
@@ -221,6 +223,34 @@ const deleteWorkspaceRoute = createRoute({
     403: { description: "Platform admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
     404: { description: "Workspace not found", content: { "application/json": { schema: ErrorSchema } } },
     409: { description: "Workspace already deleted", content: { "application/json": { schema: ErrorSchema } } },
+    500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
+  },
+});
+
+const purgeWorkspaceRoute = createRoute({
+  method: "post",
+  path: "/workspaces/:id/purge",
+  tags: ["Platform Admin"],
+  summary: "Purge workspace (GDPR hard delete)",
+  description: "SaaS only. Permanently removes ALL data for a workspace — conversations, messages, audit logs, integrations, members, and orphaned users. The workspace must already be soft-deleted. This action is irreversible.",
+  responses: {
+    200: {
+      description: "Workspace purged",
+      content: {
+        "application/json": {
+          schema: z.object({
+            message: z.string(),
+            workspaceId: z.string(),
+            purged: z.record(z.string(), z.number()),
+            totalRows: z.number(),
+          }),
+        },
+      },
+    },
+    401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
+    403: { description: "Platform admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
+    404: { description: "Workspace not found", content: { "application/json": { schema: ErrorSchema } } },
+    409: { description: "Workspace must be soft-deleted first", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
@@ -579,6 +609,49 @@ platformAdmin.openapi(deleteWorkspaceRoute, async (c) => {
       cleanup,
     }, 200);
   }), { label: "delete workspace" });
+});
+
+// ── Purge workspace (GDPR hard delete) ──────────────────────────────
+
+platformAdmin.openapi(purgeWorkspaceRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+
+    if (!hasInternalDB()) {
+      return c.json({ error: "not_configured", message: "Internal database not configured.", requestId }, 404);
+    }
+
+    const workspaceId = c.req.param("id");
+
+    const workspace = yield* Effect.promise(() => getWorkspaceDetails(workspaceId));
+    if (!workspace) {
+      return c.json({ error: "not_found", message: "Workspace not found.", requestId }, 404);
+    }
+
+    if (workspace.workspace_status !== "deleted") {
+      return c.json({
+        error: "conflict",
+        message: "Workspace must be soft-deleted before purging. Delete the workspace first, then purge.",
+        requestId,
+      }, 409);
+    }
+
+    const purged = yield* Effect.tryPromise({
+      try: () => hardDeleteWorkspace(workspaceId),
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    });
+
+    const totalRows = Object.values(purged).reduce((sum, n) => sum + n, 0);
+
+    log.info({ workspaceId, totalRows, requestId }, "Workspace purged (GDPR hard delete)");
+
+    return c.json({
+      message: "Workspace permanently purged. All data has been irreversibly removed.",
+      workspaceId,
+      purged: purged as unknown as Record<string, number>,
+      totalRows,
+    }, 200);
+  }), { label: "purge workspace (GDPR)" });
 });
 
 // ── Change plan ──────────────────────────────────────────────────────

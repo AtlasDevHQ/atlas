@@ -1407,3 +1407,326 @@ export async function setWorkspaceTrialEndsAt(
   );
   return rows.length > 0;
 }
+
+// ---------------------------------------------------------------------------
+// GDPR hard-delete (purge) — removes ALL org-scoped data permanently
+// ---------------------------------------------------------------------------
+
+/**
+ * Hard-delete result — counts of rows removed from each table.
+ */
+export interface HardDeleteResult {
+  // Data tables (org_id)
+  auditLog: number;
+  conversations: number;
+  messages: number;
+  slackInstallations: number;
+  slackThreads: number;
+  actionLog: number;
+  scheduledTaskRuns: number;
+  scheduledTasks: number;
+  connections: number;
+  tokenUsage: number;
+  invitations: number;
+  pluginSettings: number;
+  settings: number;
+  semanticEntityVersions: number;
+  semanticEntities: number;
+  learnedPatterns: number;
+  promptItems: number;
+  promptCollections: number;
+  querySuggestions: number;
+  ssoProviders: number;
+  ipAllowlist: number;
+  customRoles: number;
+  auditRetentionConfig: number;
+  workspaceModelConfig: number;
+  approvalQueue: number;
+  approvalRules: number;
+  workspaceBranding: number;
+  onboardingEmails: number;
+  piiColumnClassifications: number;
+  scimGroupMappings: number;
+  sandboxCredentials: number;
+  dashboardCards: number;
+  dashboards: number;
+  oauthState: number;
+  // Integration tables (org_id)
+  teamsInstallations: number;
+  discordInstallations: number;
+  telegramInstallations: number;
+  gchatInstallations: number;
+  githubInstallations: number;
+  linearInstallations: number;
+  whatsappInstallations: number;
+  emailInstallations: number;
+  // Tables keyed by workspace_id
+  usageEvents: number;
+  usageSummaries: number;
+  abuseEvents: number;
+  customDomains: number;
+  slaMetrics: number;
+  slaAlerts: number;
+  slaThresholds: number;
+  regionMigrations: number;
+  workspacePlugins: number;
+  // Better Auth tables
+  members: number;
+  betterAuthInvitations: number;
+  orphanedUsers: number;
+  organization: number;
+}
+
+/**
+ * GDPR-compliant hard delete — permanently removes ALL data for a workspace.
+ *
+ * Deletes every row across all tables scoped to the given orgId/workspaceId,
+ * including Better Auth records (members, organization). Users who have no
+ * remaining org memberships after removal are also deleted (sessions, accounts,
+ * user row).
+ *
+ * This is irreversible. The workspace must already be soft-deleted before
+ * calling this function.
+ *
+ * All operations run in a single transaction — either everything is purged
+ * or nothing changes.
+ */
+export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResult> {
+  const pool = getInternalDB();
+  const client = await pool.connect();
+
+  try {
+    await client.query("BEGIN");
+
+    // Lock the organization row and verify it is still in "deleted" status.
+    // Prevents a race where another admin reactivates the workspace between
+    // the route handler's pre-check and this transaction.
+    const statusCheck = await client.query(
+      `SELECT workspace_status FROM organization WHERE id = $1 FOR UPDATE`,
+      [orgId],
+    );
+    const status = (statusCheck.rows[0] as Record<string, unknown> | undefined)?.workspace_status;
+    if (statusCheck.rows.length === 0 || status !== "deleted") {
+      await client.query("ROLLBACK");
+      throw new Error("Workspace is not in deleted status — purge aborted");
+    }
+
+    // del() executes a DELETE with RETURNING 1 to count affected rows
+    const del = async (sql: string, params: unknown[] = [orgId]) => {
+      const result = await client.query(sql + " RETURNING 1", params);
+      return result.rows.length;
+    };
+    // delRaw() for statements that already include RETURNING 1 in the SQL
+    // (used when subqueries make naive append break syntax)
+    const delRaw = async (sql: string, params: unknown[] = [orgId]) => {
+      const result = await client.query(sql, params);
+      return result.rows.length;
+    };
+
+    // ── Phase 1: Child tables with FK dependencies (delete children first) ──
+
+    // slack_threads uses conversation_id (no FK constraint) — delete before conversations to avoid orphans
+    const slackThreads = await delRaw(
+      `DELETE FROM slack_threads WHERE conversation_id IN (SELECT id FROM conversations WHERE org_id = $1) RETURNING 1`,
+    );
+
+    // messages cascade from conversations via FK (schema.ts:107), but we delete
+    // explicitly as a GDPR completeness guarantee — older deployments may predate the FK
+    const messages = await delRaw(`DELETE FROM messages WHERE conversation_id IN (SELECT id FROM conversations WHERE org_id = $1) RETURNING 1`);
+
+    // scheduled_task_runs references scheduled_tasks via FK cascade
+    const scheduledTaskRuns = await delRaw(
+      `DELETE FROM scheduled_task_runs WHERE task_id IN (SELECT id FROM scheduled_tasks WHERE org_id = $1) RETURNING 1`,
+    );
+
+    // semantic_entity_versions references semantic_entities via FK cascade
+    const semanticEntityVersions = await del(
+      `DELETE FROM semantic_entity_versions WHERE org_id = $1`,
+    );
+
+    // prompt_items references prompt_collections via FK cascade
+    const promptItems = await delRaw(
+      `DELETE FROM prompt_items WHERE collection_id IN (SELECT id FROM prompt_collections WHERE org_id = $1) RETURNING 1`,
+    );
+
+    // dashboard_cards references dashboards via FK cascade
+    const dashboardCards = await delRaw(
+      `DELETE FROM dashboard_cards WHERE dashboard_id IN (SELECT id FROM dashboards WHERE org_id = $1) RETURNING 1`,
+    );
+
+    // ── Phase 2: All org_id tables ──
+
+    const auditLog = await del(`DELETE FROM audit_log WHERE org_id = $1`);
+    const conversations = await del(`DELETE FROM conversations WHERE org_id = $1`);
+    const slackInstallations = await del(`DELETE FROM slack_installations WHERE org_id = $1`);
+    const actionLog = await del(`DELETE FROM action_log WHERE org_id = $1`);
+    const scheduledTasks = await del(`DELETE FROM scheduled_tasks WHERE org_id = $1`);
+    const connections = await del(`DELETE FROM connections WHERE org_id = $1`);
+    const tokenUsage = await del(`DELETE FROM token_usage WHERE org_id = $1`);
+    const invitations = await del(`DELETE FROM invitations WHERE org_id = $1`);
+    const pluginSettings = await del(`DELETE FROM plugin_settings WHERE org_id = $1`);
+    const settings = await del(`DELETE FROM settings WHERE org_id = $1`);
+    const semanticEntities = await del(`DELETE FROM semantic_entities WHERE org_id = $1`);
+    const learnedPatterns = await del(`DELETE FROM learned_patterns WHERE org_id = $1`);
+    const promptCollections = await del(`DELETE FROM prompt_collections WHERE org_id = $1`);
+    const querySuggestions = await del(`DELETE FROM query_suggestions WHERE org_id = $1`);
+    const ssoProviders = await del(`DELETE FROM sso_providers WHERE org_id = $1`);
+    const ipAllowlist = await del(`DELETE FROM ip_allowlist WHERE org_id = $1`);
+    const customRoles = await del(`DELETE FROM custom_roles WHERE org_id = $1`);
+    const auditRetentionConfig = await del(`DELETE FROM audit_retention_config WHERE org_id = $1`);
+    const workspaceModelConfig = await del(`DELETE FROM workspace_model_config WHERE org_id = $1`);
+    const approvalQueue = await del(`DELETE FROM approval_queue WHERE org_id = $1`);
+    const approvalRules = await del(`DELETE FROM approval_rules WHERE org_id = $1`);
+    const workspaceBranding = await del(`DELETE FROM workspace_branding WHERE org_id = $1`);
+    const onboardingEmails = await del(`DELETE FROM onboarding_emails WHERE org_id = $1`);
+    const piiColumnClassifications = await del(`DELETE FROM pii_column_classifications WHERE org_id = $1`);
+    const scimGroupMappings = await del(`DELETE FROM scim_group_mappings WHERE org_id = $1`);
+    const sandboxCredentials = await del(`DELETE FROM sandbox_credentials WHERE org_id = $1`);
+    const dashboards = await del(`DELETE FROM dashboards WHERE org_id = $1`);
+    const oauthState = await del(`DELETE FROM oauth_state WHERE org_id = $1`);
+
+    // Integration tables (org_id)
+    const teamsInstallations = await del(`DELETE FROM teams_installations WHERE org_id = $1`);
+    const discordInstallations = await del(`DELETE FROM discord_installations WHERE org_id = $1`);
+    const telegramInstallations = await del(`DELETE FROM telegram_installations WHERE org_id = $1`);
+    const gchatInstallations = await del(`DELETE FROM gchat_installations WHERE org_id = $1`);
+    const githubInstallations = await del(`DELETE FROM github_installations WHERE org_id = $1`);
+    const linearInstallations = await del(`DELETE FROM linear_installations WHERE org_id = $1`);
+    const whatsappInstallations = await del(`DELETE FROM whatsapp_installations WHERE org_id = $1`);
+    const emailInstallations = await del(`DELETE FROM email_installations WHERE org_id = $1`);
+
+    // ── Phase 3: Tables keyed by workspace_id (same value as orgId) ──
+
+    const usageEvents = await del(`DELETE FROM usage_events WHERE workspace_id = $1`);
+    const usageSummaries = await del(`DELETE FROM usage_summaries WHERE workspace_id = $1`);
+    const abuseEvents = await del(`DELETE FROM abuse_events WHERE workspace_id = $1`);
+    const customDomains = await del(`DELETE FROM custom_domains WHERE workspace_id = $1`);
+    const slaMetrics = await del(`DELETE FROM sla_metrics WHERE workspace_id = $1`);
+    const slaAlerts = await del(`DELETE FROM sla_alerts WHERE workspace_id = $1`);
+    const slaThresholds = await del(`DELETE FROM sla_thresholds WHERE workspace_id = $1`);
+    const regionMigrations = await del(`DELETE FROM region_migrations WHERE workspace_id = $1`);
+    const workspacePlugins = await del(`DELETE FROM workspace_plugins WHERE workspace_id = $1`);
+
+    // ── Phase 4: Better Auth — members + orphaned users ──
+
+    // Find users who are ONLY in this org (no other memberships)
+    const orphanedUserRows = await client.query(
+      `SELECT m."userId"
+       FROM member m
+       WHERE m."organizationId" = $1
+         AND NOT EXISTS (
+           SELECT 1 FROM member m2
+           WHERE m2."userId" = m."userId"
+             AND m2."organizationId" != $1
+         )`,
+      [orgId],
+    );
+    const orphanedUserIds = (orphanedUserRows.rows as Array<{ userId: string }>).map((r) => r.userId);
+
+    // Remove all memberships for this org
+    const members = await del(`DELETE FROM member WHERE "organizationId" = $1`);
+
+    // Delete Better Auth invitations for this org
+    const betterAuthInvitations = await del(`DELETE FROM invitation WHERE "organizationId" = $1`);
+
+    // Clean up orphaned users — sessions, accounts, onboarding, email prefs, then user
+    let orphanedUsers = 0;
+    if (orphanedUserIds.length > 0) {
+      await delRaw(
+        `DELETE FROM session WHERE "userId" = ANY($1) RETURNING 1`,
+        [orphanedUserIds],
+      );
+      await delRaw(
+        `DELETE FROM account WHERE "userId" = ANY($1) RETURNING 1`,
+        [orphanedUserIds],
+      );
+      await delRaw(
+        `DELETE FROM user_onboarding WHERE user_id = ANY($1) RETURNING 1`,
+        [orphanedUserIds],
+      );
+      await delRaw(
+        `DELETE FROM email_preferences WHERE user_id = ANY($1) RETURNING 1`,
+        [orphanedUserIds],
+      );
+      const userResult = await client.query(
+        `DELETE FROM "user" WHERE id = ANY($1) RETURNING 1`,
+        [orphanedUserIds],
+      );
+      orphanedUsers = userResult.rows.length;
+    }
+
+    // ── Phase 5: Delete the organization row itself ──
+
+    const organization = await del(`DELETE FROM organization WHERE id = $1`);
+
+    await client.query("COMMIT");
+
+    return {
+      auditLog,
+      conversations,
+      messages,
+      slackInstallations,
+      slackThreads,
+      actionLog,
+      scheduledTaskRuns,
+      scheduledTasks,
+      connections,
+      tokenUsage,
+      invitations,
+      pluginSettings,
+      settings,
+      semanticEntityVersions,
+      semanticEntities,
+      learnedPatterns,
+      promptItems,
+      promptCollections,
+      querySuggestions,
+      ssoProviders,
+      ipAllowlist,
+      customRoles,
+      auditRetentionConfig,
+      workspaceModelConfig,
+      approvalQueue,
+      approvalRules,
+      workspaceBranding,
+      onboardingEmails,
+      piiColumnClassifications,
+      scimGroupMappings,
+      sandboxCredentials,
+      dashboardCards,
+      dashboards,
+      oauthState,
+      teamsInstallations,
+      discordInstallations,
+      telegramInstallations,
+      gchatInstallations,
+      githubInstallations,
+      linearInstallations,
+      whatsappInstallations,
+      emailInstallations,
+      usageEvents,
+      usageSummaries,
+      abuseEvents,
+      customDomains,
+      slaMetrics,
+      slaAlerts,
+      slaThresholds,
+      regionMigrations,
+      workspacePlugins,
+      members,
+      betterAuthInvitations,
+      orphanedUsers,
+      organization,
+    };
+  } catch (err) {
+    await client.query("ROLLBACK").catch((rollbackErr) => {
+      log.warn(
+        { err: rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr), orgId },
+        "ROLLBACK failed after purge transaction error — verify data integrity",
+      );
+    });
+    throw err;
+  } finally {
+    client.release();
+  }
+}

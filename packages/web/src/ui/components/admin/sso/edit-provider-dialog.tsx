@@ -56,6 +56,28 @@ export function EditProviderDialog({
   onOpenChange,
   provider,
 }: EditProviderDialogProps) {
+  // Render nothing when no provider selected — caller controls `open` state
+  if (!provider) {
+    return (
+      <Dialog open={false} onOpenChange={onOpenChange}>
+        <DialogContent />
+      </Dialog>
+    );
+  }
+
+  return <EditProviderDialogInner open={open} onOpenChange={onOpenChange} provider={provider} />;
+}
+
+/** Inner component — `provider` is guaranteed non-null. */
+function EditProviderDialogInner({
+  open,
+  onOpenChange,
+  provider,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  provider: SSOProviderSummary;
+}) {
   const [showSecret, setShowSecret] = useState(false);
   const [testResult, setTestResult] = useState<SSOTestResult | null>(null);
   const [testError, setTestError] = useState<string | null>(null);
@@ -71,11 +93,13 @@ export function EditProviderDialog({
     },
   );
 
-  const currentSchema = provider?.type === "oidc" ? editOidcFormSchema : editSamlFormSchema;
+  const currentSchema = provider.type === "oidc" ? editOidcFormSchema : editSamlFormSchema;
   const form = useForm<EditProviderForm>({
     resolver: zodResolver(currentSchema),
-    defaultValues: { type: provider?.type ?? "saml", domain: "", issuer: "" } as EditProviderForm,
+    defaultValues: { type: provider.type, domain: "", issuer: "" } as EditProviderForm,
   });
+  // react-hook-form Control<Union> doesn't narrow for FormField — extract as FieldValues
+  const formControl = form.control as unknown as import("react-hook-form").Control;
 
   const { mutate: updateProvider, saving, error: updateError, clearError, reset: resetMutation } = useAdminMutation<{ provider: SSOProviderDetail }>({
     method: "PATCH",
@@ -85,7 +109,7 @@ export function EditProviderDialog({
 
   // Populate form when detail loads
   useEffect(() => {
-    if (!detail || !provider) return;
+    if (!detail) return;
     const config = detail.config as Record<string, string>;
 
     if (provider.type === "saml") {
@@ -107,7 +131,7 @@ export function EditProviderDialog({
         discoveryUrl: config.discoveryUrl ?? "",
       });
     }
-  }, [detail, provider?.id]);
+  }, [detail, provider.id]);
 
   // Reset state on dialog open/close
   useEffect(() => {
@@ -145,7 +169,6 @@ export function EditProviderDialog({
   }
 
   async function handleSubmit(values: EditProviderForm) {
-    if (!provider) return;
     clearError();
 
     const config = values.type === "saml"
@@ -178,7 +201,6 @@ export function EditProviderDialog({
   }
 
   async function handleTestConnection() {
-    if (!provider) return;
     setTesting(true);
     setTestResult(null);
     setTestError(null);
@@ -244,7 +266,7 @@ export function EditProviderDialog({
 
             {/* Domain */}
             <FormField
-              control={form.control}
+              control={formControl}
               name="domain"
               render={({ field }) => (
                 <FormItem>
@@ -259,7 +281,7 @@ export function EditProviderDialog({
 
             {/* Issuer */}
             <FormField
-              control={form.control}
+              control={formControl}
               name="issuer"
               render={({ field }) => (
                 <FormItem>
@@ -276,7 +298,7 @@ export function EditProviderDialog({
             {provider.type === "saml" && (
               <>
                 <FormField
-                  control={form.control}
+                  control={formControl}
                   name={"idpEntityId" as never}
                   render={({ field }) => (
                     <FormItem>
@@ -289,7 +311,7 @@ export function EditProviderDialog({
                   )}
                 />
                 <FormField
-                  control={form.control}
+                  control={formControl}
                   name={"idpSsoUrl" as never}
                   render={({ field }) => (
                     <FormItem>
@@ -302,7 +324,7 @@ export function EditProviderDialog({
                   )}
                 />
                 <FormField
-                  control={form.control}
+                  control={formControl}
                   name={"idpCertificate" as never}
                   render={({ field }) => (
                     <FormItem>
@@ -342,7 +364,7 @@ export function EditProviderDialog({
             {provider.type === "oidc" && (
               <>
                 <FormField
-                  control={form.control}
+                  control={formControl}
                   name={"clientId" as never}
                   render={({ field }) => (
                     <FormItem>
@@ -355,7 +377,7 @@ export function EditProviderDialog({
                   )}
                 />
                 <FormField
-                  control={form.control}
+                  control={formControl}
                   name={"clientSecret" as never}
                   render={({ field }) => (
                     <FormItem>
@@ -387,7 +409,7 @@ export function EditProviderDialog({
                   )}
                 />
                 <FormField
-                  control={form.control}
+                  control={formControl}
                   name={"discoveryUrl" as never}
                   render={({ field }) => (
                     <FormItem>

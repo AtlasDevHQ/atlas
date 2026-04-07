@@ -74,6 +74,8 @@ export function CreateProviderDialog({
       ? { type: "saml", domain: "", issuer: "", idpEntityId: "", idpSsoUrl: "", idpCertificate: "" }
       : { type: "oidc", domain: "", issuer: "", clientId: "", clientSecret: "", discoveryUrl: "" },
   });
+  // react-hook-form Control<Union> doesn't narrow for FormField — extract as FieldValues
+  const formControl = form.control as unknown as import("react-hook-form").Control;
 
   // Domain availability check
   const { data: domainCheck, loading: domainChecking, error: domainCheckError } = useAdminFetch(
@@ -243,7 +245,7 @@ export function CreateProviderDialog({
               <form onSubmit={form.handleSubmit(handleSubmit)} className="space-y-4">
                 {/* Domain */}
                 <FormField
-                  control={form.control}
+                  control={formControl}
                   name="domain"
                   render={({ field }) => (
                     <FormItem>
@@ -289,7 +291,7 @@ export function CreateProviderDialog({
 
                 {/* Issuer */}
                 <FormField
-                  control={form.control}
+                  control={formControl}
                   name="issuer"
                   render={({ field }) => (
                     <FormItem>
@@ -309,7 +311,7 @@ export function CreateProviderDialog({
                 {providerType === "saml" && (
                   <>
                     <FormField
-                      control={form.control}
+                      control={formControl}
                       name={"idpEntityId" as never}
                       render={({ field }) => (
                         <FormItem>
@@ -322,7 +324,7 @@ export function CreateProviderDialog({
                       )}
                     />
                     <FormField
-                      control={form.control}
+                      control={formControl}
                       name={"idpSsoUrl" as never}
                       render={({ field }) => (
                         <FormItem>
@@ -335,7 +337,7 @@ export function CreateProviderDialog({
                       )}
                     />
                     <FormField
-                      control={form.control}
+                      control={formControl}
                       name={"idpCertificate" as never}
                       render={({ field }) => (
                         <FormItem>
@@ -376,7 +378,7 @@ export function CreateProviderDialog({
                 {providerType === "oidc" && (
                   <>
                     <FormField
-                      control={form.control}
+                      control={formControl}
                       name={"clientId" as never}
                       render={({ field }) => (
                         <FormItem>
@@ -389,7 +391,7 @@ export function CreateProviderDialog({
                       )}
                     />
                     <FormField
-                      control={form.control}
+                      control={formControl}
                       name={"clientSecret" as never}
                       render={({ field }) => (
                         <FormItem>
@@ -402,7 +404,7 @@ export function CreateProviderDialog({
                       )}
                     />
                     <FormField
-                      control={form.control}
+                      control={formControl}
                       name={"discoveryUrl" as never}
                       render={({ field }) => (
                         <FormItem>

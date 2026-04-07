@@ -254,6 +254,8 @@ describe("createSSOProvider", () => {
   it("creates a SAML provider", async () => {
     // Domain uniqueness check
     ee.queueMockRows([]);
+    // Cross-domain: hasVerifiedCustomDomain check
+    ee.queueMockRows([]);
     // INSERT RETURNING
     ee.queueMockRows([sampleSamlRow]);
 
@@ -450,6 +452,8 @@ describe("OIDC encryption round-trip", () => {
   it("encrypts clientSecret on create", async () => {
     // Domain uniqueness check
     ee.queueMockRows([]);
+    // Cross-domain: hasVerifiedCustomDomain check
+    ee.queueMockRows([]);
     // INSERT RETURNING
     ee.queueMockRows([sampleOidcRow]);
 
@@ -465,7 +469,7 @@ describe("OIDC encryption round-trip", () => {
     }));
 
     // The INSERT query params should contain the encrypted secret
-    // Params: [orgId, type, issuer, domain, config_json, verificationToken]
+    // Params: [orgId, type, issuer, domain, config_json, verificationToken, autoVerified, status]
     const insertQuery = ee.capturedQueries.find(q => q.sql.includes("INSERT INTO sso_providers"));
     expect(insertQuery).toBeDefined();
     const configParam = insertQuery!.params[4] as string;

@@ -25,6 +25,17 @@ export type CertificateStatus = (typeof CERTIFICATE_STATUSES)[number];
 // Custom domain record
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Domain verification status (DNS TXT ownership proof)
+// ---------------------------------------------------------------------------
+
+export const DOMAIN_VERIFICATION_STATUSES = ["pending", "verified", "failed"] as const;
+export type DomainVerificationStatus = (typeof DOMAIN_VERIFICATION_STATUSES)[number];
+
+// ---------------------------------------------------------------------------
+// Custom domain record
+// ---------------------------------------------------------------------------
+
 export interface CustomDomain {
   id: string;
   workspaceId: string;
@@ -36,6 +47,14 @@ export interface CustomDomain {
   cnameTarget: string | null;
   /** Current certificate status from Railway. */
   certificateStatus: CertificateStatus | null;
+  /** DNS TXT verification token (atlas-verify=<uuid>). Null for pre-migration domains. */
+  verificationToken: string | null;
+  /** Whether domain ownership has been verified via DNS TXT. */
+  domainVerified: boolean;
+  /** Timestamp of successful DNS TXT verification. */
+  domainVerifiedAt: string | null;
+  /** Current DNS TXT verification status. */
+  domainVerificationStatus: DomainVerificationStatus;
   createdAt: string;
   verifiedAt: string | null;
 }

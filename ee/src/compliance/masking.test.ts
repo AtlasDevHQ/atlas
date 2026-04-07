@@ -360,6 +360,7 @@ describe("ComplianceError", () => {
   it("has correct name and code", () => {
     const err = new ComplianceError({ message: "test message", code: "validation" });
     expect(err.name).toBe("ComplianceError");
+    expect(err._tag).toBe("ComplianceError");
     expect(err.code).toBe("validation");
     expect(err.message).toBe("test message");
     expect(err instanceof Error).toBe(true);

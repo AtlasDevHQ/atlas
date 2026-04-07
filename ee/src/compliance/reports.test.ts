@@ -428,6 +428,7 @@ describe("ReportError", () => {
   it("has correct name and code", () => {
     const err = new ReportError({ message: "test", code: "validation" });
     expect(err.name).toBe("ReportError");
+    expect(err._tag).toBe("ReportError");
     expect(err.code).toBe("validation");
     expect(err.message).toBe("test");
   });

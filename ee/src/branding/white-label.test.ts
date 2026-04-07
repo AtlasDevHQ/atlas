@@ -242,6 +242,7 @@ describe("BrandingError", () => {
   it("has correct name and code", () => {
     const err = new BrandingError({ message: "test error", code: "validation" });
     expect(err.name).toBe("BrandingError");
+    expect(err._tag).toBe("BrandingError");
     expect(err.code).toBe("validation");
     expect(err.message).toBe("test error");
   });

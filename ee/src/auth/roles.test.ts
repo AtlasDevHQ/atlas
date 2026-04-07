@@ -533,6 +533,7 @@ describe("RoleError", () => {
   it("has correct name and code", () => {
     const err = new RoleError({ message: "test message", code: "not_found" });
     expect(err.name).toBe("RoleError");
+    expect(err._tag).toBe("RoleError");
     expect(err.code).toBe("not_found");
     expect(err.message).toBe("test message");
     expect(err instanceof Error).toBe(true);

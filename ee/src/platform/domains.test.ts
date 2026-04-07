@@ -692,6 +692,7 @@ describe("domains", () => {
     it("has correct name and code", () => {
       const err = new DomainError({ message: "test", code: "invalid_domain" });
       expect(err.name).toBe("DomainError");
+      expect(err._tag).toBe("DomainError");
       expect(err.code).toBe("invalid_domain");
       expect(err.message).toBe("test");
     });

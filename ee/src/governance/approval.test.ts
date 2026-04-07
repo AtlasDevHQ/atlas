@@ -563,6 +563,7 @@ describe("ApprovalError", () => {
   it("has correct name and code", () => {
     const err = new ApprovalError({ message: "test", code: "validation" });
     expect(err.name).toBe("ApprovalError");
+    expect(err._tag).toBe("ApprovalError");
     expect(err.code).toBe("validation");
     expect(err.message).toBe("test");
   });

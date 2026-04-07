@@ -257,5 +257,6 @@ describe("ModelConfigError", () => {
     expect(err.code).toBe("validation");
     expect(err.message).toBe("test error");
     expect(err.name).toBe("ModelConfigError");
+    expect(err._tag).toBe("ModelConfigError");
   });
 });

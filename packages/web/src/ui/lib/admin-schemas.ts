@@ -295,6 +295,10 @@ export const CustomDomainSchema = z.object({
   certificateStatus: z.string().nullable(),
   createdAt: z.string(),
   verifiedAt: z.string().nullable(),
+  verificationToken: z.string().nullable(),
+  domainVerified: z.boolean(),
+  domainVerifiedAt: z.string().nullable(),
+  domainVerificationStatus: z.enum(["pending", "verified", "failed"]),
 }) as z.ZodType<CustomDomain>;
 
 export const DomainResponseSchema = z.object({

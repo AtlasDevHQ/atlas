@@ -411,11 +411,15 @@ app.onError((err, c) => {
     const corsOrigin = c.res.headers.get("Access-Control-Allow-Origin");
     if (corsOrigin && !res.headers.has("Access-Control-Allow-Origin")) {
       const patched = new Response(res.body, res);
-      patched.headers.set("Access-Control-Allow-Origin", corsOrigin);
-      const creds = c.res.headers.get("Access-Control-Allow-Credentials");
-      if (creds) patched.headers.set("Access-Control-Allow-Credentials", creds);
-      const expose = c.res.headers.get("Access-Control-Expose-Headers");
-      if (expose) patched.headers.set("Access-Control-Expose-Headers", expose);
+      for (const h of [
+        "Access-Control-Allow-Origin",
+        "Access-Control-Allow-Credentials",
+        "Access-Control-Allow-Headers",
+        "Access-Control-Expose-Headers",
+      ]) {
+        const v = c.res.headers.get(h);
+        if (v) patched.headers.set(h, v);
+      }
       return patched;
     }
     return res;

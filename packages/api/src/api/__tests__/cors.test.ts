@@ -22,7 +22,11 @@ mock.module("@atlas/api/lib/auth/middleware", () => ({
 mock.module("@atlas/api/lib/agent", () => ({
   runAgent: () =>
     Promise.resolve({
-      toUIMessageStreamResponse: () => new Response("stream", { status: 200 }),
+      // Must provide toUIMessageStream (not toUIMessageStreamResponse) —
+      // the chat route calls agentResult.toUIMessageStream() to merge into
+      // createUIMessageStream, then throws HTTPException(200, { res }).
+      toUIMessageStream: () => new ReadableStream({ start(c) { c.close(); } }),
+      text: Promise.resolve(""),
     }),
 }));
 
@@ -138,9 +142,10 @@ describe("CORS middleware", () => {
   });
 
   it("streaming chat POST response includes CORS headers (HTTPException path)", async () => {
-    // The chat route throws HTTPException(200, { res: streamResponse }) which
-    // bypasses Hono's middleware response headers. The onError handler must
-    // copy CORS headers from the context to the raw Response.
+    // The chat route creates a streaming Response via createUIMessageStreamResponse
+    // and throws it as HTTPException(200, { res }). This bypasses Hono's middleware
+    // header pipeline. The onError handler must copy CORS headers from the context
+    // to the raw Response for cross-origin browsers to accept the stream.
     const res = await app.fetch(
       new Request("http://localhost/api/v1/chat", {
         method: "POST",
@@ -156,8 +161,10 @@ describe("CORS middleware", () => {
       }),
     );
 
-    // The response should have CORS headers regardless of whether it's
-    // a normal response or a streaming HTTPException response
+    // Verify this is a streaming response (SSE), not a JSON error fallback —
+    // confirms we're testing the HTTPException path, not the normal c.json() path.
+    expect(res.headers.get("Content-Type")).toContain("text/event-stream");
+    // CORS headers must be present on the streaming response
     expect(res.headers.get("Access-Control-Allow-Origin")).toBeTruthy();
   });
 

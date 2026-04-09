@@ -404,8 +404,25 @@ if (process.env.DISCORD_CLIENT_ID) {
 app.onError((err, c) => {
   // Framework HTTP exceptions (e.g., malformed JSON from @hono/zod-openapi) carry
   // their own status code and response — forward them instead of converting to 500.
+  // CORS headers must be copied from the middleware context because the raw Response
+  // from HTTPException(200, { res }) bypasses Hono's header pipeline.
   if (err instanceof HTTPException) {
-    return err.getResponse();
+    const res = err.getResponse();
+    const corsOrigin = c.res.headers.get("Access-Control-Allow-Origin");
+    if (corsOrigin && !res.headers.has("Access-Control-Allow-Origin")) {
+      const patched = new Response(res.body, res);
+      for (const h of [
+        "Access-Control-Allow-Origin",
+        "Access-Control-Allow-Credentials",
+        "Access-Control-Allow-Headers",
+        "Access-Control-Expose-Headers",
+      ]) {
+        const v = c.res.headers.get(h);
+        if (v) patched.headers.set(h, v);
+      }
+      return patched;
+    }
+    return res;
   }
   const requestId = crypto.randomUUID();
   log.error({ err, path: c.req.path, requestId }, "Unhandled error");

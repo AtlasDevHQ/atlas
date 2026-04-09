@@ -733,6 +733,15 @@ function handleHealth(): Response {
   try {
     const entries = readdirSync(SEMANTIC_DIR);
 
+    // Check bash availability (required for explore commands)
+    let bashAvailable = false;
+    try {
+      const proc = Bun.spawnSync(["bash", "--version"]);
+      bashAvailable = proc.exitCode === 0;
+    } catch {
+      // intentionally ignored: bash availability check
+    }
+
     // Check python3 availability
     let pythonAvailable = false;
     try {
@@ -743,10 +752,12 @@ function handleHealth(): Response {
     }
 
     return Response.json({
-      status: "ok",
+      status: bashAvailable ? "ok" : "degraded",
       semanticDir: SEMANTIC_DIR,
       fileCount: entries.length,
+      bashAvailable,
       pythonAvailable,
+      ...(!bashAvailable && { warning: "bash not found — explore commands will fail. Rebuild the sidecar image." }),
     });
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);

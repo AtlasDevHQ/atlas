@@ -137,6 +137,30 @@ describe("CORS middleware", () => {
     expect(exposeHeaders).toContain("Retry-After");
   });
 
+  it("streaming chat POST response includes CORS headers (HTTPException path)", async () => {
+    // The chat route throws HTTPException(200, { res: streamResponse }) which
+    // bypasses Hono's middleware response headers. The onError handler must
+    // copy CORS headers from the context to the raw Response.
+    const res = await app.fetch(
+      new Request("http://localhost/api/v1/chat", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Origin: "http://example.com",
+        },
+        body: JSON.stringify({
+          messages: [
+            { id: "1", role: "user", parts: [{ type: "text", text: "hello" }] },
+          ],
+        }),
+      }),
+    );
+
+    // The response should have CORS headers regardless of whether it's
+    // a normal response or a streaming HTTPException response
+    expect(res.headers.get("Access-Control-Allow-Origin")).toBeTruthy();
+  });
+
   // NOTE: Testing ATLAS_CORS_ORIGIN with a specific value would require
   // re-importing the app module after setting the env var, since Hono's
   // cors() middleware captures the origin config at app creation time.

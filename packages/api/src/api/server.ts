@@ -276,6 +276,10 @@ await Effect.runPromise(runtime.runtimeEffect).catch((err) => {
 const server = Bun.serve({
   port,
   fetch: app.fetch,
+  // Bun's default idleTimeout is 10s — too short for SSE/streaming responses.
+  // Agent runs can take 60-90s with gaps >10s between stream writes (LLM thinking,
+  // tool execution). Setting to 0 disables the idle timeout entirely.
+  idleTimeout: 0,
 });
 
 // ── Graceful shutdown ───────────────────────────────────────────────

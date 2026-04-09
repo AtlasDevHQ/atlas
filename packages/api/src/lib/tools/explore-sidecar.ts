@@ -70,6 +70,18 @@ export async function createSidecarBackend(
       );
     } else {
       log.info({ url: baseUrl.origin }, "Sidecar health check passed");
+      // Warn if bash is missing — explore commands will fail with ENOENT
+      try {
+        const body = await healthRes.clone().json() as Record<string, unknown>;
+        if (body && body.bashAvailable === false) {
+          log.error(
+            { url: baseUrl.origin },
+            "Sidecar is running but bash is not installed — explore commands will fail. Rebuild the sidecar image.",
+          );
+        }
+      } catch {
+        // intentionally ignored: health response parsing — non-critical
+      }
     }
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);

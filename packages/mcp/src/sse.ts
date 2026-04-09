@@ -162,6 +162,7 @@ export async function startSseServer(
   const bunServer = Bun.serve({
     port,
     hostname,
+    idleTimeout: 0, // SSE streaming — no idle timeout
     error(err) {
       log.error({ err }, "Unhandled server error");
       return new Response(

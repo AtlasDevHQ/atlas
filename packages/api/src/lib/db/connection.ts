@@ -276,7 +276,7 @@ function createPostgresDB(config: ConnectionConfig): DBConnection {
         }
 
         await client.query(`SET statement_timeout = ${timeoutMs}`);
-        await client.query("SET TRANSACTION READ ONLY");
+        await client.query("SET default_transaction_read_only = on");
         const result = await client.query(sql);
         const columns = result.fields.map(
           (f: { name: string }) => f.name

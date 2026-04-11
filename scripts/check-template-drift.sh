@@ -12,6 +12,7 @@
 # Files intentionally different (template-specific overrides, preserved by prepare script):
 #   - lib/api-url.ts — embedded same-origin (no cross-origin API URL)
 #   - lib/auth/client.ts — embedded same-origin (no admin client, no cross-origin)
+#   - app/page.tsx — standalone AtlasChat widget (SaaS uses native chat page)
 #   - app/layout.tsx — simpler layout (no nuqs adapter, no dark mode script)
 #   - app/global-error.tsx — template-only error boundary
 #   - app/api/[...route]/route.ts — template-only catch-all route
@@ -42,6 +43,7 @@ WEB_SRC="packages/web/src"
 EXCLUDED=(
   "lib/api-url.ts"
   "lib/auth/client.ts"
+  "app/page.tsx"
   "app/layout.tsx"
   "app/global-error.tsx"
   "app/globals.css"

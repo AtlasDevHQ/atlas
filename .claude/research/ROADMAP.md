@@ -1104,6 +1104,16 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 
 ---
 
+## Native SaaS Chat Page
+
+**Replace embeddable widget with first-class SaaS experience.** The dashboard (`/`) now uses native hooks instead of the `@useatlas/react` embed, giving URL state, prompt library, sharing, and full control. (#1389)
+
+- [x] Native chat page with `?id=` URL state (PR #1388)
+- [x] Lift `AtlasProvider` to root `AuthGuard` — remove 4 per-layout wrappers
+- [x] Template overrides for standalone deployments (`create-atlas/overrides/page.tsx`)
+
+---
+
 ## Ideas / Backlog
 
 _Untracked ideas. Create issues when committing to work._

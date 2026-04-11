@@ -9,6 +9,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, mock } from "bun:test";
+import { createConnectionMock } from "../../__mocks__/connection";
 
 // --- Mocks (same set as auth.test.ts / chat.test.ts) ---
 
@@ -46,6 +47,10 @@ mock.module("@atlas/api/lib/semantic", () => ({
   getWhitelistedTables: () => new Set(),
   _resetWhitelists: () => {},
 }));
+
+mock.module("@atlas/api/lib/db/connection", () =>
+  createConnectionMock({ resolveDatasourceUrl: () => "postgresql://mock:5432/test" }),
+);
 
 mock.module("@atlas/api/lib/tools/explore", () => ({
   getExploreBackendType: () => "just-bash",

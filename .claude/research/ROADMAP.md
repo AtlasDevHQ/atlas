@@ -1097,10 +1097,10 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 **Persistent audit log for all admin mutations.** Track who changed what, when, and why across both platform and workspace admin operations. Parent: #1363.
 
 - [x] Tracer bullet — schema + logger + first mutation + platform list + UI (#1364, PR #1373)
-- [ ] Workspace admin read surface (#1365)
+- [x] Workspace admin read surface (#1365, PR #1384)
+- [x] Instrument all platform admin mutations (#1367, PR #1383)
+- [x] Instrument all workspace admin mutations (#1368, PR #1385)
 - [ ] Filtering + CSV export (#1366)
-- [ ] Instrument all platform admin mutations (#1367)
-- [ ] Instrument all workspace admin mutations (#1368)
 
 ---
 

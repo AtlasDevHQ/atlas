@@ -13,6 +13,7 @@
 import { createRoute, z } from "@hono/zod-openapi";
 import { Effect } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
+import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { RequestContext } from "@atlas/api/lib/effect/services";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
@@ -168,6 +169,16 @@ platformDomains.openapi(registerDomainRoute, async (c) => {
 
     const domain = yield* mod.registerDomain(body.workspaceId, body.domain);
     log.info({ workspaceId: body.workspaceId, domain: body.domain, requestId }, "Custom domain registered");
+
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.domain.register,
+      targetType: "domain",
+      targetId: domain.id,
+      scope: "platform",
+      metadata: { workspaceId: body.workspaceId, domain: body.domain },
+      ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+    });
+
     return c.json(mod.redactDomain(domain, true), 201);
   }), { label: "register domain", domainErrors: [customDomainError] });
 });
@@ -185,6 +196,15 @@ platformDomains.openapi(verifyDomainRoute, async (c) => {
     }
 
     const domain = yield* mod.verifyDomain(domainId);
+
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.domain.verify,
+      targetType: "domain",
+      targetId: domainId,
+      scope: "platform",
+      ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+    });
+
     return c.json(mod.redactDomain(domain), 200);
   }), { label: "verify domain", domainErrors: [customDomainError] });
 });
@@ -203,6 +223,15 @@ platformDomains.openapi(deleteDomainRoute, async (c) => {
 
     yield* mod.deleteDomain(domainId);
     log.info({ domainId, requestId }, "Custom domain deleted");
+
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.domain.delete,
+      targetType: "domain",
+      targetId: domainId,
+      scope: "platform",
+      ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+    });
+
     return c.json({ deleted: true }, 200);
   }), { label: "delete domain", domainErrors: [customDomainError] });
 });

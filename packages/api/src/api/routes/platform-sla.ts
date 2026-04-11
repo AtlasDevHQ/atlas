@@ -16,6 +16,7 @@
 import { createRoute, z } from "@hono/zod-openapi";
 import { Effect } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
+import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import {
   RequestContext,
@@ -326,8 +327,19 @@ platformSLA.openapi(updateThresholdsRoute, async (c) => {
 
     const body = c.req.valid("json");
 
+    const oldThresholds = yield* sla.getThresholds();
     yield* sla.updateThresholds(body);
     log.info({ thresholds: body, requestId }, "SLA thresholds updated by platform admin");
+
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.sla.updateThresholds,
+      targetType: "sla",
+      targetId: "default",
+      scope: "platform",
+      metadata: { previousThresholds: oldThresholds, newThresholds: body },
+      ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+    });
+
     return c.json({ message: "Thresholds updated.", thresholds: body }, 200);
   }), { label: "update SLA thresholds" });
 });
@@ -356,6 +368,15 @@ platformSLA.openapi(acknowledgeAlertRoute, async (c) => {
       return c.json({ error: "not_firing", message: "Alert is not in firing state.", requestId }, 400);
     }
     log.info({ alertId, actorId, requestId }, "SLA alert acknowledged");
+
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.sla.acknowledgeAlert,
+      targetType: "sla",
+      targetId: alertId,
+      scope: "platform",
+      ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+    });
+
     return c.json({ message: "Alert acknowledged.", alertId }, 200);
   }), { label: "acknowledge SLA alert" });
 });

@@ -13,6 +13,7 @@
 import { createRoute, z } from "@hono/zod-openapi";
 import { Effect } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
+import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { runEffect, domainError } from "@atlas/api/lib/effect/hono";
 import {
   RequestContext,
@@ -230,6 +231,16 @@ platformResidency.openapi(assignRegionRoute, async (c) => {
 
     const assignment = yield* mod.assignWorkspaceRegion(workspaceId, body.region);
     log.info({ workspaceId, region: body.region, requestId }, "Region assigned to workspace");
+
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.residency.assign,
+      targetType: "residency",
+      targetId: workspaceId,
+      scope: "platform",
+      metadata: { region: body.region },
+      ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+    });
+
     return c.json(assignment, 200);
   }), { label: "assign region", domainErrors: [residencyDomainError] });
 });

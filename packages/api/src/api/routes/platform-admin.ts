@@ -574,6 +574,14 @@ platformAdmin.openapi(unsuspendWorkspaceRoute, async (c) => {
     yield* Effect.promise(() => updateWorkspaceStatus(workspaceId, "active"));
     log.info({ workspaceId, requestId }, "Workspace unsuspended by platform admin");
 
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.workspace.unsuspend,
+      targetType: "workspace",
+      targetId: workspaceId,
+      scope: "platform",
+      ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+    });
+
     return c.json({ message: "Workspace reactivated.", workspaceId }, 200);
   }), { label: "unsuspend workspace" });
 });
@@ -611,6 +619,15 @@ platformAdmin.openapi(deleteWorkspaceRoute, async (c) => {
     });
 
     log.info({ workspaceId, cleanup, requestId }, "Workspace deleted by platform admin");
+
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.workspace.delete,
+      targetType: "workspace",
+      targetId: workspaceId,
+      scope: "platform",
+      metadata: { cleanup },
+      ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+    });
 
     return c.json({
       message: "Workspace deleted.",
@@ -653,6 +670,15 @@ platformAdmin.openapi(purgeWorkspaceRoute, async (c) => {
     const totalRows = Object.values(purged).reduce((sum, n) => sum + n, 0);
 
     log.info({ workspaceId, totalRows, requestId }, "Workspace purged (GDPR hard delete)");
+
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.workspace.purge,
+      targetType: "workspace",
+      targetId: workspaceId,
+      scope: "platform",
+      metadata: { purged, totalRows },
+      ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+    });
 
     return c.json({
       message: "Workspace permanently purged. All data has been irreversibly removed.",
@@ -707,6 +733,15 @@ platformAdmin.openapi(changePlanRoute, async (c) => {
     }));
 
     log.info({ workspaceId, planTier, previousTier: workspace.plan_tier, requestId }, "Workspace plan changed by platform admin");
+
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.workspace.changePlan,
+      targetType: "workspace",
+      targetId: workspaceId,
+      scope: "platform",
+      metadata: { previousPlan: workspace.plan_tier, newPlan: planTier },
+      ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+    });
 
     return c.json({ message: "Plan updated.", workspaceId, planTier }, 200);
   }), { label: "change workspace plan" });

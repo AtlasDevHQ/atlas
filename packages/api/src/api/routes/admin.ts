@@ -67,6 +67,7 @@ import { adminTokens } from "./admin-tokens";
 import { adminConnections } from "./admin-connections";
 import { adminPlugins } from "./admin-plugins";
 import { adminCache } from "./admin-cache";
+import { adminActions } from "./admin-actions";
 import { registerSemanticEditorRoutes } from "./admin-semantic";
 import { ErrorSchema, AuthErrorSchema, parsePagination } from "./shared-schemas";
 import { runHandler } from "@atlas/api/lib/effect/hono";
@@ -211,6 +212,8 @@ admin.route("/plugins", adminPlugins);
 admin.route("/plugins/", adminPlugins);
 admin.route("/cache", adminCache);
 admin.route("/cache/", adminCache);
+admin.route("/admin-actions", adminActions);
+admin.route("/admin-actions/", adminActions);
 // Plugin marketplace — lazy import to avoid crashing all admin routes if marketplace module fails
 try {
   const { workspaceMarketplace } = await import("./admin-marketplace");

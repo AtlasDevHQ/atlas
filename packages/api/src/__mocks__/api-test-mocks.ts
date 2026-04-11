@@ -263,6 +263,7 @@ export function createApiTestMocks(
     getAutoApproveTypes: mock(() => new Set(["update_description", "add_dimension"])),
     insertSemanticAmendment: mock(async () => ({ id: "mock-amendment-id", status: "pending" as const })),
     getPendingAmendmentCount: mock(async () => 0),
+    hardDeleteWorkspace: mock(async () => ({})),
   };
 
   mock.module("@atlas/api/lib/db/internal", () => ({

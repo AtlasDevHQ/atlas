@@ -117,6 +117,7 @@ const navGroups: NavGroup[] = [
     icon: BarChart3,
     items: [
       { href: "/admin/audit", label: "Audit Log" },
+      { href: "/admin/admin-actions", label: "Admin Action Log" },
       { href: "/admin/token-usage", label: "Token Usage" },
       { href: "/admin/usage", label: "Usage" },
       { href: "/admin/scheduled-tasks", label: "Scheduled Tasks" },

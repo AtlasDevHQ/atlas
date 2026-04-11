@@ -3,6 +3,8 @@
 import { useEffect } from "react";
 import { usePathname, useRouter } from "next/navigation";
 import { authClient } from "@/lib/auth/client";
+import { AtlasProvider } from "@/ui/context";
+import { getApiUrl, isCrossOrigin } from "@/lib/api-url";
 
 const AUTH_MODE = process.env.NEXT_PUBLIC_ATLAS_AUTH_MODE ?? "";
 
@@ -14,11 +16,12 @@ function isPublicRoute(pathname: string): boolean {
 }
 
 /**
- * Client-side auth guard for managed auth mode.
+ * Client-side auth guard and app-wide context provider.
  *
- * Redirects unauthenticated users to /login. The proxy (src/proxy.ts)
- * should handle this server-side, but this is a safety net so users
- * never see the @useatlas/react inline ManagedAuthCard.
+ * Wraps all pages in AtlasProvider (apiUrl, isCrossOrigin, authClient)
+ * so any component can call useAtlasConfig() without per-layout wrappers.
+ *
+ * Redirects unauthenticated users to /login in managed auth mode.
  */
 export function AuthGuard({ children }: { children: React.ReactNode }) {
   const router = useRouter();
@@ -37,5 +40,9 @@ export function AuthGuard({ children }: { children: React.ReactNode }) {
     }
   }, [session.isPending, isSignedIn, pathname, router]);
 
-  return <>{children}</>;
+  return (
+    <AtlasProvider config={{ apiUrl: getApiUrl(), isCrossOrigin: isCrossOrigin(), authClient }}>
+      {children}
+    </AtlasProvider>
+  );
 }

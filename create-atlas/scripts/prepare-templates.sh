@@ -69,12 +69,12 @@ done
 
 # ── Step 2b: Copy Next.js app pages + catch-all route into docker template ──
 # The docker template is a full-stack Next.js + embedded Hono API.
-# page.tsx uses the docker example override (standalone AtlasChat widget)
+# page.tsx uses the template override (standalone AtlasChat widget)
 # rather than packages/web's native SaaS chat page.
-DOCKER_EXAMPLE="$MONOREPO/examples/docker"
+OVERRIDES="$ROOT/overrides"
 echo ":: Syncing Next.js app pages → docker"
 mkdir -p "$TEMPLATES/docker/src/app/api/[...route]"
-cp "$DOCKER_EXAMPLE/src/app/page.tsx" "$TEMPLATES/docker/src/app/"
+cp "$OVERRIDES/page.tsx"   "$TEMPLATES/docker/src/app/"
 cp "$WEB_APP/layout.tsx"   "$TEMPLATES/docker/src/app/"
 cp "$WEB_APP/error.tsx"    "$TEMPLATES/docker/src/app/"
 cp "$WEB_APP/globals.css"  "$TEMPLATES/docker/src/app/"
@@ -145,10 +145,10 @@ for f in "$WEB_SRC"/lib/*.ts; do
   cp "$f" "$TEMPLATES/nextjs-standalone/src/lib/" 2>/dev/null || true
 done
 
-# Copy Next.js app pages — page.tsx uses the example override (standalone AtlasChat
+# Copy Next.js app pages — page.tsx uses the template override (standalone AtlasChat
 # widget) rather than packages/web's native SaaS chat page.
 mkdir -p "$TEMPLATES/nextjs-standalone/src/app"
-cp "$NEXTJS_EXAMPLE/src/app/page.tsx" "$TEMPLATES/nextjs-standalone/src/app/"
+cp "$OVERRIDES/page.tsx"   "$TEMPLATES/nextjs-standalone/src/app/"
 cp "$WEB_APP/layout.tsx"   "$TEMPLATES/nextjs-standalone/src/app/"
 cp "$WEB_APP/error.tsx"    "$TEMPLATES/nextjs-standalone/src/app/"
 cp "$WEB_APP/globals.css"  "$TEMPLATES/nextjs-standalone/src/app/"

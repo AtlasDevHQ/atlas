@@ -3,7 +3,7 @@
 import dynamic from "next/dynamic";
 
 const AtlasChat = dynamic(
-  () => import("@/ui/components/atlas-chat").then((m) => ({ default: m.AtlasChat })),
+  () => import("@atlas/web/ui/components/atlas-chat").then((m) => ({ default: m.AtlasChat })),
   { ssr: false },
 );
 

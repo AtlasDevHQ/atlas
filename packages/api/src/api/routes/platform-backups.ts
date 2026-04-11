@@ -16,6 +16,7 @@
 import { createRoute, z } from "@hono/zod-openapi";
 import { Effect } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
+import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import {
   RequestContext,
@@ -278,6 +279,16 @@ platformBackups.openapi(createBackupRoute, async (c) => {
 
     const result = yield* backupsMod.createBackup();
     log.info({ backupId: result.id, requestId }, "Manual backup created by platform admin");
+
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.backup.create,
+      targetType: "backup",
+      targetId: result.id,
+      scope: "platform",
+      metadata: { backupId: result.id },
+      ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+    });
+
     const row = yield* backupsMod.getBackupById(result.id);
     const backup = row ? toBackupEntry(row) : {
       id: result.id,
@@ -317,6 +328,16 @@ platformBackups.openapi(verifyBackupRoute, async (c) => {
       throw verifyResult.left;
     }
     log.info({ backupId, verified: verifyResult.right.verified, requestId }, "Backup verification completed");
+
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.backup.verify,
+      targetType: "backup",
+      targetId: backupId,
+      scope: "platform",
+      metadata: { verified: verifyResult.right.verified, message: verifyResult.right.message },
+      ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+    });
+
     return c.json(verifyResult.right, 200);
   }), { label: "verify backup" });
 });
@@ -346,6 +367,15 @@ platformBackups.openapi(requestRestoreRoute, async (c) => {
       throw restoreResult.left;
     }
     log.warn({ backupId, requestId }, "Restore requested by platform admin");
+
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.backup.requestRestore,
+      targetType: "backup",
+      targetId: backupId,
+      scope: "platform",
+      ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+    });
+
     return c.json(restoreResult.right, 200);
   }), { label: "request restore" });
 });
@@ -366,6 +396,16 @@ platformBackups.openapi(confirmRestoreRoute, async (c) => {
     return yield* backupsMod.executeRestore(body.confirmationToken).pipe(
       Effect.map((result) => {
         log.warn({ backupId: c.req.param("id"), preRestoreBackupId: result.preRestoreBackupId, requestId }, "Database restore executed by platform admin");
+
+        logAdminAction({
+          actionType: ADMIN_ACTIONS.backup.confirmRestore,
+          targetType: "backup",
+          targetId: c.req.param("id"),
+          scope: "platform",
+          metadata: { preRestoreBackupId: result.preRestoreBackupId },
+          ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+        });
+
         return c.json(result, 200);
       }),
       Effect.catchAll((err) => {
@@ -412,9 +452,31 @@ platformBackups.openapi(updateConfigRoute, async (c) => {
 
     const body = c.req.valid("json");
 
+    const oldConfig = yield* backupsMod.getBackupConfig();
     yield* backupsMod.updateBackupConfig(body);
     const config = yield* backupsMod.getBackupConfig();
     log.info({ config, requestId }, "Backup config updated by platform admin");
+
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.backup.updateConfig,
+      targetType: "backup",
+      targetId: "config",
+      scope: "platform",
+      metadata: {
+        previousConfig: {
+          schedule: oldConfig.schedule,
+          retentionDays: oldConfig.retention_days,
+          storagePath: oldConfig.storage_path,
+        },
+        newConfig: {
+          schedule: config.schedule,
+          retentionDays: config.retention_days,
+          storagePath: config.storage_path,
+        },
+      },
+      ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+    });
+
     return c.json({
       message: "Configuration updated.",
       config: {

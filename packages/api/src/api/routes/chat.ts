@@ -522,13 +522,41 @@ chat.openapi(chatRoute, async (c) => {
               });
           }
   
-          // Fire-and-forget: persist assistant response after stream completes.
+          // Fire-and-forget: persist assistant response (text + tool results) after stream completes.
           if (conversationId) {
             const cid = conversationId;
-            void Promise.resolve(agentResult.text)
-              .then((text) => {
+            void Promise.resolve(agentResult.steps)
+              .then((steps) => {
                 try {
-                  addMessage({ conversationId: cid, role: "assistant", content: [{ type: "text", text }] });
+                  const content: unknown[] = [];
+                  for (const step of steps) {
+                    if (step.text) {
+                      content.push({ type: "text", text: step.text });
+                    }
+                    if (step.toolResults) {
+                      for (const tr of step.toolResults) {
+                        try {
+                          content.push({
+                            type: "tool-invocation",
+                            toolCallId: tr.toolCallId,
+                            toolName: tr.toolName,
+                            args: tr.input,
+                            result: tr.output,
+                          });
+                        } catch (trErr) {
+                          log.warn(
+                            { err: trErr instanceof Error ? trErr.message : String(trErr), conversationId: cid },
+                            "Skipped malformed tool result during persistence",
+                          );
+                        }
+                      }
+                    }
+                  }
+                  if (content.length === 0) {
+                    log.warn({ conversationId: cid, stepCount: steps.length }, "Agent produced no text or tool results — persisting empty message");
+                    content.push({ type: "text", text: "" });
+                  }
+                  addMessage({ conversationId: cid, role: "assistant", content });
                 } catch (persistErr) {
                   log.warn({ err: persistErr instanceof Error ? persistErr.message : String(persistErr), conversationId: cid }, "Failed to persist assistant message");
                 }

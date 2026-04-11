@@ -1,6 +1,7 @@
 "use client";
 
 import type { UIMessage } from "@ai-sdk/react";
+import { isToolUIPart } from "ai";
 import type { CellStatus } from "./types";
 import { ToolPart } from "@/ui/components/chat/tool-part";
 import { Markdown } from "@/ui/components/chat/markdown";
@@ -48,7 +49,7 @@ export function NotebookCellOutput({ assistantMessage, status, collapsed }: Cell
           const displayText = parseSuggestions(part.text).text;
           return <Markdown key={i} content={displayText} />;
         }
-        if (part.type === "tool-invocation") {
+        if (isToolUIPart(part)) {
           return <ToolPart key={i} part={part} />;
         }
         return null;

@@ -8,6 +8,7 @@
 
 import { createRoute, z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
+import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { connections, detectDBType } from "@atlas/api/lib/db/connection";
 import { hasInternalDB, internalQuery, encryptUrl, decryptUrl } from "@atlas/api/lib/db/internal";
 import { maskConnectionUrl } from "@atlas/api/lib/security";
@@ -567,6 +568,15 @@ adminConnections.openapi(createConnectionRoute, async (c) => runHandler(c, "crea
   }
 
   log.info({ requestId, connectionId: id, dbType, orgId, actorId: authResult.user?.id }, "Connection created");
+
+  logAdminAction({
+    actionType: ADMIN_ACTIONS.connection.create,
+    targetType: "connection",
+    targetId: id as string,
+    ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+    metadata: { name: id as string, dbType },
+  });
+
   return c.json({
     id,
     dbType,
@@ -710,6 +720,15 @@ adminConnections.openapi(updateConnectionRoute, async (c) => runHandler(c, "upda
   }
 
   log.info({ requestId, connectionId: id, urlChanged, actorId: authResult.user?.id }, "Connection updated");
+
+  logAdminAction({
+    actionType: ADMIN_ACTIONS.connection.update,
+    targetType: "connection",
+    targetId: id,
+    ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+    metadata: { name: id, urlChanged },
+  });
+
   return c.json({ id, dbType, description: newDescription, maskedUrl: maskConnectionUrl(newUrl) }, 200);
 }));
 
@@ -779,6 +798,15 @@ adminConnections.openapi(deleteConnectionRoute, async (c) => runHandler(c, "dele
   }
 
   log.info({ requestId, connectionId: id, actorId: authResult.user?.id }, "Connection deleted");
+
+  logAdminAction({
+    actionType: ADMIN_ACTIONS.connection.delete,
+    targetType: "connection",
+    targetId: id,
+    ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+    metadata: { name: id },
+  });
+
   return c.json({ success: true }, 200);
 }));
 

@@ -8,6 +8,7 @@
 
 import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
+import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { AuthContext } from "@atlas/api/lib/effect/services";
 import { internalQuery, hasInternalDB } from "@atlas/api/lib/db/internal";
@@ -526,6 +527,15 @@ adminIntegrations.openapi(disconnectSlackRoute, async (c) => {
       }
 
       log.info({ orgId }, "Slack installation disconnected by admin");
+
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.integration.disable,
+        targetType: "integration",
+        targetId: orgId!,
+        ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+        metadata: { platform: "slack" },
+      });
+
       return c.json({ message: "Slack disconnected successfully." }, 200);
     }),
     { label: "disconnect slack" },
@@ -559,6 +569,15 @@ adminIntegrations.openapi(disconnectTeamsRoute, async (c) => {
       }
 
       log.info({ orgId }, "Teams installation disconnected by admin");
+
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.integration.disable,
+        targetType: "integration",
+        targetId: orgId!,
+        ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+        metadata: { platform: "teams" },
+      });
+
       return c.json({ message: "Teams disconnected successfully." }, 200);
     }),
     { label: "disconnect teams" },
@@ -628,6 +647,15 @@ adminIntegrations.openapi(disconnectDiscordRoute, async (c) => {
       }
 
       log.info({ orgId }, "Discord installation disconnected by admin");
+
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.integration.disable,
+        targetType: "integration",
+        targetId: orgId!,
+        ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+        metadata: { platform: "discord" },
+      });
+
       return c.json({ message: "Discord disconnected successfully." }, 200);
     }),
     { label: "disconnect discord" },
@@ -758,6 +786,15 @@ adminIntegrations.openapi(connectSlackByotRoute, async (c) => {
       });
 
       log.info({ orgId, teamId: authResult.teamId, workspaceName: authResult.workspaceName }, "Slack BYOT installation saved by admin");
+
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.integration.enable,
+        targetType: "integration",
+        targetId: orgId!,
+        ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+        metadata: { platform: "slack", mode: "byot" },
+      });
+
       return c.json(
         { message: "Slack connected successfully.", workspaceName: authResult.workspaceName, teamId: authResult.teamId },
         200,
@@ -893,6 +930,15 @@ adminIntegrations.openapi(connectTeamsByotRoute, async (c) => {
       });
 
       log.info({ orgId, appId }, "Teams BYOT installation saved by admin");
+
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.integration.enable,
+        targetType: "integration",
+        targetId: orgId!,
+        ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+        metadata: { platform: "teams", mode: "byot" },
+      });
+
       return c.json(
         { message: "Teams connected successfully.", appId },
         200,
@@ -1033,6 +1079,15 @@ adminIntegrations.openapi(connectDiscordByotRoute, async (c) => {
       });
 
       log.info({ orgId, applicationId, botUsername: meResult.botUsername }, "Discord BYOT installation saved by admin");
+
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.integration.enable,
+        targetType: "integration",
+        targetId: orgId!,
+        ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+        metadata: { platform: "discord", mode: "byot" },
+      });
+
       return c.json(
         { message: "Discord connected successfully.", botUsername: meResult.botUsername },
         200,
@@ -1158,6 +1213,15 @@ adminIntegrations.openapi(connectTelegramRoute, async (c) => {
       });
 
       log.info({ orgId, botId: getMeResult.botId, botUsername: getMeResult.botUsername }, "Telegram installation saved by admin");
+
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.integration.enable,
+        targetType: "integration",
+        targetId: orgId!,
+        ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+        metadata: { platform: "telegram" },
+      });
+
       return c.json(
         { message: "Telegram connected successfully.", botUsername: getMeResult.botUsername },
         200,
@@ -1230,6 +1294,15 @@ adminIntegrations.openapi(disconnectTelegramRoute, async (c) => {
       }
 
       log.info({ orgId }, "Telegram installation disconnected by admin");
+
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.integration.disable,
+        targetType: "integration",
+        targetId: orgId!,
+        ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+        metadata: { platform: "telegram" },
+      });
+
       return c.json({ message: "Telegram disconnected successfully." }, 200);
     }),
     { label: "disconnect telegram" },
@@ -1376,6 +1449,15 @@ adminIntegrations.openapi(connectGChatRoute, async (c) => {
       }
 
       log.info({ orgId, projectId, serviceAccountEmail: clientEmail }, "Google Chat installation saved by admin");
+
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.integration.enable,
+        targetType: "integration",
+        targetId: orgId!,
+        ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+        metadata: { platform: "gchat" },
+      });
+
       return c.json(
         { message: "Google Chat connected successfully.", projectId, serviceAccountEmail: clientEmail },
         200,
@@ -1447,6 +1529,15 @@ adminIntegrations.openapi(disconnectGChatRoute, async (c) => {
       }
 
       log.info({ orgId }, "Google Chat installation disconnected by admin");
+
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.integration.disable,
+        targetType: "integration",
+        targetId: orgId!,
+        ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+        metadata: { platform: "gchat" },
+      });
+
       return c.json({ message: "Google Chat disconnected successfully." }, 200);
     }),
     { label: "disconnect gchat" },
@@ -1601,6 +1692,15 @@ adminIntegrations.openapi(connectGitHubRoute, async (c) => {
       }
 
       log.info({ orgId, userId: userResult.userId, username: userResult.username }, "GitHub installation saved by admin");
+
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.integration.enable,
+        targetType: "integration",
+        targetId: orgId!,
+        ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+        metadata: { platform: "github" },
+      });
+
       return c.json(
         { message: "GitHub connected successfully.", username: userResult.username },
         200,
@@ -1672,6 +1772,15 @@ adminIntegrations.openapi(disconnectGitHubRoute, async (c) => {
       }
 
       log.info({ orgId }, "GitHub installation disconnected by admin");
+
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.integration.disable,
+        targetType: "integration",
+        targetId: orgId!,
+        ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+        metadata: { platform: "github" },
+      });
+
       return c.json({ message: "GitHub disconnected successfully." }, 200);
     }),
     { label: "disconnect github" },
@@ -1843,6 +1952,15 @@ adminIntegrations.openapi(connectLinearRoute, async (c) => {
       }
 
       log.info({ orgId, userId: viewerResult.userId, userName: viewerResult.userName }, "Linear installation saved by admin");
+
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.integration.enable,
+        targetType: "integration",
+        targetId: orgId!,
+        ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+        metadata: { platform: "linear" },
+      });
+
       return c.json(
         { message: "Linear connected successfully.", userName: viewerResult.userName, userEmail: viewerResult.userEmail },
         200,
@@ -1914,6 +2032,15 @@ adminIntegrations.openapi(disconnectLinearRoute, async (c) => {
       }
 
       log.info({ orgId }, "Linear installation disconnected by admin");
+
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.integration.disable,
+        targetType: "integration",
+        targetId: orgId!,
+        ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+        metadata: { platform: "linear" },
+      });
+
       return c.json({ message: "Linear disconnected successfully." }, 200);
     }),
     { label: "disconnect linear" },
@@ -2075,6 +2202,15 @@ adminIntegrations.openapi(connectWhatsAppRoute, async (c) => {
       }
 
       log.info({ orgId, phoneNumberId, displayPhone: phoneResult.displayPhone }, "WhatsApp installation saved by admin");
+
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.integration.enable,
+        targetType: "integration",
+        targetId: orgId!,
+        ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+        metadata: { platform: "whatsapp" },
+      });
+
       return c.json(
         { message: "WhatsApp connected successfully.", displayPhone: phoneResult.displayPhone },
         200,
@@ -2146,6 +2282,15 @@ adminIntegrations.openapi(disconnectWhatsAppRoute, async (c) => {
       }
 
       log.info({ orgId }, "WhatsApp installation disconnected by admin");
+
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.integration.disable,
+        targetType: "integration",
+        targetId: orgId!,
+        ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+        metadata: { platform: "whatsapp" },
+      });
+
       return c.json({ message: "WhatsApp disconnected successfully." }, 200);
     }),
     { label: "disconnect whatsapp" },
@@ -2279,6 +2424,15 @@ adminIntegrations.openapi(connectEmailRoute, async (c) => {
       });
 
       log.info({ orgId, provider, senderAddress }, "Email installation saved by admin");
+
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.integration.configure,
+        targetType: "integration",
+        targetId: orgId!,
+        ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+        metadata: { platform: "email", provider },
+      });
+
       return c.json(
         { message: "Email connected successfully.", provider, senderAddress },
         200,
@@ -2455,6 +2609,15 @@ adminIntegrations.openapi(disconnectEmailRoute, async (c) => {
       }
 
       log.info({ orgId }, "Email installation disconnected by admin");
+
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.integration.disable,
+        targetType: "integration",
+        targetId: orgId!,
+        ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+        metadata: { platform: "email" },
+      });
+
       return c.json({ message: "Email disconnected successfully." }, 200);
     }),
     { label: "disconnect email" },

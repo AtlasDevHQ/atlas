@@ -9,6 +9,7 @@ import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
 import { HTTPException } from "hono/http-exception";
 import { createLogger } from "@atlas/api/lib/logger";
+import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
 import { internalQuery } from "@atlas/api/lib/db/internal";
@@ -467,6 +468,25 @@ adminLearnedPatterns.openapi(updatePatternRoute, async (c) => {
     const updateOrg = orgFilter(orgId, updateParams, paramIdx);
     const updated = yield* Effect.promise(() => internalQuery<Record<string, unknown>>(`UPDATE learned_patterns SET ${setClauses.join(", ")} WHERE id = $${idIdx} AND ${updateOrg.clause} RETURNING *`, updateParams));
     if (updated.length === 0) return c.json({ error: "not_found", message: "Pattern was deleted before update completed." }, 404);
+
+    if (status === "approved") {
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.pattern.approve,
+        targetType: "pattern",
+        targetId: id,
+        ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+        metadata: { patternId: id },
+      });
+    } else if (status === "rejected") {
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.pattern.reject,
+        targetType: "pattern",
+        targetId: id,
+        ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+        metadata: { patternId: id },
+      });
+    }
+
     return c.json(toLearnedPattern(updated[0]), 200);
   }), { label: "update learned pattern" });
 });
@@ -489,6 +509,15 @@ adminLearnedPatterns.openapi(deletePatternRoute, async (c) => {
     const deleteOrg = orgFilter(orgId, deleteParams, deleteParams.length + 1);
     yield* Effect.promise(() => internalQuery(`DELETE FROM learned_patterns WHERE id = $1 AND ${deleteOrg.clause}`, deleteParams));
     invalidatePatternCache(orgId ?? null);
+
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.pattern.delete,
+      targetType: "pattern",
+      targetId: id,
+      ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+      metadata: { patternId: id },
+    });
+
     return c.json({ deleted: true }, 200);
   }), { label: "delete learned pattern" });
 });

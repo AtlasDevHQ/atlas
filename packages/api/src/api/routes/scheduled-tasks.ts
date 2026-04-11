@@ -15,6 +15,7 @@ import { validationHook } from "./validation-hook";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
 import { createLogger } from "@atlas/api/lib/logger";
+import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import {
   createScheduledTask,
@@ -282,6 +283,14 @@ authed.openapi(
         return c.json(fail.body, fail.status);
       }
 
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.schedule.create,
+        targetType: "schedule",
+        targetId: createResult.data.id,
+        ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+        metadata: { name: parsed.name },
+      });
+
       return c.json(createResult.data, 201);
     }), { label: "create scheduled task" });
   },
@@ -439,6 +448,27 @@ authed.openapi(
 
       // Fetch updated task to return
       const updated = yield* Effect.promise(() => getScheduledTask(id, { orgId }));
+
+      // Determine if this was a toggle (enabled field changed)
+      const isToggle = parsed.enabled !== undefined && Object.keys(parsed).length === 1;
+      if (isToggle) {
+        logAdminAction({
+          actionType: ADMIN_ACTIONS.schedule.toggle,
+          targetType: "schedule",
+          targetId: id,
+          ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+          metadata: { name: updated.ok ? updated.data.name : id, enabled: parsed.enabled },
+        });
+      } else {
+        logAdminAction({
+          actionType: ADMIN_ACTIONS.schedule.update,
+          targetType: "schedule",
+          targetId: id,
+          ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+          metadata: { name: updated.ok ? updated.data.name : id },
+        });
+      }
+
       if (!updated.ok) {
         return c.json({ ok: true }, 200);
       }
@@ -474,6 +504,15 @@ authed.openapi(deleteTaskRoute, async (c) => {
       const fail = crudFailResponse(delResult.reason, requestId);
       return c.json(fail.body, fail.status);
     }
+
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.schedule.delete,
+      targetType: "schedule",
+      targetId: id,
+      ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+      metadata: { taskId: id },
+    });
+
     return c.body(null, 204);
   }), { label: "delete scheduled task" });
 });

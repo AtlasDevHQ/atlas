@@ -16,6 +16,7 @@ import type { OpenAPIHono } from "@hono/zod-openapi";
 import { runHandler } from "@atlas/api/lib/effect/hono";
 import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
+import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import type { AuthResult } from "@atlas/api/lib/auth/types";
 import { connections } from "@atlas/api/lib/db/connection";
 import { ErrorSchema, AuthErrorSchema, createParamSchema } from "./shared-schemas";
@@ -520,6 +521,15 @@ export function registerSemanticEditorRoutes(
       }
 
       log.info({ requestId, orgId, name }, "Semantic entity upserted via editor");
+
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.semantic.updateEntity,
+        targetType: "semantic",
+        targetId: name,
+        ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+        metadata: { name, source: "editor" },
+      });
+
       return c.json({ ok: true, name, entityType: "entity" }, 200);
     }),
   );
@@ -562,6 +572,15 @@ export function registerSemanticEditorRoutes(
       }
 
       log.info({ requestId, orgId, name }, "Semantic entity deleted via editor");
+
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.semantic.deleteEntity,
+        targetType: "semantic",
+        targetId: name,
+        ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+        metadata: { name, source: "editor" },
+      });
+
       return c.json({ ok: true, name, entityType: "entity" }, 200);
     }),
   );
@@ -790,6 +809,15 @@ export function registerSemanticEditorRoutes(
       }
 
       log.info({ requestId, orgId, name, targetVersion: targetVersion.version_number }, "Semantic entity rolled back");
+
+      logAdminAction({
+        actionType: ADMIN_ACTIONS.semantic.updateEntity,
+        targetType: "semantic",
+        targetId: name,
+        ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+        metadata: { name, action: "rollback", targetVersion: targetVersion.version_number },
+      });
+
       return c.json({ ok: true, name, versionNumber: newVersionNumber }, 200);
     }),
   );

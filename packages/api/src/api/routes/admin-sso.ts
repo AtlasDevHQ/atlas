@@ -7,6 +7,7 @@
 
 import { createRoute, z } from "@hono/zod-openapi";
 import { Effect } from "effect";
+import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { runEffect, domainError } from "@atlas/api/lib/effect/hono";
 import {
   AuthContext,
@@ -672,6 +673,15 @@ adminSso.openapi(createProviderRoute, async (c) => {
     }
 
     const provider = yield* createSSOProvider(orgId!, body as unknown as CreateSSOProviderRequest);
+
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.sso.configure,
+      targetType: "sso",
+      targetId: provider.id,
+      ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+      metadata: { providerType: body.type },
+    });
+
     return c.json({ provider: redactProvider(provider) }, 201);
   }), { label: "create SSO provider", domainErrors: [ssoEnforcementDomainError, ssoDomainError] });
 });
@@ -689,6 +699,15 @@ adminSso.openapi(updateProviderRoute, async (c) => {
     const body = c.req.valid("json") as UpdateSSOProviderRequest;
 
     const provider = yield* updateSSOProvider(orgId!, providerId, body);
+
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.sso.update,
+      targetType: "sso",
+      targetId: providerId,
+      ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+      metadata: { providerType: provider.type },
+    });
+
     return c.json({ provider: redactProvider(provider) }, 200);
   }), { label: "update SSO provider", domainErrors: [ssoEnforcementDomainError, ssoDomainError] });
 });
@@ -707,6 +726,14 @@ adminSso.openapi(deleteProviderRoute, async (c) => {
     if (!deleted) {
       return c.json({ error: "not_found", message: "SSO provider not found." }, 404);
     }
+
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.sso.delete,
+      targetType: "sso",
+      targetId: providerId,
+      ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+    });
+
     return c.json({ message: "SSO provider deleted." }, 200);
   }), { label: "delete SSO provider", domainErrors: [ssoEnforcementDomainError, ssoDomainError] });
 });
@@ -722,6 +749,15 @@ adminSso.openapi(testProviderRoute, async (c) => {
     }
 
     const result = yield* testSSOProvider(orgId!, providerId);
+
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.sso.test,
+      targetType: "sso",
+      targetId: providerId,
+      ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+      metadata: { providerType: result.type, success: result.success },
+    });
+
     return c.json(result, 200);
   }), { label: "test SSO provider", domainErrors: [ssoEnforcementDomainError, ssoDomainError] });
 });

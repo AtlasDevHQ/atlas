@@ -18,6 +18,7 @@
 
 import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
+import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { runEffect, domainError } from "@atlas/api/lib/effect/hono";
 import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
 import {
@@ -411,6 +412,15 @@ adminApproval.openapi(reviewRoute, async (c) => {
       body.action,
       body.comment,
     );
+
+    logAdminAction({
+      actionType: body.action === "approve" ? ADMIN_ACTIONS.approval.approve : ADMIN_ACTIONS.approval.deny,
+      targetType: "approval",
+      targetId: itemId,
+      ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+      metadata: { requestId: itemId },
+    });
+
     return c.json({ request: result }, 200);
   }), { label: "review approval request", domainErrors: [approvalDomainError] });
 });

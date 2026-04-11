@@ -17,6 +17,7 @@ import { createLogger, withRequestContext, getRequestContext } from "@atlas/api/
 import { withRequestId } from "./middleware";
 import type { AuthResult } from "@atlas/api/lib/auth/types";
 import { authenticateRequest } from "@atlas/api/lib/auth/middleware";
+import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { connections } from "@atlas/api/lib/db/connection";
 import { hasInternalDB, internalQuery, getWorkspaceRegion } from "@atlas/api/lib/db/internal";
 import { plugins } from "@atlas/api/lib/plugins/registry";
@@ -1349,6 +1350,21 @@ admin.openapi(putOrgEntityRoute, async (c) => runHandler(c, "save org semantic e
   await syncEntityToDisk(orgId, name, entityType, body.yamlContent);
 
   log.info({ requestId, orgId, name, entityType }, "Org semantic entity upserted");
+
+  const semanticAction = entityType === "metric"
+    ? ADMIN_ACTIONS.semantic.updateMetric
+    : entityType === "glossary"
+      ? ADMIN_ACTIONS.semantic.updateGlossary
+      : ADMIN_ACTIONS.semantic.updateEntity;
+
+  logAdminAction({
+    actionType: semanticAction,
+    targetType: "semantic",
+    targetId: name,
+    ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+    metadata: { name, entityType },
+  });
+
   return c.json({ ok: true, name, entityType }, 200);
 }));
 
@@ -1381,6 +1397,15 @@ admin.openapi(deleteOrgEntityRoute, async (c) => runHandler(c, "delete org seman
   await syncEntityDeleteFromDisk(orgId, name, entityType);
 
   log.info({ requestId, orgId, name, entityType }, "Org semantic entity deleted");
+
+  logAdminAction({
+    actionType: ADMIN_ACTIONS.semantic.deleteEntity,
+    targetType: "semantic",
+    targetId: name,
+    ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+    metadata: { name, entityType },
+  });
+
   return c.json({ ok: true, name, entityType }, 200);
 }));
 
@@ -1744,11 +1769,34 @@ admin.openapi(changeUserRoleRoute, async (c) => {
   }
 
   try {
+    // Capture previous role for audit metadata (best-effort — may be undefined for non-DB auth)
+    let previousRole: string | undefined;
+    if (hasInternalDB()) {
+      try {
+        const roleRow = await internalQuery<{ role: string }>(
+          `SELECT role FROM "user" WHERE id = $1`,
+          [userId],
+        );
+        previousRole = roleRow[0]?.role;
+      } catch {
+        // intentionally ignored: previous role is metadata only, not critical
+      }
+    }
+
     await adminApi.setRole({
       body: { userId, role: newRole },
       headers: c.req.raw.headers,
     });
     log.info({ requestId, targetUserId: userId, newRole, actorId: authResult.user?.id }, "User role changed");
+
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.user.changeRole,
+      targetType: "user",
+      targetId: userId,
+      ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+      metadata: { previousRole, newRole },
+    });
+
     return c.json({ success: true }, 200);
   } catch (err) {
     log.error({ err: err instanceof Error ? err : new Error(String(err)), userId }, "Failed to set user role");
@@ -1864,6 +1912,14 @@ admin.openapi(deleteUserRoute, async (c) => {
       headers: c.req.raw.headers,
     });
     log.info({ requestId, targetUserId: userId, actorId: authResult.user?.id }, "User deleted");
+
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.user.remove,
+      targetType: "user",
+      targetId: userId,
+      ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+    });
+
     return c.json({ success: true }, 200);
   } catch (err) {
     log.error({ err: err instanceof Error ? err : new Error(String(err)), userId }, "Failed to delete user");
@@ -2005,6 +2061,15 @@ admin.openapi(updateSettingRoute, async (c) => runHandler(c, "save setting", asy
   const effectiveOrgId = def.scope === "workspace" ? orgId : undefined;
   await setSetting(key, value, authResult.user?.id, effectiveOrgId);
   log.info({ requestId, key, orgId: effectiveOrgId, actorId: authResult.user?.id }, "Setting override saved via admin API");
+
+  logAdminAction({
+    actionType: ADMIN_ACTIONS.settings.update,
+    targetType: "settings",
+    targetId: key,
+    ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+    metadata: { key, value },
+  });
+
   return c.json({ success: true, key, value }, 200);
 }));
 
@@ -2041,6 +2106,15 @@ admin.openapi(deleteSettingRoute, async (c) => runHandler(c, "delete setting", a
   const effectiveOrgId = def.scope === "workspace" ? orgId : undefined;
   await deleteSetting(key, authResult.user?.id, effectiveOrgId);
   log.info({ requestId, key, orgId: effectiveOrgId, actorId: authResult.user?.id }, "Setting override removed via admin API");
+
+  logAdminAction({
+    actionType: ADMIN_ACTIONS.settings.update,
+    targetType: "settings",
+    targetId: key,
+    ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+    metadata: { key, action: "reset_to_default" },
+  });
+
   return c.json({ success: true, key }, 200);
 }));
 

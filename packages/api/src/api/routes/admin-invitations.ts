@@ -9,6 +9,7 @@
 import { createRoute, z } from "@hono/zod-openapi";
 import type { OpenAPIHono } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
+import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { detectAuthMode } from "@atlas/api/lib/auth/detect";
 import type { AtlasRole } from "@atlas/api/lib/auth/types";
@@ -234,6 +235,14 @@ export function registerInvitationRoutes(
     }
 
     log.info({ requestId, invitationId: invitation.id, email, role, emailSent, orgId, actorId: authResult.user?.id }, "User invited");
+
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.user.invite,
+      targetType: "user",
+      targetId: invitation.id,
+      ipAddress: c.req.header("x-forwarded-for") ?? c.req.header("x-real-ip") ?? null,
+      metadata: { email, role },
+    });
 
     return c.json({
       id: invitation.id,

@@ -18,8 +18,9 @@ import {
   ChevronRight,
   ClipboardList,
 } from "lucide-react";
-import { useState } from "react";
+import { useQueryStates } from "nuqs";
 import { z } from "zod";
+import { adminActionsSearchParams } from "./search-params";
 
 // ---------------------------------------------------------------------------
 // Schema
@@ -64,6 +65,7 @@ function formatTimestamp(iso: string): string {
       second: "2-digit",
     });
   } catch {
+    // intentionally ignored: invalid date string — fall back to raw ISO
     return iso;
   }
 }
@@ -87,7 +89,8 @@ function metadataPreview(metadata: Record<string, unknown> | null): string {
 const PAGE_SIZE = 50;
 
 function AdminActionsPageContent() {
-  const [offset, setOffset] = useState(0);
+  const [params, setParams] = useQueryStates(adminActionsSearchParams);
+  const offset = (params.page - 1) * PAGE_SIZE;
 
   const { data, loading, error, refetch } = useAdminFetch(
     `/api/v1/admin/admin-actions?limit=${PAGE_SIZE}&offset=${offset}`,
@@ -167,7 +170,7 @@ function AdminActionsPageContent() {
                 variant="outline"
                 size="sm"
                 disabled={!hasPrev}
-                onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
+                onClick={() => setParams({ page: Math.max(1, params.page - 1) })}
               >
                 <ChevronLeft className="size-4 mr-1" />
                 Previous
@@ -176,7 +179,7 @@ function AdminActionsPageContent() {
                 variant="outline"
                 size="sm"
                 disabled={!hasNext}
-                onClick={() => setOffset(offset + PAGE_SIZE)}
+                onClick={() => setParams({ page: params.page + 1 })}
               >
                 Next
                 <ChevronRight className="size-4 ml-1" />

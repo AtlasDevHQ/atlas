@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useState, useRef, useEffect, useCallback } from "react";
+import { Suspense, useState, useRef, useEffect } from "react";
 import dynamic from "next/dynamic";
 import { useChat } from "@ai-sdk/react";
 import { isToolUIPart } from "ai";
@@ -60,9 +60,12 @@ function ChatPage() {
   const [loadingConversation, setLoadingConversation] = useState(false);
   const [schemaExplorerOpen, setSchemaExplorerOpen] = useState(false);
   const [promptLibraryOpen, setPromptLibraryOpen] = useState(false);
+  const [fetchErrorDismissed, setFetchErrorDismissed] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const lastLoadedIdRef = useRef<string | null>(null);
 
-  // Auth
+  // Client-side role check for nav display only — actual admin access is
+  // enforced by the backend (which resolves org member roles).
   const session = authClient.useSession();
   const user = session.data?.user as
     | { email?: string; role?: string }
@@ -94,7 +97,6 @@ function ChatPage() {
     },
   });
 
-  // Conversations
   const convos = useConversations({
     apiUrl: getApiUrl(),
     enabled: true,
@@ -105,17 +107,21 @@ function ChatPage() {
   const refreshConvosRef = useRef(convos.refresh);
   refreshConvosRef.current = convos.refresh;
 
-  // Fetch conversation list after auth resolves
+  // Reset dismissed state when a new fetch error appears
+  useEffect(() => { setFetchErrorDismissed(false); }, [convos.fetchError]);
+
+  // Re-fetch conversation list when auth mode changes
   useEffect(() => {
-    convos.fetchList();
+    // TanStack Query manages error state via convos.fetchError
+    convos.fetchList().catch(() => {
+      // intentionally ignored: TanStack Query error state handles display
+    });
   }, [authMode, convos.fetchList]);
 
-  // useChat
   const { messages, setMessages, sendMessage, status, error: chatError } = useChat({ transport });
 
   const isLoading = status === "streaming" || status === "submitted";
 
-  // Auto-scroll
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
@@ -123,15 +129,20 @@ function ChatPage() {
     if (isNearBottom) el.scrollTop = el.scrollHeight;
   }, [messages, status]);
 
-  // Load conversation when ID changes (from URL or sidebar selection)
+  // Load conversation when ID changes via URL navigation (browser back/forward, shared links).
+  // Sidebar clicks go through handleSelectConversation which sets lastLoadedIdRef to skip this.
   useEffect(() => {
     if (!conversationId) return;
+    if (conversationId === lastLoadedIdRef.current) return;
     let cancelled = false;
+    setError(null);
+    setLoadingConversation(true);
     async function load() {
       try {
         const convData = await convos.getConversationData(conversationId!);
         if (cancelled) return;
         setMessages(transformMessages(convData.messages));
+        lastLoadedIdRef.current = conversationId!;
       } catch (err: unknown) {
         if (!cancelled) {
           console.warn(
@@ -140,6 +151,8 @@ function ChatPage() {
           );
           setError("Failed to load conversation. Please try again.");
         }
+      } finally {
+        if (!cancelled) setLoadingConversation(false);
       }
     }
     load();
@@ -157,7 +170,6 @@ function ChatPage() {
       );
       setInput(saved);
       setError("Failed to send message. Please try again.");
-      setTimeout(() => setError(null), 5000);
     });
   }
 
@@ -176,6 +188,7 @@ function ChatPage() {
     try {
       const convData = await convos.getConversationData(id);
       setMessages(transformMessages(convData.messages));
+      lastLoadedIdRef.current = id;
       setParams({ id });
       convos.setSelectedId(id);
       setMobileMenuOpen(false);
@@ -190,24 +203,18 @@ function ChatPage() {
     }
   }
 
-  // Share handlers
-  const handleShare = useCallback(
-    (id: string, opts?: Parameters<typeof convos.shareConversation>[1]) =>
-      convos.shareConversation(id, opts),
-    [convos.shareConversation],
-  );
+  function handleShare(id: string, opts?: Parameters<typeof convos.shareConversation>[1]) {
+    return convos.shareConversation(id, opts);
+  }
 
-  const handleUnshare = useCallback(
-    (id: string) => convos.unshareConversation(id),
-    [convos.unshareConversation],
-  );
+  function handleUnshare(id: string) {
+    return convos.unshareConversation(id);
+  }
 
-  const handleGetShareStatus = useCallback(
-    (id: string) => convos.getShareStatus(id),
-    [convos.getShareStatus],
-  );
+  function handleGetShareStatus(id: string) {
+    return convos.getShareStatus(id);
+  }
 
-  // Health warning blocks page
   if (healthWarning) {
     return (
       <div className="flex h-dvh items-center justify-center p-8">
@@ -302,10 +309,18 @@ function ChatPage() {
               </div>
 
               {/* Error bar */}
-              {(error || convos.fetchError) && (
+              {(error || (convos.fetchError && !fetchErrorDismissed)) && (
                 <div className="mb-2 flex items-center justify-between rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700 dark:border-red-800 dark:bg-red-950 dark:text-red-300">
                   <p>{error || convos.fetchError}</p>
-                  <Button variant="ghost" size="sm" onClick={() => setError(null)} className="shrink-0 text-red-600 dark:text-red-400">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      setError(null);
+                      setFetchErrorDismissed(true);
+                    }}
+                    className="shrink-0 text-red-600 dark:text-red-400"
+                  >
                     Dismiss
                   </Button>
                 </div>
@@ -399,8 +414,8 @@ function ChatPage() {
                           <div className="max-w-[90%]">
                             <div className="rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700 dark:bg-red-950/30 dark:text-red-400">
                               {chatError.message
-                                ? `Something went wrong generating a response: ${chatError.message}. Try sending your message again.`
-                                : "Something went wrong generating a response. Try sending your message again."}
+                                ? `Response generation failed: ${chatError.message}. Try sending your message again.`
+                                : "Response generation failed. Try sending your message again."}
                             </div>
                           </div>
                         )}

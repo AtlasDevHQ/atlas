@@ -36,12 +36,14 @@ export function transformMessages(messages: Message[]): UIMessage[] {
       const parts: UIMessage["parts"] = Array.isArray(m.content)
         ? (m.content as Record<string, unknown>[])
             .filter((p) => p.type === "text" || p.type === "tool-invocation")
-            .map((p) => {
+            .map((p, idx) => {
               if (p.type === "tool-invocation") {
-                const toolCallId = String(p.toolCallId ?? "");
+                const toolCallId = typeof p.toolCallId === "string" && p.toolCallId
+                  ? p.toolCallId
+                  : `unknown-${idx}`;
                 return {
                   type: "dynamic-tool" as const,
-                  toolName: String(p.toolName ?? ""),
+                  toolName: typeof p.toolName === "string" ? p.toolName : "unknown",
                   toolCallId,
                   toolInvocationId: toolCallId,
                   state: "output-available" as const,
@@ -49,7 +51,7 @@ export function transformMessages(messages: Message[]): UIMessage[] {
                   output: p.result,
                 };
               }
-              return { type: "text" as const, text: String((p as { text?: string }).text ?? "") };
+              return { type: "text" as const, text: String(p.text ?? "") };
             })
         : [{ type: "text" as const, text: String(m.content) }];
 

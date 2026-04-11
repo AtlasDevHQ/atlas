@@ -535,17 +535,25 @@ chat.openapi(chatRoute, async (c) => {
                     }
                     if (step.toolResults) {
                       for (const tr of step.toolResults) {
-                        content.push({
-                          type: "tool-invocation",
-                          toolCallId: tr.toolCallId,
-                          toolName: tr.toolName,
-                          args: tr.input,
-                          result: tr.output,
-                        });
+                        try {
+                          content.push({
+                            type: "tool-invocation",
+                            toolCallId: tr.toolCallId,
+                            toolName: tr.toolName,
+                            args: tr.input,
+                            result: tr.output,
+                          });
+                        } catch (trErr) {
+                          log.warn(
+                            { err: trErr instanceof Error ? trErr.message : String(trErr), conversationId: cid },
+                            "Skipped malformed tool result during persistence",
+                          );
+                        }
                       }
                     }
                   }
                   if (content.length === 0) {
+                    log.warn({ conversationId: cid, stepCount: steps.length }, "Agent produced no text or tool results — persisting empty message");
                     content.push({ type: "text", text: "" });
                   }
                   addMessage({ conversationId: cid, role: "assistant", content });

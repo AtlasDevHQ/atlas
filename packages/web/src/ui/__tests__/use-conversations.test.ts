@@ -111,6 +111,37 @@ describe("transformMessages", () => {
     expect(result[0].parts[2]).toEqual({ type: "text", text: "Here are the results." });
   });
 
+  test("filters out unknown content part types", () => {
+    const messages: Message[] = [
+      msg({ id: "1", role: "assistant", content: [
+        { type: "text", text: "hello" },
+        { type: "image", url: "https://example.com/img.png" },
+        { type: "reasoning", text: "thinking..." },
+      ] }),
+    ];
+
+    const result = transformMessages(messages);
+    expect(result[0].parts).toEqual([{ type: "text", text: "hello" }]);
+  });
+
+  test("handles tool-invocation with missing fields", () => {
+    const messages: Message[] = [
+      msg({ id: "1", role: "assistant", content: [
+        { type: "tool-invocation" },
+      ] }),
+    ];
+
+    const result = transformMessages(messages);
+    const part = result[0].parts[0] as Record<string, unknown>;
+    expect(part.type).toBe("dynamic-tool");
+    expect(part.toolName).toBe("unknown");
+    expect(part.toolCallId).toBe("unknown-0");
+    expect(part.toolInvocationId).toBe("unknown-0");
+    expect(part.state).toBe("output-available");
+    expect(part.input).toBeUndefined();
+    expect(part.output).toBeUndefined();
+  });
+
   test("falls back gracefully for old conversations with only text parts", () => {
     const messages: Message[] = [
       msg({ id: "1", role: "assistant", content: [{ type: "text", text: "old format answer" }] }),

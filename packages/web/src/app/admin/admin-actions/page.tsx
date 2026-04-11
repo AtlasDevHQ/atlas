@@ -2,6 +2,14 @@
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   Table,
   TableBody,
@@ -12,12 +20,18 @@ import {
 } from "@/components/ui/table";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
+import { useAtlasConfig } from "@/ui/context";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
+import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import {
   ChevronLeft,
   ChevronRight,
   ClipboardList,
+  Download,
+  Search,
+  X,
 } from "lucide-react";
+import { useState } from "react";
 import { useQueryStates } from "nuqs";
 import { z } from "zod";
 import { adminActionsSearchParams } from "./search-params";
@@ -52,6 +66,43 @@ const ActionsResponseSchema = z.object({
 type AdminAction = z.infer<typeof AdminActionSchema>;
 
 // ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+const ACTION_TYPE_OPTIONS = [
+  { value: "settings.update", label: "settings.update" },
+  { value: "connection.create", label: "connection.create" },
+  { value: "connection.update", label: "connection.update" },
+  { value: "connection.delete", label: "connection.delete" },
+  { value: "user.invite", label: "user.invite" },
+  { value: "user.remove", label: "user.remove" },
+  { value: "user.change_role", label: "user.change_role" },
+  { value: "sso.configure", label: "sso.configure" },
+  { value: "semantic.create_entity", label: "semantic.create_entity" },
+  { value: "semantic.update_entity", label: "semantic.update_entity" },
+  { value: "semantic.delete_entity", label: "semantic.delete_entity" },
+  { value: "pattern.approve", label: "pattern.approve" },
+  { value: "pattern.reject", label: "pattern.reject" },
+  { value: "integration.enable", label: "integration.enable" },
+  { value: "integration.disable", label: "integration.disable" },
+  { value: "apikey.create", label: "apikey.create" },
+  { value: "apikey.revoke", label: "apikey.revoke" },
+];
+
+const TARGET_TYPE_OPTIONS = [
+  { value: "connection", label: "Connection" },
+  { value: "user", label: "User" },
+  { value: "settings", label: "Settings" },
+  { value: "sso", label: "SSO" },
+  { value: "semantic", label: "Semantic" },
+  { value: "pattern", label: "Pattern" },
+  { value: "integration", label: "Integration" },
+  { value: "apikey", label: "API Key" },
+  { value: "schedule", label: "Schedule" },
+  { value: "approval", label: "Approval" },
+];
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -82,6 +133,14 @@ function metadataPreview(metadata: Record<string, unknown> | null): string {
   return entries.map(([k, v]) => `${k}: ${String(v)}`).join(", ");
 }
 
+function buildFilterQueryString(params: Record<string, string>): string {
+  const qs = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v) qs.set(k, v);
+  }
+  return qs.toString();
+}
+
 // ---------------------------------------------------------------------------
 // Page
 // ---------------------------------------------------------------------------
@@ -89,11 +148,24 @@ function metadataPreview(metadata: Record<string, unknown> | null): string {
 const PAGE_SIZE = 50;
 
 function AdminActionsPageContent() {
+  const { apiUrl, isCrossOrigin } = useAtlasConfig();
+  const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
   const [params, setParams] = useQueryStates(adminActionsSearchParams);
   const offset = (params.page - 1) * PAGE_SIZE;
 
+  const filterQs = buildFilterQueryString({
+    actor: params.actor,
+    actionType: params.actionType,
+    targetType: params.targetType,
+    from: params.from,
+    to: params.to,
+    search: params.search,
+  });
+
   const { data, loading, error, refetch } = useAdminFetch(
-    `/api/v1/admin/admin-actions?limit=${PAGE_SIZE}&offset=${offset}`,
+    `/api/v1/admin/admin-actions?limit=${PAGE_SIZE}&offset=${offset}${filterQs ? `&${filterQs}` : ""}`,
     { schema: ActionsResponseSchema },
   );
 
@@ -102,13 +174,144 @@ function AdminActionsPageContent() {
   const hasNext = offset + PAGE_SIZE < total;
   const hasPrev = offset > 0;
 
+  const hasFilters = !!(params.actor || params.actionType || params.targetType || params.from || params.to || params.search);
+
+  function clearFilters() {
+    setParams({ actor: "", actionType: "", targetType: "", from: "", to: "", search: "", page: 1 });
+  }
+
+  async function handleExport() {
+    setExporting(true);
+    setExportError(null);
+    try {
+      const exportQs = buildFilterQueryString({
+        actor: params.actor,
+        actionType: params.actionType,
+        targetType: params.targetType,
+        from: params.from,
+        to: params.to,
+        search: params.search,
+      });
+      const res = await fetch(
+        `${apiUrl}/api/v1/admin/admin-actions/export${exportQs ? `?${exportQs}` : ""}`,
+        { credentials },
+      );
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        throw new Error(body?.message ?? `Export failed (${res.status})`);
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `admin-actions-${new Date().toISOString().slice(0, 10)}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setExportError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setExporting(false);
+    }
+  }
+
   return (
     <div className="space-y-6">
-      <div>
-        <h2 className="text-2xl font-bold tracking-tight">Admin Action Log</h2>
-        <p className="text-muted-foreground">
-          Admin actions performed in this workspace. {total > 0 && `${total} total entries.`}
-        </p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-2xl font-bold tracking-tight">Admin Action Log</h2>
+          <p className="text-muted-foreground">
+            Admin actions performed in this workspace. {total > 0 && `${total} total entries.`}
+          </p>
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-9"
+          onClick={handleExport}
+          disabled={loading || exporting}
+        >
+          <Download className="mr-1.5 size-3.5" />
+          {exporting ? "Exporting\u2026" : "Export CSV"}
+        </Button>
+      </div>
+
+      {exportError && (
+        <ErrorBanner
+          message={exportError}
+          onRetry={() => { setExportError(null); handleExport(); }}
+        />
+      )}
+
+      {/* Filter bar */}
+      <div className="flex flex-wrap items-end gap-3">
+        <div className="relative flex-1 min-w-[180px] max-w-xs">
+          <Search className="absolute left-2.5 top-2.5 size-3.5 text-muted-foreground" />
+          <Input
+            placeholder="Search metadata..."
+            value={params.search}
+            onChange={(e) => setParams({ search: e.target.value, page: 1 })}
+            className="h-9 pl-8"
+          />
+        </div>
+
+        <Input
+          placeholder="Actor email..."
+          value={params.actor}
+          onChange={(e) => setParams({ actor: e.target.value, page: 1 })}
+          className="h-9 w-44"
+        />
+
+        <Select
+          value={params.actionType || "__all__"}
+          onValueChange={(v) => setParams({ actionType: v === "__all__" ? "" : v, page: 1 })}
+        >
+          <SelectTrigger className="h-9 w-48" aria-label="Filter by action type">
+            <SelectValue placeholder="All action types" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__all__">All action types</SelectItem>
+            {ACTION_TYPE_OPTIONS.map((opt) => (
+              <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+
+        <Select
+          value={params.targetType || "__all__"}
+          onValueChange={(v) => setParams({ targetType: v === "__all__" ? "" : v, page: 1 })}
+        >
+          <SelectTrigger className="h-9 w-40" aria-label="Filter by target type">
+            <SelectValue placeholder="All targets" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__all__">All targets</SelectItem>
+            {TARGET_TYPE_OPTIONS.map((opt) => (
+              <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+
+        <Input
+          type="date"
+          value={params.from}
+          onChange={(e) => setParams({ from: e.target.value, page: 1 })}
+          className="h-9 w-36"
+          aria-label="From date"
+        />
+        <Input
+          type="date"
+          value={params.to}
+          onChange={(e) => setParams({ to: e.target.value, page: 1 })}
+          className="h-9 w-36"
+          aria-label="To date"
+        />
+
+        {hasFilters && (
+          <Button variant="ghost" size="sm" className="h-9" onClick={clearFilters}>
+            <X className="mr-1.5 size-3.5" />
+            Clear
+          </Button>
+        )}
       </div>
 
       <AdminContentWrapper
@@ -121,6 +324,8 @@ function AdminActionsPageContent() {
         emptyTitle="No admin actions recorded"
         emptyDescription="Admin actions will appear here once workspace mutations are performed."
         isEmpty={actions.length === 0}
+        hasFilters={hasFilters}
+        onClearFilters={clearFilters}
       >
         <div className="rounded-md border">
           <Table>

@@ -1,8 +1,9 @@
 /**
- * Tests for workspace admin action audit log endpoint.
+ * Tests for workspace admin action audit log endpoints.
  *
  * Covers: GET /api/v1/admin/admin-actions (org isolation, scope filtering,
- * pagination, auth, response shape).
+ * pagination, auth, response shape, filters)
+ *         GET /api/v1/admin/admin-actions/export (CSV export, org-scoped, headers)
  */
 
 import {
@@ -192,8 +193,10 @@ describe("GET /api/v1/admin/admin-actions", () => {
   it("respects limit and offset query params", async () => {
     mocks.mockInternalQuery.mockImplementation(async (sql: string, params?: unknown[]) => {
       if (sql.includes("COUNT(*)")) return [{ count: 100 }];
-      // Verify correct params: orgId=$1, limit=$2, offset=$3
-      expect(params).toEqual(["org-1", 10, 20]);
+      // orgId=$1, then limit and offset are the last two params
+      const pArr = params ?? [];
+      expect(pArr[pArr.length - 2]).toBe(10);
+      expect(pArr[pArr.length - 1]).toBe(20);
       return [];
     });
 
@@ -233,6 +236,198 @@ describe("GET /api/v1/admin/admin-actions", () => {
     mocks.hasInternalDB = false;
 
     const res = await app.request(adminRequest("GET", "/api/v1/admin/admin-actions"));
+    expect(res.status).toBe(404);
+  });
+
+  it("passes actor filter to SQL query", async () => {
+    let capturedSql = "";
+    let capturedParams: unknown[] = [];
+    mocks.mockInternalQuery.mockImplementation(async (sql: string, params?: unknown[]) => {
+      capturedSql = sql;
+      capturedParams = params ?? [];
+      if (sql.includes("COUNT(*)")) return [{ count: 0 }];
+      return [];
+    });
+
+    await app.request(adminRequest("GET", "/api/v1/admin/admin-actions?actor=admin"));
+    expect(capturedSql).toContain("actor_email ILIKE");
+    expect(capturedParams).toContain("%admin%");
+  });
+
+  it("passes actionType filter to SQL query", async () => {
+    let capturedSql = "";
+    let capturedParams: unknown[] = [];
+    mocks.mockInternalQuery.mockImplementation(async (sql: string, params?: unknown[]) => {
+      capturedSql = sql;
+      capturedParams = params ?? [];
+      if (sql.includes("COUNT(*)")) return [{ count: 0 }];
+      return [];
+    });
+
+    await app.request(adminRequest("GET", "/api/v1/admin/admin-actions?actionType=settings.update"));
+    expect(capturedSql).toContain("action_type =");
+    expect(capturedParams).toContain("settings.update");
+  });
+
+  it("passes date range filters to SQL query", async () => {
+    let capturedSql = "";
+    let capturedParams: unknown[] = [];
+    mocks.mockInternalQuery.mockImplementation(async (sql: string, params?: unknown[]) => {
+      capturedSql = sql;
+      capturedParams = params ?? [];
+      if (sql.includes("COUNT(*)")) return [{ count: 0 }];
+      return [];
+    });
+
+    await app.request(adminRequest("GET", "/api/v1/admin/admin-actions?from=2026-01-01&to=2026-03-01"));
+    expect(capturedSql).toContain("timestamp >=");
+    expect(capturedSql).toContain("timestamp <=");
+    expect(capturedParams).toContain("2026-01-01");
+    expect(capturedParams).toContain("2026-03-01");
+  });
+
+  it("passes metadata search filter to SQL query", async () => {
+    let capturedSql = "";
+    let capturedParams: unknown[] = [];
+    mocks.mockInternalQuery.mockImplementation(async (sql: string, params?: unknown[]) => {
+      capturedSql = sql;
+      capturedParams = params ?? [];
+      if (sql.includes("COUNT(*)")) return [{ count: 0 }];
+      return [];
+    });
+
+    await app.request(adminRequest("GET", "/api/v1/admin/admin-actions?search=test-data"));
+    expect(capturedSql).toContain("metadata::text ILIKE");
+    expect(capturedParams).toContain("%test-data%");
+  });
+
+  it("composes multiple filters together", async () => {
+    let capturedSql = "";
+    mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+      capturedSql = sql;
+      if (sql.includes("COUNT(*)")) return [{ count: 0 }];
+      return [];
+    });
+
+    await app.request(adminRequest("GET", "/api/v1/admin/admin-actions?actor=admin&actionType=settings.update&targetType=settings"));
+    expect(capturedSql).toContain("actor_email ILIKE");
+    expect(capturedSql).toContain("action_type =");
+    expect(capturedSql).toContain("target_type =");
+  });
+
+  it("returns 400 for invalid date filter", async () => {
+    const res = await app.request(adminRequest("GET", "/api/v1/admin/admin-actions?from=not-a-date"));
+    expect(res.status).toBe(400);
+  });
+});
+
+describe("GET /api/v1/admin/admin-actions/export", () => {
+  beforeEach(() => {
+    mocks.setOrgAdmin("org-1");
+    mocks.hasInternalDB = true;
+  });
+
+  it("returns CSV with correct Content-Type header", async () => {
+    mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+      if (sql.includes("COUNT(*)")) return [{ count: 1 }];
+      return [SAMPLE_WORKSPACE_ACTION];
+    });
+
+    const res = await app.request(adminRequest("GET", "/api/v1/admin/admin-actions/export"));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("Content-Type")).toBe("text/csv; charset=utf-8");
+  });
+
+  it("returns CSV with correct Content-Disposition header", async () => {
+    mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+      if (sql.includes("COUNT(*)")) return [{ count: 1 }];
+      return [SAMPLE_WORKSPACE_ACTION];
+    });
+
+    const res = await app.request(adminRequest("GET", "/api/v1/admin/admin-actions/export"));
+    expect(res.status).toBe(200);
+    const disposition = res.headers.get("Content-Disposition");
+    expect(disposition).toContain("attachment");
+    expect(disposition).toContain("admin-actions-");
+    expect(disposition).toContain(".csv");
+  });
+
+  it("includes CSV header row and data rows", async () => {
+    mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+      if (sql.includes("COUNT(*)")) return [{ count: 1 }];
+      return [SAMPLE_WORKSPACE_ACTION];
+    });
+
+    const res = await app.request(adminRequest("GET", "/api/v1/admin/admin-actions/export"));
+    const csv = await res.text();
+    const lines = csv.split("\n");
+    expect(lines[0]).toBe("timestamp,actor_email,action_type,target_type,target_id,scope,org_id,status,metadata,ip_address,request_id");
+    expect(lines[1]).toContain("admin@test.com");
+    expect(lines[1]).toContain("settings.update");
+  });
+
+  it("is org-scoped in SQL query", async () => {
+    let capturedSql = "";
+    let capturedParams: unknown[] = [];
+    mocks.mockInternalQuery.mockImplementation(async (sql: string, params?: unknown[]) => {
+      capturedSql = sql;
+      capturedParams = params ?? [];
+      if (sql.includes("COUNT(*)")) return [{ count: 0 }];
+      return [];
+    });
+
+    await app.request(adminRequest("GET", "/api/v1/admin/admin-actions/export"));
+    expect(capturedSql).toContain("org_id = $1");
+    expect(capturedSql).toContain("scope = 'workspace'");
+    expect(capturedParams[0]).toBe("org-1");
+  });
+
+  it("sets truncation headers when over 10,000 rows", async () => {
+    mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+      if (sql.includes("COUNT(*)")) return [{ count: 15000 }];
+      return [SAMPLE_WORKSPACE_ACTION];
+    });
+
+    const res = await app.request(adminRequest("GET", "/api/v1/admin/admin-actions/export"));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("X-Truncated")).toBe("true");
+    expect(res.headers.get("X-Total-Count")).toBe("15000");
+  });
+
+  it("does not set truncation headers when under limit", async () => {
+    mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+      if (sql.includes("COUNT(*)")) return [{ count: 5 }];
+      return [SAMPLE_WORKSPACE_ACTION];
+    });
+
+    const res = await app.request(adminRequest("GET", "/api/v1/admin/admin-actions/export"));
+    expect(res.status).toBe(200);
+    expect(res.headers.get("X-Truncated")).toBeNull();
+    expect(res.headers.get("X-Total-Count")).toBeNull();
+  });
+
+  it("applies filters to CSV export", async () => {
+    let capturedSql = "";
+    mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+      capturedSql = sql;
+      if (sql.includes("COUNT(*)")) return [{ count: 0 }];
+      return [];
+    });
+
+    await app.request(adminRequest("GET", "/api/v1/admin/admin-actions/export?actor=admin&actionType=settings.update"));
+    expect(capturedSql).toContain("actor_email ILIKE");
+    expect(capturedSql).toContain("action_type =");
+  });
+
+  it("returns 403 for non-admin users", async () => {
+    mocks.setMember("org-1");
+    const res = await app.request(adminRequest("GET", "/api/v1/admin/admin-actions/export"));
+    expect(res.status).toBe(403);
+  });
+
+  it("returns 404 when internal DB is not configured", async () => {
+    mocks.hasInternalDB = false;
+    const res = await app.request(adminRequest("GET", "/api/v1/admin/admin-actions/export"));
     expect(res.status).toBe(404);
   });
 });

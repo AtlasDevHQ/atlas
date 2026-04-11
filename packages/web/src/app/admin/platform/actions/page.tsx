@@ -2,6 +2,14 @@
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import {
   Table,
   TableBody,
@@ -12,15 +20,22 @@ import {
 } from "@/components/ui/table";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
+import { useAtlasConfig } from "@/ui/context";
 import { usePlatformAdminGuard } from "@/ui/hooks/use-platform-admin-guard";
+import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import {
   ChevronLeft,
   ChevronRight,
   ClipboardList,
+  Download,
+  Search,
+  X,
 } from "lucide-react";
 import { useState } from "react";
+import { useQueryStates } from "nuqs";
 import { z } from "zod";
+import { platformActionsSearchParams } from "./search-params";
 
 // ---------------------------------------------------------------------------
 // Schema
@@ -52,6 +67,44 @@ const ActionsResponseSchema = z.object({
 type AdminAction = z.infer<typeof AdminActionSchema>;
 
 // ---------------------------------------------------------------------------
+// Constants
+// ---------------------------------------------------------------------------
+
+const ACTION_TYPE_OPTIONS = [
+  { value: "workspace.suspend", label: "workspace.suspend" },
+  { value: "workspace.unsuspend", label: "workspace.unsuspend" },
+  { value: "workspace.delete", label: "workspace.delete" },
+  { value: "connection.create", label: "connection.create" },
+  { value: "connection.update", label: "connection.update" },
+  { value: "connection.delete", label: "connection.delete" },
+  { value: "user.invite", label: "user.invite" },
+  { value: "user.remove", label: "user.remove" },
+  { value: "user.change_role", label: "user.change_role" },
+  { value: "settings.update", label: "settings.update" },
+  { value: "sso.configure", label: "sso.configure" },
+  { value: "semantic.create_entity", label: "semantic.create_entity" },
+  { value: "semantic.update_entity", label: "semantic.update_entity" },
+  { value: "pattern.approve", label: "pattern.approve" },
+  { value: "integration.enable", label: "integration.enable" },
+  { value: "apikey.create", label: "apikey.create" },
+  { value: "apikey.revoke", label: "apikey.revoke" },
+];
+
+const TARGET_TYPE_OPTIONS = [
+  { value: "workspace", label: "Workspace" },
+  { value: "connection", label: "Connection" },
+  { value: "user", label: "User" },
+  { value: "settings", label: "Settings" },
+  { value: "sso", label: "SSO" },
+  { value: "semantic", label: "Semantic" },
+  { value: "pattern", label: "Pattern" },
+  { value: "integration", label: "Integration" },
+  { value: "apikey", label: "API Key" },
+  { value: "schedule", label: "Schedule" },
+  { value: "approval", label: "Approval" },
+];
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -65,6 +118,7 @@ function formatTimestamp(iso: string): string {
       second: "2-digit",
     });
   } catch {
+    // intentionally ignored: invalid date string — fall back to raw ISO
     return iso;
   }
 }
@@ -82,9 +136,17 @@ function statusBadge(status: string) {
 }
 
 function metadataPreview(metadata: Record<string, unknown> | null): string {
-  if (!metadata) return "—";
+  if (!metadata) return "\u2014";
   const entries = Object.entries(metadata).slice(0, 3);
   return entries.map(([k, v]) => `${k}: ${String(v)}`).join(", ");
+}
+
+function buildFilterQueryString(params: Record<string, string>): string {
+  const qs = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v) qs.set(k, v);
+  }
+  return qs.toString();
 }
 
 // ---------------------------------------------------------------------------
@@ -94,10 +156,25 @@ function metadataPreview(metadata: Record<string, unknown> | null): string {
 const PAGE_SIZE = 50;
 
 function ActionsPageContent() {
-  const [offset, setOffset] = useState(0);
+  const { apiUrl, isCrossOrigin } = useAtlasConfig();
+  const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
+  const [params, setParams] = useQueryStates(platformActionsSearchParams);
+  const offset = (params.page - 1) * PAGE_SIZE;
+
+  const filterQs = buildFilterQueryString({
+    actor: params.actor,
+    actionType: params.actionType,
+    targetType: params.targetType,
+    from: params.from,
+    to: params.to,
+    search: params.search,
+    orgId: params.orgId,
+  });
 
   const { data, loading, error, refetch } = useAdminFetch(
-    `/api/v1/platform/actions?limit=${PAGE_SIZE}&offset=${offset}`,
+    `/api/v1/platform/actions?limit=${PAGE_SIZE}&offset=${offset}${filterQs ? `&${filterQs}` : ""}`,
     { schema: ActionsResponseSchema },
   );
 
@@ -106,13 +183,145 @@ function ActionsPageContent() {
   const hasNext = offset + PAGE_SIZE < total;
   const hasPrev = offset > 0;
 
+  const hasFilters = !!(params.actor || params.actionType || params.targetType || params.from || params.to || params.search || params.orgId);
+
+  function clearFilters() {
+    setParams({ actor: "", actionType: "", targetType: "", from: "", to: "", search: "", orgId: "", page: 1 });
+  }
+
+  async function handleExport() {
+    setExporting(true);
+    setExportError(null);
+    try {
+      const exportQs = buildFilterQueryString({
+        actor: params.actor,
+        actionType: params.actionType,
+        targetType: params.targetType,
+        from: params.from,
+        to: params.to,
+        search: params.search,
+        orgId: params.orgId,
+      });
+      const res = await fetch(
+        `${apiUrl}/api/v1/platform/actions/export${exportQs ? `?${exportQs}` : ""}`,
+        { credentials },
+      );
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        throw new Error(body?.message ?? `Export failed (${res.status})`);
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `platform-actions-${new Date().toISOString().slice(0, 10)}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setExportError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setExporting(false);
+    }
+  }
+
   return (
     <div className="space-y-6">
-      <div>
-        <h2 className="text-2xl font-bold tracking-tight">Action Log</h2>
-        <p className="text-muted-foreground">
-          All admin actions across the platform. {total > 0 && `${total} total entries.`}
-        </p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-2xl font-bold tracking-tight">Action Log</h2>
+          <p className="text-muted-foreground">
+            All admin actions across the platform. {total > 0 && `${total} total entries.`}
+          </p>
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          className="h-9"
+          onClick={handleExport}
+          disabled={loading || exporting}
+        >
+          <Download className="mr-1.5 size-3.5" />
+          {exporting ? "Exporting\u2026" : "Export CSV"}
+        </Button>
+      </div>
+
+      {exportError && (
+        <ErrorBanner
+          message={exportError}
+          onRetry={() => { setExportError(null); handleExport(); }}
+        />
+      )}
+
+      {/* Filter bar */}
+      <div className="flex flex-wrap items-end gap-3">
+        <div className="relative flex-1 min-w-[180px] max-w-xs">
+          <Search className="absolute left-2.5 top-2.5 size-3.5 text-muted-foreground" />
+          <Input
+            placeholder="Search metadata..."
+            value={params.search}
+            onChange={(e) => setParams({ search: e.target.value, page: 1 })}
+            className="h-9 pl-8"
+          />
+        </div>
+
+        <Input
+          placeholder="Actor email..."
+          value={params.actor}
+          onChange={(e) => setParams({ actor: e.target.value, page: 1 })}
+          className="h-9 w-44"
+        />
+
+        <Select
+          value={params.actionType || "__all__"}
+          onValueChange={(v) => setParams({ actionType: v === "__all__" ? "" : v, page: 1 })}
+        >
+          <SelectTrigger className="h-9 w-48" aria-label="Filter by action type">
+            <SelectValue placeholder="All action types" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__all__">All action types</SelectItem>
+            {ACTION_TYPE_OPTIONS.map((opt) => (
+              <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+
+        <Select
+          value={params.targetType || "__all__"}
+          onValueChange={(v) => setParams({ targetType: v === "__all__" ? "" : v, page: 1 })}
+        >
+          <SelectTrigger className="h-9 w-40" aria-label="Filter by target type">
+            <SelectValue placeholder="All targets" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="__all__">All targets</SelectItem>
+            {TARGET_TYPE_OPTIONS.map((opt) => (
+              <SelectItem key={opt.value} value={opt.value}>{opt.label}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+
+        <Input
+          type="date"
+          value={params.from}
+          onChange={(e) => setParams({ from: e.target.value, page: 1 })}
+          className="h-9 w-36"
+          aria-label="From date"
+        />
+        <Input
+          type="date"
+          value={params.to}
+          onChange={(e) => setParams({ to: e.target.value, page: 1 })}
+          className="h-9 w-36"
+          aria-label="To date"
+        />
+
+        {hasFilters && (
+          <Button variant="ghost" size="sm" className="h-9" onClick={clearFilters}>
+            <X className="mr-1.5 size-3.5" />
+            Clear
+          </Button>
+        )}
       </div>
 
       <AdminContentWrapper
@@ -120,11 +329,13 @@ function ActionsPageContent() {
         error={error}
         feature="Action Log"
         onRetry={refetch}
-        loadingMessage="Loading action log…"
+        loadingMessage="Loading action log\u2026"
         emptyIcon={ClipboardList}
         emptyTitle="No actions recorded"
         emptyDescription="Admin actions will appear here once platform or workspace mutations are performed."
         isEmpty={actions.length === 0}
+        hasFilters={hasFilters}
+        onClearFilters={clearFilters}
       >
         <div className="rounded-md border">
           <Table>
@@ -169,14 +380,14 @@ function ActionsPageContent() {
         {total > PAGE_SIZE && (
           <div className="flex items-center justify-between pt-4">
             <p className="text-sm text-muted-foreground">
-              Showing {offset + 1}–{Math.min(offset + PAGE_SIZE, total)} of {total}
+              Showing {offset + 1}\u2013{Math.min(offset + PAGE_SIZE, total)} of {total}
             </p>
             <div className="flex gap-2">
               <Button
                 variant="outline"
                 size="sm"
                 disabled={!hasPrev}
-                onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
+                onClick={() => setParams({ page: Math.max(1, params.page - 1) })}
               >
                 <ChevronLeft className="size-4 mr-1" />
                 Previous
@@ -185,7 +396,7 @@ function ActionsPageContent() {
                 variant="outline"
                 size="sm"
                 disabled={!hasNext}
-                onClick={() => setOffset(offset + PAGE_SIZE)}
+                onClick={() => setParams({ page: params.page + 1 })}
               >
                 Next
                 <ChevronRight className="size-4 ml-1" />

@@ -22,6 +22,7 @@ import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAtlasConfig } from "@/ui/context";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
+import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import {
   ChevronLeft,
   ChevronRight,
@@ -30,6 +31,7 @@ import {
   Search,
   X,
 } from "lucide-react";
+import { useState } from "react";
 import { useQueryStates } from "nuqs";
 import { z } from "zod";
 import { adminActionsSearchParams } from "./search-params";
@@ -146,7 +148,10 @@ function buildFilterQueryString(params: Record<string, string>): string {
 const PAGE_SIZE = 50;
 
 function AdminActionsPageContent() {
-  const { apiUrl } = useAtlasConfig();
+  const { apiUrl, isCrossOrigin } = useAtlasConfig();
+  const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
   const [params, setParams] = useQueryStates(adminActionsSearchParams);
   const offset = (params.page - 1) * PAGE_SIZE;
 
@@ -175,17 +180,38 @@ function AdminActionsPageContent() {
     setParams({ actor: "", actionType: "", targetType: "", from: "", to: "", search: "", page: 1 });
   }
 
-  function handleExport() {
-    const exportQs = buildFilterQueryString({
-      actor: params.actor,
-      actionType: params.actionType,
-      targetType: params.targetType,
-      from: params.from,
-      to: params.to,
-      search: params.search,
-    });
-    const url = `${apiUrl}/api/v1/admin/admin-actions/export${exportQs ? `?${exportQs}` : ""}`;
-    window.open(url, "_blank");
+  async function handleExport() {
+    setExporting(true);
+    setExportError(null);
+    try {
+      const exportQs = buildFilterQueryString({
+        actor: params.actor,
+        actionType: params.actionType,
+        targetType: params.targetType,
+        from: params.from,
+        to: params.to,
+        search: params.search,
+      });
+      const res = await fetch(
+        `${apiUrl}/api/v1/admin/admin-actions/export${exportQs ? `?${exportQs}` : ""}`,
+        { credentials },
+      );
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        throw new Error(body?.message ?? `Export failed (${res.status})`);
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `admin-actions-${new Date().toISOString().slice(0, 10)}.csv`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      setExportError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setExporting(false);
+    }
   }
 
   return (
@@ -202,12 +228,19 @@ function AdminActionsPageContent() {
           size="sm"
           className="h-9"
           onClick={handleExport}
-          disabled={loading}
+          disabled={loading || exporting}
         >
           <Download className="mr-1.5 size-3.5" />
-          Export CSV
+          {exporting ? "Exporting\u2026" : "Export CSV"}
         </Button>
       </div>
+
+      {exportError && (
+        <ErrorBanner
+          message={exportError}
+          onRetry={() => { setExportError(null); handleExport(); }}
+        />
+      )}
 
       {/* Filter bar */}
       <div className="flex flex-wrap items-end gap-3">

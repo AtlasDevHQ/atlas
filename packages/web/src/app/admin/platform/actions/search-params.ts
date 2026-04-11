@@ -1,6 +1,6 @@
 import { parseAsInteger, parseAsString } from "nuqs";
 
-export const adminActionsSearchParams = {
+export const platformActionsSearchParams = {
   page: parseAsInteger.withDefault(1),
   actor: parseAsString.withDefault(""),
   actionType: parseAsString.withDefault(""),
@@ -8,4 +8,5 @@ export const adminActionsSearchParams = {
   from: parseAsString.withDefault(""),
   to: parseAsString.withDefault(""),
   search: parseAsString.withDefault(""),
+  orgId: parseAsString.withDefault(""),
 };

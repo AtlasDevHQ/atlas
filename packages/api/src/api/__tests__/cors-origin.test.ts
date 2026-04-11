@@ -9,6 +9,7 @@
  */
 
 import { describe, it, expect, mock } from "bun:test";
+import { createConnectionMock } from "../../__mocks__/connection";
 
 // --- Mocks (same set as cors.test.ts, but with explicit CORS origin) ---
 
@@ -46,7 +47,15 @@ mock.module("@atlas/api/lib/semantic", () => ({
 mock.module("@atlas/api/lib/tools/explore", () => ({
   getExploreBackendType: () => "just-bash",
   getActiveSandboxPluginId: () => null,
+  explore: { type: "function" },
+  invalidateExploreBackend: mock(() => {}),
+  markNsjailFailed: mock(() => {}),
+  markSidecarFailed: mock(() => {}),
 }));
+
+mock.module("@atlas/api/lib/db/connection", () =>
+  createConnectionMock({ resolveDatasourceUrl: () => "postgresql://mock:5432/test" }),
+);
 
 mock.module("@atlas/api/lib/auth/detect", () => ({
   detectAuthMode: () => "none",

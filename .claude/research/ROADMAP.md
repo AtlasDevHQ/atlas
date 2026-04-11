@@ -1100,7 +1100,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] Workspace admin read surface (#1365, PR #1384)
 - [x] Instrument all platform admin mutations (#1367, PR #1383)
 - [x] Instrument all workspace admin mutations (#1368, PR #1385)
-- [ ] Filtering + CSV export (#1366)
+- [x] Filtering + CSV export (#1366, PR #1387)
 
 ---
 

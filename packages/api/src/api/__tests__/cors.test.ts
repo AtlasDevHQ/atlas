@@ -50,6 +50,10 @@ mock.module("@atlas/api/lib/semantic", () => ({
 mock.module("@atlas/api/lib/tools/explore", () => ({
   getExploreBackendType: () => "just-bash",
   getActiveSandboxPluginId: () => null,
+  explore: { type: "function" },
+  invalidateExploreBackend: mock(() => {}),
+  markNsjailFailed: mock(() => {}),
+  markSidecarFailed: mock(() => {}),
 }));
 
 mock.module("@atlas/api/lib/auth/detect", () => ({

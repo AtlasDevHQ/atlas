@@ -39,9 +39,23 @@ export function transformMessages(messages: Message[]): UIMessage[] {
     .filter((m) => m.role === "user" || m.role === "assistant")
     .map((m) => {
       const parts: UIMessage["parts"] = Array.isArray(m.content)
-        ? m.content
-            .filter((p: { type?: string }) => p.type === "text")
-            .map((p: { text?: string }) => ({ type: "text" as const, text: p.text ?? "" }))
+        ? (m.content as Record<string, unknown>[])
+            .filter((p) => p.type === "text" || p.type === "tool-invocation")
+            .map((p) => {
+              if (p.type === "tool-invocation") {
+                const toolCallId = String(p.toolCallId ?? "");
+                return {
+                  type: "dynamic-tool" as const,
+                  toolName: String(p.toolName ?? ""),
+                  toolCallId,
+                  toolInvocationId: toolCallId,
+                  state: "output-available" as const,
+                  input: p.args,
+                  output: p.result,
+                };
+              }
+              return { type: "text" as const, text: String((p as { text?: string }).text ?? "") };
+            })
         : [{ type: "text" as const, text: String(m.content) }];
 
       return {

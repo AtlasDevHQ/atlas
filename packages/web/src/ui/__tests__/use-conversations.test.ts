@@ -66,16 +66,58 @@ describe("transformMessages", () => {
     ]);
   });
 
-  test("filters out non-text parts from content array", () => {
+  test("reconstructs tool-invocation parts as DynamicToolUIPart", () => {
     const messages: Message[] = [
       msg({ id: "1", role: "assistant", content: [
-        { type: "text", text: "answer" },
-        { type: "tool-invocation", toolName: "executeSQL" },
+        { type: "tool-invocation", toolCallId: "tc1", toolName: "executeSQL", args: { sql: "SELECT 1" }, result: { columns: ["?column?"], rows: [{ "?column?": 1 }] } },
       ] }),
     ];
 
     const result = transformMessages(messages);
-    expect(result[0].parts).toEqual([{ type: "text", text: "answer" }]);
+    expect(result[0].parts).toEqual([
+      {
+        type: "dynamic-tool",
+        toolName: "executeSQL",
+        toolCallId: "tc1",
+        toolInvocationId: "tc1",
+        state: "output-available",
+        input: { sql: "SELECT 1" },
+        output: { columns: ["?column?"], rows: [{ "?column?": 1 }] },
+      },
+    ]);
+  });
+
+  test("handles mixed text and tool-invocation parts", () => {
+    const messages: Message[] = [
+      msg({ id: "1", role: "assistant", content: [
+        { type: "text", text: "Let me run that query." },
+        { type: "tool-invocation", toolCallId: "tc1", toolName: "executeSQL", args: { sql: "SELECT 1" }, result: { columns: ["n"], rows: [{ n: 1 }] } },
+        { type: "text", text: "Here are the results." },
+      ] }),
+    ];
+
+    const result = transformMessages(messages);
+    expect(result[0].parts).toHaveLength(3);
+    expect(result[0].parts[0]).toEqual({ type: "text", text: "Let me run that query." });
+    expect(result[0].parts[1]).toEqual({
+      type: "dynamic-tool",
+      toolName: "executeSQL",
+      toolCallId: "tc1",
+      toolInvocationId: "tc1",
+      state: "output-available",
+      input: { sql: "SELECT 1" },
+      output: { columns: ["n"], rows: [{ n: 1 }] },
+    });
+    expect(result[0].parts[2]).toEqual({ type: "text", text: "Here are the results." });
+  });
+
+  test("falls back gracefully for old conversations with only text parts", () => {
+    const messages: Message[] = [
+      msg({ id: "1", role: "assistant", content: [{ type: "text", text: "old format answer" }] }),
+    ];
+
+    const result = transformMessages(messages);
+    expect(result[0].parts).toEqual([{ type: "text", text: "old format answer" }]);
   });
 
   test("preserves string content as-is", () => {

@@ -1,8 +1,8 @@
 "use client";
 
-import { useContext, useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect } from "react";
 import { getToolArgs, getToolResult, isToolComplete } from "../../lib/helpers";
-import { DarkModeContext } from "../../hooks/use-dark-mode";
+import { useDarkMode } from "../../hooks/use-dark-mode";
 import dynamic from "next/dynamic";
 import { LoadingCard } from "./loading-card";
 import { DataTable } from "./data-table";
@@ -47,7 +47,7 @@ export function PythonResultCard({ part, progressEvents }: { part: unknown; prog
 }
 
 function PythonResultCardInner({ part, progressEvents }: { part: unknown; progressEvents?: PythonProgressData[] }) {
-  const dark = useContext(DarkModeContext);
+  const dark = useDarkMode();
   const args = getToolArgs(part);
   const raw = getToolResult(part);
   const done = isToolComplete(part);

@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useContext, useMemo, type ReactNode } from "react";
+import { createContext, useContext, useMemo, useCallback, type ReactNode } from "react";
 import type { AtlasAuthClient, ActionAuthValue } from "@useatlas/types";
 
 export type { AtlasAuthClient, ActionAuthValue } from "@useatlas/types";
@@ -11,12 +11,23 @@ export interface AtlasConfig {
   authClient: AtlasAuthClient;
 }
 
-const AtlasContext = createContext<AtlasConfig | null>(null);
+interface AtlasContextValue extends AtlasConfig {
+  /** Auth helpers for action API calls (derived from config). */
+  actionAuth: ActionAuthValue;
+}
+
+const AtlasContext = createContext<AtlasContextValue | null>(null);
 
 export function useAtlasConfig(): AtlasConfig {
   const ctx = useContext(AtlasContext);
   if (!ctx) throw new Error("useAtlasConfig must be used within <AtlasProvider>");
   return ctx;
+}
+
+/** Returns auth helpers for action API calls. */
+export function useActionAuth(): ActionAuthValue | null {
+  const ctx = useContext(AtlasContext);
+  return ctx?.actionAuth ?? null;
 }
 
 export function AtlasProvider({
@@ -26,36 +37,24 @@ export function AtlasProvider({
   config: AtlasConfig;
   children: ReactNode;
 }) {
+  const getHeaders = useCallback((): Record<string, string> => ({}), []);
+  const getCredentials = useCallback(
+    (): "include" | "omit" | "same-origin" =>
+      config.isCrossOrigin ? "include" : "same-origin",
+    [config.isCrossOrigin],
+  );
+
+  const value = useMemo<AtlasContextValue>(
+    () => ({
+      ...config,
+      actionAuth: { getHeaders, getCredentials },
+    }),
+    [config, getHeaders, getCredentials],
+  );
+
   return (
-    <AtlasContext.Provider value={config}>
+    <AtlasContext.Provider value={value}>
       {children}
     </AtlasContext.Provider>
-  );
-}
-
-/* ------------------------------------------------------------------ */
-/*  ActionAuth — internal context for passing auth to action cards     */
-/* ------------------------------------------------------------------ */
-
-const ActionAuthContext = createContext<ActionAuthValue | null>(null);
-
-/** Returns auth helpers for action API calls, or null when no provider is present. */
-export function useActionAuth(): ActionAuthValue | null {
-  return useContext(ActionAuthContext);
-}
-
-export function ActionAuthProvider({
-  getHeaders,
-  getCredentials,
-  children,
-}: ActionAuthValue & { children: ReactNode }) {
-  const value = useMemo(
-    () => ({ getHeaders, getCredentials }),
-    [getHeaders, getCredentials],
-  );
-  return (
-    <ActionAuthContext.Provider value={value}>
-      {children}
-    </ActionAuthContext.Provider>
   );
 }

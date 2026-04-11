@@ -1,9 +1,9 @@
 "use client";
 
-import { memo, useContext, useState, useEffect, type ReactNode } from "react";
+import { memo, useState, useEffect, type ReactNode } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { DarkModeContext } from "../../hooks/use-dark-mode";
+import { useDarkMode } from "../../hooks/use-dark-mode";
 
 /* ------------------------------------------------------------------ */
 /*  Lazy-loaded syntax highlighter (~300KB)                            */
@@ -110,7 +110,7 @@ const mdComponents = {
 };
 
 export const Markdown = memo(function Markdown({ content }: { content: string }) {
-  const dark = useContext(DarkModeContext);
+  const dark = useDarkMode();
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}

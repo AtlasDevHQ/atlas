@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useSyncExternalStore } from "react";
+import { useSyncExternalStore } from "react";
 
 // ---------------------------------------------------------------------------
 // Theme types & constants
@@ -134,8 +134,6 @@ export function applyBrandColor(color: string) {
   if (typeof document === "undefined") return;
   document.documentElement.style.setProperty("--atlas-brand", color);
 }
-
-export const DarkModeContext = createContext(false);
 
 /** Returns whether the effective theme is dark. */
 export function useDarkMode(): boolean {

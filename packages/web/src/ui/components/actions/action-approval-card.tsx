@@ -104,7 +104,7 @@ export function ActionApprovalCard({ part }: { part: unknown }) {
 
   async function callAction(endpoint: "approve" | "deny", body?: Record<string, unknown>) {
     if (!actionAuth) {
-      console.warn("ActionApprovalCard: No ActionAuthProvider found. API calls will be sent without authentication.");
+      console.warn("ActionApprovalCard: No AtlasProvider found. API calls will be sent without authentication.");
     }
 
     const headers: Record<string, string> = {

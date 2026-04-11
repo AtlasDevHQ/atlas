@@ -1,9 +1,8 @@
 "use client";
 
-import { useContext } from "react";
 import dynamic from "next/dynamic";
 import { Card } from "@/components/ui/card";
-import { DarkModeContext } from "@/ui/hooks/use-dark-mode";
+import { useDarkMode } from "@/ui/hooks/use-dark-mode";
 import { DataTable } from "@/ui/components/chat/data-table";
 import { ResultCardErrorBoundary } from "@/ui/components/chat/result-card-base";
 import { Clock } from "lucide-react";
@@ -40,7 +39,7 @@ function validateRows(raw: unknown[] | null): Record<string, unknown>[] {
 }
 
 function SharedCardView({ card }: { card: SharedCard }) {
-  const dark = useContext(DarkModeContext);
+  const dark = useDarkMode();
   const columns = card.cachedColumns ?? [];
   const rows = validateRows(card.cachedRows);
   const hasData = columns.length > 0 && rows.length > 0;

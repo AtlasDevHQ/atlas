@@ -4,8 +4,8 @@ import { useChat } from "@ai-sdk/react";
 import { isToolUIPart, getToolName } from "ai";
 import { useState, useRef, useEffect, useCallback } from "react";
 import type { PythonProgressData } from "./chat/python-result-card";
-import { useAtlasConfig, ActionAuthProvider } from "../context";
-import { DarkModeContext, useDarkMode, useThemeMode, setTheme, type ThemeMode } from "../hooks/use-dark-mode";
+import { useAtlasConfig } from "../context";
+import { useThemeMode, setTheme, type ThemeMode } from "../hooks/use-dark-mode";
 import { useAtlasTransport } from "../hooks/use-atlas-transport";
 import { useConversations } from "../hooks/use-conversations";
 import { ErrorBanner } from "./chat/error-banner";
@@ -128,7 +128,6 @@ function SaveButton({
 
 export function AtlasChat() {
   const { apiUrl, isCrossOrigin, authClient } = useAtlasConfig();
-  const dark = useDarkMode();
   const [input, setInput] = useState("");
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [transientWarning, setTransientWarning] = useState("");
@@ -356,14 +355,12 @@ export function AtlasChat() {
   // when managed auth is active but session hasn't been checked yet.
   if (!authResolved || (isManaged && managedSession.isPending)) {
     return (
-      <DarkModeContext.Provider value={dark}>
-        <div className="flex h-dvh items-center justify-center bg-white dark:bg-zinc-950" />
-      </DarkModeContext.Provider>
+      <div className="flex h-dvh items-center justify-center bg-white dark:bg-zinc-950" />
     );
   }
 
   return (
-    <DarkModeContext.Provider value={dark}>
+    <>
       <div className="flex h-dvh">
         {convos.available && (
           <ConversationSidebar
@@ -455,7 +452,7 @@ export function AtlasChat() {
             {isManaged && !isSignedIn ? (
               null /* proxy redirects unauthenticated users to /signup */
             ) : (
-              <ActionAuthProvider getHeaders={getHeaders} getCredentials={getCredentials}>
+              <>
                 {authMode === "simple-key" && (
                   <div className="mb-3 flex-none">
                     <ApiKeyBar apiKey={apiKey} onSave={setApiKey} />
@@ -663,7 +660,7 @@ export function AtlasChat() {
                     <Send className="size-4" />
                   </Button>
                 </form>
-              </ActionAuthProvider>
+              </>
             )}
           </div>
         </main>
@@ -686,6 +683,6 @@ export function AtlasChat() {
         open={!passwordDialogDismissed && (passwordData?.passwordChangeRequired ?? false)}
         onComplete={() => setPasswordDialogDismissed(true)}
       />
-    </DarkModeContext.Provider>
+    </>
   );
 }

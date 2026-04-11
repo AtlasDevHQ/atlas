@@ -1,9 +1,9 @@
 "use client";
 
-import { useContext, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { getToolArgs, getToolResult, isToolComplete, downloadCSV, downloadExcel, toCsvString } from "../../lib/helpers";
 import { FileDown, FileSpreadsheet, LayoutDashboard } from "lucide-react";
-import { DarkModeContext } from "../../hooks/use-dark-mode";
+import { useDarkMode } from "../../hooks/use-dark-mode";
 import { detectCharts } from "../chart/chart-detection";
 import dynamic from "next/dynamic";
 
@@ -36,7 +36,7 @@ const AddToDashboardDialog = dynamic(
 );
 
 function SQLResultCardInner({ part }: { part: unknown }) {
-  const dark = useContext(DarkModeContext);
+  const dark = useDarkMode();
   const args = getToolArgs(part);
   const result = getToolResult(part) as Record<string, unknown> | null;
   const done = isToolComplete(part);

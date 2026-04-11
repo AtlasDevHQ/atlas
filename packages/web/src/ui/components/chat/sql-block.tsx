@@ -1,7 +1,7 @@
 "use client";
 
-import { useContext, useState, useEffect } from "react";
-import { DarkModeContext } from "../../hooks/use-dark-mode";
+import { useState, useEffect } from "react";
+import { useDarkMode } from "../../hooks/use-dark-mode";
 import { CopyButton } from "./copy-button";
 
 type SyntaxHighlighterModule = typeof import("react-syntax-highlighter");
@@ -17,7 +17,7 @@ const SQL_BLOCK_STYLE = {
 } as const;
 
 export function SQLBlock({ sql }: { sql: string }) {
-  const dark = useContext(DarkModeContext);
+  const dark = useDarkMode();
   const [mod, setMod] = useState(_cache);
 
   useEffect(() => {

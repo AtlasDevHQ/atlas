@@ -1,6 +1,6 @@
 "use client";
 
-import { useContext, useState } from "react";
+import { useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import dynamic from "next/dynamic";
@@ -44,7 +44,7 @@ import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { NavBar } from "@/ui/components/tour/nav-bar";
 import { DataTable } from "@/ui/components/chat/data-table";
-import { DarkModeContext } from "@/ui/hooks/use-dark-mode";
+import { useDarkMode } from "@/ui/hooks/use-dark-mode";
 import {
   Select,
   SelectContent,
@@ -101,7 +101,7 @@ function DashboardCardView({
   onUpdate: (cardId: string, title: string) => void;
   refreshingId: string | null;
 }) {
-  const dark = useContext(DarkModeContext);
+  const dark = useDarkMode();
   const [editing, setEditing] = useState(false);
   const [editTitle, setEditTitle] = useState(card.title);
   const isRefreshing = refreshingId === card.id;

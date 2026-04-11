@@ -1084,6 +1084,12 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] Settings split + GDPR workspace purge docs (PR #1371)
 - [x] Billing per-seat pricing, SSO domain verification & test connection docs (PR #1347)
 
+### Follow-ups
+- [x] Health check findings — PG readonly, sidecar healthchecks, whitelist warning (PR #1374)
+- [x] Docs audit — critical/high findings across docs site (PR #1379)
+- [x] Docs audit — OpenAPI params, SDK docs, plugin directory (PR #1380)
+- [x] CORS on streaming responses, Bun idle timeout, PG read-only (PR #1381)
+
 ---
 
 ## Admin Action Audit

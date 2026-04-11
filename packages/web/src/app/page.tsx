@@ -8,6 +8,7 @@ import { useQueryStates } from "nuqs";
 import { chatSearchParams } from "./search-params";
 import { useConversations, transformMessages } from "@/ui/hooks/use-conversations";
 import { ConversationSidebar } from "@/ui/components/conversations/conversation-sidebar";
+import { AtlasProvider } from "@/ui/context";
 import { getApiUrl, isCrossOrigin } from "@/lib/api-url";
 import { useAtlasTransport } from "@/ui/hooks/use-atlas-transport";
 import { authClient } from "@/lib/auth/client";
@@ -38,15 +39,17 @@ const GuidedTour = dynamic(
 
 export default function Home() {
   return (
-    <Suspense
-      fallback={
-        <div className="flex h-dvh items-center justify-center">
-          <p className="text-sm text-zinc-500">Loading...</p>
-        </div>
-      }
-    >
-      <ChatPage />
-    </Suspense>
+    <AtlasProvider config={{ apiUrl: getApiUrl(), isCrossOrigin: isCrossOrigin(), authClient }}>
+      <Suspense
+        fallback={
+          <div className="flex h-dvh items-center justify-center">
+            <p className="text-sm text-zinc-500">Loading...</p>
+          </div>
+        }
+      >
+        <ChatPage />
+      </Suspense>
+    </AtlasProvider>
   );
 }
 

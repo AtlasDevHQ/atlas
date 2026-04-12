@@ -1110,6 +1110,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 
 - [x] Native chat page with `?id=` URL state (PR #1388)
 - [x] Lift `AtlasProvider` to root `AuthGuard` — remove 4 per-layout wrappers
+- [x] Eliminate `DarkModeContext` and `ActionAuthProvider` — dead code after provider lift
 - [x] Template overrides for standalone deployments (`create-atlas/overrides/page.tsx`)
 
 ---
@@ -1123,6 +1124,8 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] Sidebar double-highlight on Semantic Layer + Improve Layer (PR #1395)
 - [x] CORS test explore mock missing exports (#1386, PR #1382)
 - [x] `api-test-mocks` missing `hardDeleteWorkspace` export (#1372)
+- [x] `ErrorBanner` crashes on `FetchError` — extract `.message` before rendering
+- [x] Semantic improve diff viewer: full-file rewrite diffs + monochrome display (PR #1403)
 
 ---
 

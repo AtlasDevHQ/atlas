@@ -603,6 +603,81 @@ const pendingCountRoute = createRoute({
   },
 });
 
+const PendingAmendmentSchema = z.object({
+  id: z.string(),
+  entityName: z.string(),
+  description: z.string().nullable(),
+  confidence: z.number(),
+  amendmentType: z.string().nullable(),
+  amendment: z.record(z.string(), z.unknown()).nullable(),
+  rationale: z.string().nullable(),
+  testQuery: z.string().nullable(),
+  createdAt: z.string(),
+});
+
+const pendingListRoute = createRoute({
+  method: "get",
+  path: "/pending",
+  tags: ["Admin — Semantic Improve"],
+  summary: "List pending semantic amendment proposals",
+  description: "Returns pending amendment proposals awaiting review, newest first.",
+  responses: {
+    200: {
+      description: "Pending amendments",
+      content: { "application/json": { schema: z.object({ amendments: z.array(PendingAmendmentSchema) }) } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const reviewAmendmentRoute = createRoute({
+  method: "post",
+  path: "/amendments/{id}/review",
+  tags: ["Admin — Semantic Improve"],
+  summary: "Approve or reject a pending amendment",
+  description: "Updates the status of a pending semantic amendment in the database.",
+  request: {
+    params: createParamSchema("id", "550e8400-e29b-41d4-a716-446655440000"),
+    body: {
+      content: {
+        "application/json": {
+          schema: z.object({ decision: z.enum(["approved", "rejected"]) }),
+        },
+      },
+      required: true,
+    },
+  },
+  responses: {
+    200: {
+      description: "Amendment reviewed",
+      content: { "application/json": { schema: z.object({ ok: z.boolean(), id: z.string(), decision: z.string() }) } },
+    },
+    400: {
+      description: "Invalid decision",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Amendment not found or already reviewed",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
 const healthScoreRoute = createRoute({
   method: "get",
   path: "/health",
@@ -648,6 +723,92 @@ adminSemanticImprove.openapi(pendingCountRoute, async (c) =>
     const count = await getPendingAmendmentCount(orgId);
 
     return c.json({ count }, 200);
+  }),
+);
+
+// GET /pending — list pending amendments
+adminSemanticImprove.openapi(pendingListRoute, async (c) =>
+  runHandler(c, "list-pending-amendments", async () => {
+    const { orgId } = c.get("orgContext");
+
+    const { getPendingAmendments } = await import("@atlas/api/lib/db/internal");
+    const rows = await getPendingAmendments(orgId);
+
+    const amendments = rows.map((row) => {
+      const payload = row.amendment_payload;
+      return {
+        id: row.id,
+        entityName: row.source_entity,
+        description: row.description,
+        confidence: row.confidence,
+        amendmentType: typeof payload?.amendmentType === "string" ? payload.amendmentType : null,
+        amendment: payload ?? null,
+        rationale: typeof payload?.rationale === "string" ? payload.rationale : null,
+        testQuery: typeof payload?.testQuery === "string" ? payload.testQuery : null,
+        createdAt: row.created_at,
+      };
+    });
+
+    return c.json({ amendments }, 200);
+  }),
+);
+
+// POST /amendments/:id/review — approve or reject a DB amendment
+adminSemanticImprove.openapi(reviewAmendmentRoute, async (c) =>
+  runHandler(c, "review-amendment", async () => {
+    const { requestId, orgId } = c.get("orgContext");
+    const { id } = c.req.valid("param");
+    const { decision } = c.req.valid("json");
+
+    const { reviewSemanticAmendment } = await import("@atlas/api/lib/db/internal");
+
+    // For approvals, apply YAML first — only update DB status on success
+    if (decision === "approved") {
+      // Peek at the row to get payload before changing status
+      const { getPendingAmendments } = await import("@atlas/api/lib/db/internal");
+      const pending = await getPendingAmendments(orgId);
+      const target = pending.find((r) => r.id === id);
+      if (!target) {
+        return c.json({ error: "not_found", message: "Amendment not found or already reviewed.", requestId }, 404);
+      }
+
+      const payload = target.amendment_payload;
+      if (payload) {
+        const { applyAmendmentToEntity } = await import("@atlas/api/lib/semantic/expert/apply");
+        const { ANALYSIS_CATEGORIES } = await import("@atlas/api/lib/semantic/expert/types");
+        const { AMENDMENT_TYPES } = await import("@useatlas/types");
+
+        const rawCategory = String(payload.category ?? "coverage_gaps");
+        const rawAmendmentType = String(payload.amendmentType ?? "update_description");
+
+        // This throws on failure — runHandler maps it to 500
+        await applyAmendmentToEntity(orgId, {
+          entityName: target.source_entity,
+          category: (ANALYSIS_CATEGORIES as readonly string[]).includes(rawCategory)
+            ? rawCategory as typeof ANALYSIS_CATEGORIES[number]
+            : "coverage_gaps",
+          amendmentType: (AMENDMENT_TYPES as readonly string[]).includes(rawAmendmentType)
+            ? rawAmendmentType as typeof AMENDMENT_TYPES[number]
+            : "update_description",
+          amendment: payload,
+          rationale: typeof payload.rationale === "string" ? payload.rationale : "",
+          confidence: 0,
+          impact: 0,
+          score: 0,
+          staleness: 0,
+        }, requestId);
+      }
+    }
+
+    // YAML applied (or rejection) — now update DB status
+    const reviewed = await reviewSemanticAmendment(id, orgId, decision, "admin");
+
+    if (!reviewed) {
+      return c.json({ error: "not_found", message: "Amendment not found or already reviewed.", requestId }, 404);
+    }
+
+    log.info({ requestId, orgId, id, decision }, "Amendment reviewed");
+    return c.json({ ok: true, id, decision }, 200);
   }),
 );
 

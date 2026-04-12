@@ -264,7 +264,7 @@ export function createApiTestMocks(
     insertSemanticAmendment: mock(async () => ({ id: "mock-amendment-id", status: "pending" as const })),
     getPendingAmendmentCount: mock(async () => 0),
     getPendingAmendments: mock(async () => []),
-    reviewSemanticAmendment: mock(async () => false),
+    reviewSemanticAmendment: mock(async () => null),
     hardDeleteWorkspace: mock(async () => ({})),
   };
 

@@ -761,52 +761,50 @@ adminSemanticImprove.openapi(reviewAmendmentRoute, async (c) =>
     const { decision } = c.req.valid("json");
 
     const { reviewSemanticAmendment } = await import("@atlas/api/lib/db/internal");
-    const updated = await reviewSemanticAmendment(id, orgId, decision, "admin");
 
-    if (!updated) {
-      return c.json({ error: "not_found", message: "Amendment not found or already reviewed.", requestId }, 404);
+    // For approvals, apply YAML first — only update DB status on success
+    if (decision === "approved") {
+      // Peek at the row to get payload before changing status
+      const { getPendingAmendments } = await import("@atlas/api/lib/db/internal");
+      const pending = await getPendingAmendments(orgId);
+      const target = pending.find((r) => r.id === id);
+      if (!target) {
+        return c.json({ error: "not_found", message: "Amendment not found or already reviewed.", requestId }, 404);
+      }
+
+      const payload = target.amendment_payload;
+      if (payload) {
+        const { applyAmendmentToEntity } = await import("@atlas/api/lib/semantic/expert/apply");
+        const { ANALYSIS_CATEGORIES } = await import("@atlas/api/lib/semantic/expert/types");
+        const { AMENDMENT_TYPES } = await import("@useatlas/types");
+
+        const rawCategory = String(payload.category ?? "coverage_gaps");
+        const rawAmendmentType = String(payload.amendmentType ?? "update_description");
+
+        // This throws on failure — runHandler maps it to 500
+        await applyAmendmentToEntity(orgId, {
+          entityName: target.source_entity,
+          category: (ANALYSIS_CATEGORIES as readonly string[]).includes(rawCategory)
+            ? rawCategory as typeof ANALYSIS_CATEGORIES[number]
+            : "coverage_gaps",
+          amendmentType: (AMENDMENT_TYPES as readonly string[]).includes(rawAmendmentType)
+            ? rawAmendmentType as typeof AMENDMENT_TYPES[number]
+            : "update_description",
+          amendment: payload,
+          rationale: typeof payload.rationale === "string" ? payload.rationale : "",
+          confidence: 0,
+          impact: 0,
+          score: 0,
+          staleness: 0,
+        }, requestId);
+      }
     }
 
-    // If approving, apply the YAML amendment
-    if (decision === "approved") {
-      try {
-        // Re-fetch the row to get amendment payload (status was just updated)
-        const { internalQuery } = await import("@atlas/api/lib/db/internal");
-        const rows = await internalQuery<Record<string, unknown>>(
-          `SELECT source_entity, amendment_payload FROM learned_patterns WHERE id = $1`,
-          [id],
-        );
-        const payload = rows[0]?.amendment_payload as Record<string, unknown> | null;
-        if (payload) {
-          const { applyAmendmentToEntity } = await import("@atlas/api/lib/semantic/expert/apply");
-          const { ANALYSIS_CATEGORIES } = await import("@atlas/api/lib/semantic/expert/types");
-          const { AMENDMENT_TYPES } = await import("@useatlas/types");
+    // YAML applied (or rejection) — now update DB status
+    const reviewed = await reviewSemanticAmendment(id, orgId, decision, "admin");
 
-          const rawCategory = String(payload.category ?? "coverage_gaps");
-          const rawAmendmentType = String(payload.amendmentType ?? "update_description");
-
-          await applyAmendmentToEntity(orgId, {
-            entityName: String(rows[0].source_entity),
-            category: (ANALYSIS_CATEGORIES as readonly string[]).includes(rawCategory)
-              ? rawCategory as typeof ANALYSIS_CATEGORIES[number]
-              : "coverage_gaps",
-            amendmentType: (AMENDMENT_TYPES as readonly string[]).includes(rawAmendmentType)
-              ? rawAmendmentType as typeof AMENDMENT_TYPES[number]
-              : "update_description",
-            amendment: payload,
-            rationale: typeof payload.rationale === "string" ? payload.rationale : "",
-            confidence: 0,
-            impact: 0,
-            score: 0,
-            staleness: 0,
-          }, requestId);
-        }
-      } catch (err) {
-        log.error(
-          { err: err instanceof Error ? err.message : String(err), requestId, id },
-          "Amendment approved but YAML apply failed — status updated, YAML unchanged",
-        );
-      }
+    if (!reviewed) {
+      return c.json({ error: "not_found", message: "Amendment not found or already reviewed.", requestId }, 404);
     }
 
     log.info({ requestId, orgId, id, decision }, "Amendment reviewed");

@@ -42,8 +42,8 @@ interface Proposal {
   rationale: string;
   testQuery?: string;
   confidence: number;
-  impact: number;
-  score: number;
+  impact?: number;
+  score?: number;
   decision: "accepted" | "rejected" | "skipped" | null;
   /** DB row id for pending amendments loaded from previous sessions. */
   dbId?: string;
@@ -196,7 +196,7 @@ function extractProposals(messages: UIMessage[]): Proposal[] {
     for (const part of msg.parts) {
       if (isToolUIPart(part)) {
         let name: string;
-        try { name = getToolName(part as Parameters<typeof getToolName>[0]); } catch { continue; }
+        try { name = getToolName(part as Parameters<typeof getToolName>[0]); } catch { /* intentionally ignored: skip unrecognizable tool parts */ continue; }
         if (name !== "proposeAmendment") continue;
         const args = getToolArgs(part);
         if (args.entityName) {
@@ -257,17 +257,13 @@ export default function SemanticImprovePage() {
   const isLoading = status === "streaming" || status === "submitted";
 
   // Fetch pending amendments from the DB (created by previous sessions)
-  const { data: pendingData, loading: pendingLoading, refetch: refetchPending } =
+  const { data: pendingData, loading: pendingLoading, error: pendingError, refetch: refetchPending } =
     useAdminFetch<{ amendments: PendingAmendment[] }>("/api/v1/admin/semantic-improve/pending");
 
-  // Mutations for approve/reject
-  const { mutate: mutateApprove, isMutating: isApproving, error: approveError } = useAdminMutation({
+  // Single mutation hook for approve/reject
+  const { mutate, isMutating, error: mutationError } = useAdminMutation({
     method: "POST",
   });
-  const { mutate: mutateReject, isMutating: isRejecting, error: rejectError } = useAdminMutation({
-    method: "POST",
-  });
-  const mutationError = approveError || rejectError;
 
   // Convert DB pending amendments to Proposal shape for display
   const pendingAmendments: Proposal[] = (pendingData?.amendments ?? []).map((a, i) => ({
@@ -279,8 +275,6 @@ export default function SemanticImprovePage() {
     rationale: a.rationale ?? a.description ?? "",
     testQuery: a.testQuery ?? undefined,
     confidence: a.confidence,
-    impact: 0.5,
-    score: a.confidence,
     decision: null,
     dbId: a.id,
   }));
@@ -320,40 +314,24 @@ export default function SemanticImprovePage() {
     });
   }
 
-  async function handleApprove(proposal: Proposal) {
+  async function handleReview(proposal: Proposal, decision: "approved" | "rejected") {
+    const label = decision === "approved" ? "approve" : "reject";
     if (proposal.dbId) {
-      const result = await mutateApprove({
+      const result = await mutate({
         path: `/api/v1/admin/semantic-improve/amendments/${proposal.dbId}/review`,
-        itemId: `approve-${proposal.dbId}`,
-        body: { decision: "approved" },
+        itemId: `${label}-${proposal.dbId}`,
+        body: { decision },
       });
       if (result.ok) refetchPending();
     } else {
-      const result = await mutateApprove({
-        path: `/api/v1/admin/semantic-improve/proposals/${proposal.index}/approve`,
-        itemId: `approve-${proposal.index}`,
+      const chatDecision = decision === "approved" ? "accepted" as const : "rejected" as const;
+      const chatPath = decision === "approved" ? "approve" : "reject";
+      const result = await mutate({
+        path: `/api/v1/admin/semantic-improve/proposals/${proposal.index}/${chatPath}`,
+        itemId: `${label}-${proposal.index}`,
       });
       if (result.ok) {
-        setProposalDecisions((prev) => new Map(prev).set(proposal.index, "accepted"));
-      }
-    }
-  }
-
-  async function handleReject(proposal: Proposal) {
-    if (proposal.dbId) {
-      const result = await mutateReject({
-        path: `/api/v1/admin/semantic-improve/amendments/${proposal.dbId}/review`,
-        itemId: `reject-${proposal.dbId}`,
-        body: { decision: "rejected" },
-      });
-      if (result.ok) refetchPending();
-    } else {
-      const result = await mutateReject({
-        path: `/api/v1/admin/semantic-improve/proposals/${proposal.index}/reject`,
-        itemId: `reject-${proposal.index}`,
-      });
-      if (result.ok) {
-        setProposalDecisions((prev) => new Map(prev).set(proposal.index, "rejected"));
+        setProposalDecisions((prev) => new Map(prev).set(proposal.index, chatDecision));
       }
     }
   }
@@ -511,6 +489,9 @@ export default function SemanticImprovePage() {
               </div>
               <ScrollArea className="flex-1 p-4">
                 <div className="space-y-3">
+                  {pendingError && (
+                    <ErrorBanner message={pendingError} />
+                  )}
                   {mutationError && (
                     <ErrorBanner message={mutationError} />
                   )}
@@ -529,14 +510,15 @@ export default function SemanticImprovePage() {
                   )}
                   {proposals.map((proposal) => {
                     const itemKey = proposal.dbId ?? `chat-${proposal.index}`;
+                    const idSuffix = proposal.dbId ?? String(proposal.index);
                     return (
                       <ProposalCard
                         key={itemKey}
                         proposal={proposal}
-                        onApprove={() => handleApprove(proposal)}
-                        onReject={() => handleReject(proposal)}
-                        approving={isApproving(proposal.dbId ? `approve-${proposal.dbId}` : `approve-${proposal.index}`)}
-                        rejecting={isRejecting(proposal.dbId ? `reject-${proposal.dbId}` : `reject-${proposal.index}`)}
+                        onApprove={() => handleReview(proposal, "approved")}
+                        onReject={() => handleReview(proposal, "rejected")}
+                        approving={isMutating(`approve-${idSuffix}`)}
+                        rejecting={isMutating(`reject-${idSuffix}`)}
                       />
                     );
                   })}

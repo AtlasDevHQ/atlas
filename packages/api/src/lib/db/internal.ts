@@ -917,34 +917,44 @@ export async function getPendingAmendments(orgId: string | null): Promise<Pendin
   );
 }
 
+/** Row returned by reviewSemanticAmendment on success. */
+export type ReviewedAmendmentRow = Record<string, unknown> & {
+  id: string;
+  source_entity: string;
+  amendment_payload: Record<string, unknown> | null;
+};
+
 /**
  * Update a pending semantic amendment's status to approved or rejected.
- * Returns true if the row was found and updated, false if not found or already reviewed.
+ * Returns the updated row (with payload) on success, or null if not found / already reviewed.
+ * @throws {Error} If the internal database is not configured or the query fails.
  */
 export async function reviewSemanticAmendment(
   id: string,
   orgId: string | null,
   decision: "approved" | "rejected",
   reviewedBy: string,
-): Promise<boolean> {
-  if (!hasInternalDB()) return false;
+): Promise<ReviewedAmendmentRow | null> {
+  if (!hasInternalDB()) {
+    throw new Error("Internal database is not configured. Amendment review requires DATABASE_URL.");
+  }
 
-  const rows = await internalQuery<{ id: string }>(
+  const rows = await internalQuery<ReviewedAmendmentRow>(
     orgId
       ? `UPDATE learned_patterns
          SET status = $1, reviewed_by = $2, reviewed_at = now(), updated_at = now()
          WHERE id = $3 AND type = 'semantic_amendment' AND status = 'pending'
          AND (org_id = $4 OR org_id IS NULL)
-         RETURNING id`
+         RETURNING id, source_entity, amendment_payload`
       : `UPDATE learned_patterns
          SET status = $1, reviewed_by = $2, reviewed_at = now(), updated_at = now()
          WHERE id = $3 AND type = 'semantic_amendment' AND status = 'pending'
          AND org_id IS NULL
-         RETURNING id`,
+         RETURNING id, source_entity, amendment_payload`,
     orgId ? [decision, reviewedBy, id, orgId] : [decision, reviewedBy, id],
   );
 
-  return rows.length > 0;
+  return rows[0] ?? null;
 }
 
 /**

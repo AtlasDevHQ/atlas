@@ -10,6 +10,7 @@ import { z } from "zod";
 import * as fs from "fs";
 import * as path from "path";
 import * as yaml from "js-yaml";
+import { createTwoFilesPatch } from "diff";
 import { hasInternalDB, insertSemanticAmendment } from "@atlas/api/lib/db/internal";
 import { connections, getDB } from "@atlas/api/lib/db/connection";
 import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
@@ -19,57 +20,7 @@ import { getSemanticRoot } from "@atlas/api/lib/semantic/files";
 
 const log = createLogger("tool:propose-amendment");
 
-/** Generate a unified diff string between two YAML strings. */
-function unifiedDiff(
-  entityName: string,
-  before: string,
-  after: string,
-): string {
-  const beforeLines = before.split("\n");
-  const afterLines = after.split("\n");
-  const lines: string[] = [
-    `--- a/semantic/entities/${entityName}.yml`,
-    `+++ b/semantic/entities/${entityName}.yml`,
-  ];
-
-  // Simple line-by-line diff — find first and last difference
-  const maxLen = Math.max(beforeLines.length, afterLines.length);
-  let diffStart = -1;
-  let diffEnd = -1;
-
-  for (let i = 0; i < maxLen; i++) {
-    if (beforeLines[i] !== afterLines[i]) {
-      if (diffStart === -1) diffStart = i;
-      diffEnd = i;
-    }
-  }
-
-  if (diffStart === -1) return ""; // No changes
-
-  // Context: 3 lines before and after
-  const ctxStart = Math.max(0, diffStart - 3);
-  const ctxEnd = Math.min(maxLen - 1, diffEnd + 3);
-
-  lines.push(
-    `@@ -${ctxStart + 1},${Math.min(beforeLines.length, ctxEnd + 1) - ctxStart} +${ctxStart + 1},${Math.min(afterLines.length, ctxEnd + 1) - ctxStart} @@`,
-  );
-
-  for (let i = ctxStart; i <= ctxEnd; i++) {
-    const bLine = i < beforeLines.length ? beforeLines[i] : undefined;
-    const aLine = i < afterLines.length ? afterLines[i] : undefined;
-
-    if (bLine === aLine) {
-      if (bLine !== undefined) lines.push(` ${bLine}`);
-    } else {
-      if (bLine !== undefined) lines.push(`-${bLine}`);
-      if (aLine !== undefined) lines.push(`+${aLine}`);
-    }
-  }
-
-  return lines.join("\n");
-}
-
-/** Apply an amendment to a parsed entity object and return updated YAML. */
+/** Apply an amendment to a parsed entity object and return the updated object. */
 function applyAmendment(
   entity: Record<string, unknown>,
   amendmentType: AmendmentType,
@@ -189,7 +140,13 @@ The amendment object should match the YAML structure for that type (e.g., { name
 
       if (fs.existsSync(entityPath)) {
         beforeYaml = fs.readFileSync(entityPath, "utf-8");
-        entity = yaml.load(beforeYaml) as Record<string, unknown>;
+        const raw = yaml.load(beforeYaml);
+        if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+          return {
+            error: `Entity file ${entityName}.yml could not be parsed as a YAML mapping. The file may be empty or malformed.`,
+          };
+        }
+        entity = raw as Record<string, unknown>;
       } else {
         return {
           error: `Entity file not found: ${entityPath}. Check that the entity name matches a YAML file in the semantic layer.`,
@@ -198,14 +155,21 @@ The amendment object should match the YAML structure for that type (e.g., { name
 
       // Apply amendment
       const updated = applyAmendment(entity, amendmentType, amendment);
-      const afterYaml = yaml.dump(updated, {
+
+      // Normalize both sides through yaml.dump() with identical options so
+      // the diff only shows actual content changes, not formatting drift
+      // (e.g. inline arrays → multiline, whitespace differences).
+      const dumpOpts: yaml.DumpOptions = {
         lineWidth: 120,
         noRefs: true,
         quotingType: '"',
-      });
+      };
+      const beforeNormalized = yaml.dump(entity, dumpOpts);
+      const afterYaml = yaml.dump(updated, dumpOpts);
 
-      // Generate diff
-      const diff = unifiedDiff(entityName, beforeYaml, afterYaml);
+      // Generate diff — LCS-based algorithm produces proper multi-hunk unified diffs
+      const filePath = `semantic/entities/${entityName}.yml`;
+      const diff = createTwoFilesPatch(filePath, filePath, beforeNormalized, afterYaml, "", "", { context: 3 });
 
       // Run test query if provided — validate through SQL pipeline first
       let testResult: AmendmentPayload["testResult"];
@@ -218,6 +182,7 @@ The amendment object should match the YAML structure for that type (e.g., { name
               success: false,
               rowCount: 0,
               sampleRows: [],
+              error: validation.error ?? "SQL validation failed",
             };
             log.warn(
               { testQuery, error: validation.error },
@@ -241,13 +206,15 @@ The amendment object should match the YAML structure for that type (e.g., { name
             };
           }
         } catch (err) {
+          const errMsg = err instanceof Error ? err.message : String(err);
           testResult = {
             success: false,
             rowCount: 0,
             sampleRows: [],
+            error: errMsg,
           };
           log.warn(
-            { err: err instanceof Error ? err.message : String(err), testQuery },
+            { err: errMsg, testQuery },
             "Amendment test query failed",
           );
         }

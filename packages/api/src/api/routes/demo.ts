@@ -32,6 +32,7 @@ import {
   getConversation,
   listConversations,
   generateTitle,
+  persistAssistantSteps,
 } from "@atlas/api/lib/conversations";
 import { setStreamWriter, clearStreamWriter } from "@atlas/api/lib/tools/python-stream";
 import {
@@ -532,20 +533,9 @@ demo.openapi(demoChatRoute, async (c) => {
           },
         });
 
-        // Fire-and-forget: persist assistant response
+        // Fire-and-forget: persist assistant response (text + tool results) after stream completes.
         if (conversationId) {
-          const cid = conversationId;
-          void Promise.resolve(agentResult.text)
-            .then((text) => {
-              try {
-                addMessage({ conversationId: cid, role: "assistant", content: [{ type: "text", text }] });
-              } catch (persistErr) {
-                log.warn({ err: persistErr instanceof Error ? persistErr.message : String(persistErr), conversationId: cid }, "Failed to persist assistant message");
-              }
-            })
-            .catch((err: unknown) => {
-              log.error({ err: err instanceof Error ? err.message : String(err), conversationId: cid }, "Demo agent stream failed");
-            });
+          persistAssistantSteps({ conversationId, steps: agentResult.steps, label: "demo" });
         }
 
         // Streaming response bypasses OpenAPI typed returns via HTTPException + res

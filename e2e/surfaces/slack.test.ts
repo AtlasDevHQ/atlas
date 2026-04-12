@@ -214,6 +214,7 @@ mock.module("@atlas/api/lib/tools/actions/handler", () => ({
 mock.module("@atlas/api/lib/conversations", () => ({
   createConversation: mock(() => Promise.resolve(null)),
   addMessage: mock(() => {}),
+  persistAssistantSteps: mock(() => {}),
   getConversation: mock(() =>
     Promise.resolve({
       ok: true as const,

@@ -74,6 +74,7 @@ mock.module("@atlas/api/lib/conversations", () => ({
   createConversation: mockCreateConversation,
   addMessage: mockAddMessage,
   generateTitle: mockGenerateTitle,
+  persistAssistantSteps: mock(() => {}),
   updateNotebookState: mock(() => Promise.resolve({ ok: true })),
   forkConversation: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
   // Type exports (no runtime value — needed so mock.module doesn't break re-exports)

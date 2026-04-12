@@ -117,6 +117,7 @@ const mockGenerateTitle: Mock<(question: string) => string> = mock((q: string) =
 mock.module("@atlas/api/lib/conversations", () => ({
   createConversation: mockCreateConversation,
   addMessage: mockAddMessage,
+  persistAssistantSteps: mock(() => {}),
   getConversation: mockGetConversation,
   generateTitle: mockGenerateTitle,
   listConversations: mock(() => Promise.resolve({ conversations: [], total: 0 })),

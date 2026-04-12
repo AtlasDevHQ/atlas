@@ -115,6 +115,63 @@ export async function createConversation(opts: {
   }
 }
 
+/**
+ * Fire-and-forget: persist assistant text + tool results after the agent stream completes.
+ * Iterates steps, builds a content array, and calls addMessage. Skips
+ * persistence with an error log if no text or tool results are found.
+ * Logs and returns on failure — never throws.
+ */
+export function persistAssistantSteps(opts: {
+  conversationId: string;
+  steps: PromiseLike<{ text: string; toolResults?: readonly { toolCallId: string; toolName: string; input: unknown; output: unknown }[] }[]>;
+  label: string;
+}): void {
+  const { conversationId, label } = opts;
+  void Promise.resolve(opts.steps)
+    .then((steps) => {
+      try {
+        const content: unknown[] = steps.flatMap((step) => {
+          const parts: unknown[] = [];
+          if (step.text) {
+            parts.push({ type: "text", text: step.text });
+          }
+          for (const tr of step.toolResults ?? []) {
+            parts.push({
+              type: "tool-invocation",
+              toolCallId: tr.toolCallId,
+              toolName: tr.toolName,
+              args: tr.input,
+              result: tr.output,
+            });
+          }
+          return parts;
+        });
+        if (content.length === 0) {
+          log.error(
+            { conversationId, stepCount: steps.length },
+            "[%s] Agent produced steps but no text or tool results — skipping persistence",
+            label,
+          );
+          return;
+        }
+        addMessage({ conversationId, role: "assistant", content });
+      } catch (persistErr) {
+        log.error(
+          { err: persistErr instanceof Error ? persistErr.message : String(persistErr), conversationId },
+          "[%s] Failed to persist assistant message",
+          label,
+        );
+      }
+    })
+    .catch((err: unknown) => {
+      log.error(
+        { err: err instanceof Error ? err.message : String(err), conversationId },
+        "[%s] Agent stream failed — assistant response not available",
+        label,
+      );
+    });
+}
+
 /** Fire-and-forget — inserts the message and bumps updated_at in two separate non-transactional writes. */
 export function addMessage(opts: {
   conversationId: string;

@@ -123,6 +123,7 @@ mock.module("@atlas/api/lib/conversations", () => ({
   deleteConversation: mock(() => Promise.resolve(false)),
   createConversation: mock(() => Promise.resolve(null)),
   addMessage: mock(() => {}),
+  persistAssistantSteps: mock(() => {}),
   generateTitle: mock(() => "Test title"),
   starConversation: async () => false,
   shareConversation: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),

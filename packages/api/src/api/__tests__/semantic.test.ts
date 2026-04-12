@@ -238,6 +238,7 @@ mock.module("@atlas/api/lib/tools/actions", () => ({
 mock.module("@atlas/api/lib/conversations", () => ({
   createConversation: mock(() => Promise.resolve(null)),
   addMessage: mock(() => {}),
+  persistAssistantSteps: mock(() => {}),
   getConversation: mock(() => Promise.resolve(null)),
   generateTitle: mock((q: string) => q.slice(0, 80)),
   listConversations: mock(() => Promise.resolve({ conversations: [], total: 0 })),

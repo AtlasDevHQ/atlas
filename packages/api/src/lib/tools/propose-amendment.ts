@@ -198,14 +198,20 @@ The amendment object should match the YAML structure for that type (e.g., { name
 
       // Apply amendment
       const updated = applyAmendment(entity, amendmentType, amendment);
-      const afterYaml = yaml.dump(updated, {
+
+      // Normalize both sides through yaml.dump() with identical options so
+      // the diff only shows actual content changes, not formatting drift
+      // (e.g. inline arrays → multiline, whitespace differences).
+      const dumpOpts: yaml.DumpOptions = {
         lineWidth: 120,
         noRefs: true,
         quotingType: '"',
-      });
+      };
+      const beforeNormalized = yaml.dump(entity, dumpOpts);
+      const afterYaml = yaml.dump(updated, dumpOpts);
 
       // Generate diff
-      const diff = unifiedDiff(entityName, beforeYaml, afterYaml);
+      const diff = unifiedDiff(entityName, beforeNormalized, afterYaml);
 
       // Run test query if provided — validate through SQL pipeline first
       let testResult: AmendmentPayload["testResult"];

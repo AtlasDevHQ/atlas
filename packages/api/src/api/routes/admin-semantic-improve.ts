@@ -611,7 +611,13 @@ const PendingAmendmentSchema = z.object({
   amendmentType: z.string().nullable(),
   amendment: z.record(z.string(), z.unknown()).nullable(),
   rationale: z.string().nullable(),
+  diff: z.string().nullable(),
   testQuery: z.string().nullable(),
+  testResult: z.object({
+    success: z.boolean(),
+    rowCount: z.number(),
+    sampleRows: z.array(z.record(z.string(), z.unknown())),
+  }).nullable(),
   createdAt: z.string(),
 });
 
@@ -736,15 +742,24 @@ adminSemanticImprove.openapi(pendingListRoute, async (c) =>
 
     const amendments = rows.map((row) => {
       const payload = row.amendment_payload;
+      // Extract the inner amendment object, not the full payload
+      const innerAmendment = payload?.amendment;
+      const testResult = payload?.testResult;
       return {
         id: row.id,
         entityName: row.source_entity,
         description: row.description,
         confidence: row.confidence,
         amendmentType: typeof payload?.amendmentType === "string" ? payload.amendmentType : null,
-        amendment: payload ?? null,
+        amendment: (innerAmendment && typeof innerAmendment === "object" && !Array.isArray(innerAmendment))
+          ? innerAmendment as Record<string, unknown>
+          : null,
         rationale: typeof payload?.rationale === "string" ? payload.rationale : null,
+        diff: typeof payload?.diff === "string" ? payload.diff : null,
         testQuery: typeof payload?.testQuery === "string" ? payload.testQuery : null,
+        testResult: (testResult && typeof testResult === "object" && "success" in testResult)
+          ? testResult as { success: boolean; rowCount: number; sampleRows: Record<string, unknown>[] }
+          : null,
         createdAt: row.created_at,
       };
     });

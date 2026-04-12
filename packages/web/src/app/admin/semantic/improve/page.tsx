@@ -3,7 +3,7 @@
 import { useState, useRef, useMemo } from "react";
 import { useChat, type UIMessage } from "@ai-sdk/react";
 import { DefaultChatTransport, isToolUIPart, getToolName } from "ai";
-import { getToolArgs } from "@/ui/lib/helpers";
+import { getToolArgs, getToolResult } from "@/ui/lib/helpers";
 import { useAtlasConfig } from "@/ui/context";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
@@ -40,7 +40,9 @@ interface Proposal {
   amendmentType: string;
   amendment: Record<string, unknown>;
   rationale: string;
+  diff?: string;
   testQuery?: string;
+  testResult?: { success: boolean; rowCount: number; sampleRows: Record<string, unknown>[] };
   confidence: number;
   impact?: number;
   score?: number;
@@ -57,8 +59,41 @@ interface PendingAmendment {
   amendmentType: string | null;
   amendment: Record<string, unknown> | null;
   rationale: string | null;
+  diff: string | null;
   testQuery: string | null;
+  testResult: { success: boolean; rowCount: number; sampleRows: Record<string, unknown>[] } | null;
   createdAt: string;
+}
+
+// ---------------------------------------------------------------------------
+// DiffViewer — color-coded unified diff
+// ---------------------------------------------------------------------------
+
+function DiffViewer({ diff }: { diff: string }) {
+  const lines = diff.split("\n");
+  return (
+    <pre className="overflow-x-auto rounded-md border text-xs font-mono p-0 m-0">
+      {lines.map((line, i) => {
+        let className = "px-3 py-0.5 ";
+        if (line.startsWith("+++") || line.startsWith("---")) {
+          className += "text-muted-foreground bg-muted font-semibold";
+        } else if (line.startsWith("@@")) {
+          className += "text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/30";
+        } else if (line.startsWith("+")) {
+          className += "text-green-700 dark:text-green-400 bg-green-50 dark:bg-green-950/30";
+        } else if (line.startsWith("-")) {
+          className += "text-red-700 dark:text-red-400 bg-red-50 dark:bg-red-950/30";
+        } else {
+          className += "text-muted-foreground";
+        }
+        return (
+          <div key={i} className={className}>
+            {line || "\u00A0"}
+          </div>
+        );
+      })}
+    </pre>
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -115,15 +150,26 @@ function ProposalCard({
       <CardContent className="py-2 space-y-3">
         <p className="text-sm text-muted-foreground">{proposal.rationale}</p>
 
-        {/* Amendment preview */}
-        <pre className="overflow-x-auto rounded-md bg-muted p-3 text-xs font-mono whitespace-pre-wrap">
-          {formatAmendment(proposal.amendmentType, proposal.amendment)}
-        </pre>
+        {/* Diff view when available, otherwise amendment preview */}
+        {proposal.diff ? (
+          <DiffViewer diff={proposal.diff} />
+        ) : (
+          <pre className="overflow-x-auto rounded-md bg-muted p-3 text-xs font-mono whitespace-pre-wrap">
+            {formatAmendment(proposal.amendmentType, proposal.amendment)}
+          </pre>
+        )}
 
         {proposal.testQuery && (
-          <div className="text-xs text-muted-foreground">
+          <div className="text-xs text-muted-foreground space-y-1">
             <span className="font-medium">Test query:</span>{" "}
             <code className="rounded bg-muted px-1 py-0.5">{proposal.testQuery}</code>
+            {proposal.testResult && (
+              <p className={proposal.testResult.success ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}>
+                {proposal.testResult.success
+                  ? `Passed — ${proposal.testResult.rowCount} row${proposal.testResult.rowCount === 1 ? "" : "s"}`
+                  : "Failed"}
+              </p>
+            )}
           </div>
         )}
 
@@ -200,6 +246,10 @@ function extractProposals(messages: UIMessage[]): Proposal[] {
         if (name !== "proposeAmendment") continue;
         const args = getToolArgs(part);
         if (args.entityName) {
+          // Extract diff from tool result if available
+          const result = getToolResult(part) as Record<string, unknown> | null;
+          const diff = typeof result?.diff === "string" ? result.diff : undefined;
+          const testResult = result?.testResult as Proposal["testResult"] | undefined;
           proposals.push({
             index: idx++,
             entityName: String(args.entityName ?? "unknown"),
@@ -207,7 +257,9 @@ function extractProposals(messages: UIMessage[]): Proposal[] {
             amendmentType: String(args.amendmentType ?? ""),
             amendment: (args.amendment as Record<string, unknown>) ?? {},
             rationale: String(args.rationale ?? ""),
+            diff,
             testQuery: args.testQuery ? String(args.testQuery) : undefined,
+            testResult,
             confidence: Number(args.confidence ?? 0.5),
             impact: Number(args.impact ?? 0.5),
             score: Number(args.score ?? 0.5),
@@ -273,7 +325,9 @@ export default function SemanticImprovePage() {
     amendmentType: a.amendmentType ?? "unknown",
     amendment: a.amendment ?? {},
     rationale: a.rationale ?? a.description ?? "",
+    diff: a.diff ?? undefined,
     testQuery: a.testQuery ?? undefined,
+    testResult: a.testResult ?? undefined,
     confidence: a.confidence,
     decision: null,
     dbId: a.id,

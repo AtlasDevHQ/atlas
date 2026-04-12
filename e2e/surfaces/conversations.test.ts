@@ -264,6 +264,8 @@ mock.module("@atlas/api/lib/conversations", () => ({
     });
   }),
 
+  persistAssistantSteps: mock(() => {}),
+
   getConversation: mock((id: string, userId?: string | null): Promise<CrudDataResult<unknown>> => {
     const conv = conversations.find((c) =>
       c.id === id && (userId == null || c.user_id === userId),

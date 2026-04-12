@@ -884,6 +884,69 @@ export async function getPendingAmendmentCount(orgId: string | null): Promise<nu
   return parseInt(rows[0]?.count ?? "0", 10);
 }
 
+/** Row shape returned by getPendingAmendments. */
+export type PendingAmendmentRow = Record<string, unknown> & {
+  id: string;
+  source_entity: string;
+  description: string | null;
+  confidence: number;
+  amendment_payload: Record<string, unknown> | null;
+  created_at: string;
+};
+
+/**
+ * List pending semantic amendment proposals for an org, newest first.
+ * Returns [] when no internal DB is available.
+ */
+export async function getPendingAmendments(orgId: string | null): Promise<PendingAmendmentRow[]> {
+  if (!hasInternalDB()) return [];
+
+  return internalQuery<PendingAmendmentRow>(
+    orgId
+      ? `SELECT id, source_entity, description, confidence, amendment_payload, created_at::text
+         FROM learned_patterns
+         WHERE type = 'semantic_amendment' AND status = 'pending'
+         AND (org_id = $1 OR org_id IS NULL)
+         ORDER BY created_at DESC`
+      : `SELECT id, source_entity, description, confidence, amendment_payload, created_at::text
+         FROM learned_patterns
+         WHERE type = 'semantic_amendment' AND status = 'pending'
+         AND org_id IS NULL
+         ORDER BY created_at DESC`,
+    orgId ? [orgId] : [],
+  );
+}
+
+/**
+ * Update a pending semantic amendment's status to approved or rejected.
+ * Returns true if the row was found and updated, false if not found or already reviewed.
+ */
+export async function reviewSemanticAmendment(
+  id: string,
+  orgId: string | null,
+  decision: "approved" | "rejected",
+  reviewedBy: string,
+): Promise<boolean> {
+  if (!hasInternalDB()) return false;
+
+  const rows = await internalQuery<{ id: string }>(
+    orgId
+      ? `UPDATE learned_patterns
+         SET status = $1, reviewed_by = $2, reviewed_at = now(), updated_at = now()
+         WHERE id = $3 AND type = 'semantic_amendment' AND status = 'pending'
+         AND (org_id = $4 OR org_id IS NULL)
+         RETURNING id`
+      : `UPDATE learned_patterns
+         SET status = $1, reviewed_by = $2, reviewed_at = now(), updated_at = now()
+         WHERE id = $3 AND type = 'semantic_amendment' AND status = 'pending'
+         AND org_id IS NULL
+         RETURNING id`,
+    orgId ? [decision, reviewedBy, id, orgId] : [decision, reviewedBy, id],
+  );
+
+  return rows.length > 0;
+}
+
 /**
  * Increment repetition_count by 1 and increase confidence by 0.1 (capped at 1.0).
  * When sourceFingerprint is provided, appends it to source_queries (capped at 100 entries).

@@ -5,6 +5,7 @@ import { useChat, type UIMessage } from "@ai-sdk/react";
 import { DefaultChatTransport, isToolUIPart, getToolName } from "ai";
 import { getToolArgs } from "@/ui/lib/helpers";
 import { useAtlasConfig } from "@/ui/context";
+import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { Button } from "@/components/ui/button";
@@ -44,6 +45,20 @@ interface Proposal {
   impact: number;
   score: number;
   decision: "accepted" | "rejected" | "skipped" | null;
+  /** DB row id for pending amendments loaded from previous sessions. */
+  dbId?: string;
+}
+
+interface PendingAmendment {
+  id: string;
+  entityName: string;
+  description: string | null;
+  confidence: number;
+  amendmentType: string | null;
+  amendment: Record<string, unknown> | null;
+  rationale: string | null;
+  testQuery: string | null;
+  createdAt: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -241,6 +256,10 @@ export default function SemanticImprovePage() {
   const { messages, sendMessage, status, error: chatError } = useChat({ transport });
   const isLoading = status === "streaming" || status === "submitted";
 
+  // Fetch pending amendments from the DB (created by previous sessions)
+  const { data: pendingData, loading: pendingLoading, refetch: refetchPending } =
+    useAdminFetch<{ amendments: PendingAmendment[] }>("/api/v1/admin/semantic-improve/pending");
+
   // Mutations for approve/reject
   const { mutate: mutateApprove, isMutating: isApproving, error: approveError } = useAdminMutation({
     method: "POST",
@@ -250,11 +269,30 @@ export default function SemanticImprovePage() {
   });
   const mutationError = approveError || rejectError;
 
-  // Extract proposals from messages
-  const proposals = extractProposals(messages).map((p) => ({
+  // Convert DB pending amendments to Proposal shape for display
+  const pendingAmendments: Proposal[] = (pendingData?.amendments ?? []).map((a, i) => ({
+    index: i,
+    entityName: a.entityName,
+    category: "",
+    amendmentType: a.amendmentType ?? "unknown",
+    amendment: a.amendment ?? {},
+    rationale: a.rationale ?? a.description ?? "",
+    testQuery: a.testQuery ?? undefined,
+    confidence: a.confidence,
+    impact: 0.5,
+    score: a.confidence,
+    decision: null,
+    dbId: a.id,
+  }));
+
+  // Extract proposals from current chat session messages
+  const chatProposals = extractProposals(messages).map((p) => ({
     ...p,
     decision: proposalDecisions.get(p.index) ?? p.decision,
   }));
+
+  // Show chat proposals when a session is active, otherwise show DB pending
+  const proposals = chatProposals.length > 0 ? chatProposals : pendingAmendments;
 
   function handleSend() {
     if (!inputValue.trim() || isLoading) return;
@@ -282,23 +320,41 @@ export default function SemanticImprovePage() {
     });
   }
 
-  async function handleApprove(index: number) {
-    const result = await mutateApprove({
-      path: `/api/v1/admin/semantic-improve/proposals/${index}/approve`,
-      itemId: `approve-${index}`,
-    });
-    if (result.ok) {
-      setProposalDecisions((prev) => new Map(prev).set(index, "accepted"));
+  async function handleApprove(proposal: Proposal) {
+    if (proposal.dbId) {
+      const result = await mutateApprove({
+        path: `/api/v1/admin/semantic-improve/amendments/${proposal.dbId}/review`,
+        itemId: `approve-${proposal.dbId}`,
+        body: { decision: "approved" },
+      });
+      if (result.ok) refetchPending();
+    } else {
+      const result = await mutateApprove({
+        path: `/api/v1/admin/semantic-improve/proposals/${proposal.index}/approve`,
+        itemId: `approve-${proposal.index}`,
+      });
+      if (result.ok) {
+        setProposalDecisions((prev) => new Map(prev).set(proposal.index, "accepted"));
+      }
     }
   }
 
-  async function handleReject(index: number) {
-    const result = await mutateReject({
-      path: `/api/v1/admin/semantic-improve/proposals/${index}/reject`,
-      itemId: `reject-${index}`,
-    });
-    if (result.ok) {
-      setProposalDecisions((prev) => new Map(prev).set(index, "rejected"));
+  async function handleReject(proposal: Proposal) {
+    if (proposal.dbId) {
+      const result = await mutateReject({
+        path: `/api/v1/admin/semantic-improve/amendments/${proposal.dbId}/review`,
+        itemId: `reject-${proposal.dbId}`,
+        body: { decision: "rejected" },
+      });
+      if (result.ok) refetchPending();
+    } else {
+      const result = await mutateReject({
+        path: `/api/v1/admin/semantic-improve/proposals/${proposal.index}/reject`,
+        itemId: `reject-${proposal.index}`,
+      });
+      if (result.ok) {
+        setProposalDecisions((prev) => new Map(prev).set(proposal.index, "rejected"));
+      }
     }
   }
 
@@ -458,21 +514,32 @@ export default function SemanticImprovePage() {
                   {mutationError && (
                     <ErrorBanner message={mutationError} />
                   )}
-                  {proposals.length === 0 && (
+                  {proposals.length === 0 && !pendingLoading && (
                     <div className="py-12 text-center text-xs text-muted-foreground">
-                      Proposals will appear here as the agent identifies improvements.
+                      {messages.length === 0
+                        ? "No pending improvements. Run an analysis to identify opportunities."
+                        : "Proposals will appear here as the agent identifies improvements."}
                     </div>
                   )}
-                  {proposals.map((proposal) => (
-                    <ProposalCard
-                      key={proposal.index}
-                      proposal={proposal}
-                      onApprove={() => handleApprove(proposal.index)}
-                      onReject={() => handleReject(proposal.index)}
-                      approving={isApproving(`approve-${proposal.index}`)}
-                      rejecting={isRejecting(`reject-${proposal.index}`)}
-                    />
-                  ))}
+                  {pendingLoading && proposals.length === 0 && (
+                    <div className="flex items-center justify-center py-12 text-xs text-muted-foreground">
+                      <Loader2 className="size-3 animate-spin mr-2" />
+                      Loading pending amendments...
+                    </div>
+                  )}
+                  {proposals.map((proposal) => {
+                    const itemKey = proposal.dbId ?? `chat-${proposal.index}`;
+                    return (
+                      <ProposalCard
+                        key={itemKey}
+                        proposal={proposal}
+                        onApprove={() => handleApprove(proposal)}
+                        onReject={() => handleReject(proposal)}
+                        approving={isApproving(proposal.dbId ? `approve-${proposal.dbId}` : `approve-${proposal.index}`)}
+                        rejecting={isRejecting(proposal.dbId ? `reject-${proposal.dbId}` : `reject-${proposal.index}`)}
+                      />
+                    );
+                  })}
                 </div>
               </ScrollArea>
             </div>

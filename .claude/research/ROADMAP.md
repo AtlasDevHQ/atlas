@@ -1114,6 +1114,34 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 
 ---
 
+## Bug Fixes (post-1.0.0)
+
+- [x] Loaded conversations don't render tool results — SQL cards, charts, dashboard button (#1390, PR #1391)
+- [x] Demo route does not persist tool results in conversations (#1392, PR #1394)
+- [x] Extract `persistAssistantSteps` shared helper — deduplicate chat.ts/demo.ts persistence (PR #1394)
+- [x] Semantic improve page shows badge count but no pending amendments (#1395)
+- [x] Sidebar double-highlight on Semantic Layer + Improve Layer (PR #1395)
+- [x] CORS test explore mock missing exports (#1386, PR #1382)
+- [x] `api-test-mocks` missing `hardDeleteWorkspace` export (#1372)
+
+---
+
+## 1.1.0 — Notebook Evolution
+
+**Make the notebook surface earn its place** by bridging exploratory chat and persistent dashboards. PRD: #1396. Milestone: #33.
+
+### Phase 1 (core flow)
+- [ ] Execution metadata on tool results — timing + row count (#1397)
+- [ ] Convert chat to notebook — API + UI (#1398)
+- [ ] Dashboard bridge from notebook cells (#1399)
+
+### Phase 2 (sharing + polish)
+- [ ] Report route — shareable notebook view (#1400)
+- [ ] Fork UX — "What if?" affordance + gutter indicators (#1401)
+- [ ] Execution metadata — rerun comparison (#1402)
+
+---
+
 ## Ideas / Backlog
 
 _Untracked ideas. Create issues when committing to work._

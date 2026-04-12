@@ -490,7 +490,7 @@ export default function SemanticImprovePage() {
               <ScrollArea className="flex-1 p-4">
                 <div className="space-y-3">
                   {pendingError && (
-                    <ErrorBanner message={pendingError} />
+                    <ErrorBanner message={pendingError.message} />
                   )}
                   {mutationError && (
                     <ErrorBanner message={mutationError} />

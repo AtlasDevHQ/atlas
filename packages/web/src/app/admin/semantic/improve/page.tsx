@@ -37,6 +37,7 @@ interface TestResult {
   success: boolean;
   rowCount: number;
   sampleRows: Record<string, unknown>[];
+  error?: string;
 }
 
 interface Proposal {
@@ -174,7 +175,7 @@ function ProposalCard({
               <p className={proposal.testResult.success ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}>
                 {proposal.testResult.success
                   ? `Passed — ${proposal.testResult.rowCount} row${proposal.testResult.rowCount === 1 ? "" : "s"}`
-                  : "Failed"}
+                  : `Failed${proposal.testResult.error ? ` — ${proposal.testResult.error}` : ""}`}
               </p>
             )}
           </div>

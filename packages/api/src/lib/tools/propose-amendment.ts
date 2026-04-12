@@ -69,7 +69,7 @@ function unifiedDiff(
   return lines.join("\n");
 }
 
-/** Apply an amendment to a parsed entity object and return updated YAML. */
+/** Apply an amendment to a parsed entity object and return the updated object. */
 function applyAmendment(
   entity: Record<string, unknown>,
   amendmentType: AmendmentType,
@@ -189,7 +189,13 @@ The amendment object should match the YAML structure for that type (e.g., { name
 
       if (fs.existsSync(entityPath)) {
         beforeYaml = fs.readFileSync(entityPath, "utf-8");
-        entity = yaml.load(beforeYaml) as Record<string, unknown>;
+        const raw = yaml.load(beforeYaml);
+        if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+          return {
+            error: `Entity file ${entityName}.yml could not be parsed as a YAML mapping. The file may be empty or malformed.`,
+          };
+        }
+        entity = raw as Record<string, unknown>;
       } else {
         return {
           error: `Entity file not found: ${entityPath}. Check that the entity name matches a YAML file in the semantic layer.`,
@@ -224,6 +230,7 @@ The amendment object should match the YAML structure for that type (e.g., { name
               success: false,
               rowCount: 0,
               sampleRows: [],
+              error: validation.error ?? "SQL validation failed",
             };
             log.warn(
               { testQuery, error: validation.error },
@@ -247,13 +254,15 @@ The amendment object should match the YAML structure for that type (e.g., { name
             };
           }
         } catch (err) {
+          const errMsg = err instanceof Error ? err.message : String(err);
           testResult = {
             success: false,
             rowCount: 0,
             sampleRows: [],
+            error: errMsg,
           };
           log.warn(
-            { err: err instanceof Error ? err.message : String(err), testQuery },
+            { err: errMsg, testQuery },
             "Amendment test query failed",
           );
         }

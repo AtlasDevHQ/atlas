@@ -45,6 +45,8 @@ export interface AmendmentPayload {
     success: boolean;
     rowCount: number;
     sampleRows: Record<string, unknown>[];
+    /** Present when `success` is false — describes why the test query failed. */
+    error?: string;
   };
   /** Agent's confidence this amendment is correct (0.0–1.0). */
   confidence: number;

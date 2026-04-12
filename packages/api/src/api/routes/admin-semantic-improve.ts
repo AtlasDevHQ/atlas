@@ -607,6 +607,7 @@ const TestResultSchema = z.object({
   success: z.boolean(),
   rowCount: z.number(),
   sampleRows: z.array(z.record(z.string(), z.unknown())),
+  error: z.string().optional(),
 });
 
 const PendingAmendmentSchema = z.object({
@@ -744,6 +745,9 @@ adminSemanticImprove.openapi(pendingListRoute, async (c) =>
 
     const amendments = rows.map((row) => {
       const payload = row.amendment_payload;
+      if (!payload || typeof payload !== "object") {
+        log.debug({ id: row.id }, "Pending amendment has null or non-object payload");
+      }
 
       /** Safely extract a string field from the untyped payload. */
       function str(key: string): string | null {

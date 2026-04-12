@@ -33,6 +33,12 @@ import Link from "next/link";
 // Types
 // ---------------------------------------------------------------------------
 
+interface TestResult {
+  success: boolean;
+  rowCount: number;
+  sampleRows: Record<string, unknown>[];
+}
+
 interface Proposal {
   index: number;
   entityName: string;
@@ -42,7 +48,7 @@ interface Proposal {
   rationale: string;
   diff?: string;
   testQuery?: string;
-  testResult?: { success: boolean; rowCount: number; sampleRows: Record<string, unknown>[] };
+  testResult?: TestResult;
   confidence: number;
   impact?: number;
   score?: number;
@@ -61,7 +67,7 @@ interface PendingAmendment {
   rationale: string | null;
   diff: string | null;
   testQuery: string | null;
-  testResult: { success: boolean; rowCount: number; sampleRows: Record<string, unknown>[] } | null;
+  testResult: TestResult | null;
   createdAt: string;
 }
 
@@ -69,29 +75,30 @@ interface PendingAmendment {
 // DiffViewer — color-coded unified diff
 // ---------------------------------------------------------------------------
 
+function diffLineStyle(line: string): string {
+  if (line.startsWith("+++") || line.startsWith("---")) {
+    return "text-muted-foreground bg-muted font-semibold";
+  }
+  if (line.startsWith("@@")) {
+    return "text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/30";
+  }
+  if (line.startsWith("+")) {
+    return "text-green-700 dark:text-green-400 bg-green-50 dark:bg-green-950/30";
+  }
+  if (line.startsWith("-")) {
+    return "text-red-700 dark:text-red-400 bg-red-50 dark:bg-red-950/30";
+  }
+  return "text-muted-foreground";
+}
+
 function DiffViewer({ diff }: { diff: string }) {
-  const lines = diff.split("\n");
   return (
     <pre className="overflow-x-auto rounded-md border text-xs font-mono p-0 m-0">
-      {lines.map((line, i) => {
-        let className = "px-3 py-0.5 ";
-        if (line.startsWith("+++") || line.startsWith("---")) {
-          className += "text-muted-foreground bg-muted font-semibold";
-        } else if (line.startsWith("@@")) {
-          className += "text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/30";
-        } else if (line.startsWith("+")) {
-          className += "text-green-700 dark:text-green-400 bg-green-50 dark:bg-green-950/30";
-        } else if (line.startsWith("-")) {
-          className += "text-red-700 dark:text-red-400 bg-red-50 dark:bg-red-950/30";
-        } else {
-          className += "text-muted-foreground";
-        }
-        return (
-          <div key={i} className={className}>
-            {line || "\u00A0"}
-          </div>
-        );
-      })}
+      {diff.split("\n").map((line, i) => (
+        <div key={i} className={`px-3 py-0.5 ${diffLineStyle(line)}`}>
+          {line || "\u00A0"}
+        </div>
+      ))}
     </pre>
   );
 }
@@ -246,10 +253,15 @@ function extractProposals(messages: UIMessage[]): Proposal[] {
         if (name !== "proposeAmendment") continue;
         const args = getToolArgs(part);
         if (args.entityName) {
-          // Extract diff from tool result if available
+          // Extract diff and testResult from tool result if available
           const result = getToolResult(part) as Record<string, unknown> | null;
           const diff = typeof result?.diff === "string" ? result.diff : undefined;
-          const testResult = result?.testResult as Proposal["testResult"] | undefined;
+          const rawTR = result?.testResult;
+          const testResult: Proposal["testResult"] | undefined =
+            rawTR && typeof rawTR === "object" && !Array.isArray(rawTR) &&
+            "success" in rawTR && typeof (rawTR as Record<string, unknown>).rowCount === "number"
+              ? (rawTR as Proposal["testResult"])
+              : undefined;
           proposals.push({
             index: idx++,
             entityName: String(args.entityName ?? "unknown"),

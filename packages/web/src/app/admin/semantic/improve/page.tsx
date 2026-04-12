@@ -456,7 +456,7 @@ export default function SemanticImprovePage() {
                       }
                     }}
                     placeholder="Ask the expert agent to improve specific areas..."
-                    className="min-h-[40px] max-h-[120px] resize-none text-sm"
+                    className="min-h-10 max-h-30 resize-none text-sm"
                     rows={1}
                   />
                   <Button

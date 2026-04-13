@@ -94,7 +94,7 @@ function diffLineStyle(line: string): string {
 
 function DiffViewer({ diff }: { diff: string }) {
   return (
-    <pre className="overflow-x-auto rounded-md border text-xs font-mono p-0 m-0">
+    <pre className="rounded-md border text-xs font-mono p-0 m-0 whitespace-pre-wrap break-words">
       {diff.split("\n").map((line, i) => (
         <div key={i} className={`px-3 py-0.5 ${diffLineStyle(line)}`}>
           {line || "\u00A0"}
@@ -404,9 +404,9 @@ export default function SemanticImprovePage() {
   }
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full flex-col overflow-hidden">
       {/* Header */}
-      <div className="flex items-center gap-3 border-b px-6 py-4">
+      <div className="flex shrink-0 items-center gap-3 border-b px-6 py-4">
         <Link href="/admin/semantic">
           <Button variant="ghost" size="sm" className="gap-1.5">
             <ArrowLeft className="size-4" />
@@ -431,12 +431,12 @@ export default function SemanticImprovePage() {
       </div>
 
       {/* Split view */}
-      <div className="flex-1 overflow-hidden">
+      <div className="min-h-0 flex-1 overflow-hidden">
         <ResizablePanelGroup orientation="horizontal">
           {/* Chat panel */}
           <ResizablePanel defaultSize={55} minSize={35}>
-            <div className="flex h-full flex-col">
-              <ScrollArea className="flex-1 p-4">
+            <div className="flex h-full min-h-0 flex-col">
+              <ScrollArea className="min-h-0 flex-1 p-4">
                 <div className="space-y-4 pb-4">
                   {messages.length === 0 && (
                     <div className="flex flex-col items-center justify-center py-16 text-center text-muted-foreground">
@@ -543,8 +543,8 @@ export default function SemanticImprovePage() {
 
           {/* Proposals panel */}
           <ResizablePanel defaultSize={45} minSize={25}>
-            <div className="flex h-full flex-col">
-              <div className="border-b px-4 py-3">
+            <div className="flex h-full min-h-0 flex-col">
+              <div className="shrink-0 border-b px-4 py-3">
                 <h2 className="text-sm font-semibold">
                   Proposals
                   {proposals.length > 0 && (
@@ -554,7 +554,7 @@ export default function SemanticImprovePage() {
                   )}
                 </h2>
               </div>
-              <ScrollArea className="flex-1 p-4">
+              <ScrollArea className="min-h-0 flex-1 p-4">
                 <div className="space-y-3">
                   {pendingError && (
                     <ErrorBanner message={pendingError.message} />

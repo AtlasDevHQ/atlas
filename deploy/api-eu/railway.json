@@ -1,0 +1,24 @@
+{
+  "$schema": "https://railway.com/railway.schema.json",
+  "build": {
+    "builder": "DOCKERFILE",
+    "dockerfilePath": "deploy/api/Dockerfile",
+    "dockerfileContext": "../..",
+    "watchPatterns": [
+      "packages/api/**",
+      "packages/react/**",
+      "packages/cli/data/**",
+      "packages/plugin-sdk/**",
+      "plugins/**",
+      "semantic/**",
+      "deploy/api/**",
+      "deploy/api-eu/**"
+    ]
+  },
+  "deploy": {
+    "restartPolicyType": "ON_FAILURE",
+    "restartPolicyMaxRetries": 10,
+    "healthcheckPath": "/api/health",
+    "healthcheckTimeout": 300
+  }
+}

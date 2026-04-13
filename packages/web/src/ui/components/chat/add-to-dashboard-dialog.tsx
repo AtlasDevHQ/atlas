@@ -58,6 +58,8 @@ interface AddToDashboardDialogProps {
   rows: Record<string, unknown>[];
   chartResult: ChartDetectionResult;
   explanation?: string;
+  /** Called after a card is successfully added to a dashboard. */
+  onAdded?: (dashboardId: string, cardId: string) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -72,6 +74,7 @@ export function AddToDashboardDialog({
   rows,
   chartResult,
   explanation,
+  onAdded,
 }: AddToDashboardDialogProps) {
   const [mode, setMode] = useState<"existing" | "new">("existing");
   const [selectedDashboardId, setSelectedDashboardId] = useState<string>("");
@@ -90,7 +93,7 @@ export function AddToDashboardDialog({
   }>("/api/v1/dashboards");
 
   const { mutate: createDashboard, saving: creatingDashboard } = useAdminMutation<Dashboard>({});
-  const { mutate: addCard, saving: addingCard } = useAdminMutation({});
+  const { mutate: addCard, saving: addingCard } = useAdminMutation<{ id: string }>({});
 
   const saving = creatingDashboard || addingCard;
 
@@ -201,6 +204,13 @@ export function AddToDashboardDialog({
           setError(cardResult.error ?? "Failed to add card.");
         }
         return;
+      }
+
+      const cardId = cardResult.data?.id;
+      if (cardId) {
+        onAdded?.(dashboardId, cardId);
+      } else {
+        console.warn("Dashboard card created but server response did not include card ID — notebook tracking skipped.");
       }
 
       setSuccess(true);

@@ -6,6 +6,7 @@ import { FileDown, FileSpreadsheet, LayoutDashboard } from "lucide-react";
 import { useDarkMode } from "../../hooks/use-dark-mode";
 import { detectCharts } from "../chart/chart-detection";
 import dynamic from "next/dynamic";
+import { useDashboardBridge } from "../notebook/dashboard-bridge-context";
 
 const ResultChart = dynamic(
   () => import("../chart/result-chart").then((m) => ({ default: m.ResultChart })),
@@ -37,6 +38,7 @@ const AddToDashboardDialog = dynamic(
 
 function SQLResultCardInner({ part }: { part: unknown }) {
   const dark = useDarkMode();
+  const bridge = useDashboardBridge();
   const args = getToolArgs(part);
   const result = getToolResult(part) as Record<string, unknown> | null;
   const done = isToolComplete(part);
@@ -44,6 +46,19 @@ function SQLResultCardInner({ part }: { part: unknown }) {
   const [viewMode, setViewMode] = useState<"both" | "chart" | "table">("both");
   const [excelError, setExcelError] = useState(false);
   const [dashboardDialogOpen, setDashboardDialogOpen] = useState(false);
+
+  // In notebook context, track which cell this result belongs to
+  const cellId = bridge?.cellId ?? null;
+  const isOnDashboard = cellId ? !!bridge?.dashboardCards[cellId] : false;
+
+  function handleDashboardAdded(dashboardId: string, cardId: string) {
+    if (!bridge) return; // Not in notebook context
+    if (!cellId) {
+      console.warn("Dashboard card added but cellId is null in bridge context — tracking skipped.");
+      return;
+    }
+    bridge.onDashboardCardAdded(cellId, { dashboardId, cardId });
+  }
 
   const columns = useMemo(
     () => (done && result?.success ? ((result.columns as string[]) ?? []) : []),
@@ -89,7 +104,15 @@ function SQLResultCardInner({ part }: { part: unknown }) {
       badgeClassName="bg-blue-100 text-blue-700 dark:bg-blue-600/20 dark:text-blue-400"
       title={String(args.explanation ?? "Query result")}
       headerExtra={
-        <span className="text-zinc-500">
+        <span className="flex items-center gap-1.5 text-zinc-500">
+          {isOnDashboard && (
+            <span
+              className="inline-flex items-center gap-1 rounded bg-emerald-100 px-1.5 py-0.5 text-emerald-700 dark:bg-emerald-600/20 dark:text-emerald-400"
+              title="Added to dashboard"
+            >
+              <LayoutDashboard className="size-3" />
+            </span>
+          )}
           {rows.length} row{rows.length !== 1 ? "s" : ""}
           {result.truncated ? "+" : ""}
           {Number.isFinite(result.executionMs) && (
@@ -189,6 +212,7 @@ function SQLResultCardInner({ part }: { part: unknown }) {
             rows={rows}
             chartResult={chartResult}
             explanation={String(args.explanation ?? "")}
+            onAdded={handleDashboardAdded}
           />
         </ResultCardErrorBoundary>
       )}

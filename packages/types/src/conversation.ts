@@ -30,6 +30,8 @@ export interface NotebookStateWire {
   forkPointCellId?: string;
   /** Text cell content keyed by cell ID (text cells are not message-backed). */
   textCells?: Record<string, { content: string }>;
+  /** Tracks which notebook cells have been added to dashboards. */
+  dashboardCards?: Record<string, { dashboardId: string; cardId: string }>;
 }
 
 /** A fork branch — metadata for a forked conversation. */

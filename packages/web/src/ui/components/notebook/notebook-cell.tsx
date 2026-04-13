@@ -11,6 +11,7 @@ import { NotebookCellInput } from "./notebook-cell-input";
 import { NotebookCellOutput } from "./notebook-cell-output";
 import { DeleteCellDialog } from "./delete-cell-dialog";
 import { extractTextContent } from "./use-notebook";
+import { DashboardBridgeProvider, type DashboardCardEntry } from "./dashboard-bridge-context";
 
 interface NotebookCellProps {
   cell: ResolvedCell;
@@ -21,16 +22,24 @@ interface NotebookCellProps {
   onToggleCollapse: (cellId: string) => void;
   onCopy: (cellId: string) => Promise<void>;
   onFork: (cellId: string) => Promise<void>;
+  dashboardCards: Record<string, DashboardCardEntry>;
+  onDashboardCardAdded: (cellId: string, entry: DashboardCardEntry) => void;
 }
 
 export const NotebookCell = forwardRef<HTMLElement, NotebookCellProps>(
   function NotebookCell(
-    { cell, anyRunning, onRerun, onDelete, onToggleEdit, onToggleCollapse, onCopy, onFork },
+    { cell, anyRunning, onRerun, onDelete, onToggleEdit, onToggleCollapse, onCopy, onFork, dashboardCards, onDashboardCardAdded },
     ref,
   ) {
     const [showDeleteDialog, setShowDeleteDialog] = useState(false);
     const question = extractTextContent(cell.userMessage);
     const isRunning = cell.status === "running";
+
+    const bridgeValue = {
+      cellId: cell.id,
+      dashboardCards,
+      onDashboardCardAdded,
+    };
 
     return (
       <>
@@ -99,11 +108,13 @@ export const NotebookCell = forwardRef<HTMLElement, NotebookCellProps>(
             aria-label={`Cell ${cell.number} output`}
             className={cn("px-4 py-3", cell.editing && "opacity-50")}
           >
-            <NotebookCellOutput
-              assistantMessage={cell.assistantMessage}
-              status={cell.status}
-              collapsed={cell.collapsed}
-            />
+            <DashboardBridgeProvider value={bridgeValue}>
+              <NotebookCellOutput
+                assistantMessage={cell.assistantMessage}
+                status={cell.status}
+                collapsed={cell.collapsed}
+              />
+            </DashboardBridgeProvider>
           </div>
         </section>
 

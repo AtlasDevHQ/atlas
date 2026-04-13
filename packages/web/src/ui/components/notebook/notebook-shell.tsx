@@ -219,6 +219,8 @@ export function NotebookShell({ notebook, focusCellId }: NotebookShellProps) {
                           onToggleCollapse={notebook.toggleCollapse}
                           onCopy={notebook.copyCell}
                           onFork={notebook.forkCell}
+                          dashboardCards={notebook.dashboardCards}
+                          onDashboardCardAdded={notebook.addDashboardCard}
                         />
                       )}
                     </ErrorBoundary>

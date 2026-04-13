@@ -172,6 +172,11 @@ export interface UseNotebookOptions {
   forkInfo?: ForkInfo | null;
 }
 
+export interface DashboardCardEntry {
+  dashboardId: string;
+  cardId: string;
+}
+
 export interface UseNotebookReturn {
   cells: ResolvedCell[];
   status: "ready" | "streaming" | "submitted" | "error";
@@ -192,6 +197,10 @@ export interface UseNotebookReturn {
   setInput: (value: string) => void;
   insertTextCell: (afterCellId?: string) => void;
   updateTextCell: (cellId: string, content: string) => void;
+  /** Map of cellId → dashboard card info for cells added to a dashboard. */
+  dashboardCards: Record<string, DashboardCardEntry>;
+  /** Record that a cell was added to a dashboard. */
+  addDashboardCard: (cellId: string, entry: DashboardCardEntry) => void;
 }
 
 export function useNotebook({
@@ -283,6 +292,12 @@ export function useNotebook({
     return saved?.cellOrder ?? [];
   });
 
+  // Dashboard card mappings — which cells have been added to dashboards
+  const [dashboardCards, setDashboardCards] = useState<Record<string, DashboardCardEntry>>(() => {
+    if (initialServerState?.dashboardCards) return initialServerState.dashboardCards;
+    return {};
+  });
+
   const pendingRerun = useRef<string | null>(null);
   // Snapshot of cell state taken before a rerun truncates messages. Used as
   // fallback during reconciliation so collapsed/editing state survives the
@@ -333,6 +348,7 @@ export function useNotebook({
       suppressSaveUntil.current = Date.now() + 1000;
       setCellState(freshCells);
       setCellOrder(initialServerState?.cellOrder ?? []);
+      setDashboardCards(initialServerState?.dashboardCards ?? {});
       return;
     }
 
@@ -399,12 +415,13 @@ export function useNotebook({
         cellOrder: cellOrder.length > 0 ? cellOrder : undefined,
         cellProps: Object.keys(cellProps).length > 0 ? cellProps : undefined,
         textCells: Object.keys(textCells).length > 0 ? textCells : undefined,
+        dashboardCards: Object.keys(dashboardCards).length > 0 ? dashboardCards : undefined,
       };
       saveToServer(wire);
     }, 500);
 
     return () => clearTimeout(timer);
-  }, [cellState, cellOrder, conversationId, saveToServer]);
+  }, [cellState, cellOrder, dashboardCards, conversationId, saveToServer]);
 
   // Migrate localStorage key when conversationId changes from temp to real
   const prevConversationId = useRef(conversationId);
@@ -660,6 +677,11 @@ export function useNotebook({
     );
   }, []);
 
+  /** Record that a cell was added to a dashboard. */
+  const addDashboardCard = useCallback((cellId: string, entry: DashboardCardEntry) => {
+    setDashboardCards((prev) => ({ ...prev, [cellId]: entry }));
+  }, []);
+
   return {
     cells,
     status: chat.status,
@@ -680,5 +702,7 @@ export function useNotebook({
     setInput,
     insertTextCell,
     updateTextCell,
+    dashboardCards,
+    addDashboardCard,
   };
 }

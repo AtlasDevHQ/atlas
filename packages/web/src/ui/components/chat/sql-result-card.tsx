@@ -7,6 +7,7 @@ import { useDarkMode } from "../../hooks/use-dark-mode";
 import { detectCharts } from "../chart/chart-detection";
 import dynamic from "next/dynamic";
 import { useDashboardBridge } from "../notebook/dashboard-bridge-context";
+import type { PreviousExecution } from "../notebook/types";
 
 const ResultChart = dynamic(
   () => import("../chart/result-chart").then((m) => ({ default: m.ResultChart })),
@@ -23,7 +24,7 @@ function toStringRows(columns: string[], rows: Record<string, unknown>[]): strin
 }
 
 
-export function SQLResultCard({ part, previousExecution }: { part: unknown; previousExecution?: { executionMs?: number; rowCount?: number } }) {
+export function SQLResultCard({ part, previousExecution }: { part: unknown; previousExecution?: PreviousExecution }) {
   return (
     <ResultCardErrorBoundary label="SQL">
       <SQLResultCardInner part={part} previousExecution={previousExecution} />
@@ -36,9 +37,9 @@ const AddToDashboardDialog = dynamic(
   { ssr: false, loading: () => null },
 );
 
-/** Build a human-readable comparison string like "was 512 rows · 3.4s". */
+/** Build a human-readable comparison string, e.g. "was 3.4s" or "was 512 rows · 3.4s" (row count shown only when changed). */
 function formatPreviousExecution(
-  prev: { executionMs?: number; rowCount?: number },
+  prev: PreviousExecution,
   currentRowCount: number,
 ): string | null {
   const parts: string[] = [];
@@ -48,14 +49,14 @@ function formatPreviousExecution(
     parts.push(`${prev.rowCount} row${prev.rowCount !== 1 ? "s" : ""}`);
   }
 
-  if (prev.executionMs != null) {
-    parts.push(`${(prev.executionMs / 1000).toFixed(1)}s`);
+  if (Number.isFinite(prev.executionMs)) {
+    parts.push(`${(prev.executionMs! / 1000).toFixed(1)}s`);
   }
 
   return parts.length > 0 ? `was ${parts.join(" · ")}` : null;
 }
 
-function SQLResultCardInner({ part, previousExecution }: { part: unknown; previousExecution?: { executionMs?: number; rowCount?: number } }) {
+function SQLResultCardInner({ part, previousExecution }: { part: unknown; previousExecution?: PreviousExecution }) {
   const dark = useDarkMode();
   const bridge = useDashboardBridge();
   const args = getToolArgs(part);

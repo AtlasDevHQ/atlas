@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import type { UIMessage } from "@ai-sdk/react";
 import { isToolUIPart } from "ai";
 import type { NotebookStateWire, ForkBranchWire } from "@/ui/lib/types";
-import type { NotebookCell, NotebookState, ResolvedCell, ForkInfo } from "./types";
+import type { NotebookCell, NotebookState, ResolvedCell, ForkInfo, PreviousExecution } from "./types";
 import type { DashboardCardEntry } from "./dashboard-bridge-context";
 
 const STORAGE_PREFIX = "atlas:notebook:";
@@ -156,7 +156,7 @@ export function extractTextContent(message: UIMessage): string {
 function extractExecutionMetadata(
   messages: UIMessage[],
   cellMessageId: string,
-): { executionMs?: number; rowCount?: number } | undefined {
+): PreviousExecution | undefined {
   const userIdx = messages.findIndex((m) => m.id === cellMessageId);
   if (userIdx === -1) return undefined;
 
@@ -245,6 +245,8 @@ export function useNotebook({
   const [input, setInput] = useState("");
   const [warning, setWarning] = useState<string | null>(null);
   const warningTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Timers for auto-clearing previousExecution comparison after 30s
+  const comparisonTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
   function showWarning(msg: string): void {
     if (warningTimer.current) clearTimeout(warningTimer.current);
@@ -279,7 +281,6 @@ export function useNotebook({
       for (const cell of freshCells) {
         const props = initialServerState.cellProps[cell.id];
         if (props?.collapsed) cell.collapsed = true;
-        if (props?.previousExecution) cell.previousExecution = props.previousExecution;
       }
       // Restore text cells from server state
       if (initialServerState.textCells) {
@@ -337,8 +338,6 @@ export function useNotebook({
   // fallback during reconciliation so collapsed/editing state survives the
   // intermediate truncation step where the re-run cell is temporarily absent.
   const preRerunCells = useRef<NotebookCell[]>([]);
-  // Timers for auto-clearing previousExecution comparison after 30s
-  const comparisonTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
   // Track which conversation's server state we last applied, so we can
   // detect when new server state arrives (after the async fetch completes).
@@ -377,7 +376,6 @@ export function useNotebook({
         for (const cell of freshCells) {
           const props = initialServerState.cellProps[cell.id];
           if (props?.collapsed) cell.collapsed = true;
-          if (props?.previousExecution) cell.previousExecution = props.previousExecution;
         }
       }
 
@@ -432,13 +430,10 @@ export function useNotebook({
     if (Date.now() < suppressSaveUntil.current) return;
 
     const timer = setTimeout(() => {
-      const cellProps: Record<string, { collapsed?: boolean; previousExecution?: { executionMs?: number; rowCount?: number } }> = {};
+      const cellProps: Record<string, { collapsed?: boolean }> = {};
       for (const cell of cellState) {
-        if (cell.collapsed || cell.previousExecution) {
-          cellProps[cell.id] = {
-            ...(cell.collapsed && { collapsed: true }),
-            ...(cell.previousExecution && { previousExecution: cell.previousExecution }),
-          };
+        if (cell.collapsed) {
+          cellProps[cell.id] = { collapsed: true };
         }
       }
 

@@ -2,7 +2,7 @@
 
 import type { UIMessage } from "@ai-sdk/react";
 import { isToolUIPart } from "ai";
-import type { CellStatus } from "./types";
+import type { CellStatus, PreviousExecution } from "./types";
 import { ToolPart } from "@/ui/components/chat/tool-part";
 import { Markdown } from "@/ui/components/chat/markdown";
 import { TypingIndicator } from "@/ui/components/chat/typing-indicator";
@@ -12,7 +12,7 @@ interface CellOutputProps {
   assistantMessage: UIMessage | null;
   status: CellStatus;
   collapsed: boolean;
-  previousExecution?: { executionMs?: number; rowCount?: number };
+  previousExecution?: PreviousExecution;
 }
 
 export function NotebookCellOutput({ assistantMessage, status, collapsed, previousExecution }: CellOutputProps) {

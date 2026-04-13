@@ -8,6 +8,7 @@ import { ExploreCard } from "./explore-card";
 import { SQLResultCard } from "./sql-result-card";
 import { ActionApprovalCard } from "../actions/action-approval-card";
 import { PythonResultCard, type PythonProgressData } from "./python-result-card";
+import type { PreviousExecution } from "../notebook/types";
 
 /** Extract the tool invocation ID from an AI SDK tool part. */
 function getToolInvocationId(part: unknown): string | undefined {
@@ -16,7 +17,7 @@ function getToolInvocationId(part: unknown): string | undefined {
   return typeof p.toolInvocationId === "string" ? p.toolInvocationId : undefined;
 }
 
-export const ToolPart = memo(function ToolPart({ part, pythonProgress, previousExecution }: { part: unknown; pythonProgress?: Map<string, PythonProgressData[]>; previousExecution?: { executionMs?: number; rowCount?: number } }) {
+export const ToolPart = memo(function ToolPart({ part, pythonProgress, previousExecution }: { part: unknown; pythonProgress?: Map<string, PythonProgressData[]>; previousExecution?: PreviousExecution }) {
   let name: string;
   try {
     name = getToolName(part as Parameters<typeof getToolName>[0]);

@@ -441,6 +441,76 @@ export async function forkConversation(opts: {
   }
 }
 
+/** Convert a chat conversation into a notebook by copying all messages to a new conversation with surface "notebook". */
+export async function convertToNotebook(opts: {
+  sourceId: string;
+  userId?: string | null;
+  orgId?: string | null;
+}): Promise<CrudDataResult<{ id: string; messageCount: number }>> {
+  if (!hasInternalDB()) return { ok: false, reason: "no_db" };
+  let newId: string | null = null;
+  try {
+    // Verify source exists and user owns it
+    const sourceRows = opts.userId
+      ? await internalQuery<Record<string, unknown>>(
+          `SELECT id, title, surface, connection_id, org_id FROM conversations WHERE id = $1 AND user_id = $2`,
+          [opts.sourceId, opts.userId],
+        )
+      : await internalQuery<Record<string, unknown>>(
+          `SELECT id, title, surface, connection_id, org_id FROM conversations WHERE id = $1`,
+          [opts.sourceId],
+        );
+    if (sourceRows.length === 0) return { ok: false, reason: "not_found" };
+
+    const source = sourceRows[0];
+    const sourceTitle = (source.title as string) ?? "Conversation";
+    const orgId = opts.orgId ?? (source.org_id as string) ?? null;
+
+    // Create new conversation with surface "notebook"
+    const newConv = await internalQuery<{ id: string }>(
+      `INSERT INTO conversations (user_id, title, surface, connection_id, org_id)
+       VALUES ($1, $2, $3, $4, $5) RETURNING id`,
+      [
+        opts.userId ?? null,
+        `${sourceTitle} (notebook)`,
+        "notebook",
+        (source.connection_id as string) ?? null,
+        orgId,
+      ],
+    );
+
+    if (newConv.length === 0) return { ok: false, reason: "error" };
+    newId = newConv[0].id;
+
+    // Bulk-copy all messages into the new conversation
+    const copyResult = await internalQuery<{ id: string }>(
+      `INSERT INTO messages (conversation_id, role, content, created_at)
+       SELECT $1, role, content, created_at FROM messages
+       WHERE conversation_id = $2
+       ORDER BY created_at ASC
+       RETURNING id`,
+      [newId, opts.sourceId],
+    );
+
+    if (copyResult.length === 0) {
+      log.warn({ sourceId: opts.sourceId, newId }, "convertToNotebook copied zero messages — source conversation may be empty");
+    }
+
+    return { ok: true, data: { id: newId, messageCount: copyResult.length } };
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err.message : String(err), sourceId: opts.sourceId }, "convertToNotebook failed");
+    // Clean up partially-created conversation to avoid orphans
+    if (newId) {
+      try {
+        await internalQuery(`DELETE FROM conversations WHERE id = $1`, [newId]);
+      } catch (cleanupErr) {
+        log.error({ err: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr) }, "Failed to clean up partial notebook conversion");
+      }
+    }
+    return { ok: false, reason: "error" };
+  }
+}
+
 /** Delete a conversation (CASCADE deletes messages). Auth-scoped when userId is provided. */
 export async function deleteConversation(
   id: string,

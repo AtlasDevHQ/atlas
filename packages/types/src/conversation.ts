@@ -1,7 +1,7 @@
 /** Conversation persistence types — wire format for conversations and messages. */
 
 export type MessageRole = "user" | "assistant" | "system" | "tool";
-export type Surface = "web" | "api" | "mcp" | "slack";
+export type Surface = "web" | "api" | "mcp" | "slack" | "notebook";
 
 export interface Conversation {
   id: string;

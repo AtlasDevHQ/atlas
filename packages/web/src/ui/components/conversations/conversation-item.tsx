@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { Loader2, NotebookPen, Star, Trash2 } from "lucide-react";
-import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import type { Conversation } from "../../lib/types";
 import { DeleteConfirmation } from "./delete-confirmation";
@@ -32,16 +32,20 @@ export function ConversationItem({
   onSelect,
   onDelete,
   onStar,
+  onConvertToNotebook,
 }: {
   conversation: Conversation;
   isActive: boolean;
   onSelect: () => void;
   onDelete: () => Promise<void>;
   onStar: (starred: boolean) => Promise<void>;
+  onConvertToNotebook?: () => Promise<{ id: string }>;
 }) {
+  const router = useRouter();
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [starPending, setStarPending] = useState(false);
+  const [converting, setConverting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   if (confirmDelete) {
@@ -129,14 +133,36 @@ export function ConversationItem({
             <Star className="h-3.5 w-3.5" fill={conversation.starred ? "currentColor" : "none"} />
           )}
         </Button>
-        <Link
-          href={`/notebook?id=${conversation.id}`}
-          className="rounded p-1 text-zinc-400 opacity-100 md:opacity-0 transition-all hover:text-zinc-600 md:group-hover:opacity-100 dark:hover:text-zinc-300"
-          aria-label="Open in notebook"
-          onClick={(e) => e.stopPropagation()}
-        >
-          <NotebookPen className="size-3.5" />
-        </Link>
+        {onConvertToNotebook && conversation.surface !== "notebook" && (
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={async (e) => {
+              e.stopPropagation();
+              if (converting) return;
+              setConverting(true);
+              try {
+                const { id } = await onConvertToNotebook();
+                router.push(`/notebook?id=${id}`);
+              } catch (err: unknown) {
+                console.warn("Failed to convert to notebook:", err instanceof Error ? err.message : String(err));
+                setError("Failed to convert. Please try again.");
+                setTimeout(() => setError(null), 3000);
+              } finally {
+                setConverting(false);
+              }
+            }}
+            disabled={converting}
+            className={`size-8 text-zinc-400 opacity-100 md:opacity-0 transition-all hover:text-zinc-600 md:group-hover:opacity-100 dark:hover:text-zinc-300 ${converting ? "opacity-50" : ""}`}
+            aria-label="Convert to notebook"
+          >
+            {converting ? (
+              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+            ) : (
+              <NotebookPen className="size-3.5" />
+            )}
+          </Button>
+        )}
         <Button
           variant="ghost"
           size="icon"

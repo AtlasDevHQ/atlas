@@ -26,6 +26,7 @@ export interface UseConversationsReturn {
   getConversationData: (id: string) => Promise<ConversationWithMessages>;
   saveNotebookState: (id: string, state: NotebookStateWire) => Promise<void>;
   forkConversation: (sourceId: string, forkPointMessageId: string, label?: string) => Promise<{ id: string; branches: ForkBranchWire[]; warning?: string }>;
+  convertToNotebook: (sourceId: string) => Promise<{ id: string; messageCount: number }>;
   deleteConversation: (id: string) => Promise<void>;
   starConversation: (id: string, starred: boolean) => Promise<void>;
   shareConversation: (id: string, opts?: { expiresIn?: ShareExpiryKey; shareMode?: ShareMode }) => Promise<{ token: string; url: string }>;
@@ -230,6 +231,19 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
     };
   }, [api]);
 
+  const convertToNotebook = useCallback(async (
+    sourceId: string,
+  ): Promise<{ id: string; messageCount: number }> => {
+    const data = await api.post<Record<string, unknown>>(`/api/v1/conversations/${sourceId}/convert-to-notebook`, {});
+    if (!data.id || typeof data.id !== "string") {
+      throw new Error("Convert response missing conversation ID");
+    }
+    return {
+      id: data.id,
+      messageCount: typeof data.messageCount === "number" ? data.messageCount : 0,
+    };
+  }, [api]);
+
   const refresh = useCallback(async () => {
     await queryClient.invalidateQueries({ queryKey: ["conversations", "list"] });
   }, [queryClient]);
@@ -247,6 +261,7 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
     getConversationData,
     saveNotebookState,
     forkConversation,
+    convertToNotebook,
     deleteConversation,
     starConversation,
     shareConversation,

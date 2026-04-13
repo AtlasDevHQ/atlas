@@ -17,6 +17,7 @@ export function ConversationSidebar({
   onSelect,
   onDelete,
   onStar,
+  onConvertToNotebook,
   onNewChat,
   mobileOpen,
   onMobileClose,
@@ -27,6 +28,7 @@ export function ConversationSidebar({
   onSelect: (id: string) => void;
   onDelete: (id: string) => Promise<void>;
   onStar: (id: string, starred: boolean) => Promise<void>;
+  onConvertToNotebook?: (id: string) => Promise<{ id: string }>;
   onNewChat: () => void;
   mobileOpen: boolean;
   onMobileClose: () => void;
@@ -100,6 +102,7 @@ export function ConversationSidebar({
             onSelect={onSelect}
             onDelete={onDelete}
             onStar={onStar}
+            onConvertToNotebook={onConvertToNotebook}
             showSections={filter === "all"}
             emptyMessage={filter === "saved" ? "Star conversations to save them here" : undefined}
           />

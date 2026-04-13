@@ -10,6 +10,7 @@ export function ConversationList({
   onSelect,
   onDelete,
   onStar,
+  onConvertToNotebook,
   showSections = true,
   emptyMessage,
 }: {
@@ -18,6 +19,7 @@ export function ConversationList({
   onSelect: (id: string) => void;
   onDelete: (id: string) => Promise<void>;
   onStar: (id: string, starred: boolean) => Promise<void>;
+  onConvertToNotebook?: (id: string) => Promise<{ id: string }>;
   showSections?: boolean;
   emptyMessage?: string;
 }) {
@@ -48,6 +50,7 @@ export function ConversationList({
         onSelect={() => onSelect(c.id)}
         onDelete={() => onDelete(c.id)}
         onStar={(s) => onStar(c.id, s)}
+        onConvertToNotebook={onConvertToNotebook ? () => onConvertToNotebook(c.id) : undefined}
       />
     ));
   }

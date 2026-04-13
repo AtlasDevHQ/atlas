@@ -9,7 +9,7 @@ import { getApiUrl, isCrossOrigin } from "@/lib/api-url";
 const AUTH_MODE = process.env.NEXT_PUBLIC_ATLAS_AUTH_MODE ?? "";
 
 /** Routes that don't require authentication. */
-const publicPrefixes = ["/demo", "/shared", "/login", "/signup", "/wizard"];
+const publicPrefixes = ["/demo", "/shared", "/report", "/login", "/signup", "/wizard"];
 
 function isPublicRoute(pathname: string): boolean {
   return publicPrefixes.some((prefix) => pathname.startsWith(prefix));

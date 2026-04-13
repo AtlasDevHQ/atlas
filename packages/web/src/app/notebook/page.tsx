@@ -228,6 +228,15 @@ function NotebookContent() {
     forkInfo,
   });
 
+  // Share as Report — creates a share link and returns the token
+  const handleShareAsReport =
+    !conversationId || conversationId.startsWith("temp:")
+      ? undefined
+      : async (): Promise<string> => {
+          const result = await convos.shareConversation(conversationId);
+          return result.token;
+        };
+
   // New chat handler
   function handleNewChat() {
     setError(null);
@@ -318,7 +327,7 @@ function NotebookContent() {
                 </Button>
               </div>
             )}
-            <NotebookShell notebook={notebook} focusCellId={focusCellId} />
+            <NotebookShell notebook={notebook} focusCellId={focusCellId} onShareAsReport={handleShareAsReport} />
           </main>
         </div>
       </div>

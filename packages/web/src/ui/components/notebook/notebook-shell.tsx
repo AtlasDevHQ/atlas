@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useEffect, useState } from "react";
-import { Plus, Download } from "lucide-react";
+import { Plus, Download, FileText, Check } from "lucide-react";
 import type { UseNotebookReturn } from "./use-notebook";
 import { useKeyboardNav } from "./use-keyboard-nav";
 import { NotebookCell } from "./notebook-cell";
@@ -29,14 +29,17 @@ import {
 interface NotebookShellProps {
   notebook: UseNotebookReturn;
   focusCellId?: string;
+  /** When provided, enables the "Share as Report" button. Returns the share token. */
+  onShareAsReport?: () => Promise<string>;
 }
 
-export function NotebookShell({ notebook, focusCellId }: NotebookShellProps) {
+export function NotebookShell({ notebook, focusCellId, onShareAsReport }: NotebookShellProps) {
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const anyRunning = notebook.cells.some((c) => c.status === "running");
   const editingCellId = notebook.cells.find((c) => c.editing)?.id ?? null;
   const [pendingDeleteIndex, setPendingDeleteIndex] = useState<number | null>(null);
   const [dismissedError, setDismissedError] = useState<Error | null>(null);
+  const [shareState, setShareState] = useState<"idle" | "sharing" | "copied" | "error">("idle");
 
   const { setRef, focusCell } = useKeyboardNav({
     cellCount: notebook.cells.length,
@@ -108,7 +111,7 @@ export function NotebookShell({ notebook, focusCellId }: NotebookShellProps) {
             />
           )}
 
-          {/* Notebook toolbar — insert text cell + export */}
+          {/* Notebook toolbar */}
           {notebook.cells.length > 0 && (
             <div className="flex items-center justify-between">
               <Button
@@ -121,56 +124,109 @@ export function NotebookShell({ notebook, focusCellId }: NotebookShellProps) {
                 Text Cell
               </Button>
 
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
+              <div className="flex items-center gap-1.5">
+                {onShareAsReport && (
                   <Button
                     variant="outline"
                     size="sm"
                     className="h-7 gap-1.5 text-xs"
+                    disabled={shareState === "sharing"}
+                    onClick={async () => {
+                      setShareState("sharing");
+                      let token: string;
+                      try {
+                        token = await onShareAsReport();
+                      } catch (err: unknown) {
+                        console.error(
+                          "Share as Report API failed:",
+                          err instanceof Error ? err.message : String(err),
+                        );
+                        setShareState("error");
+                        setTimeout(() => setShareState("idle"), 3000);
+                        return;
+                      }
+                      const url = `${window.location.origin}/report/${token}`;
+                      try {
+                        await navigator.clipboard.writeText(url);
+                        setShareState("copied");
+                        setTimeout(() => setShareState("idle"), 2500);
+                      } catch (clipErr: unknown) {
+                        console.warn(
+                          "Clipboard write failed, share was created:",
+                          clipErr instanceof Error ? clipErr.message : String(clipErr),
+                        );
+                        window.prompt("Report link (copy manually):", url);
+                        setShareState("copied");
+                        setTimeout(() => setShareState("idle"), 2500);
+                      }
+                    }}
                   >
-                    <Download className="size-3" />
-                    Export
+                    {shareState === "copied" ? (
+                      <Check className="size-3" />
+                    ) : (
+                      <FileText className="size-3" />
+                    )}
+                    {shareState === "sharing"
+                      ? "Sharing..."
+                      : shareState === "copied"
+                        ? "Link Copied!"
+                        : shareState === "error"
+                          ? "Share Failed"
+                          : "Share as Report"}
                   </Button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
-                  <DropdownMenuItem
-                    onClick={() => {
-                      try {
-                        downloadFile(
-                          exportToMarkdown(notebook.cells),
-                          "notebook.md",
-                          "text/markdown",
-                        );
-                      } catch (err: unknown) {
-                        console.error(
-                          "Export to Markdown failed:",
-                          err instanceof Error ? err.message : String(err),
-                        );
-                      }
-                    }}
-                  >
-                    Markdown (.md)
-                  </DropdownMenuItem>
-                  <DropdownMenuItem
-                    onClick={() => {
-                      try {
-                        downloadFile(
-                          exportToHTML(notebook.cells),
-                          "notebook.html",
-                          "text/html",
-                        );
-                      } catch (err: unknown) {
-                        console.error(
-                          "Export to HTML failed:",
-                          err instanceof Error ? err.message : String(err),
-                        );
-                      }
-                    }}
-                  >
-                    HTML (.html)
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
+                )}
+
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-7 gap-1.5 text-xs"
+                    >
+                      <Download className="size-3" />
+                      Export
+                    </Button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem
+                      onClick={() => {
+                        try {
+                          downloadFile(
+                            exportToMarkdown(notebook.cells),
+                            "notebook.md",
+                            "text/markdown",
+                          );
+                        } catch (err: unknown) {
+                          console.error(
+                            "Export to Markdown failed:",
+                            err instanceof Error ? err.message : String(err),
+                          );
+                        }
+                      }}
+                    >
+                      Markdown (.md)
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onClick={() => {
+                        try {
+                          downloadFile(
+                            exportToHTML(notebook.cells),
+                            "notebook.html",
+                            "text/html",
+                          );
+                        } catch (err: unknown) {
+                          console.error(
+                            "Export to HTML failed:",
+                            err instanceof Error ? err.message : String(err),
+                          );
+                        }
+                      }}
+                    >
+                      HTML (.html)
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              </div>
             </div>
           )}
 

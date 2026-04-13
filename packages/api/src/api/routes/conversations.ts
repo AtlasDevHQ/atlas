@@ -1188,12 +1188,16 @@ publicConversations.openapi(getSharedConversationRoute, async (c) => {
   }
 
   // Strip internal IDs — only expose conversation content
-  const { title, surface, createdAt, messages, shareMode } = result.data;
+  const { title, surface, createdAt, messages, shareMode, notebookState } = result.data;
   return c.json({
     title,
     surface,
     createdAt,
     shareMode,
+    // Expose only display-relevant notebook state — strip fork metadata (internal conversation IDs)
+    notebookState: notebookState
+      ? { version: notebookState.version, cellOrder: notebookState.cellOrder, cellProps: notebookState.cellProps, textCells: notebookState.textCells }
+      : null,
     messages: messages.map((m) => ({
       role: m.role,
       content: m.content,

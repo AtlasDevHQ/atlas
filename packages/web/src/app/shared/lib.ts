@@ -1,18 +1,27 @@
 // ---------------------------------------------------------------------------
-// Shared utilities for the public shared-conversation routes (/shared/[token])
+// Shared utilities for public conversation routes (/shared/[token], /report/[token])
 // ---------------------------------------------------------------------------
 
-interface SharedMessage {
+export interface SharedMessage {
   role: "user" | "assistant" | "system" | "tool";
   content: unknown;
   createdAt: string;
 }
 
-interface SharedConversation {
+/** Subset of NotebookStateWire relevant for public read-only views. Fork metadata is excluded. */
+export interface SharedNotebookState {
+  version: number;
+  cellOrder?: string[];
+  cellProps?: Record<string, { collapsed?: boolean }>;
+  textCells?: Record<string, { content: string }>;
+}
+
+export interface SharedConversation {
   title: string | null;
   surface: string;
   createdAt: string;
   messages: SharedMessage[];
+  notebookState: SharedNotebookState | null;
 }
 
 type FetchResult =

@@ -782,6 +782,7 @@ function executeAndAuditEffect(opts: {
             truncated,
             cached: false,
             maskingApplied,
+            executionMs: durationMs,
             ...(hasHookMeta && { metadata: hookMetadata }),
           } as Record<string, unknown>;
         },
@@ -804,6 +805,7 @@ function pipelineErrorToResponse(error: PipelineError): Record<string, unknown> 
       return {
         success: false,
         error: error.message,
+        executionMs: 0,
         ...(error.retryAfterMs != null && { retryAfterMs: error.retryAfterMs }),
       };
     case "ConcurrencyLimitError":
@@ -813,10 +815,10 @@ function pipelineErrorToResponse(error: PipelineError): Record<string, unknown> 
     case "RLSError":
     case "PluginRejectedError":
     case "QueryExecutionError":
-      return { success: false, error: error.message };
+      return { success: false, error: error.message, executionMs: 0 };
     default: {
       const _exhaustive: never = error;
-      return { success: false, error: `Unknown pipeline error: ${(_exhaustive as { message: string }).message}` };
+      return { success: false, error: `Unknown pipeline error: ${(_exhaustive as { message: string }).message}`, executionMs: 0 };
     }
   }
 }
@@ -871,7 +873,7 @@ Rules:
           sql: normalizedSql.slice(0, 2000), durationMs: 0, rowCount: null, success: false,
           error: initial.auditError, sourceId: connId, sourceType: dbType,
         });
-        return { success: false, error: initial.error };
+        return { success: false, error: initial.error, executionMs: 0 };
       }
       // Classification is only populated for standard SQL (validateSQL path).
       // Custom validators (SOQL, GraphQL) bypass node-sql-parser so classification
@@ -914,6 +916,7 @@ Rules:
                 return {
                   success: false,
                   error: "This query requires approval but the requester identity could not be determined. Please sign in and try again.",
+                  executionMs: 0,
                 };
               }
 
@@ -945,6 +948,7 @@ Rules:
                   message: `This query requires approval before execution. Rule: "${firstRule.name}". ` +
                     `An approval request has been submitted (ID: ${approvalReq.id}). ` +
                     `An admin must approve it before the query can run.`,
+                  executionMs: 0,
                 };
               }
             }
@@ -1002,6 +1006,7 @@ Rules:
                   columns: cached.columns, rows: cachedRows,
                   truncated: cachedRows.length >= getRowLimit(), cached: true,
                   maskingApplied: cachedMaskingApplied,
+                  executionMs: 0,
                 };
               },
               catch: (err) => {
@@ -1063,7 +1068,7 @@ Rules:
                 error: `Plugin-rewritten SQL failed validation: ${revalidation.auditError}`,
                 sourceId: connId, sourceType: dbType, targetHost,
               });
-              return { success: false, error: `Plugin-rewritten SQL failed validation: ${revalidation.error}` };
+              return { success: false, error: `Plugin-rewritten SQL failed validation: ${revalidation.error}`, executionMs: 0 };
             }
           }
 

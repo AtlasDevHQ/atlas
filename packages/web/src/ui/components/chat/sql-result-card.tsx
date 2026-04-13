@@ -92,6 +92,9 @@ function SQLResultCardInner({ part }: { part: unknown }) {
         <span className="text-zinc-500">
           {rows.length} row{rows.length !== 1 ? "s" : ""}
           {result.truncated ? "+" : ""}
+          {Number.isFinite(result.executionMs) && (
+            <> · {result.cached ? "cached" : `${(result.executionMs / 1000).toFixed(1)}s`}</>
+          )}
         </span>
       }
     >

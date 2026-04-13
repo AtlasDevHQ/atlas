@@ -1232,5 +1232,39 @@ describe("conversations routes", () => {
         expect.objectContaining({ sourceId: VALID_ID, userId: "u1" }),
       );
     });
+
+    it("returns 500 on database error", async () => {
+      mockConvertToNotebook.mockResolvedValueOnce({ ok: false, reason: "error" });
+
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/conversations/${VALID_ID}/convert-to-notebook`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+
+      expect(response.status).toBe(500);
+      const body = await response.json() as Record<string, unknown>;
+      expect(body.error).toBe("internal_error");
+    });
+
+    it("forwards orgId from auth context", async () => {
+      mockConvertToNotebook.mockResolvedValueOnce({
+        ok: true,
+        data: { id: "nb-0000-0000-0000-000000000000", messageCount: 2 },
+      });
+
+      await app.fetch(
+        new Request(`http://localhost/api/v1/conversations/${VALID_ID}/convert-to-notebook`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+
+      // simple-key auth has no activeOrganizationId, so orgId is undefined
+      expect(mockConvertToNotebook).toHaveBeenCalledWith(
+        expect.objectContaining({ sourceId: VALID_ID, userId: "u1", orgId: undefined }),
+      );
+    });
   });
 });

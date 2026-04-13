@@ -26,6 +26,7 @@ export interface UseConversationsReturn {
   getConversationData: (id: string) => Promise<ConversationWithMessages>;
   saveNotebookState: (id: string, state: NotebookStateWire) => Promise<void>;
   forkConversation: (sourceId: string, forkPointMessageId: string, label?: string) => Promise<{ id: string; branches: ForkBranchWire[]; warning?: string }>;
+  convertToNotebook: (sourceId: string) => Promise<{ id: string; messageCount: number }>;
   deleteConversation: (id: string) => Promise<void>;
   starConversation: (id: string, starred: boolean) => Promise<void>;
   shareConversation: (id: string, opts?: { expiresIn?: ShareExpiryKey; shareMode?: ShareMode }) => Promise<{ token: string; url: string }>;

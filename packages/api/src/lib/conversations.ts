@@ -492,6 +492,10 @@ export async function convertToNotebook(opts: {
       [newId, opts.sourceId],
     );
 
+    if (copyResult.length === 0) {
+      log.warn({ sourceId: opts.sourceId, newId }, "convertToNotebook copied zero messages — source conversation may be empty");
+    }
+
     return { ok: true, data: { id: newId, messageCount: copyResult.length } };
   } catch (err) {
     log.error({ err: err instanceof Error ? err.message : String(err), sourceId: opts.sourceId }, "convertToNotebook failed");

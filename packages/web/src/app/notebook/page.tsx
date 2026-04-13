@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useState, useRef, useEffect, useCallback, useMemo } from "react";
+import { Suspense, useState, useRef, useEffect, useCallback } from "react";
 import dynamic from "next/dynamic";
 import { useChat } from "@ai-sdk/react";
 import { useQueryStates } from "nuqs";
@@ -229,13 +229,13 @@ function NotebookContent() {
   });
 
   // Share as Report — creates a share link and returns the token
-  const handleShareAsReport = useMemo(() => {
-    if (!conversationId || conversationId.startsWith("temp:")) return undefined;
-    return async (): Promise<string> => {
-      const result = await convos.shareConversation(conversationId);
-      return result.token;
-    };
-  }, [conversationId, convos.shareConversation]);
+  const handleShareAsReport =
+    !conversationId || conversationId.startsWith("temp:")
+      ? undefined
+      : async (): Promise<string> => {
+          const result = await convos.shareConversation(conversationId);
+          return result.token;
+        };
 
   // New chat handler
   function handleNewChat() {

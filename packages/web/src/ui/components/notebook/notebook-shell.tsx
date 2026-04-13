@@ -111,7 +111,7 @@ export function NotebookShell({ notebook, focusCellId, onShareAsReport }: Notebo
             />
           )}
 
-          {/* Notebook toolbar — insert text cell + export */}
+          {/* Notebook toolbar */}
           {notebook.cells.length > 0 && (
             <div className="flex items-center justify-between">
               <Button
@@ -133,19 +133,31 @@ export function NotebookShell({ notebook, focusCellId, onShareAsReport }: Notebo
                     disabled={shareState === "sharing"}
                     onClick={async () => {
                       setShareState("sharing");
+                      let token: string;
                       try {
-                        const token = await onShareAsReport();
-                        const url = `${window.location.origin}/report/${token}`;
-                        await navigator.clipboard.writeText(url);
-                        setShareState("copied");
-                        setTimeout(() => setShareState("idle"), 2500);
+                        token = await onShareAsReport();
                       } catch (err: unknown) {
                         console.error(
-                          "Share as Report failed:",
+                          "Share as Report API failed:",
                           err instanceof Error ? err.message : String(err),
                         );
                         setShareState("error");
                         setTimeout(() => setShareState("idle"), 3000);
+                        return;
+                      }
+                      const url = `${window.location.origin}/report/${token}`;
+                      try {
+                        await navigator.clipboard.writeText(url);
+                        setShareState("copied");
+                        setTimeout(() => setShareState("idle"), 2500);
+                      } catch (clipErr: unknown) {
+                        console.warn(
+                          "Clipboard write failed, share was created:",
+                          clipErr instanceof Error ? clipErr.message : String(clipErr),
+                        );
+                        window.prompt("Report link (copy manually):", url);
+                        setShareState("copied");
+                        setTimeout(() => setShareState("idle"), 2500);
                       }
                     }}
                   >

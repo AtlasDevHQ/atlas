@@ -1194,7 +1194,10 @@ publicConversations.openapi(getSharedConversationRoute, async (c) => {
     surface,
     createdAt,
     shareMode,
-    notebookState: notebookState ?? null,
+    // Expose only display-relevant notebook state — strip fork metadata (internal conversation IDs)
+    notebookState: notebookState
+      ? { version: notebookState.version, cellOrder: notebookState.cellOrder, cellProps: notebookState.cellProps, textCells: notebookState.textCells }
+      : null,
     messages: messages.map((m) => ({
       role: m.role,
       content: m.content,

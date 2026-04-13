@@ -13,6 +13,12 @@ interface SharedConversation {
   surface: string;
   createdAt: string;
   messages: SharedMessage[];
+  notebookState?: {
+    version: number;
+    cellOrder?: string[];
+    cellProps?: Record<string, { collapsed?: boolean }>;
+    textCells?: Record<string, { content: string }>;
+  } | null;
 }
 
 type FetchResult =

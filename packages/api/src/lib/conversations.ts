@@ -686,7 +686,7 @@ export async function getSharedConversation(
   if (!hasInternalDB()) return { ok: false, reason: "no_db" };
   try {
     const convRows = await internalQuery<Record<string, unknown>>(
-      `SELECT id, user_id, title, surface, connection_id, starred, share_expires_at, share_mode, created_at, updated_at
+      `SELECT id, user_id, title, surface, connection_id, starred, share_expires_at, share_mode, notebook_state, created_at, updated_at
        FROM conversations
        WHERE share_token = $1`,
       [token],

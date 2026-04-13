@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import type { UIMessage } from "@ai-sdk/react";
+import { isToolUIPart } from "ai";
 import type { NotebookStateWire, ForkBranchWire } from "@/ui/lib/types";
 import type { NotebookCell, NotebookState, ResolvedCell, ForkInfo } from "./types";
 import type { DashboardCardEntry } from "./dashboard-bridge-context";
@@ -148,6 +149,37 @@ export function extractTextContent(message: UIMessage): string {
     .join("\n");
 }
 
+/**
+ * Extracts executionMs and rowCount from the executeSQL tool result in a cell's
+ * assistant response. Returns undefined if the cell has no SQL result.
+ */
+function extractExecutionMetadata(
+  messages: UIMessage[],
+  cellMessageId: string,
+): { executionMs?: number; rowCount?: number } | undefined {
+  const userIdx = messages.findIndex((m) => m.id === cellMessageId);
+  if (userIdx === -1) return undefined;
+
+  const nextMsg = messages[userIdx + 1];
+  if (!nextMsg || nextMsg.role !== "assistant") return undefined;
+
+  for (const part of nextMsg.parts) {
+    if (!isToolUIPart(part)) continue;
+    const p = part as Record<string, unknown>;
+    if (p.toolName !== "executeSQL" || p.state !== "output-available") continue;
+
+    const result = p.output as Record<string, unknown> | undefined;
+    if (!result?.success) continue;
+
+    return {
+      executionMs: typeof result.executionMs === "number" ? result.executionMs : undefined,
+      rowCount: Array.isArray(result.rows) ? result.rows.length : undefined,
+    };
+  }
+
+  return undefined;
+}
+
 // ---------------------------------------------------------------------------
 // React hook
 // ---------------------------------------------------------------------------
@@ -225,10 +257,13 @@ export function useNotebook({
     setWarning(null);
   }
 
-  // Clean up warning timer on unmount
+  // Clean up timers on unmount
   useEffect(() => {
+    const timers = comparisonTimers.current;
     return () => {
       if (warningTimer.current) clearTimeout(warningTimer.current);
+      for (const timer of timers.values()) clearTimeout(timer);
+      timers.clear();
     };
   }, []);
 
@@ -244,6 +279,7 @@ export function useNotebook({
       for (const cell of freshCells) {
         const props = initialServerState.cellProps[cell.id];
         if (props?.collapsed) cell.collapsed = true;
+        if (props?.previousExecution) cell.previousExecution = props.previousExecution;
       }
       // Restore text cells from server state
       if (initialServerState.textCells) {
@@ -301,6 +337,8 @@ export function useNotebook({
   // fallback during reconciliation so collapsed/editing state survives the
   // intermediate truncation step where the re-run cell is temporarily absent.
   const preRerunCells = useRef<NotebookCell[]>([]);
+  // Timers for auto-clearing previousExecution comparison after 30s
+  const comparisonTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 
   // Track which conversation's server state we last applied, so we can
   // detect when new server state arrives (after the async fetch completes).
@@ -334,11 +372,12 @@ export function useNotebook({
         }
       }
 
-      // Restore collapsed state from server
+      // Restore persisted cell props from server
       if (initialServerState?.cellProps) {
         for (const cell of freshCells) {
           const props = initialServerState.cellProps[cell.id];
           if (props?.collapsed) cell.collapsed = true;
+          if (props?.previousExecution) cell.previousExecution = props.previousExecution;
         }
       }
 
@@ -360,12 +399,12 @@ export function useNotebook({
       const queryCells = fresh.map((fc) => {
         const existing = prev.find((pc) => pc.id === fc.id && pc.type !== "text");
         if (existing) {
-          return { ...fc, collapsed: existing.collapsed, editing: existing.editing };
+          return { ...fc, collapsed: existing.collapsed, editing: existing.editing, previousExecution: existing.previousExecution };
         }
         const fallback = preRerunCells.current.find((pc) => pc.id === fc.id);
         if (fallback) {
           usedFallback = true;
-          return { ...fc, collapsed: fallback.collapsed, editing: fallback.editing };
+          return { ...fc, collapsed: fallback.collapsed, editing: fallback.editing, previousExecution: fallback.previousExecution };
         }
         return fc;
       });
@@ -393,10 +432,13 @@ export function useNotebook({
     if (Date.now() < suppressSaveUntil.current) return;
 
     const timer = setTimeout(() => {
-      const cellProps: Record<string, { collapsed?: boolean }> = {};
+      const cellProps: Record<string, { collapsed?: boolean; previousExecution?: { executionMs?: number; rowCount?: number } }> = {};
       for (const cell of cellState) {
-        if (cell.collapsed) {
-          cellProps[cell.id] = { collapsed: true };
+        if (cell.collapsed || cell.previousExecution) {
+          cellProps[cell.id] = {
+            ...(cell.collapsed && { collapsed: true }),
+            ...(cell.previousExecution && { previousExecution: cell.previousExecution }),
+          };
         }
       }
 
@@ -514,7 +556,31 @@ export function useNotebook({
         console.warn(`rerunCell: cell ${cellId} not found`);
         return;
       }
-      preRerunCells.current = [...cellState];
+
+      // Snapshot current execution metadata for comparison display
+      const prevMeta = extractExecutionMetadata(chat.messages, cell.messageId);
+      if (prevMeta) {
+        setCellState((prev) =>
+          prev.map((c) => (c.id === cellId ? { ...c, previousExecution: prevMeta } : c)),
+        );
+
+        // Auto-clear comparison after 30s
+        const existing = comparisonTimers.current.get(cellId);
+        if (existing) clearTimeout(existing);
+        comparisonTimers.current.set(
+          cellId,
+          setTimeout(() => {
+            comparisonTimers.current.delete(cellId);
+            setCellState((prev) =>
+              prev.map((c) => (c.id === cellId ? { ...c, previousExecution: undefined } : c)),
+            );
+          }, 30_000),
+        );
+      }
+
+      preRerunCells.current = [...cellState.map((c) =>
+        c.id === cellId && prevMeta ? { ...c, previousExecution: prevMeta } : c,
+      )];
       const truncated = truncateMessagesForRerun(chat.messages, cell.messageId);
       chat.setMessages(truncated);
       pendingRerun.current = newQuestion;

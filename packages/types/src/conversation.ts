@@ -20,8 +20,11 @@ export interface NotebookStateWire {
   version: number;
   /** Custom display order of cell IDs (empty = natural message order). */
   cellOrder?: string[];
-  /** Per-cell persisted properties (only collapsed; editing/status are transient). */
-  cellProps?: Record<string, { collapsed?: boolean }>;
+  /** Per-cell persisted properties (collapsed + transient rerun comparison). */
+  cellProps?: Record<string, {
+    collapsed?: boolean;
+    previousExecution?: { executionMs?: number; rowCount?: number };
+  }>;
   /** Fork branches originating from this conversation (stored on root only). */
   branches?: ForkBranchWire[];
   /** If this conversation is a fork, the root conversation ID. */

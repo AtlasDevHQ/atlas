@@ -16,6 +16,8 @@ export interface NotebookCell {
   type?: CellType;
   /** Markdown content for text cells. */
   content?: string;
+  /** Snapshot of previous execution metadata — set before rerun, auto-cleared after 30s. */
+  previousExecution?: { executionMs?: number; rowCount?: number };
 }
 
 export interface NotebookState {

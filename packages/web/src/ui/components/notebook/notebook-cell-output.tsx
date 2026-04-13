@@ -12,9 +12,10 @@ interface CellOutputProps {
   assistantMessage: UIMessage | null;
   status: CellStatus;
   collapsed: boolean;
+  previousExecution?: { executionMs?: number; rowCount?: number };
 }
 
-export function NotebookCellOutput({ assistantMessage, status, collapsed }: CellOutputProps) {
+export function NotebookCellOutput({ assistantMessage, status, collapsed, previousExecution }: CellOutputProps) {
   if (status === "running" && !assistantMessage) {
     return <TypingIndicator />;
   }
@@ -50,7 +51,7 @@ export function NotebookCellOutput({ assistantMessage, status, collapsed }: Cell
           return <Markdown key={i} content={displayText} />;
         }
         if (isToolUIPart(part)) {
-          return <ToolPart key={i} part={part} />;
+          return <ToolPart key={i} part={part} previousExecution={previousExecution} />;
         }
         return null;
       })}

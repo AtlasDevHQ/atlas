@@ -23,10 +23,10 @@ function toStringRows(columns: string[], rows: Record<string, unknown>[]): strin
 }
 
 
-export function SQLResultCard({ part }: { part: unknown }) {
+export function SQLResultCard({ part, previousExecution }: { part: unknown; previousExecution?: { executionMs?: number; rowCount?: number } }) {
   return (
     <ResultCardErrorBoundary label="SQL">
-      <SQLResultCardInner part={part} />
+      <SQLResultCardInner part={part} previousExecution={previousExecution} />
     </ResultCardErrorBoundary>
   );
 }
@@ -36,7 +36,26 @@ const AddToDashboardDialog = dynamic(
   { ssr: false, loading: () => null },
 );
 
-function SQLResultCardInner({ part }: { part: unknown }) {
+/** Build a human-readable comparison string like "was 512 rows · 3.4s". */
+function formatPreviousExecution(
+  prev: { executionMs?: number; rowCount?: number },
+  currentRowCount: number,
+): string | null {
+  const parts: string[] = [];
+
+  // Show previous row count only if it differs from current
+  if (prev.rowCount != null && prev.rowCount !== currentRowCount) {
+    parts.push(`${prev.rowCount} row${prev.rowCount !== 1 ? "s" : ""}`);
+  }
+
+  if (prev.executionMs != null) {
+    parts.push(`${(prev.executionMs / 1000).toFixed(1)}s`);
+  }
+
+  return parts.length > 0 ? `was ${parts.join(" · ")}` : null;
+}
+
+function SQLResultCardInner({ part, previousExecution }: { part: unknown; previousExecution?: { executionMs?: number; rowCount?: number } }) {
   const dark = useDarkMode();
   const bridge = useDashboardBridge();
   const args = getToolArgs(part);
@@ -118,6 +137,10 @@ function SQLResultCardInner({ part }: { part: unknown }) {
           {Number.isFinite(result.executionMs) && (
             <> · {result.cached ? "cached" : `${(result.executionMs / 1000).toFixed(1)}s`}</>
           )}
+          {previousExecution && (() => {
+            const comparison = formatPreviousExecution(previousExecution, rows.length);
+            return comparison ? <span className="text-zinc-400 dark:text-zinc-500"> ({comparison})</span> : null;
+          })()}
         </span>
       }
     >

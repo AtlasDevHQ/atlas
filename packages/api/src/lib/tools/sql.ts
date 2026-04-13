@@ -782,6 +782,7 @@ function executeAndAuditEffect(opts: {
             truncated,
             cached: false,
             maskingApplied,
+            executionMs: durationMs,
             ...(hasHookMeta && { metadata: hookMetadata }),
           } as Record<string, unknown>;
         },
@@ -1002,6 +1003,7 @@ Rules:
                   columns: cached.columns, rows: cachedRows,
                   truncated: cachedRows.length >= getRowLimit(), cached: true,
                   maskingApplied: cachedMaskingApplied,
+                  executionMs: 0,
                 };
               },
               catch: (err) => {

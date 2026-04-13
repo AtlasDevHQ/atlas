@@ -82,6 +82,9 @@ export function SQLResultCard({ part }: { part: unknown }) {
         <span className="text-zinc-500">
           {rows.length} row{rows.length !== 1 ? "s" : ""}
           {result.truncated ? "+" : ""}
+          {typeof result.executionMs === "number" && (
+            <> · {result.cached ? "cached" : `${(result.executionMs / 1000).toFixed(1)}s`}</>
+          )}
         </span>
         <span className="text-zinc-400 dark:text-zinc-600">{open ? "\u25BE" : "\u25B8"}</span>
       </button>

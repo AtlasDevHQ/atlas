@@ -1135,13 +1135,13 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 
 ### Phase 1 (core flow)
 - [x] Execution metadata on tool results — timing + row count (#1397, PR #1404)
-- [ ] Convert chat to notebook — API + UI (#1398)
-- [ ] Dashboard bridge from notebook cells (#1399)
+- [x] Convert chat to notebook — API + UI (#1398, PR #1405)
+- [x] Dashboard bridge from notebook cells (#1399, PR #1406)
 
 ### Phase 2 (sharing + polish)
-- [ ] Report route — shareable notebook view (#1400)
+- [x] Report route — shareable notebook view (#1400, PR #1409)
 - [ ] Fork UX — "What if?" affordance + gutter indicators (#1401)
-- [ ] Execution metadata — rerun comparison (#1402)
+- [x] Execution metadata — rerun comparison (#1402, PR #1411)
 
 ---
 

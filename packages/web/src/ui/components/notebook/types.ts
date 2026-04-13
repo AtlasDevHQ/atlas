@@ -4,6 +4,12 @@ import type { ForkBranchWire } from "@/ui/lib/types";
 export type CellStatus = "idle" | "running" | "error";
 export type CellType = "query" | "text";
 
+/** Snapshot of a prior SQL execution for rerun comparison display. */
+export interface PreviousExecution {
+  executionMs?: number;
+  rowCount?: number;
+}
+
 export interface NotebookCell {
   id: string;
   /** Message ID for query cells; empty string for text cells. */
@@ -16,6 +22,8 @@ export interface NotebookCell {
   type?: CellType;
   /** Markdown content for text cells. */
   content?: string;
+  /** Snapshot of previous execution metadata — set before rerun, auto-cleared after 30s. */
+  previousExecution?: PreviousExecution;
 }
 
 export interface NotebookState {

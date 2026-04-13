@@ -7,6 +7,7 @@ import { useDarkMode } from "../../hooks/use-dark-mode";
 import { detectCharts } from "../chart/chart-detection";
 import dynamic from "next/dynamic";
 import { useDashboardBridge } from "../notebook/dashboard-bridge-context";
+import type { PreviousExecution } from "../notebook/types";
 
 const ResultChart = dynamic(
   () => import("../chart/result-chart").then((m) => ({ default: m.ResultChart })),
@@ -23,10 +24,10 @@ function toStringRows(columns: string[], rows: Record<string, unknown>[]): strin
 }
 
 
-export function SQLResultCard({ part }: { part: unknown }) {
+export function SQLResultCard({ part, previousExecution }: { part: unknown; previousExecution?: PreviousExecution }) {
   return (
     <ResultCardErrorBoundary label="SQL">
-      <SQLResultCardInner part={part} />
+      <SQLResultCardInner part={part} previousExecution={previousExecution} />
     </ResultCardErrorBoundary>
   );
 }
@@ -36,7 +37,26 @@ const AddToDashboardDialog = dynamic(
   { ssr: false, loading: () => null },
 );
 
-function SQLResultCardInner({ part }: { part: unknown }) {
+/** Build a human-readable comparison string, e.g. "was 3.4s" or "was 512 rows · 3.4s" (row count shown only when changed). */
+function formatPreviousExecution(
+  prev: PreviousExecution,
+  currentRowCount: number,
+): string | null {
+  const parts: string[] = [];
+
+  // Show previous row count only if it differs from current
+  if (prev.rowCount != null && prev.rowCount !== currentRowCount) {
+    parts.push(`${prev.rowCount} row${prev.rowCount !== 1 ? "s" : ""}`);
+  }
+
+  if (Number.isFinite(prev.executionMs)) {
+    parts.push(`${(prev.executionMs! / 1000).toFixed(1)}s`);
+  }
+
+  return parts.length > 0 ? `was ${parts.join(" · ")}` : null;
+}
+
+function SQLResultCardInner({ part, previousExecution }: { part: unknown; previousExecution?: PreviousExecution }) {
   const dark = useDarkMode();
   const bridge = useDashboardBridge();
   const args = getToolArgs(part);
@@ -118,6 +138,10 @@ function SQLResultCardInner({ part }: { part: unknown }) {
           {Number.isFinite(result.executionMs) && (
             <> · {result.cached ? "cached" : `${(result.executionMs / 1000).toFixed(1)}s`}</>
           )}
+          {previousExecution && (() => {
+            const comparison = formatPreviousExecution(previousExecution, rows.length);
+            return comparison ? <span className="text-zinc-400 dark:text-zinc-500"> ({comparison})</span> : null;
+          })()}
         </span>
       }
     >

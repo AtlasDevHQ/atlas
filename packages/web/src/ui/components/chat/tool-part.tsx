@@ -8,6 +8,7 @@ import { ExploreCard } from "./explore-card";
 import { SQLResultCard } from "./sql-result-card";
 import { ActionApprovalCard } from "../actions/action-approval-card";
 import { PythonResultCard, type PythonProgressData } from "./python-result-card";
+import type { PreviousExecution } from "../notebook/types";
 
 /** Extract the tool invocation ID from an AI SDK tool part. */
 function getToolInvocationId(part: unknown): string | undefined {
@@ -16,7 +17,7 @@ function getToolInvocationId(part: unknown): string | undefined {
   return typeof p.toolInvocationId === "string" ? p.toolInvocationId : undefined;
 }
 
-export const ToolPart = memo(function ToolPart({ part, pythonProgress }: { part: unknown; pythonProgress?: Map<string, PythonProgressData[]> }) {
+export const ToolPart = memo(function ToolPart({ part, pythonProgress, previousExecution }: { part: unknown; pythonProgress?: Map<string, PythonProgressData[]>; previousExecution?: PreviousExecution }) {
   let name: string;
   try {
     name = getToolName(part as Parameters<typeof getToolName>[0]);
@@ -33,7 +34,7 @@ export const ToolPart = memo(function ToolPart({ part, pythonProgress }: { part:
     case "explore":
       return <ExploreCard part={part} />;
     case "executeSQL":
-      return <SQLResultCard part={part} />;
+      return <SQLResultCard part={part} previousExecution={previousExecution} />;
     case "executePython": {
       const invocationId = getToolInvocationId(part);
       const events = invocationId ? pythonProgress?.get(invocationId) : undefined;
@@ -52,6 +53,8 @@ export const ToolPart = memo(function ToolPart({ part, pythonProgress }: { part:
     }
   }
 }, (prev, next) => {
+  // Re-render when previousExecution comparison changes (rerun metadata display)
+  if (prev.previousExecution !== next.previousExecution) return false;
   // Once a tool part is complete, its output won't change — skip re-renders.
   // This prevents the Recharts render tree from contributing to React's update depth limit.
   if (isToolComplete(prev.part) && isToolComplete(next.part)) return true;

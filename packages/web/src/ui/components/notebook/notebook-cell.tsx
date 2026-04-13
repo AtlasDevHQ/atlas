@@ -113,6 +113,7 @@ export const NotebookCell = forwardRef<HTMLElement, NotebookCellProps>(
                 assistantMessage={cell.assistantMessage}
                 status={cell.status}
                 collapsed={cell.collapsed}
+                previousExecution={cell.previousExecution}
               />
             </DashboardBridgeProvider>
           </div>

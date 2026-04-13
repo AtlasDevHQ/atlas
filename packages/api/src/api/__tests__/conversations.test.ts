@@ -60,6 +60,7 @@ const mockShareConversation = mock((): Promise<ShareResult> => Promise.resolve({
 const mockUnshareConversation = mock((): Promise<CrudResult> => Promise.resolve({ ok: false, reason: "not_found" }));
 const mockGetShareStatus = mock((): Promise<CrudDataResult<import("@atlas/api/lib/conversations").ShareStatusData>> => Promise.resolve({ ok: false, reason: "not_found" }));
 const mockGetSharedConversation = mock((): Promise<import("@atlas/api/lib/conversations").SharedConversationResult> => Promise.resolve({ ok: false, reason: "not_found" }));
+const mockConvertToNotebook = mock((): Promise<CrudDataResult<{ id: string; messageCount: number }>> => Promise.resolve({ ok: false, reason: "not_found" }));
 
 mock.module("@atlas/api/lib/conversations", () => ({
   listConversations: mockListConversations,
@@ -77,6 +78,7 @@ mock.module("@atlas/api/lib/conversations", () => ({
   persistAssistantSteps: mock(() => {}),
   updateNotebookState: mock(() => Promise.resolve({ ok: true })),
   forkConversation: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
+  convertToNotebook: mockConvertToNotebook,
   // Type exports (no runtime value — needed so mock.module doesn't break re-exports)
 }));
 
@@ -157,6 +159,8 @@ describe("conversations routes", () => {
     mockGetShareStatus.mockResolvedValue({ ok: false, reason: "not_found" });
     mockGetSharedConversation.mockReset();
     mockGetSharedConversation.mockResolvedValue({ ok: false, reason: "not_found" });
+    mockConvertToNotebook.mockReset();
+    mockConvertToNotebook.mockResolvedValue({ ok: false, reason: "not_found" });
   });
 
   afterEach(() => {
@@ -1160,6 +1164,73 @@ describe("conversations routes", () => {
       const msgs = body.messages as Record<string, unknown>[];
       expect(msgs[0]).not.toHaveProperty("id");
       expect(msgs[0]).not.toHaveProperty("conversationId");
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // POST /:id/convert-to-notebook
+  // -----------------------------------------------------------------------
+
+  describe("POST /:id/convert-to-notebook", () => {
+    it("returns 200 with new notebook id on success", async () => {
+      mockConvertToNotebook.mockResolvedValueOnce({
+        ok: true,
+        data: { id: "nb-1234-5678-9012-abcdef000000", messageCount: 5 },
+      });
+
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/conversations/${VALID_ID}/convert-to-notebook`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+
+      expect(response.status).toBe(200);
+      const body = await response.json() as Record<string, unknown>;
+      expect(body.id).toBe("nb-1234-5678-9012-abcdef000000");
+      expect(body.messageCount).toBe(5);
+    });
+
+    it("returns 404 when source conversation not found", async () => {
+      mockConvertToNotebook.mockResolvedValueOnce({ ok: false, reason: "not_found" });
+
+      const response = await app.fetch(
+        new Request(`http://localhost/api/v1/conversations/${VALID_ID}/convert-to-notebook`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+
+      expect(response.status).toBe(404);
+    });
+
+    it("returns 400 for invalid UUID", async () => {
+      const response = await app.fetch(
+        new Request("http://localhost/api/v1/conversations/not-a-uuid/convert-to-notebook", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+
+      expect(response.status).toBe(400);
+    });
+
+    it("passes userId from auth context", async () => {
+      mockConvertToNotebook.mockResolvedValueOnce({
+        ok: true,
+        data: { id: "nb-0000-0000-0000-000000000000", messageCount: 3 },
+      });
+
+      await app.fetch(
+        new Request(`http://localhost/api/v1/conversations/${VALID_ID}/convert-to-notebook`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+        }),
+      );
+
+      expect(mockConvertToNotebook).toHaveBeenCalledWith(
+        expect.objectContaining({ sourceId: VALID_ID, userId: "u1" }),
+      );
     });
   });
 });

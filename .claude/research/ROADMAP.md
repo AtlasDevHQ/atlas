@@ -1134,7 +1134,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 **Make the notebook surface earn its place** by bridging exploratory chat and persistent dashboards. PRD: #1396. Milestone: #33.
 
 ### Phase 1 (core flow)
-- [ ] Execution metadata on tool results — timing + row count (#1397)
+- [x] Execution metadata on tool results — timing + row count (#1397, PR #1404)
 - [ ] Convert chat to notebook — API + UI (#1398)
 - [ ] Dashboard bridge from notebook cells (#1399)
 

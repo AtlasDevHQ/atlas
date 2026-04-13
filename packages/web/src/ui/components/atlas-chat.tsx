@@ -370,6 +370,7 @@ export function AtlasChat() {
             onSelect={handleSelectConversation}
             onDelete={(id) => convos.deleteConversation(id)}
             onStar={(id, starred) => convos.starConversation(id, starred)}
+            onConvertToNotebook={(id) => convos.convertToNotebook(id)}
             onNewChat={handleNewChat}
             mobileOpen={mobileMenuOpen}
             onMobileClose={() => setMobileMenuOpen(false)}

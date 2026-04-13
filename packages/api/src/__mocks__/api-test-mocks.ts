@@ -432,6 +432,9 @@ export function createApiTestMocks(
     forkConversation: mock(() =>
       Promise.resolve({ ok: false, reason: "not_found" }),
     ),
+    convertToNotebook: mock(() =>
+      Promise.resolve({ ok: false, reason: "not_found" }),
+    ),
   }));
 
   // ── Security ──────────────────────────────────────────────────

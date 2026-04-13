@@ -27,6 +27,7 @@ import {
   starConversation,
   updateNotebookState,
   forkConversation,
+  convertToNotebook,
   shareConversation,
   unshareConversation,
   getShareStatus,
@@ -67,7 +68,7 @@ const ConversationSchema = z.object({
   id: z.string().uuid(),
   userId: z.string().nullable(),
   title: z.string().nullable(),
-  surface: z.enum(["web", "api", "mcp", "slack"]),
+  surface: z.enum(["web", "api", "mcp", "slack", "notebook"]),
   connectionId: z.string().nullable(),
   starred: z.boolean(),
   createdAt: z.string().datetime(),
@@ -367,6 +368,48 @@ const forkConversationRoute = createRoute({
     429: {
       description: "Rate limit exceeded",
       content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const convertToNotebookRoute = createRoute({
+  method: "post",
+  path: "/{id}/convert-to-notebook",
+  tags: ["Conversations"],
+  summary: "Convert a chat conversation to a notebook",
+  description:
+    "Creates a new conversation with surface 'notebook' by copying all messages from the source. " +
+    "The original conversation is left unchanged.",
+  request: {
+    params: IdParamSchema,
+  },
+  responses: {
+    200: {
+      description: "Notebook created successfully",
+      content: {
+        "application/json": {
+          schema: z.object({
+            id: z.string().uuid(),
+            messageCount: z.number(),
+          }),
+        },
+      },
+    },
+    400: {
+      description: "Invalid conversation ID",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Conversation not found or not owned by user",
+      content: { "application/json": { schema: ErrorSchema } },
     },
     500: {
       description: "Internal server error",
@@ -774,6 +817,39 @@ conversations.openapi(forkConversationRoute, async (c) => {
       ...(metadataWarning ? { warning: metadataWarning } : {}),
     }, 200);
   }), { label: "fork conversation" });
+});
+
+// ---------------------------------------------------------------------------
+// POST /:id/convert-to-notebook — convert chat to notebook
+// ---------------------------------------------------------------------------
+
+conversations.openapi(convertToNotebookRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    if (!hasInternalDB()) {
+      return c.json({ error: "not_available", message: "Conversation history is not available (no internal database configured)." }, 404);
+    }
+
+    const { requestId } = yield* RequestContext;
+    const { user } = yield* AuthContext;
+
+    const { id } = c.req.valid("param");
+    if (!UUID_RE.test(id)) {
+      return c.json({ error: "invalid_request", message: "Invalid conversation ID format." }, 400);
+    }
+
+    const result = yield* Effect.promise(() => convertToNotebook({
+      sourceId: id,
+      userId: user?.id,
+      orgId: user?.activeOrganizationId,
+    }));
+
+    if (!result.ok) {
+      const fail = crudFailResponse(result.reason, requestId);
+      return c.json(fail.body, fail.status);
+    }
+
+    return c.json({ id: result.data.id, messageCount: result.data.messageCount }, 200);
+  }), { label: "convert to notebook" });
 });
 
 // ---------------------------------------------------------------------------

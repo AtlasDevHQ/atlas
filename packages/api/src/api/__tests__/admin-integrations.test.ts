@@ -266,6 +266,7 @@ mock.module("@atlas/api/lib/conversations", () => ({
   getSharedConversation: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
   updateNotebookState: mock(() => Promise.resolve({ ok: true })),
   forkConversation: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
+  convertToNotebook: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
 }));
 
 mock.module("@atlas/api/lib/auth/server", () => ({

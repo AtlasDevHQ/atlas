@@ -1,6 +1,6 @@
 "use client";
 
-import { forwardRef, useState, useMemo } from "react";
+import { forwardRef, useState } from "react";
 import { ChevronDown, ChevronRight, GripVertical } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { SortableItemHandle } from "@/components/ui/sortable";
@@ -35,11 +35,11 @@ export const NotebookCell = forwardRef<HTMLElement, NotebookCellProps>(
     const question = extractTextContent(cell.userMessage);
     const isRunning = cell.status === "running";
 
-    const bridgeValue = useMemo(() => ({
+    const bridgeValue = {
       cellId: cell.id,
       dashboardCards,
       onDashboardCardAdded,
-    }), [cell.id, dashboardCards, onDashboardCardAdded]);
+    };
 
     return (
       <>

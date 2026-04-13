@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, useCallback } from "react";
+import { useMemo, useState } from "react";
 import { getToolArgs, getToolResult, isToolComplete, downloadCSV, downloadExcel, toCsvString } from "../../lib/helpers";
 import { FileDown, FileSpreadsheet, LayoutDashboard } from "lucide-react";
 import { useDarkMode } from "../../hooks/use-dark-mode";
@@ -51,11 +51,14 @@ function SQLResultCardInner({ part }: { part: unknown }) {
   const cellId = bridge?.cellId ?? null;
   const isOnDashboard = cellId ? !!bridge?.dashboardCards[cellId] : false;
 
-  const handleDashboardAdded = useCallback((dashboardId: string, cardId: string) => {
-    if (cellId && bridge) {
-      bridge.onDashboardCardAdded(cellId, { dashboardId, cardId });
+  function handleDashboardAdded(dashboardId: string, cardId: string) {
+    if (!bridge) return; // Not in notebook context
+    if (!cellId) {
+      console.warn("Dashboard card added but cellId is null in bridge context — tracking skipped.");
+      return;
     }
-  }, [cellId, bridge]);
+    bridge.onDashboardCardAdded(cellId, { dashboardId, cardId });
+  }
 
   const columns = useMemo(
     () => (done && result?.success ? ((result.columns as string[]) ?? []) : []),

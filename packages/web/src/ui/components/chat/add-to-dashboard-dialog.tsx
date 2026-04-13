@@ -206,9 +206,11 @@ export function AddToDashboardDialog({
         return;
       }
 
-      const cardId = (cardResult.data as { id: string } | null)?.id;
+      const cardId = cardResult.data?.id;
       if (cardId) {
         onAdded?.(dashboardId, cardId);
+      } else {
+        console.warn("Dashboard card created but server response did not include card ID — notebook tracking skipped.");
       }
 
       setSuccess(true);

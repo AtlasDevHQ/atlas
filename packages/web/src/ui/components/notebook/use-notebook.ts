@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import type { UIMessage } from "@ai-sdk/react";
 import type { NotebookStateWire, ForkBranchWire } from "@/ui/lib/types";
 import type { NotebookCell, NotebookState, ResolvedCell, ForkInfo } from "./types";
+import type { DashboardCardEntry } from "./dashboard-bridge-context";
 
 const STORAGE_PREFIX = "atlas:notebook:";
 
@@ -172,10 +173,7 @@ export interface UseNotebookOptions {
   forkInfo?: ForkInfo | null;
 }
 
-export interface DashboardCardEntry {
-  dashboardId: string;
-  cardId: string;
-}
+export type { DashboardCardEntry } from "./dashboard-bridge-context";
 
 export interface UseNotebookReturn {
   cells: ResolvedCell[];
@@ -536,6 +534,12 @@ export function useNotebook({
         // Text cells: remove only this cell, no message truncation
         setCellState((prev) => prev.filter((c) => c.id !== cellId));
         setCellOrder((prev) => prev.filter((id) => id !== cellId));
+        setDashboardCards((prev) => {
+          if (!(cellId in prev)) return prev;
+          const next = { ...prev };
+          delete next[cellId];
+          return next;
+        });
         return;
       }
 
@@ -551,6 +555,17 @@ export function useNotebook({
           .map((c) => c.id),
       );
       setCellOrder((prev) => prev.filter((id) => !deletedIds.has(id)));
+      // Clean up dashboard card associations for deleted cells
+      setDashboardCards((prev) => {
+        let changed = false;
+        for (const id of deletedIds) {
+          if (id in prev) { changed = true; break; }
+        }
+        if (!changed) return prev;
+        const next = { ...prev };
+        for (const id of deletedIds) delete next[id];
+        return next;
+      });
     },
     [cellState, chat],
   );

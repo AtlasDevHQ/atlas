@@ -404,7 +404,7 @@ export default function SemanticImprovePage() {
   }
 
   return (
-    <div className="flex h-full flex-col overflow-hidden">
+    <div className="flex h-[calc(100dvh-4rem)] flex-col overflow-hidden">
       {/* Header */}
       <div className="flex shrink-0 items-center gap-3 border-b px-6 py-4">
         <Link href="/admin/semantic">

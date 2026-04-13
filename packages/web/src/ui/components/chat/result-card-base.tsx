@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils";
 export interface ResultCardBaseProps {
   /** Badge text shown in the header (e.g. "SQL", "Python") */
   badge: string;
-  /** Color classes for the badge — expects bg + text + dark variants, e.g. "bg-blue-100 text-blue-700 dark:bg-blue-600/20 dark:text-blue-400" */
+  /** Color classes for the badge — expects bg + text + dark variants, e.g. "bg-primary/15 text-primary dark:bg-primary/20 dark:text-primary" */
   badgeClassName: string;
   /** Title/explanation text shown next to the badge */
   title: string;
@@ -32,7 +32,7 @@ export function ResultCardBase({
   const [open, setOpen] = useState(defaultOpen);
 
   return (
-    <div className="my-2 overflow-hidden rounded-lg border border-zinc-200 bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900">
+    <div className="my-2 rounded-lg border border-zinc-200 bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-900">
       <button
         aria-expanded={open}
         onClick={() => setOpen(!open)}

@@ -101,7 +101,7 @@ function SQLResultCardInner({ part }: { part: unknown }) {
   return (
     <ResultCardBase
       badge="SQL"
-      badgeClassName="bg-blue-100 text-blue-700 dark:bg-blue-600/20 dark:text-blue-400"
+      badgeClassName="bg-primary/15 text-primary dark:bg-primary/20 dark:text-primary"
       title={String(args.explanation ?? "Query result")}
       headerExtra={
         <span className="flex items-center gap-1.5 text-zinc-500">

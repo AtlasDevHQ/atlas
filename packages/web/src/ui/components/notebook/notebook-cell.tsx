@@ -49,8 +49,8 @@ export const NotebookCell = forwardRef<HTMLElement, NotebookCellProps>(
           aria-label={`Cell ${cell.number}`}
           tabIndex={0}
           className={cn(
-            "group rounded-lg border border-zinc-200 bg-white transition-shadow focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-zinc-800 dark:bg-zinc-950",
-            isRunning && "ring-2 ring-blue-400/50",
+            "group rounded-lg border border-zinc-200 bg-white transition-shadow focus:outline-none focus:ring-2 focus:ring-ring dark:border-zinc-800 dark:bg-zinc-950",
+            isRunning && "ring-2 ring-primary/50",
           )}
         >
           <div className="flex items-start gap-3 border-b border-zinc-100 px-4 py-3 dark:border-zinc-800/50">

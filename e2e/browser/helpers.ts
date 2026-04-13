@@ -19,8 +19,8 @@ export async function askQuestion(page: Page, question: string) {
 
 /** Wait for a SQL result card to appear in the conversation. */
 export async function waitForSQLResult(page: Page) {
-  // SQL result cards have a blue "SQL" badge (bg-blue-100 class — update if theme changes)
-  await page.locator(".bg-blue-100", { hasText: "SQL" }).first().waitFor({ timeout: 60_000 });
+  // SQL result cards render a badge with text "SQL" inside a ResultCardBase
+  await page.locator("span", { hasText: /^SQL$/ }).first().waitFor({ timeout: 60_000 });
 }
 
 /** Start a new chat session. */

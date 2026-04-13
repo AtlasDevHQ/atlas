@@ -234,8 +234,8 @@ export function ShareDialog({ conversationId, onShare, onUnshare, onGetShareStat
           size="xs"
           className={
             shared
-              ? "text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300"
-              : "text-zinc-400 hover:text-blue-500 dark:text-zinc-500 dark:hover:text-blue-400"
+              ? "text-primary hover:text-primary/80 dark:text-primary dark:hover:text-primary/80"
+              : "text-zinc-400 hover:text-primary dark:text-zinc-500 dark:hover:text-primary"
           }
           aria-label={shared ? "Manage share link" : "Share conversation"}
         >

@@ -22,7 +22,7 @@ export const industryBadge: Record<
   saas: {
     variant: "outline",
     className:
-      "border-blue-300 text-blue-700 dark:border-blue-700 dark:text-blue-400",
+      "border-primary/50 text-primary dark:border-primary/50 dark:text-primary",
     label: "SaaS",
   },
   ecommerce: {

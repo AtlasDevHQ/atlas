@@ -112,7 +112,7 @@ function planBadge(tier: PlanTier) {
     case "free":
       return <Badge variant="secondary">Free</Badge>;
     case "trial":
-      return <Badge variant="outline" className="border-blue-500 text-blue-600">Trial</Badge>;
+      return <Badge variant="outline" className="border-primary/50 text-primary">Trial</Badge>;
     case "starter":
       return <Badge variant="outline" className="border-green-500 text-green-600">Starter</Badge>;
     case "pro":

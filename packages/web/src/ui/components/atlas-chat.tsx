@@ -513,7 +513,7 @@ export function AtlasChat() {
                     if (m.role === "user") {
                       return (
                         <div key={m.id} className="flex justify-end" role="article" aria-label="Message from you">
-                          <div className="max-w-[85%] rounded-xl bg-blue-600 px-4 py-3 text-sm text-white">
+                          <div className="max-w-[85%] rounded-xl bg-primary px-4 py-3 text-sm text-primary-foreground">
                             {m.parts?.map((part, i) =>
                               part.type === "text" ? (
                                 <p key={i} className="whitespace-pre-wrap">

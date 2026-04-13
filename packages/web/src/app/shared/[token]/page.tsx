@@ -153,7 +153,7 @@ export default async function SharedConversationPage({
             <div
               className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-medium ${
                 msg.role === "user"
-                  ? "bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300"
+                  ? "bg-primary/15 text-primary dark:bg-primary/20 dark:text-primary"
                   : "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-300"
               }`}
             >

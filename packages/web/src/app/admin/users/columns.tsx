@@ -35,7 +35,7 @@ export interface Invitation {
 const roleBadge: Record<string, { variant: "outline"; className: string }> = {
   owner: { variant: "outline", className: "border-purple-300 text-purple-700 dark:border-purple-700 dark:text-purple-400" },
   admin: { variant: "outline", className: "border-red-300 text-red-700 dark:border-red-700 dark:text-red-400" },
-  member: { variant: "outline", className: "border-blue-300 text-blue-700 dark:border-blue-700 dark:text-blue-400" },
+  member: { variant: "outline", className: "border-primary/50 text-primary dark:border-primary/50 dark:text-primary" },
 };
 
 const inviteStatusBadge: Record<string, { variant: "outline"; className: string }> = {

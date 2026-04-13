@@ -81,7 +81,7 @@ function diffLineStyle(line: string): string {
     return "text-muted-foreground bg-muted font-semibold";
   }
   if (line.startsWith("@@")) {
-    return "text-blue-600 dark:text-blue-400 bg-blue-50 dark:bg-blue-950/30";
+    return "text-primary dark:text-primary bg-primary/10 dark:bg-primary/10";
   }
   if (line.startsWith("+")) {
     return "text-green-700 dark:text-green-400 bg-green-50 dark:bg-green-950/30";

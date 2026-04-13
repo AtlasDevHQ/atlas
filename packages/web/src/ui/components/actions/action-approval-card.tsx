@@ -247,7 +247,7 @@ export function ActionApprovalCard({ part }: { part: unknown }) {
             <button
               onClick={handleApprove}
               disabled={isSubmitting}
-              className="inline-flex items-center gap-1.5 rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-blue-500 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-blue-500/50 disabled:opacity-40"
+              className="inline-flex items-center gap-1.5 rounded bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-primary/50 disabled:opacity-40"
             >
               {isSubmitting && cardState.action === "approve" && (
                 <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-white/30 border-t-white" />

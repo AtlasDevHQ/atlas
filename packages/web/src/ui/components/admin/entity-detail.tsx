@@ -67,7 +67,7 @@ export function EntityDetail({ entity }: { entity: EntityData }) {
                           </Badge>
                         )}
                         {dim.foreign_key && (
-                          <Badge className="bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400 text-[10px] px-1 py-0">
+                          <Badge className="bg-primary/15 text-primary dark:bg-primary/20 dark:text-primary text-[10px] px-1 py-0">
                             FK
                           </Badge>
                         )}

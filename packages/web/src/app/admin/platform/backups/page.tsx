@@ -62,7 +62,7 @@ function statusBadge(status: BackupStatus) {
     case "completed":
       return <Badge variant="outline" className="gap-1 border-green-500 text-green-600"><CheckCircle2 className="size-3" />Completed</Badge>;
     case "verified":
-      return <Badge variant="outline" className="gap-1 border-blue-500 text-blue-600"><ShieldCheck className="size-3" />Verified</Badge>;
+      return <Badge variant="outline" className="gap-1 border-primary/50 text-primary"><ShieldCheck className="size-3" />Verified</Badge>;
     case "in_progress":
       return <Badge variant="outline" className="gap-1 border-amber-500 text-amber-600"><Loader2 className="size-3 animate-spin" />In Progress</Badge>;
     case "failed":

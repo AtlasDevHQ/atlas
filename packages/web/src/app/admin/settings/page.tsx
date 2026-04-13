@@ -365,9 +365,9 @@ export default function SettingsPage() {
           )}
 
           {manageable && (
-            <div className="mb-6 flex items-start gap-2 rounded-md border border-blue-500/30 bg-blue-500/5 px-4 py-3">
-              <Info className="mt-0.5 size-4 shrink-0 text-blue-600 dark:text-blue-400" />
-              <p className="text-sm text-blue-700 dark:text-blue-300">
+            <div className="mb-6 flex items-start gap-2 rounded-md border border-primary/30 bg-primary/5 px-4 py-3">
+              <Info className="mt-0.5 size-4 shrink-0 text-primary" />
+              <p className="text-sm text-primary dark:text-primary/80">
                 {isSaas
                   ? "Setting overrides are saved and take effect immediately."
                   : <>

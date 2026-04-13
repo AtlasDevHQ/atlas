@@ -6,7 +6,7 @@ import { ResultCardBase, ResultCardErrorBoundary } from "../components/chat/resu
 describe("ResultCardBase", () => {
   test("renders badge text", () => {
     const { container } = render(
-      <ResultCardBase badge="SQL" badgeClassName="bg-blue-100" title="Test query">
+      <ResultCardBase badge="SQL" badgeClassName="bg-primary/15" title="Test query">
         <div>content</div>
       </ResultCardBase>,
     );
@@ -15,7 +15,7 @@ describe("ResultCardBase", () => {
 
   test("renders title text", () => {
     const { container } = render(
-      <ResultCardBase badge="SQL" badgeClassName="bg-blue-100" title="Top companies by revenue">
+      <ResultCardBase badge="SQL" badgeClassName="bg-primary/15" title="Top companies by revenue">
         <div>content</div>
       </ResultCardBase>,
     );
@@ -26,7 +26,7 @@ describe("ResultCardBase", () => {
     const { container } = render(
       <ResultCardBase
         badge="SQL"
-        badgeClassName="bg-blue-100"
+        badgeClassName="bg-primary/15"
         title="Query"
         headerExtra={<span data-testid="row-count">5 rows</span>}
       >
@@ -40,7 +40,7 @@ describe("ResultCardBase", () => {
     const { container } = render(
       <ResultCardBase
         badge="SQL"
-        badgeClassName="bg-blue-100"
+        badgeClassName="bg-primary/15"
         title="Query"
         headerExtra={<span data-testid="row-count">5 rows</span>}
       >
@@ -57,7 +57,7 @@ describe("ResultCardBase", () => {
 
   test("renders children when expanded (default)", () => {
     const { container } = render(
-      <ResultCardBase badge="SQL" badgeClassName="bg-blue-100" title="Query">
+      <ResultCardBase badge="SQL" badgeClassName="bg-primary/15" title="Query">
         <div data-testid="child-content">table here</div>
       </ResultCardBase>,
     );
@@ -66,7 +66,7 @@ describe("ResultCardBase", () => {
 
   test("collapse hides children", () => {
     const { container } = render(
-      <ResultCardBase badge="SQL" badgeClassName="bg-blue-100" title="Query">
+      <ResultCardBase badge="SQL" badgeClassName="bg-primary/15" title="Query">
         <div data-testid="child-content">table here</div>
       </ResultCardBase>,
     );
@@ -79,7 +79,7 @@ describe("ResultCardBase", () => {
 
   test("expand after collapse restores children", () => {
     const { container } = render(
-      <ResultCardBase badge="SQL" badgeClassName="bg-blue-100" title="Query">
+      <ResultCardBase badge="SQL" badgeClassName="bg-primary/15" title="Query">
         <div data-testid="child-content">table here</div>
       </ResultCardBase>,
     );
@@ -95,7 +95,7 @@ describe("ResultCardBase", () => {
 
   test("defaultOpen=false starts collapsed", () => {
     const { container } = render(
-      <ResultCardBase badge="SQL" badgeClassName="bg-blue-100" title="Query" defaultOpen={false}>
+      <ResultCardBase badge="SQL" badgeClassName="bg-primary/15" title="Query" defaultOpen={false}>
         <div data-testid="child-content">table here</div>
       </ResultCardBase>,
     );
@@ -104,7 +104,7 @@ describe("ResultCardBase", () => {
 
   test("defaultOpen=false can be expanded", () => {
     const { container } = render(
-      <ResultCardBase badge="SQL" badgeClassName="bg-blue-100" title="Query" defaultOpen={false}>
+      <ResultCardBase badge="SQL" badgeClassName="bg-primary/15" title="Query" defaultOpen={false}>
         <div data-testid="child-content">table here</div>
       </ResultCardBase>,
     );
@@ -143,7 +143,7 @@ describe("ResultCardBase", () => {
 
   test("shows collapse arrow ▾ when expanded", () => {
     const { container } = render(
-      <ResultCardBase badge="SQL" badgeClassName="bg-blue-100" title="Query">
+      <ResultCardBase badge="SQL" badgeClassName="bg-primary/15" title="Query">
         <div>content</div>
       </ResultCardBase>,
     );
@@ -152,7 +152,7 @@ describe("ResultCardBase", () => {
 
   test("shows expand arrow ▸ when collapsed", () => {
     const { container } = render(
-      <ResultCardBase badge="SQL" badgeClassName="bg-blue-100" title="Query" defaultOpen={false}>
+      <ResultCardBase badge="SQL" badgeClassName="bg-primary/15" title="Query" defaultOpen={false}>
         <div>content</div>
       </ResultCardBase>,
     );
@@ -161,7 +161,7 @@ describe("ResultCardBase", () => {
 
   test("toggle button has aria-expanded=true when open", () => {
     const { container } = render(
-      <ResultCardBase badge="SQL" badgeClassName="bg-blue-100" title="Query">
+      <ResultCardBase badge="SQL" badgeClassName="bg-primary/15" title="Query">
         <div>content</div>
       </ResultCardBase>,
     );
@@ -171,7 +171,7 @@ describe("ResultCardBase", () => {
 
   test("toggle button has aria-expanded=false when collapsed", () => {
     const { container } = render(
-      <ResultCardBase badge="SQL" badgeClassName="bg-blue-100" title="Query">
+      <ResultCardBase badge="SQL" badgeClassName="bg-primary/15" title="Query">
         <div>content</div>
       </ResultCardBase>,
     );

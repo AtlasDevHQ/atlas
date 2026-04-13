@@ -76,7 +76,7 @@ export const NotebookTextCell = forwardRef<HTMLElement, NotebookTextCellProps>(
         aria-label={`Text cell ${cell.number}`}
         tabIndex={0}
         className={cn(
-          "group rounded-lg border border-dashed border-zinc-300 bg-zinc-50/50 transition-shadow focus:outline-none focus:ring-2 focus:ring-blue-500 dark:border-zinc-700 dark:bg-zinc-900/30",
+          "group rounded-lg border border-dashed border-zinc-300 bg-zinc-50/50 transition-shadow focus:outline-none focus:ring-2 focus:ring-ring dark:border-zinc-700 dark:bg-zinc-900/30",
         )}
       >
         <div className="flex items-start gap-3 border-b border-dashed border-zinc-200 px-4 py-2 dark:border-zinc-800/50">

@@ -248,7 +248,7 @@ function EntityDetailView({
                             </Badge>
                           )}
                           {dim.foreign_key && (
-                            <Badge className="shrink-0 bg-blue-100 text-blue-800 dark:bg-blue-900/30 dark:text-blue-400 text-[9px] px-1 py-0">
+                            <Badge className="shrink-0 bg-primary/15 text-primary dark:bg-primary/20 dark:text-primary text-[9px] px-1 py-0">
                               FK
                             </Badge>
                           )}
@@ -293,7 +293,7 @@ function EntityDetailView({
                         </Badge>
                         <button
                           onClick={() => onNavigateEntity(join.to)}
-                          className="text-xs font-medium text-blue-600 hover:underline dark:text-blue-400"
+                          className="text-xs font-medium text-primary hover:underline dark:text-primary"
                         >
                           {join.to}
                         </button>

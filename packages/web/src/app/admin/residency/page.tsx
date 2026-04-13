@@ -314,17 +314,17 @@ function MigrationStatusBanner({
   switch (migration.status) {
     case "pending":
       return (
-        <div className="flex items-start gap-3 rounded-md border border-blue-200 bg-blue-50 p-4 dark:border-blue-900 dark:bg-blue-950/50">
-          <Clock className="mt-0.5 h-5 w-5 shrink-0 text-blue-600 dark:text-blue-400" />
+        <div className="flex items-start gap-3 rounded-md border border-primary/30 bg-primary/5 p-4 dark:border-primary/20 dark:bg-primary/5">
+          <Clock className="mt-0.5 h-5 w-5 shrink-0 text-primary" />
           <div className="flex-1 text-sm">
-            <p className="font-medium text-blue-800 dark:text-blue-200">
+            <p className="font-medium text-primary">
               Migration requested
             </p>
-            <p className="mt-1 text-blue-700 dark:text-blue-300">
+            <p className="mt-1 text-primary/80 dark:text-primary/70">
               Your request to migrate from <strong>{migration.sourceRegion}</strong> to{" "}
               <strong>{migration.targetRegion}</strong> is queued for processing.
             </p>
-            <p className="mt-1 text-xs text-blue-600 dark:text-blue-400">
+            <p className="mt-1 text-xs text-primary/70 dark:text-primary/60">
               Requested {formatDate(migration.requestedAt)}
             </p>
             <div className="mt-2">
@@ -333,7 +333,7 @@ function MigrationStatusBanner({
                 size="sm"
                 onClick={() => onCancel(migration.id)}
                 disabled={cancelling}
-                className="border-blue-300 text-blue-700 hover:bg-blue-100 dark:border-blue-800 dark:text-blue-300 dark:hover:bg-blue-900"
+                className="border-primary/50 text-primary hover:bg-primary/10 dark:border-primary/30 dark:text-primary/80 dark:hover:bg-primary/10"
               >
                 {cancelling ? (
                   <>

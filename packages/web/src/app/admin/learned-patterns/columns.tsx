@@ -42,7 +42,7 @@ export const statusBadge: Record<string, { variant: "outline"; className: string
 export const typeBadge: Record<string, { variant: "outline"; className: string; label: string }> = {
   query_pattern: {
     variant: "outline",
-    className: "border-blue-300 text-blue-700 dark:border-blue-700 dark:text-blue-400",
+    className: "border-primary/50 text-primary dark:border-primary/50 dark:text-primary",
     label: "Query Pattern",
   },
   semantic_amendment: {
@@ -55,7 +55,7 @@ export const typeBadge: Record<string, { variant: "outline"; className: string; 
 const sourceBadge: Record<string, { variant: "outline"; className: string; label: string }> = {
   agent: {
     variant: "outline",
-    className: "border-blue-300 text-blue-700 dark:border-blue-700 dark:text-blue-400",
+    className: "border-primary/50 text-primary dark:border-primary/50 dark:text-primary",
     label: "Agent",
   },
   "atlas-learn": {

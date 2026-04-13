@@ -403,7 +403,7 @@ function PoolBar({ active, idle, total }: { active: number; idle: number; total:
   const idlePct = Math.round((idle / total) * 100);
   return (
     <div className="flex h-2 w-full overflow-hidden rounded-full bg-muted">
-      <div className="bg-blue-500 transition-all" style={{ width: `${activePct}%` }} />
+      <div className="bg-primary transition-all" style={{ width: `${activePct}%` }} />
       <div className="bg-emerald-400 transition-all" style={{ width: `${idlePct}%` }} />
     </div>
   );

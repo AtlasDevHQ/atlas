@@ -1,5 +1,8 @@
 FROM oven/bun:1.3.11@sha256:0733e50325078969732ebe3b15ce4c4be5082f18c4ac1a0f0ca4839c2e4e42a7 AS base
 
+# Cache-bust: increment to force apt layer rebuild
+ARG CACHE_BUST=1
+
 # Install tools needed for explore mode + Python for executePython
 RUN apt-get update && apt-get install -y --no-install-recommends \
     bash \

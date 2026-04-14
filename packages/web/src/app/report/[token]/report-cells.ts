@@ -57,7 +57,7 @@ export function toUIMessage(msg: SharedMessage, id: string): UIMessage {
               : `tool-${id}-${idx}`;
           return {
             type: "tool-invocation" as const,
-            toolInvocationId: toolCallId,
+            toolCallId,
             toolName: String(p.toolName ?? "unknown"),
             state: "output-available" as const,
             input: p.args ?? {},

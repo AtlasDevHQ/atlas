@@ -1126,6 +1126,13 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] `api-test-mocks` missing `hardDeleteWorkspace` export (#1372)
 - [x] `ErrorBanner` crashes on `FetchError` — extract `.message` before rendering
 - [x] Semantic improve diff viewer: full-file rewrite diffs + monochrome display (PR #1403)
+- [x] Admin-actions page missing p-6 padding (PR #1408)
+- [x] Semantic improve page: independent scroll areas + text wrapping (PR #1407)
+- [x] Semantic improve page: anchor height to viewport for panel scrolling (PR #1410)
+- [x] Typing indicator: replace bounce easing with smooth pulse (PR #1412)
+- [x] Chat UI: replace hardcoded blue with brand primary (PR #1413)
+- [x] Report cells: `toolInvocationId` → `toolCallId` for AI SDK compat
+- [x] SQL result card: narrow `executionMs` type before arithmetic
 
 ---
 

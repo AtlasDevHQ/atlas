@@ -135,7 +135,7 @@ function SQLResultCardInner({ part, previousExecution }: { part: unknown; previo
           )}
           {rows.length} row{rows.length !== 1 ? "s" : ""}
           {result.truncated ? "+" : ""}
-          {Number.isFinite(result.executionMs) && (
+          {typeof result.executionMs === "number" && Number.isFinite(result.executionMs) && (
             <> · {result.cached ? "cached" : `${(result.executionMs / 1000).toFixed(1)}s`}</>
           )}
           {previousExecution && (() => {

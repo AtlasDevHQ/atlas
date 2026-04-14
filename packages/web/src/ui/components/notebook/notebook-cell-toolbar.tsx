@@ -1,13 +1,20 @@
 "use client";
 
-import { Pencil, Play, Copy, GitFork, Trash2, Loader2 } from "lucide-react";
+import { Pencil, Play, Copy, GitBranch, Trash2, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import type { CellStatus } from "./types";
 
 interface CellToolbarProps {
   status: CellStatus;
   editing: boolean;
   disabled: boolean;
+  hasOutput: boolean;
   onEdit: () => void;
   onRun: () => void;
   onCopy: () => void;
@@ -19,6 +26,7 @@ export function NotebookCellToolbar({
   status,
   editing,
   disabled,
+  hasOutput,
   onEdit,
   onRun,
   onCopy,
@@ -66,16 +74,28 @@ export function NotebookCellToolbar({
       >
         <Copy className="size-3.5" />
       </Button>
-      <Button
-        variant="ghost"
-        size="icon"
-        className="size-7"
-        onClick={onFork}
-        disabled={isRunning || disabled}
-        aria-label="Fork from this cell"
-      >
-        <GitFork className="size-3.5" />
-      </Button>
+      {hasOutput && (
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7 gap-1 px-2 text-xs font-normal text-zinc-500 hover:text-zinc-700 dark:text-zinc-400 dark:hover:text-zinc-200"
+                onClick={onFork}
+                disabled={isRunning || disabled}
+                aria-label="Create a branch from this cell to explore an alternative"
+              >
+                <GitBranch className="size-3.5" />
+                What if?
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">
+              <p>Branch from this cell to explore a different direction</p>
+            </TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+      )}
       <Button
         variant="ghost"
         size="icon"

@@ -422,6 +422,8 @@ mock.module("@atlas/api/lib/conversations", () => ({
   updateNotebookState: mock(() => Promise.resolve({ ok: true })),
   forkConversation: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
   convertToNotebook: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
+  deleteBranch: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
+  renameBranch: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
 }));
 
 // Import app after all mocks are registered

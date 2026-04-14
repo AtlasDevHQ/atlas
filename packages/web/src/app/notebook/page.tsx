@@ -226,6 +226,8 @@ function NotebookContent() {
     forkConversation: convos.forkConversation,
     onNavigateToBranch: handleNavigateToBranch,
     forkInfo,
+    deleteBranch: convos.deleteBranch,
+    renameBranch: convos.renameBranch,
   });
 
   // Share as Report — creates a share link and returns the token

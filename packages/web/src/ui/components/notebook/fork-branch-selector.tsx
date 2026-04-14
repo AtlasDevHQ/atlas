@@ -23,10 +23,8 @@ import {
 } from "@/components/ui/alert-dialog";
 import type { ForkInfo } from "./types";
 
-/** Extract the cell number from a forkPointCellId like "msg-uuid" → look up by index. */
+/** Truncate a forkPointCellId (message UUID) for compact display in the branch selector. */
 function formatForkPoint(forkPointCellId: string): string {
-  // forkPointCellId is a message ID — we can't resolve it to a cell number
-  // without the full cell list, so we show a truncated ID
   return forkPointCellId.slice(0, 8);
 }
 
@@ -71,8 +69,12 @@ export function ForkBranchSelector({
 
   async function commitRename() {
     if (!editingId || !editValue.trim() || !onRenameBranch) return;
-    await onRenameBranch(editingId, editValue.trim());
-    setEditingId(null);
+    try {
+      await onRenameBranch(editingId, editValue.trim());
+      setEditingId(null);
+    } catch {
+      // Keep editing state open — the parent hook shows a warning toast
+    }
   }
 
   function cancelRename() {

@@ -474,10 +474,15 @@ export async function deleteBranch(opts: {
     };
 
     // Delete the branch conversation (CASCADE deletes messages)
-    const delRows = await internalQuery<{ id: string }>(
-      `DELETE FROM conversations WHERE id = $1 RETURNING id`,
-      [opts.branchId],
-    );
+    const delRows = opts.userId
+      ? await internalQuery<{ id: string }>(
+          `DELETE FROM conversations WHERE id = $1 AND user_id = $2 RETURNING id`,
+          [opts.branchId, opts.userId],
+        )
+      : await internalQuery<{ id: string }>(
+          `DELETE FROM conversations WHERE id = $1 RETURNING id`,
+          [opts.branchId],
+        );
     if (delRows.length === 0) {
       log.warn({ rootId: opts.rootId, branchId: opts.branchId }, "Branch conversation not found during delete — removing from root state anyway");
     }

@@ -207,6 +207,8 @@ export interface UseNotebookOptions {
   deleteBranch?: (rootId: string, branchId: string) => Promise<void>;
   /** Rename a branch label. */
   renameBranch?: (rootId: string, branchId: string, label: string) => Promise<void>;
+  /** Called after a branch mutation (delete/rename) so the parent can refresh fork info. */
+  onForkInfoChanged?: (updatedForkInfo: ForkInfo) => void;
 }
 
 export type { DashboardCardEntry } from "./dashboard-bridge-context";
@@ -249,6 +251,7 @@ export function useNotebook({
   forkInfo: forkInfoProp,
   deleteBranch: deleteBranchFn,
   renameBranch: renameBranchFn,
+  onForkInfoChanged,
 }: UseNotebookOptions): UseNotebookReturn {
   const [input, setInput] = useState("");
   const [warning, setWarning] = useState<string | null>(null);
@@ -732,6 +735,12 @@ export function useNotebook({
         // If we're viewing the deleted branch, navigate to root
         if (forkInfoProp.currentId === branchId) {
           onNavigateToBranch?.(forkInfoProp.rootId);
+        } else {
+          // Update forkInfo optimistically so the UI reflects the removal
+          onForkInfoChanged?.({
+            ...forkInfoProp,
+            branches: forkInfoProp.branches.filter((b) => b.conversationId !== branchId),
+          });
         }
       } catch (err: unknown) {
         console.warn(
@@ -741,7 +750,7 @@ export function useNotebook({
         showWarning("Failed to delete branch. Please try again.");
       }
     },
-    [deleteBranchFn, forkInfoProp, onNavigateToBranch],
+    [deleteBranchFn, forkInfoProp, onNavigateToBranch, onForkInfoChanged],
   );
 
   const renameBranch = useCallback(
@@ -752,15 +761,23 @@ export function useNotebook({
       }
       try {
         await renameBranchFn(forkInfoProp.rootId, branchId, label);
+        // Update forkInfo optimistically so the UI reflects the new label
+        onForkInfoChanged?.({
+          ...forkInfoProp,
+          branches: forkInfoProp.branches.map((b) =>
+            b.conversationId === branchId ? { ...b, label } : b,
+          ),
+        });
       } catch (err: unknown) {
         console.warn(
           "Failed to rename branch:",
           err instanceof Error ? err.message : String(err),
         );
         showWarning("Failed to rename branch. Please try again.");
+        throw err; // Re-throw so callers (e.g. inline edit UI) can keep their state
       }
     },
-    [renameBranchFn, forkInfoProp],
+    [renameBranchFn, forkInfoProp, onForkInfoChanged],
   );
 
   /** Insert a new text cell. If afterCellId is provided, inserts after that cell; otherwise appends to the end. */

@@ -471,7 +471,7 @@ const deleteBranchRoute = createRoute({
 });
 
 const RenameBranchBodySchema = z.object({
-  label: z.string().min(1).max(200),
+  label: z.string().trim().min(1).max(200),
 });
 
 const renameBranchRoute = createRoute({

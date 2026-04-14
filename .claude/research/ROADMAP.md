@@ -1147,8 +1147,14 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 
 ### Phase 2 (sharing + polish)
 - [x] Report route — shareable notebook view (#1400, PR #1409)
-- [ ] Fork UX — "What if?" affordance + gutter indicators (#1401)
+- [x] Fork UX — "What if?" affordance + gutter indicators (#1401, PR #1419)
 - [x] Execution metadata — rerun comparison (#1402, PR #1411)
+- [x] Notebook guide docs update for all 1.1.0 features (#1414, PR #1415)
+
+### Follow-ups
+- [x] Extract shared `transformMessages` to `@useatlas/types/conversation` (#1393, PR #1417)
+- [x] Fix report-view test: `toolInvocationId` → `toolCallId` (#1416, #1418)
+- [x] Publish `@useatlas/types` 0.0.10 — conversation entrypoint
 
 ---
 

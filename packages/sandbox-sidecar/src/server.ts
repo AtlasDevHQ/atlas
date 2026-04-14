@@ -751,14 +751,18 @@ function handleHealth(): Response {
       // intentionally ignored: python3 availability check — absence is expected in some environments
     }
 
-    return Response.json({
+    const body = {
       status: bashAvailable ? "ok" : "degraded",
       semanticDir: SEMANTIC_DIR,
       fileCount: entries.length,
       bashAvailable,
       pythonAvailable,
       ...(!bashAvailable && { warning: "bash not found — explore commands will fail. Rebuild the sidecar image." }),
-    });
+    };
+
+    // Fail Railway healthcheck when bash is missing so the service doesn't
+    // appear healthy while every explore command errors with ENOENT.
+    return Response.json(body, { status: bashAvailable ? 200 : 503 });
   } catch (err) {
     const detail = err instanceof Error ? err.message : String(err);
     return Response.json(

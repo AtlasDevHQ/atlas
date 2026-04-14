@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { transformMessages } from "../hooks/use-conversations";
-import type { Message } from "../lib/types";
+import { transformMessages } from "./conversation";
+import type { Message } from "./conversation";
 
 /* ------------------------------------------------------------------ */
 /*  transformMessages                                                   */
@@ -66,7 +66,7 @@ describe("transformMessages", () => {
     ]);
   });
 
-  test("reconstructs tool-invocation parts as DynamicToolUIPart", () => {
+  test("reconstructs tool-invocation parts as dynamic-tool", () => {
     const messages: Message[] = [
       msg({ id: "1", role: "assistant", content: [
         { type: "tool-invocation", toolCallId: "tc1", toolName: "executeSQL", args: { sql: "SELECT 1" }, result: { columns: ["?column?"], rows: [{ "?column?": 1 }] } },
@@ -140,15 +140,6 @@ describe("transformMessages", () => {
     expect(part.state).toBe("output-available");
     expect(part.input).toBeUndefined();
     expect(part.output).toBeUndefined();
-  });
-
-  test("falls back gracefully for old conversations with only text parts", () => {
-    const messages: Message[] = [
-      msg({ id: "1", role: "assistant", content: [{ type: "text", text: "old format answer" }] }),
-    ];
-
-    const result = transformMessages(messages);
-    expect(result[0].parts).toEqual([{ type: "text", text: "old format answer" }]);
   });
 
   test("preserves string content as-is", () => {

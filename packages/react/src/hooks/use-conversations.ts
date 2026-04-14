@@ -2,8 +2,9 @@
 
 import { useState, useCallback, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import type { Conversation, ConversationWithMessages, Message } from "../lib/types";
+import type { Conversation, ConversationWithMessages } from "../lib/types";
 import type { UIMessage } from "@ai-sdk/react";
+import { transformMessages } from "@useatlas/types/conversation";
 
 export interface UseConversationsOptions {
   apiUrl: string;
@@ -29,39 +30,7 @@ export interface UseConversationsReturn {
   refresh: () => Promise<void>;
 }
 
-export function transformMessages(messages: Message[]): UIMessage[] {
-  return messages
-    .filter((m) => m.role === "user" || m.role === "assistant")
-    .map((m) => {
-      const parts: UIMessage["parts"] = Array.isArray(m.content)
-        ? (m.content as Record<string, unknown>[])
-            .filter((p) => p.type === "text" || p.type === "tool-invocation")
-            .map((p, idx) => {
-              if (p.type === "tool-invocation") {
-                const toolCallId = typeof p.toolCallId === "string" && p.toolCallId
-                  ? p.toolCallId
-                  : `unknown-${idx}`;
-                return {
-                  type: "dynamic-tool" as const,
-                  toolName: typeof p.toolName === "string" ? p.toolName : "unknown",
-                  toolCallId,
-                  toolInvocationId: toolCallId,
-                  state: "output-available" as const,
-                  input: p.args,
-                  output: p.result,
-                };
-              }
-              return { type: "text" as const, text: String(p.text ?? "") };
-            })
-        : [{ type: "text" as const, text: String(m.content) }];
-
-      return {
-        id: m.id,
-        role: m.role as "user" | "assistant",
-        parts,
-      };
-    });
-}
+export { transformMessages } from "@useatlas/types/conversation";
 
 interface ConversationListData {
   conversations: Conversation[];

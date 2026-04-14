@@ -28,6 +28,8 @@ import {
   updateNotebookState,
   forkConversation,
   convertToNotebook,
+  deleteBranch,
+  renameBranch,
   shareConversation,
   unshareConversation,
   getShareStatus,
@@ -410,6 +412,110 @@ const convertToNotebookRoute = createRoute({
     404: {
       description: "Conversation not found or not owned by user",
       content: { "application/json": { schema: ErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Branch management route definitions
+// ---------------------------------------------------------------------------
+
+const BranchParamsSchema = z.object({
+  id: z.string().openapi({ param: { name: "id", in: "path" }, example: "550e8400-e29b-41d4-a716-446655440000" }),
+  branchId: z.string().openapi({ param: { name: "branchId", in: "path" }, example: "660e8400-e29b-41d4-a716-446655440000" }),
+});
+
+const deleteBranchRoute = createRoute({
+  method: "delete",
+  path: "/{id}/branches/{branchId}",
+  tags: ["Conversations"],
+  summary: "Delete a branch",
+  description:
+    "Deletes a branch conversation and removes it from the root conversation's notebookState.branches array.",
+  request: {
+    params: BranchParamsSchema,
+  },
+  responses: {
+    204: {
+      description: "Branch deleted successfully",
+    },
+    400: {
+      description: "Invalid conversation or branch ID format",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — insufficient permissions",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Conversation or branch not found",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const RenameBranchBodySchema = z.object({
+  label: z.string().trim().min(1).max(200),
+});
+
+const renameBranchRoute = createRoute({
+  method: "patch",
+  path: "/{id}/branches/{branchId}",
+  tags: ["Conversations"],
+  summary: "Rename a branch",
+  description:
+    "Updates the label of a branch in the root conversation's notebookState.branches array.",
+  request: {
+    params: BranchParamsSchema,
+    body: {
+      content: { "application/json": { schema: RenameBranchBodySchema } },
+      required: true,
+    },
+  },
+  responses: {
+    200: {
+      description: "Branch renamed successfully",
+      content: {
+        "application/json": {
+          schema: z.object({ id: z.string(), label: z.string() }),
+        },
+      },
+    },
+    400: {
+      description: "Invalid request",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — insufficient permissions",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Conversation or branch not found",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
     },
     500: {
       description: "Internal server error",
@@ -850,6 +956,71 @@ conversations.openapi(convertToNotebookRoute, async (c) => {
 
     return c.json({ id: result.data.id, messageCount: result.data.messageCount }, 200);
   }), { label: "convert to notebook" });
+});
+
+// ---------------------------------------------------------------------------
+// DELETE /:id/branches/:branchId — delete a branch
+// ---------------------------------------------------------------------------
+
+conversations.openapi(deleteBranchRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    if (!hasInternalDB()) {
+      return c.json({ error: "not_available", message: "Conversation history is not available (no internal database configured)." }, 404);
+    }
+
+    const { requestId } = yield* RequestContext;
+    const { user } = yield* AuthContext;
+
+    const { id, branchId } = c.req.valid("param");
+    if (!UUID_RE.test(id) || !UUID_RE.test(branchId)) {
+      return c.json({ error: "invalid_request", message: "Invalid conversation or branch ID format." }, 400);
+    }
+
+    const result = yield* Effect.promise(() => deleteBranch({
+      rootId: id,
+      branchId,
+      userId: user?.id,
+    }));
+    if (!result.ok) {
+      const fail = crudFailResponse(result.reason, requestId);
+      return c.json(fail.body, fail.status);
+    }
+    return c.body(null, 204);
+  }), { label: "delete branch" });
+});
+
+// ---------------------------------------------------------------------------
+// PATCH /:id/branches/:branchId — rename a branch
+// ---------------------------------------------------------------------------
+
+conversations.openapi(renameBranchRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    if (!hasInternalDB()) {
+      return c.json({ error: "not_available", message: "Conversation history is not available (no internal database configured)." }, 404);
+    }
+
+    const { requestId } = yield* RequestContext;
+    const { user } = yield* AuthContext;
+
+    const { id, branchId } = c.req.valid("param");
+    if (!UUID_RE.test(id) || !UUID_RE.test(branchId)) {
+      return c.json({ error: "invalid_request", message: "Invalid conversation or branch ID format." }, 400);
+    }
+
+    const parsed = c.req.valid("json");
+
+    const result = yield* Effect.promise(() => renameBranch({
+      rootId: id,
+      branchId,
+      label: parsed.label,
+      userId: user?.id,
+    }));
+    if (!result.ok) {
+      const fail = crudFailResponse(result.reason, requestId);
+      return c.json(fail.body, fail.status);
+    }
+    return c.json({ id: branchId, label: parsed.label }, 200);
+  }), { label: "rename branch" });
 });
 
 // ---------------------------------------------------------------------------

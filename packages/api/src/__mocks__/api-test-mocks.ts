@@ -435,6 +435,12 @@ export function createApiTestMocks(
     convertToNotebook: mock(() =>
       Promise.resolve({ ok: false, reason: "not_found" }),
     ),
+    deleteBranch: mock(() =>
+      Promise.resolve({ ok: false, reason: "not_found" }),
+    ),
+    renameBranch: mock(() =>
+      Promise.resolve({ ok: false, reason: "not_found" }),
+    ),
   }));
 
   // ── Security ──────────────────────────────────────────────────

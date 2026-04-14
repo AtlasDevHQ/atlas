@@ -441,6 +441,111 @@ export async function forkConversation(opts: {
   }
 }
 
+/** Delete a branch conversation and remove it from the root's notebookState.branches array. */
+export async function deleteBranch(opts: {
+  rootId: string;
+  branchId: string;
+  userId?: string | null;
+}): Promise<CrudResult> {
+  if (!hasInternalDB()) return { ok: false, reason: "no_db" };
+  try {
+    // Read root conversation's notebook_state
+    const rootRows = opts.userId
+      ? await internalQuery<Record<string, unknown>>(
+          `SELECT id, notebook_state FROM conversations WHERE id = $1 AND user_id = $2`,
+          [opts.rootId, opts.userId],
+        )
+      : await internalQuery<Record<string, unknown>>(
+          `SELECT id, notebook_state FROM conversations WHERE id = $1`,
+          [opts.rootId],
+        );
+    if (rootRows.length === 0) return { ok: false, reason: "not_found" };
+
+    const state = (rootRows[0].notebook_state ?? {}) as NotebookStateWire;
+    const branches = state.branches ?? [];
+    const branchIndex = branches.findIndex((b) => b.conversationId === opts.branchId);
+    if (branchIndex === -1) return { ok: false, reason: "not_found" };
+
+    // Remove from branches array
+    const updatedBranches = branches.filter((b) => b.conversationId !== opts.branchId);
+    const updatedState: NotebookStateWire = {
+      ...state,
+      branches: updatedBranches.length > 0 ? updatedBranches : undefined,
+    };
+
+    // Delete the branch conversation (CASCADE deletes messages)
+    const delRows = opts.userId
+      ? await internalQuery<{ id: string }>(
+          `DELETE FROM conversations WHERE id = $1 AND user_id = $2 RETURNING id`,
+          [opts.branchId, opts.userId],
+        )
+      : await internalQuery<{ id: string }>(
+          `DELETE FROM conversations WHERE id = $1 RETURNING id`,
+          [opts.branchId],
+        );
+    if (delRows.length === 0) {
+      log.warn({ rootId: opts.rootId, branchId: opts.branchId }, "Branch conversation not found during delete — removing from root state anyway");
+    }
+
+    // Update root's notebook_state
+    await internalQuery(
+      `UPDATE conversations SET notebook_state = $1, updated_at = NOW()
+       WHERE id = $2`,
+      [JSON.stringify(updatedState), opts.rootId],
+    );
+
+    return { ok: true };
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err.message : String(err), rootId: opts.rootId, branchId: opts.branchId }, "deleteBranch failed");
+    return { ok: false, reason: "error" };
+  }
+}
+
+/** Rename a branch by updating its label in the root's notebookState.branches array. */
+export async function renameBranch(opts: {
+  rootId: string;
+  branchId: string;
+  label: string;
+  userId?: string | null;
+}): Promise<CrudResult> {
+  if (!hasInternalDB()) return { ok: false, reason: "no_db" };
+  try {
+    // Read root conversation's notebook_state
+    const rootRows = opts.userId
+      ? await internalQuery<Record<string, unknown>>(
+          `SELECT id, notebook_state FROM conversations WHERE id = $1 AND user_id = $2`,
+          [opts.rootId, opts.userId],
+        )
+      : await internalQuery<Record<string, unknown>>(
+          `SELECT id, notebook_state FROM conversations WHERE id = $1`,
+          [opts.rootId],
+        );
+    if (rootRows.length === 0) return { ok: false, reason: "not_found" };
+
+    const state = (rootRows[0].notebook_state ?? {}) as NotebookStateWire;
+    const branches = state.branches ?? [];
+    const branchIndex = branches.findIndex((b) => b.conversationId === opts.branchId);
+    if (branchIndex === -1) return { ok: false, reason: "not_found" };
+
+    // Update the label
+    const updatedBranches = branches.map((b) =>
+      b.conversationId === opts.branchId ? { ...b, label: opts.label } : b,
+    );
+    const updatedState: NotebookStateWire = { ...state, branches: updatedBranches };
+
+    await internalQuery(
+      `UPDATE conversations SET notebook_state = $1, updated_at = NOW()
+       WHERE id = $2`,
+      [JSON.stringify(updatedState), opts.rootId],
+    );
+
+    return { ok: true };
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err.message : String(err), rootId: opts.rootId, branchId: opts.branchId }, "renameBranch failed");
+    return { ok: false, reason: "error" };
+  }
+}
+
 /** Convert a chat conversation into a notebook by copying all messages to a new conversation with surface "notebook". */
 export async function convertToNotebook(opts: {
   sourceId: string;

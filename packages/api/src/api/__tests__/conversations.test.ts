@@ -79,6 +79,8 @@ mock.module("@atlas/api/lib/conversations", () => ({
   updateNotebookState: mock(() => Promise.resolve({ ok: true })),
   forkConversation: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
   convertToNotebook: mockConvertToNotebook,
+  deleteBranch: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
+  renameBranch: mock(() => Promise.resolve({ ok: false, reason: "not_found" })),
   // Type exports (no runtime value — needed so mock.module doesn't break re-exports)
 }));
 

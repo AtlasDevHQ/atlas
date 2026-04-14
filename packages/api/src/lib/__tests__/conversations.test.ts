@@ -19,6 +19,8 @@ import {
   getShareStatus,
   getSharedConversation,
   cleanupExpiredShares,
+  deleteBranch,
+  renameBranch,
 } from "../conversations";
 
 // ---------------------------------------------------------------------------
@@ -1044,6 +1046,141 @@ describe("conversations module", () => {
 
       const count = await cleanupExpiredShares();
       expect(count).toBe(-1);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // deleteBranch
+  // -------------------------------------------------------------------------
+
+  describe("deleteBranch()", () => {
+    it("returns no_db when DATABASE_URL is not set", async () => {
+      const result = await deleteBranch({ rootId: "r1", branchId: "b1" });
+      expect(result).toEqual({ ok: false, reason: "no_db" });
+    });
+
+    it("returns not_found when root conversation does not exist", async () => {
+      enableInternalDB();
+      setResults({ rows: [] });
+
+      const result = await deleteBranch({ rootId: "r1", branchId: "b1", userId: "u1" });
+      expect(result).toEqual({ ok: false, reason: "not_found" });
+    });
+
+    it("returns not_found when branch is not in root's branches array", async () => {
+      enableInternalDB();
+      setResults(
+        // Root conversation found, but no matching branch
+        { rows: [{ id: "r1", notebook_state: { version: 3, branches: [{ conversationId: "other", forkPointCellId: "c1", label: "Other", createdAt: "2026-01-01" }] } }] },
+      );
+
+      const result = await deleteBranch({ rootId: "r1", branchId: "b1" });
+      expect(result).toEqual({ ok: false, reason: "not_found" });
+    });
+
+    it("deletes branch conversation and updates root state", async () => {
+      enableInternalDB();
+      setResults(
+        // Root conversation with branch
+        { rows: [{ id: "r1", notebook_state: { version: 3, branches: [{ conversationId: "b1", forkPointCellId: "c1", label: "Branch 1", createdAt: "2026-01-01" }] } }] },
+        // DELETE branch conversation
+        { rows: [{ id: "b1" }] },
+        // UPDATE root notebook_state
+        { rows: [] },
+      );
+
+      const result = await deleteBranch({ rootId: "r1", branchId: "b1" });
+      expect(result).toEqual({ ok: true });
+      // Should have called DELETE on the branch conversation
+      expect(queryCalls[1].sql).toContain("DELETE FROM conversations");
+      expect(queryCalls[1].params).toEqual(["b1"]);
+      // Should have updated root's notebook_state with branches removed
+      expect(queryCalls[2].sql).toContain("UPDATE conversations SET notebook_state");
+      const updatedState = JSON.parse(queryCalls[2].params![0] as string);
+      expect(updatedState.branches).toBeUndefined();
+    });
+
+    it("removes only the target branch when multiple branches exist", async () => {
+      enableInternalDB();
+      const branches = [
+        { conversationId: "b1", forkPointCellId: "c1", label: "Branch 1", createdAt: "2026-01-01" },
+        { conversationId: "b2", forkPointCellId: "c2", label: "Branch 2", createdAt: "2026-01-02" },
+      ];
+      setResults(
+        { rows: [{ id: "r1", notebook_state: { version: 3, branches } }] },
+        { rows: [{ id: "b1" }] },
+        { rows: [] },
+      );
+
+      const result = await deleteBranch({ rootId: "r1", branchId: "b1" });
+      expect(result).toEqual({ ok: true });
+      const updatedState = JSON.parse(queryCalls[2].params![0] as string);
+      expect(updatedState.branches).toHaveLength(1);
+      expect(updatedState.branches[0].conversationId).toBe("b2");
+    });
+
+    it("returns error on DB failure", async () => {
+      enableInternalDB();
+      queryThrow = new Error("connection reset");
+
+      const result = await deleteBranch({ rootId: "r1", branchId: "b1" });
+      expect(result).toEqual({ ok: false, reason: "error" });
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // renameBranch
+  // -------------------------------------------------------------------------
+
+  describe("renameBranch()", () => {
+    it("returns no_db when DATABASE_URL is not set", async () => {
+      const result = await renameBranch({ rootId: "r1", branchId: "b1", label: "New name" });
+      expect(result).toEqual({ ok: false, reason: "no_db" });
+    });
+
+    it("returns not_found when root conversation does not exist", async () => {
+      enableInternalDB();
+      setResults({ rows: [] });
+
+      const result = await renameBranch({ rootId: "r1", branchId: "b1", label: "New name", userId: "u1" });
+      expect(result).toEqual({ ok: false, reason: "not_found" });
+    });
+
+    it("returns not_found when branch is not in root's branches array", async () => {
+      enableInternalDB();
+      setResults(
+        { rows: [{ id: "r1", notebook_state: { version: 3, branches: [] } }] },
+      );
+
+      const result = await renameBranch({ rootId: "r1", branchId: "b1", label: "New" });
+      expect(result).toEqual({ ok: false, reason: "not_found" });
+    });
+
+    it("updates the branch label in root's notebook_state", async () => {
+      enableInternalDB();
+      const branches = [
+        { conversationId: "b1", forkPointCellId: "c1", label: "Old name", createdAt: "2026-01-01" },
+        { conversationId: "b2", forkPointCellId: "c2", label: "Branch 2", createdAt: "2026-01-02" },
+      ];
+      setResults(
+        { rows: [{ id: "r1", notebook_state: { version: 3, branches } }] },
+        { rows: [] },
+      );
+
+      const result = await renameBranch({ rootId: "r1", branchId: "b1", label: "New name" });
+      expect(result).toEqual({ ok: true });
+      expect(queryCalls[1].sql).toContain("UPDATE conversations SET notebook_state");
+      const updatedState = JSON.parse(queryCalls[1].params![0] as string);
+      expect(updatedState.branches[0].label).toBe("New name");
+      expect(updatedState.branches[1].label).toBe("Branch 2");
+    });
+
+    it("returns error on DB failure", async () => {
+      enableInternalDB();
+      queryThrow = new Error("timeout");
+
+      const result = await renameBranch({ rootId: "r1", branchId: "b1", label: "New" });
+      expect(result).toEqual({ ok: false, reason: "error" });
     });
   });
 });

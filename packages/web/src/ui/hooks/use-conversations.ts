@@ -28,6 +28,8 @@ export interface UseConversationsReturn {
   saveNotebookState: (id: string, state: NotebookStateWire) => Promise<void>;
   forkConversation: (sourceId: string, forkPointMessageId: string, label?: string) => Promise<{ id: string; branches: ForkBranchWire[]; warning?: string }>;
   convertToNotebook: (sourceId: string) => Promise<{ id: string; messageCount: number }>;
+  deleteBranch: (rootId: string, branchId: string) => Promise<void>;
+  renameBranch: (rootId: string, branchId: string, label: string) => Promise<void>;
   deleteConversation: (id: string) => Promise<void>;
   starConversation: (id: string, starred: boolean) => Promise<void>;
   shareConversation: (id: string, opts?: { expiresIn?: ShareExpiryKey; shareMode?: ShareMode }) => Promise<{ token: string; url: string }>;
@@ -200,6 +202,21 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
     };
   }, [api]);
 
+  const deleteBranch = useCallback(async (
+    rootId: string,
+    branchId: string,
+  ): Promise<void> => {
+    await api.del(`/api/v1/conversations/${rootId}/branches/${branchId}`);
+  }, [api]);
+
+  const renameBranch = useCallback(async (
+    rootId: string,
+    branchId: string,
+    label: string,
+  ): Promise<void> => {
+    await api.patch(`/api/v1/conversations/${rootId}/branches/${branchId}`, { label });
+  }, [api]);
+
   const convertToNotebook = useCallback(async (
     sourceId: string,
   ): Promise<{ id: string; messageCount: number }> => {
@@ -231,6 +248,8 @@ export function useConversations(opts: UseConversationsOptions): UseConversation
     saveNotebookState,
     forkConversation,
     convertToNotebook,
+    deleteBranch,
+    renameBranch,
     deleteConversation,
     starConversation,
     shareConversation,

@@ -203,6 +203,12 @@ export interface UseNotebookOptions {
   onNavigateToBranch?: (conversationId: string) => void;
   /** Fork info from server state (branches, root, etc.). */
   forkInfo?: ForkInfo | null;
+  /** Delete a branch conversation. */
+  deleteBranch?: (rootId: string, branchId: string) => Promise<void>;
+  /** Rename a branch label. */
+  renameBranch?: (rootId: string, branchId: string, label: string) => Promise<void>;
+  /** Called after a branch mutation (delete/rename) so the parent can refresh fork info. */
+  onForkInfoChanged?: (updatedForkInfo: ForkInfo) => void;
 }
 
 export type { DashboardCardEntry } from "./dashboard-bridge-context";
@@ -222,6 +228,8 @@ export interface UseNotebookReturn {
   reorderCells: (orderedIds: string[]) => void;
   forkCell: (cellId: string) => Promise<void>;
   switchBranch: (conversationId: string) => void;
+  deleteBranch: (branchId: string) => Promise<void>;
+  renameBranch: (branchId: string, label: string) => Promise<void>;
   forkInfo: ForkInfo | null;
   input: string;
   setInput: (value: string) => void;
@@ -241,6 +249,9 @@ export function useNotebook({
   forkConversation: forkConversationFn,
   onNavigateToBranch,
   forkInfo: forkInfoProp,
+  deleteBranch: deleteBranchFn,
+  renameBranch: renameBranchFn,
+  onForkInfoChanged,
 }: UseNotebookOptions): UseNotebookReturn {
   const [input, setInput] = useState("");
   const [warning, setWarning] = useState<string | null>(null);
@@ -713,6 +724,62 @@ export function useNotebook({
     [onNavigateToBranch],
   );
 
+  const deleteBranch = useCallback(
+    async (branchId: string) => {
+      if (!deleteBranchFn || !forkInfoProp) {
+        showWarning("Branch deletion is not available.");
+        return;
+      }
+      try {
+        await deleteBranchFn(forkInfoProp.rootId, branchId);
+        // If we're viewing the deleted branch, navigate to root
+        if (forkInfoProp.currentId === branchId) {
+          onNavigateToBranch?.(forkInfoProp.rootId);
+        } else {
+          // Update forkInfo optimistically so the UI reflects the removal
+          onForkInfoChanged?.({
+            ...forkInfoProp,
+            branches: forkInfoProp.branches.filter((b) => b.conversationId !== branchId),
+          });
+        }
+      } catch (err: unknown) {
+        console.warn(
+          "Failed to delete branch:",
+          err instanceof Error ? err.message : String(err),
+        );
+        showWarning("Failed to delete branch. Please try again.");
+      }
+    },
+    [deleteBranchFn, forkInfoProp, onNavigateToBranch, onForkInfoChanged],
+  );
+
+  const renameBranch = useCallback(
+    async (branchId: string, label: string) => {
+      if (!renameBranchFn || !forkInfoProp) {
+        showWarning("Branch renaming is not available.");
+        return;
+      }
+      try {
+        await renameBranchFn(forkInfoProp.rootId, branchId, label);
+        // Update forkInfo optimistically so the UI reflects the new label
+        onForkInfoChanged?.({
+          ...forkInfoProp,
+          branches: forkInfoProp.branches.map((b) =>
+            b.conversationId === branchId ? { ...b, label } : b,
+          ),
+        });
+      } catch (err: unknown) {
+        console.warn(
+          "Failed to rename branch:",
+          err instanceof Error ? err.message : String(err),
+        );
+        showWarning("Failed to rename branch. Please try again.");
+        throw err; // Re-throw so callers (e.g. inline edit UI) can keep their state
+      }
+    },
+    [renameBranchFn, forkInfoProp, onForkInfoChanged],
+  );
+
   /** Insert a new text cell. If afterCellId is provided, inserts after that cell; otherwise appends to the end. */
   const insertTextCell = useCallback(
     (afterCellId?: string) => {
@@ -773,6 +840,8 @@ export function useNotebook({
     reorderCells,
     forkCell,
     switchBranch,
+    deleteBranch,
+    renameBranch,
     forkInfo: forkInfoProp ?? null,
     input,
     setInput,

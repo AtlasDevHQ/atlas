@@ -10,12 +10,16 @@ import { NotebookCellToolbar } from "./notebook-cell-toolbar";
 import { NotebookCellInput } from "./notebook-cell-input";
 import { NotebookCellOutput } from "./notebook-cell-output";
 import { DeleteCellDialog } from "./delete-cell-dialog";
+import { ForkGutterIndicator } from "./fork-gutter-indicator";
 import { extractTextContent } from "./use-notebook";
 import { DashboardBridgeProvider, type DashboardCardEntry } from "./dashboard-bridge-context";
+import type { ForkBranchWire } from "@/ui/lib/types";
 
 interface NotebookCellProps {
   cell: ResolvedCell;
   anyRunning: boolean;
+  /** Branches that originate from this cell's message. */
+  cellBranches: ForkBranchWire[];
   onRerun: (cellId: string, newQuestion: string) => void;
   onDelete: (cellId: string) => void;
   onToggleEdit: (cellId: string) => void;
@@ -28,7 +32,7 @@ interface NotebookCellProps {
 
 export const NotebookCell = forwardRef<HTMLElement, NotebookCellProps>(
   function NotebookCell(
-    { cell, anyRunning, onRerun, onDelete, onToggleEdit, onToggleCollapse, onCopy, onFork, dashboardCards, onDashboardCardAdded },
+    { cell, anyRunning, cellBranches, onRerun, onDelete, onToggleEdit, onToggleCollapse, onCopy, onFork, dashboardCards, onDashboardCardAdded },
     ref,
   ) {
     const [showDeleteDialog, setShowDeleteDialog] = useState(false);
@@ -49,10 +53,11 @@ export const NotebookCell = forwardRef<HTMLElement, NotebookCellProps>(
           aria-label={`Cell ${cell.number}`}
           tabIndex={0}
           className={cn(
-            "group rounded-lg border border-zinc-200 bg-white transition-shadow focus:outline-none focus:ring-2 focus:ring-ring dark:border-zinc-800 dark:bg-zinc-950",
+            "group relative rounded-lg border border-zinc-200 bg-white transition-shadow focus:outline-none focus:ring-2 focus:ring-ring dark:border-zinc-800 dark:bg-zinc-950",
             isRunning && "ring-2 ring-primary/50",
           )}
         >
+          <ForkGutterIndicator branches={cellBranches} />
           <div className="flex items-start gap-3 border-b border-zinc-100 px-4 py-3 dark:border-zinc-800/50">
             <SortableItemHandle asChild>
               <button
@@ -94,6 +99,7 @@ export const NotebookCell = forwardRef<HTMLElement, NotebookCellProps>(
                 status={cell.status}
                 editing={cell.editing}
                 disabled={anyRunning && !isRunning}
+                hasOutput={cell.assistantMessage !== null}
                 onEdit={() => onToggleEdit(cell.id)}
                 onRun={() => onRerun(cell.id, question)}
                 onCopy={() => onCopy(cell.id)}

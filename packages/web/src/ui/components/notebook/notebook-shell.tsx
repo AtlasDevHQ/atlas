@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useEffect, useState } from "react";
+import { useRef, useEffect, useState, useMemo } from "react";
 import { Plus, Download, FileText, Check } from "lucide-react";
 import type { UseNotebookReturn } from "./use-notebook";
 import { useKeyboardNav } from "./use-keyboard-nav";
@@ -11,6 +11,7 @@ import { NotebookInputBar } from "./notebook-input-bar";
 import { DeleteCellDialog } from "./delete-cell-dialog";
 import { ForkBranchSelector } from "./fork-branch-selector";
 import { exportToMarkdown, exportToHTML, downloadFile } from "./notebook-export";
+import type { ForkBranchWire } from "@/ui/lib/types";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { Button } from "@/components/ui/button";
 import {
@@ -40,6 +41,22 @@ export function NotebookShell({ notebook, focusCellId, onShareAsReport }: Notebo
   const [pendingDeleteIndex, setPendingDeleteIndex] = useState<number | null>(null);
   const [dismissedError, setDismissedError] = useState<Error | null>(null);
   const [shareState, setShareState] = useState<"idle" | "sharing" | "copied" | "error">("idle");
+
+  // Build a map from forkPointCellId (message ID) → branches for gutter indicators.
+  // Correctness: useMemo is needed here for a stable reference identity across renders.
+  const branchesByMessageId = useMemo(() => {
+    const map = new Map<string, ForkBranchWire[]>();
+    if (!notebook.forkInfo?.branches) return map;
+    for (const branch of notebook.forkInfo.branches) {
+      const existing = map.get(branch.forkPointCellId);
+      if (existing) {
+        existing.push(branch);
+      } else {
+        map.set(branch.forkPointCellId, [branch]);
+      }
+    }
+    return map;
+  }, [notebook.forkInfo?.branches]);
 
   const { setRef, focusCell } = useKeyboardNav({
     cellCount: notebook.cells.length,
@@ -108,6 +125,8 @@ export function NotebookShell({ notebook, focusCellId, onShareAsReport }: Notebo
             <ForkBranchSelector
               forkInfo={notebook.forkInfo}
               onSwitchBranch={notebook.switchBranch}
+              onDeleteBranch={notebook.deleteBranch}
+              onRenameBranch={notebook.renameBranch}
             />
           )}
 
@@ -269,6 +288,7 @@ export function NotebookShell({ notebook, focusCellId, onShareAsReport }: Notebo
                           ref={setRef(i)}
                           cell={cell}
                           anyRunning={anyRunning}
+                          cellBranches={branchesByMessageId.get(cell.messageId) ?? []}
                           onRerun={notebook.rerunCell}
                           onDelete={notebook.deleteCell}
                           onToggleEdit={notebook.toggleEdit}

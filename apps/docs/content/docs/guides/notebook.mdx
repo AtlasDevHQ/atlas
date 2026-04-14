@@ -11,10 +11,11 @@ The notebook view provides a cell-based interface for exploratory data analysis.
 
 ## Accessing the Notebook
 
-There are two ways to open the notebook view:
+There are three ways to open the notebook view:
 
 - **Direct URL** — Navigate to `/notebook` to start a fresh notebook session
-- **From the sidebar** — Click the notebook icon on any existing conversation to switch from chat view to notebook view
+- **From the sidebar** — Click any existing notebook conversation to open it in notebook view
+- **Convert from chat** — Click the notebook icon on a chat conversation to convert it (see [Converting from Chat](#converting-from-chat) below)
 
 The notebook displays the same conversation content as the chat view, reorganized into cells.
 
@@ -22,7 +23,7 @@ The notebook displays the same conversation content as the chat view, reorganize
 
 ## Converting from Chat
 
-You can convert any existing chat conversation into a notebook. In the sidebar, hover over a conversation and click the notebook icon (pen on notebook). Atlas creates a new notebook conversation by copying all messages from the original — the original chat is preserved unchanged.
+You can convert any existing chat conversation into a notebook. In the sidebar, click the notebook icon (pen on notebook) on a chat conversation. Atlas creates a new notebook conversation by copying all messages from the original — the original chat is preserved unchanged.
 
 After conversion, you're navigated to the new notebook where all prior agent steps appear as individual cells ready to edit, re-run, or annotate with text cells.
 
@@ -109,6 +110,10 @@ Cell numbers update to reflect the new display position. Keyboard navigation fol
 SQL result cells in the notebook include a **Dashboard** button in the action bar. Click it to add the query result — including its chart, if one was detected — to a dashboard. Once added, a green dashboard icon badge appears on the cell header to indicate it's been pinned.
 
 The dashboard bridge tracks which cells have been added and persists this mapping with the notebook state, so the badge survives page reloads.
+
+<Callout type="info">
+Dashboard card tracking is stored server-side only. Without an internal database (`DATABASE_URL`), badges will not persist across page reloads.
+</Callout>
 
 ---
 

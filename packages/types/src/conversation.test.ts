@@ -164,4 +164,70 @@ describe("transformMessages", () => {
     const result = transformMessages(messages);
     expect(result[0].parts).toEqual([{ type: "text", text: "hello world" }]);
   });
+
+  test("handles null content as empty text", () => {
+    const messages: Message[] = [
+      msg({ id: "1", role: "user", content: null }),
+    ];
+
+    const result = transformMessages(messages);
+    expect(result[0].parts).toEqual([{ type: "text", text: "" }]);
+  });
+
+  test("handles undefined content as empty text", () => {
+    const messages: Message[] = [
+      msg({ id: "1", role: "assistant", content: undefined }),
+    ];
+
+    const result = transformMessages(messages);
+    expect(result[0].parts).toEqual([{ type: "text", text: "" }]);
+  });
+
+  test("handles object content as empty text", () => {
+    const messages: Message[] = [
+      msg({ id: "1", role: "assistant", content: { unexpected: true } }),
+    ];
+
+    const result = transformMessages(messages);
+    expect(result[0].parts).toEqual([{ type: "text", text: "" }]);
+  });
+
+  test("empty-string toolCallId triggers fallback", () => {
+    const messages: Message[] = [
+      msg({ id: "1", role: "assistant", content: [
+        { type: "tool-invocation", toolCallId: "", toolName: "foo", args: {}, result: {} },
+      ] }),
+    ];
+
+    const result = transformMessages(messages);
+    const part = result[0].parts[0] as unknown as Record<string, unknown>;
+    expect(part.toolCallId).toBe("unknown-0");
+    expect(part.toolInvocationId).toBe("unknown-0");
+  });
+
+  test("content array with all unknown types produces empty parts", () => {
+    const messages: Message[] = [
+      msg({ id: "1", role: "assistant", content: [
+        { type: "image", url: "https://example.com/img.png" },
+        { type: "reasoning", text: "thinking..." },
+      ] }),
+    ];
+
+    const result = transformMessages(messages);
+    expect(result[0].parts).toEqual([]);
+  });
+
+  test("skips null and primitive elements in content array", () => {
+    const messages: Message[] = [
+      msg({ id: "1", role: "assistant", content: [
+        null,
+        42,
+        "raw string",
+        { type: "text", text: "valid" },
+      ] }),
+    ];
+
+    const result = transformMessages(messages);
+    expect(result[0].parts).toEqual([{ type: "text", text: "valid" }]);
+  });
 });

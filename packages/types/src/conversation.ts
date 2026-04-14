@@ -69,6 +69,7 @@ export interface TransformedToolPart {
   readonly type: "dynamic-tool";
   readonly toolName: string;
   readonly toolCallId: string;
+  /** Legacy bridge — always equal to `toolCallId`. Some UI components read this field. */
   readonly toolInvocationId: string;
   readonly state: "output-available";
   readonly input: unknown;
@@ -84,6 +85,16 @@ export interface TransformedMessage {
   readonly parts: TransformedPart[];
 }
 
+/** Type predicate that narrows Message to user/assistant roles. */
+function isRenderable(m: Message): m is Message & { role: "user" | "assistant" } {
+  return m.role === "user" || m.role === "assistant";
+}
+
+/** Type guard for valid content part objects (filters out null, primitives, nested arrays). */
+function isContentPart(v: unknown): v is Record<string, unknown> {
+  return v != null && typeof v === "object" && !Array.isArray(v);
+}
+
 /**
  * Converts persisted `Message[]` into a UI-ready array.
  *
@@ -92,37 +103,34 @@ export interface TransformedMessage {
  * `UIMessage` from `@ai-sdk/react`.
  */
 export function transformMessages(messages: Message[]): TransformedMessage[] {
-  return messages
-    .filter((m) => m.role === "user" || m.role === "assistant")
-    .map((m) => {
-      const parts: TransformedPart[] = Array.isArray(m.content)
-        ? (m.content as Record<string, unknown>[])
-            .filter((p) => p.type === "text" || p.type === "tool-invocation")
-            .map((p, idx) => {
-              if (p.type === "tool-invocation") {
-                const toolCallId =
-                  typeof p.toolCallId === "string" && p.toolCallId
-                    ? p.toolCallId
-                    : `unknown-${idx}`;
-                return {
-                  type: "dynamic-tool" as const,
-                  toolName:
-                    typeof p.toolName === "string" ? p.toolName : "unknown",
-                  toolCallId,
-                  toolInvocationId: toolCallId,
-                  state: "output-available" as const,
-                  input: p.args,
-                  output: p.result,
-                };
-              }
-              return { type: "text" as const, text: String(p.text ?? "") };
-            })
-        : [{ type: "text" as const, text: String(m.content) }];
+  return messages.filter(isRenderable).map((m) => {
+    const parts: TransformedPart[] = Array.isArray(m.content)
+      ? (m.content as unknown[])
+          .filter(isContentPart)
+          .filter((p) => p.type === "text" || p.type === "tool-invocation")
+          .map((p, idx) => {
+            if (p.type === "tool-invocation") {
+              const toolCallId =
+                typeof p.toolCallId === "string" && p.toolCallId
+                  ? (p.toolCallId as string)
+                  : `unknown-${idx}`;
+              return {
+                type: "dynamic-tool" as const,
+                toolName:
+                  typeof p.toolName === "string" ? p.toolName : "unknown",
+                toolCallId,
+                toolInvocationId: toolCallId,
+                state: "output-available" as const,
+                input: p.args,
+                output: p.result,
+              };
+            }
+            return { type: "text" as const, text: String(p.text ?? "") };
+          })
+      : typeof m.content === "string"
+        ? [{ type: "text" as const, text: m.content }]
+        : [{ type: "text" as const, text: "" }];
 
-      return {
-        id: m.id,
-        role: m.role as "user" | "assistant",
-        parts,
-      };
-    });
+    return { id: m.id, role: m.role, parts };
+  });
 }

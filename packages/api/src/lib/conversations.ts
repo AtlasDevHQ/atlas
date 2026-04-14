@@ -20,6 +20,16 @@ import {
 const log = createLogger("conversations");
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Convert a DB timestamp value (Date or string) to ISO 8601 for use in SQL parameters. */
+function toISOTimestamp(value: unknown): string {
+  if (value instanceof Date) return value.toISOString();
+  return String(value);
+}
+
+// ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
@@ -379,7 +389,7 @@ export async function forkConversation(opts: {
     );
     if (forkMsg.length === 0) return { ok: false, reason: "not_found" };
 
-    const forkTimestamp = String(forkMsg[0].created_at);
+    const forkTimestamp = toISOTimestamp(forkMsg[0].created_at);
 
     // Check if the next message after the fork point is an assistant response
     const nextMsg = await internalQuery<Record<string, unknown>>(
@@ -392,7 +402,7 @@ export async function forkConversation(opts: {
     // Include the assistant response if it follows the fork point
     const includeNext = nextMsg.length > 0 && (nextMsg[0].role as string) === "assistant";
     const cutoffTimestamp = includeNext
-      ? String(nextMsg[0].created_at)
+      ? toISOTimestamp(nextMsg[0].created_at)
       : forkTimestamp;
 
     // Create new conversation

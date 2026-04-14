@@ -20,6 +20,18 @@ The notebook displays the same conversation content as the chat view, reorganize
 
 ---
 
+## Converting from Chat
+
+You can convert any existing chat conversation into a notebook. In the sidebar, hover over a conversation and click the notebook icon (pen on notebook). Atlas creates a new notebook conversation by copying all messages from the original — the original chat is preserved unchanged.
+
+After conversion, you're navigated to the new notebook where all prior agent steps appear as individual cells ready to edit, re-run, or annotate with text cells.
+
+<Callout type="info">
+Converting requires server-side persistence (an internal database). The convert button only appears on chat conversations — conversations already in notebook mode don't show it.
+</Callout>
+
+---
+
 ## Cell Types
 
 ### Query Cells
@@ -62,6 +74,10 @@ Each query cell supports the following actions:
 
 Text cells support **Edit**, **Delete**, and **Drag to reorder**.
 
+### Execution Metadata
+
+SQL result cells display execution timing and row counts in the card header — for example, `42 rows · 1.2s`. Cached queries show `cached` instead of the timing. If a query returns more rows than the configured limit, a `+` suffix indicates truncation (e.g., `1000 rows+`).
+
 ---
 
 ## Re-running Cells
@@ -74,6 +90,10 @@ You can edit a cell's question and click **Run** to re-execute from that point. 
 
 Text cells are not affected by re-running — they are independent annotations.
 
+### Rerun Comparison
+
+When you re-run a SQL cell, the result card shows a comparison with the previous execution. The previous timing and row count appear in parentheses next to the current metadata — for example, `35 rows · 0.8s (was 42 rows · 1.2s)`. The previous row count is only shown when it differs from the current result. This comparison automatically disappears after 30 seconds.
+
 ---
 
 ## Reordering Cells
@@ -81,6 +101,14 @@ Text cells are not affected by re-running — they are independent annotations.
 Drag cells to rearrange them in any order using the grip handle on the left side of each cell. Both query cells and text cells can be reordered freely. The display order is independent of execution order — reordering cells does not change the underlying conversation history.
 
 Cell numbers update to reflect the new display position. Keyboard navigation follows display order after reordering.
+
+---
+
+## Dashboard Bridge
+
+SQL result cells in the notebook include a **Dashboard** button in the action bar. Click it to add the query result — including its chart, if one was detected — to a dashboard. Once added, a green dashboard icon badge appears on the cell header to indicate it's been pinned.
+
+The dashboard bridge tracks which cells have been added and persists this mapping with the notebook state, so the badge survives page reloads.
 
 ---
 
@@ -115,6 +143,25 @@ Generates a `.md` file with:
 ### HTML Export
 
 Generates a self-contained `.html` file with inline CSS styling. The file can be opened in any browser and shared without dependencies. Query results are rendered as styled HTML tables, and code blocks are formatted with monospace styling.
+
+---
+
+## Reports
+
+Share a notebook as a read-only report by creating a share link. The report is available at `/report/{token}` and renders the notebook in a clean, print-friendly layout — no sidebar, no editing controls, just numbered cells with their results.
+
+Reports include:
+
+- **Query cells** — cell number, the user's question as a heading, followed by the agent's response text, tool outputs (SQL results, charts), and explore output
+- **Text cells** — rendered as formatted markdown between query cells, in the same order as the notebook
+- **Collapsed cells** — shown as a single-line summary with the question text and a "collapsed" indicator
+- **Print / PDF** — a "Save as PDF" button uses the browser's print dialog. Print-optimized CSS hides navigation, forces light mode, and prevents page breaks inside cells
+
+Reports use the same sharing mechanism as chat conversations — you control expiry duration and visibility (public or organization-only) through the share dialog.
+
+<Callout type="info">
+Text cell positions in the report require a saved cell order. If a notebook has text cells but no explicit cell ordering saved, text cells are omitted from the report.
+</Callout>
 
 ---
 

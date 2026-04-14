@@ -44,7 +44,7 @@ describe("toUIMessage", () => {
     const part = result.parts[0] as Record<string, unknown>;
     expect(part.type).toBe("tool-invocation");
     expect(part.toolName).toBe("executeSQL");
-    expect(part.toolInvocationId).toBe("tc-1");
+    expect(part.toolCallId).toBe("tc-1");
     expect(part.state).toBe("output-available");
   });
 
@@ -56,7 +56,7 @@ describe("toUIMessage", () => {
     };
     const result = toUIMessage(msg, "msg-4");
     const part = result.parts[0] as Record<string, unknown>;
-    expect(part.toolInvocationId).toBe("tool-msg-4-0");
+    expect(part.toolCallId).toBe("tool-msg-4-0");
   });
 
   test("filters out unrecognized part types", () => {

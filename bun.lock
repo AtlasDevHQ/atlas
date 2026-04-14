@@ -225,7 +225,7 @@
       "dependencies": {
         "@radix-ui/react-slot": "^1.2.4",
         "@tanstack/react-query": "^5.96.2",
-        "@useatlas/types": "^0.0.9",
+        "@useatlas/types": "^0.0.10",
         "class-variance-authority": "^0.7.1",
         "clsx": "^2.1.1",
         "radix-ui": "^1.4.3",
@@ -283,7 +283,7 @@
       "name": "@useatlas/sdk",
       "version": "0.0.9",
       "dependencies": {
-        "@useatlas/types": "^0.0.9",
+        "@useatlas/types": "^0.0.10",
       },
     },
     "packages/types": {
@@ -4174,10 +4174,6 @@
     "@typescript-eslint/eslint-plugin/ignore": ["ignore@7.0.5", "", {}, "sha512-Hs59xBNfUIunMFgWAbGX5cq6893IbWg4KnrjbYwX3tx0ztorVgTDA6B2sxf8ejHJ4wz8BqGUMYlnzNBer5NvGg=="],
 
     "@typespec/ts-http-runtime/https-proxy-agent": ["https-proxy-agent@7.0.6", "", { "dependencies": { "agent-base": "^7.1.2", "debug": "4" } }, "sha512-vK9P5/iUfdl95AI+JVyUuIcVtd4ofvtrOr3HNtM2yxC9bnMbEdp3x01OhQNnjb8IJYi38VlTE3mBXwcfvywuSw=="],
-
-    "@useatlas/react/@useatlas/types": ["@useatlas/types@0.0.9", "", {}, "sha512-tSpignfUNZm5+krc2MzIug0OnwqUD80h5py7UcXSsI3ZyCLhoFfCeqxrMdyEJ81pJwags5dAHUwTFLtW9UU0EA=="],
-
-    "@useatlas/sdk/@useatlas/types": ["@useatlas/types@0.0.9", "", {}, "sha512-tSpignfUNZm5+krc2MzIug0OnwqUD80h5py7UcXSsI3ZyCLhoFfCeqxrMdyEJ81pJwags5dAHUwTFLtW9UU0EA=="],
 
     "@vercel/sandbox/zod": ["zod@3.24.4", "", {}, "sha512-OdqJE9UDRPwWsrHjLN2F8bPxvwJBK22EHLWtanu0LSYr5YqzsaaW3RMgmjwr8Rypg5k+meEJdSPXJZXE/yqOMg=="],
 

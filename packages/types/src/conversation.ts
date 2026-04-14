@@ -53,3 +53,84 @@ export interface Message {
 export interface ConversationWithMessages extends Conversation {
   messages: Message[];
 }
+
+// ---------------------------------------------------------------------------
+// transformMessages — converts persisted Message[] to UI-ready format
+// ---------------------------------------------------------------------------
+
+/** A text part in a transformed message. */
+export interface TransformedTextPart {
+  readonly type: "text";
+  readonly text: string;
+}
+
+/** A tool invocation part in a transformed message. */
+export interface TransformedToolPart {
+  readonly type: "dynamic-tool";
+  readonly toolName: string;
+  readonly toolCallId: string;
+  /** Legacy bridge — always equal to `toolCallId`. Some UI components read this field. */
+  readonly toolInvocationId: string;
+  readonly state: "output-available";
+  readonly input: unknown;
+  readonly output: unknown;
+}
+
+export type TransformedPart = TransformedTextPart | TransformedToolPart;
+
+/** A UI-ready message produced by `transformMessages`. Structurally compatible with `UIMessage`. */
+export interface TransformedMessage {
+  readonly id: string;
+  readonly role: "user" | "assistant";
+  readonly parts: TransformedPart[];
+}
+
+/** Type predicate that narrows Message to user/assistant roles. */
+function isRenderable(m: Message): m is Message & { role: "user" | "assistant" } {
+  return m.role === "user" || m.role === "assistant";
+}
+
+/** Type guard for valid content part objects (filters out null, primitives, nested arrays). */
+function isContentPart(v: unknown): v is Record<string, unknown> {
+  return v != null && typeof v === "object" && !Array.isArray(v);
+}
+
+/**
+ * Converts persisted `Message[]` into a UI-ready array.
+ *
+ * Filters to user/assistant messages, maps content parts to text and
+ * dynamic-tool parts. The return type is structurally compatible with
+ * `UIMessage` from `@ai-sdk/react`.
+ */
+export function transformMessages(messages: Message[]): TransformedMessage[] {
+  return messages.filter(isRenderable).map((m) => {
+    const parts: TransformedPart[] = Array.isArray(m.content)
+      ? (m.content as unknown[])
+          .filter(isContentPart)
+          .filter((p) => p.type === "text" || p.type === "tool-invocation")
+          .map((p, idx) => {
+            if (p.type === "tool-invocation") {
+              const toolCallId =
+                typeof p.toolCallId === "string" && p.toolCallId
+                  ? (p.toolCallId as string)
+                  : `unknown-${idx}`;
+              return {
+                type: "dynamic-tool" as const,
+                toolName:
+                  typeof p.toolName === "string" ? p.toolName : "unknown",
+                toolCallId,
+                toolInvocationId: toolCallId,
+                state: "output-available" as const,
+                input: p.args,
+                output: p.result,
+              };
+            }
+            return { type: "text" as const, text: String(p.text ?? "") };
+          })
+      : typeof m.content === "string"
+        ? [{ type: "text" as const, text: m.content }]
+        : [{ type: "text" as const, text: "" }];
+
+    return { id: m.id, role: m.role, parts };
+  });
+}

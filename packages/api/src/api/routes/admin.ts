@@ -14,7 +14,7 @@ import { validationHook } from "./validation-hook";
 import type { Context } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { createLogger, withRequestContext, getRequestContext } from "@atlas/api/lib/logger";
-import { withRequestId } from "./middleware";
+import { withRequestId, resolveMode } from "./middleware";
 import type { AuthResult } from "@atlas/api/lib/auth/types";
 import { authenticateRequest } from "@atlas/api/lib/auth/middleware";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
@@ -99,8 +99,15 @@ const getAtlasMode = (c: { get(key: string): unknown }): import("@useatlas/types
  * Run admin auth preamble and bind user identity into AsyncLocalStorage.
  * Returns { authResult, requestId } for the handler to use.
  * Throws HTTPException on auth failure.
+ *
+ * Also resolves the effective atlas mode and stores it on the Hono context
+ * (`c.set("atlasMode", ...)`). admin.ts uses the `withRequestId` middleware
+ * — not `adminAuth` — so the mode is resolved lazily here once the auth
+ * result is known.
  */
-async function adminAuthAndContext(c: { req: { raw: Request }; get(key: string): unknown }): Promise<{ authResult: AuthResult & { authenticated: true }; requestId: string }> {
+async function adminAuthAndContext(
+  c: { req: { raw: Request }; get(key: string): unknown; set?: (key: string, value: unknown) => void },
+): Promise<{ authResult: AuthResult & { authenticated: true }; requestId: string }> {
   const requestId = reqId(c);
   const preamble = await adminAuthPreamble(c.req.raw, requestId);
   requireAdminAuth(preamble);
@@ -113,6 +120,16 @@ async function adminAuthAndContext(c: { req: { raw: Request }; get(key: string):
   if (ctx) {
     (ctx as unknown as Record<string, unknown>).user = authResult.user;
   }
+
+  // Resolve and publish atlas mode for downstream handlers. getAtlasMode(c)
+  // reads from c.get("atlasMode") — populate it once per request.
+  if (typeof c.set === "function") {
+    const cookieHeader = c.req.raw.headers.get("cookie");
+    const xAtlasModeHeader = c.req.raw.headers.get("x-atlas-mode");
+    const mode = resolveMode(cookieHeader, xAtlasModeHeader, authResult);
+    c.set("atlasMode", mode);
+  }
+
   return { authResult, requestId };
 }
 

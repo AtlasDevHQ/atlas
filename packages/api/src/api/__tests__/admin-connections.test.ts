@@ -490,12 +490,16 @@ describe("admin connections — org scoping", () => {
       const body = (await res.json()) as any;
       expect(body.success).toBe(true);
 
-      // Verify DELETE includes org_id filter (composite PK scoping)
-      const deleteCall = mocks.mockInternalQuery.mock.calls.find(
-        ([sql]) => typeof sql === "string" && sql.includes("DELETE") && sql.includes("connections"),
+      // Delete is implemented as an archive UPDATE (#1428) — verify it
+      // includes the org_id filter (composite PK scoping)
+      const archiveCall = mocks.mockInternalQuery.mock.calls.find(
+        ([sql]) =>
+          typeof sql === "string" &&
+          sql.includes("UPDATE connections") &&
+          sql.includes("archived"),
       );
-      expect(deleteCall).toBeDefined();
-      expect(deleteCall![0]).toContain("org_id");
+      expect(archiveCall).toBeDefined();
+      expect(archiveCall![0]).toContain("org_id");
     });
   });
 
@@ -629,6 +633,149 @@ describe("admin connections — org scoping", () => {
       expect(call![0]).not.toContain("status = 'published'");
       // Archived rows are always excluded — never appears in either mode
       expect(call![0]).not.toContain("archived");
+    });
+  });
+
+  // ─── Write-path mode-awareness (#1428) ────────────────────────────────
+
+  describe("POST /connections — mode-aware create", () => {
+    beforeEach(() => {
+      setOrgAdmin("org-alpha");
+    });
+
+    it("published mode inserts status='published'", async () => {
+      mocks.mockInternalQuery.mockResolvedValue([]);
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/connections", "POST", {
+          id: "analytics",
+          url: "postgresql://user:pass@host/db",
+        }),
+      );
+      expect(res.status).toBe(201);
+      const insertCall = mocks.mockInternalQuery.mock.calls.find(
+        ([sql]) => typeof sql === "string" && sql.includes("INSERT INTO connections"),
+      );
+      expect(insertCall).toBeDefined();
+      const [sql, params] = insertCall!;
+      expect(sql).toContain("status");
+      expect((params as unknown[])[(params as unknown[]).length - 1]).toBe("published");
+    });
+
+    it("developer mode inserts status='draft'", async () => {
+      mocks.mockInternalQuery.mockResolvedValue([]);
+      const res = await app.fetch(
+        adminRequest(
+          "/api/v1/admin/connections",
+          "POST",
+          { id: "analytics", url: "postgresql://user:pass@host/db" },
+          "atlas-mode=developer",
+        ),
+      );
+      expect(res.status).toBe(201);
+      const insertCall = mocks.mockInternalQuery.mock.calls.find(
+        ([sql]) => typeof sql === "string" && sql.includes("INSERT INTO connections"),
+      );
+      expect(insertCall).toBeDefined();
+      const [sql, params] = insertCall!;
+      expect(sql).toContain("status");
+      // status is the last parameter — verify it's 'draft'
+      expect((params as unknown[])[(params as unknown[]).length - 1]).toBe("draft");
+    });
+  });
+
+  describe("PUT /connections/__demo__ — demo gating", () => {
+    it("rejects demo writes in published mode with 403 and descriptive message", async () => {
+      setOrgAdmin("org-alpha");
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/connections/__demo__", "PUT", { description: "tampered" }),
+      );
+      expect(res.status).toBe(403);
+      const body = (await res.json()) as Record<string, unknown>;
+      expect(body.error).toBe("demo_readonly");
+      expect(String(body.message)).toMatch(/developer mode/i);
+    });
+
+    it("allows demo writes in developer mode (hits the DB select)", async () => {
+      setOrgAdmin("org-alpha");
+      // The select returns empty — we only care that the demo gate doesn't fire first
+      mocks.mockInternalQuery.mockResolvedValue([]);
+      const res = await app.fetch(
+        adminRequest(
+          "/api/v1/admin/connections/__demo__",
+          "PUT",
+          { description: "editing demo in dev" },
+          "atlas-mode=developer",
+        ),
+      );
+      // Returns 404 because we haven't seeded the row in the mock, but the demo
+      // gate didn't fire — that's what we're verifying
+      expect(res.status).toBe(404);
+    });
+  });
+
+  describe("DELETE /connections — mode-aware archive", () => {
+    it("archives (status='archived') instead of hard delete", async () => {
+      setOrgAdmin("org-alpha");
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
+        if (sql.includes("SELECT") && sql.includes("connections")) {
+          return Promise.resolve([{ id: "warehouse" }]);
+        }
+        return Promise.resolve([{ count: "0" }]);
+      });
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/connections/warehouse", "DELETE"),
+      );
+      expect(res.status).toBe(200);
+      const archiveCall = mocks.mockInternalQuery.mock.calls.find(
+        ([sql]) =>
+          typeof sql === "string" &&
+          sql.includes("UPDATE connections") &&
+          sql.includes("status") &&
+          sql.includes("archived"),
+      );
+      expect(archiveCall).toBeDefined();
+      const hardDelete = mocks.mockInternalQuery.mock.calls.find(
+        ([sql]) =>
+          typeof sql === "string" &&
+          sql.includes("DELETE FROM connections WHERE id"),
+      );
+      expect(hardDelete).toBeUndefined();
+    });
+
+    it("rejects DELETE on __demo__ in published mode with 403", async () => {
+      setOrgAdmin("org-alpha");
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/connections/__demo__", "DELETE"),
+      );
+      expect(res.status).toBe(403);
+      const body = (await res.json()) as Record<string, unknown>;
+      expect(body.error).toBe("demo_readonly");
+    });
+
+    it("allows DELETE on __demo__ in developer mode (archives instead of hard delete)", async () => {
+      setOrgAdmin("org-alpha");
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
+        if (sql.includes("SELECT") && sql.includes("connections")) {
+          return Promise.resolve([{ id: "__demo__" }]);
+        }
+        return Promise.resolve([{ count: "0" }]);
+      });
+      const res = await app.fetch(
+        adminRequest(
+          "/api/v1/admin/connections/__demo__",
+          "DELETE",
+          undefined,
+          "atlas-mode=developer",
+        ),
+      );
+      expect(res.status).toBe(200);
+      const archiveCall = mocks.mockInternalQuery.mock.calls.find(
+        ([sql]) =>
+          typeof sql === "string" &&
+          sql.includes("UPDATE connections") &&
+          sql.includes("archived"),
+      );
+      expect(archiveCall).toBeDefined();
     });
   });
 });

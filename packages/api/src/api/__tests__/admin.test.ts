@@ -270,6 +270,9 @@ const mockListEntitiesAdmin: Mock<(orgId: string, type?: string) => Promise<unkn
 const mockGetEntityAdmin: Mock<(orgId: string, type: string, name: string) => Promise<unknown>> = mock(() => Promise.resolve(null));
 const mockUpsertEntityAdmin: Mock<(...args: unknown[]) => Promise<void>> = mock(() => Promise.resolve());
 const mockDeleteEntityAdmin: Mock<(orgId: string, type: string, name: string) => Promise<boolean>> = mock(() => Promise.resolve(false));
+const mockUpsertDraftEntityAdmin: Mock<(...args: unknown[]) => Promise<void>> = mock(() => Promise.resolve());
+const mockUpsertTombstoneAdmin: Mock<(...args: unknown[]) => Promise<void>> = mock(() => Promise.resolve());
+const mockDeleteDraftEntityAdmin: Mock<(...args: unknown[]) => Promise<boolean>> = mock(() => Promise.resolve(true));
 const mockCreateVersion: Mock<(...args: unknown[]) => Promise<string>> = mock(() => Promise.resolve("version-1"));
 const mockListVersions: Mock<(...args: unknown[]) => Promise<{ versions: unknown[]; total: number }>> = mock(() => Promise.resolve({ versions: [], total: 0 }));
 const mockGetVersion: Mock<(...args: unknown[]) => Promise<unknown>> = mock(() => Promise.resolve(null));
@@ -280,6 +283,9 @@ mock.module("@atlas/api/lib/semantic/entities", () => ({
   getEntity: mockGetEntityAdmin,
   upsertEntity: mockUpsertEntityAdmin,
   deleteEntity: mockDeleteEntityAdmin,
+  upsertDraftEntity: mockUpsertDraftEntityAdmin,
+  upsertTombstone: mockUpsertTombstoneAdmin,
+  deleteDraftEntity: mockDeleteDraftEntityAdmin,
   countEntities: mock(() => Promise.resolve(0)),
   bulkUpsertEntities: mock(() => Promise.resolve(0)),
   createVersion: mockCreateVersion,
@@ -2456,6 +2462,162 @@ describe("PUT /api/v1/admin/semantic/entities/edit/:name — version creation", 
     // Save still succeeds
     expect(res.status).toBe(200);
     expect(mockUpsertEntityAdmin).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Semantic entity write-path mode awareness (#1428)
+// ---------------------------------------------------------------------------
+
+describe("PUT /api/v1/admin/semantic/entities/edit/:name — mode-aware writes (#1428)", () => {
+  beforeEach(() => {
+    mockHasInternalDB = true;
+    mockUpsertEntityAdmin.mockReset();
+    mockUpsertEntityAdmin.mockResolvedValue(undefined);
+    mockUpsertDraftEntityAdmin.mockReset();
+    mockUpsertDraftEntityAdmin.mockResolvedValue(undefined);
+    mockGetEntityAdmin.mockReset();
+    mockSyncEntityToDisk.mockReset();
+    mockSyncEntityToDisk.mockResolvedValue(undefined);
+  });
+
+  it("published mode upserts the published row (calls upsertEntity)", async () => {
+    setOrgAdmin("org-1");
+    mockGetEntityAdmin.mockResolvedValue(null);
+    const res = await app.fetch(
+      adminRequest("/api/v1/admin/semantic/entities/edit/users", "PUT", {
+        table: "users",
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(mockUpsertEntityAdmin).toHaveBeenCalledTimes(1);
+    expect(mockUpsertDraftEntityAdmin).not.toHaveBeenCalled();
+  });
+
+  it("developer mode creates a draft for a new entity (calls upsertDraftEntity)", async () => {
+    setOrgAdmin("org-1");
+    mockGetEntityAdmin.mockResolvedValue(null);
+    const req = new Request("http://localhost/api/v1/admin/semantic/entities/edit/users", {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer test-key",
+        "Content-Type": "application/json",
+        Cookie: "atlas-mode=developer",
+      },
+      body: JSON.stringify({ table: "users" }),
+    });
+    const res = await app.fetch(req);
+    expect(res.status).toBe(200);
+    expect(mockUpsertDraftEntityAdmin).toHaveBeenCalledTimes(1);
+    expect(mockUpsertEntityAdmin).not.toHaveBeenCalled();
+  });
+
+  it("developer mode — editing a published entity inserts a draft copy (published untouched)", async () => {
+    setOrgAdmin("org-1");
+    // There's already a published row with the same name
+    mockGetEntityAdmin.mockResolvedValue({
+      id: "e-published", org_id: "org-1", entity_type: "entity", name: "users",
+      yaml_content: "table: users\n", connection_id: null, status: "published",
+      created_at: "2026-04-01T10:00:00Z", updated_at: "2026-04-01T10:00:00Z",
+    });
+    const req = new Request("http://localhost/api/v1/admin/semantic/entities/edit/users", {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer test-key",
+        "Content-Type": "application/json",
+        Cookie: "atlas-mode=developer",
+      },
+      body: JSON.stringify({ table: "users", description: "edited" }),
+    });
+    const res = await app.fetch(req);
+    expect(res.status).toBe(200);
+    expect(mockUpsertDraftEntityAdmin).toHaveBeenCalledTimes(1);
+    // The published upsert must NOT be called — the published row must remain untouched
+    expect(mockUpsertEntityAdmin).not.toHaveBeenCalled();
+  });
+
+  it("developer mode — editing an existing draft updates the draft row in place", async () => {
+    setOrgAdmin("org-1");
+    mockGetEntityAdmin.mockResolvedValue({
+      id: "e-draft", org_id: "org-1", entity_type: "entity", name: "users",
+      yaml_content: "table: users\n", connection_id: null, status: "draft",
+      created_at: "2026-04-01T10:00:00Z", updated_at: "2026-04-01T10:00:00Z",
+    });
+    const req = new Request("http://localhost/api/v1/admin/semantic/entities/edit/users", {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer test-key",
+        "Content-Type": "application/json",
+        Cookie: "atlas-mode=developer",
+      },
+      body: JSON.stringify({ table: "users", description: "edited again" }),
+    });
+    const res = await app.fetch(req);
+    expect(res.status).toBe(200);
+    expect(mockUpsertDraftEntityAdmin).toHaveBeenCalledTimes(1);
+    // ON CONFLICT on the draft partial index handles update-in-place; we don't
+    // need a different function — just assert that draft upsert is called once
+  });
+});
+
+describe("DELETE /api/v1/admin/semantic/entities/edit/:name — mode-aware deletes (#1428)", () => {
+  beforeEach(() => {
+    mockHasInternalDB = true;
+    mockDeleteEntityAdmin.mockReset();
+    mockUpsertTombstoneAdmin.mockReset();
+    mockDeleteDraftEntityAdmin.mockReset();
+    mockGetEntityAdmin.mockReset();
+    mockSyncEntityDeleteFromDisk.mockReset();
+    mockSyncEntityDeleteFromDisk.mockResolvedValue(undefined);
+  });
+
+  it("published mode performs a hard delete", async () => {
+    setOrgAdmin("org-1");
+    mockDeleteEntityAdmin.mockResolvedValue(true);
+    const res = await app.fetch(
+      adminRequest("/api/v1/admin/semantic/entities/edit/users", "DELETE"),
+    );
+    expect(res.status).toBe(200);
+    expect(mockDeleteEntityAdmin).toHaveBeenCalledTimes(1);
+    expect(mockUpsertTombstoneAdmin).not.toHaveBeenCalled();
+  });
+
+  it("developer mode — deleting a published entity inserts a draft_delete tombstone", async () => {
+    setOrgAdmin("org-1");
+    mockGetEntityAdmin.mockResolvedValue({
+      id: "e-published", org_id: "org-1", entity_type: "entity", name: "users",
+      yaml_content: "table: users\n", connection_id: null, status: "published",
+      created_at: "2026-04-01T10:00:00Z", updated_at: "2026-04-01T10:00:00Z",
+    });
+    mockUpsertTombstoneAdmin.mockResolvedValue(undefined);
+    const req = new Request("http://localhost/api/v1/admin/semantic/entities/edit/users", {
+      method: "DELETE",
+      headers: { Authorization: "Bearer test-key", Cookie: "atlas-mode=developer" },
+    });
+    const res = await app.fetch(req);
+    expect(res.status).toBe(200);
+    expect(mockUpsertTombstoneAdmin).toHaveBeenCalledTimes(1);
+    // Published row must remain untouched
+    expect(mockDeleteEntityAdmin).not.toHaveBeenCalled();
+  });
+
+  it("developer mode — deleting an existing draft row removes the draft only", async () => {
+    setOrgAdmin("org-1");
+    mockGetEntityAdmin.mockResolvedValue({
+      id: "e-draft", org_id: "org-1", entity_type: "entity", name: "users",
+      yaml_content: "table: users\n", connection_id: null, status: "draft",
+      created_at: "2026-04-01T10:00:00Z", updated_at: "2026-04-01T10:00:00Z",
+    });
+    mockDeleteDraftEntityAdmin.mockResolvedValue(true);
+    const req = new Request("http://localhost/api/v1/admin/semantic/entities/edit/users", {
+      method: "DELETE",
+      headers: { Authorization: "Bearer test-key", Cookie: "atlas-mode=developer" },
+    });
+    const res = await app.fetch(req);
+    expect(res.status).toBe(200);
+    expect(mockDeleteDraftEntityAdmin).toHaveBeenCalledTimes(1);
+    expect(mockUpsertTombstoneAdmin).not.toHaveBeenCalled();
+    expect(mockDeleteEntityAdmin).not.toHaveBeenCalled();
   });
 });
 

@@ -32,8 +32,14 @@ export interface SemanticEntityRow {
 }
 
 /**
- * Upsert a semantic entity for an org.
- * Uses ON CONFLICT on (org_id, entity_type, name) to update if exists.
+ * Upsert a semantic entity for an org at status='published'.
+ *
+ * Writes the published row — used for direct (non-draft) updates from the
+ * editor and the expert amendment flow. Uses ON CONFLICT on the partial
+ * published unique index so draft/tombstone rows for the same key are
+ * preserved untouched.
+ *
+ * For the developer-mode draft workflow, use `upsertDraftEntity` instead.
  */
 export async function upsertEntity(
   orgId: string,
@@ -46,14 +52,96 @@ export async function upsertEntity(
     throw new Error("Internal DB required for org-scoped semantic entities");
   }
   await internalQuery(
-    `INSERT INTO semantic_entities (org_id, entity_type, name, yaml_content, connection_id)
-     VALUES ($1, $2, $3, $4, $5)
-     ON CONFLICT (org_id, entity_type, name)
+    `INSERT INTO semantic_entities (org_id, entity_type, name, yaml_content, connection_id, status)
+     VALUES ($1, $2, $3, $4, $5, 'published')
+     ON CONFLICT (org_id, name, COALESCE(connection_id, '__default__')) WHERE status = 'published'
      DO UPDATE SET yaml_content = EXCLUDED.yaml_content,
+                   entity_type = EXCLUDED.entity_type,
                    connection_id = EXCLUDED.connection_id,
                    updated_at = now()`,
     [orgId, entityType, name, yamlContent, connectionId ?? null],
   );
+}
+
+/**
+ * Upsert a semantic entity at status='draft'.
+ *
+ * Used for developer-mode writes. The published row (if any) is left
+ * untouched. ON CONFLICT on the partial draft unique index updates an
+ * existing draft in place.
+ */
+export async function upsertDraftEntity(
+  orgId: string,
+  entityType: SemanticEntityType,
+  name: string,
+  yamlContent: string,
+  connectionId?: string,
+): Promise<void> {
+  if (!hasInternalDB()) {
+    throw new Error("Internal DB required for org-scoped semantic entities");
+  }
+  await internalQuery(
+    `INSERT INTO semantic_entities (org_id, entity_type, name, yaml_content, connection_id, status)
+     VALUES ($1, $2, $3, $4, $5, 'draft')
+     ON CONFLICT (org_id, name, COALESCE(connection_id, '__default__')) WHERE status = 'draft'
+     DO UPDATE SET yaml_content = EXCLUDED.yaml_content,
+                   entity_type = EXCLUDED.entity_type,
+                   connection_id = EXCLUDED.connection_id,
+                   updated_at = now()`,
+    [orgId, entityType, name, yamlContent, connectionId ?? null],
+  );
+}
+
+/**
+ * Insert a draft_delete tombstone for an entity.
+ *
+ * Used for developer-mode deletes where a published row exists — the
+ * tombstone hides the published entity via the overlay query until publish
+ * time. ON CONFLICT on the partial tombstone unique index updates the
+ * tombstone's updated_at timestamp if one already exists.
+ */
+export async function upsertTombstone(
+  orgId: string,
+  entityType: SemanticEntityType,
+  name: string,
+  connectionId?: string,
+): Promise<void> {
+  if (!hasInternalDB()) {
+    throw new Error("Internal DB required for org-scoped semantic entities");
+  }
+  await internalQuery(
+    `INSERT INTO semantic_entities (org_id, entity_type, name, yaml_content, connection_id, status)
+     VALUES ($1, $2, $3, '', $4, 'draft_delete')
+     ON CONFLICT (org_id, name, COALESCE(connection_id, '__default__')) WHERE status = 'draft_delete'
+     DO UPDATE SET updated_at = now()`,
+    [orgId, entityType, name, connectionId ?? null],
+  );
+}
+
+/**
+ * Delete the draft row (or tombstone) for an entity. Leaves any published
+ * row intact. Returns true if a draft row was removed.
+ *
+ * Used when an admin discards an in-progress draft in developer mode.
+ */
+export async function deleteDraftEntity(
+  orgId: string,
+  entityType: SemanticEntityType,
+  name: string,
+  connectionId?: string,
+): Promise<boolean> {
+  if (!hasInternalDB()) return false;
+  const rows = await internalQuery<{ id: string }>(
+    `DELETE FROM semantic_entities
+     WHERE org_id = $1
+       AND entity_type = $2
+       AND name = $3
+       AND COALESCE(connection_id, '__default__') = COALESCE($4, '__default__')
+       AND status IN ('draft', 'draft_delete')
+     RETURNING id`,
+    [orgId, entityType, name, connectionId ?? null],
+  );
+  return rows.length > 0;
 }
 
 /**

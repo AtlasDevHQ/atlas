@@ -54,9 +54,9 @@ FROM base AS builder
 WORKDIR /app
 COPY --from=deps /app ./
 COPY . .
-COPY packages/cli/data/demo-semantic semantic
-COPY packages/cli/data/cybersec-semantic data/cybersec-semantic
-COPY packages/cli/data/ecommerce-semantic data/ecommerce-semantic
+COPY packages/cli/data/seeds/simple/semantic semantic
+COPY packages/cli/data/seeds/cybersec/semantic data/cybersec-semantic
+COPY packages/cli/data/seeds/ecommerce/semantic data/ecommerce-semantic
 # Build @useatlas/types first (exports point to dist/) then the react widget bundle
 RUN cd packages/types && bun run build
 RUN cd packages/react && bun run build
@@ -104,9 +104,9 @@ COPY --from=builder --chown=atlas:atlas /app/ee ./ee
 # Plugins (loaded at runtime by the plugin system)
 COPY --from=builder --chown=atlas:atlas /app/plugins ./plugins
 # Demo seeding (ATLAS_SEED_DEMO=true) — all three datasets coexist in the same DB
-COPY --from=builder --chown=atlas:atlas /app/packages/cli/data/demo.sql ./data/demo.sql
-COPY --from=builder --chown=atlas:atlas /app/packages/cli/data/cybersec.sql ./data/cybersec.sql
-COPY --from=builder --chown=atlas:atlas /app/packages/cli/data/ecommerce.sql ./data/ecommerce.sql
+COPY --from=builder --chown=atlas:atlas /app/packages/cli/data/seeds/simple/seed.sql ./data/demo.sql
+COPY --from=builder --chown=atlas:atlas /app/packages/cli/data/seeds/cybersec/seed.sql ./data/cybersec.sql
+COPY --from=builder --chown=atlas:atlas /app/packages/cli/data/seeds/ecommerce/seed.sql ./data/ecommerce.sql
 COPY --chown=atlas:atlas examples/docker/scripts/seed-demo.ts ./scripts/seed-demo.ts
 COPY --chown=atlas:atlas deploy/api/atlas.config.ts ./atlas.config.ts
 COPY --chown=atlas:atlas deploy/api/scripts/start.sh ./scripts/start.sh

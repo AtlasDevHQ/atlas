@@ -259,7 +259,7 @@ export const adminAuth = createMiddleware<AuthEnv>(async (c, next) => {
   // the workspace during migration (retry, cancel, configure).
 
   c.set("authResult", authResult);
-  c.set("atlasMode", resolveMode(c.req.raw.headers.get("cookie"), c.req.raw.headers.get("x-atlas-mode"), authResult));
+  resolveModeForRequest(c, authResult, requestId);
   await next();
 });
 
@@ -294,7 +294,7 @@ export const platformAdminAuth = createMiddleware<AuthEnv>(async (c, next) => {
   }
 
   c.set("authResult", authResult);
-  c.set("atlasMode", resolveMode(c.req.raw.headers.get("cookie"), c.req.raw.headers.get("x-atlas-mode"), authResult));
+  resolveModeForRequest(c, authResult, requestId);
   await next();
 });
 
@@ -323,7 +323,7 @@ export const standardAuth = createMiddleware<AuthEnv>(async (c, next) => {
   }
 
   c.set("authResult", authResult);
-  c.set("atlasMode", resolveMode(c.req.raw.headers.get("cookie"), c.req.raw.headers.get("x-atlas-mode"), authResult));
+  resolveModeForRequest(c, authResult, requestId);
   await next();
 });
 
@@ -379,7 +379,8 @@ function parseModeFromCookie(cookieHeader: string | null): string | undefined {
  * Only admin/owner/platform_admin users may use `developer` mode — non-admin
  * requests always resolve to `published` regardless of cookie/header value.
  *
- * Exported for unit testing.
+ * Called inline by adminAuth, standardAuth, and platformAdminAuth.
+ * Exported as a pure function for testability.
  */
 export function resolveMode(
   cookieHeader: string | null,
@@ -402,22 +403,32 @@ export function resolveMode(
 }
 
 /**
- * Mode resolution middleware — must run after auth middleware (adminAuth / standardAuth).
- *
- * Reads `atlas-mode` cookie (fallback: `X-Atlas-Mode` header), validates
- * the user has admin privileges before honoring `developer`, and defaults
- * to `published`. Sets `c.get("atlasMode")` for downstream use.
+ * Resolve mode and log when a developer request is downgraded due to
+ * insufficient role. Used by the auth middlewares to centralize the
+ * resolve + set + log pattern.
  */
-export const modeResolution = createMiddleware<AuthEnv>(async (c, next) => {
-  const authResult = c.get("authResult");
+function resolveModeForRequest(
+  c: { req: { raw: Request }; set: (key: string, value: unknown) => void },
+  authResult: AuthResult & { authenticated: true },
+  requestId: string,
+): void {
   const cookieHeader = c.req.raw.headers.get("cookie");
   const xAtlasModeHeader = c.req.raw.headers.get("x-atlas-mode");
-
   const mode = resolveMode(cookieHeader, xAtlasModeHeader, authResult);
-  c.set("atlasMode", mode);
 
-  await next();
-});
+  // Log security-relevant downgrade: someone requested developer mode but
+  // lacks admin privileges. Could be a stale cookie, frontend bug, or probe.
+  const requestedDeveloper =
+    parseModeFromCookie(cookieHeader) === "developer" || xAtlasModeHeader === "developer";
+  if (requestedDeveloper && mode === "published") {
+    log.warn(
+      { requestId, userId: authResult.user?.id, role: authResult.user?.role },
+      "Developer mode request downgraded to published — insufficient role",
+    );
+  }
+
+  c.set("atlasMode", mode);
+}
 
 // ---------------------------------------------------------------------------
 // requestContext — wraps downstream handlers in withRequestContext

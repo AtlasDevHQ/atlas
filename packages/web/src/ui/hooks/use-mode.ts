@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useSyncExternalStore } from "react";
+import { useSyncExternalStore } from "react";
 import { useUserRole } from "@/ui/hooks/use-platform-admin-guard";
 import type { AtlasMode } from "@/ui/lib/types";
 
@@ -75,17 +75,13 @@ export function useMode(): {
 
   const cookieValue = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
 
-  // Non-admins always see published
   const mode: AtlasMode = isAdmin ? cookieValue : "published";
 
-  const setMode = useCallback(
-    (next: AtlasMode) => {
-      if (!isAdmin) return;
-      writeCookie(next);
-      notify(next);
-    },
-    [isAdmin],
-  );
+  function setMode(next: AtlasMode) {
+    if (!isAdmin) return;
+    writeCookie(next);
+    notify(next);
+  }
 
   return { mode, setMode, isAdmin };
 }

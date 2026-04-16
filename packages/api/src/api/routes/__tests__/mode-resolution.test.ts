@@ -1,8 +1,8 @@
 /**
- * Unit tests for mode resolution middleware.
+ * Unit tests for mode resolution logic.
  *
  * Tests the resolveMode() pure function directly and verifies that
- * the modeResolution middleware sets the atlasMode context variable.
+ * RequestContext test layers correctly propagate mode values.
  */
 
 import { describe, it, expect, mock } from "bun:test";
@@ -108,6 +108,19 @@ function memberAuth(): AuthResult & { authenticated: true } {
   };
 }
 
+function simpleKeyAuth(): AuthResult & { authenticated: true } {
+  return {
+    authenticated: true,
+    mode: "simple-key",
+    user: {
+      id: "sk-1",
+      mode: "simple-key",
+      label: "key-user",
+      // role is undefined — BYOT/simple-key users may not have explicit roles
+    },
+  };
+}
+
 function noneAuth(): AuthResult & { authenticated: true } {
   return {
     authenticated: true,
@@ -171,6 +184,12 @@ describe("resolveMode", () => {
 
   it("non-admin (member) always resolves to published even with developer header", () => {
     expect(resolveMode(null, "developer", memberAuth())).toBe("published");
+  });
+
+  // ── User with undefined role (BYOT / simple-key) ────────────────────
+
+  it("user with undefined role resolves to published even with developer cookie", () => {
+    expect(resolveMode("atlas-mode=developer", null, simpleKeyAuth())).toBe("published");
   });
 
   // ── Auth mode "none" (local dev) ───────────────────────────────────

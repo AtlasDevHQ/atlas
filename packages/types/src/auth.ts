@@ -3,6 +3,7 @@
  *
  * AuthMode determines how requests are authenticated.
  * AtlasRole determines the user's permission level for action approval.
+ * AtlasMode determines the UI/API surface (developer preview vs published).
  * AtlasUser represents a verified identity attached to a request.
  */
 

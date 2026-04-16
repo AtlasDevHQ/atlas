@@ -421,7 +421,7 @@ function buildContextLayer(
   const requestId = (c.get("requestId") as string | undefined);
   if (!requestId) return undefined;
 
-  // Read resolved mode from modeResolution middleware (defaults to "published" if not set)
+  // Read resolved mode set by auth middleware (defaults to "published" if not set)
   const atlasMode = (c.get("atlasMode") as import("@useatlas/types/auth").AtlasMode | undefined) ?? "published";
 
   const requestLayer = makeRequestContextLayer(requestId, undefined, atlasMode);

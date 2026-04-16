@@ -1166,10 +1166,10 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 ### Foundation
 - [x] Schema migration — add `status` column to connections, semantic_entities, prompt_collections (#1423, PR #1443)
 - [x] Mode resolution middleware + RequestContext propagation (#1424, PR #1442)
-- [ ] Onboarding — save demo as `__demo__` connection with `demo_industry` setting (#1425)
+- [x] Onboarding — save demo as `__demo__` connection with `demo_industry` setting (#1425, PR #1446)
 
 ### Query Layer
-- [ ] Published mode query filtering across connections, entities, prompts (#1426)
+- [x] Published mode query filtering across connections, entities, prompts (#1426, PR #1447)
 - [ ] Developer mode overlay queries — entity CTE + union queries (#1427)
 - [ ] Write path mode-awareness — draft creation, draft edits, tombstones (#1428)
 
@@ -1185,7 +1185,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 
 ### Frontend
 - [ ] Connect page redesign — two equal-weight paths (#1432)
-- [ ] Developer mode banner + cookie-based toggle (#1433)
+- [x] Developer mode banner + cookie-based toggle (#1433, PR #1445)
 - [ ] Non-admin demo indicator chip (#1434)
 - [ ] Admin surface — draft/demo badges, read-only published, pending changes summary (#1435)
 - [ ] Empty states in developer mode (#1436)
@@ -1193,7 +1193,8 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 ### Bug Fixes
 - [x] Bundle cybersec + ecommerce semantic directories in Docker image (#1422, PR #1441)
 - [x] Docker COPY for demo-semantic and SQL seed symlinks (#1440, PR #1441)
-- [ ] Partial unique indexes on semantic_entities are NULL-unsafe for connection_id (#1444)
+- [x] Partial unique indexes on semantic_entities are NULL-unsafe for connection_id (#1444, PR #1447)
+- [x] Scaffold template layout override — strip ModeBanner for standalone deploys (PR forthcoming)
 
 ---
 

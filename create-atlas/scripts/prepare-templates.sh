@@ -145,11 +145,12 @@ for f in "$WEB_SRC"/lib/*.ts; do
   cp "$f" "$TEMPLATES/nextjs-standalone/src/lib/" 2>/dev/null || true
 done
 
-# Copy Next.js app pages — page.tsx uses the template override (standalone AtlasChat
-# widget) rather than packages/web's native SaaS chat page.
+# Copy Next.js app pages — page.tsx and layout.tsx use template overrides:
+# page.tsx: standalone AtlasChat widget (not SaaS native chat page)
+# layout.tsx: no ModeBanner (developer/published mode is SaaS-only)
 mkdir -p "$TEMPLATES/nextjs-standalone/src/app"
 cp "$OVERRIDES/page.tsx"   "$TEMPLATES/nextjs-standalone/src/app/"
-cp "$WEB_APP/layout.tsx"   "$TEMPLATES/nextjs-standalone/src/app/"
+cp "$OVERRIDES/layout.tsx" "$TEMPLATES/nextjs-standalone/src/app/"
 cp "$WEB_APP/error.tsx"    "$TEMPLATES/nextjs-standalone/src/app/"
 cp "$WEB_APP/globals.css"  "$TEMPLATES/nextjs-standalone/src/app/"
 

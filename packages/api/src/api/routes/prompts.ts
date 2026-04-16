@@ -19,7 +19,12 @@ import type { PromptCollection, PromptItem } from "@useatlas/types";
 
 const log = createLogger("prompts");
 import { ErrorSchema } from "./shared-schemas";
-import { standardAuth, requestContext, buildUnionStatusClause, type AuthEnv } from "./middleware";
+import { standardAuth, requestContext, type AuthEnv } from "./middleware";
+import {
+  buildCollectionsListQuery,
+  buildCollectionGetQuery,
+  resolvePromptDemoContext,
+} from "@atlas/api/lib/prompts/scoping";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -173,19 +178,18 @@ prompts.openapi(listCollectionsRoute, async (c) => {
       return c.json({ collections: [] }, 200);
     }
 
-    const statusClause = buildUnionStatusClause(atlasMode);
-
-    let rows: Record<string, unknown>[];
-    if (orgId) {
-      rows = yield* Effect.promise(() => internalQuery<Record<string, unknown>>(
-        `SELECT * FROM prompt_collections WHERE (org_id IS NULL OR org_id = $1)${statusClause} ORDER BY sort_order ASC, created_at ASC`,
-        [orgId],
-      ));
-    } else {
-      rows = yield* Effect.promise(() => internalQuery<Record<string, unknown>>(
-        `SELECT * FROM prompt_collections WHERE org_id IS NULL${statusClause} ORDER BY sort_order ASC, created_at ASC`,
-      ));
-    }
+    const { demoIndustry, demoConnectionActive } = yield* Effect.promise(() =>
+      resolvePromptDemoContext(orgId),
+    );
+    const { sql, params } = buildCollectionsListQuery({
+      orgId,
+      mode: atlasMode,
+      demoIndustry,
+      demoConnectionActive,
+    });
+    const rows = yield* Effect.promise(() =>
+      internalQuery<Record<string, unknown>>(sql, params),
+    );
 
     return c.json({ collections: rows.map(toPromptCollection) }, 200);
   }), { label: "list prompt collections" });
@@ -205,20 +209,17 @@ prompts.openapi(getCollectionRoute, async (c) => {
     }
 
     const { id } = c.req.valid("param");
-    const statusClause = buildUnionStatusClause(atlasMode);
 
-    let collectionRows: Record<string, unknown>[];
-    if (orgId) {
-      collectionRows = yield* Effect.promise(() => internalQuery<Record<string, unknown>>(
-        `SELECT * FROM prompt_collections WHERE id = $1 AND (org_id IS NULL OR org_id = $2)${statusClause}`,
-        [id, orgId],
-      ));
-    } else {
-      collectionRows = yield* Effect.promise(() => internalQuery<Record<string, unknown>>(
-        `SELECT * FROM prompt_collections WHERE id = $1 AND org_id IS NULL${statusClause}`,
-        [id],
-      ));
-    }
+    const { demoIndustry, demoConnectionActive } = yield* Effect.promise(() =>
+      resolvePromptDemoContext(orgId),
+    );
+    const { sql, params } = buildCollectionGetQuery(
+      { orgId, mode: atlasMode, demoIndustry, demoConnectionActive },
+      id,
+    );
+    const collectionRows = yield* Effect.promise(() =>
+      internalQuery<Record<string, unknown>>(sql, params),
+    );
 
     if (collectionRows.length === 0) {
       return c.json({ error: "not_found", message: "Prompt collection not found." }, 404);

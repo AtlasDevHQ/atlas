@@ -15,7 +15,10 @@ import { internalQuery } from "@atlas/api/lib/db/internal";
 import type { PromptCollection, PromptItem } from "@useatlas/types";
 import { ErrorSchema, AuthErrorSchema, createIdParamSchema, createParamSchema, createListResponseSchema, DeletedResponseSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
-import { buildUnionStatusClause } from "./middleware";
+import {
+  buildCollectionsListQuery,
+  resolvePromptDemoContext,
+} from "@atlas/api/lib/prompts/scoping";
 
 const log = createLogger("admin-prompts");
 
@@ -487,14 +490,20 @@ adminPrompts.openapi(listCollectionsRoute, async (c) => {
     const { orgId } = yield* AuthContext;
     const { atlasMode } = yield* RequestContext;
 
-    const statusClause = buildUnionStatusClause(atlasMode);
-
-    let rows: Record<string, unknown>[];
-    if (orgId) {
-      rows = yield* Effect.promise(() => internalQuery<Record<string, unknown>>(`SELECT * FROM prompt_collections WHERE (org_id IS NULL OR org_id = $1)${statusClause} ORDER BY sort_order ASC, created_at ASC`, [orgId]));
-    } else {
-      rows = yield* Effect.promise(() => internalQuery<Record<string, unknown>>(`SELECT * FROM prompt_collections WHERE 1=1${statusClause} ORDER BY sort_order ASC, created_at ASC`));
-    }
+    // requireOrgContext upstream guarantees orgId is set here. resolvePromptDemoContext
+    // still handles `undefined` defensively so typing stays permissive.
+    const { demoIndustry, demoConnectionActive } = yield* Effect.promise(() =>
+      resolvePromptDemoContext(orgId),
+    );
+    const { sql, params } = buildCollectionsListQuery({
+      orgId,
+      mode: atlasMode,
+      demoIndustry,
+      demoConnectionActive,
+    });
+    const rows = yield* Effect.promise(() =>
+      internalQuery<Record<string, unknown>>(sql, params),
+    );
     return c.json({ collections: rows.map(toPromptCollection), total: rows.length }, 200);
   }), { label: "list prompt collections" });
 });

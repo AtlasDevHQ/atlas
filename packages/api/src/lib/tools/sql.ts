@@ -17,7 +17,7 @@ import { tool } from "ai";
 import { z } from "zod";
 import { Effect } from "effect";
 import { Parser } from "node-sql-parser";
-import { connections, detectDBType, getRegionAwareConnection, ConnectionNotRegisteredError, NoDatasourceConfiguredError, PoolCapacityExceededError } from "@atlas/api/lib/db/connection";
+import { connections, detectDBType, getRegionAwareConnection, isConnectionVisibleInMode, ConnectionNotRegisteredError, NoDatasourceConfiguredError, PoolCapacityExceededError } from "@atlas/api/lib/db/connection";
 import type { DBConnection, DBType } from "@atlas/api/lib/db/connection";
 import { getWhitelistedTables, getOrgWhitelistedTables } from "@atlas/api/lib/semantic";
 import { logQueryAudit } from "@atlas/api/lib/auth/audit";
@@ -399,13 +399,35 @@ type PipelineError =
 /** Resolve the database connection. Fails with tagged connection errors. */
 function resolveConnectionEffect(
   connId: string,
+  /** Org ID used for pool routing — gated on `isOrgPoolingEnabled()` in SaaS. */
   orgId: string | undefined,
+  atlasMode: import("@useatlas/types/auth").AtlasMode,
+  /** Org ID from auth context — always set when a user is logged in. Used for mode visibility. */
+  authOrgId: string | undefined,
 ): Effect.Effect<
   { db: DBConnection; dbType: DBType },
   ConnectionNotFoundError | PoolExhaustedError | NoDatasourceError
 > {
   return Effect.tryPromise({
     try: async () => {
+      // Mode isolation: published-mode requests may only resolve published
+      // connections; developer-mode may also resolve drafts; archived is
+      // hidden in both. `default` bypasses the check (config-managed, no DB
+      // row). Uses authOrgId — pool-level org isolation is a separate concern
+      // and may be disabled, but mode visibility still applies.
+      if (authOrgId) {
+        const visible = await isConnectionVisibleInMode(authOrgId, connId, atlasMode);
+        if (!visible) {
+          // Mirror the shape used when the in-memory registry lacks an entry.
+          // In published mode this is how a draft connection must appear to
+          // the agent — as if it does not exist.
+          throw new ConnectionNotRegisteredError({
+            message: `Connection "${connId}" is not available in ${atlasMode} mode.`,
+            id: connId,
+          });
+        }
+      }
+
       let db: DBConnection;
       let resolvedConnId = connId;
       if (orgId) {
@@ -859,9 +881,16 @@ Rules:
       const orgId = connections.isOrgPoolingEnabled()
         ? reqCtx?.user?.activeOrganizationId
         : undefined;
+      // Mode visibility always uses the real auth orgId — draft/published
+      // isolation applies in self-hosted single-org deployments as well as
+      // SaaS, even when pool-level org isolation is disabled.
+      const authOrgId = reqCtx?.user?.activeOrganizationId;
+      // Mode isolation: visible connections and whitelist depend on atlasMode.
+      // Default to "published" (most restrictive) if not set.
+      const atlasMode = reqCtx?.atlasMode ?? "published";
 
       // Step 1: Resolve connection (tagged errors)
-      const { db, dbType } = yield* resolveConnectionEffect(connId, orgId);
+      const { db, dbType } = yield* resolveConnectionEffect(connId, orgId, atlasMode, authOrgId);
 
       const targetHost = connections.getTargetHost(connId);
       const customValidator = connections.getValidator(connId);

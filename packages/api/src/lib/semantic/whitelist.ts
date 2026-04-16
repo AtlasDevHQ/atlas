@@ -505,6 +505,18 @@ export function invalidateOrgWhitelist(orgId: string): void {
   _orgWhitelists.delete(`${orgId}:published`);
   _orgWhitelists.delete(`${orgId}:developer`);
   invalidateOrgSemanticIndex(orgId);
+  // Invalidate the lazily-built mode-specific semantic roots so the next
+  // explore command rebuilds from DB. Dynamic import avoids a cycle between
+  // whitelist.ts and sync.ts (sync.ts also reads from whitelist via
+  // listEntitiesWithOverlay).
+  import("./sync")
+    .then(({ invalidateOrgModeRoots }) => invalidateOrgModeRoots(orgId))
+    .catch((err) => {
+      log.warn(
+        { orgId, err: err instanceof Error ? err.message : String(err) },
+        "Failed to invalidate org mode-specific semantic roots — agent may serve stale data",
+      );
+    });
 }
 
 /** Clear all org whitelist caches. For testing. */

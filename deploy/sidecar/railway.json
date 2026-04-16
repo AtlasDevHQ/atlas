@@ -6,7 +6,7 @@
     "dockerfileContext": "../..",
     "watchPatterns": [
       "packages/sandbox-sidecar/**",
-      "packages/cli/data/demo-semantic/**"
+      "packages/cli/data/seeds/simple/semantic/**"
     ]
   },
   "deploy": {

@@ -35,7 +35,7 @@ COPY packages/sandbox-sidecar/src/ ./src/
 
 # Semantic layer — baked in from demo data (matches other Railway services).
 # For custom datasets, rebuild with a volume mount or replace semantic/ in CI.
-COPY packages/cli/data/demo-semantic/ /semantic/
+COPY packages/cli/data/seeds/simple/semantic/ /semantic/
 RUN chmod -R a-w /semantic/
 
 # No secrets, no database drivers, no node_modules beyond bun runtime

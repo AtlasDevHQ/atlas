@@ -217,7 +217,7 @@ describe("resolveMode", () => {
 // Test layer integration — verify mode flows through RequestContext
 // ---------------------------------------------------------------------------
 
-describe("RequestContext mode", () => {
+describe("RequestContext atlasMode", () => {
   it("createRequestContextTestLayer defaults to published", async () => {
     const { Effect } = await import("effect");
     const { createRequestContextTestLayer, RequestContext } = await import(
@@ -228,7 +228,7 @@ describe("RequestContext mode", () => {
     const result = await Effect.runPromise(
       Effect.gen(function* () {
         const ctx = yield* RequestContext;
-        return ctx.mode;
+        return ctx.atlasMode;
       }).pipe(Effect.provide(layer)),
     );
     expect(result).toBe("published");
@@ -240,11 +240,11 @@ describe("RequestContext mode", () => {
       "@atlas/api/lib/effect/services"
     );
 
-    const layer = createRequestContextTestLayer({ mode: "developer" });
+    const layer = createRequestContextTestLayer({ atlasMode: "developer" });
     const result = await Effect.runPromise(
       Effect.gen(function* () {
         const ctx = yield* RequestContext;
-        return ctx.mode;
+        return ctx.atlasMode;
       }).pipe(Effect.provide(layer)),
     );
     expect(result).toBe("developer");
@@ -255,11 +255,11 @@ describe("RequestContext mode", () => {
     const { RequestContext } = await import("@atlas/api/lib/effect/services");
     const { buildTestLayer } = await import("../../../__test-utils__/layers");
 
-    const layer = buildTestLayer({ request: { mode: "developer" } });
+    const layer = buildTestLayer({ request: { atlasMode: "developer" } });
     const result = await Effect.runPromise(
       Effect.gen(function* () {
         const ctx = yield* RequestContext;
-        return ctx.mode;
+        return ctx.atlasMode;
       }).pipe(Effect.provide(layer)),
     );
     expect(result).toBe("developer");

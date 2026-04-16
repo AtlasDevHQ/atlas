@@ -691,8 +691,8 @@ type AtlasMode = import("@useatlas/types/auth").AtlasMode;
 export interface RequestContextShape {
   readonly requestId: string;
   readonly startTime: number;
-  /** Resolved mode — `developer` (admin preview) or `published` (production). */
-  readonly mode: AtlasMode;
+  /** Resolved mode — `developer` (shows draft/unpublished content, admin-only) or `published` (end-user surface). */
+  readonly atlasMode: AtlasMode;
 }
 
 export class RequestContext extends Context.Tag("RequestContext")<
@@ -707,12 +707,12 @@ export class RequestContext extends Context.Tag("RequestContext")<
 export function makeRequestContextLayer(
   requestId: string,
   startTime?: number,
-  mode?: AtlasMode,
+  atlasMode?: AtlasMode,
 ): Layer.Layer<RequestContext> {
   return Layer.succeed(RequestContext, {
     requestId,
     startTime: startTime ?? Date.now(),
-    mode: mode ?? "published",
+    atlasMode: atlasMode ?? "published",
   });
 }
 
@@ -723,7 +723,7 @@ export function createRequestContextTestLayer(
   return Layer.succeed(RequestContext, {
     requestId: partial.requestId ?? "test-request-id",
     startTime: partial.startTime ?? Date.now(),
-    mode: partial.mode ?? "published",
+    atlasMode: partial.atlasMode ?? "published",
   });
 }
 

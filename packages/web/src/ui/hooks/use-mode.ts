@@ -2,10 +2,12 @@
 
 import { useSyncExternalStore } from "react";
 import { useUserRole } from "@/ui/hooks/use-platform-admin-guard";
+import { useAtlasConfig } from "@/ui/context";
+import { ADMIN_ROLES } from "@/ui/lib/types";
 import type { AtlasMode } from "@/ui/lib/types";
 
 const COOKIE_NAME = "atlas-mode";
-const ADMIN_ROLES = new Set(["admin", "owner", "platform_admin"]);
+const ADMIN_ROLE_SET = new Set<string>(ADMIN_ROLES);
 
 // ---------------------------------------------------------------------------
 // Cookie helpers
@@ -61,6 +63,8 @@ function notify(mode: AtlasMode): void {
  * - `mode`: current resolved mode (`developer` or `published`)
  * - `setMode`: update the cookie (only works for admins)
  * - `isAdmin`: whether the current user has an admin-level role
+ * - `isLoading`: true while the session is still loading — consumers should
+ *   defer rendering mode-dependent content to avoid a flash of wrong mode
  *
  * Non-admin users always see `published` regardless of cookie value.
  * Calling `setMode("developer")` as a non-admin is a no-op.
@@ -69,9 +73,12 @@ export function useMode(): {
   mode: AtlasMode;
   setMode: (next: AtlasMode) => void;
   isAdmin: boolean;
+  isLoading: boolean;
 } {
   const role = useUserRole();
-  const isAdmin = role !== undefined && ADMIN_ROLES.has(role);
+  const { authClient } = useAtlasConfig();
+  const isLoading = authClient.useSession().isPending === true;
+  const isAdmin = !isLoading && role !== undefined && ADMIN_ROLE_SET.has(role);
 
   const cookieValue = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
 
@@ -83,5 +90,5 @@ export function useMode(): {
     notify(next);
   }
 
-  return { mode, setMode, isAdmin };
+  return { mode, setMode, isAdmin, isLoading };
 }

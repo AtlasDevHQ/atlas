@@ -28,6 +28,7 @@ import {
   isStrictRoutingEnabled,
 } from "@atlas/api/lib/residency/misrouting";
 import { isWorkspaceMigrating } from "@atlas/api/lib/residency/readonly";
+import { ADMIN_ROLES } from "@useatlas/types/auth";
 
 const log = createLogger("middleware");
 
@@ -355,7 +356,7 @@ export const migrationWriteLock = createMiddleware<AuthEnv>(async (c, next) => {
 // Mode resolution — reads atlas-mode cookie/header, enforces admin gate
 // ---------------------------------------------------------------------------
 
-const ADMIN_ROLES = new Set(["admin", "owner", "platform_admin"]);
+const ADMIN_ROLE_SET = new Set<string>(ADMIN_ROLES);
 
 /**
  * Parse the `atlas-mode` cookie from the Cookie header.
@@ -395,7 +396,7 @@ export function resolveMode(
   if (authResult.mode === "none") return "developer";
 
   // Check if user has an admin-level role
-  if (authResult.user?.role && ADMIN_ROLES.has(authResult.user.role)) {
+  if (authResult.user?.role && ADMIN_ROLE_SET.has(authResult.user.role)) {
     return "developer";
   }
 

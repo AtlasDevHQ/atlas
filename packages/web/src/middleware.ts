@@ -8,8 +8,9 @@
 
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
+import { ATLAS_MODES } from "@useatlas/types/auth";
 
-const VALID_MODES = new Set(["developer", "published"]);
+const VALID_MODES = new Set<string>(ATLAS_MODES);
 
 export function middleware(request: NextRequest) {
   const raw = request.cookies.get("atlas-mode")?.value;

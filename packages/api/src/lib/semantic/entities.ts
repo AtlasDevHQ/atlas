@@ -527,6 +527,119 @@ export async function generateChangeSummary(
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────
+// Publish helpers — operate on a caller-owned transactional client so the
+// atomic publish endpoint (#1429) can run all steps under a single BEGIN.
+// ─────────────────────────────────────────────────────────────────────
+
+/**
+ * Minimal pg client shape the publish helpers need. Matches the return of
+ * `pool.connect()` from node-postgres, but typed here so we don't import
+ * pg in code that runs in browsers/Edge.
+ */
+export interface TransactionalClient {
+  query: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[] }>;
+}
+
+/**
+ * Step 1: apply `draft_delete` tombstones for an org.
+ *
+ * Deletes the published entity row targeted by each tombstone, then deletes
+ * the tombstones themselves. Returns the number of published rows removed
+ * (i.e., how many entities the admin actually hid).
+ *
+ * Runs on a caller-supplied client so the caller controls the transaction.
+ */
+export async function applyTombstones(
+  client: TransactionalClient,
+  orgId: string,
+): Promise<number> {
+  // Delete the published rows targeted by tombstones (using USING join)
+  const deletedPublished = await client.query(
+    `DELETE FROM semantic_entities p
+     USING semantic_entities d
+     WHERE p.org_id = $1 AND p.status = 'published'
+       AND d.org_id = p.org_id
+       AND d.name = p.name
+       AND COALESCE(d.connection_id, '__default__') = COALESCE(p.connection_id, '__default__')
+       AND d.status = 'draft_delete'
+     RETURNING p.id`,
+    [orgId],
+  );
+
+  // Delete the tombstones themselves
+  await client.query(
+    `DELETE FROM semantic_entities WHERE org_id = $1 AND status = 'draft_delete'`,
+    [orgId],
+  );
+
+  return deletedPublished.rows.length;
+}
+
+/**
+ * Step 2 + 3: promote all draft entities for an org to published.
+ *
+ * First deletes any published row superseded by a draft for the same entity
+ * key, then flips `status='draft' → 'published'` on the remaining drafts.
+ * Returns the number of drafts promoted.
+ */
+export async function promoteDraftEntities(
+  client: TransactionalClient,
+  orgId: string,
+): Promise<number> {
+  // Remove published rows that a draft is about to replace
+  await client.query(
+    `DELETE FROM semantic_entities p
+     USING semantic_entities d
+     WHERE p.org_id = $1 AND p.status = 'published'
+       AND d.org_id = p.org_id
+       AND d.name = p.name
+       AND COALESCE(d.connection_id, '__default__') = COALESCE(p.connection_id, '__default__')
+       AND d.status = 'draft'`,
+    [orgId],
+  );
+
+  // Promote drafts to published
+  const promoted = await client.query(
+    `UPDATE semantic_entities SET status = 'published', updated_at = now()
+     WHERE org_id = $1 AND status = 'draft'
+     RETURNING id`,
+    [orgId],
+  );
+  return promoted.rows.length;
+}
+
+/**
+ * Archive specified connection IDs and cascade to their published entities.
+ *
+ * Sets `status='archived'` on both the connection rows and the semantic
+ * entities referencing them. Returns the number of connections archived
+ * and the number of entities cascaded.
+ */
+export async function archiveConnectionsAndEntities(
+  client: TransactionalClient,
+  orgId: string,
+  connectionIds: readonly string[],
+): Promise<{ connections: number; entities: number }> {
+  if (connectionIds.length === 0) return { connections: 0, entities: 0 };
+  const archivedConns = await client.query(
+    `UPDATE connections SET status = 'archived', updated_at = now()
+     WHERE org_id = $1 AND id = ANY($2::text[])
+     RETURNING id`,
+    [orgId, connectionIds as string[]],
+  );
+  const archivedEntities = await client.query(
+    `UPDATE semantic_entities SET status = 'archived', updated_at = now()
+     WHERE org_id = $1 AND connection_id = ANY($2::text[]) AND status = 'published'
+     RETURNING id`,
+    [orgId, connectionIds as string[]],
+  );
+  return {
+    connections: archivedConns.rows.length,
+    entities: archivedEntities.rows.length,
+  };
+}
+
 /**
  * Bulk upsert entities for an org. Each entity is upserted individually —
  * failures are logged and skipped (partial imports are expected).

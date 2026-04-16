@@ -1,0 +1,120 @@
+---
+title: Developer / Published Mode
+description: Stage configuration changes as drafts in developer mode, then promote them to all users atomically by publishing.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Atlas separates **what admins are working on** from **what users see** using a Stripe-inspired dual-mode system. Admins configure in **developer mode** — adding connections, editing semantic entities, curating prompts — while non-admin users continue to see the stable **published mode**. When the admin is ready, a single **publish** action atomically promotes every draft.
+
+This model is borrowed from CMSs (WordPress, Contentful, Sanity) and applies to three resource types: connections, semantic entities, and prompt collections.
+
+---
+
+## Who Sees What
+
+- **Non-admin users**: Always see **published mode**. They never see drafts or tombstones and have no awareness that developer mode exists.
+- **Admins**: Can toggle their own view between developer and published mode via the mode switch in the admin banner. The choice is stored in an `atlas-mode` cookie and scoped per-session — one admin's toggle does not affect another's.
+- **Publishing**: An admin action that atomically promotes every draft to published. All users see the new state on their next page load.
+
+---
+
+## Staging Semantics by Resource
+
+Not every change is staged. The higher the blast radius of a bad change, the more staging it gets.
+
+| Operation | Connections | Semantic entities | Prompt collections |
+|-----------|-------------|-------------------|--------------------|
+| **Create** | Staged (draft → publish) | Staged (draft → publish) | Staged (draft → publish) |
+| **Edit** | Immediate | Staged (draft copy → publish) | Immediate |
+| **Delete** | Immediate (archive) | Staged (draft_delete → publish) | Immediate |
+
+- Semantic entities use the full draft/publish cycle because a bad entity definition makes the agent generate wrong SQL.
+- Connections edit/delete are immediate — they are infrastructure changes, not experiments.
+- Prompt collection creation is staged (admins curate before launch), but edits and deletes run through immediately.
+
+---
+
+## The Publish Endpoint
+
+When an admin clicks **Publish**, the frontend calls:
+
+```http
+POST /api/v1/admin/publish
+Content-Type: application/json
+Authorization: Bearer <admin token>
+
+{
+  "archiveConnections": ["__demo__"]
+}
+```
+
+### Request body
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `archiveConnections` | `string[]` | No | Connection IDs to archive as part of the publish. Archiving cascades to the connection's entities. When the array includes the reserved `__demo__` ID, built-in demo prompt collections matching the org's `demo_industry` setting are also archived. |
+
+### Response
+
+`200 OK` with a summary of what changed:
+
+```json
+{
+  "promoted": { "connections": 1, "entities": 42, "prompts": 3 },
+  "deleted":  { "entities": 2 },
+  "archived": { "connections": 1 }
+}
+```
+
+- `promoted.*` — rows whose `status` flipped from `draft` to `published`.
+- `deleted.entities` — published entity rows removed via `draft_delete` tombstones.
+- `archived.connections` — connections whose status flipped to `archived` via the `archiveConnections` parameter.
+
+### What runs in the transaction
+
+The endpoint executes four phases inside a single PostgreSQL transaction. Any failure rolls back everything — there is no partial commit.
+
+1. **Apply tombstones.** For each `draft_delete` tombstone in the org, the published entity row with the matching `(org_id, name, connection_id)` key is deleted, then the tombstone itself is deleted.
+2. **Remove superseded published entities.** For each `draft` entity, the matching published row (if any) is deleted so the promotion in step 3 can succeed without a partial-unique-index conflict.
+3. **Promote drafts.** All remaining `draft` rows in `semantic_entities`, `connections`, and `prompt_collections` for the org flip to `published`.
+4. **Archive (optional).** If `archiveConnections` is provided, each listed connection's `status` flips to `archived` and the cascade hides its published entities. When `__demo__` is included, the org's built-in demo prompt collections (filtered by the `demo_industry` setting) also flip to `archived`.
+
+After a successful response, **no `draft` or `draft_delete` rows remain for the org**.
+
+<Callout title="Atomicity">
+  Every mutation above runs through a single `BEGIN ... COMMIT` block. If any statement throws — a constraint violation, a lost connection, anything — the endpoint issues `ROLLBACK`, releases the client, and returns `500 publish_failed` with the original error detail. The internal DB state is left untouched.
+</Callout>
+
+### Responses
+
+| Status | Body | When |
+|--------|------|------|
+| `200` | Summary `{ promoted, deleted, archived }` | Publish succeeded |
+| `401` | `{ error: "auth_error", ... }` | Not authenticated |
+| `403` | `{ error: "forbidden_role", ... }` | Not an admin/owner/platform_admin |
+| `404` | `{ error: "not_available", ... }` | Internal database not configured |
+| `422` | `{ error: "validation_error", ... }` | `archiveConnections` is not an array of non-empty strings |
+| `429` | `{ error: "rate_limited", ... }` | Admin rate limit exceeded |
+| `500` | `{ error: "publish_failed", ... }` | Transaction rolled back; no state change |
+
+---
+
+## First Publish for Demo Orgs
+
+Orgs that picked a demo during onboarding have a seeded `__demo__` connection with matching published entities and built-in prompts. On the first publish, the admin UI pre-selects `__demo__` in the `archiveConnections` list — the admin clicks through to move from demo data to their real configuration in one atomic step. The admin can uncheck to keep the demo visible alongside their real data.
+
+---
+
+## Cycle Repeats
+
+Publishing clears every draft for the org. The admin's next edit — a new entity, a prompt collection, a fresh connection — starts a new draft layer on top of the newly-published state. There is one staging workflow, reused indefinitely. There is no separate "environment" to maintain.
+
+---
+
+## Related
+
+- [Admin Console overview](/guides/admin-console)
+- [Semantic editor walkthrough](/guides/semantic-editor)
+- [GET /api/v1/mode](/api-reference/mode/getMode) — read the effective mode for the current request
+- [POST /api/v1/admin/publish](/api-reference/admin-mode/postAdminPublish) — auto-generated OpenAPI reference

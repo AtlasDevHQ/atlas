@@ -292,6 +292,13 @@ mock.module("@atlas/api/lib/semantic/entities", () => ({
   listVersions: mockListVersions,
   getVersion: mockGetVersion,
   generateChangeSummary: mockGenerateChangeSummary,
+  // Publish helpers (#1429) — not exercised in this file, but must exist so
+  // admin-publish.ts can resolve its imports when admin routes load.
+  applyTombstones: mock(() => Promise.resolve(0)),
+  promoteDraftEntities: mock(() => Promise.resolve(0)),
+  archiveConnectionsAndEntities: mock(() =>
+    Promise.resolve({ connections: 0, entities: 0 }),
+  ),
 }));
 
 const mockSyncEntityToDisk: Mock<(...args: unknown[]) => Promise<void>> = mock(() => Promise.resolve());

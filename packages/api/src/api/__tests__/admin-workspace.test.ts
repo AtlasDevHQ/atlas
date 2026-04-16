@@ -216,6 +216,13 @@ mock.module("@atlas/api/lib/semantic/entities", () => ({
   deleteEntity: mock(() => Promise.resolve(false)),
   countEntities: mock(() => Promise.resolve(0)),
   bulkUpsertEntities: mock(() => Promise.resolve(0)),
+  // Publish helpers (#1429) — not exercised here but required for admin
+  // route loading since admin-publish.ts imports them.
+  applyTombstones: mock(() => Promise.resolve(0)),
+  promoteDraftEntities: mock(() => Promise.resolve(0)),
+  archiveConnectionsAndEntities: mock(() =>
+    Promise.resolve({ connections: 0, entities: 0 }),
+  ),
 }));
 
 mock.module("@atlas/api/lib/plugins/registry", () => ({

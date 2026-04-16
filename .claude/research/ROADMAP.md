@@ -1174,7 +1174,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] Write path mode-awareness — draft creation, draft edits, tombstones (#1428, PR #1461)
 
 ### Publishing
-- [ ] Atomic publish endpoint with `archiveConnections` parameter (#1429)
+- [x] Atomic publish endpoint with `archiveConnections` parameter (#1429, PR #1464)
 - [ ] Archive/restore connection endpoints with entity cascade (#1437)
 
 ### Agent & Data

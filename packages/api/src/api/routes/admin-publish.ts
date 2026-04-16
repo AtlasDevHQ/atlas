@@ -1,0 +1,322 @@
+/**
+ * Admin publish endpoint — atomic promotion of drafts to published.
+ *
+ * Mounted under /api/v1/admin/publish via admin.route(). Admin-only.
+ *
+ * Runs the 4-phase publish flow from PRD #1421 in a single transaction:
+ * 1. Apply `draft_delete` tombstones (delete the targeted published rows,
+ *    then delete the tombstones themselves).
+ * 2. Delete published entity rows superseded by drafts (same entity key).
+ * 3. Promote all `draft` rows (entities + connections + prompt collections)
+ *    to `published`.
+ * 4. If `archiveConnections` is provided, archive those connections and
+ *    cascade to their entities. When the archive list includes the reserved
+ *    `__demo__` ID, also archive the built-in demo prompt collections whose
+ *    industry matches the org's `demo_industry` setting.
+ *
+ * Any failure rolls back the entire transaction — no partial state.
+ */
+
+import { createRoute, z } from "@hono/zod-openapi";
+import { createLogger } from "@atlas/api/lib/logger";
+import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
+import { internalQuery, getInternalDB } from "@atlas/api/lib/db/internal";
+import {
+  applyTombstones,
+  promoteDraftEntities,
+  archiveConnectionsAndEntities,
+} from "@atlas/api/lib/semantic/entities";
+import { runHandler } from "@atlas/api/lib/effect/hono";
+import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
+import { createAdminRouter, requireOrgContext } from "./admin-router";
+
+const log = createLogger("admin-publish");
+
+/** Reserved ID for the onboarding demo connection. */
+const DEMO_CONNECTION_ID = "__demo__";
+
+// ---------------------------------------------------------------------------
+// Request / response schemas
+// ---------------------------------------------------------------------------
+
+const PublishRequestSchema = z.object({
+  /**
+   * Optional list of connection IDs to archive as part of the publish.
+   * When set, each connection's status is flipped to `archived` and its
+   * published entities cascade to `archived`. When the list includes the
+   * reserved `__demo__` connection, built-in demo prompt collections for
+   * the org's demo industry are also archived.
+   */
+  archiveConnections: z.array(z.string().min(1)).optional(),
+});
+
+const PublishResponseSchema = z.object({
+  promoted: z.object({
+    connections: z.number().int().nonnegative(),
+    entities: z.number().int().nonnegative(),
+    prompts: z.number().int().nonnegative(),
+  }),
+  deleted: z.object({
+    entities: z.number().int().nonnegative(),
+  }),
+  archived: z.object({
+    connections: z.number().int().nonnegative(),
+    entities: z.number().int().nonnegative(),
+  }),
+});
+
+export type PublishResponse = z.infer<typeof PublishResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// Route definition
+// ---------------------------------------------------------------------------
+
+const publishRoute = createRoute({
+  method: "post",
+  path: "/",
+  tags: ["Admin — Mode"],
+  summary: "Publish all drafts",
+  description:
+    "Atomically promote every `draft` and apply every `draft_delete` tombstone " +
+    "for the active org, optionally archiving the specified connections. " +
+    "After a successful response, no draft or tombstone rows remain for the org.",
+  request: {
+    body: {
+      content: { "application/json": { schema: PublishRequestSchema } },
+      required: true,
+    },
+  },
+  responses: {
+    200: {
+      description: "Publish summary",
+      content: { "application/json": { schema: PublishResponseSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — admin role required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    404: {
+      description: "Internal database not configured",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    422: {
+      description: "Validation error",
+      content: {
+        "application/json": {
+          schema: ErrorSchema.extend({
+            details: z.array(z.unknown()).optional(),
+          }),
+        },
+      },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Publish failed — transaction rolled back",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+// ---------------------------------------------------------------------------
+// Router
+// ---------------------------------------------------------------------------
+
+const adminPublish = createAdminRouter();
+adminPublish.use(requireOrgContext());
+
+adminPublish.openapi(publishRoute, async (c) =>
+  runHandler(c, "publish mode", async () => {
+    const { requestId, orgId } = c.get("orgContext");
+    const authResult = c.get("authResult");
+
+    // Body validation is handled upstream by `validationHook` (returns 422
+    // on invalid shapes) and `requireOrgContext()` (returns 404 when the
+    // internal DB is unavailable). Here we just consume the validated body.
+    const { archiveConnections } = c.req.valid("json");
+    const archiveIds = archiveConnections ?? [];
+    const archiveDemo = archiveIds.includes(DEMO_CONNECTION_ID);
+
+    // ── Pre-transaction: resolve demo industry if we'll archive demo ─
+    // Kept outside the transaction because it's a simple read that informs
+    // whether we run the builtin-demo-prompts archive step.
+    let demoIndustry: string | null = null;
+    if (archiveDemo) {
+      try {
+        const rows = await internalQuery<{ value: string }>(
+          `SELECT value FROM settings WHERE org_id = $1 AND key = 'demo_industry'`,
+          [orgId],
+        );
+        demoIndustry = rows[0]?.value ?? null;
+      } catch (err) {
+        log.warn(
+          {
+            err: err instanceof Error ? err.message : String(err),
+            orgId,
+            requestId,
+          },
+          "Failed to read demo_industry setting — demo prompts will not be archived",
+        );
+      }
+    }
+
+    // ── Transaction ────────────────────────────────────────────────
+    const pool = getInternalDB();
+    const client = await pool.connect();
+    // Values are assigned inside the try block before either the 200
+    // response or a 500 (which doesn't read them) — start as numbers for
+    // type inference without seeding a read-before-write warning.
+    let deletedEntityCount: number;
+    let promotedEntityCount: number;
+    let promotedConnectionCount: number;
+    let promotedPromptCount: number;
+    let archivedConnectionCount: number;
+    let archivedEntityCount: number;
+
+    try {
+      await client.query("BEGIN");
+
+      // Phase 1: apply tombstones (delete targeted published rows + tombstones)
+      deletedEntityCount = await applyTombstones(client, orgId);
+
+      // Phase 2 + 3a: remove superseded published entities, promote drafts
+      promotedEntityCount = await promoteDraftEntities(client, orgId);
+
+      // Phase 3b: promote draft connections
+      const promotedConns = await client.query(
+        `UPDATE connections SET status = 'published', updated_at = now()
+         WHERE org_id = $1 AND status = 'draft'
+         RETURNING id`,
+        [orgId],
+      );
+      promotedConnectionCount = promotedConns.rows.length;
+
+      // Phase 3c: promote draft prompt collections
+      const promotedPrompts = await client.query(
+        `UPDATE prompt_collections SET status = 'published', updated_at = now()
+         WHERE org_id = $1 AND status = 'draft'
+         RETURNING id`,
+        [orgId],
+      );
+      promotedPromptCount = promotedPrompts.rows.length;
+
+      // Phase 4: archive requested connections (+ cascade to their entities)
+      const archiveResult = await archiveConnectionsAndEntities(
+        client,
+        orgId,
+        archiveIds,
+      );
+      archivedConnectionCount = archiveResult.connections;
+      archivedEntityCount = archiveResult.entities;
+
+      // Phase 4b: when demo is being archived, also archive the built-in
+      // demo prompt collections that match the org's demo industry.
+      if (archiveDemo && demoIndustry) {
+        await client.query(
+          `UPDATE prompt_collections SET status = 'archived', updated_at = now()
+           WHERE org_id = $1
+             AND is_builtin = true
+             AND status = 'published'
+             AND industry = $2`,
+          [orgId, demoIndustry],
+        );
+      }
+
+      await client.query("COMMIT");
+    } catch (err) {
+      await client.query("ROLLBACK").catch((rollbackErr: unknown) => {
+        log.warn(
+          {
+            err:
+              rollbackErr instanceof Error
+                ? rollbackErr.message
+                : String(rollbackErr),
+            orgId,
+            requestId,
+          },
+          "ROLLBACK failed after publish error",
+        );
+      });
+      log.error(
+        {
+          err: err instanceof Error ? err : new Error(String(err)),
+          orgId,
+          requestId,
+        },
+        "Publish failed — transaction rolled back",
+      );
+      return c.json(
+        {
+          error: "publish_failed",
+          message:
+            "Publish failed — all changes rolled back. See server logs for details.",
+          requestId,
+        },
+        500,
+      );
+    } finally {
+      client.release();
+    }
+
+    // ── Audit + response ────────────────────────────────────────────
+    logAdminAction({
+      actionType: ADMIN_ACTIONS.mode.publish,
+      targetType: "mode",
+      targetId: orgId,
+      ipAddress:
+        c.req.header("x-forwarded-for") ??
+        c.req.header("x-real-ip") ??
+        null,
+      metadata: {
+        promotedConnections: promotedConnectionCount,
+        promotedEntities: promotedEntityCount,
+        promotedPrompts: promotedPromptCount,
+        deletedEntities: deletedEntityCount,
+        archivedConnections: archivedConnectionCount,
+        archivedEntities: archivedEntityCount,
+        archiveIds,
+      },
+    });
+
+    log.info(
+      {
+        requestId,
+        orgId,
+        actorId: authResult.user?.id,
+        promoted: {
+          connections: promotedConnectionCount,
+          entities: promotedEntityCount,
+          prompts: promotedPromptCount,
+        },
+        deleted: { entities: deletedEntityCount },
+        archived: {
+          connections: archivedConnectionCount,
+          entities: archivedEntityCount,
+        },
+      },
+      "Publish succeeded",
+    );
+
+    const response: PublishResponse = {
+      promoted: {
+        connections: promotedConnectionCount,
+        entities: promotedEntityCount,
+        prompts: promotedPromptCount,
+      },
+      deleted: { entities: deletedEntityCount },
+      archived: {
+        connections: archivedConnectionCount,
+        entities: archivedEntityCount,
+      },
+    };
+    return c.json(response, 200);
+  }),
+);
+
+export { adminPublish };

@@ -298,6 +298,14 @@ export function createApiTestMocks(
     deleteEntity: mock(() => Promise.resolve(false)),
     countEntities: mock(() => Promise.resolve(0)),
     bulkUpsertEntities: mock(() => Promise.resolve(0)),
+    // Publish helpers (#1429) — default no-ops. Tests that exercise the
+    // publish endpoint override `@atlas/api/lib/db/internal.getInternalDB`
+    // to drive the transactional client directly.
+    applyTombstones: mock(() => Promise.resolve(0)),
+    promoteDraftEntities: mock(() => Promise.resolve(0)),
+    archiveConnectionsAndEntities: mock(() =>
+      Promise.resolve({ connections: 0, entities: 0 }),
+    ),
   }));
 
   mock.module("@atlas/api/lib/semantic/diff", () => ({

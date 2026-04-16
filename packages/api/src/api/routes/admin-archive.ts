@@ -94,6 +94,42 @@ async function readDemoIndustry(
   }
 }
 
+/**
+ * Map an archive helper result with cascade counts to the wire response.
+ * `connection` is `true` only when the connection row itself flipped
+ * (`archived` variant); `already_archived` reports `false` with the
+ * reconciled cascade counts.
+ */
+function toArchiveResponse(
+  result: { status: "archived" | "already_archived"; entities: number; prompts: number },
+): ArchiveResponse {
+  return {
+    archived: {
+      connection: result.status === "archived",
+      entities: result.entities,
+      prompts: result.prompts,
+    },
+  };
+}
+
+/**
+ * Map a restore helper result to the wire response. Only invoked on the
+ * `restored` variant — `not_found` / `not_archived` are handled as 404
+ * before reaching here.
+ */
+function toRestoreResponse(result: {
+  entities: number;
+  prompts: number;
+}): RestoreResponse {
+  return {
+    restored: {
+      connection: true,
+      entities: result.entities,
+      prompts: result.prompts,
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Routes
 // ---------------------------------------------------------------------------
@@ -300,13 +336,18 @@ adminArchive.openapi(archiveRoute, async (c) =>
           404,
         );
 
+      case "archived":
       case "already_archived": {
-        // Connection row was already archived; cascades still ran so any
-        // straggler published entities/prompts got reconciled. Audit the
-        // reconciliation so ops can see it, but mark `connection: false`
-        // on the wire — the connection row itself didn't flip.
+        // Audit action splits on whether the connection row actually
+        // flipped: `mode.archive` captures the state transition;
+        // `mode.archive_reconcile` captures cascade-only reconciliation
+        // on an already-archived connection. Compliance queries
+        // counting `action_type = 'mode.archive'` stay clean.
+        const isReconcile = result.status === "already_archived";
         logAdminAction({
-          actionType: ADMIN_ACTIONS.mode.archive,
+          actionType: isReconcile
+            ? ADMIN_ACTIONS.mode.archiveReconcile
+            : ADMIN_ACTIONS.mode.archive,
           targetType: "mode",
           targetId: connectionId,
           ipAddress:
@@ -318,7 +359,6 @@ adminArchive.openapi(archiveRoute, async (c) =>
             connectionId,
             cascadedEntities: result.entities,
             cascadedPrompts: result.prompts,
-            alreadyArchived: true,
           },
         });
         log.info(
@@ -332,55 +372,11 @@ adminArchive.openapi(archiveRoute, async (c) =>
               prompts: result.prompts,
             },
           },
-          "Connection already archived — cascade reconciled",
+          isReconcile
+            ? "Connection already archived — cascade reconciled"
+            : "Connection archived",
         );
-        const response: ArchiveResponse = {
-          archived: {
-            connection: false,
-            entities: result.entities,
-            prompts: result.prompts,
-          },
-        };
-        return c.json(response, 200);
-      }
-
-      case "archived": {
-        logAdminAction({
-          actionType: ADMIN_ACTIONS.mode.archive,
-          targetType: "mode",
-          targetId: connectionId,
-          ipAddress:
-            c.req.header("x-forwarded-for") ??
-            c.req.header("x-real-ip") ??
-            null,
-          metadata: {
-            orgId,
-            connectionId,
-            cascadedEntities: result.entities,
-            cascadedPrompts: result.prompts,
-          },
-        });
-        log.info(
-          {
-            requestId,
-            orgId,
-            connectionId,
-            actorId: authResult.user?.id,
-            archived: {
-              entities: result.entities,
-              prompts: result.prompts,
-            },
-          },
-          "Connection archived",
-        );
-        const response: ArchiveResponse = {
-          archived: {
-            connection: true,
-            entities: result.entities,
-            prompts: result.prompts,
-          },
-        };
-        return c.json(response, 200);
+        return c.json(toArchiveResponse(result), 200);
       }
 
       default: {
@@ -503,14 +499,7 @@ adminRestore.openapi(restoreRoute, async (c) =>
           },
           "Connection restored",
         );
-        const response: RestoreResponse = {
-          restored: {
-            connection: true,
-            entities: result.entities,
-            prompts: result.prompts,
-          },
-        };
-        return c.json(response, 200);
+        return c.json(toRestoreResponse(result), 200);
       }
 
       default: {

@@ -11,6 +11,7 @@
 
 import { describe, it, expect, beforeEach, afterAll, mock } from "bun:test";
 import { createApiTestMocks } from "@atlas/api/testing/api-test-mocks";
+import { makeArchiveRestoreStubs } from "@atlas/api/testing/archive-restore";
 
 // ── Transactional client mock ─────────────────────────────────────────
 // Each test captures the sequence of queries issued against the pool's
@@ -129,59 +130,10 @@ mock.module("@atlas/api/lib/semantic/entities", () => ({
     );
     return res.rows.length;
   },
-  DEMO_CONNECTION_ID: "__demo__",
-  // Single-connection archive helper — real-fidelity stub that issues the
-  // SQL publish now loops through. Mirrors the implementation in
-  // packages/api/src/lib/semantic/entities.ts and must be kept in sync.
-  archiveSingleConnection: async (
-    client: { query: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[] }> },
-    orgId: string,
-    connectionId: string,
-    opts?: { demoIndustry?: string | null },
-  ) => {
-    const current = await client.query(
-      `SELECT status FROM connections WHERE org_id = $1 AND id = $2 FOR UPDATE`,
-      [orgId, connectionId],
-    );
-    if (current.rows.length === 0) return { status: "not_found" as const };
-    const row = current.rows[0] as { status: string };
-    const wasAlreadyArchived = row.status === "archived";
-    if (!wasAlreadyArchived) {
-      await client.query(
-        `UPDATE connections SET status = 'archived', updated_at = now()
-         WHERE org_id = $1 AND id = $2`,
-        [orgId, connectionId],
-      );
-    }
-    const archivedEntities = await client.query(
-      `UPDATE semantic_entities SET status = 'archived', updated_at = now()
-       WHERE org_id = $1 AND connection_id = $2 AND status = 'published'
-       RETURNING id`,
-      [orgId, connectionId],
-    );
-    let prompts = 0;
-    if (connectionId === "__demo__" && opts?.demoIndustry) {
-      const archivedPrompts = await client.query(
-        `UPDATE prompt_collections SET status = 'archived', updated_at = now()
-         WHERE org_id = $1 AND is_builtin = true AND status = 'published' AND industry = $2
-         RETURNING id`,
-        [orgId, opts.demoIndustry],
-      );
-      prompts = archivedPrompts.rows.length;
-    }
-    return {
-      status: wasAlreadyArchived
-        ? ("already_archived" as const)
-        : ("archived" as const),
-      entities: archivedEntities.rows.length,
-      prompts,
-    };
-  },
-  // Not exercised by publish tests but exports must exist so admin-archive.ts
-  // can load when admin.ts imports it.
-  restoreSingleConnection: mock(() =>
-    Promise.resolve({ status: "not_found" as const }),
-  ),
+  // Single-connection archive/restore helpers. Spread from the shared
+  // factory so admin-publish.test.ts and admin-archive-restore.test.ts
+  // stay in lockstep automatically.
+  ...makeArchiveRestoreStubs(),
 }));
 
 // ── Import app AFTER mocks ────────────────────────────────────────────

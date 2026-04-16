@@ -16,6 +16,7 @@
 
 import { describe, it, expect, beforeEach, afterAll, mock } from "bun:test";
 import { createApiTestMocks } from "@atlas/api/testing/api-test-mocks";
+import { makeArchiveRestoreStubs } from "@atlas/api/testing/archive-restore";
 
 // ── Transactional client mock ─────────────────────────────────────────
 
@@ -65,125 +66,31 @@ const mocks = createApiTestMocks({
   },
 });
 
-// Full-fidelity stubs for the archive/restore helpers — mirrors the real
-// implementation in packages/api/src/lib/semantic/entities.ts and is kept
-// in sync with the signature there. We want the endpoint to issue actual
-// SQL against our mock client so we can assert BEGIN/COMMIT/ROLLBACK and
-// cascade ordering.
-mock.module("@atlas/api/lib/semantic/entities", () => {
-  const DEMO_CONNECTION_ID = "__demo__";
-
-  return {
-    // Default no-ops for non-publish helpers
-    listEntities: mock(() => Promise.resolve([])),
-    getEntity: mock(() => Promise.resolve(null)),
-    upsertEntity: mock(() => Promise.resolve()),
-    deleteEntity: mock(() => Promise.resolve(false)),
-    countEntities: mock(() => Promise.resolve(0)),
-    bulkUpsertEntities: mock(() => Promise.resolve(0)),
-    upsertDraftEntity: mock(() => Promise.resolve()),
-    upsertTombstone: mock(() => Promise.resolve()),
-    deleteDraftEntity: mock(() => Promise.resolve(false)),
-    createVersion: mock(() => Promise.resolve("v1")),
-    listVersions: mock(() => Promise.resolve({ versions: [], total: 0 })),
-    getVersion: mock(() => Promise.resolve(null)),
-    generateChangeSummary: mock(() => Promise.resolve("")),
-    listEntitiesWithOverlay: mock(() => Promise.resolve([])),
-    SEMANTIC_ENTITY_STATUSES: ["published", "draft", "draft_delete", "archived"],
-    DEMO_CONNECTION_ID,
-
-    applyTombstones: mock(() => Promise.resolve(0)),
-    promoteDraftEntities: mock(() => Promise.resolve(0)),
-
-    archiveSingleConnection: async (
-      client: { query: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[] }> },
-      orgId: string,
-      connectionId: string,
-      opts?: { demoIndustry?: string | null },
-    ) => {
-      const current = await client.query(
-        `SELECT status FROM connections WHERE org_id = $1 AND id = $2 FOR UPDATE`,
-        [orgId, connectionId],
-      );
-      if (current.rows.length === 0) return { status: "not_found" as const };
-      const row = current.rows[0] as { status: string };
-      const wasAlreadyArchived = row.status === "archived";
-      if (!wasAlreadyArchived) {
-        await client.query(
-          `UPDATE connections SET status = 'archived', updated_at = now()
-           WHERE org_id = $1 AND id = $2`,
-          [orgId, connectionId],
-        );
-      }
-      const archivedEntities = await client.query(
-        `UPDATE semantic_entities SET status = 'archived', updated_at = now()
-         WHERE org_id = $1 AND connection_id = $2 AND status = 'published'
-         RETURNING id`,
-        [orgId, connectionId],
-      );
-      let prompts = 0;
-      if (connectionId === DEMO_CONNECTION_ID && opts?.demoIndustry) {
-        const archivedPrompts = await client.query(
-          `UPDATE prompt_collections SET status = 'archived', updated_at = now()
-           WHERE org_id = $1 AND is_builtin = true AND status = 'published' AND industry = $2
-           RETURNING id`,
-          [orgId, opts.demoIndustry],
-        );
-        prompts = archivedPrompts.rows.length;
-      }
-      return {
-        status: wasAlreadyArchived
-          ? ("already_archived" as const)
-          : ("archived" as const),
-        entities: archivedEntities.rows.length,
-        prompts,
-      };
-    },
-
-    restoreSingleConnection: async (
-      client: { query: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[] }> },
-      orgId: string,
-      connectionId: string,
-      opts?: { demoIndustry?: string | null },
-    ) => {
-      const current = await client.query(
-        `SELECT status FROM connections WHERE org_id = $1 AND id = $2 FOR UPDATE`,
-        [orgId, connectionId],
-      );
-      if (current.rows.length === 0) return { status: "not_found" as const };
-      const row = current.rows[0] as { status: string };
-      if (row.status !== "archived") {
-        return { status: "not_archived" as const };
-      }
-      await client.query(
-        `UPDATE connections SET status = 'published', updated_at = now()
-         WHERE org_id = $1 AND id = $2 AND status = 'archived'`,
-        [orgId, connectionId],
-      );
-      const restoredEntities = await client.query(
-        `UPDATE semantic_entities SET status = 'published', updated_at = now()
-         WHERE org_id = $1 AND connection_id = $2 AND status = 'archived'
-         RETURNING id`,
-        [orgId, connectionId],
-      );
-      let prompts = 0;
-      if (connectionId === DEMO_CONNECTION_ID && opts?.demoIndustry) {
-        const restoredPrompts = await client.query(
-          `UPDATE prompt_collections SET status = 'published', updated_at = now()
-           WHERE org_id = $1 AND is_builtin = true AND status = 'archived' AND industry = $2
-           RETURNING id`,
-          [orgId, opts.demoIndustry],
-        );
-        prompts = restoredPrompts.rows.length;
-      }
-      return {
-        status: "restored" as const,
-        entities: restoredEntities.rows.length,
-        prompts,
-      };
-    },
-  };
-});
+// Replace the default no-op semantic/entities mock with full-fidelity
+// archive/restore stubs that issue real SQL against our transactional
+// client. That lets the tests assert BEGIN / lock-before-mutate /
+// cascade-ordering / COMMIT. Other entity helpers stay as no-ops because
+// this test file doesn't exercise them.
+mock.module("@atlas/api/lib/semantic/entities", () => ({
+  listEntities: mock(() => Promise.resolve([])),
+  getEntity: mock(() => Promise.resolve(null)),
+  upsertEntity: mock(() => Promise.resolve()),
+  deleteEntity: mock(() => Promise.resolve(false)),
+  countEntities: mock(() => Promise.resolve(0)),
+  bulkUpsertEntities: mock(() => Promise.resolve(0)),
+  upsertDraftEntity: mock(() => Promise.resolve()),
+  upsertTombstone: mock(() => Promise.resolve()),
+  deleteDraftEntity: mock(() => Promise.resolve(false)),
+  createVersion: mock(() => Promise.resolve("v1")),
+  listVersions: mock(() => Promise.resolve({ versions: [], total: 0 })),
+  getVersion: mock(() => Promise.resolve(null)),
+  generateChangeSummary: mock(() => Promise.resolve("")),
+  listEntitiesWithOverlay: mock(() => Promise.resolve([])),
+  SEMANTIC_ENTITY_STATUSES: ["published", "draft", "draft_delete", "archived"],
+  applyTombstones: mock(() => Promise.resolve(0)),
+  promoteDraftEntities: mock(() => Promise.resolve(0)),
+  ...makeArchiveRestoreStubs(),
+}));
 
 // Import app AFTER mocks are declared
 const { app } = await import("../index");

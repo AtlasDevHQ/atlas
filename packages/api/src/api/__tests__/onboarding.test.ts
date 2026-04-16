@@ -104,6 +104,30 @@ mock.module("@atlas/api/lib/semantic", () => ({
   _resetWhitelists: () => {},
 }));
 
+const mockImportFromDisk: Mock<(orgId: string, options?: { connectionId?: string; sourceDir?: string }) => Promise<{ imported: number; skipped: number; errors: unknown[]; total: number }>> = mock(
+  async () => ({ imported: 5, skipped: 0, errors: [], total: 5 }),
+);
+
+mock.module("@atlas/api/lib/semantic/sync", () => ({
+  importFromDisk: mockImportFromDisk,
+}));
+
+mock.module("@atlas/api/lib/semantic/files", () => ({
+  getSemanticRoot: () => "/mock/semantic",
+}));
+
+// Mock fs.existsSync so getDemoSemanticDir can resolve paths without real filesystem
+mock.module("fs", () => ({
+  existsSync: () => true,
+  promises: {
+    readFile: async () => "",
+    readdir: async () => [],
+    stat: async () => ({ isDirectory: () => true }),
+    mkdir: async () => undefined,
+    writeFile: async () => undefined,
+  },
+}));
+
 mock.module("@atlas/api/lib/security", () => ({
   maskConnectionUrl: (url: string) => url.replace(/\/\/.*@/, "//***@"),
 }));
@@ -122,6 +146,8 @@ mock.module("@atlas/api/lib/plugins/hooks", () => ({
   dispatchHook: async () => {},
 }));
 
+const mockSetSetting: Mock<(key: string, value: string, userId?: string, orgId?: string) => Promise<void>> = mock(async () => {});
+
 mock.module("@atlas/api/lib/settings", () => ({
   getSetting: () => undefined,
   getSettingAuto: () => undefined,
@@ -129,7 +155,7 @@ mock.module("@atlas/api/lib/settings", () => ({
   getSettingsForAdmin: () => [],
   getSettingsRegistry: () => [],
   getSettingDefinition: () => undefined,
-  setSetting: async () => {},
+  setSetting: mockSetSetting,
   deleteSetting: async () => {},
   loadSettings: async () => 0,
   getAllSettingOverrides: async () => [],
@@ -585,6 +611,257 @@ describe("POST /api/v1/onboarding/tour-reset", () => {
       method: "POST",
     });
     expect(res.status).toBe(404);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/v1/onboarding/use-demo
+// ---------------------------------------------------------------------------
+
+describe("POST /api/v1/onboarding/use-demo", () => {
+  const originalEnv = { ...process.env };
+
+  beforeEach(() => {
+    mockAuthMode = "managed";
+    mockAuthenticate.mockImplementation(() =>
+      Promise.resolve({
+        authenticated: true,
+        mode: "managed",
+        user: { id: "user-1", mode: "managed", label: "test@example.com", role: "admin", activeOrganizationId: "org-1" },
+      }),
+    );
+    mockHasInternalDB.mockImplementation(() => true);
+    mockInternalQuery.mockClear();
+    mockInternalQuery.mockImplementation(async () => [{ id: "__demo__" }]);
+    mockEncryptUrl.mockClear();
+    mockEncryptUrl.mockImplementation((url: string) => `encrypted:${url}`);
+    mockRegister.mockClear();
+    mockUnregister.mockClear();
+    mockHas.mockImplementation(() => true);
+    mockImportFromDisk.mockClear();
+    mockImportFromDisk.mockImplementation(async () => ({ imported: 5, skipped: 0, errors: [], total: 5 }));
+    mockSetSetting.mockClear();
+    process.env.ATLAS_DATASOURCE_URL = "postgresql://demo:pass@localhost:5432/demo";
+  });
+
+  afterEach(() => {
+    Object.assign(process.env, originalEnv);
+  });
+
+  it("creates demo connection with id='__demo__'", async () => {
+    const res = await request("/api/v1/onboarding/use-demo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ demoType: "cybersec" }),
+    });
+    expect(res.status).toBe(201);
+    const data = await json(res);
+    expect(data.connectionId).toBe("__demo__");
+    expect(data.dbType).toBe("postgres");
+    expect(data.entitiesImported).toBe(5);
+  });
+
+  it("saves connection with status='published' in upsert SQL", async () => {
+    await request("/api/v1/onboarding/use-demo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ demoType: "cybersec" }),
+    });
+
+    // Find the INSERT INTO connections call
+    const connectionInsertCall = mockInternalQuery.mock.calls.find(
+      (call) => typeof call[0] === "string" && call[0].includes("INSERT INTO connections"),
+    );
+    expect(connectionInsertCall).toBeDefined();
+    const sql = connectionInsertCall![0] as string;
+    expect(sql).toContain("'published'");
+    const params = connectionInsertCall![1] as unknown[];
+    expect(params[0]).toBe("__demo__");
+  });
+
+  it("imports semantic entities with connectionId='__demo__'", async () => {
+    await request("/api/v1/onboarding/use-demo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ demoType: "cybersec" }),
+    });
+
+    expect(mockImportFromDisk).toHaveBeenCalledWith(
+      "org-1",
+      expect.objectContaining({ connectionId: "__demo__" }),
+    );
+  });
+
+  it("writes demo_industry setting for the org", async () => {
+    await request("/api/v1/onboarding/use-demo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ demoType: "cybersec" }),
+    });
+
+    expect(mockSetSetting).toHaveBeenCalledWith(
+      "ATLAS_DEMO_INDUSTRY",
+      "cybersecurity",
+      "user-1",
+      "org-1",
+    );
+  });
+
+  it("maps demo type 'ecommerce' to industry 'ecommerce'", async () => {
+    await request("/api/v1/onboarding/use-demo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ demoType: "ecommerce" }),
+    });
+
+    expect(mockSetSetting).toHaveBeenCalledWith(
+      "ATLAS_DEMO_INDUSTRY",
+      "ecommerce",
+      "user-1",
+      "org-1",
+    );
+  });
+
+  it("maps demo type 'demo' to industry 'saas'", async () => {
+    await request("/api/v1/onboarding/use-demo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+
+    expect(mockSetSetting).toHaveBeenCalledWith(
+      "ATLAS_DEMO_INDUSTRY",
+      "saas",
+      "user-1",
+      "org-1",
+    );
+  });
+
+  it("seeds demo prompt collections for matching industry", async () => {
+    await request("/api/v1/onboarding/use-demo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ demoType: "cybersec" }),
+    });
+
+    // The seedDemoPromptCollections function queries for builtin collections
+    const builtinQuery = mockInternalQuery.mock.calls.find(
+      (call) => typeof call[0] === "string" && call[0].includes("is_builtin = true") && call[0].includes("industry"),
+    );
+    expect(builtinQuery).toBeDefined();
+    const params = builtinQuery![1] as unknown[];
+    expect(params[0]).toBe("cybersecurity");
+  });
+
+  it("rejects when auth mode is not managed", async () => {
+    mockAuthMode = "none";
+    const res = await request("/api/v1/onboarding/use-demo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ demoType: "cybersec" }),
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it("rejects when no active organization", async () => {
+    mockAuthenticate.mockImplementation(() =>
+      Promise.resolve({
+        authenticated: true,
+        mode: "managed",
+        user: { id: "user-1", mode: "managed", label: "test@example.com", role: "member" },
+      }),
+    );
+    const res = await request("/api/v1/onboarding/use-demo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ demoType: "cybersec" }),
+    });
+    expect(res.status).toBe(400);
+    const data = await json(res);
+    expect(data.error).toBe("no_organization");
+  });
+
+  it("returns 400 when no datasource URL is configured", async () => {
+    delete process.env.ATLAS_DATASOURCE_URL;
+    const res = await request("/api/v1/onboarding/use-demo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ demoType: "cybersec" }),
+    });
+    expect(res.status).toBe(400);
+    const data = await json(res);
+    expect(data.error).toBe("no_demo_datasource");
+  });
+
+  it("returns 500 when semantic import fails", async () => {
+    mockImportFromDisk.mockImplementation(async () => { throw new Error("import boom"); });
+    const res = await request("/api/v1/onboarding/use-demo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ demoType: "cybersec" }),
+    });
+    expect(res.status).toBe(500);
+    const data = await json(res);
+    expect(data.error).toBe("import_failed");
+    mockImportFromDisk.mockImplementation(async () => ({ imported: 5, skipped: 0, errors: [], total: 5 }));
+  });
+
+  it("returns 500 with requestId when encryption fails", async () => {
+    mockEncryptUrl.mockImplementation(() => { throw new Error("bad key"); });
+    const res = await request("/api/v1/onboarding/use-demo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ demoType: "cybersec" }),
+    });
+    expect(res.status).toBe(500);
+    const data = await json(res);
+    expect(data.error).toBe("encryption_failed");
+    expect(data.requestId).toBeDefined();
+    mockEncryptUrl.mockImplementation((url: string) => `encrypted:${url}`);
+  });
+
+  it("succeeds even when setSetting fails (non-fatal)", async () => {
+    mockSetSetting.mockImplementation(async () => { throw new Error("settings db down"); });
+    const res = await request("/api/v1/onboarding/use-demo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ demoType: "cybersec" }),
+    });
+    expect(res.status).toBe(201);
+    const data = await json(res);
+    expect(data.connectionId).toBe("__demo__");
+  });
+
+  it("succeeds even when prompt collection seeding fails (non-fatal)", async () => {
+    const originalImpl = mockInternalQuery.getMockImplementation();
+    mockInternalQuery.mockImplementation(async (sql: string) => {
+      if (typeof sql === "string" && sql.includes("is_builtin = true")) {
+        throw new Error("prompt_collections table missing");
+      }
+      return [{ id: "__demo__" }];
+    });
+    const res = await request("/api/v1/onboarding/use-demo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ demoType: "cybersec" }),
+    });
+    expect(res.status).toBe(201);
+    const data = await json(res);
+    expect(data.connectionId).toBe("__demo__");
+    if (originalImpl) mockInternalQuery.mockImplementation(originalImpl);
+  });
+
+  it("returns 500 with requestId when DB upsert fails", async () => {
+    mockInternalQuery.mockImplementation(async () => { throw new Error("connection reset"); });
+    const res = await request("/api/v1/onboarding/use-demo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ demoType: "cybersec" }),
+    });
+    expect(res.status).toBe(500);
+    const data = await json(res);
+    expect(data.error).toBe("internal_error");
+    expect(data.requestId).toBeDefined();
   });
 });
 

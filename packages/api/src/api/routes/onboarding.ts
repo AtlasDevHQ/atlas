@@ -24,6 +24,7 @@ import { maskConnectionUrl } from "@atlas/api/lib/security";
 import { _resetWhitelists } from "@atlas/api/lib/semantic";
 import { importFromDisk } from "@atlas/api/lib/semantic/sync";
 import { getSemanticRoot } from "@atlas/api/lib/semantic/files";
+import { setSetting } from "@atlas/api/lib/settings";
 import { ErrorSchema } from "./shared-schemas";
 import { standardAuth, requestContext, type AuthEnv } from "./middleware";
 import path from "path";
@@ -42,6 +43,16 @@ const DEMO_LABELS: Record<DemoType, string> = {
   cybersec: "Sentinel Security (Cybersecurity SaaS)",
   ecommerce: "NovaMart (E-commerce)",
 };
+
+/** Maps demo type to the canonical industry string used in prompt_collections and settings. */
+const DEMO_INDUSTRIES: Record<DemoType, string> = {
+  demo: "saas",
+  cybersec: "cybersecurity",
+  ecommerce: "ecommerce",
+};
+
+/** Reserved connection ID for demo workspaces. */
+const DEMO_CONNECTION_ID = "__demo__";
 
 /**
  * Resolve the semantic layer source directory for a demo type.
@@ -69,6 +80,63 @@ function getDemoSemanticDir(demoType: DemoType): string {
     `Each semantic directory must contain an entities/ subdirectory. ` +
     `Checked: ${dockerPath}/entities, ${seedsPath}/entities, ${devPath}/entities`,
   );
+}
+
+/**
+ * Seed org-scoped prompt collections matching the demo industry.
+ * Copies the global builtins for that industry into the org's namespace
+ * so they appear in the prompt library immediately after demo setup.
+ */
+async function seedDemoPromptCollections(orgId: string, industry: string): Promise<void> {
+  // Find global builtin collections for this industry
+  const builtins = await internalQuery<{ id: string; name: string; description: string; sort_order: number }>(
+    `SELECT id, name, description, sort_order FROM prompt_collections
+     WHERE is_builtin = true AND industry = $1 AND org_id IS NULL`,
+    [industry],
+  );
+
+  for (const builtin of builtins) {
+    try {
+      // Skip if org already has a collection with this name
+      const existing = await internalQuery<{ id: string }>(
+        `SELECT id FROM prompt_collections WHERE name = $1 AND org_id = $2`,
+        [builtin.name, orgId],
+      );
+      if (existing.length > 0) continue;
+
+      // Create org-scoped copy
+      const inserted = await internalQuery<{ id: string }>(
+        `INSERT INTO prompt_collections (name, industry, description, is_builtin, sort_order, org_id, status)
+         VALUES ($1, $2, $3, true, $4, $5, 'published')
+         RETURNING id`,
+        [builtin.name, industry, builtin.description, builtin.sort_order, orgId],
+      );
+      if (!inserted[0]?.id) {
+        log.warn({ collection: builtin.name, orgId }, "Failed to seed demo prompt collection — INSERT returned no rows");
+        continue;
+      }
+
+      // Copy prompt items from the global collection (independent inserts — parallelize)
+      const items = await internalQuery<{ question: string; description: string; category: string; sort_order: number }>(
+        `SELECT question, description, category, sort_order FROM prompt_items
+         WHERE collection_id = $1 ORDER BY sort_order ASC`,
+        [builtin.id],
+      );
+      const collectionId = inserted[0].id;
+      await Promise.all(items.map((item) =>
+        internalQuery(
+          `INSERT INTO prompt_items (collection_id, question, description, category, sort_order)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [collectionId, item.question, item.description, item.category, item.sort_order],
+        ),
+      ));
+    } catch (err) {
+      log.warn(
+        { err: err instanceof Error ? err.message : String(err), collection: builtin.name, orgId },
+        "Failed to seed demo prompt collection — skipping to next",
+      );
+    }
+  }
 }
 
 /** Valid connection ID: lowercase alphanumeric, hyphens, underscores, 1-64 chars. Must not start with underscore (reserved for internal IDs). */
@@ -489,7 +557,7 @@ onboarding.openapi(
         ),
         catch: (err) => err instanceof Error ? err : new Error(String(err)),
       }).pipe(Effect.catchAll((err) => {
-        log.error({ err, requestId }, "Failed to persist onboarding connection");
+        log.error({ err: err.message, requestId }, "Failed to persist onboarding connection");
         return Effect.succeed(null);
       }));
 
@@ -579,7 +647,8 @@ onboarding.openapi(
         return c.json({ error: "no_demo_datasource", message: "No demo datasource configured. Set ATLAS_DATASOURCE_URL." }, 400);
       }
 
-      const id = "default";
+      const id = DEMO_CONNECTION_ID;
+      const industry = DEMO_INDUSTRIES[demoType];
       let dbType: string;
       try {
         dbType = detectDBType(url);
@@ -588,7 +657,7 @@ onboarding.openapi(
         return c.json({ error: "invalid_datasource", message: "Demo datasource URL has an unsupported scheme." }, 500);
       }
 
-      // Encrypt and persist (same logic as /complete)
+      // Encrypt and persist with status='published'
       let encryptedUrl: string;
       try {
         encryptedUrl = encryptUrl(url);
@@ -600,15 +669,15 @@ onboarding.openapi(
       const demoLabel = DEMO_LABELS[demoType];
       const upsertResult = yield* Effect.tryPromise({
         try: () => internalQuery<{ id: string }>(
-          `INSERT INTO connections (id, url, type, description, org_id)
-           VALUES ($1, $2, $3, $4, $5)
-           ON CONFLICT (id, org_id) DO UPDATE SET url = $2, type = $3, description = $4, updated_at = NOW()
+          `INSERT INTO connections (id, url, type, description, org_id, status)
+           VALUES ($1, $2, $3, $4, $5, 'published')
+           ON CONFLICT (id, org_id) DO UPDATE SET url = $2, type = $3, description = $4, status = 'published', updated_at = NOW()
            RETURNING id`,
           [id, encryptedUrl, dbType, `${demoLabel} — demo ${dbType} datasource`, orgId],
         ),
         catch: (err) => err instanceof Error ? err : new Error(String(err)),
       }).pipe(Effect.catchAll((err) => {
-        log.error({ err, requestId }, "Failed to persist demo connection");
+        log.error({ err: err.message, requestId }, "Failed to persist demo connection");
         return Effect.succeed(null);
       }));
 
@@ -642,7 +711,7 @@ onboarding.openapi(
       }
 
       const importResult = yield* Effect.tryPromise({
-        try: () => importFromDisk(orgId, { sourceDir: semanticDir, connectionId: "default" }),
+        try: () => importFromDisk(orgId, { sourceDir: semanticDir, connectionId: DEMO_CONNECTION_ID }),
         catch: (err) => err instanceof Error ? err : new Error(String(err)),
       }).pipe(Effect.catchAll((err) => {
         log.error({ err: err.message, requestId, demoType, semanticDir }, "Semantic layer import failed");
@@ -662,9 +731,27 @@ onboarding.openapi(
         log.info({ orgId, demoType, imported: importResult.imported, skipped: importResult.skipped, requestId }, "Imported semantic layer for demo workspace");
       }
 
+      // Write demo_industry setting + seed prompt collections concurrently (independent, non-fatal)
+      yield* Effect.all([
+        Effect.tryPromise({
+          try: () => setSetting("ATLAS_DEMO_INDUSTRY", industry, user?.id, orgId),
+          catch: (err) => err instanceof Error ? err : new Error(String(err)),
+        }).pipe(Effect.catchAll((err) => {
+          log.warn({ err: err.message, requestId, orgId, industry }, "Failed to write demo_industry setting — non-fatal");
+          return Effect.void;
+        })),
+        Effect.tryPromise({
+          try: () => seedDemoPromptCollections(orgId, industry),
+          catch: (err) => err instanceof Error ? err : new Error(String(err)),
+        }).pipe(Effect.catchAll((err) => {
+          log.warn({ err: err.message, requestId, orgId, industry }, "Failed to seed demo prompt collections — non-fatal");
+          return Effect.void;
+        })),
+      ], { concurrency: "unbounded" });
+
       _resetWhitelists();
 
-      log.info({ requestId, orgId, demoType, dbType, userId: user?.id, entitiesImported }, "Demo onboarding complete");
+      log.info({ requestId, orgId, demoType, dbType, userId: user?.id, entitiesImported, industry }, "Demo onboarding complete");
 
       return c.json({
         connectionId: id,

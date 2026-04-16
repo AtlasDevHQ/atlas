@@ -306,6 +306,18 @@ const SETTINGS_REGISTRY: SettingDefinition[] = [
     scope: "workspace",
   },
 
+  // Demo
+  {
+    key: "ATLAS_DEMO_INDUSTRY",
+    section: "Demo",
+    label: "Demo Industry",
+    description: "Industry of the demo dataset provisioned during onboarding (saas, cybersecurity, ecommerce)",
+    type: "string",
+    envVar: "ATLAS_DEMO_INDUSTRY",
+    scope: "workspace",
+    saasVisible: false,
+  },
+
   // Appearance
   {
     key: "ATLAS_BRAND_COLOR",

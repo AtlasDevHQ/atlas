@@ -1,6 +1,6 @@
 import { describe, expect, test, afterEach } from "bun:test";
 import { render, cleanup } from "@testing-library/react";
-import { DemoBadge, DraftBadge } from "../components/admin/mode-badges";
+import { DemoBadge, DraftBadge, PublishedBadge } from "../components/admin/mode-badges";
 
 describe("DemoBadge", () => {
   afterEach(() => {
@@ -49,5 +49,29 @@ describe("DraftBadge", () => {
     // Keep assertion broad so restyles within the amber family don't break
     // the test — we only care that the amber signal is present.
     expect(el?.className).toContain("amber");
+  });
+});
+
+describe("PublishedBadge", () => {
+  afterEach(() => {
+    cleanup();
+  });
+
+  test("renders 'Published' text", () => {
+    const { container } = render(<PublishedBadge />);
+    expect(container.textContent).toBe("Published");
+  });
+
+  test("has accessible label and title attribute", () => {
+    const { container } = render(<PublishedBadge />);
+    const el = container.querySelector("[aria-label]");
+    expect(el?.getAttribute("aria-label")).toBe("Published — live in production");
+    expect(el?.getAttribute("title")).toBe("Published — live in production");
+  });
+
+  test("uses emerald tint so it reads distinctly from the amber 'Draft' pill", () => {
+    const { container } = render(<PublishedBadge />);
+    const el = container.querySelector("[aria-label]");
+    expect(el?.className).toContain("emerald");
   });
 });

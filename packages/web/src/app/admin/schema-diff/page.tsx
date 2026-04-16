@@ -43,6 +43,8 @@ import {
 } from "lucide-react";
 import type { SemanticTableDiff, ConnectionInfo } from "@/ui/lib/types";
 import { ConnectionsResponseSchema, SemanticDiffResponseSchema } from "@/ui/lib/admin-schemas";
+import { useDevModeNoDrafts } from "@/ui/hooks/use-dev-mode-no-drafts";
+import { DeveloperEmptyState } from "@/ui/components/admin/developer-empty-state";
 
 // ---------------------------------------------------------------------------
 
@@ -60,6 +62,11 @@ export default function SchemaDiffPage() {
     { schema: SemanticDiffResponseSchema, deps: [connectionId] },
   );
 
+  // Schema diff is meaningful only against a developer-mode (draft)
+  // connection — route the admin to /admin/connections when they haven't
+  // drafted one yet, instead of the generic "no diff data" message.
+  const showDevNoConnection = useDevModeNoDrafts(["connections"]);
+
   const multipleConnections = connectionsData && connectionsData.length > 1;
 
   const hasDrift = diff ? diff.summary.new > 0 || diff.summary.removed > 0 || diff.summary.changed > 0 : false;
@@ -72,6 +79,14 @@ export default function SchemaDiffPage() {
         onChange={setConnectionId}
       />
     ) : null}>
+      {showDevNoConnection && !diff && !loading && !error ? (
+        <DeveloperEmptyState
+          icon={GitCompareArrows}
+          title="Nothing to diff — no developer mode connection yet."
+          description="Create a draft connection to compare its schema against the semantic layer."
+          action={{ kind: "link", label: "Go to connections", href: "/admin/connections" }}
+        />
+      ) : (
       <AdminContentWrapper
         loading={loading}
         error={error}
@@ -232,6 +247,7 @@ export default function SchemaDiffPage() {
         </div>
       </ErrorBoundary>}
       </AdminContentWrapper>
+      )}
     </PageShell>
   );
 }

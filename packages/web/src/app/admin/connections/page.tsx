@@ -34,6 +34,9 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { useDemoReadonly } from "@/ui/hooks/use-demo-readonly";
+import { useDevModeNoDrafts } from "@/ui/hooks/use-dev-mode-no-drafts";
+import { DeveloperEmptyState } from "@/ui/components/admin/developer-empty-state";
+import { PublishedContextWrapper } from "@/ui/components/admin/published-context-wrapper";
 import { DEMO_CONNECTION_ID, getConnectionColumns } from "./columns";
 import { useDataTable } from "@/hooks/use-data-table";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -584,6 +587,7 @@ export default function ConnectionsPage() {
   const { apiUrl, isCrossOrigin } = useAtlasConfig();
   const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
   const { readOnly: demoReadOnly } = useDemoReadonly();
+  const showDevNoDrafts = useDevModeNoDrafts(["connections"]);
 
   const testMutation = useAdminMutation<ConnectionHealth>({ method: "POST" });
   const [mutationError, setMutationError] = useState<string | null>(null);
@@ -820,11 +824,32 @@ export default function ConnectionsPage() {
           emptyTitle="No datasource connections"
           emptyDescription="Add a connection to start querying your data"
           emptyAction={{ label: "Add connection", onClick: handleAdd }}
-          isEmpty={displayConnections.length === 0}
+          // In dev-mode-no-drafts we short-circuit to DeveloperEmptyState
+          // instead of the generic empty state so the CTA language matches
+          // "start building" rather than "add a connection".
+          isEmpty={displayConnections.length === 0 && !showDevNoDrafts}
         >
-          <DataTable table={connTable}>
-            <DataTableToolbar table={connTable} />
-          </DataTable>
+          {showDevNoDrafts && displayConnections.length === 0 ? (
+            <DeveloperEmptyState
+              icon={Cable}
+              title="Connect your first database to start building."
+              description="Add a connection in developer mode, then publish it when you're ready."
+              action={{ kind: "button", label: "Add connection", onClick: handleAdd }}
+            />
+          ) : showDevNoDrafts ? (
+            <PublishedContextWrapper
+              resourceLabel={{ singular: "connection", plural: "connections" }}
+              action={{ kind: "button", label: "Create draft", onClick: handleAdd }}
+            >
+              <DataTable table={connTable}>
+                <DataTableToolbar table={connTable} />
+              </DataTable>
+            </PublishedContextWrapper>
+          ) : (
+            <DataTable table={connTable}>
+              <DataTableToolbar table={connTable} />
+            </DataTable>
+          )}
         </AdminContentWrapper>
       </div>
       </ErrorBoundary>

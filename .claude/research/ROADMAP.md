@@ -1178,7 +1178,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [ ] Archive/restore connection endpoints with entity cascade (#1437)
 
 ### Agent & Data
-- [ ] Agent isolation — mode-aware connection + whitelist in tool execution (#1430)
+- [x] Agent isolation — mode-aware connection + whitelist in tool execution (#1430, PR #1460)
 - [ ] Semantic diff scoping — filter `getDBSchema` to whitelist (#1431)
 - [ ] Prompt library mode scoping — demo industry filtering + draft visibility (#1438)
 - [x] `GET /api/v1/mode` endpoint (#1439, PR #1453)

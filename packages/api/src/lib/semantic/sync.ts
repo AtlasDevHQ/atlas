@@ -320,6 +320,13 @@ const _modeBuildLocks = new Map<string, Promise<void>>();
 /** Track which (orgId, mode) directories have already been built this process. */
 const _modeBuilt = new Set<string>();
 
+/**
+ * Monotonic invalidation counter per (orgId, mode). Incremented by
+ * `invalidateOrgModeRoots` so an in-flight build started before the
+ * invalidation does NOT mark the now-stale content as fresh.
+ */
+const _modeInvalidationStamp = new Map<string, number>();
+
 function modeKey(orgId: string, mode: import("@useatlas/types/auth").AtlasMode): string {
   return `${orgId}:${mode}`;
 }
@@ -327,10 +334,17 @@ function modeKey(orgId: string, mode: import("@useatlas/types/auth").AtlasMode):
 /**
  * Invalidate the cached mode-specific semantic roots for an org.
  * Called from entity CRUD paths so the next explore call rebuilds from DB.
+ *
+ * Increments the per-(org,mode) invalidation stamp so any currently-running
+ * rebuild will not add its key to `_modeBuilt` after completion — the next
+ * call rebuilds instead of serving stale files.
  */
 export function invalidateOrgModeRoots(orgId: string): void {
-  _modeBuilt.delete(modeKey(orgId, "published"));
-  _modeBuilt.delete(modeKey(orgId, "developer"));
+  for (const mode of ["published", "developer"] as const) {
+    const key = modeKey(orgId, mode);
+    _modeBuilt.delete(key);
+    _modeInvalidationStamp.set(key, (_modeInvalidationStamp.get(key) ?? 0) + 1);
+  }
 }
 
 /**
@@ -365,9 +379,21 @@ export async function ensureOrgModeSemanticRoot(
   const lock = new Promise<void>((r) => { resolve = r; });
   _modeBuildLocks.set(key, lock);
 
+  // Capture the invalidation stamp before building. If it advances during the
+  // build, an entity CRUD happened mid-build — the content we just wrote is
+  // stale. Leave _modeBuilt unset so the next call rebuilds.
+  const stampBefore = _modeInvalidationStamp.get(key) ?? 0;
   try {
     await _buildOrgModeRoot(orgId, mode, root);
-    _modeBuilt.add(key);
+    const stampAfter = _modeInvalidationStamp.get(key) ?? 0;
+    if (stampAfter === stampBefore) {
+      _modeBuilt.add(key);
+    } else {
+      log.debug(
+        { orgId, mode, stampBefore, stampAfter },
+        "Mode-specific semantic root rebuilt but invalidated mid-build — next call will rebuild",
+      );
+    }
   } finally {
     resolve!();
     _modeBuildLocks.delete(key);
@@ -423,6 +449,7 @@ async function _buildOrgModeRoot(
 export function _resetModeBuildCache(): void {
   _modeBuilt.clear();
   _modeBuildLocks.clear();
+  _modeInvalidationStamp.clear();
 }
 
 // ---------------------------------------------------------------------------

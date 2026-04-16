@@ -408,6 +408,17 @@ function resolveConnectionEffect(
   { db: DBConnection; dbType: DBType },
   ConnectionNotFoundError | PoolExhaustedError | NoDatasourceError
 > {
+  // Sentinel thrown by the mode-visibility gate so the catch arm can return an
+  // error without leaking the full registered-connection list — in published
+  // mode that list includes draft connections the user must not know about.
+  class ModeGateRejection extends Error {
+    readonly connectionId: string;
+    constructor(connectionId: string) {
+      super(`Connection "${connectionId}" is not available in ${atlasMode} mode.`);
+      this.connectionId = connectionId;
+    }
+  }
+
   return Effect.tryPromise({
     try: async () => {
       // Mode isolation: published-mode requests may only resolve published
@@ -418,13 +429,7 @@ function resolveConnectionEffect(
       if (authOrgId) {
         const visible = await isConnectionVisibleInMode(authOrgId, connId, atlasMode);
         if (!visible) {
-          // Mirror the shape used when the in-memory registry lacks an entry.
-          // In published mode this is how a draft connection must appear to
-          // the agent — as if it does not exist.
-          throw new ConnectionNotRegisteredError({
-            message: `Connection "${connId}" is not available in ${atlasMode} mode.`,
-            id: connId,
-          });
+          throw new ModeGateRejection(connId);
         }
       }
 
@@ -443,6 +448,16 @@ function resolveConnectionEffect(
       return { db, dbType };
     },
     catch: (err) => {
+      if (err instanceof ModeGateRejection) {
+        // Zero-knowledge guarantee: do NOT list registered connections —
+        // draft IDs would leak to published-mode users. Return an empty
+        // `available` list so the error shape stays consistent.
+        return new ConnectionNotFoundError({
+          message: err.message,
+          connectionId: connId,
+          available: [],
+        });
+      }
       if (err instanceof ConnectionNotRegisteredError) {
         return new ConnectionNotFoundError({
           message: `Connection "${connId}" is not registered. Available: ${connections.list().join(", ") || "(none)"}`,

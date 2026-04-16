@@ -20,6 +20,7 @@ import type { AtlasMode } from "@useatlas/types/auth";
 import { Data, Effect, Schedule, Duration, Fiber } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
 import { _resetWhitelists } from "@atlas/api/lib/semantic";
+import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import type { HealthStatus } from "@atlas/api/lib/connection-types";
 
 export type { HealthStatus } from "@atlas/api/lib/connection-types";
@@ -1368,10 +1369,6 @@ export async function isConnectionVisibleInMode(
   mode: AtlasMode,
 ): Promise<boolean> {
   if (connectionId === "default") return true;
-
-  // Lazy import to avoid a cycle: internal.ts imports from this module via
-  // connection-types, and this function is only called from the tool pipeline.
-  const { hasInternalDB, internalQuery } = await import("@atlas/api/lib/db/internal");
   if (!hasInternalDB()) return true;
 
   const statusClause = mode === "developer"

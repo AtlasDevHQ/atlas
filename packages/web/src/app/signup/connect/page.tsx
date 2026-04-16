@@ -13,7 +13,17 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Database, CheckCircle2, XCircle, Loader2, Shield, ShoppingCart, Users } from "lucide-react";
+import { cn } from "@/lib/utils";
+import {
+  Database,
+  CheckCircle2,
+  XCircle,
+  Loader2,
+  Shield,
+  ShoppingCart,
+  Users,
+  Sparkles,
+} from "lucide-react";
 
 function getApiBase(): string {
   const url = getApiUrl();
@@ -38,10 +48,18 @@ interface TestResult {
   message?: string;
 }
 
-const DEMO_DATASETS: { type: DemoType; label: string; description: string; icon: typeof Database; tables: number }[] = [
-  { type: "demo",      label: "SaaS CRM",       description: "Companies, contacts, and subscription accounts",      icon: Users,        tables: 3 },
-  { type: "cybersec",  label: "Cybersecurity",   description: "Vulnerabilities, incidents, compliance, and billing", icon: Shield,       tables: 62 },
-  { type: "ecommerce", label: "E-commerce",      description: "Orders, products, customers, shipping, and reviews",  icon: ShoppingCart, tables: 52 },
+interface DemoDataset {
+  type: DemoType;
+  label: string;
+  description: string;
+  icon: typeof Database;
+  tables: number;
+}
+
+const DEMO_DATASETS: DemoDataset[] = [
+  { type: "demo",      label: "SaaS CRM",      description: "Companies, contacts, and subscription accounts",      icon: Users,        tables: 3 },
+  { type: "cybersec",  label: "Cybersecurity", description: "Vulnerabilities, incidents, compliance, and billing", icon: Shield,       tables: 62 },
+  { type: "ecommerce", label: "E-commerce",    description: "Orders, products, customers, shipping, and reviews",  icon: ShoppingCart, tables: 52 },
 ];
 
 /** Auto-detect database type from URL scheme for display. */
@@ -57,11 +75,11 @@ export default function ConnectPage() {
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>("idle");
   const [testResult, setTestResult] = useState<TestResult | null>(null);
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [connectError, setConnectError] = useState<string | null>(null);
+  const [demoError, setDemoError] = useState<string | null>(null);
   const [demoAvailable, setDemoAvailable] = useState(false);
   const [loadingDemo, setLoadingDemo] = useState<DemoType | null>(null);
 
-  // Check if a default datasource is available (for "Try demo data" option)
   useEffect(() => {
     fetch(`${getApiBase()}/api/health`, { credentials: getCredentials() })
       .then((res) => {
@@ -83,7 +101,7 @@ export default function ConnectPage() {
 
     setConnectionStatus("testing");
     setTestResult(null);
-    setError(null);
+    setConnectError(null);
 
     try {
       const res = await fetch(`${getApiBase()}/api/v1/onboarding/test-connection`, {
@@ -96,9 +114,10 @@ export default function ConnectPage() {
       let data: TestResult;
       try {
         data = await res.json();
-      } catch {
+      } catch (parseErr) {
+        console.debug("[signup/connect] test-connection JSON parse failed:", parseErr instanceof Error ? parseErr.message : String(parseErr));
         setConnectionStatus("error");
-        setError("Server returned an unexpected response. Check that the API is running.");
+        setConnectError("Server returned an unexpected response. Check that the API is running.");
         return;
       }
       setTestResult(data);
@@ -107,11 +126,11 @@ export default function ConnectPage() {
         setConnectionStatus("success");
       } else {
         setConnectionStatus("error");
-        setError(data.message ?? "Connection test failed");
+        setConnectError(data.message ?? "Connection test failed");
       }
     } catch (err) {
       setConnectionStatus("error");
-      setError(
+      setConnectError(
         err instanceof TypeError
           ? "Unable to reach the server"
           : "Connection test failed",
@@ -123,7 +142,7 @@ export default function ConnectPage() {
     if (!url.trim() || connectionStatus !== "success") return;
 
     setSaving(true);
-    setError(null);
+    setConnectError(null);
 
     try {
       const res = await fetch(`${getApiBase()}/api/v1/onboarding/complete`, {
@@ -136,18 +155,22 @@ export default function ConnectPage() {
       let data: Record<string, unknown>;
       try {
         data = await res.json() as Record<string, unknown>;
-      } catch {
-        setError("Server returned an unexpected response. Check that the API is running.");
+      } catch (parseErr) {
+        console.debug("[signup/connect] complete JSON parse failed:", parseErr instanceof Error ? parseErr.message : String(parseErr));
+        setConnectionStatus("error");
+        setConnectError("Server returned an unexpected response. Check that the API is running.");
         return;
       }
       if (!res.ok) {
-        setError((data.message as string) ?? "Failed to save connection");
+        setConnectionStatus("error");
+        setConnectError((data.message as string) ?? "Failed to save connection");
         return;
       }
 
       router.push("/signup/success");
     } catch (err) {
-      setError(
+      setConnectionStatus("error");
+      setConnectError(
         err instanceof TypeError
           ? "Unable to reach the server"
           : "Failed to complete setup",
@@ -159,7 +182,7 @@ export default function ConnectPage() {
 
   async function handleUseDemo(demoType: DemoType) {
     setLoadingDemo(demoType);
-    setError(null);
+    setDemoError(null);
 
     try {
       const res = await fetch(`${getApiBase()}/api/v1/onboarding/use-demo`, {
@@ -172,18 +195,19 @@ export default function ConnectPage() {
       let data: Record<string, unknown>;
       try {
         data = await res.json() as Record<string, unknown>;
-      } catch {
-        setError("Server returned an unexpected response.");
+      } catch (parseErr) {
+        console.debug("[signup/connect] use-demo JSON parse failed:", parseErr instanceof Error ? parseErr.message : String(parseErr));
+        setDemoError("Server returned an unexpected response.");
         return;
       }
       if (!res.ok) {
-        setError((data.message as string) ?? "Failed to set up demo data");
+        setDemoError((data.message as string) ?? "Failed to set up demo data");
         return;
       }
 
       router.push("/signup/success");
     } catch (err) {
-      setError(
+      setDemoError(
         err instanceof TypeError
           ? "Unable to reach the server"
           : "Failed to set up demo data",
@@ -194,141 +218,193 @@ export default function ConnectPage() {
   }
 
   const dbLabel = url ? detectDbLabel(url) : "Database";
+  const anyLoading = saving || loadingDemo !== null;
 
   return (
-    <Card className="w-full max-w-lg">
-      <CardHeader className="text-center">
-        <div className="mx-auto mb-2 flex size-12 items-center justify-center rounded-lg bg-primary/10">
+    <div className={cn("w-full", demoAvailable ? "max-w-4xl" : "max-w-lg")}>
+      <div className="mb-6 flex flex-col items-center text-center">
+        <div className="mb-3 flex size-12 items-center justify-center rounded-lg bg-primary/10">
           <Database className="size-6 text-primary" />
         </div>
-        <CardTitle className="text-2xl">Connect your database</CardTitle>
-        <CardDescription>
-          Paste your database connection URL. Atlas connects read-only and never
-          modifies your data.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <div className="space-y-2">
-          <Label htmlFor="db-url">Connection URL</Label>
-          <Input
-            id="db-url"
-            type="url"
-            placeholder="postgresql://user:pass@host:5432/dbname"
-            value={url}
-            onChange={(e) => {
-              setUrl(e.target.value);
-              setConnectionStatus("idle");
-              setTestResult(null);
-              setError(null);
-            }}
-            autoFocus
-            className="font-mono text-sm"
-          />
-          <p className="text-xs text-muted-foreground">
-            Supports PostgreSQL (<code>postgresql://</code>) and MySQL (<code>mysql://</code>).
-          </p>
-        </div>
+        <h1 className="text-2xl font-semibold tracking-tight">
+          Get started with your data
+        </h1>
+        <p className="mt-1 max-w-md text-sm text-muted-foreground">
+          Connect your own database or explore Atlas with a pre-loaded demo dataset.
+        </p>
+      </div>
 
-        {/* Test result indicator */}
-        {connectionStatus === "success" && testResult && (
-          <div className="flex items-center gap-2 rounded-md border border-green-200 bg-green-50 p-3 text-sm text-green-800 dark:border-green-900 dark:bg-green-950 dark:text-green-200">
-            <CheckCircle2 className="size-4 shrink-0" />
-            <span>
-              Connected to {dbLabel} in {testResult.latencyMs}ms
-            </span>
-          </div>
+      <div
+        className={cn(
+          "grid gap-4",
+          demoAvailable && "md:grid-cols-2",
         )}
-
-        {(connectionStatus === "error" || error) && (
-          <div className="flex items-start gap-2 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-200">
-            <XCircle className="mt-0.5 size-4 shrink-0" />
-            <span>{error ?? "Connection failed"}</span>
-          </div>
-        )}
-
-        <div className="flex gap-2">
-          <Button
-            variant="outline"
-            onClick={handleTest}
-            disabled={!url.trim() || connectionStatus === "testing"}
-            className="flex-1"
-          >
-            {connectionStatus === "testing" ? (
-              <>
-                <Loader2 className="mr-2 size-4 animate-spin" />
-                Testing...
-              </>
-            ) : (
-              "Test connection"
-            )}
-          </Button>
-          <Button
-            onClick={handleComplete}
-            disabled={connectionStatus !== "success" || saving}
-            className="flex-1"
-          >
-            {saving ? (
-              <>
-                <Loader2 className="mr-2 size-4 animate-spin" />
-                Saving...
-              </>
-            ) : (
-              "Continue"
-            )}
-          </Button>
-        </div>
-
-        {demoAvailable ? (
-          <div className="space-y-3">
-            <div className="relative flex items-center">
-              <div className="flex-1 border-t" />
-              <span className="px-3 text-xs text-muted-foreground">or try a demo dataset</span>
-              <div className="flex-1 border-t" />
+      >
+        <Card className="flex flex-col">
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-lg">
+              <Database className="size-4 text-muted-foreground" />
+              Connect your database
+            </CardTitle>
+            <CardDescription>
+              Paste a read-only connection URL. Atlas never modifies your data.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="flex flex-1 flex-col space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="db-url">Connection URL</Label>
+              <Input
+                id="db-url"
+                type="url"
+                placeholder="postgresql://user:pass@host:5432/dbname"
+                value={url}
+                onChange={(e) => {
+                  setUrl(e.target.value);
+                  setConnectionStatus("idle");
+                  setTestResult(null);
+                  setConnectError(null);
+                }}
+                autoFocus
+                disabled={anyLoading}
+                className="font-mono text-sm"
+              />
+              <p className="text-xs text-muted-foreground">
+                Supports PostgreSQL (<code>postgresql://</code>) and MySQL (<code>mysql://</code>).
+              </p>
             </div>
-            <div className="grid gap-2">
-              {DEMO_DATASETS.map((ds) => (
-                <button
-                  key={ds.type}
-                  type="button"
-                  onClick={() => handleUseDemo(ds.type)}
-                  disabled={loadingDemo !== null}
-                  className="flex items-center gap-3 rounded-lg border p-3 text-left transition-colors hover:bg-accent disabled:opacity-50"
+
+            {connectionStatus === "success" && testResult && (
+              <div
+                role="status"
+                className="flex items-center gap-2 rounded-md border border-green-200 bg-green-50 p-3 text-sm text-green-800 dark:border-green-900 dark:bg-green-950 dark:text-green-200"
+              >
+                <CheckCircle2 className="size-4 shrink-0" />
+                <span>Connected to {dbLabel} in {testResult.latencyMs}ms</span>
+              </div>
+            )}
+
+            {(connectionStatus === "error" || connectError) && (
+              <div
+                role="alert"
+                className="flex items-start gap-2 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-200"
+              >
+                <XCircle className="mt-0.5 size-4 shrink-0" />
+                <span>{connectError ?? "Connection failed"}</span>
+              </div>
+            )}
+
+            <div className="mt-auto flex gap-2 pt-2">
+              <Button
+                variant="outline"
+                onClick={handleTest}
+                disabled={!url.trim() || connectionStatus === "testing" || anyLoading}
+                className="flex-1"
+              >
+                {connectionStatus === "testing" ? (
+                  <>
+                    <Loader2 className="mr-2 size-4 animate-spin" />
+                    Testing...
+                  </>
+                ) : (
+                  "Test connection"
+                )}
+              </Button>
+              <Button
+                onClick={handleComplete}
+                disabled={connectionStatus !== "success" || saving || loadingDemo !== null}
+                className="flex-1"
+              >
+                {saving ? (
+                  <>
+                    <Loader2 className="mr-2 size-4 animate-spin" />
+                    Saving...
+                  </>
+                ) : (
+                  "Continue"
+                )}
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+
+        {demoAvailable && (
+          <Card className="flex flex-col">
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-lg">
+                <Sparkles className="size-4 text-muted-foreground" />
+                Explore demo data
+              </CardTitle>
+              <CardDescription>
+                Try Atlas with a pre-loaded dataset. You can connect your own database later.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="flex flex-1 flex-col space-y-3">
+              <div className="grid gap-2">
+                {DEMO_DATASETS.map((ds) => {
+                  const isLoading = loadingDemo === ds.type;
+                  return (
+                    <button
+                      key={ds.type}
+                      type="button"
+                      onClick={() => handleUseDemo(ds.type)}
+                      disabled={anyLoading}
+                      aria-label={`Use ${ds.label} demo dataset (${ds.tables} tables)`}
+                      className={cn(
+                        "group flex items-center gap-3 rounded-lg border bg-card p-3 text-left transition-colors",
+                        "hover:border-primary/50 hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                        "disabled:pointer-events-none disabled:opacity-50",
+                      )}
+                    >
+                      <div className="flex size-9 shrink-0 items-center justify-center rounded-md bg-muted group-hover:bg-primary/10">
+                        <ds.icon className="size-4 text-muted-foreground group-hover:text-primary" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2">
+                          <span className="truncate text-sm font-medium">{ds.label}</span>
+                          <span className="shrink-0 text-[10px] text-muted-foreground">
+                            {ds.tables} {ds.tables === 1 ? "table" : "tables"}
+                          </span>
+                        </div>
+                        <p className="truncate text-xs text-muted-foreground">{ds.description}</p>
+                      </div>
+                      {isLoading && (
+                        <Loader2 className="size-4 shrink-0 animate-spin text-muted-foreground" />
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {demoError && (
+                <div
+                  role="alert"
+                  className="flex items-start gap-2 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-800 dark:border-red-900 dark:bg-red-950 dark:text-red-200"
                 >
-                  <div className="flex size-9 shrink-0 items-center justify-center rounded-md bg-muted">
-                    <ds.icon className="size-4 text-muted-foreground" />
-                  </div>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm font-medium">{ds.label}</span>
-                      <span className="text-[10px] text-muted-foreground">{ds.tables} tables</span>
-                    </div>
-                    <p className="truncate text-xs text-muted-foreground">{ds.description}</p>
-                  </div>
-                  {loadingDemo === ds.type && (
-                    <Loader2 className="size-4 shrink-0 animate-spin text-muted-foreground" />
-                  )}
-                </button>
-              ))}
-            </div>
-            <p className="text-center text-xs text-muted-foreground">
-              All demo data is pre-loaded. You can connect your own database later.
-            </p>
-          </div>
-        ) : (
-          <button
-            type="button"
-            onClick={() => router.push("/signup/success")}
-            className="w-full text-center text-sm text-muted-foreground hover:text-foreground"
-          >
-            Skip for now — I&apos;ll connect later
-          </button>
-        )}
+                  <XCircle className="mt-0.5 size-4 shrink-0" />
+                  <span>{demoError}</span>
+                </div>
+              )}
 
-        <div className="flex justify-center">
-          <StepIndicator current={4} total={5} />
-        </div>
-      </CardContent>
-    </Card>
+              <p className="mt-auto pt-2 text-xs text-muted-foreground">
+                Demo data is pre-loaded and read-only. Perfect for exploring the agent.
+              </p>
+            </CardContent>
+          </Card>
+        )}
+      </div>
+
+      <div className="mt-6 flex flex-col items-center gap-4">
+        <button
+          type="button"
+          onClick={() => router.push("/signup/success")}
+          disabled={anyLoading}
+          className="text-sm text-muted-foreground transition-colors hover:text-foreground disabled:pointer-events-none disabled:opacity-50"
+        >
+          Skip for now — I&apos;ll connect later
+        </button>
+        <StepIndicator current={4} total={5} />
+      </div>
+    </div>
   );
 }
 

@@ -4,8 +4,12 @@ import type { ColumnDef } from "@tanstack/react-table";
 import { Badge } from "@/components/ui/badge";
 import { DataTableColumnHeader } from "@/components/data-table/data-table-column-header";
 import { HealthBadge } from "@/ui/components/admin/health-badge";
+import { DemoBadge, DraftBadge } from "@/ui/components/admin/mode-badges";
 import { Fingerprint, Database, FileText, Activity, Clock } from "lucide-react";
 import type { ConnectionHealth, ConnectionInfo } from "@/ui/lib/types";
+
+/** Reserved connection id for the onboarding demo dataset. */
+export const DEMO_CONNECTION_ID = "__demo__";
 
 function mapHealthStatus(
   status?: ConnectionHealth["status"],
@@ -23,9 +27,17 @@ export function getConnectionColumns(): ColumnDef<ConnectionInfo>[] {
       header: ({ column }) => (
         <DataTableColumnHeader column={column} label="ID" />
       ),
-      cell: ({ row }) => (
-        <span className="font-mono text-xs">{row.getValue<string>("id")}</span>
-      ),
+      cell: ({ row }) => {
+        const id = row.getValue<string>("id");
+        const status = row.original.status;
+        return (
+          <div className="flex items-center gap-2">
+            <span className="font-mono text-xs">{id}</span>
+            {id === DEMO_CONNECTION_ID && <DemoBadge />}
+            {status === "draft" && <DraftBadge />}
+          </div>
+        );
+      },
       meta: { label: "ID", icon: Fingerprint },
       enableSorting: false,
     },

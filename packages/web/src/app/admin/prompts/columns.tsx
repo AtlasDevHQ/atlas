@@ -4,6 +4,7 @@ import type { ColumnDef } from "@tanstack/react-table";
 import type { PromptCollection } from "@/ui/lib/types";
 import { Badge } from "@/components/ui/badge";
 import { DataTableColumnHeader } from "@/components/data-table/data-table-column-header";
+import { DemoBadge, DraftBadge } from "@/ui/components/admin/mode-badges";
 import {
   FileText,
   Tag,
@@ -64,18 +65,12 @@ export function getPromptCollectionColumns(
       ),
       cell: ({ row }) => {
         const name = row.getValue<string>("name");
-        const isBuiltin = row.original.isBuiltin;
+        const { isBuiltin, status } = row.original;
         return (
           <div className="flex items-center gap-2">
             <span className="text-sm font-medium">{name}</span>
-            {isBuiltin && (
-              <Badge
-                variant="outline"
-                className="border-amber-300 text-amber-700 dark:border-amber-700 dark:text-amber-400 text-[10px] px-1.5 py-0"
-              >
-                Built-in
-              </Badge>
-            )}
+            {isBuiltin && <DemoBadge />}
+            {status === "draft" && <DraftBadge />}
           </div>
         );
       },

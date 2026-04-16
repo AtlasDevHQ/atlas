@@ -40,6 +40,13 @@ import { useDeployMode } from "@/ui/hooks/use-deploy-mode";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { EntityVersionHistory } from "@/ui/components/admin/entity-version-history";
 import { SemanticHealthWidget } from "@/ui/components/admin/semantic-health-widget";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { useDemoReadonly, demoIndustryLabel } from "@/ui/hooks/use-demo-readonly";
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -332,12 +339,18 @@ function RawYamlViewer({ content }: { content: string }) {
 
 // ── Page ──────────────────────────────────────────────────────────
 
+/** Tooltip text when semantic editor mutations are blocked by published-mode demo readonly. */
+const DEMO_READONLY_TOOLTIP = "Switch to developer mode to edit demo semantic entities";
+
 export default function SemanticPage() {
   const { apiUrl, isCrossOrigin } = useAtlasConfig();
   const { deployMode } = useDeployMode();
   const isSaas = deployMode === "saas";
+  const { readOnly: demoReadOnly, demoIndustry } = useDemoReadonly();
+  const demoLabel = demoIndustryLabel(demoIndustry);
 
   const [entities, setEntities] = useState<EntitySummary[]>([]);
+  const [draftEntityNames, setDraftEntityNames] = useState<Set<string>>(() => new Set());
   const [selectedEntity, setSelectedEntity] = useState<EntityData | null>(null);
   const [glossary, setGlossary] = useState<GlossaryTerm[]>([]);
   const [metrics, setMetrics] = useState<MetricEntry[]>([]);
@@ -431,6 +444,40 @@ export default function SemanticPage() {
     });
     return () => { cancelled = true; };
   }, [apiUrl, fetchKey]);
+
+  // Fetch org-scoped draft entity names so the file tree can render the
+  // amber accent on drafts. Non-SaaS self-hosted installs without an
+  // internal DB get a 501 — we swallow that, since drafts are a SaaS-only
+  // concept there.
+  useEffect(() => {
+    if (!isSaas) return;
+    let cancelled = false;
+
+    async function fetchDrafts() {
+      try {
+        const res = await fetch(
+          `${apiUrl}/api/v1/admin/semantic/org/entities?type=entity`,
+          fetchOpts,
+        );
+        if (!res.ok) return;
+        const data = await res.json();
+        const entries = Array.isArray(data?.entities) ? data.entities as Array<{ name?: unknown; status?: unknown }> : [];
+        const names = new Set<string>();
+        for (const e of entries) {
+          if (typeof e.name === "string" && e.status === "draft") names.add(e.name);
+        }
+        if (!cancelled) setDraftEntityNames(names);
+      } catch (err) {
+        console.debug(
+          "Failed to fetch draft entity names:",
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+    }
+
+    fetchDrafts();
+    return () => { cancelled = true; };
+  }, [apiUrl, fetchKey, isSaas]);
 
   const handleSelect = (sel: SemanticSelection) => {
     startTransition(() => {
@@ -569,7 +616,11 @@ export default function SemanticPage() {
           <div>
             <h1 className="text-2xl font-bold tracking-tight">Semantic Layer</h1>
             <p className="text-sm text-muted-foreground">
-              {isSaas ? "Manage entities, glossary, metrics, and catalog" : "Browse entities, glossary, metrics, and catalog"}
+              {demoLabel
+                ? `${demoLabel} \u2014 ${entities.length} ${entities.length === 1 ? "entity" : "entities"}`
+                : isSaas
+                  ? "Manage entities, glossary, metrics, and catalog"
+                  : "Browse entities, glossary, metrics, and catalog"}
             </p>
           </div>
           <div className="flex items-center gap-2">
@@ -579,12 +630,26 @@ export default function SemanticPage() {
                 Improve
               </Button>
             </Link>
-            {isSaas && (
+            {isSaas && (demoReadOnly ? (
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <span tabIndex={0}>
+                      <Button onClick={handleAddEntity} className="gap-1.5" disabled>
+                        <Plus className="size-4" />
+                        Add Entity
+                      </Button>
+                    </span>
+                  </TooltipTrigger>
+                  <TooltipContent>{DEMO_READONLY_TOOLTIP}</TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
+            ) : (
               <Button onClick={handleAddEntity} className="gap-1.5">
                 <Plus className="size-4" />
                 Add Entity
               </Button>
-            )}
+            ))}
           </div>
         </div>
       </div>
@@ -619,6 +684,7 @@ export default function SemanticPage() {
           hasGlossary={glossary.length > 0}
           selection={selection}
           onSelect={handleSelect}
+          draftEntityNames={draftEntityNames}
           className="w-64 shrink-0 border-r"
         />
 
@@ -629,23 +695,47 @@ export default function SemanticPage() {
             <div className="flex h-[41px] items-center justify-between border-b px-4">
               {/* Edit/delete actions (SaaS mode, entity selected) */}
               <div className="flex items-center gap-1.5">
-                {isSaas && selection.type === "entity" && selectedEntity && (
-                  <>
-                    <Button variant="outline" size="sm" onClick={handleEditEntity} className="gap-1 text-xs">
+                {isSaas && selection.type === "entity" && selectedEntity && (() => {
+                  const editBtn = (
+                    <Button variant="outline" size="sm" onClick={handleEditEntity} className="gap-1 text-xs" disabled={demoReadOnly}>
                       <Pencil className="size-3" />
                       Edit
                     </Button>
+                  );
+                  const deleteBtn = (
                     <Button
                       variant="outline"
                       size="sm"
                       onClick={() => setDeleteTarget(selection.name)}
                       className="gap-1 text-xs text-destructive hover:text-destructive"
+                      disabled={demoReadOnly}
                     >
                       <Trash2 className="size-3" />
                       Delete
                     </Button>
-                  </>
-                )}
+                  );
+                  return demoReadOnly ? (
+                    <TooltipProvider>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <span tabIndex={0}>{editBtn}</span>
+                        </TooltipTrigger>
+                        <TooltipContent>{DEMO_READONLY_TOOLTIP}</TooltipContent>
+                      </Tooltip>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <span tabIndex={0}>{deleteBtn}</span>
+                        </TooltipTrigger>
+                        <TooltipContent>{DEMO_READONLY_TOOLTIP}</TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
+                  ) : (
+                    <>
+                      {editBtn}
+                      {deleteBtn}
+                    </>
+                  );
+                })()}
               </div>
               <ViewToggle mode={viewMode} onChange={(m) => { startTransition(() => { setParams({ view: m }); }); }} showHistory={isSaas && selection?.type === "entity"} />
             </div>

@@ -7251,6 +7251,131 @@
         "operationId": "postOnboardingEmailsResubscribe"
       }
     },
+    "/api/v1/mode": {
+      "get": {
+        "tags": [
+          "Mode"
+        ],
+        "summary": "Get effective developer/published mode state",
+        "description": "Returns the resolved mode for the current request, whether the user can toggle it, demo workspace state, and per-table draft counts. The frontend uses this to render banners, badges, the publish button, and the pending-changes summary. Non-admin users always receive `mode: 'published'` and `canToggle: false` regardless of the `atlas-mode` cookie or `X-Atlas-Mode` header.",
+        "responses": {
+          "200": {
+            "description": "Effective mode state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "mode": {
+                      "type": "string",
+                      "enum": [
+                        "developer",
+                        "published"
+                      ]
+                    },
+                    "canToggle": {
+                      "type": "boolean"
+                    },
+                    "demoIndustry": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "demoConnectionActive": {
+                      "type": "boolean"
+                    },
+                    "hasDrafts": {
+                      "type": "boolean"
+                    },
+                    "draftCounts": {
+                      "type": [
+                        "object",
+                        "null"
+                      ],
+                      "properties": {
+                        "connections": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "entities": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "entityEdits": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "entityDeletes": {
+                          "type": "integer",
+                          "minimum": 0
+                        },
+                        "prompts": {
+                          "type": "integer",
+                          "minimum": 0
+                        }
+                      },
+                      "required": [
+                        "connections",
+                        "entities",
+                        "entityEdits",
+                        "entityDeletes",
+                        "prompts"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "mode",
+                    "canToggle",
+                    "demoIndustry",
+                    "demoConnectionActive",
+                    "hasDrafts",
+                    "draftCounts"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getMode"
+      }
+    },
     "/api/v1/onboarding/social-providers": {
       "get": {
         "tags": [
@@ -17542,6 +17667,9 @@
                           "sortOrder": {
                             "type": "number"
                           },
+                          "status": {
+                            "type": "string"
+                          },
                           "createdAt": {
                             "type": "string"
                           },
@@ -17557,6 +17685,7 @@
                           "description",
                           "isBuiltin",
                           "sortOrder",
+                          "status",
                           "createdAt",
                           "updatedAt"
                         ]
@@ -17723,6 +17852,9 @@
                     "sortOrder": {
                       "type": "number"
                     },
+                    "status": {
+                      "type": "string"
+                    },
                     "createdAt": {
                       "type": "string"
                     },
@@ -17738,6 +17870,7 @@
                     "description",
                     "isBuiltin",
                     "sortOrder",
+                    "status",
                     "createdAt",
                     "updatedAt"
                   ]
@@ -17929,6 +18062,9 @@
                     "sortOrder": {
                       "type": "number"
                     },
+                    "status": {
+                      "type": "string"
+                    },
                     "createdAt": {
                       "type": "string"
                     },
@@ -17944,6 +18080,7 @@
                     "description",
                     "isBuiltin",
                     "sortOrder",
+                    "status",
                     "createdAt",
                     "updatedAt"
                   ]
@@ -55240,6 +55377,9 @@
     },
     {
       "name": "Health"
+    },
+    {
+      "name": "Mode"
     },
     {
       "name": "Onboarding"

@@ -96,36 +96,44 @@ async function seedDemoPromptCollections(orgId: string, industry: string): Promi
   );
 
   for (const builtin of builtins) {
-    // Skip if org already has a collection with this name
-    const existing = await internalQuery<{ id: string }>(
-      `SELECT id FROM prompt_collections WHERE name = $1 AND org_id = $2`,
-      [builtin.name, orgId],
-    );
-    if (existing.length > 0) continue;
+    try {
+      // Skip if org already has a collection with this name
+      const existing = await internalQuery<{ id: string }>(
+        `SELECT id FROM prompt_collections WHERE name = $1 AND org_id = $2`,
+        [builtin.name, orgId],
+      );
+      if (existing.length > 0) continue;
 
-    // Create org-scoped copy
-    const inserted = await internalQuery<{ id: string }>(
-      `INSERT INTO prompt_collections (name, industry, description, is_builtin, sort_order, org_id, status)
-       VALUES ($1, $2, $3, true, $4, $5, 'published')
-       RETURNING id`,
-      [builtin.name, industry, builtin.description, builtin.sort_order, orgId],
-    );
-    if (!inserted[0]) {
-      log.warn({ collection: builtin.name, orgId }, "Failed to seed demo prompt collection — INSERT returned no rows");
-      continue;
-    }
+      // Create org-scoped copy
+      const inserted = await internalQuery<{ id: string }>(
+        `INSERT INTO prompt_collections (name, industry, description, is_builtin, sort_order, org_id, status)
+         VALUES ($1, $2, $3, true, $4, $5, 'published')
+         RETURNING id`,
+        [builtin.name, industry, builtin.description, builtin.sort_order, orgId],
+      );
+      if (!inserted[0]?.id) {
+        log.warn({ collection: builtin.name, orgId }, "Failed to seed demo prompt collection — INSERT returned no rows");
+        continue;
+      }
 
-    // Copy prompt items from the global collection
-    const items = await internalQuery<{ question: string; description: string; category: string; sort_order: number }>(
-      `SELECT question, description, category, sort_order FROM prompt_items
-       WHERE collection_id = $1 ORDER BY sort_order ASC`,
-      [builtin.id],
-    );
-    for (const item of items) {
-      await internalQuery(
-        `INSERT INTO prompt_items (collection_id, question, description, category, sort_order)
-         VALUES ($1, $2, $3, $4, $5)`,
-        [inserted[0].id, item.question, item.description, item.category, item.sort_order],
+      // Copy prompt items from the global collection (independent inserts — parallelize)
+      const items = await internalQuery<{ question: string; description: string; category: string; sort_order: number }>(
+        `SELECT question, description, category, sort_order FROM prompt_items
+         WHERE collection_id = $1 ORDER BY sort_order ASC`,
+        [builtin.id],
+      );
+      const collectionId = inserted[0].id;
+      await Promise.all(items.map((item) =>
+        internalQuery(
+          `INSERT INTO prompt_items (collection_id, question, description, category, sort_order)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [collectionId, item.question, item.description, item.category, item.sort_order],
+        ),
+      ));
+    } catch (err) {
+      log.warn(
+        { err: err instanceof Error ? err.message : String(err), collection: builtin.name, orgId },
+        "Failed to seed demo prompt collection — skipping to next",
       );
     }
   }

@@ -830,7 +830,38 @@ describe("POST /api/v1/onboarding/use-demo", () => {
     expect(res.status).toBe(201);
     const data = await json(res);
     expect(data.connectionId).toBe("__demo__");
-    mockSetSetting.mockImplementation(async () => {});
+  });
+
+  it("succeeds even when prompt collection seeding fails (non-fatal)", async () => {
+    const originalImpl = mockInternalQuery.getMockImplementation();
+    mockInternalQuery.mockImplementation(async (sql: string) => {
+      if (typeof sql === "string" && sql.includes("is_builtin = true")) {
+        throw new Error("prompt_collections table missing");
+      }
+      return [{ id: "__demo__" }];
+    });
+    const res = await request("/api/v1/onboarding/use-demo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ demoType: "cybersec" }),
+    });
+    expect(res.status).toBe(201);
+    const data = await json(res);
+    expect(data.connectionId).toBe("__demo__");
+    if (originalImpl) mockInternalQuery.mockImplementation(originalImpl);
+  });
+
+  it("returns 500 with requestId when DB upsert fails", async () => {
+    mockInternalQuery.mockImplementation(async () => { throw new Error("connection reset"); });
+    const res = await request("/api/v1/onboarding/use-demo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ demoType: "cybersec" }),
+    });
+    expect(res.status).toBe(500);
+    const data = await json(res);
+    expect(data.error).toBe("internal_error");
+    expect(data.requestId).toBeDefined();
   });
 });
 

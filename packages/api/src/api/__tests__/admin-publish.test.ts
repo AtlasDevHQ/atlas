@@ -145,14 +145,14 @@ mock.module("@atlas/api/lib/semantic/entities", () => ({
     );
     if (current.rows.length === 0) return { status: "not_found" as const };
     const row = current.rows[0] as { status: string };
-    if (row.status === "archived") {
-      return { status: "already_archived" as const };
+    const wasAlreadyArchived = row.status === "archived";
+    if (!wasAlreadyArchived) {
+      await client.query(
+        `UPDATE connections SET status = 'archived', updated_at = now()
+         WHERE org_id = $1 AND id = $2`,
+        [orgId, connectionId],
+      );
     }
-    await client.query(
-      `UPDATE connections SET status = 'archived', updated_at = now()
-       WHERE org_id = $1 AND id = $2`,
-      [orgId, connectionId],
-    );
     const archivedEntities = await client.query(
       `UPDATE semantic_entities SET status = 'archived', updated_at = now()
        WHERE org_id = $1 AND connection_id = $2 AND status = 'published'
@@ -170,7 +170,9 @@ mock.module("@atlas/api/lib/semantic/entities", () => ({
       prompts = archivedPrompts.rows.length;
     }
     return {
-      status: "archived" as const,
+      status: wasAlreadyArchived
+        ? ("already_archived" as const)
+        : ("archived" as const),
       entities: archivedEntities.rows.length,
       prompts,
     };
@@ -288,7 +290,7 @@ describe("POST /api/v1/admin/publish — atomic promotion", () => {
     const body = (await res.json()) as {
       promoted: { connections: number; entities: number; prompts: number };
       deleted: { entities: number };
-      archived: { connections: number; entities: number };
+      archived: { connections: number; entities: number; prompts: number };
     };
 
     expect(body.promoted.entities).toBe(2);
@@ -299,6 +301,7 @@ describe("POST /api/v1/admin/publish — atomic promotion", () => {
     // No archive requested
     expect(body.archived.connections).toBe(0);
     expect(body.archived.entities).toBe(0);
+    expect(body.archived.prompts).toBe(0);
 
     // Transaction lifecycle
     const sqls = clientQueries.map((q) => q.sql.trim().toUpperCase());
@@ -392,11 +395,14 @@ describe("POST /api/v1/admin/publish — archiveConnections", () => {
     const res = await app.fetch(publishReq({ archiveConnections: ["__demo__"] }));
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
-      archived: { connections: number; entities: number };
+      archived: { connections: number; entities: number; prompts: number };
     };
     expect(body.archived.connections).toBe(1);
     // Cascade count reflects the entities UPDATE RETURNING rowcount
     expect(body.archived.entities).toBe(3);
+    // Publish reports demo prompt count too (parity with the standalone
+    // archive endpoint after the #1437 refactor).
+    expect(body.archived.prompts).toBeGreaterThanOrEqual(0);
 
     // Assert three archive statements fired in the transaction
     const archiveConnSql = clientQueries.find(
@@ -441,15 +447,80 @@ describe("POST /api/v1/admin/publish — archiveConnections", () => {
     const res = await app.fetch(publishReq({ archiveConnections: [] }));
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
-      archived: { connections: number; entities: number };
+      archived: { connections: number; entities: number; prompts: number };
     };
     expect(body.archived.connections).toBe(0);
     expect(body.archived.entities).toBe(0);
+    expect(body.archived.prompts).toBe(0);
 
     const archiveConnSql = clientQueries.find(
       (q) => /UPDATE\s+connections\s+SET\s+status\s*=\s*'archived'/i.test(q.sql),
     );
     expect(archiveConnSql).toBeUndefined();
+  });
+
+  it("loops over multiple archive ids, locking and cascading each", async () => {
+    // After the #1437 refactor publish loops archiveSingleConnection per
+    // id. A bug that early-returns after the first id would let the
+    // second connection stay published. Verify both connections' lock +
+    // UPDATE pair fire.
+    mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([]));
+    queryHandler = async (sql) => {
+      if (/SELECT\s+status\s+FROM\s+connections/i.test(sql)) {
+        return { rows: [{ status: "published" }] };
+      }
+      if (/UPDATE\s+connections\s+SET\s+status\s*=\s*'archived'/i.test(sql)) {
+        return { rows: [{ id: "x" }] };
+      }
+      return { rows: [] };
+    };
+
+    const res = await app.fetch(
+      publishReq({ archiveConnections: ["warehouse", "legacy"] }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      archived: { connections: number; entities: number; prompts: number };
+    };
+    expect(body.archived.connections).toBe(2);
+
+    const locks = clientQueries.filter((q) =>
+      /SELECT\s+status\s+FROM\s+connections[\s\S]*FOR\s+UPDATE/i.test(q.sql),
+    );
+    expect(locks.length).toBe(2);
+    const lockedIds = locks.map((q) => (q.params as unknown[])[1]);
+    expect(lockedIds).toContain("warehouse");
+    expect(lockedIds).toContain("legacy");
+  });
+
+  it("rolls back atomically when a later archive id in the loop fails", async () => {
+    // First id locks + archives fine, second id throws during entity
+    // cascade. The whole publish transaction must ROLLBACK — no partial
+    // commit from the first id survives.
+    mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([]));
+    let lockCalls = 0;
+    queryHandler = async (sql) => {
+      if (/SELECT\s+status\s+FROM\s+connections/i.test(sql)) {
+        lockCalls++;
+        return { rows: [{ status: "published" }] };
+      }
+      if (/UPDATE\s+semantic_entities\s+SET\s+status\s*=\s*'archived'/i.test(sql)) {
+        if (lockCalls === 2) {
+          throw new Error("cascade failure on second id");
+        }
+        return { rows: [] };
+      }
+      return { rows: [] };
+    };
+
+    const res = await app.fetch(
+      publishReq({ archiveConnections: ["first", "second"] }),
+    );
+    expect(res.status).toBe(500);
+
+    const sqls = clientQueries.map((q) => q.sql.trim().toUpperCase());
+    expect(sqls.includes("ROLLBACK")).toBe(true);
+    expect(sqls.includes("COMMIT")).toBe(false);
   });
 });
 

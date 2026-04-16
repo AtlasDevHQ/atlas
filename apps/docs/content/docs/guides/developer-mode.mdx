@@ -63,13 +63,14 @@ Authorization: Bearer <admin token>
 {
   "promoted": { "connections": 1, "entities": 42, "prompts": 3 },
   "deleted":  { "entities": 2 },
-  "archived": { "connections": 1 }
+  "archived": { "connections": 1, "entities": 12, "prompts": 4 }
 }
 ```
 
 - `promoted.*` — rows whose `status` flipped from `draft` to `published`.
 - `deleted.entities` — published entity rows removed via `draft_delete` tombstones.
 - `archived.connections` — connections whose status flipped to `archived` via the `archiveConnections` parameter.
+- `archived.entities` / `archived.prompts` — published rows cascaded to `archived` for those connections. When `__demo__` is in the list, `archived.prompts` reflects the built-in demo collections picked up.
 
 ### What runs in the transaction
 
@@ -118,11 +119,11 @@ Authorization: Bearer <admin token>
 { "connectionId": "__demo__" }
 ```
 
-Response:
+Response (counts depend on the demo industry and any admin edits since seeding):
 
 ```json
 {
-  "archived": { "connection": true, "entities": 62, "prompts": 4 }
+  "archived": { "connection": true, "entities": 12, "prompts": 4 }
 }
 ```
 
@@ -150,11 +151,11 @@ Authorization: Bearer <admin token>
 | Scenario | Status | Notes |
 |----------|--------|-------|
 | Connection archived successfully | `200` | `archived.connection = true` |
-| Archiving an already-archived connection | `200` | No-op — `archived.connection = false`, cascade counts are `0` |
+| Archiving an already-archived connection | `200` | `archived.connection = false`. Entity + demo-prompt cascades still run so any stragglers are reconciled — counts reflect what was picked up. |
 | Archiving a connection that doesn't exist for the org | `404` | `not_found` |
 | Restoring an archived connection | `200` | `restored.connection = true` |
 | Restoring a connection that doesn't exist | `404` | `not_found` |
-| Restoring a connection that is not currently archived | `404` | Restore is strict — it won't silently no-op |
+| Restoring a connection that is not currently archived | `404` | Restore is strict — asking to restore a live connection is an error, not a silent success |
 | Mid-transaction failure | `500` | `archive_failed` or `restore_failed`; transaction rolls back |
 
 ### Use case: training new hires on demo data

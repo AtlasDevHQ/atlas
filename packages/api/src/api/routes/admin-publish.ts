@@ -60,6 +60,7 @@ const PublishResponseSchema = z.object({
   archived: z.object({
     connections: z.number().int().nonnegative(),
     entities: z.number().int().nonnegative(),
+    prompts: z.number().int().nonnegative(),
   }),
 });
 
@@ -176,6 +177,7 @@ adminPublish.openapi(publishRoute, async (c) =>
     let promotedPromptCount: number;
     let archivedConnectionCount: number;
     let archivedEntityCount: number;
+    let archivedPromptCount: number;
 
     try {
       await client.query("BEGIN");
@@ -207,10 +209,10 @@ adminPublish.openapi(publishRoute, async (c) =>
       // Phase 4: archive requested connections (+ cascade to their entities +
       // demo prompt collections when the id is `__demo__`). Loops the shared
       // single-connection helper so publish and the standalone archive
-      // endpoints stay in lockstep — see #1437. Missing or already-archived
-      // ids silently no-op (publish is best-effort for the archive list).
+      // endpoints stay in lockstep — see #1437.
       archivedConnectionCount = 0;
       archivedEntityCount = 0;
+      archivedPromptCount = 0;
       for (const id of archiveIds) {
         const archiveResult = await archiveSingleConnection(client, orgId, id, {
           demoIndustry: id === DEMO_CONNECTION_ID ? demoIndustry : null,
@@ -218,6 +220,29 @@ adminPublish.openapi(publishRoute, async (c) =>
         if (archiveResult.status === "archived") {
           archivedConnectionCount++;
           archivedEntityCount += archiveResult.entities;
+          archivedPromptCount += archiveResult.prompts;
+        } else if (archiveResult.status === "already_archived") {
+          // The connection row itself was already archived, but the helper's
+          // cascade still reconciled any straggler entities / demo prompts.
+          archivedEntityCount += archiveResult.entities;
+          archivedPromptCount += archiveResult.prompts;
+          log.warn(
+            {
+              requestId,
+              orgId,
+              connectionId: id,
+              cascadedEntities: archiveResult.entities,
+              cascadedPrompts: archiveResult.prompts,
+            },
+            "archiveConnection id already archived during publish — cascade reconciled",
+          );
+        } else {
+          // not_found: admin passed a bogus id. Surface it in the log so
+          // ops can spot typos; publish itself still commits the rest.
+          log.warn(
+            { requestId, orgId, connectionId: id },
+            "archiveConnection id not found during publish — skipped",
+          );
         }
       }
 
@@ -273,6 +298,7 @@ adminPublish.openapi(publishRoute, async (c) =>
         deletedEntities: deletedEntityCount,
         archivedConnections: archivedConnectionCount,
         archivedEntities: archivedEntityCount,
+        archivedPrompts: archivedPromptCount,
         archiveIds,
       },
     });
@@ -291,6 +317,7 @@ adminPublish.openapi(publishRoute, async (c) =>
         archived: {
           connections: archivedConnectionCount,
           entities: archivedEntityCount,
+          prompts: archivedPromptCount,
         },
       },
       "Publish succeeded",
@@ -306,6 +333,7 @@ adminPublish.openapi(publishRoute, async (c) =>
       archived: {
         connections: archivedConnectionCount,
         entities: archivedEntityCount,
+        prompts: archivedPromptCount,
       },
     };
     return c.json(response, 200);

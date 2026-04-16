@@ -94,9 +94,6 @@ mock.module("@atlas/api/lib/semantic/entities", () => {
 
     applyTombstones: mock(() => Promise.resolve(0)),
     promoteDraftEntities: mock(() => Promise.resolve(0)),
-    archiveConnectionsAndEntities: mock(() =>
-      Promise.resolve({ connections: 0, entities: 0 }),
-    ),
 
     archiveSingleConnection: async (
       client: { query: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[] }> },
@@ -110,14 +107,14 @@ mock.module("@atlas/api/lib/semantic/entities", () => {
       );
       if (current.rows.length === 0) return { status: "not_found" as const };
       const row = current.rows[0] as { status: string };
-      if (row.status === "archived") {
-        return { status: "already_archived" as const };
+      const wasAlreadyArchived = row.status === "archived";
+      if (!wasAlreadyArchived) {
+        await client.query(
+          `UPDATE connections SET status = 'archived', updated_at = now()
+           WHERE org_id = $1 AND id = $2`,
+          [orgId, connectionId],
+        );
       }
-      await client.query(
-        `UPDATE connections SET status = 'archived', updated_at = now()
-         WHERE org_id = $1 AND id = $2`,
-        [orgId, connectionId],
-      );
       const archivedEntities = await client.query(
         `UPDATE semantic_entities SET status = 'archived', updated_at = now()
          WHERE org_id = $1 AND connection_id = $2 AND status = 'published'
@@ -135,7 +132,9 @@ mock.module("@atlas/api/lib/semantic/entities", () => {
         prompts = archivedPrompts.rows.length;
       }
       return {
-        status: "archived" as const,
+        status: wasAlreadyArchived
+          ? ("already_archived" as const)
+          : ("archived" as const),
         entities: archivedEntities.rows.length,
         prompts,
       };
@@ -447,14 +446,55 @@ describe("POST /api/v1/admin/archive-connection — errors", () => {
     );
     expect(res.status).toBe(404);
 
-    // Still committed (no mutations happened, but transaction closed cleanly)
+    // The read-only transaction commits cleanly — a 404 is not a failure
+    // (no work to undo), so pin COMMIT rather than accept either COMMIT
+    // or ROLLBACK. A future refactor that silently ROLLBACKs on missing
+    // rows would mask debugging signal.
     const sqls = clientQueries.map((q) => q.sql.trim().toUpperCase());
     expect(sqls[0]).toBe("BEGIN");
-    expect(sqls.includes("COMMIT") || sqls.includes("ROLLBACK")).toBe(true);
+    expect(sqls.includes("COMMIT")).toBe(true);
+    expect(sqls.includes("ROLLBACK")).toBe(false);
     expect(clientReleased).toBe(true);
   });
 
-  it("is idempotent (200 with zeroed cascade) when already archived", async () => {
+  it("is idempotent when already archived — cascades still run to reconcile stragglers", async () => {
+    // Simulate a broken-invariant state: connection is already archived,
+    // but one straggler entity is still 'published'. The helper should
+    // report `connection: false` (the connection row didn't flip) AND
+    // surface the reconciled cascade count.
+    queryHandler = async (sql) => {
+      if (/SELECT\s+status\s+FROM\s+connections/i.test(sql)) {
+        return { rows: [{ status: "archived" }] };
+      }
+      if (/UPDATE\s+semantic_entities\s+SET\s+status\s*=\s*'archived'/i.test(sql)) {
+        return { rows: [{ id: "straggler-1" }] };
+      }
+      return { rows: [] };
+    };
+    const res = await app.fetch(
+      makeReq("archive-connection", { connectionId: "warehouse" }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      archived: { connection: boolean; entities: number; prompts: number };
+    };
+    expect(body.archived.connection).toBe(false);
+    expect(body.archived.entities).toBe(1);
+    expect(body.archived.prompts).toBe(0);
+
+    // No connection-row UPDATE (already archived)
+    const connUpdate = clientQueries.find((q) =>
+      /UPDATE\s+connections\s+SET\s+status\s*=\s*'archived'/i.test(q.sql),
+    );
+    expect(connUpdate).toBeUndefined();
+    // But the entity cascade UPDATE did fire
+    const entityUpdate = clientQueries.find((q) =>
+      /UPDATE\s+semantic_entities\s+SET\s+status\s*=\s*'archived'/i.test(q.sql),
+    );
+    expect(entityUpdate).toBeDefined();
+  });
+
+  it("idempotent no-op when already archived and nothing to reconcile", async () => {
     queryHandler = async (sql) => {
       if (/SELECT\s+status\s+FROM\s+connections/i.test(sql)) {
         return { rows: [{ status: "archived" }] };
@@ -471,10 +511,6 @@ describe("POST /api/v1/admin/archive-connection — errors", () => {
     expect(body.archived.connection).toBe(false);
     expect(body.archived.entities).toBe(0);
     expect(body.archived.prompts).toBe(0);
-
-    // No cascading UPDATE should fire
-    const mutating = clientQueries.filter((q) => /^\s*UPDATE/i.test(q.sql));
-    expect(mutating.length).toBe(0);
   });
 
   it("issues ROLLBACK and returns 500 when a mid-transaction statement fails", async () => {
@@ -516,6 +552,70 @@ describe("POST /api/v1/admin/archive-connection — errors", () => {
     const body = (await res.json()) as Record<string, unknown>;
     expect(body.error).toBe("not_available");
     mocks.hasInternalDB = true;
+  });
+
+  it("archive __demo__ with no demo_industry setting — skips prompt cascade, still returns 200", async () => {
+    // The readDemoIndustry helper returns null when the setting row is
+    // missing. The endpoint proceeds without touching prompt_collections
+    // (no UPDATE fires) and reports prompts: 0.
+    mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([]));
+
+    queryHandler = async (sql) => {
+      if (/SELECT\s+status\s+FROM\s+connections/i.test(sql)) {
+        return { rows: [{ status: "published" }] };
+      }
+      if (/UPDATE\s+semantic_entities\s+SET\s+status\s*=\s*'archived'/i.test(sql)) {
+        return { rows: [{ id: "ent-1" }] };
+      }
+      return { rows: [] };
+    };
+
+    const res = await app.fetch(
+      makeReq("archive-connection", { connectionId: "__demo__" }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      archived: { connection: boolean; entities: number; prompts: number };
+    };
+    expect(body.archived.connection).toBe(true);
+    expect(body.archived.entities).toBe(1);
+    expect(body.archived.prompts).toBe(0);
+
+    const promptUpdate = clientQueries.find((q) =>
+      /UPDATE\s+prompt_collections/i.test(q.sql),
+    );
+    expect(promptUpdate).toBeUndefined();
+  });
+
+  it("archive __demo__ when demo_industry read throws — logs warn, skips prompt cascade, still returns 200", async () => {
+    // readDemoIndustry catches failures from internalQuery and returns
+    // null. A transient settings read failure should NOT fail the
+    // archive — the connection + entity cascade still commits.
+    mocks.mockInternalQuery.mockImplementation(() =>
+      Promise.reject(new Error("transient settings read failure")),
+    );
+
+    queryHandler = async (sql) => {
+      if (/SELECT\s+status\s+FROM\s+connections/i.test(sql)) {
+        return { rows: [{ status: "published" }] };
+      }
+      return { rows: [] };
+    };
+
+    const res = await app.fetch(
+      makeReq("archive-connection", { connectionId: "__demo__" }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      archived: { connection: boolean; entities: number; prompts: number };
+    };
+    expect(body.archived.connection).toBe(true);
+    expect(body.archived.prompts).toBe(0);
+
+    const promptUpdate = clientQueries.find((q) =>
+      /UPDATE\s+prompt_collections/i.test(q.sql),
+    );
+    expect(promptUpdate).toBeUndefined();
   });
 });
 
@@ -623,6 +723,15 @@ describe("POST /api/v1/admin/restore-connection — errors", () => {
       makeReq("restore-connection", { connectionId: "nope" }),
     );
     expect(res.status).toBe(404);
+
+    // Read-only transaction commits cleanly even on a 404 (the SELECT
+    // ran but found nothing). Pin COMMIT so a future silent-ROLLBACK
+    // refactor gets caught.
+    const sqls = clientQueries.map((q) => q.sql.trim().toUpperCase());
+    expect(sqls[0]).toBe("BEGIN");
+    expect(sqls.includes("COMMIT")).toBe(true);
+    expect(sqls.includes("ROLLBACK")).toBe(false);
+    expect(clientReleased).toBe(true);
   });
 
   it("returns 404 when the connection is not currently archived", async () => {
@@ -642,6 +751,13 @@ describe("POST /api/v1/admin/restore-connection — errors", () => {
       (q) => /UPDATE\s+(connections|semantic_entities|prompt_collections)\s+SET\s+status\s*=\s*'published'/i.test(q.sql),
     );
     expect(restoreUpdates.length).toBe(0);
+
+    // Transaction closes cleanly + client released
+    const sqls = clientQueries.map((q) => q.sql.trim().toUpperCase());
+    expect(sqls[0]).toBe("BEGIN");
+    expect(sqls.includes("COMMIT")).toBe(true);
+    expect(sqls.includes("ROLLBACK")).toBe(false);
+    expect(clientReleased).toBe(true);
   });
 
   it("issues ROLLBACK and returns 500 when a mid-transaction statement fails", async () => {
@@ -666,7 +782,10 @@ describe("POST /api/v1/admin/restore-connection — errors", () => {
     expect(clientReleased).toBe(true);
 
     const body = (await res.json()) as Record<string, unknown>;
+    // requestId is surfaced for log correlation
+    expect(typeof body.requestId).toBe("string");
     expect(String(body.message ?? "")).not.toContain(rawErrorMessage);
+    expect(String(body.message ?? "")).toContain("server logs");
   });
 
   it("returns 404 when the internal DB is not configured", async () => {

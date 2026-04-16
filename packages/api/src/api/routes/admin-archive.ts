@@ -214,10 +214,10 @@ const restoreRoute = createRoute({
 // Routers
 // ---------------------------------------------------------------------------
 //
-// Two separate sub-routers so each mounts at its own prefix in admin.ts —
-// matches the existing `admin.route("/publish", adminPublish)` pattern and
-// scopes the `requireOrgContext()` middleware to each endpoint instead of
-// leaking onto sibling admin routes.
+// Each route below uses path `/` internally and mounts at a different admin
+// prefix (`/archive-connection`, `/restore-connection`). A single router
+// can't carry two `/`-path routes without collision, so we split — matches
+// the existing `admin.route("/publish", adminPublish)` pattern.
 
 const adminArchive = createAdminRouter();
 adminArchive.use(requireOrgContext());
@@ -283,63 +283,110 @@ adminArchive.openapi(archiveRoute, async (c) =>
       client.release();
     }
 
-    if (result.status === "not_found") {
-      return c.json(
-        {
-          error: "not_found",
-          message: `Connection "${connectionId}" not found for this organization.`,
-          requestId,
-        },
-        404,
-      );
+    // Exhaustive switch on the tagged result — adding a new variant to
+    // ArchiveConnectionResult will fail the `never` default and force a
+    // handler update here.
+    switch (result.status) {
+      case "not_found":
+        return c.json(
+          {
+            error: "not_found",
+            message: `Connection "${connectionId}" not found for this organization.`,
+            requestId,
+          },
+          404,
+        );
+
+      case "already_archived": {
+        // Connection row was already archived; cascades still ran so any
+        // straggler published entities/prompts got reconciled. Audit the
+        // reconciliation so ops can see it, but mark `connection: false`
+        // on the wire — the connection row itself didn't flip.
+        logAdminAction({
+          actionType: ADMIN_ACTIONS.mode.archive,
+          targetType: "mode",
+          targetId: connectionId,
+          ipAddress:
+            c.req.header("x-forwarded-for") ??
+            c.req.header("x-real-ip") ??
+            null,
+          metadata: {
+            orgId,
+            connectionId,
+            cascadedEntities: result.entities,
+            cascadedPrompts: result.prompts,
+            alreadyArchived: true,
+          },
+        });
+        log.info(
+          {
+            requestId,
+            orgId,
+            connectionId,
+            actorId: authResult.user?.id,
+            cascaded: {
+              entities: result.entities,
+              prompts: result.prompts,
+            },
+          },
+          "Connection already archived — cascade reconciled",
+        );
+        const response: ArchiveResponse = {
+          archived: {
+            connection: false,
+            entities: result.entities,
+            prompts: result.prompts,
+          },
+        };
+        return c.json(response, 200);
+      }
+
+      case "archived": {
+        logAdminAction({
+          actionType: ADMIN_ACTIONS.mode.archive,
+          targetType: "mode",
+          targetId: connectionId,
+          ipAddress:
+            c.req.header("x-forwarded-for") ??
+            c.req.header("x-real-ip") ??
+            null,
+          metadata: {
+            orgId,
+            connectionId,
+            cascadedEntities: result.entities,
+            cascadedPrompts: result.prompts,
+          },
+        });
+        log.info(
+          {
+            requestId,
+            orgId,
+            connectionId,
+            actorId: authResult.user?.id,
+            archived: {
+              entities: result.entities,
+              prompts: result.prompts,
+            },
+          },
+          "Connection archived",
+        );
+        const response: ArchiveResponse = {
+          archived: {
+            connection: true,
+            entities: result.entities,
+            prompts: result.prompts,
+          },
+        };
+        return c.json(response, 200);
+      }
+
+      default: {
+        const _exhaustive: never = result;
+        throw new Error(
+          `Unhandled archive result: ${JSON.stringify(_exhaustive)}`,
+        );
+      }
     }
-
-    // Idempotent no-op when already archived — no audit log, no cascade.
-    if (result.status === "already_archived") {
-      const response: ArchiveResponse = {
-        archived: { connection: false, entities: 0, prompts: 0 },
-      };
-      return c.json(response, 200);
-    }
-
-    logAdminAction({
-      actionType: ADMIN_ACTIONS.mode.archive,
-      targetType: "mode",
-      targetId: connectionId,
-      ipAddress:
-        c.req.header("x-forwarded-for") ??
-        c.req.header("x-real-ip") ??
-        null,
-      metadata: {
-        orgId,
-        connectionId,
-        cascadedEntities: result.entities,
-        cascadedPrompts: result.prompts,
-      },
-    });
-
-    log.info(
-      {
-        requestId,
-        orgId,
-        connectionId,
-        actorId: authResult.user?.id,
-        archived: {
-          entities: result.entities,
-          prompts: result.prompts,
-        },
-      },
-      "Connection archived",
-    );
-
-    const response: ArchiveResponse = {
-      archived: {
-        connection: true,
-        entities: result.entities,
-        prompts: result.prompts,
-      },
-    };
-    return c.json(response, 200);
   }),
 );
 
@@ -401,58 +448,75 @@ adminRestore.openapi(restoreRoute, async (c) =>
       client.release();
     }
 
-    if (result.status === "not_found" || result.status === "not_archived") {
-      return c.json(
-        {
-          error: "not_found",
-          message:
-            result.status === "not_found"
-              ? `Connection "${connectionId}" not found for this organization.`
-              : `Connection "${connectionId}" is not currently archived.`,
-          requestId,
-        },
-        404,
-      );
+    // Exhaustive switch — adding a new RestoreConnectionResult variant
+    // will fail the `never` default and force a handler update here.
+    switch (result.status) {
+      case "not_found":
+        return c.json(
+          {
+            error: "not_found",
+            message: `Connection "${connectionId}" not found for this organization.`,
+            requestId,
+          },
+          404,
+        );
+
+      case "not_archived":
+        return c.json(
+          {
+            error: "not_found",
+            message: `Connection "${connectionId}" is not currently archived.`,
+            requestId,
+          },
+          404,
+        );
+
+      case "restored": {
+        logAdminAction({
+          actionType: ADMIN_ACTIONS.mode.restore,
+          targetType: "mode",
+          targetId: connectionId,
+          ipAddress:
+            c.req.header("x-forwarded-for") ??
+            c.req.header("x-real-ip") ??
+            null,
+          metadata: {
+            orgId,
+            connectionId,
+            cascadedEntities: result.entities,
+            cascadedPrompts: result.prompts,
+          },
+        });
+        log.info(
+          {
+            requestId,
+            orgId,
+            connectionId,
+            actorId: authResult.user?.id,
+            restored: {
+              entities: result.entities,
+              prompts: result.prompts,
+            },
+          },
+          "Connection restored",
+        );
+        const response: RestoreResponse = {
+          restored: {
+            connection: true,
+            entities: result.entities,
+            prompts: result.prompts,
+          },
+        };
+        return c.json(response, 200);
+      }
+
+      default: {
+        const _exhaustive: never = result;
+        throw new Error(
+          `Unhandled restore result: ${JSON.stringify(_exhaustive)}`,
+        );
+      }
     }
-
-    logAdminAction({
-      actionType: ADMIN_ACTIONS.mode.restore,
-      targetType: "mode",
-      targetId: connectionId,
-      ipAddress:
-        c.req.header("x-forwarded-for") ??
-        c.req.header("x-real-ip") ??
-        null,
-      metadata: {
-        orgId,
-        connectionId,
-        cascadedEntities: result.entities,
-        cascadedPrompts: result.prompts,
-      },
-    });
-
-    log.info(
-      {
-        requestId,
-        orgId,
-        connectionId,
-        actorId: authResult.user?.id,
-        restored: {
-          entities: result.entities,
-          prompts: result.prompts,
-        },
-      },
-      "Connection restored",
-    );
-
-    const response: RestoreResponse = {
-      restored: {
-        connection: true,
-        entities: result.entities,
-        prompts: result.prompts,
-      },
-    };
-    return c.json(response, 200);
   }),
 );
 

@@ -15,6 +15,7 @@ import { internalQuery } from "@atlas/api/lib/db/internal";
 import type { PromptCollection, PromptItem } from "@useatlas/types";
 import { ErrorSchema, AuthErrorSchema, createIdParamSchema, createParamSchema, createListResponseSchema, DeletedResponseSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
+import { buildUnionStatusClause } from "./middleware";
 
 const log = createLogger("admin-prompts");
 
@@ -486,7 +487,7 @@ adminPrompts.openapi(listCollectionsRoute, async (c) => {
     const { orgId } = yield* AuthContext;
     const { atlasMode } = yield* RequestContext;
 
-    const statusClause = atlasMode === "published" ? " AND status = 'published'" : "";
+    const statusClause = buildUnionStatusClause(atlasMode);
 
     let rows: Record<string, unknown>[];
     if (orgId) {

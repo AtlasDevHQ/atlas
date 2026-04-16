@@ -19,7 +19,7 @@ import type { PromptCollection, PromptItem } from "@useatlas/types";
 
 const log = createLogger("prompts");
 import { ErrorSchema } from "./shared-schemas";
-import { standardAuth, requestContext, type AuthEnv } from "./middleware";
+import { standardAuth, requestContext, buildUnionStatusClause, type AuthEnv } from "./middleware";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -173,7 +173,7 @@ prompts.openapi(listCollectionsRoute, async (c) => {
       return c.json({ collections: [] }, 200);
     }
 
-    const statusClause = atlasMode === "published" ? " AND status = 'published'" : "";
+    const statusClause = buildUnionStatusClause(atlasMode);
 
     let rows: Record<string, unknown>[];
     if (orgId) {
@@ -205,7 +205,7 @@ prompts.openapi(getCollectionRoute, async (c) => {
     }
 
     const { id } = c.req.valid("param");
-    const statusClause = atlasMode === "published" ? " AND status = 'published'" : "";
+    const statusClause = buildUnionStatusClause(atlasMode);
 
     let collectionRows: Record<string, unknown>[];
     if (orgId) {

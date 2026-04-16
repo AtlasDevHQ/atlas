@@ -399,7 +399,10 @@ const _orgWhitelists = new Map<string, Map<string, Set<string>>>();
  *
  * @param orgId - Organization ID to load entities for.
  * @param mode - Atlas mode. When "published", only published entities are
- *   included. When "developer" (or omitted), all entities are included.
+ *   included. When "developer", drafts are overlaid on published via the
+ *   CTE in `listEntitiesWithOverlay` (drafts supersede, tombstones hide,
+ *   archived-connection entities excluded). When omitted, behaves like
+ *   developer mode without the overlay — returns all rows the DB has.
  * @returns Map of connectionId → Set<tableName>.
  */
 export async function loadOrgWhitelist(orgId: string, mode?: "published" | "developer"): Promise<Map<string, Set<string>>> {
@@ -407,9 +410,10 @@ export async function loadOrgWhitelist(orgId: string, mode?: "published" | "deve
   const cached = _orgWhitelists.get(cacheKey);
   if (cached) return cached;
 
-  const { listEntities } = await import("@atlas/api/lib/semantic/entities");
-  const statusFilter = mode === "published" ? "published" as const : undefined;
-  const rows = await listEntities(orgId, "entity", statusFilter);
+  const { listEntities, listEntitiesWithOverlay } = await import("@atlas/api/lib/semantic/entities");
+  const rows = mode === "developer"
+    ? await listEntitiesWithOverlay(orgId, "entity")
+    : await listEntities(orgId, "entity", mode === "published" ? "published" : undefined);
 
   const byConnection = new Map<string, Set<string>>();
   let parseFailures = 0;

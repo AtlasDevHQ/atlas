@@ -17,6 +17,7 @@ import { runHandler } from "@atlas/api/lib/effect/hono";
 import { checkResourceLimit } from "@atlas/api/lib/billing/enforcement";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
+import { buildUnionStatusClause } from "./middleware";
 
 const log = createLogger("admin-connections");
 
@@ -33,7 +34,9 @@ function getAtlasMode(c: { get(key: string): unknown }): import("@useatlas/types
  * Get the set of connection IDs visible to a workspace admin.
  * Returns null for platform admins (they see all connections).
  *
- * @param mode - Atlas mode. When "published", only published connections are visible.
+ * @param mode - Atlas mode. Published mode sees only published connections;
+ *   developer mode additionally sees drafts. Archived connections are hidden
+ *   in both modes.
  */
 async function getVisibleConnectionIds(
   orgId: string,
@@ -46,7 +49,7 @@ async function getVisibleConnectionIds(
   const visible = new Set<string>(["default"]);
 
   if (hasInternalDB()) {
-    const statusClause = mode === "published" ? " AND status = 'published'" : "";
+    const statusClause = buildUnionStatusClause(mode);
     const rows = await internalQuery<{ id: string }>(
       `SELECT id FROM connections WHERE org_id = $1${statusClause}`,
       [orgId],

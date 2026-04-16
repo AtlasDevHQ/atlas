@@ -85,6 +85,9 @@ export const ADMIN_ACTIONS = {
     approve: "approval.approve",
     deny: "approval.deny",
   },
+  mode: {
+    publish: "mode.publish",
+  },
 } as const;
 
 /** Union of all admin action type string values. */

@@ -108,7 +108,10 @@ const archiveRoute = createRoute({
     "semantic entities to `archived`. When the id is the reserved " +
     "`__demo__` connection, built-in demo prompt collections matching the " +
     "org's `demo_industry` setting are also archived. " +
-    "Archiving an already-archived connection is an idempotent no-op.",
+    "Archiving an already-archived connection returns `archived.connection = " +
+    "false` and still runs the entity + demo-prompt cascades — any straggler " +
+    "rows that were left at `published` get reconciled, and the response " +
+    "reports the counts.",
   request: {
     body: {
       content: { "application/json": { schema: ConnectionIdBodySchema } },

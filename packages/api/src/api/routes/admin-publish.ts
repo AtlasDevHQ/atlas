@@ -217,32 +217,47 @@ adminPublish.openapi(publishRoute, async (c) =>
         const archiveResult = await archiveSingleConnection(client, orgId, id, {
           demoIndustry: id === DEMO_CONNECTION_ID ? demoIndustry : null,
         });
-        if (archiveResult.status === "archived") {
-          archivedConnectionCount++;
-          archivedEntityCount += archiveResult.entities;
-          archivedPromptCount += archiveResult.prompts;
-        } else if (archiveResult.status === "already_archived") {
-          // The connection row itself was already archived, but the helper's
-          // cascade still reconciled any straggler entities / demo prompts.
-          archivedEntityCount += archiveResult.entities;
-          archivedPromptCount += archiveResult.prompts;
-          log.warn(
-            {
-              requestId,
-              orgId,
-              connectionId: id,
-              cascadedEntities: archiveResult.entities,
-              cascadedPrompts: archiveResult.prompts,
-            },
-            "archiveConnection id already archived during publish — cascade reconciled",
-          );
-        } else {
-          // not_found: admin passed a bogus id. Surface it in the log so
-          // ops can spot typos; publish itself still commits the rest.
-          log.warn(
-            { requestId, orgId, connectionId: id },
-            "archiveConnection id not found during publish — skipped",
-          );
+        // Exhaustive switch — matches the pattern in admin-archive.ts so a
+        // future ArchiveConnectionResult variant fails the `never` default
+        // at compile time instead of getting silently treated as
+        // `not_found`.
+        switch (archiveResult.status) {
+          case "archived":
+            archivedConnectionCount++;
+            archivedEntityCount += archiveResult.entities;
+            archivedPromptCount += archiveResult.prompts;
+            break;
+          case "already_archived":
+            // The connection row itself was already archived, but the
+            // helper's cascade still reconciled any straggler entities /
+            // demo prompts.
+            archivedEntityCount += archiveResult.entities;
+            archivedPromptCount += archiveResult.prompts;
+            log.warn(
+              {
+                requestId,
+                orgId,
+                connectionId: id,
+                cascadedEntities: archiveResult.entities,
+                cascadedPrompts: archiveResult.prompts,
+              },
+              "archiveConnection id already archived during publish — cascade reconciled",
+            );
+            break;
+          case "not_found":
+            // Admin passed a bogus id. Surface it in the log so ops can
+            // spot typos; publish itself still commits the rest.
+            log.warn(
+              { requestId, orgId, connectionId: id },
+              "archiveConnection id not found during publish — skipped",
+            );
+            break;
+          default: {
+            const _exhaustive: never = archiveResult;
+            throw new Error(
+              `Unhandled archive result in publish loop: ${JSON.stringify(_exhaustive)}`,
+            );
+          }
         }
       }
 

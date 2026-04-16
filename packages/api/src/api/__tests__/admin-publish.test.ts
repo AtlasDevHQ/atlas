@@ -389,6 +389,12 @@ describe("POST /api/v1/admin/publish — archiveConnections", () => {
           ],
         };
       }
+      // Cascade archives 2 built-in demo prompts
+      if (
+        /UPDATE\s+prompt_collections\s+SET\s+status\s*=\s*'archived'/i.test(sql)
+      ) {
+        return { rows: [{ id: "prompt-1" }, { id: "prompt-2" }] };
+      }
       return { rows: [] };
     };
 
@@ -398,11 +404,11 @@ describe("POST /api/v1/admin/publish — archiveConnections", () => {
       archived: { connections: number; entities: number; prompts: number };
     };
     expect(body.archived.connections).toBe(1);
-    // Cascade count reflects the entities UPDATE RETURNING rowcount
+    // Cascade counts reflect the UPDATE ... RETURNING rowcounts. Concrete
+    // values — a bare `>= 0` would be tautological (zod already enforces
+    // `z.number().int().nonnegative()` on the response schema).
     expect(body.archived.entities).toBe(3);
-    // Publish reports demo prompt count too (parity with the standalone
-    // archive endpoint after the #1437 refactor).
-    expect(body.archived.prompts).toBeGreaterThanOrEqual(0);
+    expect(body.archived.prompts).toBe(2);
 
     // Assert three archive statements fired in the transaction
     const archiveConnSql = clientQueries.find(
@@ -521,6 +527,97 @@ describe("POST /api/v1/admin/publish — archiveConnections", () => {
     const sqls = clientQueries.map((q) => q.sql.trim().toUpperCase());
     expect(sqls.includes("ROLLBACK")).toBe(true);
     expect(sqls.includes("COMMIT")).toBe(false);
+  });
+
+  it("archive loop: already-archived id reconciles stragglers without bumping connection count", async () => {
+    // An id in archiveConnections is already `archived` but still has
+    // straggler entities stuck at `published` and built-in demo prompts
+    // in the same state. archiveSingleConnection should NOT flip the
+    // connection row (it's already archived) but SHOULD still cascade
+    // and return non-zero counts. Publish must accumulate those counts
+    // into archived.entities / archived.prompts while keeping
+    // archived.connections at 0, and emit the "cascade reconciled" warn.
+    mocks.mockInternalQuery.mockImplementation((sql: string) => {
+      if (sql.includes("demo_industry")) {
+        return Promise.resolve([{ value: "cybersecurity" }]);
+      }
+      return Promise.resolve([]);
+    });
+
+    queryHandler = async (sql) => {
+      if (/SELECT\s+status\s+FROM\s+connections/i.test(sql)) {
+        // Already archived — helper will NOT run the connection UPDATE
+        return { rows: [{ status: "archived" }] };
+      }
+      if (/UPDATE\s+semantic_entities\s+SET\s+status\s*=\s*'archived'/i.test(sql)) {
+        return { rows: [{ id: "straggler-1" }, { id: "straggler-2" }] };
+      }
+      if (/UPDATE\s+prompt_collections\s+SET\s+status\s*=\s*'archived'/i.test(sql)) {
+        return { rows: [{ id: "prompt-straggler-1" }] };
+      }
+      return { rows: [] };
+    };
+
+    const res = await app.fetch(publishReq({ archiveConnections: ["__demo__"] }));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      archived: { connections: number; entities: number; prompts: number };
+    };
+    // Connection row didn't flip — no bump
+    expect(body.archived.connections).toBe(0);
+    // But cascade reconciliation surfaces in both counts
+    expect(body.archived.entities).toBe(2);
+    expect(body.archived.prompts).toBe(1);
+
+    // No connection UPDATE (the helper skips it when already archived)
+    const connUpdate = clientQueries.find((q) =>
+      /UPDATE\s+connections\s+SET\s+status\s*=\s*'archived'/i.test(q.sql),
+    );
+    expect(connUpdate).toBeUndefined();
+    // Transaction still commits cleanly
+    const sqls = clientQueries.map((q) => q.sql.trim().toUpperCase());
+    expect(sqls.includes("COMMIT")).toBe(true);
+    expect(sqls.includes("ROLLBACK")).toBe(false);
+  });
+
+  it("archive loop: not_found id does not abort the loop — subsequent ids still process", async () => {
+    // First id is not_found; second is published and should still
+    // archive. The `not_found` branch must continue, not short-circuit.
+    let lockCalls = 0;
+    queryHandler = async (sql) => {
+      if (/SELECT\s+status\s+FROM\s+connections/i.test(sql)) {
+        lockCalls++;
+        // First id: missing; second id: published
+        return lockCalls === 1 ? { rows: [] } : { rows: [{ status: "published" }] };
+      }
+      if (/UPDATE\s+connections\s+SET\s+status\s*=\s*'archived'/i.test(sql)) {
+        return { rows: [{ id: "real-id" }] };
+      }
+      return { rows: [] };
+    };
+
+    const res = await app.fetch(
+      publishReq({ archiveConnections: ["typo-id", "real-id"] }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      archived: { connections: number; entities: number; prompts: number };
+    };
+    // Only the second id archived; the first was not_found and skipped
+    expect(body.archived.connections).toBe(1);
+
+    // Both ids got locked (loop didn't early-exit)
+    const lockParams = clientQueries
+      .filter((q) =>
+        /SELECT\s+status\s+FROM\s+connections[\s\S]*FOR\s+UPDATE/i.test(q.sql),
+      )
+      .map((q) => (q.params as unknown[])[1]);
+    expect(lockParams).toEqual(["typo-id", "real-id"]);
+
+    // Transaction commits — publish is best-effort for the archive list
+    const sqls = clientQueries.map((q) => q.sql.trim().toUpperCase());
+    expect(sqls.includes("COMMIT")).toBe(true);
+    expect(sqls.includes("ROLLBACK")).toBe(false);
   });
 });
 

@@ -17,7 +17,7 @@ import { tool } from "ai";
 import { z } from "zod";
 import { Effect } from "effect";
 import { Parser } from "node-sql-parser";
-import { connections, detectDBType, getRegionAwareConnection, ConnectionNotRegisteredError, NoDatasourceConfiguredError, PoolCapacityExceededError } from "@atlas/api/lib/db/connection";
+import { connections, detectDBType, getRegionAwareConnection, isConnectionVisibleInMode, ConnectionNotRegisteredError, NoDatasourceConfiguredError, PoolCapacityExceededError } from "@atlas/api/lib/db/connection";
 import type { DBConnection, DBType } from "@atlas/api/lib/db/connection";
 import { getWhitelistedTables, getOrgWhitelistedTables } from "@atlas/api/lib/semantic";
 import { logQueryAudit } from "@atlas/api/lib/auth/audit";
@@ -399,13 +399,40 @@ type PipelineError =
 /** Resolve the database connection. Fails with tagged connection errors. */
 function resolveConnectionEffect(
   connId: string,
+  /** Org ID used for pool routing — gated on `isOrgPoolingEnabled()` in SaaS. */
   orgId: string | undefined,
+  atlasMode: import("@useatlas/types/auth").AtlasMode,
+  /** Org ID from auth context — undefined in unauthenticated self-hosted mode. Used for mode visibility. */
+  authOrgId: string | undefined,
 ): Effect.Effect<
   { db: DBConnection; dbType: DBType },
   ConnectionNotFoundError | PoolExhaustedError | NoDatasourceError
 > {
+  // Sentinel thrown by the mode-visibility gate so the catch arm can return an
+  // error without leaking the full registered-connection list — in published
+  // mode that list includes draft connections the user must not know about.
+  class ModeGateRejection extends Error {
+    readonly connectionId: string;
+    constructor(connectionId: string) {
+      super(`Connection "${connectionId}" is not available in ${atlasMode} mode.`);
+      this.connectionId = connectionId;
+    }
+  }
+
   return Effect.tryPromise({
     try: async () => {
+      // Mode isolation: published-mode requests may only resolve published
+      // connections; developer-mode may also resolve drafts; archived is
+      // hidden in both. `default` bypasses the check (config-managed, no DB
+      // row). Uses authOrgId — pool-level org isolation is a separate concern
+      // and may be disabled, but mode visibility still applies.
+      if (authOrgId) {
+        const visible = await isConnectionVisibleInMode(authOrgId, connId, atlasMode);
+        if (!visible) {
+          throw new ModeGateRejection(connId);
+        }
+      }
+
       let db: DBConnection;
       let resolvedConnId = connId;
       if (orgId) {
@@ -421,11 +448,28 @@ function resolveConnectionEffect(
       return { db, dbType };
     },
     catch: (err) => {
+      // Zero-knowledge guarantee: when a caller has an org/mode context, the
+      // list of registered connections must never be surfaced — the registry
+      // is populated from every org's DB rows on boot, so exposing it would
+      // leak draft IDs across orgs and modes. Self-hosted callers without an
+      // org context still get the debug list.
+      const availableList = authOrgId ? [] : connections.list();
+      const availableSuffix = availableList.length > 0 ? availableList.join(", ") : "(none)";
+
+      if (err instanceof ModeGateRejection) {
+        return new ConnectionNotFoundError({
+          message: err.message,
+          connectionId: connId,
+          available: availableList,
+        });
+      }
       if (err instanceof ConnectionNotRegisteredError) {
         return new ConnectionNotFoundError({
-          message: `Connection "${connId}" is not registered. Available: ${connections.list().join(", ") || "(none)"}`,
+          message: authOrgId
+            ? `Connection "${connId}" is not registered.`
+            : `Connection "${connId}" is not registered. Available: ${availableSuffix}`,
           connectionId: connId,
-          available: connections.list(),
+          available: availableList,
         });
       }
       if (err instanceof NoDatasourceConfiguredError) {
@@ -444,7 +488,7 @@ function resolveConnectionEffect(
       return new ConnectionNotFoundError({
         message: `Connection "${connId}" failed to initialize: ${message}`,
         connectionId: connId,
-        available: connections.list(),
+        available: availableList,
       });
     },
   });
@@ -859,9 +903,15 @@ Rules:
       const orgId = connections.isOrgPoolingEnabled()
         ? reqCtx?.user?.activeOrganizationId
         : undefined;
+      // Mode visibility always uses the real auth orgId — draft/published
+      // isolation applies in self-hosted single-org deployments as well as
+      // SaaS, even when pool-level org isolation is disabled.
+      const authOrgId = reqCtx?.user?.activeOrganizationId;
+      // Fail-closed default for mode: missing atlasMode implies published.
+      const atlasMode = reqCtx?.atlasMode ?? "published";
 
       // Step 1: Resolve connection (tagged errors)
-      const { db, dbType } = yield* resolveConnectionEffect(connId, orgId);
+      const { db, dbType } = yield* resolveConnectionEffect(connId, orgId, atlasMode, authOrgId);
 
       const targetHost = connections.getTargetHost(connId);
       const customValidator = connections.getValidator(connId);

@@ -27,6 +27,7 @@ import { getSemanticRoot as getDefaultSemanticRoot } from "./files";
 import { createLogger } from "@atlas/api/lib/logger";
 import { invalidateSemanticIndex } from "./search";
 import { getEntityDirs } from "./scanner";
+import { invalidateOrgModeRoots } from "./sync";
 
 const log = createLogger("semantic");
 
@@ -505,6 +506,7 @@ export function invalidateOrgWhitelist(orgId: string): void {
   _orgWhitelists.delete(`${orgId}:published`);
   _orgWhitelists.delete(`${orgId}:developer`);
   invalidateOrgSemanticIndex(orgId);
+  invalidateOrgModeRoots(orgId);
 }
 
 /** Clear all org whitelist caches. For testing. */

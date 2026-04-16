@@ -6,7 +6,7 @@
 
 import { tool } from "ai";
 import { z } from "zod";
-import { connections, getDB } from "@atlas/api/lib/db/connection";
+import { connections, getDB, isConnectionVisibleInMode } from "@atlas/api/lib/db/connection";
 import { getWhitelistedTables, getOrgWhitelistedTables } from "@atlas/api/lib/semantic";
 import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
 
@@ -31,14 +31,25 @@ export const profileTable = tool({
     const connId = connectionId ?? "default";
 
     try {
-      // Whitelist check
+      // Whitelist + mode visibility check
       const reqCtx = getRequestContext();
-      const orgId = connections.isOrgPoolingEnabled()
-        ? reqCtx?.user?.activeOrganizationId
-        : undefined;
+      const atlasMode = reqCtx?.atlasMode ?? "published";
+      const authOrgId = reqCtx?.user?.activeOrganizationId;
+      const poolOrgId = connections.isOrgPoolingEnabled() ? authOrgId : undefined;
 
-      const whitelist = orgId
-        ? getOrgWhitelistedTables(orgId, "default", reqCtx?.atlasMode)
+      // Mode isolation: reject non-visible connections before touching pools.
+      // Mirrors the gate in executeSQL.
+      if (authOrgId) {
+        const visible = await isConnectionVisibleInMode(authOrgId, connId, atlasMode);
+        if (!visible) {
+          return {
+            error: `Connection "${connId}" is not available in ${atlasMode} mode.`,
+          };
+        }
+      }
+
+      const whitelist = authOrgId
+        ? getOrgWhitelistedTables(authOrgId, connId, atlasMode)
         : getWhitelistedTables(connId);
 
       if (!whitelist.has(table.toLowerCase())) {
@@ -48,8 +59,8 @@ export const profileTable = tool({
       }
 
       // Get connection info
-      const db = orgId
-        ? connections.getForOrg(orgId, connId)
+      const db = poolOrgId
+        ? connections.getForOrg(poolOrgId, connId)
         : connId === "default"
           ? getDB()
           : connections.get(connId);

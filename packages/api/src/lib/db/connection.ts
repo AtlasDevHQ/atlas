@@ -16,9 +16,11 @@
  */
 
 import { matchError } from "@useatlas/types";
+import type { AtlasMode } from "@useatlas/types/auth";
 import { Data, Effect, Schedule, Duration, Fiber } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
 import { _resetWhitelists } from "@atlas/api/lib/semantic";
+import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import type { HealthStatus } from "@atlas/api/lib/connection-types";
 
 export type { HealthStatus } from "@atlas/api/lib/connection-types";
@@ -1342,6 +1344,50 @@ export const connections = new ConnectionRegistry();
 /** Backward-compatible singleton — delegates to the connection registry. */
 export function getDB(): DBConnection {
   return connections.getDefault();
+}
+
+/**
+ * Check whether a connection is visible to an org in the given atlas mode.
+ *
+ * Visibility rules:
+ * - `"default"` — config-managed, not stored in the connections table;
+ *   always visible regardless of mode.
+ * - Published mode — only `status = 'published'` rows are visible.
+ * - Developer mode — `status IN ('published', 'draft')` rows are visible;
+ *   drafts appear alongside published connections.
+ * - `archived` — never visible in either mode.
+ *
+ * When no internal DB is configured (self-hosted without Atlas DB), all
+ * connections are considered visible — the status column does not exist.
+ *
+ * Used as the agent-isolation gate: `executeSQL` consults this before
+ * resolving a connection so published-mode users never touch a draft pool.
+ */
+export async function isConnectionVisibleInMode(
+  orgId: string,
+  connectionId: string,
+  mode: AtlasMode,
+): Promise<boolean> {
+  if (connectionId === "default") return true;
+  if (!hasInternalDB()) return true;
+
+  const statusClause = mode === "developer"
+    ? "status IN ('published', 'draft')"
+    : "status = 'published'";
+
+  try {
+    const rows = await internalQuery<{ id: string }>(
+      `SELECT id FROM connections WHERE org_id = $1 AND id = $2 AND ${statusClause}`,
+      [orgId, connectionId],
+    );
+    return rows.length > 0;
+  } catch (err) {
+    log.error(
+      { err: err instanceof Error ? err.message : String(err), orgId, connectionId, mode },
+      "Connection visibility check failed — denying access (fail closed)",
+    );
+    return false;
+  }
 }
 
 /** Result from region-aware connection resolution. */

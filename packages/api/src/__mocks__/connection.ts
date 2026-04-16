@@ -108,6 +108,9 @@ export function createConnectionMock(overrides?: ConnectionMockOverrides) {
     resolveDatasourceUrl: () => process.env.ATLAS_DATASOURCE_URL || undefined,
     detectDBType: () => "postgres" as const,
     extractTargetHost: () => "localhost",
+    // Default to always-visible so existing tests that don't care about mode
+    // continue to work. Tests exercising the visibility boundary override this.
+    isConnectionVisibleInMode: async () => true,
     ConnectionRegistry: class {},
     ConnectionNotRegisteredError: class extends Error {
       readonly id: string;

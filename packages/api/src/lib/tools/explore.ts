@@ -25,7 +25,7 @@ import { z } from "zod";
 import { createLogger, getRequestContext } from "@atlas/api/lib/logger";
 import { withSpan } from "@atlas/api/lib/tracing";
 import { getConfig, type SandboxBackendName } from "@atlas/api/lib/config";
-import { getSemanticRoot } from "@atlas/api/lib/semantic/sync";
+import { getSemanticRoot, ensureOrgModeSemanticRoot } from "@atlas/api/lib/semantic/sync";
 import { getSetting } from "@atlas/api/lib/settings";
 import { useVercelSandbox, useSidecar } from "./backends/detect";
 
@@ -498,9 +498,23 @@ Always start by listing the root directory to see what sources are available.`,
   }),
 
   execute: async ({ command }) => {
-    // Resolve org-scoped semantic root from request context
-    const orgId = getRequestContext()?.user?.activeOrganizationId;
-    const semanticRoot = getSemanticRoot(orgId);
+    // Resolve org-scoped, mode-specific semantic root from request context.
+    // Mode isolation: published-mode users see only published entities;
+    // developer-mode users see the draft overlay. Self-hosted (no orgId)
+    // continues to use the base semantic root.
+    const reqCtx = getRequestContext();
+    const orgId = reqCtx?.user?.activeOrganizationId;
+    const atlasMode = reqCtx?.atlasMode ?? "published";
+    let semanticRoot: string;
+    try {
+      semanticRoot = orgId
+        ? await ensureOrgModeSemanticRoot(orgId, atlasMode)
+        : getSemanticRoot();
+    } catch (err) {
+      const detail = err instanceof Error ? err.message : String(err);
+      log.error({ err: detail, orgId, atlasMode }, "Failed to prepare org semantic root for explore");
+      return `Error: Explore tool is unavailable — ${detail}`;
+    }
 
     let backend: ExploreBackend;
     try {

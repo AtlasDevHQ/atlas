@@ -28,20 +28,31 @@ const log = createLogger("semantic-sync");
 /**
  * Resolve the semantic root for a given org.
  *
- * - With orgId: `{semanticRoot}/.orgs/{orgId}/`
- * - Without orgId: the base semantic root (defaults to `{cwd}/semantic`, overridable via `ATLAS_SEMANTIC_ROOT`)
+ * - With orgId + mode: `{semanticRoot}/.orgs/{orgId}/modes/{mode}/` —
+ *   mode-specific view built lazily by `ensureOrgModeSemanticRoot()`.
+ *   Used by the agent's `explore` tool so published-mode users see only
+ *   published entities and developer-mode users see the draft overlay.
+ * - With orgId only: `{semanticRoot}/.orgs/{orgId}/` — the legacy
+ *   all-content directory used by the CLI and write-path sync operations.
+ * - Without orgId: the base semantic root (defaults to `{cwd}/semantic`,
+ *   overridable via `ATLAS_SEMANTIC_ROOT`).
  *
  * Validates orgId against path traversal — rejects values containing
  * path separators or `..` components.
  */
-export function getSemanticRoot(orgId?: string): string {
+export function getSemanticRoot(
+  orgId?: string,
+  mode?: import("@useatlas/types/auth").AtlasMode,
+): string {
   const base = getBaseSemanticRoot();
   if (!orgId) return base;
   const safe = path.basename(orgId);
   if (safe !== orgId || orgId === "." || orgId === "..") {
     throw new Error(`Invalid orgId for semantic root: "${orgId}"`);
   }
-  return path.join(base, ".orgs", safe);
+  const orgRoot = path.join(base, ".orgs", safe);
+  if (!mode) return orgRoot;
+  return path.join(orgRoot, "modes", mode);
 }
 
 // ---------------------------------------------------------------------------
@@ -294,6 +305,162 @@ export async function cleanupOrgDirectory(orgId: string): Promise<void> {
       "Failed to clean up org directory",
     );
   }
+}
+
+// ---------------------------------------------------------------------------
+// Mode-specific semantic root (agent isolation)
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-org, per-mode build locks so concurrent agent requests for the same
+ * (orgId, mode) share a single build rather than rebuilding in parallel.
+ */
+const _modeBuildLocks = new Map<string, Promise<void>>();
+
+/** Track which (orgId, mode) directories have already been built this process. */
+const _modeBuilt = new Set<string>();
+
+/**
+ * Monotonic invalidation counter per (orgId, mode). Incremented by
+ * `invalidateOrgModeRoots` so an in-flight build started before the
+ * invalidation does NOT mark the now-stale content as fresh.
+ */
+const _modeInvalidationStamp = new Map<string, number>();
+
+function modeKey(orgId: string, mode: import("@useatlas/types/auth").AtlasMode): string {
+  return `${orgId}:${mode}`;
+}
+
+/**
+ * Invalidate the cached mode-specific semantic roots for an org.
+ * Called from entity CRUD paths so the next explore call rebuilds from DB.
+ *
+ * Increments the per-(org,mode) invalidation stamp so any currently-running
+ * rebuild will not add its key to `_modeBuilt` after completion — the next
+ * call rebuilds instead of serving stale files.
+ */
+export function invalidateOrgModeRoots(orgId: string): void {
+  for (const mode of ["published", "developer"] as const) {
+    const key = modeKey(orgId, mode);
+    _modeBuilt.delete(key);
+    _modeInvalidationStamp.set(key, (_modeInvalidationStamp.get(key) ?? 0) + 1);
+  }
+}
+
+/**
+ * Ensure the mode-specific semantic root exists on disk for the agent's
+ * explore tool. Mode isolation guarantee: published-mode users see only
+ * published entities, developer-mode users see the draft overlay (drafts
+ * supersede published, tombstones hide targets, archived-connection entities
+ * excluded) — same semantics as `loadOrgWhitelist`.
+ *
+ * Build is lazy: if the directory has not been populated this process (or
+ * was invalidated by entity CRUD), rebuild from DB. Subsequent calls are a
+ * no-op.
+ *
+ * Returns the resolved directory path.
+ */
+export async function ensureOrgModeSemanticRoot(
+  orgId: string,
+  mode: import("@useatlas/types/auth").AtlasMode,
+): Promise<string> {
+  const root = getSemanticRoot(orgId, mode);
+  const key = modeKey(orgId, mode);
+  if (_modeBuilt.has(key)) return root;
+
+  // Coalesce concurrent builds. If another caller is already building, wait
+  // and then re-check `_modeBuilt` — the in-flight build may have been
+  // invalidated mid-flight or failed per-file writes, in which case the
+  // waiter must itself rebuild instead of returning a stale root.
+  const existing = _modeBuildLocks.get(key);
+  if (existing) {
+    await existing;
+    if (_modeBuilt.has(key)) return root;
+    return ensureOrgModeSemanticRoot(orgId, mode);
+  }
+
+  let resolve: () => void;
+  const lock = new Promise<void>((r) => { resolve = r; });
+  _modeBuildLocks.set(key, lock);
+
+  // Capture the invalidation stamp before building. If it advances during the
+  // build, an entity CRUD happened mid-build — the content we just wrote is
+  // stale. Leave _modeBuilt unset so the next call rebuilds.
+  const stampBefore = _modeInvalidationStamp.get(key) ?? 0;
+  try {
+    const result = await _buildOrgModeRoot(orgId, mode, root);
+    const stampAfter = _modeInvalidationStamp.get(key) ?? 0;
+    // Mark as built only if BOTH: (a) stamp did not advance (no CRUD raced),
+    // and (b) every entity wrote successfully. Partial writes leave the
+    // directory in an undefined state that must not be trusted.
+    if (stampAfter === stampBefore && result.failed === 0) {
+      _modeBuilt.add(key);
+    } else {
+      log.debug(
+        { orgId, mode, stampBefore, stampAfter, failed: result.failed },
+        "Mode-specific semantic root build incomplete — next call will rebuild",
+      );
+    }
+  } finally {
+    resolve!();
+    _modeBuildLocks.delete(key);
+  }
+
+  return root;
+}
+
+/** Rebuild the mode-specific directory from DB using the mode-appropriate loader. */
+async function _buildOrgModeRoot(
+  orgId: string,
+  mode: import("@useatlas/types/auth").AtlasMode,
+  root: string,
+): Promise<{ written: number; failed: number }> {
+  const { listEntities, listEntitiesWithOverlay } = await import("@atlas/api/lib/semantic/entities");
+
+  const rows = mode === "published"
+    ? await listEntities(orgId, undefined, "published")
+    : await listEntitiesWithOverlay(orgId);
+
+  await Promise.all([
+    fs.promises.mkdir(path.join(root, "entities"), { recursive: true }),
+    fs.promises.mkdir(path.join(root, "metrics"), { recursive: true }),
+  ]);
+
+  const expectedFiles = new Set<string>();
+  let written = 0;
+  let failed = 0;
+  for (const row of rows) {
+    const subdir = entityTypeDir(row.entity_type as SemanticEntityType);
+    const fileName = `${safeName(row.name)}.yml`;
+    const filePath = subdir ? path.join(root, subdir, fileName) : path.join(root, fileName);
+    expectedFiles.add(filePath);
+    try {
+      await atomicWriteFile(filePath, row.yaml_content);
+      written++;
+    } catch (err) {
+      failed++;
+      log.error(
+        { orgId, mode, name: row.name, type: row.entity_type, err: err instanceof Error ? err.message : String(err) },
+        "Failed to write mode-specific entity file",
+      );
+    }
+  }
+
+  await _cleanStaleFiles(root, expectedFiles);
+
+  log.info(
+    { orgId, mode, entityCount: rows.length, written, failed, path: root },
+    "Built mode-specific semantic root",
+  );
+
+  return { written, failed };
+}
+
+/** @internal Clear the mode-built cache — for testing only. */
+export function _resetModeBuildCache(): void {
+  _modeBuilt.clear();
+  _modeBuildLocks.clear();
+  _modeInvalidationStamp.clear();
 }
 
 // ---------------------------------------------------------------------------

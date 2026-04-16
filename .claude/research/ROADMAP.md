@@ -1089,6 +1089,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] Docs audit — critical/high findings across docs site (PR #1379)
 - [x] Docs audit — OpenAPI params, SDK docs, plugin directory (PR #1380)
 - [x] CORS on streaming responses, Bun idle timeout, PG read-only (PR #1381)
+- [x] Docs accuracy audit — fix 12 findings across docs site (PR #1420)
 
 ---
 
@@ -1155,6 +1156,42 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] Extract shared `transformMessages` to `@useatlas/types/conversation` (#1393, PR #1417)
 - [x] Fix report-view test: `toolInvocationId` → `toolCallId` (#1416, #1418)
 - [x] Publish `@useatlas/types` 0.0.10 — conversation entrypoint
+
+---
+
+## 1.2.0 — Developer/Published Mode
+
+**Stripe-style dual-mode experience with draft/published content model.** Admins configure in developer mode (drafts), publish atomically to users. Demo data is the initial published content for new signups. PRD: #1421. Milestone: #34.
+
+### Foundation
+- [ ] Schema migration — add `status` column to connections, semantic_entities, prompt_collections (#1423)
+- [ ] Mode resolution middleware + RequestContext propagation (#1424)
+- [ ] Onboarding — save demo as `__demo__` connection with `demo_industry` setting (#1425)
+
+### Query Layer
+- [ ] Published mode query filtering across connections, entities, prompts (#1426)
+- [ ] Developer mode overlay queries — entity CTE + union queries (#1427)
+- [ ] Write path mode-awareness — draft creation, draft edits, tombstones (#1428)
+
+### Publishing
+- [ ] Atomic publish endpoint with `archiveConnections` parameter (#1429)
+- [ ] Archive/restore connection endpoints with entity cascade (#1437)
+
+### Agent & Data
+- [ ] Agent isolation — mode-aware connection + whitelist in tool execution (#1430)
+- [ ] Semantic diff scoping — filter `getDBSchema` to whitelist (#1431)
+- [ ] Prompt library mode scoping — demo industry filtering + draft visibility (#1438)
+- [ ] `GET /api/v1/mode` endpoint (#1439)
+
+### Frontend
+- [ ] Connect page redesign — two equal-weight paths (#1432)
+- [ ] Developer mode banner + cookie-based toggle (#1433)
+- [ ] Non-admin demo indicator chip (#1434)
+- [ ] Admin surface — draft/demo badges, read-only published, pending changes summary (#1435)
+- [ ] Empty states in developer mode (#1436)
+
+### Deploy Fix
+- [ ] Bundle cybersec + ecommerce semantic directories in Docker image (#1422)
 
 ---
 

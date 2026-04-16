@@ -87,6 +87,11 @@ IMPORTANT — Incidental findings:
 - Use: `gh issue create -R AtlasDevHQ/atlas --title "fix: <description>" --body "<details>" --label "bug,area: <area>"`
 - Keep your current work focused — the issue ensures the finding isn't lost
 
+IMPORTANT — Testing approach:
+- For features and bug fixes, use `/tdd` to drive development with red-green-refactor
+- Write tests alongside code, not after — one test → one implementation → repeat
+- Skip `/tdd` for docs-only, chore, or trivial config changes
+
 IMPORTANT — Docs impact:
 - When your change affects user-facing behavior, configuration, APIs, or plugin interfaces, update the relevant docs:
   - Docs site pages: `apps/docs/content/docs/` (MDX files)

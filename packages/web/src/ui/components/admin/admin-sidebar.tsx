@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import { useUserRole } from "@/ui/hooks/use-platform-admin-guard";
 import { useBranding } from "@/ui/hooks/use-branding";
 import { useDeployMode } from "@/ui/hooks/use-deploy-mode";
+import { useMode } from "@/ui/hooks/use-mode";
 import { useAtlasConfig } from "@/ui/context";
 import type { LucideIcon } from "lucide-react";
 import {
@@ -19,6 +20,7 @@ import {
   Settings,
   Shield,
   Globe,
+  Code,
 } from "lucide-react";
 import {
   Sidebar,
@@ -41,6 +43,8 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
 import { OrgSwitcher } from "@/ui/components/org-switcher";
 
 // ---------------------------------------------------------------------------
@@ -192,6 +196,7 @@ export function AdminSidebar() {
   const userRole = useUserRole();
   const { branding } = useBranding();
   const { deployMode } = useDeployMode();
+  const { mode, setMode, isAdmin } = useMode();
   const pendingCount = usePendingAmendmentCount();
   const isSaas = deployMode === "saas";
 
@@ -324,6 +329,24 @@ export function AdminSidebar() {
       </SidebarContent>
 
       <SidebarFooter>
+        {isAdmin && (
+          <div className="flex items-center gap-2 px-2 py-1.5 group-data-[collapsible=icon]:justify-center group-data-[collapsible=icon]:px-0">
+            <Code className="size-4 shrink-0 text-muted-foreground" />
+            <Label
+              htmlFor="mode-toggle"
+              className="flex-1 cursor-pointer text-xs font-medium text-muted-foreground group-data-[collapsible=icon]:hidden"
+            >
+              Developer mode
+            </Label>
+            <Switch
+              id="mode-toggle"
+              size="sm"
+              checked={mode === "developer"}
+              onCheckedChange={(checked) => setMode(checked ? "developer" : "published")}
+              className="group-data-[collapsible=icon]:hidden"
+            />
+          </div>
+        )}
         <SidebarMenu>
           <SidebarMenuItem>
             <SidebarMenuButton asChild tooltip="Back to Chat">

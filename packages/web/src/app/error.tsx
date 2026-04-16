@@ -8,7 +8,7 @@ export default function Error({
   reset: () => void;
 }) {
   return (
-    <div className="flex h-dvh flex-col items-center justify-center gap-4 bg-zinc-950 p-4 text-zinc-100">
+    <div className="flex h-full flex-col items-center justify-center gap-4 bg-zinc-950 p-4 text-zinc-100">
       <h2 className="text-lg font-semibold">An unexpected error occurred</h2>
       <p className="max-w-md text-center text-sm text-zinc-400">
         {error.message || "Please try again or contact your admin if the problem persists."}

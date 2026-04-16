@@ -40,7 +40,7 @@ export function AdminLayout({ children }: { children: ReactNode }) {
   // On client-side nav, session.data persists so we skip the flash.
   if (!session.data?.user && (session.isPending || adminCheck === "pending")) {
     return (
-      <main id="main" tabIndex={-1} className="flex h-dvh items-center justify-center">
+      <main id="main" tabIndex={-1} className="flex h-full items-center justify-center">
         <LoadingState message="Checking access..." />
       </main>
     );
@@ -49,7 +49,7 @@ export function AdminLayout({ children }: { children: ReactNode }) {
   // Signed in but not admin — inline forbidden UI using shadcn
   if (adminCheck === "denied") {
     return (
-      <main id="main" tabIndex={-1} className="flex h-dvh items-center justify-center bg-background p-4">
+      <main id="main" tabIndex={-1} className="flex h-full items-center justify-center bg-background p-4">
         <Card className="w-full max-w-sm">
           <CardHeader className="text-center">
             <div className="mx-auto mb-2 flex size-12 items-center justify-center rounded-lg bg-destructive/10">
@@ -78,7 +78,7 @@ export function AdminLayout({ children }: { children: ReactNode }) {
   }
 
   return (
-    <SidebarProvider>
+    <SidebarProvider className="!min-h-0 h-full">
       <AdminSidebar />
       <SidebarInset id="main" tabIndex={-1}>
         <header className="flex h-16 shrink-0 items-center gap-2 transition-[width,height] ease-linear group-has-data-[collapsible=icon]/sidebar-wrapper:h-12">

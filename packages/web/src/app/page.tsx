@@ -40,7 +40,7 @@ export default function Home() {
   return (
     <Suspense
       fallback={
-        <div className="flex h-dvh items-center justify-center">
+        <div className="flex h-full items-center justify-center">
           <p className="text-sm text-zinc-500">Loading...</p>
         </div>
       }
@@ -217,7 +217,7 @@ function ChatPage() {
 
   if (healthWarning) {
     return (
-      <div className="flex h-dvh items-center justify-center p-8">
+      <div className="flex h-full items-center justify-center p-8">
         <div className="text-center">
           <p className="text-sm text-red-600 dark:text-red-400">{healthWarning}</p>
           <Button className="mt-4" onClick={() => window.location.reload()}>
@@ -230,7 +230,7 @@ function ChatPage() {
 
   if (!authResolved) {
     return (
-      <div className="flex h-dvh items-center justify-center">
+      <div className="flex h-full items-center justify-center">
         <p className="text-sm text-zinc-500">Connecting...</p>
       </div>
     );
@@ -243,7 +243,7 @@ function ChatPage() {
       isAdmin={isAdmin}
       serverTrackingEnabled={isSignedIn}
     >
-      <div className="flex h-dvh flex-col">
+      <div className="flex h-full flex-col">
         <IncidentBanner slug={OPENSTATUS_SLUG} statusUrl={STATUS_URL} />
         <NavBar isAdmin={isAdmin} />
         <div className="flex flex-1 overflow-hidden">

@@ -26,7 +26,7 @@ export default function NotebookPage() {
   return (
     <Suspense
       fallback={
-        <div className="flex h-screen items-center justify-center">
+        <div className="flex h-full items-center justify-center">
           <p className="text-sm text-zinc-500">Loading notebook...</p>
         </div>
       }
@@ -278,7 +278,7 @@ function NotebookContent() {
   // Health warning — blocks the entire page until resolved (requires reload)
   if (healthWarning) {
     return (
-      <div className="flex h-screen items-center justify-center p-8">
+      <div className="flex h-full items-center justify-center p-8">
         <div className="text-center">
           <p className="text-sm text-red-600 dark:text-red-400">{healthWarning}</p>
           <Button className="mt-4" onClick={() => window.location.reload()}>
@@ -292,7 +292,7 @@ function NotebookContent() {
   // Loading auth
   if (!authResolved) {
     return (
-      <div className="flex h-screen items-center justify-center">
+      <div className="flex h-full items-center justify-center">
         <p className="text-sm text-zinc-500">Connecting...</p>
       </div>
     );
@@ -305,7 +305,7 @@ function NotebookContent() {
       isAdmin={isAdmin}
       serverTrackingEnabled={isSignedIn}
     >
-      <div className="flex h-screen flex-col">
+      <div className="flex h-full flex-col">
         <NavBar isAdmin={isAdmin} />
         <div className="flex flex-1 overflow-hidden">
           {convos.available && (

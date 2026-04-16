@@ -12,7 +12,7 @@ export default function DemoLayout({
   children: React.ReactNode;
 }) {
   return (
-    <main id="main" className="flex h-dvh flex-col bg-background">
+    <main id="main" className="flex h-full flex-col bg-background">
       {children}
     </main>
   );

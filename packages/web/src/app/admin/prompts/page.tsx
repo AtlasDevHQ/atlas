@@ -64,8 +64,7 @@ import {
 import type { FetchError } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
-import { useMode } from "@/ui/hooks/use-mode";
-import { useModeStatus } from "@/ui/hooks/use-mode-status";
+import { useDevModeNoDrafts } from "@/ui/hooks/use-dev-mode-no-drafts";
 import { DeveloperEmptyState } from "@/ui/components/admin/developer-empty-state";
 import { PublishedContextWrapper } from "@/ui/components/admin/published-context-wrapper";
 import {
@@ -456,15 +455,7 @@ export default function PromptsPage() {
 
   const hasFilters = !!params.industry;
 
-  const { mode } = useMode();
-  const { data: modeStatus } = useModeStatus();
-  const inDevMode = mode === "developer";
-  // Gate on `modeStatus !== null` so the empty state doesn't flash while
-  // /api/v1/mode is in flight (admin might already have prompt drafts).
-  const showDevNoDrafts =
-    inDevMode && modeStatus !== null
-      ? (modeStatus.draftCounts?.prompts ?? 0) === 0
-      : false;
+  const showDevNoDrafts = useDevModeNoDrafts(["prompts"]);
 
   return (
     <div className="p-6">
@@ -575,12 +566,12 @@ export default function PromptsPage() {
                 icon={BookOpen}
                 title="Create prompt collections to help your users ask the right questions."
                 description="Draft a collection now, then publish it when it's ready for users."
-                action={{ label: "Create collection", onClick: openCreateDialog }}
+                action={{ kind: "button", label: "Create collection", onClick: openCreateDialog }}
               />
             ) : showDevNoDrafts && filtered.length > 0 && !hasFilters ? (
               <PublishedContextWrapper
-                resourceLabel="prompt collection"
-                action={{ label: "Create draft collection", onClick: openCreateDialog }}
+                resourceLabel={{ singular: "prompt collection", plural: "prompt collections" }}
+                action={{ kind: "button", label: "Create draft collection", onClick: openCreateDialog }}
               >
                 <DataTable
                   table={table}

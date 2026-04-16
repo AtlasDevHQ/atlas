@@ -17,8 +17,7 @@ import { STARTER_PROMPTS } from "./chat/starter-prompts";
 import { FollowUpChips } from "./chat/follow-up-chips";
 import { SuggestionChips } from "./chat/suggestion-chips";
 import { DeveloperChatEmptyState } from "./chat/developer-empty-state";
-import { useMode } from "../hooks/use-mode";
-import { useModeStatus } from "../hooks/use-mode-status";
+import { useDevModeNoDrafts } from "../hooks/use-dev-mode-no-drafts";
 import type { QuerySuggestion } from "@/ui/lib/types";
 import { ShareDialog } from "./chat/share-dialog";
 import { ConversationSidebar } from "./conversations/conversation-sidebar";
@@ -131,17 +130,10 @@ function SaveButton({
 
 export function AtlasChat() {
   const { apiUrl, isCrossOrigin, authClient } = useAtlasConfig();
-  const { mode } = useMode();
-  const { data: modeStatus } = useModeStatus();
   // In developer mode the chat talks to draft connections. If the admin
-  // hasn't drafted one yet, surface a dedicated empty state (#1436) instead
-  // of letting the agent fail with a confusing "no datasource" error. Gate
-  // on `modeStatus !== null` so the composer doesn't flash hidden before
-  // /api/v1/mode resolves.
-  const showDevChatEmpty =
-    mode === "developer" && modeStatus !== null
-      ? (modeStatus.draftCounts?.connections ?? 0) === 0
-      : false;
+  // hasn't drafted one yet, surface a dedicated empty state instead of
+  // letting the agent fail with a confusing "no datasource" error.
+  const showDevChatEmpty = useDevModeNoDrafts(["connections"]);
   const [input, setInput] = useState("");
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [transientWarning, setTransientWarning] = useState("");

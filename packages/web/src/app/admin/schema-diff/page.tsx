@@ -43,8 +43,7 @@ import {
 } from "lucide-react";
 import type { SemanticTableDiff, ConnectionInfo } from "@/ui/lib/types";
 import { ConnectionsResponseSchema, SemanticDiffResponseSchema } from "@/ui/lib/admin-schemas";
-import { useMode } from "@/ui/hooks/use-mode";
-import { useModeStatus } from "@/ui/hooks/use-mode-status";
+import { useDevModeNoDrafts } from "@/ui/hooks/use-dev-mode-no-drafts";
 import { DeveloperEmptyState } from "@/ui/components/admin/developer-empty-state";
 
 // ---------------------------------------------------------------------------
@@ -63,18 +62,10 @@ export default function SchemaDiffPage() {
     { schema: SemanticDiffResponseSchema, deps: [connectionId] },
   );
 
-  const { mode } = useMode();
-  const { data: modeStatus } = useModeStatus();
-  const inDevMode = mode === "developer";
   // Schema diff is meaningful only against a developer-mode (draft)
-  // connection. If the admin toggled into dev mode but hasn't drafted one
-  // yet, short-circuit the generic "no diff data" empty state with a
-  // message that names the root cause. Gate on `modeStatus !== null` so the
-  // panel doesn't flash before /api/v1/mode resolves.
-  const showDevNoConnection =
-    inDevMode && modeStatus !== null
-      ? (modeStatus.draftCounts?.connections ?? 0) === 0
-      : false;
+  // connection — route the admin to /admin/connections when they haven't
+  // drafted one yet, instead of the generic "no diff data" message.
+  const showDevNoConnection = useDevModeNoDrafts(["connections"]);
 
   const multipleConnections = connectionsData && connectionsData.length > 1;
 
@@ -93,7 +84,7 @@ export default function SchemaDiffPage() {
           icon={GitCompareArrows}
           title="Nothing to diff — no developer mode connection yet."
           description="Create a draft connection to compare its schema against the semantic layer."
-          action={{ label: "Go to connections", href: "/admin/connections" }}
+          action={{ kind: "link", label: "Go to connections", href: "/admin/connections" }}
         />
       ) : (
       <AdminContentWrapper

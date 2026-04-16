@@ -6,9 +6,9 @@ import { Button } from "@/components/ui/button";
 
 /**
  * Shown in the chat surface when an admin is in developer mode but has no
- * draft connections (#1436). Without this, sending a message would let the
- * agent run against nothing and surface a confusing error — instead we
- * redirect them to the admin connections page where they can draft one.
+ * draft connections. Without this, sending a message would let the agent
+ * run against nothing and surface a confusing error — instead we redirect
+ * them to the admin connections page where they can draft one.
  */
 export function DeveloperChatEmptyState() {
   return (

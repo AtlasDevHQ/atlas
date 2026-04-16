@@ -47,10 +47,9 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { useDemoReadonly, demoIndustryLabel } from "@/ui/hooks/use-demo-readonly";
-import { useMode } from "@/ui/hooks/use-mode";
-import { useModeStatus } from "@/ui/hooks/use-mode-status";
+import { useDevModeNoDrafts } from "@/ui/hooks/use-dev-mode-no-drafts";
 import { DeveloperEmptyState } from "@/ui/components/admin/developer-empty-state";
-import { PublishedBadge } from "@/ui/components/admin/mode-badges";
+import { SemanticPublishedBanner } from "@/ui/components/admin/semantic-published-banner";
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -352,17 +351,11 @@ export default function SemanticPage() {
   const isSaas = deployMode === "saas";
   const { readOnly: demoReadOnly, demoIndustry } = useDemoReadonly();
   const demoLabel = demoIndustryLabel(demoIndustry);
-  const { mode } = useMode();
-  const { data: modeStatus } = useModeStatus();
-  const inDevMode = mode === "developer";
-  // Gate on `modeStatus !== null` to avoid flashing the dev-mode empty
-  // state while `/api/v1/mode` is in flight (admin might already have drafts).
-  const showDevNoDrafts =
-    inDevMode && modeStatus !== null
-      ? (modeStatus.draftCounts?.entities ?? 0)
-          + (modeStatus.draftCounts?.entityEdits ?? 0)
-          + (modeStatus.draftCounts?.entityDeletes ?? 0) === 0
-      : false;
+  const showDevNoDrafts = useDevModeNoDrafts([
+    "entities",
+    "entityEdits",
+    "entityDeletes",
+  ]);
 
   const [entities, setEntities] = useState<EntitySummary[]>([]);
   const [draftEntityNames, setDraftEntityNames] = useState<Set<string>>(() => new Set());
@@ -691,25 +684,19 @@ export default function SemanticPage() {
             icon={BookOpen}
             title="Import your schema after connecting a database."
             description="Entities are generated from your database schema. Add a connection first, then come back here to import."
-            action={{ label: "Go to connections", href: "/admin/connections" }}
+            action={{ kind: "link", label: "Go to connections", href: "/admin/connections" }}
           />
         </div>
       ) : (
       <>
       {/*
-        Dev-mode-no-drafts with existing published entities (e.g. demo data):
-        surface a Published-tagged banner so the admin knows the tree reflects
-        live state. The file tree stays interactive so they can browse — the
-        existing demoReadOnly tooltips prevent accidental edits.
+        When an admin is in dev-mode-no-drafts but published entities exist
+        (e.g. demo data), show a banner so they know the tree reflects
+        live state. The file tree stays interactive so they can browse —
+        the existing demoReadOnly tooltips prevent accidental edits.
       */}
       {showDevNoDrafts && entities.length > 0 && !loading ? (
-        <div className="flex items-center gap-2 border-b bg-amber-50/40 px-6 py-2.5 text-xs text-muted-foreground dark:bg-amber-950/10">
-          <PublishedBadge />
-          <span>
-            You&rsquo;re viewing the live semantic layer. Use{" "}
-            <span className="font-medium">Add Entity</span> to start a draft.
-          </span>
-        </div>
+        <SemanticPublishedBanner />
       ) : null}
 
       {!isSaas && (

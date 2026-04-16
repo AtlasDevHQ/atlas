@@ -31,25 +31,29 @@ describe("DeveloperEmptyState", () => {
     expect(wrapper.innerHTML).toContain("amber");
   });
 
-  test("renders href-style CTA as a link", () => {
+  test("renders kind=link action as a link", () => {
     const { getByRole } = render(
       <DeveloperEmptyState
         icon={Database}
         title="Connect your first database"
-        action={{ label: "Go to connections", href: "/admin/connections" }}
+        action={{ kind: "link", label: "Go to connections", href: "/admin/connections" }}
       />,
     );
     const link = getByRole("link", { name: "Go to connections" });
     expect(link.getAttribute("href")).toBe("/admin/connections");
   });
 
-  test("renders onClick-style CTA as a button that fires the handler", () => {
+  test("renders kind=button action as a button that fires the handler", () => {
     let clicked = false;
     const { getByRole } = render(
       <DeveloperEmptyState
         icon={Database}
         title="Connect your first database"
-        action={{ label: "Add connection", onClick: () => { clicked = true; } }}
+        action={{
+          kind: "button",
+          label: "Add connection",
+          onClick: () => { clicked = true; },
+        }}
       />,
     );
     const button = getByRole("button", { name: "Add connection" });

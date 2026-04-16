@@ -3,27 +3,24 @@
 import type { LucideIcon } from "lucide-react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
-
-export type DeveloperEmptyStateAction =
-  | { label: string; href: string }
-  | { label: string; onClick: () => void };
+import type { EmptyStateAction } from "./empty-state-types";
 
 export interface DeveloperEmptyStateProps {
   icon: LucideIcon;
   title: string;
   description?: string;
-  action?: DeveloperEmptyStateAction;
+  action?: EmptyStateAction;
 }
 
 /**
  * Empty state shown to admins in developer mode when they haven't drafted
- * anything yet for a given resource (#1436).
+ * anything yet for a given resource.
  *
  * Visually distinct from the generic `EmptyState` — an amber accent bar
  * mirrors the developer-mode banner so admins recognize this as a dev-mode
  * prompt rather than a real "no data" error. Supports either a link CTA
  * (navigates to another admin surface) or an onClick CTA (opens a dialog on
- * the current page).
+ * the current page) via the tagged `EmptyStateAction` union.
  */
 export function DeveloperEmptyState({
   icon: Icon,
@@ -48,7 +45,7 @@ export function DeveloperEmptyState({
         )}
         {action && (
           <div className="mt-4">
-            {"href" in action ? (
+            {action.kind === "link" ? (
               <Button asChild size="sm" variant="default">
                 <Link href={action.href}>{action.label}</Link>
               </Button>

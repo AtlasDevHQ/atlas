@@ -34,8 +34,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { useDemoReadonly } from "@/ui/hooks/use-demo-readonly";
-import { useMode } from "@/ui/hooks/use-mode";
-import { useModeStatus } from "@/ui/hooks/use-mode-status";
+import { useDevModeNoDrafts } from "@/ui/hooks/use-dev-mode-no-drafts";
 import { DeveloperEmptyState } from "@/ui/components/admin/developer-empty-state";
 import { PublishedContextWrapper } from "@/ui/components/admin/published-context-wrapper";
 import { DEMO_CONNECTION_ID, getConnectionColumns } from "./columns";
@@ -588,18 +587,7 @@ export default function ConnectionsPage() {
   const { apiUrl, isCrossOrigin } = useAtlasConfig();
   const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
   const { readOnly: demoReadOnly } = useDemoReadonly();
-  const { mode } = useMode();
-  const { data: modeStatus } = useModeStatus();
-  const inDevMode = mode === "developer";
-  // Dev-mode empty signal: admin is in developer mode but has not drafted a
-  // connection yet. The empty + published-context UIs only render when this
-  // is true — in published mode the page keeps its existing behavior. Gate
-  // on `modeStatus !== null` so admins with drafts don't see the empty
-  // state flash while `/api/v1/mode` is in flight.
-  const showDevNoDrafts =
-    inDevMode && modeStatus !== null
-      ? (modeStatus.draftCounts?.connections ?? 0) === 0
-      : false;
+  const showDevNoDrafts = useDevModeNoDrafts(["connections"]);
 
   const testMutation = useAdminMutation<ConnectionHealth>({ method: "POST" });
   const [mutationError, setMutationError] = useState<string | null>(null);
@@ -846,12 +834,12 @@ export default function ConnectionsPage() {
               icon={Cable}
               title="Connect your first database to start building."
               description="Add a connection in developer mode, then publish it when you're ready."
-              action={{ label: "Add connection", onClick: handleAdd }}
+              action={{ kind: "button", label: "Add connection", onClick: handleAdd }}
             />
           ) : showDevNoDrafts ? (
             <PublishedContextWrapper
-              resourceLabel="connection"
-              action={{ label: "Create draft", onClick: handleAdd }}
+              resourceLabel={{ singular: "connection", plural: "connections" }}
+              action={{ kind: "button", label: "Create draft", onClick: handleAdd }}
             >
               <DataTable table={connTable}>
                 <DataTableToolbar table={connTable} />

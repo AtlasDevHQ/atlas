@@ -248,18 +248,22 @@ describe("loadOrgWhitelist — developer mode uses overlay", () => {
     expect(mockListEntities).toHaveBeenCalledTimes(1);
   });
 
-  it("invalidateOrgWhitelist clears both caches so next load re-runs the overlay", async () => {
+  it("invalidateOrgWhitelist clears every mode's cache (developer, published, and bare-orgId legacy)", async () => {
+    // Warm all three caches — one per code path through whitelistCacheKey
     await whitelistMod.loadOrgWhitelist("org-1", "developer");
     await whitelistMod.loadOrgWhitelist("org-1", "published");
+    await whitelistMod.loadOrgWhitelist("org-1"); // legacy path
     expect(mockListEntitiesWithOverlay).toHaveBeenCalledTimes(1);
-    expect(mockListEntities).toHaveBeenCalledTimes(1);
+    expect(mockListEntities).toHaveBeenCalledTimes(2); // published filter + undefined filter
 
     whitelistMod.invalidateOrgWhitelist("org-1");
 
+    // Each mode must cache-miss after invalidation
     await whitelistMod.loadOrgWhitelist("org-1", "developer");
     await whitelistMod.loadOrgWhitelist("org-1", "published");
+    await whitelistMod.loadOrgWhitelist("org-1");
     expect(mockListEntitiesWithOverlay).toHaveBeenCalledTimes(2);
-    expect(mockListEntities).toHaveBeenCalledTimes(2);
+    expect(mockListEntities).toHaveBeenCalledTimes(4);
   });
 
   it("developer mode and undefined-mode cache entries are isolated (no collision)", async () => {

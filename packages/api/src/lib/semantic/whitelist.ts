@@ -464,11 +464,15 @@ export async function loadOrgWhitelist(orgId: string, mode?: "published" | "deve
 /**
  * Get whitelisted tables for an org + connection.
  *
- * Must be called after `loadOrgWhitelist(orgId)` — returns empty set if
- * the org whitelist has not been loaded yet.
+ * Must be called after `loadOrgWhitelist(orgId, mode)` with the matching mode —
+ * each mode has a distinct cache key (see `_orgWhitelists` and `whitelistCacheKey`),
+ * so a published-mode load won't satisfy a developer-mode lookup. Returns an
+ * empty set if the requested cache has not been loaded.
  *
- * @param mode - Atlas mode. When "published", looks up the published-only cache.
- *   Omit for developer mode (all entities).
+ * @param mode - `"published"` → published-only cache; `"developer"` → overlay
+ *   cache (drafts on published, tombstones hidden, archived-connection entities
+ *   excluded); omitted → legacy cache built from `listEntities` with no status
+ *   filter (includes tombstones and archived rows).
  */
 export function getOrgWhitelistedTables(orgId: string, connectionId: string = "default", mode?: "published" | "developer"): Set<string> {
   const cacheKey = whitelistCacheKey(orgId, mode);

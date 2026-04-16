@@ -117,7 +117,8 @@ export async function listEntities(
  * - A `draft` row supersedes a published row with the same
  *   (org_id, name, connection_id) key
  * - Unmodified published entities pass through
- * - Entities whose parent connection is archived are excluded
+ * - `archived` entity rows are excluded (the `status IN` filter drops them)
+ * - Entities whose parent connection is archived are also excluded
  *
  * The CTE uses DISTINCT ON with a status priority (draft_delete > draft >
  * published) so exactly one row per entity key survives, then the outer

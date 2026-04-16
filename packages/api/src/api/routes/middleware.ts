@@ -366,7 +366,7 @@ const ADMIN_ROLE_SET = new Set(["admin", "owner", "platform_admin"]);
  * Parse the `atlas-mode` cookie from the Cookie header.
  * Returns the raw cookie value, or undefined if not present.
  */
-function parseModeFromCookie(cookieHeader: string | null): string | undefined {
+export function parseModeFromCookie(cookieHeader: string | null): string | undefined {
   if (!cookieHeader) return undefined;
   for (const pair of cookieHeader.split(";")) {
     const [key, ...rest] = pair.split("=");

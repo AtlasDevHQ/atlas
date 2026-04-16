@@ -551,10 +551,16 @@ adminConnections.openapi(createConnectionRoute, async (c) => runHandler(c, "crea
   // If an archived row already owns this PK, the INSERT below would 500;
   // we revive it instead via UPDATE. Any other status (published/draft) is a
   // real conflict.
-  const existingRow = await internalQuery<{ status: string }>(
-    `SELECT status FROM connections WHERE id = $1 AND org_id = $2`,
-    [id, orgId],
-  );
+  let existingRow: { status: string }[];
+  try {
+    existingRow = await internalQuery<{ status: string }>(
+      `SELECT status FROM connections WHERE id = $1 AND org_id = $2`,
+      [id, orgId],
+    );
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err.message : String(err), connectionId: id, requestId }, "Failed to check for existing connection row before create");
+    return c.json({ error: "internal_error", message: "Failed to check for existing connection. Try again.", requestId }, 500);
+  }
   if (existingRow.length > 0 && existingRow[0].status !== "archived") {
     return c.json({ error: "conflict", message: `Connection "${id}" already exists.`, requestId }, 409);
   }

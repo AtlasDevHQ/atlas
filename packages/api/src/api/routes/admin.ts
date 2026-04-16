@@ -14,7 +14,7 @@ import { validationHook } from "./validation-hook";
 import type { Context } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { createLogger, withRequestContext, getRequestContext } from "@atlas/api/lib/logger";
-import { withRequestId, resolveMode } from "./middleware";
+import { withRequestId, resolveMode, parseModeFromCookie } from "./middleware";
 import type { AuthResult } from "@atlas/api/lib/auth/types";
 import { authenticateRequest } from "@atlas/api/lib/auth/middleware";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
@@ -126,12 +126,17 @@ async function adminAuthAndContext(
   // developer-mode request we downgraded due to insufficient role (matches
   // the security signal emitted by `resolveModeForRequest` on the
   // adminAuth/standardAuth middleware paths).
+  //
+  // Note: the downgrade branch is defensive — `requireAdminAuth` above
+  // already 403's non-admin users before this point, so in practice the
+  // downgrade never fires for admin routes. It stays for parity with the
+  // other auth preambles in case admin gating is ever relaxed.
   if (typeof c.set === "function") {
     const cookieHeader = c.req.raw.headers.get("cookie");
     const xAtlasModeHeader = c.req.raw.headers.get("x-atlas-mode");
     const mode = resolveMode(cookieHeader, xAtlasModeHeader, authResult);
     const requestedDeveloper =
-      (cookieHeader?.split(";").some((p) => p.trim().startsWith("atlas-mode=developer")) ?? false) ||
+      parseModeFromCookie(cookieHeader) === "developer" ||
       xAtlasModeHeader === "developer";
     if (requestedDeveloper && mode === "published") {
       log.warn(

@@ -443,7 +443,8 @@ function resolveModeForRequest(
 export const requestContext = createMiddleware<AuthEnv>(async (c, next) => {
   const requestId = c.get("requestId");
   const authResult = c.get("authResult");
-  await withRequestContext({ requestId, user: authResult.user }, () => next());
+  const atlasMode = c.get("atlasMode");
+  await withRequestContext({ requestId, user: authResult.user, atlasMode }, () => next());
 });
 
 // ---------------------------------------------------------------------------

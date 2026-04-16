@@ -20,6 +20,11 @@ import { createAdminRouter, requireOrgContext } from "./admin-router";
 
 const log = createLogger("admin-connections");
 
+/** Read atlasMode from the Hono context. Defaults to "published" (most restrictive) when not set. */
+function getAtlasMode(c: { get(key: string): unknown }): import("@useatlas/types/auth").AtlasMode {
+  return (c.get("atlasMode") as import("@useatlas/types/auth").AtlasMode | undefined) ?? "published";
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -310,10 +315,8 @@ adminConnections.openapi(listConnectionsRoute, async (c) => runHandler(c, "list 
   const { orgId } = c.get("orgContext");
   const authResult = c.get("authResult");
   const isPlatformAdmin = authResult.user?.role === "platform_admin";
-  const atlasMode = (c.get("atlasMode") ?? "published") as import("@useatlas/types/auth").AtlasMode;
-
   const connList = connections.describe();
-  const visible = await getVisibleConnectionIds(orgId, isPlatformAdmin, atlasMode);
+  const visible = await getVisibleConnectionIds(orgId, isPlatformAdmin, getAtlasMode(c));
   const filtered = visible ? connList.filter((conn) => visible.has(conn.id)) : connList;
 
   return c.json({ connections: filtered }, 200);
@@ -390,8 +393,7 @@ adminConnections.openapi(drainConnectionPoolRoute, async (c) => runHandler(c, "d
   }
 
   // Workspace admins can only drain connections visible to their org
-  const atlasModeDrain = (c.get("atlasMode") ?? "published") as import("@useatlas/types/auth").AtlasMode;
-  const visible = await getVisibleConnectionIds(orgId, isPlatformAdmin, atlasModeDrain);
+  const visible = await getVisibleConnectionIds(orgId, isPlatformAdmin, getAtlasMode(c));
   if (visible && !visible.has(id)) {
     return c.json({ error: "not_found", message: `Connection "${id}" not found`, requestId }, 404);
   }
@@ -468,8 +470,7 @@ adminConnections.openapi(testExistingConnectionRoute, async (c) => runHandler(c,
     return c.json({ error: "not_found", message: `Connection "${id}" not found.`, requestId }, 404);
   }
 
-  const atlasModeHealth = (c.get("atlasMode") ?? "published") as import("@useatlas/types/auth").AtlasMode;
-  const visible = await getVisibleConnectionIds(orgId, isPlatformAdmin, atlasModeHealth);
+  const visible = await getVisibleConnectionIds(orgId, isPlatformAdmin, getAtlasMode(c));
   if (visible && !visible.has(id)) {
     return c.json({ error: "not_found", message: `Connection "${id}" not found.`, requestId }, 404);
   }
@@ -829,8 +830,7 @@ adminConnections.openapi(getConnectionRoute, async (c) => runHandler(c, "get con
   }
 
   // Verify visibility for workspace admins
-  const atlasModeDetail = (c.get("atlasMode") ?? "published") as import("@useatlas/types/auth").AtlasMode;
-  const visible = await getVisibleConnectionIds(orgId, isPlatformAdmin, atlasModeDetail);
+  const visible = await getVisibleConnectionIds(orgId, isPlatformAdmin, getAtlasMode(c));
   if (visible && !visible.has(id)) {
     return c.json({ error: "not_found", message: `Connection "${id}" not found.`, requestId }, 404);
   }

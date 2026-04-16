@@ -384,9 +384,10 @@ export function _resetPluginEntities(): void {
 // ---------------------------------------------------------------------------
 
 /**
- * Per-org whitelist cache: Map<orgId, Map<connectionId, Set<tableName>>>.
+ * Per-org whitelist cache: Map<cacheKey, Map<connectionId, Set<tableName>>>.
+ * Cache key is `orgId` for developer mode or `${orgId}:published` for published mode.
  * Populated by `loadOrgWhitelist()` before the agent loop starts.
- * Invalidated by `invalidateOrgWhitelist(orgId)` on entity CRUD.
+ * Invalidated by `invalidateOrgWhitelist(orgId)` on entity CRUD (clears both modes).
  */
 const _orgWhitelists = new Map<string, Map<string, Set<string>>>();
 
@@ -480,9 +481,10 @@ export function getOrgWhitelistedTables(orgId: string, connectionId: string = "d
   return tables;
 }
 
-/** Invalidate the cached whitelist for an org (call after entity CRUD). */
+/** Invalidate the cached whitelist for an org (call after entity CRUD). Clears both developer and published mode caches. */
 export function invalidateOrgWhitelist(orgId: string): void {
   _orgWhitelists.delete(orgId);
+  _orgWhitelists.delete(`${orgId}:published`);
   invalidateOrgSemanticIndex(orgId);
 }
 

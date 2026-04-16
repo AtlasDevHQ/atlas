@@ -59,6 +59,7 @@ const modPath = resolve(__dirname, "../semantic/whitelist.ts");
 const mod = await import(`${modPath}?t=${Date.now()}`);
 const loadOrgWhitelist = mod.loadOrgWhitelist as typeof import("../semantic/whitelist").loadOrgWhitelist;
 const getOrgWhitelistedTables = mod.getOrgWhitelistedTables as typeof import("../semantic/whitelist").getOrgWhitelistedTables;
+const invalidateOrgWhitelist = mod.invalidateOrgWhitelist as typeof import("../semantic/whitelist").invalidateOrgWhitelist;
 const _resetOrgWhitelists = mod._resetOrgWhitelists as typeof import("../semantic/whitelist")._resetOrgWhitelists;
 
 // ---------------------------------------------------------------------------
@@ -227,6 +228,43 @@ describe("published mode filtering", () => {
       const tables = getOrgWhitelistedTables("org-1", "default", "published");
       expect(tables.has("orders")).toBe(false);
       expect(mockListEntities).toHaveBeenCalledTimes(1); // only one call due to cache
+    });
+  });
+
+  describe("cache invalidation clears both modes", () => {
+    it("invalidateOrgWhitelist clears both developer and published caches", async () => {
+      storedEntities = [
+        makeEntityRow("users", "users", "published"),
+        makeEntityRow("orders", "orders", "draft"),
+      ];
+
+      // Load both caches
+      await loadOrgWhitelist("org-1", "published");
+      await loadOrgWhitelist("org-1", "developer");
+      expect(mockListEntities).toHaveBeenCalledTimes(2);
+
+      // Invalidate — should clear both
+      invalidateOrgWhitelist("org-1");
+
+      // Reload both — should call listEntities again (cache miss)
+      await loadOrgWhitelist("org-1", "published");
+      await loadOrgWhitelist("org-1", "developer");
+      expect(mockListEntities).toHaveBeenCalledTimes(4); // 2 original + 2 reloads
+    });
+
+    it("invalidateOrgWhitelist clears published cache even when developer cache was not loaded", async () => {
+      storedEntities = [makeEntityRow("users", "users", "published")];
+
+      // Load only published cache
+      await loadOrgWhitelist("org-1", "published");
+      expect(mockListEntities).toHaveBeenCalledTimes(1);
+
+      // Invalidate
+      invalidateOrgWhitelist("org-1");
+
+      // Reload published — should call listEntities again
+      await loadOrgWhitelist("org-1", "published");
+      expect(mockListEntities).toHaveBeenCalledTimes(2);
     });
   });
 });

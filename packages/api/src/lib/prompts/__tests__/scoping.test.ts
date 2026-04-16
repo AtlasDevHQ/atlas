@@ -1,16 +1,38 @@
 /**
  * Unit tests for prompt collection scoping (#1438).
  *
- * Covers `buildCollectionsListQuery` and `buildCollectionGetQuery` under
- * the (orgId × mode × demoIndustry × demoConnectionActive) matrix.
- * No HTTP layer — pure query builder.
+ * Covers `buildCollectionsListQuery`, `buildCollectionGetQuery`, and
+ * `resolvePromptDemoContext` under the (orgId × mode × demoIndustry ×
+ * demoConnectionActive) matrix. No HTTP layer.
  */
-import { describe, it, expect } from "bun:test";
-import {
+import { describe, it, expect, mock } from "bun:test";
+
+// ── Module mocks (must run before importing scoping) ───────────────
+
+let hasInternalDBFixture = true;
+let demoIndustryFixture: string | undefined;
+const mockInternalQuery = mock(
+  async (_sql: string, _params?: unknown[]) => [] as unknown[],
+);
+
+mock.module("@atlas/api/lib/db/internal", () => ({
+  hasInternalDB: () => hasInternalDBFixture,
+  internalQuery: mockInternalQuery,
+}));
+
+mock.module("@atlas/api/lib/settings", () => ({
+  getSettingAuto: (key: string, _orgId?: string) =>
+    key === "ATLAS_DEMO_INDUSTRY" ? demoIndustryFixture : undefined,
+  getSetting: () => undefined,
+}));
+
+// Imports MUST come after mock.module calls.
+const {
   buildCollectionsListQuery,
   buildCollectionGetQuery,
-  type PromptScope,
-} from "../scoping";
+  resolvePromptDemoContext,
+} = await import("../scoping");
+import type { PromptScope } from "../scoping";
 
 function scope(overrides: Partial<PromptScope> = {}): PromptScope {
   return {
@@ -40,6 +62,7 @@ describe("buildCollectionsListQuery", () => {
       scope({ demoIndustry: "cybersecurity", demoConnectionActive: false }),
     );
     expect(q.sql).toContain("status = 'published'");
+    expect(q.sql).toContain("org_id = $1");
     expect(q.sql).toContain("is_builtin = false");
     expect(q.sql).not.toContain("industry =");
     expect(q.sql).not.toContain("org_id IS NULL OR");
@@ -52,6 +75,7 @@ describe("buildCollectionsListQuery", () => {
     const q = buildCollectionsListQuery(
       scope({ demoIndustry: null, demoConnectionActive: true }),
     );
+    expect(q.sql).toContain("org_id = $1");
     expect(q.sql).toContain("is_builtin = false");
     expect(q.sql).not.toContain("industry =");
     expect(q.params).toEqual(["org-1"]);
@@ -77,6 +101,7 @@ describe("buildCollectionsListQuery", () => {
       scope({ mode: "developer", demoConnectionActive: false }),
     );
     expect(q.sql).toContain("status IN ('published', 'draft')");
+    expect(q.sql).toContain("org_id = $1");
     expect(q.sql).toContain("is_builtin = false");
     expect(q.sql).not.toContain("industry =");
     expect(q.params).toEqual(["org-1"]);
@@ -137,5 +162,81 @@ describe("buildCollectionGetQuery", () => {
     expect(q.sql).not.toContain("ORDER BY");
     expect(q.sql).toContain("AND id = $1");
     expect(q.params).toEqual(["col-3"]);
+  });
+});
+
+describe("resolvePromptDemoContext", () => {
+  // Reset fixtures + call count before each scenario
+  function reset({
+    hasDB = true,
+    industry,
+  }: { hasDB?: boolean; industry?: string } = {}) {
+    hasInternalDBFixture = hasDB;
+    demoIndustryFixture = industry;
+    mockInternalQuery.mockClear();
+    mockInternalQuery.mockImplementation(async () => [] as unknown[]);
+  }
+
+  it("returns defaults and skips DB when orgId is undefined", async () => {
+    reset();
+    const result = await resolvePromptDemoContext(undefined);
+    expect(result).toEqual({ demoIndustry: null, demoConnectionActive: false });
+    expect(mockInternalQuery).not.toHaveBeenCalled();
+  });
+
+  it("returns defaults and skips DB when internal DB is unavailable", async () => {
+    reset({ hasDB: false, industry: "cybersecurity" });
+    const result = await resolvePromptDemoContext("org-1");
+    expect(result).toEqual({ demoIndustry: null, demoConnectionActive: false });
+    expect(mockInternalQuery).not.toHaveBeenCalled();
+  });
+
+  it("returns industry + active=true when demo exists as published connection", async () => {
+    reset({ industry: "cybersecurity" });
+    mockInternalQuery.mockImplementation(async () => [{ active: true }]);
+    const result = await resolvePromptDemoContext("org-1");
+    expect(result).toEqual({
+      demoIndustry: "cybersecurity",
+      demoConnectionActive: true,
+    });
+    const [sql, params] = mockInternalQuery.mock.calls[0]!;
+    expect(sql).toContain("__demo__");
+    expect(sql).toContain("status = 'published'");
+    expect(params).toEqual(["org-1"]);
+  });
+
+  it("returns industry + active=false when demo row reports inactive", async () => {
+    reset({ industry: "saas" });
+    mockInternalQuery.mockImplementation(async () => [{ active: false }]);
+    const result = await resolvePromptDemoContext("org-1");
+    expect(result.demoIndustry).toBe("saas");
+    expect(result.demoConnectionActive).toBe(false);
+  });
+
+  it("returns active=false when EXISTS query returns no rows", async () => {
+    reset({ industry: "saas" });
+    mockInternalQuery.mockImplementation(async () => [] as unknown[]);
+    const result = await resolvePromptDemoContext("org-1");
+    expect(result.demoConnectionActive).toBe(false);
+  });
+
+  it("normalizes a missing ATLAS_DEMO_INDUSTRY setting to null", async () => {
+    reset({ industry: undefined });
+    mockInternalQuery.mockImplementation(async () => [{ active: true }]);
+    const result = await resolvePromptDemoContext("org-1");
+    expect(result.demoIndustry).toBeNull();
+    expect(result.demoConnectionActive).toBe(true);
+  });
+
+  it("treats non-strict-true `active` values as inactive", async () => {
+    // Defense-in-depth: some drivers have returned "t" or 1 historically;
+    // strict equality keeps demoConnectionActive pinned to real booleans.
+    reset({ industry: "saas" });
+    mockInternalQuery.mockImplementation(async () =>
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any -- simulating loose driver output
+      [{ active: "t" as any }],
+    );
+    const result = await resolvePromptDemoContext("org-1");
+    expect(result.demoConnectionActive).toBe(false);
   });
 });

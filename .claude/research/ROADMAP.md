@@ -1184,7 +1184,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [ ] `GET /api/v1/mode` endpoint (#1439)
 
 ### Frontend
-- [ ] Connect page redesign — two equal-weight paths (#1432)
+- [x] Connect page redesign — two equal-weight paths (#1432)
 - [x] Developer mode banner + cookie-based toggle (#1433, PR #1445)
 - [ ] Non-admin demo indicator chip (#1434)
 - [ ] Admin surface — draft/demo badges, read-only published, pending changes summary (#1435)

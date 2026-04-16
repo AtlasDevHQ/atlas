@@ -27,7 +27,14 @@ import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { DataTable } from "@/components/data-table/data-table";
 import { DataTableToolbar } from "@/components/data-table/data-table-toolbar";
-import { getConnectionColumns } from "./columns";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { useDemoReadonly } from "@/ui/hooks/use-demo-readonly";
+import { DEMO_CONNECTION_ID, getConnectionColumns } from "./columns";
 import { useDataTable } from "@/hooks/use-data-table";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Cable, Loader2, Plus, Pencil, Trash2, Eye, EyeOff, Activity, ChevronDown, ChevronUp, Droplets, Check, X } from "lucide-react";
@@ -570,9 +577,13 @@ function PoolStatsSection({ onError }: { onError: (msg: string) => void }) {
 
 // ── Page ──────────────────────────────────────────────────────────
 
+/** Tooltip text when connection mutations are blocked by published-mode demo readonly. */
+const DEMO_READONLY_TOOLTIP = "Switch to developer mode to manage connections";
+
 export default function ConnectionsPage() {
   const { apiUrl, isCrossOrigin } = useAtlasConfig();
   const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
+  const { readOnly: demoReadOnly } = useDemoReadonly();
 
   const testMutation = useAdminMutation<ConnectionHealth>({ method: "POST" });
   const [mutationError, setMutationError] = useState<string | null>(null);
@@ -626,27 +637,55 @@ export default function ConnectionsPage() {
                 "Test"
               )}
             </Button>
-            {conn.id !== "default" && (
-              <>
+            {conn.id !== "default" && (() => {
+              // Demo connections are read-only in published mode — the only
+              // way to edit/delete them is to drop into developer mode. Show
+              // a tooltip explaining why the action is disabled.
+              const rowReadOnly = demoReadOnly && conn.id === DEMO_CONNECTION_ID;
+              const editBtn = (
                 <Button
                   variant="ghost"
                   size="sm"
                   onClick={() => handleEdit(conn.id)}
-                  disabled={loadingDetail}
+                  disabled={loadingDetail || rowReadOnly}
                   aria-label={`Edit connection ${conn.id}`}
                 >
                   <Pencil className="size-3.5" />
                 </Button>
+              );
+              const deleteBtn = (
                 <Button
                   variant="ghost"
                   size="sm"
                   onClick={() => handleDelete(conn.id)}
+                  disabled={rowReadOnly}
                   aria-label={`Delete connection ${conn.id}`}
                 >
                   <Trash2 className="size-3.5 text-destructive" />
                 </Button>
-              </>
-            )}
+              );
+              return rowReadOnly ? (
+                <TooltipProvider>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span tabIndex={0}>{editBtn}</span>
+                    </TooltipTrigger>
+                    <TooltipContent>{DEMO_READONLY_TOOLTIP}</TooltipContent>
+                  </Tooltip>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <span tabIndex={0}>{deleteBtn}</span>
+                    </TooltipTrigger>
+                    <TooltipContent>{DEMO_READONLY_TOOLTIP}</TooltipContent>
+                  </Tooltip>
+                </TooltipProvider>
+              ) : (
+                <>
+                  {editBtn}
+                  {deleteBtn}
+                </>
+              );
+            })()}
           </div>
         );
       },
@@ -742,10 +781,26 @@ export default function ConnectionsPage() {
           <h1 className="text-2xl font-bold tracking-tight">Connections</h1>
           <p className="text-sm text-muted-foreground">Manage datasource connections</p>
         </div>
-        <Button onClick={handleAdd} size="sm">
-          <Plus className="mr-2 size-4" />
-          Add Connection
-        </Button>
+        {demoReadOnly ? (
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span tabIndex={0}>
+                  <Button onClick={handleAdd} size="sm" disabled>
+                    <Plus className="mr-2 size-4" />
+                    Add Connection
+                  </Button>
+                </span>
+              </TooltipTrigger>
+              <TooltipContent>{DEMO_READONLY_TOOLTIP}</TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+        ) : (
+          <Button onClick={handleAdd} size="sm">
+            <Plus className="mr-2 size-4" />
+            Add Connection
+          </Button>
+        )}
       </div>
 
       <ErrorBoundary>

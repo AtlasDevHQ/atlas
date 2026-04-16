@@ -55,6 +55,12 @@ describe("DemoIndicatorChip", () => {
     expect(chip.getAttribute("title")).toBe("You are viewing the Sentinel Security demo dataset");
   });
 
+  test("renders Sentinel Security label for new `cybersec` slug (#1463 review follow-up)", () => {
+    modeStatusState = { data: activeMode("cybersec"), loading: false };
+    const { container } = render(<DemoIndicatorChip />);
+    expect(container.textContent).toContain("Sentinel Security demo");
+  });
+
   test("renders SaaS CRM label for saas industry", () => {
     modeStatusState = { data: activeMode("saas"), loading: false };
     const { container } = render(<DemoIndicatorChip />);

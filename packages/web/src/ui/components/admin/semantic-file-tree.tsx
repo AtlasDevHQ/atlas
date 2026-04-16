@@ -20,6 +20,12 @@ interface SemanticFileTreeProps {
   hasGlossary: boolean;
   selection: SemanticSelection;
   onSelect: (selection: SemanticSelection) => void;
+  /**
+   * Names of entities with `status === 'draft'`. Rendered with a quiet
+   * amber accent so admins scanning the tree can spot unpublished edits
+   * without the treatment shouting at non-draft rows (#1435).
+   */
+  draftEntityNames?: ReadonlySet<string>;
   className?: string;
 }
 
@@ -36,11 +42,14 @@ function FileItem({
   selected,
   onClick,
   indent = 0,
+  draft = false,
 }: {
   name: string;
   selected: boolean;
   onClick: () => void;
   indent?: number;
+  /** Quiet amber accent to signal "this is a draft" without shouting. */
+  draft?: boolean;
 }) {
   return (
     <button
@@ -48,8 +57,13 @@ function FileItem({
       className={cn(
         "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors",
         selected ? "bg-accent text-accent-foreground" : "hover:bg-muted text-muted-foreground hover:text-foreground",
+        // A 2px amber left border reads as "marked" in peripheral vision but
+        // doesn't change the row's baseline color/contrast — important since
+        // published entities dominate the list visually.
+        draft && "border-l-2 border-amber-400/60",
       )}
       style={{ paddingLeft: `${8 + indent * 16}px` }}
+      aria-label={draft ? `${name} (draft)` : undefined}
     >
       <File className="size-4 shrink-0 opacity-60" />
       <span className="truncate">{name}</span>
@@ -94,6 +108,7 @@ export function SemanticFileTree({
   hasGlossary,
   selection,
   onSelect,
+  draftEntityNames,
   className,
 }: SemanticFileTreeProps) {
   return (
@@ -134,6 +149,7 @@ export function SemanticFileTree({
                   selected={isSelected(selection, { type: "entity", name })}
                   onClick={() => onSelect({ type: "entity", name })}
                   indent={1}
+                  draft={draftEntityNames?.has(name) ?? false}
                 />
               ))
             )}

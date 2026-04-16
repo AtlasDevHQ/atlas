@@ -1,8 +1,9 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
-import { getApiUrl, isCrossOrigin } from "@/lib/api-url";
+import { postJson, getApiBase, getCredentials } from "@/lib/fetch-json";
+import { detectDbLabel } from "@/lib/db-labels";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -23,21 +24,12 @@ import {
   ShoppingCart,
   Users,
   Sparkles,
+  RefreshCw,
 } from "lucide-react";
-
-function getApiBase(): string {
-  const url = getApiUrl();
-  if (url) return url;
-  if (typeof window !== "undefined") return window.location.origin;
-  return "http://localhost:3000";
-}
-
-function getCredentials(): RequestCredentials {
-  return isCrossOrigin() ? "include" : "same-origin";
-}
 
 type ConnectionStatus = "idle" | "testing" | "success" | "error";
 type DemoType = "demo" | "cybersec" | "ecommerce";
+type DemoAvailability = "unknown" | "available" | "unavailable" | "error";
 
 interface TestResult {
   status?: string;
@@ -62,11 +54,22 @@ const DEMO_DATASETS: DemoDataset[] = [
   { type: "ecommerce", label: "E-commerce",    description: "Orders, products, customers, shipping, and reviews",  icon: ShoppingCart, tables: 52 },
 ];
 
-/** Auto-detect database type from URL scheme for display. */
-function detectDbLabel(url: string): string {
-  if (url.startsWith("postgresql://") || url.startsWith("postgres://")) return "PostgreSQL";
-  if (url.startsWith("mysql://") || url.startsWith("mysql2://")) return "MySQL";
-  return "Database";
+async function runHealthCheck(signal?: AbortSignal): Promise<DemoAvailability> {
+  try {
+    const res = await fetch(`${getApiBase()}/api/health`, {
+      credentials: getCredentials(),
+      signal,
+    });
+    if (!res.ok) throw new Error(`Health check returned ${res.status}`);
+    const data = (await res.json()) as { checks?: { datasource?: { status?: string } } };
+    return data?.checks?.datasource?.status === "ok" ? "available" : "unavailable";
+  } catch (err) {
+    if (err instanceof Error && err.name === "AbortError") throw err;
+    console.warn("[signup/connect] health check failed:", {
+      err: err instanceof Error ? err.message : String(err),
+    });
+    return "error";
+  }
 }
 
 export default function ConnectPage() {
@@ -77,23 +80,27 @@ export default function ConnectPage() {
   const [saving, setSaving] = useState(false);
   const [connectError, setConnectError] = useState<string | null>(null);
   const [demoError, setDemoError] = useState<string | null>(null);
-  const [demoAvailable, setDemoAvailable] = useState(false);
+  const [demoAvailability, setDemoAvailability] = useState<DemoAvailability>("unknown");
   const [loadingDemo, setLoadingDemo] = useState<DemoType | null>(null);
+  // Aborts any in-flight health check (mount effect or retry click) so stale
+  // resolutions can't overwrite a newer result or setState after unmount.
+  const healthCheckAbortRef = useRef<AbortController | null>(null);
 
+  // Don't silently hide the demo card on health-check failure — "error" state
+  // shows a retry affordance so users can distinguish "demo not configured"
+  // from "we couldn't check."
   useEffect(() => {
-    fetch(`${getApiBase()}/api/health`, { credentials: getCredentials() })
-      .then((res) => {
-        if (!res.ok) throw new Error(`Health check returned ${res.status}`);
-        return res.json();
-      })
-      .then((data) => {
-        if (data?.checks?.datasource?.status === "ok") {
-          setDemoAvailable(true);
-        }
+    const controller = new AbortController();
+    healthCheckAbortRef.current = controller;
+    runHealthCheck(controller.signal)
+      .then((result) => {
+        if (!controller.signal.aborted) setDemoAvailability(result);
       })
       .catch((err) => {
-        console.debug("[signup/connect] health check failed:", err instanceof Error ? err.message : String(err));
+        if (err instanceof Error && err.name === "AbortError") return;
+        console.warn("[signup/connect] unexpected error from health-check:", err);
       });
+    return () => controller.abort();
   }, []);
 
   async function handleTest() {
@@ -115,7 +122,11 @@ export default function ConnectPage() {
       try {
         data = await res.json();
       } catch (parseErr) {
-        console.debug("[signup/connect] test-connection JSON parse failed:", parseErr instanceof Error ? parseErr.message : String(parseErr));
+        console.debug("[signup/connect] test-connection JSON parse failed:", {
+          status: res.status,
+          contentType: res.headers.get("content-type"),
+          err: parseErr instanceof Error ? parseErr.message : String(parseErr),
+        });
         setConnectionStatus("error");
         setConnectError("Server returned an unexpected response. Check that the API is running.");
         return;
@@ -131,9 +142,7 @@ export default function ConnectPage() {
     } catch (err) {
       setConnectionStatus("error");
       setConnectError(
-        err instanceof TypeError
-          ? "Unable to reach the server"
-          : "Connection test failed",
+        err instanceof TypeError ? "Unable to reach the server" : "Connection test failed",
       );
     }
   }
@@ -144,84 +153,57 @@ export default function ConnectPage() {
     setSaving(true);
     setConnectError(null);
 
-    try {
-      const res = await fetch(`${getApiBase()}/api/v1/onboarding/complete`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: getCredentials(),
-        body: JSON.stringify({ url }),
-      });
+    const result = await postJson("/api/v1/onboarding/complete", { url }, {
+      fallbackMessage: "Failed to save connection",
+    });
 
-      let data: Record<string, unknown>;
-      try {
-        data = await res.json() as Record<string, unknown>;
-      } catch (parseErr) {
-        console.debug("[signup/connect] complete JSON parse failed:", parseErr instanceof Error ? parseErr.message : String(parseErr));
-        setConnectionStatus("error");
-        setConnectError("Server returned an unexpected response. Check that the API is running.");
-        return;
-      }
-      if (!res.ok) {
-        setConnectionStatus("error");
-        setConnectError((data.message as string) ?? "Failed to save connection");
-        return;
-      }
-
-      router.push("/signup/success");
-    } catch (err) {
+    if (!result.ok) {
       setConnectionStatus("error");
-      setConnectError(
-        err instanceof TypeError
-          ? "Unable to reach the server"
-          : "Failed to complete setup",
-      );
-    } finally {
+      setConnectError(result.error);
       setSaving(false);
+      return;
     }
+
+    router.push("/signup/success");
   }
 
   async function handleUseDemo(demoType: DemoType) {
     setLoadingDemo(demoType);
     setDemoError(null);
 
-    try {
-      const res = await fetch(`${getApiBase()}/api/v1/onboarding/use-demo`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        credentials: getCredentials(),
-        body: JSON.stringify({ demoType }),
-      });
+    const result = await postJson("/api/v1/onboarding/use-demo", { demoType }, {
+      fallbackMessage: "Failed to set up demo data",
+    });
 
-      let data: Record<string, unknown>;
-      try {
-        data = await res.json() as Record<string, unknown>;
-      } catch (parseErr) {
-        console.debug("[signup/connect] use-demo JSON parse failed:", parseErr instanceof Error ? parseErr.message : String(parseErr));
-        setDemoError("Server returned an unexpected response.");
-        return;
-      }
-      if (!res.ok) {
-        setDemoError((data.message as string) ?? "Failed to set up demo data");
-        return;
-      }
-
-      router.push("/signup/success");
-    } catch (err) {
-      setDemoError(
-        err instanceof TypeError
-          ? "Unable to reach the server"
-          : "Failed to set up demo data",
-      );
-    } finally {
+    if (!result.ok) {
+      setDemoError(result.error);
       setLoadingDemo(null);
+      return;
+    }
+
+    router.push("/signup/success");
+  }
+
+  async function retryHealthCheck() {
+    healthCheckAbortRef.current?.abort();
+    const controller = new AbortController();
+    healthCheckAbortRef.current = controller;
+    setDemoAvailability("unknown");
+    try {
+      const result = await runHealthCheck(controller.signal);
+      if (!controller.signal.aborted) setDemoAvailability(result);
+    } catch (err) {
+      if (err instanceof Error && err.name === "AbortError") return;
+      console.warn("[signup/connect] unexpected error from health-check retry:", err);
     }
   }
 
   const dbLabel = url ? detectDbLabel(url) : "Database";
   const anyLoading = saving || loadingDemo !== null;
+  const showDemoCard = demoAvailability === "available" || demoAvailability === "error";
 
   return (
-    <div className={cn("w-full", demoAvailable ? "max-w-4xl" : "max-w-lg")}>
+    <div className={cn("w-full", showDemoCard ? "max-w-4xl" : "max-w-lg")}>
       <div className="mb-6 flex flex-col items-center text-center">
         <div className="mb-3 flex size-12 items-center justify-center rounded-lg bg-primary/10">
           <Database className="size-6 text-primary" />
@@ -234,12 +216,7 @@ export default function ConnectPage() {
         </p>
       </div>
 
-      <div
-        className={cn(
-          "grid gap-4",
-          demoAvailable && "md:grid-cols-2",
-        )}
-      >
+      <div className={cn("grid gap-4", showDemoCard && "md:grid-cols-2")}>
         <Card className="flex flex-col">
           <CardHeader>
             <CardTitle className="flex items-center gap-2 text-lg">
@@ -327,7 +304,7 @@ export default function ConnectPage() {
           </CardContent>
         </Card>
 
-        {demoAvailable && (
+        {showDemoCard && (
           <Card className="flex flex-col">
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-lg">
@@ -339,41 +316,60 @@ export default function ConnectPage() {
               </CardDescription>
             </CardHeader>
             <CardContent className="flex flex-1 flex-col space-y-3">
-              <div className="grid gap-2">
-                {DEMO_DATASETS.map((ds) => {
-                  const isLoading = loadingDemo === ds.type;
-                  return (
-                    <button
-                      key={ds.type}
-                      type="button"
-                      onClick={() => handleUseDemo(ds.type)}
-                      disabled={anyLoading}
-                      aria-label={`Use ${ds.label} demo dataset (${ds.tables} tables)`}
-                      className={cn(
-                        "group flex items-center gap-3 rounded-lg border bg-card p-3 text-left transition-colors",
-                        "hover:border-primary/50 hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                        "disabled:pointer-events-none disabled:opacity-50",
-                      )}
-                    >
-                      <div className="flex size-9 shrink-0 items-center justify-center rounded-md bg-muted group-hover:bg-primary/10">
-                        <ds.icon className="size-4 text-muted-foreground group-hover:text-primary" />
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-2">
-                          <span className="truncate text-sm font-medium">{ds.label}</span>
-                          <span className="shrink-0 text-[10px] text-muted-foreground">
-                            {ds.tables} {ds.tables === 1 ? "table" : "tables"}
-                          </span>
+              {demoAvailability === "error" ? (
+                <div
+                  role="alert"
+                  className="flex items-center justify-between gap-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200"
+                >
+                  <span>Couldn&apos;t check demo availability.</span>
+                  <Button
+                    type="button"
+                    onClick={retryHealthCheck}
+                    variant="outline"
+                    size="sm"
+                    className="h-7 shrink-0 gap-1 border-amber-300 bg-transparent hover:bg-amber-100 dark:border-amber-800 dark:hover:bg-amber-900"
+                  >
+                    <RefreshCw className="size-3" />
+                    Retry
+                  </Button>
+                </div>
+              ) : (
+                <div className="grid gap-2">
+                  {DEMO_DATASETS.map((ds) => {
+                    const isLoading = loadingDemo === ds.type;
+                    return (
+                      <button
+                        key={ds.type}
+                        type="button"
+                        onClick={() => handleUseDemo(ds.type)}
+                        disabled={anyLoading}
+                        aria-label={`Use ${ds.label} demo dataset (${ds.tables} tables)`}
+                        className={cn(
+                          "group flex items-center gap-3 rounded-lg border bg-card p-3 text-left transition-colors",
+                          "hover:border-primary/50 hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+                          "disabled:pointer-events-none disabled:opacity-50",
+                        )}
+                      >
+                        <div className="flex size-9 shrink-0 items-center justify-center rounded-md bg-muted group-hover:bg-primary/10">
+                          <ds.icon className="size-4 text-muted-foreground group-hover:text-primary" />
                         </div>
-                        <p className="truncate text-xs text-muted-foreground">{ds.description}</p>
-                      </div>
-                      {isLoading && (
-                        <Loader2 className="size-4 shrink-0 animate-spin text-muted-foreground" />
-                      )}
-                    </button>
-                  );
-                })}
-              </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2">
+                            <span className="truncate text-sm font-medium">{ds.label}</span>
+                            <span className="shrink-0 text-[10px] text-muted-foreground">
+                              {ds.tables} {ds.tables === 1 ? "table" : "tables"}
+                            </span>
+                          </div>
+                          <p className="truncate text-xs text-muted-foreground">{ds.description}</p>
+                        </div>
+                        {isLoading && (
+                          <Loader2 className="size-4 shrink-0 animate-spin text-muted-foreground" />
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
 
               {demoError && (
                 <div

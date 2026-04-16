@@ -1164,8 +1164,8 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 **Stripe-style dual-mode experience with draft/published content model.** Admins configure in developer mode (drafts), publish atomically to users. Demo data is the initial published content for new signups. PRD: #1421. Milestone: #34.
 
 ### Foundation
-- [ ] Schema migration — add `status` column to connections, semantic_entities, prompt_collections (#1423)
-- [ ] Mode resolution middleware + RequestContext propagation (#1424)
+- [x] Schema migration — add `status` column to connections, semantic_entities, prompt_collections (#1423, PR #1443)
+- [x] Mode resolution middleware + RequestContext propagation (#1424, PR #1442)
 - [ ] Onboarding — save demo as `__demo__` connection with `demo_industry` setting (#1425)
 
 ### Query Layer
@@ -1190,8 +1190,10 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [ ] Admin surface — draft/demo badges, read-only published, pending changes summary (#1435)
 - [ ] Empty states in developer mode (#1436)
 
-### Deploy Fix
-- [ ] Bundle cybersec + ecommerce semantic directories in Docker image (#1422)
+### Bug Fixes
+- [x] Bundle cybersec + ecommerce semantic directories in Docker image (#1422, PR #1441)
+- [x] Docker COPY for demo-semantic and SQL seed symlinks (#1440, PR #1441)
+- [ ] Partial unique indexes on semantic_entities are NULL-unsafe for connection_id (#1444)
 
 ---
 

@@ -262,6 +262,30 @@ describe("loadOrgWhitelist — developer mode uses overlay", () => {
     expect(mockListEntities).toHaveBeenCalledTimes(2);
   });
 
+  it("developer mode and undefined-mode cache entries are isolated (no collision)", async () => {
+    // `undefined` calls listEntities with no filter (all rows including tombstones);
+    // `developer` calls listEntitiesWithOverlay. If they shared a cache key, the
+    // first call would poison the second.
+    mockListEntities.mockImplementation(async () => [
+      makeRow({ name: "legacy", table: "legacy", status: "archived" }),
+    ]);
+    mockListEntitiesWithOverlay.mockImplementation(async () => [
+      makeRow({ name: "users", table: "users", status: "published" }),
+    ]);
+
+    const undef = await whitelistMod.loadOrgWhitelist("org-1");
+    const dev = await whitelistMod.loadOrgWhitelist("org-1", "developer");
+
+    const undefTables = undef.get("default") ?? new Set<string>();
+    const devTables = dev.get("default") ?? new Set<string>();
+
+    expect(undefTables.has("legacy")).toBe(true);
+    expect(devTables.has("users")).toBe(true);
+    expect(devTables.has("legacy")).toBe(false);
+    expect(mockListEntities).toHaveBeenCalledTimes(1);
+    expect(mockListEntitiesWithOverlay).toHaveBeenCalledTimes(1);
+  });
+
   it("developer mode builds the whitelist from overlay rows", async () => {
     mockListEntitiesWithOverlay.mockImplementation(async () => [
       makeRow({ name: "users", table: "users", status: "published" }),

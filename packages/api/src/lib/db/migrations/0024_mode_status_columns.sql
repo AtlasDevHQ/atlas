@@ -1,10 +1,11 @@
 -- 0024 — Developer/published mode: add status column to content tables
 --
--- Foundation for the dual-mode system (#1421). Adds a status column
--- (published | draft | archived) to connections, semantic_entities,
--- and prompt_collections. Semantic entities additionally support
--- draft_delete (tombstone for staged deletions) and get unique partial
--- indexes ensuring at most one row per entity key per status.
+-- Foundation for the dual-mode system (#1421). Adds a status column:
+--   connections:        published | draft | archived
+--   semantic_entities:  published | draft | draft_delete | archived
+--   prompt_collections: published | draft | archived
+-- Semantic entities get unique partial indexes on (org_id, name,
+-- connection_id) ensuring at most one row per entity key per status.
 --
 -- All existing rows default to 'published' via the column default.
 -- No data migration needed.

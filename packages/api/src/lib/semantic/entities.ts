@@ -14,8 +14,9 @@ const log = createLogger("semantic-entities");
 
 export type SemanticEntityType = "entity" | "metric" | "glossary" | "catalog";
 
-/** Valid status values for semantic entities (draft/published mode). */
-export type SemanticEntityStatus = "published" | "draft" | "draft_delete" | "archived";
+/** Valid status values for semantic entities in the developer/published mode system. */
+export const SEMANTIC_ENTITY_STATUSES = ["published", "draft", "draft_delete", "archived"] as const;
+export type SemanticEntityStatus = (typeof SEMANTIC_ENTITY_STATUSES)[number];
 
 export interface SemanticEntityRow {
   id: string;

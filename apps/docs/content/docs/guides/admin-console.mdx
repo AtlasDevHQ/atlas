@@ -472,12 +472,13 @@ Tracks all admin mutations — settings changes, connection edits, user role cha
 Each entry shows:
 - **Timestamp** — when the action occurred
 - **Actor** — the admin who performed it (email)
-- **Action** — what was done (e.g. `update_setting`, `create_connection`, `change_role`)
-- **Target** — what was affected (e.g. the setting key, connection name, or user email)
-- **Details** — additional context (old/new values where applicable)
+- **Action type** — what was done (e.g. `update_setting`, `create_connection`, `change_role`)
+- **Target type + ID** — what was affected (e.g. `setting` / `ATLAS_ROW_LIMIT`, `connection` / `warehouse`)
+- **Status** — `success` or `failure`
+- **Metadata** — additional context (old/new values where applicable)
 
 **Features:**
-- **Filtering** — filter by action type, actor, or date range
+- **Filtering** — filter by action type, target type, actor, date range, or free-text search
 - **CSV export** — download the audit trail for compliance or offline review
 - **Org-scoped** — in SaaS mode, workspace admins see only their organization's admin actions
 

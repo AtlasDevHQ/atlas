@@ -548,7 +548,7 @@ See [Python Tool](/guides/python) for the full guide.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ATLAS_EMAIL_PROVIDER` | `resend` | Platform email provider: `resend`, `sendgrid`, `postmark`, `smtp`. Primarily configured via Admin > Settings, but falls back to this env var |
+| `ATLAS_EMAIL_PROVIDER` | `resend` | Platform email provider: `resend`, `sendgrid`, `postmark`, `smtp`, `ses`. Primarily configured via Admin > Settings, but falls back to this env var |
 | `RESEND_API_KEY` | — | Resend API key for email delivery in scheduled tasks and onboarding emails |
 | `SENDGRID_API_KEY` | — | SendGrid API key. Used when `ATLAS_EMAIL_PROVIDER=sendgrid` |
 | `POSTMARK_SERVER_TOKEN` | — | Postmark server token. Used when `ATLAS_EMAIL_PROVIDER=postmark` |

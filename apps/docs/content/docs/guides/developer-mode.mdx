@@ -112,6 +112,20 @@ Publishing clears every draft for the org. The admin's next edit — a new entit
 
 ---
 
+## What Admins See on First Toggle
+
+When an admin flips into developer mode for the first time, none of the staged resources have drafts yet — every page would otherwise show the same content the user sees in published mode. To keep the intent of the mode visible, each admin surface renders a focused empty state instead:
+
+- **Connections** — "Connect your first database to start building." A dialog CTA opens the Add Connection form.
+- **Semantic editor** — "Import your schema after connecting a database." The CTA routes to the connections page so the admin can source the schema first.
+- **Schema diff** — "Nothing to diff — no developer mode connection yet." The diff needs a draft connection to compare against.
+- **Prompts** — "Create prompt collections to help your users ask the right questions." The CTA opens the new-collection dialog.
+- **Chat** — "No connection configured in developer mode. Connect a database in the admin panel to start testing." The CTA routes to the connections page, preventing the agent from running against nothing.
+
+If published items exist for a resource (for example, a workspace with the `__demo__` connection in place), developer mode renders those items as a grayed-out read-only context with a **Published** badge and a **Create draft** CTA so admins can see the live state without editing it by mistake.
+
+---
+
 ## Related
 
 - [Admin Console overview](/guides/admin-console)

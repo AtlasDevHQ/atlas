@@ -16,6 +16,9 @@ import { Markdown } from "./chat/markdown";
 import { STARTER_PROMPTS } from "./chat/starter-prompts";
 import { FollowUpChips } from "./chat/follow-up-chips";
 import { SuggestionChips } from "./chat/suggestion-chips";
+import { DeveloperChatEmptyState } from "./chat/developer-empty-state";
+import { useMode } from "../hooks/use-mode";
+import { useModeStatus } from "../hooks/use-mode-status";
 import type { QuerySuggestion } from "@/ui/lib/types";
 import { ShareDialog } from "./chat/share-dialog";
 import { ConversationSidebar } from "./conversations/conversation-sidebar";
@@ -128,6 +131,13 @@ function SaveButton({
 
 export function AtlasChat() {
   const { apiUrl, isCrossOrigin, authClient } = useAtlasConfig();
+  const { mode } = useMode();
+  const { data: modeStatus } = useModeStatus();
+  // In developer mode the chat talks to draft connections. If the admin
+  // hasn't drafted one yet, surface a dedicated empty state (#1436) instead
+  // of letting the agent fail with a confusing "no datasource" error.
+  const showDevChatEmpty =
+    mode === "developer" && (modeStatus?.draftCounts?.connections ?? 0) === 0;
   const [input, setInput] = useState("");
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [transientWarning, setTransientWarning] = useState("");
@@ -471,6 +481,9 @@ export function AtlasChat() {
                 >
                 <div className="space-y-4 pb-4 pr-3">
                   {messages.length === 0 && !error && (
+                    showDevChatEmpty ? (
+                      <DeveloperChatEmptyState />
+                    ) : (
                     <div className="flex h-full flex-col items-center justify-center gap-6">
                       <div className="text-center">
                         <p className="text-lg font-medium text-zinc-500 dark:text-zinc-400">
@@ -507,6 +520,7 @@ export function AtlasChat() {
                         Browse prompt library
                       </Button>
                     </div>
+                    )
                   )}
 
                   {messages.map((m, msgIndex) => {

@@ -46,3 +46,25 @@ export function DraftBadge({ className }: { className?: string }) {
     </Badge>
   );
 }
+
+/**
+ * "Published" pill shown when developer-mode surfaces render live/published
+ * items as read-only context (e.g. a demo connection shown while the admin
+ * hasn't drafted anything yet). Emerald tint reads as "live", distinct from
+ * the amber "Draft" pill and the neutral "Demo" pill.
+ */
+export function PublishedBadge({ className }: { className?: string }) {
+  return (
+    <Badge
+      variant="outline"
+      className={cn(
+        "border-emerald-300 bg-emerald-50 px-1.5 py-0 text-[10px] font-medium text-emerald-700 dark:border-emerald-700 dark:bg-emerald-950/30 dark:text-emerald-400",
+        className,
+      )}
+      aria-label="Published — live in production"
+      title="Published — live in production"
+    >
+      Published
+    </Badge>
+  );
+}

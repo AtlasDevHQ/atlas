@@ -43,6 +43,9 @@ import {
 } from "lucide-react";
 import type { SemanticTableDiff, ConnectionInfo } from "@/ui/lib/types";
 import { ConnectionsResponseSchema, SemanticDiffResponseSchema } from "@/ui/lib/admin-schemas";
+import { useMode } from "@/ui/hooks/use-mode";
+import { useModeStatus } from "@/ui/hooks/use-mode-status";
+import { DeveloperEmptyState } from "@/ui/components/admin/developer-empty-state";
 
 // ---------------------------------------------------------------------------
 
@@ -60,6 +63,16 @@ export default function SchemaDiffPage() {
     { schema: SemanticDiffResponseSchema, deps: [connectionId] },
   );
 
+  const { mode } = useMode();
+  const { data: modeStatus } = useModeStatus();
+  const inDevMode = mode === "developer";
+  const connectionDrafts = modeStatus?.draftCounts?.connections ?? 0;
+  // Schema diff is meaningful only against a developer-mode (draft)
+  // connection. If the admin toggled into dev mode but hasn't drafted one
+  // yet, short-circuit the generic "no diff data" empty state with a
+  // message that names the root cause.
+  const showDevNoConnection = inDevMode && connectionDrafts === 0;
+
   const multipleConnections = connectionsData && connectionsData.length > 1;
 
   const hasDrift = diff ? diff.summary.new > 0 || diff.summary.removed > 0 || diff.summary.changed > 0 : false;
@@ -72,6 +85,14 @@ export default function SchemaDiffPage() {
         onChange={setConnectionId}
       />
     ) : null}>
+      {showDevNoConnection && !diff && !loading && !error ? (
+        <DeveloperEmptyState
+          icon={GitCompareArrows}
+          title="Nothing to diff — no developer mode connection yet."
+          description="Create a draft connection to compare its schema against the semantic layer."
+          action={{ label: "Go to connections", href: "/admin/connections" }}
+        />
+      ) : (
       <AdminContentWrapper
         loading={loading}
         error={error}
@@ -232,6 +253,7 @@ export default function SchemaDiffPage() {
         </div>
       </ErrorBoundary>}
       </AdminContentWrapper>
+      )}
     </PageShell>
   );
 }

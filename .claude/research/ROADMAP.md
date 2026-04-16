@@ -1188,7 +1188,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] Developer mode banner + cookie-based toggle (#1433, PR #1445)
 - [x] Non-admin demo indicator chip (#1434, PR #1459)
 - [x] Admin surface — draft/demo badges, read-only published, pending changes summary (#1435, PR #1463)
-- [ ] Empty states in developer mode (#1436)
+- [x] Empty states in developer mode (#1436)
 
 ### Bug Fixes
 - [x] Bundle cybersec + ecommerce semantic directories in Docker image (#1422, PR #1441)

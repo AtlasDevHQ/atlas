@@ -47,6 +47,10 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { useDemoReadonly, demoIndustryLabel } from "@/ui/hooks/use-demo-readonly";
+import { useMode } from "@/ui/hooks/use-mode";
+import { useModeStatus } from "@/ui/hooks/use-mode-status";
+import { DeveloperEmptyState } from "@/ui/components/admin/developer-empty-state";
+import { PublishedBadge } from "@/ui/components/admin/mode-badges";
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -348,6 +352,13 @@ export default function SemanticPage() {
   const isSaas = deployMode === "saas";
   const { readOnly: demoReadOnly, demoIndustry } = useDemoReadonly();
   const demoLabel = demoIndustryLabel(demoIndustry);
+  const { mode } = useMode();
+  const { data: modeStatus } = useModeStatus();
+  const inDevMode = mode === "developer";
+  const entityDrafts = (modeStatus?.draftCounts?.entities ?? 0)
+    + (modeStatus?.draftCounts?.entityEdits ?? 0)
+    + (modeStatus?.draftCounts?.entityDeletes ?? 0);
+  const showDevNoDrafts = inDevMode && entityDrafts === 0;
 
   const [entities, setEntities] = useState<EntitySummary[]>([]);
   const [draftEntityNames, setDraftEntityNames] = useState<Set<string>>(() => new Set());
@@ -663,6 +674,40 @@ export default function SemanticPage() {
         onRetry={() => setFetchKey((k) => k + 1)}
         loadingMessage="Loading semantic layer..."
       >
+      {/*
+        Dev-mode empty: admin is in developer mode with no entity drafts and
+        no published entities at all. Route them to /admin/connections — a
+        connection must exist before entities can be imported. Short-circuits
+        the file-tree layout below to avoid showing an empty tree next to
+        the empty state.
+      */}
+      {showDevNoDrafts && entities.length === 0 ? (
+        <div className="p-6">
+          <DeveloperEmptyState
+            icon={BookOpen}
+            title="Import your schema after connecting a database."
+            description="Entities are generated from your database schema. Add a connection first, then come back here to import."
+            action={{ label: "Go to connections", href: "/admin/connections" }}
+          />
+        </div>
+      ) : (
+      <>
+      {/*
+        Dev-mode-no-drafts with existing published entities (e.g. demo data):
+        surface a Published-tagged banner so the admin knows the tree reflects
+        live state. The file tree stays interactive so they can browse — the
+        existing demoReadOnly tooltips prevent accidental edits.
+      */}
+      {showDevNoDrafts && entities.length > 0 && !loading ? (
+        <div className="flex items-center gap-2 border-b bg-amber-50/40 px-6 py-2.5 text-xs text-muted-foreground dark:bg-amber-950/10">
+          <PublishedBadge />
+          <span>
+            You&rsquo;re viewing the live semantic layer. Use{" "}
+            <span className="font-medium">Add Entity</span> to start a draft.
+          </span>
+        </div>
+      ) : null}
+
       {!isSaas && (
         <div className="flex items-center gap-2 border-b bg-muted/30 px-6 py-2.5 text-xs text-muted-foreground">
           <Terminal className="size-3.5 shrink-0" />
@@ -792,6 +837,8 @@ export default function SemanticPage() {
         </div>
       </div>
       </ErrorBoundary>
+      </>
+      )}
       </AdminContentWrapper>
 
       {/* Entity editor dialog */}

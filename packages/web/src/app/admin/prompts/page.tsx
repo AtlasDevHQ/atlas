@@ -64,6 +64,10 @@ import {
 import type { FetchError } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
+import { useMode } from "@/ui/hooks/use-mode";
+import { useModeStatus } from "@/ui/hooks/use-mode-status";
+import { DeveloperEmptyState } from "@/ui/components/admin/developer-empty-state";
+import { PublishedContextWrapper } from "@/ui/components/admin/published-context-wrapper";
 import {
   BookOpen,
   Plus,
@@ -452,6 +456,12 @@ export default function PromptsPage() {
 
   const hasFilters = !!params.industry;
 
+  const { mode } = useMode();
+  const { data: modeStatus } = useModeStatus();
+  const inDevMode = mode === "developer";
+  const promptDrafts = modeStatus?.draftCounts?.prompts ?? 0;
+  const showDevNoDrafts = inDevMode && promptDrafts === 0;
+
   return (
     <div className="p-6">
       {/* Header */}
@@ -550,26 +560,59 @@ export default function PromptsPage() {
             emptyTitle="No prompt collections"
             emptyDescription="Create a collection to add starter questions for your users."
             emptyAction={{ label: "Create collection", onClick: openCreateDialog }}
-            isEmpty={filtered.length === 0}
+            // In dev-mode-no-drafts we short-circuit to a DeveloperEmptyState
+            // so the CTA copy speaks to the drafting workflow.
+            isEmpty={filtered.length === 0 && !(showDevNoDrafts && !hasFilters)}
             hasFilters={hasFilters}
             onClearFilters={() => setParams({ industry: "", page: 1 })}
           >
-            <DataTable
-              table={table}
-              onRowClick={(row, e) => {
-                if (
-                  (e.target as HTMLElement).closest(
-                    '[role="checkbox"], button',
+            {showDevNoDrafts && filtered.length === 0 && !hasFilters ? (
+              <DeveloperEmptyState
+                icon={BookOpen}
+                title="Create prompt collections to help your users ask the right questions."
+                description="Draft a collection now, then publish it when it's ready for users."
+                action={{ label: "Create collection", onClick: openCreateDialog }}
+              />
+            ) : showDevNoDrafts && filtered.length > 0 && !hasFilters ? (
+              <PublishedContextWrapper
+                resourceLabel="prompt collection"
+                action={{ label: "Create draft collection", onClick: openCreateDialog }}
+              >
+                <DataTable
+                  table={table}
+                  onRowClick={(row, e) => {
+                    if (
+                      (e.target as HTMLElement).closest(
+                        '[role="checkbox"], button',
+                      )
+                    )
+                      return;
+                    setDetailCollection(row.original);
+                  }}
+                >
+                  <DataTableToolbar table={table}>
+                    <DataTableSortList table={table} />
+                  </DataTableToolbar>
+                </DataTable>
+              </PublishedContextWrapper>
+            ) : (
+              <DataTable
+                table={table}
+                onRowClick={(row, e) => {
+                  if (
+                    (e.target as HTMLElement).closest(
+                      '[role="checkbox"], button',
+                    )
                   )
-                )
-                  return;
-                setDetailCollection(row.original);
-              }}
-            >
-              <DataTableToolbar table={table}>
-                <DataTableSortList table={table} />
-              </DataTableToolbar>
-            </DataTable>
+                    return;
+                  setDetailCollection(row.original);
+                }}
+              >
+                <DataTableToolbar table={table}>
+                  <DataTableSortList table={table} />
+                </DataTableToolbar>
+              </DataTable>
+            )}
           </AdminContentWrapper>
         </div>
       </ErrorBoundary>

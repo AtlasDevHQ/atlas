@@ -591,11 +591,15 @@ export default function ConnectionsPage() {
   const { mode } = useMode();
   const { data: modeStatus } = useModeStatus();
   const inDevMode = mode === "developer";
-  const connectionDrafts = modeStatus?.draftCounts?.connections ?? 0;
   // Dev-mode empty signal: admin is in developer mode but has not drafted a
   // connection yet. The empty + published-context UIs only render when this
-  // is true — in published mode the page keeps its existing behavior.
-  const showDevNoDrafts = inDevMode && connectionDrafts === 0;
+  // is true — in published mode the page keeps its existing behavior. Gate
+  // on `modeStatus !== null` so admins with drafts don't see the empty
+  // state flash while `/api/v1/mode` is in flight.
+  const showDevNoDrafts =
+    inDevMode && modeStatus !== null
+      ? (modeStatus.draftCounts?.connections ?? 0) === 0
+      : false;
 
   const testMutation = useAdminMutation<ConnectionHealth>({ method: "POST" });
   const [mutationError, setMutationError] = useState<string | null>(null);

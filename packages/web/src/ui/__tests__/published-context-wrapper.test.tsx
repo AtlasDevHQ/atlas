@@ -7,7 +7,7 @@ describe("PublishedContextWrapper", () => {
     cleanup();
   });
 
-  test("renders children wrapped in an aria-hidden, non-interactive container", () => {
+  test("renders children wrapped in an inert, non-interactive container", () => {
     const { getByText, container } = render(
       <PublishedContextWrapper
         resourceLabel="connection"
@@ -18,12 +18,14 @@ describe("PublishedContextWrapper", () => {
     );
     expect(getByText("Published demo connection")).toBeTruthy();
 
-    // The rendered list should be hidden from assistive tech and
-    // non-interactive so admins don't accidentally mutate the live
-    // state while in this "context-only" view.
-    const hidden = container.querySelector('[aria-hidden="true"]');
-    expect(hidden?.className).toContain("pointer-events-none");
-    expect(hidden?.className).toContain("opacity-60");
+    // `inert` on the wrapper removes the subtree from tab order AND the
+    // a11y tree. We assert inert directly because pointer-events-none alone
+    // doesn't block keyboard focus — without `inert` a tabbing admin could
+    // trigger row clicks or sort toggles on the "read-only" list.
+    const inertBox = container.querySelector('[inert]');
+    expect(inertBox).toBeTruthy();
+    expect(inertBox?.className).toContain("pointer-events-none");
+    expect(inertBox?.className).toContain("opacity-60");
   });
 
   test("renders the Published badge + explanatory copy with the resource label", () => {

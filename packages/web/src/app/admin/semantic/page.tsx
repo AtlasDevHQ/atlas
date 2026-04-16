@@ -355,10 +355,14 @@ export default function SemanticPage() {
   const { mode } = useMode();
   const { data: modeStatus } = useModeStatus();
   const inDevMode = mode === "developer";
-  const entityDrafts = (modeStatus?.draftCounts?.entities ?? 0)
-    + (modeStatus?.draftCounts?.entityEdits ?? 0)
-    + (modeStatus?.draftCounts?.entityDeletes ?? 0);
-  const showDevNoDrafts = inDevMode && entityDrafts === 0;
+  // Gate on `modeStatus !== null` to avoid flashing the dev-mode empty
+  // state while `/api/v1/mode` is in flight (admin might already have drafts).
+  const showDevNoDrafts =
+    inDevMode && modeStatus !== null
+      ? (modeStatus.draftCounts?.entities ?? 0)
+          + (modeStatus.draftCounts?.entityEdits ?? 0)
+          + (modeStatus.draftCounts?.entityDeletes ?? 0) === 0
+      : false;
 
   const [entities, setEntities] = useState<EntitySummary[]>([]);
   const [draftEntityNames, setDraftEntityNames] = useState<Set<string>>(() => new Set());

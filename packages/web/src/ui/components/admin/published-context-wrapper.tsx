@@ -48,13 +48,15 @@ export function PublishedContextWrapper({
         </span>
       </div>
       {/*
-        opacity-60 + pointer-events-none signal read-only visually and
-        programmatically. aria-hidden tells assistive tech to skip the list
-        — the CTA below is where the admin should focus.
+        opacity-60 + pointer-events-none signal read-only visually.
+        `inert` removes the subtree from the tab order and the a11y tree
+        in one go — pointer-events-none alone doesn't block keyboard focus,
+        so without `inert` a tabbing admin could still trigger row clicks
+        or sort toggles on the "read-only" list.
       */}
       <div
         className="pointer-events-none select-none opacity-60"
-        aria-hidden="true"
+        inert
       >
         {children}
       </div>

@@ -135,9 +135,13 @@ export function AtlasChat() {
   const { data: modeStatus } = useModeStatus();
   // In developer mode the chat talks to draft connections. If the admin
   // hasn't drafted one yet, surface a dedicated empty state (#1436) instead
-  // of letting the agent fail with a confusing "no datasource" error.
+  // of letting the agent fail with a confusing "no datasource" error. Gate
+  // on `modeStatus !== null` so the composer doesn't flash hidden before
+  // /api/v1/mode resolves.
   const showDevChatEmpty =
-    mode === "developer" && (modeStatus?.draftCounts?.connections ?? 0) === 0;
+    mode === "developer" && modeStatus !== null
+      ? (modeStatus.draftCounts?.connections ?? 0) === 0
+      : false;
   const [input, setInput] = useState("");
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [transientWarning, setTransientWarning] = useState("");

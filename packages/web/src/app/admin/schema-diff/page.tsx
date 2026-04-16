@@ -66,12 +66,15 @@ export default function SchemaDiffPage() {
   const { mode } = useMode();
   const { data: modeStatus } = useModeStatus();
   const inDevMode = mode === "developer";
-  const connectionDrafts = modeStatus?.draftCounts?.connections ?? 0;
   // Schema diff is meaningful only against a developer-mode (draft)
   // connection. If the admin toggled into dev mode but hasn't drafted one
   // yet, short-circuit the generic "no diff data" empty state with a
-  // message that names the root cause.
-  const showDevNoConnection = inDevMode && connectionDrafts === 0;
+  // message that names the root cause. Gate on `modeStatus !== null` so the
+  // panel doesn't flash before /api/v1/mode resolves.
+  const showDevNoConnection =
+    inDevMode && modeStatus !== null
+      ? (modeStatus.draftCounts?.connections ?? 0) === 0
+      : false;
 
   const multipleConnections = connectionsData && connectionsData.length > 1;
 

@@ -459,8 +459,12 @@ export default function PromptsPage() {
   const { mode } = useMode();
   const { data: modeStatus } = useModeStatus();
   const inDevMode = mode === "developer";
-  const promptDrafts = modeStatus?.draftCounts?.prompts ?? 0;
-  const showDevNoDrafts = inDevMode && promptDrafts === 0;
+  // Gate on `modeStatus !== null` so the empty state doesn't flash while
+  // /api/v1/mode is in flight (admin might already have prompt drafts).
+  const showDevNoDrafts =
+    inDevMode && modeStatus !== null
+      ? (modeStatus.draftCounts?.prompts ?? 0) === 0
+      : false;
 
   return (
     <div className="p-6">

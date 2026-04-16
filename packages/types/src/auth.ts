@@ -12,6 +12,9 @@ export type AuthMode = (typeof AUTH_MODES)[number];
 export const ATLAS_ROLES = ["member", "admin", "owner", "platform_admin"] as const;
 export type AtlasRole = (typeof ATLAS_ROLES)[number];
 
+export const ATLAS_MODES = ["developer", "published"] as const;
+export type AtlasMode = (typeof ATLAS_MODES)[number];
+
 // ── Client-side auth interfaces ────────────────────────────────────
 // Shared between @atlas/web and @useatlas/react so each package has
 // a single source of truth for auth client shapes.

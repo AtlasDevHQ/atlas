@@ -1195,7 +1195,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] Docker COPY for demo-semantic and SQL seed symlinks (#1440, PR #1441)
 - [x] Partial unique indexes on semantic_entities are NULL-unsafe for connection_id (#1444, PR #1447)
 - [x] Scaffold template layout override — strip ModeBanner for standalone deploys (commit 079f8996)
-- [ ] Scaffold types.ts — re-exports `ADMIN_ROLES`/`ATLAS_MODES` not yet in published `@useatlas/types@0.0.10` (PR #1448)
+- [x] Scaffold types.ts — `ADMIN_ROLES`/`ATLAS_MODES` missing from published `@useatlas/types` (PRs #1457, #1458 — bumped to `0.0.11`, consumer refs updated; #1448 closed as superseded)
 
 ---
 

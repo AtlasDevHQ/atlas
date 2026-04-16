@@ -23,6 +23,23 @@ import { ErrorSchema, AuthErrorSchema, createParamSchema } from "./shared-schema
 
 const log = createLogger("admin-semantic-editor");
 
+/** Reserved ID for the onboarding demo connection. */
+const DEMO_CONNECTION_ID = "__demo__";
+
+/** Read atlasMode from Hono context. Defaults to "published" when not set. */
+function getAtlasMode(c: { get(key: string): unknown }): import("@useatlas/types/auth").AtlasMode {
+  return (c.get("atlasMode") as import("@useatlas/types/auth").AtlasMode | undefined) ?? "published";
+}
+
+/** Demo-readonly response for writes in published mode against `__demo__`. */
+function demoReadonlyResponse(requestId: string): { error: string; message: string; requestId: string } {
+  return {
+    error: "demo_readonly",
+    message: "Demo content is read-only in published mode. Switch to developer mode to manage semantic entities.",
+    requestId,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Zod schemas — column metadata
 // ---------------------------------------------------------------------------
@@ -227,6 +244,10 @@ export const putStructuredEntityRoute = createRoute({
       description: "Authentication required",
       content: { "application/json": { schema: AuthErrorSchema } },
     },
+    403: {
+      description: "Demo content is read-only in published mode",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
     501: {
       description: "Internal database not available",
       content: { "application/json": { schema: ErrorSchema } },
@@ -259,6 +280,10 @@ export const deleteStructuredEntityRoute = createRoute({
     401: {
       description: "Authentication required",
       content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Demo content is read-only in published mode",
+      content: { "application/json": { schema: ErrorSchema } },
     },
     404: {
       description: "Entity not found",
@@ -476,17 +501,42 @@ export function registerSemanticEditorRoutes(
         return c.json({ error: "not_available", message: "Semantic entity editor requires an internal database (DATABASE_URL).", requestId }, 501);
       }
 
+      const atlasMode = getAtlasMode(c);
+
       // Convert structured data to YAML
       const yamlContent = await entityToYaml(body);
 
       // Store in DB
-      const { upsertEntity, getEntity, createVersion, generateChangeSummary } = await import("@atlas/api/lib/semantic/entities");
+      const {
+        upsertEntity,
+        upsertDraftEntity,
+        getEntity,
+        createVersion,
+        generateChangeSummary,
+      } = await import("@atlas/api/lib/semantic/entities");
 
       // Fetch previous version for change summary (before upsert overwrites it)
       const previousEntity = await getEntity(orgId, "entity", name);
       const oldYaml = previousEntity?.yaml_content ?? null;
 
-      await upsertEntity(orgId, "entity", name, yamlContent, body.connectionId);
+      // Demo entities are read-only in published mode. Check both the
+      // incoming body (new entities pointed at __demo__) and the existing
+      // row (edits that omit connectionId but target a demo-owned entity).
+      if (
+        atlasMode !== "developer" &&
+        (body.connectionId === DEMO_CONNECTION_ID ||
+          previousEntity?.connection_id === DEMO_CONNECTION_ID)
+      ) {
+        return c.json(demoReadonlyResponse(requestId), 403);
+      }
+
+      // Developer mode writes stage as drafts so the published row is
+      // preserved until publish. Published mode writes the published row directly.
+      if (atlasMode === "developer") {
+        await upsertDraftEntity(orgId, "entity", name, yamlContent, body.connectionId);
+      } else {
+        await upsertEntity(orgId, "entity", name, yamlContent, body.connectionId);
+      }
 
       // Create version snapshot — non-fatal
       try {
@@ -549,8 +599,48 @@ export function registerSemanticEditorRoutes(
         return c.json({ error: "not_available", message: "Semantic entity editor requires an internal database (DATABASE_URL).", requestId }, 501);
       }
 
-      const { deleteEntity } = await import("@atlas/api/lib/semantic/entities");
-      const deleted = await deleteEntity(orgId, "entity", name);
+      const atlasMode = getAtlasMode(c);
+      const {
+        deleteEntity,
+        getEntity,
+        upsertTombstone,
+        deleteDraftEntity,
+      } = await import("@atlas/api/lib/semantic/entities");
+
+      let deleted = true;
+      if (atlasMode === "developer") {
+        // Developer mode: stage the deletion. Resolve the existing row so we
+        // know whether to discard a draft or stamp a tombstone over a published
+        // row. If nothing matches either state, 404.
+        const existing = await getEntity(orgId, "entity", name);
+        if (!existing) {
+          return c.json({ error: "not_found", message: `Entity "${name}" not found.` }, 404);
+        }
+        if (existing.status === "draft" || existing.status === "draft_delete") {
+          deleted = await deleteDraftEntity(
+            orgId,
+            "entity",
+            name,
+            existing.connection_id ?? undefined,
+          );
+        } else {
+          await upsertTombstone(
+            orgId,
+            "entity",
+            name,
+            existing.connection_id ?? undefined,
+          );
+        }
+      } else {
+        // Published mode: hard delete preserves today's behavior. Check the
+        // demo gate before the destructive call — published mode cannot touch
+        // entities owned by the reserved demo connection.
+        const existing = await getEntity(orgId, "entity", name);
+        if (existing?.connection_id === DEMO_CONNECTION_ID) {
+          return c.json(demoReadonlyResponse(requestId), 403);
+        }
+        deleted = await deleteEntity(orgId, "entity", name);
+      }
 
       if (!deleted) {
         return c.json({ error: "not_found", message: `Entity "${name}" not found.` }, 404);

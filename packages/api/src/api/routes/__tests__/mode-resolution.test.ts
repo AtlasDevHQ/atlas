@@ -46,7 +46,7 @@ mock.module("@atlas/api/lib/residency/readonly", () => ({
 // Imports (after mocks)
 // ---------------------------------------------------------------------------
 
-const { resolveMode, buildUnionStatusClause } = await import("../middleware");
+const { resolveMode, buildUnionStatusClause, parseModeFromCookie } = await import("../middleware");
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -216,6 +216,37 @@ describe("resolveMode", () => {
 // ---------------------------------------------------------------------------
 // buildUnionStatusClause — shared helper for connections and prompt collections
 // ---------------------------------------------------------------------------
+
+describe("parseModeFromCookie", () => {
+  it("returns undefined for null", () => {
+    expect(parseModeFromCookie(null)).toBeUndefined();
+  });
+
+  it("returns undefined for empty string", () => {
+    expect(parseModeFromCookie("")).toBeUndefined();
+  });
+
+  it("reads atlas-mode value when present alone", () => {
+    expect(parseModeFromCookie("atlas-mode=developer")).toBe("developer");
+  });
+
+  it("reads atlas-mode value among other cookies", () => {
+    expect(parseModeFromCookie("session=abc; atlas-mode=developer; theme=dark")).toBe("developer");
+  });
+
+  it("is exact-match — different key prefixes do not collide", () => {
+    expect(parseModeFromCookie("atlas-mode-other=developer")).toBeUndefined();
+  });
+
+  it("returns the full value verbatim — no special handling of unknown values", () => {
+    // resolveMode() filters unknown values; parseModeFromCookie just extracts
+    expect(parseModeFromCookie("atlas-mode=developer_extra")).toBe("developer_extra");
+  });
+
+  it("returns undefined when atlas-mode key is absent", () => {
+    expect(parseModeFromCookie("session=abc; theme=dark")).toBeUndefined();
+  });
+});
 
 describe("buildUnionStatusClause", () => {
   it("published mode restricts to status = 'published'", () => {

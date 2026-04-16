@@ -26,6 +26,18 @@ function getAtlasMode(c: { get(key: string): unknown }): import("@useatlas/types
   return (c.get("atlasMode") as import("@useatlas/types/auth").AtlasMode | undefined) ?? "published";
 }
 
+/** Reserved ID for the onboarding demo connection. Writes in published mode are read-only. */
+const DEMO_CONNECTION_ID = "__demo__";
+
+/** Demo-readonly response for writes in published mode against `__demo__`. */
+function demoReadonly(requestId: string): { error: string; message: string; requestId: string } {
+  return {
+    error: "demo_readonly",
+    message: "Demo connection is read-only in published mode. Switch to developer mode to manage connections.",
+    requestId,
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -534,6 +546,26 @@ adminConnections.openapi(createConnectionRoute, async (c) => runHandler(c, "crea
     return c.json({ error: "conflict", message: `Connection "${id}" already exists.`, requestId }, 409);
   }
 
+  // Archive-aware conflict check: the archive-on-delete flow preserves rows,
+  // so the (id, org_id) PK may collide even when the registry has no entry.
+  // If an archived row already owns this PK, the INSERT below would 500;
+  // we revive it instead via UPDATE. Any other status (published/draft) is a
+  // real conflict.
+  let existingRow: { status: string }[];
+  try {
+    existingRow = await internalQuery<{ status: string }>(
+      `SELECT status FROM connections WHERE id = $1 AND org_id = $2`,
+      [id, orgId],
+    );
+  } catch (err) {
+    log.error({ err: err instanceof Error ? err.message : String(err), connectionId: id, requestId }, "Failed to check for existing connection row before create");
+    return c.json({ error: "internal_error", message: "Failed to check for existing connection. Try again.", requestId }, 500);
+  }
+  if (existingRow.length > 0 && existingRow[0].status !== "archived") {
+    return c.json({ error: "conflict", message: `Connection "${id}" already exists.`, requestId }, 409);
+  }
+  const revivingArchived = existingRow.length > 0;
+
   // Test the connection before saving
   try {
     connections.register(id, {
@@ -561,11 +593,25 @@ adminConnections.openapi(createConnectionRoute, async (c) => runHandler(c, "crea
     return c.json({ error: "encryption_failed", message: "Failed to encrypt connection URL. Check ATLAS_ENCRYPTION_KEY or BETTER_AUTH_SECRET.", requestId }, 500);
   }
 
+  // Mode-aware status: in developer mode, new connections are saved as drafts
+  // so non-admin users don't see them until publish. In published mode, new
+  // connections go live immediately (preserves existing single-mode behavior).
+  const status = getAtlasMode(c) === "developer" ? "draft" : "published";
+
   try {
-    await internalQuery(
-      `INSERT INTO connections (id, url, type, description, schema_name, org_id) VALUES ($1, $2, $3, $4, $5, $6)`,
-      [id, encryptedUrl, dbType, typeof description === "string" ? description : null, typeof schema === "string" ? schema : null, orgId],
-    );
+    if (revivingArchived) {
+      // The archived row owns the PK — revive it in place so we preserve
+      // audit/version history rather than stranding it.
+      await internalQuery(
+        `UPDATE connections SET url = $1, type = $2, description = $3, schema_name = $4, status = $5, updated_at = now() WHERE id = $6 AND org_id = $7`,
+        [encryptedUrl, dbType, typeof description === "string" ? description : null, typeof schema === "string" ? schema : null, status, id, orgId],
+      );
+    } else {
+      await internalQuery(
+        `INSERT INTO connections (id, url, type, description, schema_name, org_id, status) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [id, encryptedUrl, dbType, typeof description === "string" ? description : null, typeof schema === "string" ? schema : null, orgId, status],
+      );
+    }
   } catch (err) {
     connections.unregister(id);
     log.error({ err: err instanceof Error ? err.message : String(err), connectionId: id, requestId }, "Failed to persist connection");
@@ -608,6 +654,12 @@ adminConnections.openapi(updateConnectionRoute, async (c) => runHandler(c, "upda
 
   if (id === "default") {
     return c.json({ error: "forbidden", message: "Cannot modify the default connection. Update ATLAS_DATASOURCE_URL instead.", requestId }, 403);
+  }
+
+  // Demo content is read-only in published mode — admins must toggle to
+  // developer mode to edit demo data.
+  if (id === DEMO_CONNECTION_ID && getAtlasMode(c) !== "developer") {
+    return c.json(demoReadonly(requestId), 403);
   }
 
   // Check it exists in the DB and belongs to this org
@@ -757,6 +809,12 @@ adminConnections.openapi(deleteConnectionRoute, async (c) => runHandler(c, "dele
     return c.json({ error: "forbidden", message: "Cannot delete the default connection.", requestId }, 403);
   }
 
+  // Demo content is read-only in published mode — writes in published mode
+  // against __demo__ must be blocked. Developer mode can archive the demo.
+  if (id === DEMO_CONNECTION_ID && getAtlasMode(c) !== "developer") {
+    return c.json(demoReadonly(requestId), 403);
+  }
+
   // Must exist in the DB and belong to the org
   const existing = await internalQuery<{ id: string }>(
     `SELECT id FROM connections WHERE id = $1 AND org_id = $2`,
@@ -791,15 +849,16 @@ adminConnections.openapi(deleteConnectionRoute, async (c) => runHandler(c, "dele
     log.warn({ connectionId: id, requestId }, "Scheduled tasks table does not exist — skipping reference check");
   }
 
-  // Remove from DB and registry
+  // Archive instead of hard-delete so drafts can be restored and the
+  // publish flow retains history. Cascades to entities is handled at publish time.
   try {
     await internalQuery(
-      `DELETE FROM connections WHERE id = $1 AND org_id = $2`,
+      `UPDATE connections SET status = 'archived', updated_at = now() WHERE id = $1 AND org_id = $2`,
       [id, orgId],
     );
   } catch (err) {
-    log.error({ err: err instanceof Error ? err.message : String(err), connectionId: id, requestId }, "Failed to delete connection from DB");
-    return c.json({ error: "internal_error", message: "Failed to delete connection.", requestId }, 500);
+    log.error({ err: err instanceof Error ? err.message : String(err), connectionId: id, requestId }, "Failed to archive connection");
+    return c.json({ error: "internal_error", message: "Failed to archive connection.", requestId }, 500);
   }
 
   try {
@@ -808,7 +867,7 @@ adminConnections.openapi(deleteConnectionRoute, async (c) => runHandler(c, "dele
     log.warn({ err: err instanceof Error ? err.message : String(err), connectionId: id, requestId }, "Failed to unregister connection from in-memory registry — will reconcile on restart");
   }
 
-  log.info({ requestId, connectionId: id, actorId: authResult.user?.id }, "Connection deleted");
+  log.info({ requestId, connectionId: id, actorId: authResult.user?.id }, "Connection archived");
 
   logAdminAction({
     actionType: ADMIN_ACTIONS.connection.delete,

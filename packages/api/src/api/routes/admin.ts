@@ -14,7 +14,7 @@ import { validationHook } from "./validation-hook";
 import type { Context } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { createLogger, withRequestContext, getRequestContext } from "@atlas/api/lib/logger";
-import { withRequestId } from "./middleware";
+import { withRequestId, resolveMode, parseModeFromCookie } from "./middleware";
 import type { AuthResult } from "@atlas/api/lib/auth/types";
 import { authenticateRequest } from "@atlas/api/lib/auth/middleware";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
@@ -99,8 +99,15 @@ const getAtlasMode = (c: { get(key: string): unknown }): import("@useatlas/types
  * Run admin auth preamble and bind user identity into AsyncLocalStorage.
  * Returns { authResult, requestId } for the handler to use.
  * Throws HTTPException on auth failure.
+ *
+ * Also resolves the effective atlas mode and stores it on the Hono context
+ * (`c.set("atlasMode", ...)`). admin.ts uses the `withRequestId` middleware
+ * — not `adminAuth` — so the mode is resolved lazily here once the auth
+ * result is known.
  */
-async function adminAuthAndContext(c: { req: { raw: Request }; get(key: string): unknown }): Promise<{ authResult: AuthResult & { authenticated: true }; requestId: string }> {
+async function adminAuthAndContext(
+  c: { req: { raw: Request }; get(key: string): unknown; set?: (key: string, value: unknown) => void },
+): Promise<{ authResult: AuthResult & { authenticated: true }; requestId: string }> {
   const requestId = reqId(c);
   const preamble = await adminAuthPreamble(c.req.raw, requestId);
   requireAdminAuth(preamble);
@@ -113,6 +120,33 @@ async function adminAuthAndContext(c: { req: { raw: Request }; get(key: string):
   if (ctx) {
     (ctx as unknown as Record<string, unknown>).user = authResult.user;
   }
+
+  // Resolve and publish atlas mode for downstream handlers. getAtlasMode(c)
+  // reads from c.get("atlasMode") — populate it once per request and log any
+  // developer-mode request we downgraded due to insufficient role (matches
+  // the security signal emitted by `resolveModeForRequest` on the
+  // adminAuth/standardAuth middleware paths).
+  //
+  // Note: the downgrade branch is defensive — `requireAdminAuth` above
+  // already 403's non-admin users before this point, so in practice the
+  // downgrade never fires for admin routes. It stays for parity with the
+  // other auth preambles in case admin gating is ever relaxed.
+  if (typeof c.set === "function") {
+    const cookieHeader = c.req.raw.headers.get("cookie");
+    const xAtlasModeHeader = c.req.raw.headers.get("x-atlas-mode");
+    const mode = resolveMode(cookieHeader, xAtlasModeHeader, authResult);
+    const requestedDeveloper =
+      parseModeFromCookie(cookieHeader) === "developer" ||
+      xAtlasModeHeader === "developer";
+    if (requestedDeveloper && mode === "published") {
+      log.warn(
+        { requestId, userId: authResult.user?.id, role: authResult.user?.role },
+        "Developer mode request downgraded to published — insufficient role",
+      );
+    }
+    c.set("atlasMode", mode);
+  }
+
   return { authResult, requestId };
 }
 

@@ -268,6 +268,7 @@ describe("migrateAuthTables", () => {
             { name: "0023_admin_action_log.sql" },
             { name: "0024_mode_status_columns.sql" },
             { name: "0025_fix_null_unsafe_indexes.sql" },
+            { name: "0026_drop_legacy_semantic_entity_index.sql" },
           ],
         };
       }

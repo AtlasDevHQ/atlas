@@ -502,7 +502,7 @@ adminPrompts.openapi(listCollectionsRoute, async (c) => {
 // POST / — create collection
 adminPrompts.openapi(createCollectionRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
-    const { requestId } = yield* RequestContext;
+    const { requestId, atlasMode } = yield* RequestContext;
     const { orgId } = yield* AuthContext;
 
     const bodyResult = yield* Effect.tryPromise({
@@ -518,7 +518,11 @@ adminPrompts.openapi(createCollectionRoute, async (c) => {
     if (!name || typeof name !== "string") return c.json({ error: "bad_request", message: "name is required and must be a string." }, 400);
     if (!industry || typeof industry !== "string") return c.json({ error: "bad_request", message: "industry is required and must be a string." }, 400);
 
-    const rows = yield* Effect.promise(() => internalQuery<Record<string, unknown>>(`INSERT INTO prompt_collections (org_id, name, industry, description, is_builtin) VALUES ($1, $2, $3, $4, false) RETURNING *`, [orgId ?? null, name, industry, description]));
+    // Mode-aware status: developer-mode collections are staged as drafts
+    // until the admin publishes; published mode creates them live.
+    const status = atlasMode === "developer" ? "draft" : "published";
+
+    const rows = yield* Effect.promise(() => internalQuery<Record<string, unknown>>(`INSERT INTO prompt_collections (org_id, name, industry, description, is_builtin, status) VALUES ($1, $2, $3, $4, false, $5) RETURNING *`, [orgId ?? null, name, industry, description, status]));
     return c.json(toPromptCollection(rows[0]), 201);
   }), { label: "create prompt collection" });
 });

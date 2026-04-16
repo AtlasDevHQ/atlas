@@ -709,6 +709,52 @@ describe("admin connections — org scoping", () => {
           sql.includes("status"),
       );
       expect(updateCall).toBeDefined();
+      // Revival UPDATE must be scoped to the composite PK — id AND org_id
+      expect(updateCall![0] as string).toContain("WHERE id =");
+      expect(updateCall![0] as string).toContain("org_id");
+      const updateParams = updateCall![1] as unknown[];
+      // status revives to 'published' (default mode), then id, then orgId
+      expect(updateParams).toContain("published");
+      expect(updateParams).toContain("analytics");
+      expect(updateParams).toContain("org-alpha");
+      const staleInsert = mocks.mockInternalQuery.mock.calls.find(
+        ([sql]) =>
+          typeof sql === "string" && sql.includes("INSERT INTO connections"),
+      );
+      expect(staleInsert).toBeUndefined();
+    });
+
+    it("non-demo PUT in developer mode is immediate direct UPDATE (not staged)", async () => {
+      // AC: connection edits are immediate per PRD — even in developer mode
+      setOrgAdmin("org-alpha");
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
+        if (sql.includes("SELECT") && sql.includes("connections")) {
+          return Promise.resolve([{
+            id: "warehouse",
+            url: "encrypted:postgresql://user:pass@host/db",
+            type: "postgres",
+            description: "Warehouse",
+            schema_name: null,
+          }]);
+        }
+        return Promise.resolve([]);
+      });
+      const res = await app.fetch(
+        adminRequest(
+          "/api/v1/admin/connections/warehouse",
+          "PUT",
+          { description: "edited in dev" },
+          "atlas-mode=developer",
+        ),
+      );
+      expect(res.status).toBe(200);
+      // Verify we ran UPDATE — not an INSERT (draft-copy semantics would be wrong for connections)
+      const updateCall = mocks.mockInternalQuery.mock.calls.find(
+        ([sql]) =>
+          typeof sql === "string" &&
+          sql.includes("UPDATE connections SET url"),
+      );
+      expect(updateCall).toBeDefined();
       const staleInsert = mocks.mockInternalQuery.mock.calls.find(
         ([sql]) =>
           typeof sql === "string" && sql.includes("INSERT INTO connections"),

@@ -447,11 +447,15 @@ describe("admin prompt routes", () => {
       });
       const res = await adminReq("PATCH", "/col-1", { name: "Updated in dev" }, "atlas-mode=developer");
       expect(res.status).toBe(200);
-      // Verify the UPDATE ran — no new INSERT
+      // Verify the UPDATE ran with the new name in the SET clause and params
       const updateCall = mocks.mockInternalQuery.mock.calls.find(
         ([sql]) => typeof sql === "string" && sql.includes("UPDATE prompt_collections"),
       );
       expect(updateCall).toBeDefined();
+      expect(updateCall![0] as string).toContain("name = $1");
+      const updateParams = updateCall![1] as unknown[];
+      expect(updateParams).toContain("Updated in dev");
+      expect(updateParams).toContain("col-1");
       const staleInsert = mocks.mockInternalQuery.mock.calls.find(
         ([sql]) => typeof sql === "string" && sql.includes("INSERT INTO prompt_collections"),
       );
@@ -487,6 +491,26 @@ describe("admin prompt routes", () => {
       mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([]));
       const res = await adminReq("DELETE", "/col-1");
       expect(res.status).toBe(404);
+    });
+
+    it("developer mode deletes are immediate — direct DELETE FROM (#1428)", async () => {
+      let callCount = 0;
+      mocks.mockInternalQuery.mockImplementation(() => {
+        callCount++;
+        if (callCount === 1) return Promise.resolve([mockCollectionRow()]);
+        return Promise.resolve([]);
+      });
+      const res = await adminReq("DELETE", "/col-1", undefined, "atlas-mode=developer");
+      expect(res.status).toBe(200);
+      const deleteCall = mocks.mockInternalQuery.mock.calls.find(
+        ([sql]) => typeof sql === "string" && sql.includes("DELETE FROM prompt_collections"),
+      );
+      expect(deleteCall).toBeDefined();
+      // No staging — no tombstone / draft insert
+      const staleInsert = mocks.mockInternalQuery.mock.calls.find(
+        ([sql]) => typeof sql === "string" && sql.includes("INSERT INTO prompt_collections"),
+      );
+      expect(staleInsert).toBeUndefined();
     });
   });
 

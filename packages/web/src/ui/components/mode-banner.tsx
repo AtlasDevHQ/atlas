@@ -7,7 +7,7 @@ import { Code, ArrowRight } from "lucide-react";
 
 /**
  * Stripe-style amber banner shown at the very top of every page when an admin
- * is in developer mode. Provides a quick toggle back to published mode.
+ * is in developer mode. Provides a one-click switch back to published mode.
  *
  * Renders nothing when the session is loading, the user is not an admin, or
  * the current mode is `published`.

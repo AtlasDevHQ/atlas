@@ -23,7 +23,7 @@ import { standardAuth, requestContext, type AuthEnv } from "./middleware";
 import {
   buildCollectionsListQuery,
   buildCollectionGetQuery,
-  resolvePromptDemoContext,
+  resolvePromptScope,
 } from "@atlas/api/lib/prompts/scoping";
 
 // ---------------------------------------------------------------------------
@@ -178,18 +178,15 @@ prompts.openapi(listCollectionsRoute, async (c) => {
       return c.json({ collections: [] }, 200);
     }
 
-    const { demoIndustry, demoConnectionActive } = yield* Effect.promise(() =>
-      resolvePromptDemoContext(orgId),
-    );
-    const { sql, params } = buildCollectionsListQuery({
-      orgId,
-      mode: atlasMode,
-      demoIndustry,
-      demoConnectionActive,
+    const scope = yield* Effect.tryPromise({
+      try: () => resolvePromptScope({ orgId, mode: atlasMode }),
+      catch: (err) => (err instanceof Error ? err : new Error(String(err))),
     });
-    const rows = yield* Effect.promise(() =>
-      internalQuery<Record<string, unknown>>(sql, params),
-    );
+    const { sql, params } = buildCollectionsListQuery(scope);
+    const rows = yield* Effect.tryPromise({
+      try: () => internalQuery<Record<string, unknown>>(sql, params),
+      catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+    });
 
     return c.json({ collections: rows.map(toPromptCollection) }, 200);
   }), { label: "list prompt collections" });
@@ -210,25 +207,27 @@ prompts.openapi(getCollectionRoute, async (c) => {
 
     const { id } = c.req.valid("param");
 
-    const { demoIndustry, demoConnectionActive } = yield* Effect.promise(() =>
-      resolvePromptDemoContext(orgId),
-    );
-    const { sql, params } = buildCollectionGetQuery(
-      { orgId, mode: atlasMode, demoIndustry, demoConnectionActive },
-      id,
-    );
-    const collectionRows = yield* Effect.promise(() =>
-      internalQuery<Record<string, unknown>>(sql, params),
-    );
+    const scope = yield* Effect.tryPromise({
+      try: () => resolvePromptScope({ orgId, mode: atlasMode }),
+      catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+    });
+    const { sql, params } = buildCollectionGetQuery(scope, id);
+    const collectionRows = yield* Effect.tryPromise({
+      try: () => internalQuery<Record<string, unknown>>(sql, params),
+      catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+    });
 
     if (collectionRows.length === 0) {
       return c.json({ error: "not_found", message: "Prompt collection not found." }, 404);
     }
 
-    const items = yield* Effect.promise(() => internalQuery<Record<string, unknown>>(
-      `SELECT * FROM prompt_items WHERE collection_id = $1 ORDER BY sort_order ASC, created_at ASC`,
-      [id],
-    ));
+    const items = yield* Effect.tryPromise({
+      try: () => internalQuery<Record<string, unknown>>(
+        `SELECT * FROM prompt_items WHERE collection_id = $1 ORDER BY sort_order ASC, created_at ASC`,
+        [id],
+      ),
+      catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+    });
 
     return c.json({
       collection: toPromptCollection(collectionRows[0]),

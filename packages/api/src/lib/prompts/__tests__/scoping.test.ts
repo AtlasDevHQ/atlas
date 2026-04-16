@@ -1,9 +1,12 @@
 /**
- * Unit tests for prompt collection scoping (#1438).
+ * Unit tests for prompt collection scoping.
  *
  * Covers `buildCollectionsListQuery`, `buildCollectionGetQuery`, and
- * `resolvePromptDemoContext` under the (orgId × mode × demoIndustry ×
- * demoConnectionActive) matrix. No HTTP layer.
+ * `resolvePromptScope` under the (orgId × mode × demoIndustry ×
+ * demoConnectionActive) matrix expressed as the tagged scope union.
+ * No HTTP layer.
+ *
+ * See: #1438.
  */
 import { describe, it, expect, mock } from "bun:test";
 
@@ -30,25 +33,34 @@ mock.module("@atlas/api/lib/settings", () => ({
 const {
   buildCollectionsListQuery,
   buildCollectionGetQuery,
-  resolvePromptDemoContext,
+  resolvePromptScope,
 } = await import("../scoping");
 import type { PromptScope } from "../scoping";
+import type { AtlasMode } from "@useatlas/types/auth";
 
-function scope(overrides: Partial<PromptScope> = {}): PromptScope {
-  return {
-    orgId: "org-1",
-    mode: "published",
-    demoIndustry: null,
-    demoConnectionActive: false,
-    ...overrides,
-  };
+// Scope constructors — one per variant, so each test reads declaratively.
+function globalScope(mode: AtlasMode = "published"): PromptScope {
+  return { kind: "global", mode };
+}
+
+function customOnlyScope(
+  orgId = "org-1",
+  mode: AtlasMode = "published",
+): PromptScope {
+  return { kind: "org-custom-only", orgId, mode };
+}
+
+function withDemoScope(
+  orgId = "org-1",
+  demoIndustry = "cybersecurity",
+  mode: AtlasMode = "published",
+): PromptScope {
+  return { kind: "org-with-demo", orgId, mode, demoIndustry };
 }
 
 describe("buildCollectionsListQuery", () => {
-  it("published + demo active: matches industry built-ins + custom published", () => {
-    const q = buildCollectionsListQuery(
-      scope({ demoIndustry: "cybersecurity", demoConnectionActive: true }),
-    );
+  it("org-with-demo (published): industry-filtered built-ins + custom published", () => {
+    const q = buildCollectionsListQuery(withDemoScope());
     expect(q.sql).toContain("status = 'published'");
     expect(q.sql).not.toContain("status IN");
     expect(q.sql).toContain("is_builtin = true AND industry = $2");
@@ -57,10 +69,8 @@ describe("buildCollectionsListQuery", () => {
     expect(q.params).toEqual(["org-1", "cybersecurity"]);
   });
 
-  it("published + demo archived: only custom published, hides all built-ins", () => {
-    const q = buildCollectionsListQuery(
-      scope({ demoIndustry: "cybersecurity", demoConnectionActive: false }),
-    );
+  it("org-custom-only (published): hides all built-ins, only custom published", () => {
+    const q = buildCollectionsListQuery(customOnlyScope());
     expect(q.sql).toContain("status = 'published'");
     expect(q.sql).toContain("org_id = $1");
     expect(q.sql).toContain("is_builtin = false");
@@ -69,25 +79,9 @@ describe("buildCollectionsListQuery", () => {
     expect(q.params).toEqual(["org-1"]);
   });
 
-  it("published + no demo industry even when connection active: hides all built-ins", () => {
-    // Edge case: __demo__ exists as published connection but industry unset.
-    // Without an industry filter we'd show every global builtin; safer to hide.
+  it("org-with-demo (developer): status IN + industry + custom (incl. drafts)", () => {
     const q = buildCollectionsListQuery(
-      scope({ demoIndustry: null, demoConnectionActive: true }),
-    );
-    expect(q.sql).toContain("org_id = $1");
-    expect(q.sql).toContain("is_builtin = false");
-    expect(q.sql).not.toContain("industry =");
-    expect(q.params).toEqual(["org-1"]);
-  });
-
-  it("developer + demo active: status IN + industry + custom (incl. drafts)", () => {
-    const q = buildCollectionsListQuery(
-      scope({
-        mode: "developer",
-        demoIndustry: "cybersecurity",
-        demoConnectionActive: true,
-      }),
+      withDemoScope("org-1", "cybersecurity", "developer"),
     );
     expect(q.sql).toContain("status IN ('published', 'draft')");
     expect(q.sql).not.toContain("archived");
@@ -96,10 +90,8 @@ describe("buildCollectionsListQuery", () => {
     expect(q.params).toEqual(["org-1", "cybersecurity"]);
   });
 
-  it("developer + no demo: only custom (published + draft)", () => {
-    const q = buildCollectionsListQuery(
-      scope({ mode: "developer", demoConnectionActive: false }),
-    );
+  it("org-custom-only (developer): only custom (published + draft)", () => {
+    const q = buildCollectionsListQuery(customOnlyScope("org-1", "developer"));
     expect(q.sql).toContain("status IN ('published', 'draft')");
     expect(q.sql).toContain("org_id = $1");
     expect(q.sql).toContain("is_builtin = false");
@@ -107,10 +99,8 @@ describe("buildCollectionsListQuery", () => {
     expect(q.params).toEqual(["org-1"]);
   });
 
-  it("no orgId (single-tenant): global built-ins only, no industry/custom filter", () => {
-    const q = buildCollectionsListQuery(
-      scope({ orgId: undefined, demoIndustry: "cybersecurity", demoConnectionActive: true }),
-    );
+  it("global (published): global built-ins only, no industry/custom filter", () => {
+    const q = buildCollectionsListQuery(globalScope());
     expect(q.sql).toContain("org_id IS NULL");
     expect(q.sql).toContain("status = 'published'");
     expect(q.sql).not.toContain("industry =");
@@ -118,55 +108,52 @@ describe("buildCollectionsListQuery", () => {
     expect(q.params).toEqual([]);
   });
 
-  it("no orgId + developer: global built-ins, status IN", () => {
-    const q = buildCollectionsListQuery(
-      scope({ orgId: undefined, mode: "developer" }),
-    );
+  it("global (developer): global built-ins, status IN", () => {
+    const q = buildCollectionsListQuery(globalScope("developer"));
     expect(q.sql).toContain("org_id IS NULL");
     expect(q.sql).toContain("status IN ('published', 'draft')");
     expect(q.params).toEqual([]);
   });
 
-  it("mode defaults to published when undefined", () => {
-    const q = buildCollectionsListQuery(scope({ mode: undefined }));
-    expect(q.sql).toContain("status = 'published'");
-    expect(q.sql).not.toContain("status IN");
-  });
-
   it("includes ORDER BY on list queries", () => {
-    const q = buildCollectionsListQuery(scope());
+    const q = buildCollectionsListQuery(customOnlyScope());
     expect(q.sql).toContain("ORDER BY sort_order ASC, created_at ASC");
   });
 });
 
 describe("buildCollectionGetQuery", () => {
-  it("appends id filter with next positional placeholder (demo active)", () => {
-    const q = buildCollectionGetQuery(
-      scope({ demoIndustry: "cybersecurity", demoConnectionActive: true }),
-      "col-1",
-    );
+  it("org-with-demo: appends id as $3 after orgId + industry", () => {
+    const q = buildCollectionGetQuery(withDemoScope(), "col-1");
     expect(q.sql).not.toContain("ORDER BY");
     expect(q.sql).toContain("AND id = $3");
+    expect(q.sql).toContain("is_builtin = true AND industry = $2");
     expect(q.params).toEqual(["org-1", "cybersecurity", "col-1"]);
   });
 
-  it("appends id filter (custom-only branch)", () => {
-    const q = buildCollectionGetQuery(scope(), "col-2");
+  it("org-custom-only: appends id as $2 after orgId", () => {
+    const q = buildCollectionGetQuery(customOnlyScope(), "col-2");
     expect(q.sql).not.toContain("ORDER BY");
     expect(q.sql).toContain("AND id = $2");
+    expect(q.sql).toContain("org_id = $1");
+    expect(q.sql).toContain("is_builtin = false");
     expect(q.params).toEqual(["org-1", "col-2"]);
   });
 
-  it("appends id filter (no-orgId branch)", () => {
-    const q = buildCollectionGetQuery(scope({ orgId: undefined }), "col-3");
+  it("global: id as $1, no org filter", () => {
+    const q = buildCollectionGetQuery(globalScope(), "col-3");
     expect(q.sql).not.toContain("ORDER BY");
     expect(q.sql).toContain("AND id = $1");
+    expect(q.sql).toContain("org_id IS NULL");
     expect(q.params).toEqual(["col-3"]);
+  });
+
+  it("inherits developer status clause", () => {
+    const q = buildCollectionGetQuery(customOnlyScope("org-1", "developer"), "col-x");
+    expect(q.sql).toContain("status IN ('published', 'draft')");
   });
 });
 
-describe("resolvePromptDemoContext", () => {
-  // Reset fixtures + call count before each scenario
+describe("resolvePromptScope", () => {
   function reset({
     hasDB = true,
     industry,
@@ -177,66 +164,74 @@ describe("resolvePromptDemoContext", () => {
     mockInternalQuery.mockImplementation(async () => [] as unknown[]);
   }
 
-  it("returns defaults and skips DB when orgId is undefined", async () => {
+  it("returns `global` variant when orgId is undefined, skips DB", async () => {
     reset();
-    const result = await resolvePromptDemoContext(undefined);
-    expect(result).toEqual({ demoIndustry: null, demoConnectionActive: false });
+    const scope = await resolvePromptScope({ orgId: undefined, mode: "published" });
+    expect(scope.kind).toBe("global");
+    expect(scope.mode).toBe("published");
     expect(mockInternalQuery).not.toHaveBeenCalled();
   });
 
-  it("returns defaults and skips DB when internal DB is unavailable", async () => {
+  it("returns `global` variant when internal DB is unavailable, skips DB", async () => {
     reset({ hasDB: false, industry: "cybersecurity" });
-    const result = await resolvePromptDemoContext("org-1");
-    expect(result).toEqual({ demoIndustry: null, demoConnectionActive: false });
+    const scope = await resolvePromptScope({ orgId: "org-1", mode: "developer" });
+    expect(scope.kind).toBe("global");
+    expect(scope.mode).toBe("developer");
     expect(mockInternalQuery).not.toHaveBeenCalled();
   });
 
-  it("returns industry + active=true when demo exists as published connection", async () => {
+  it("returns `org-with-demo` when demo is published + industry set", async () => {
     reset({ industry: "cybersecurity" });
     mockInternalQuery.mockImplementation(async () => [{ active: true }]);
-    const result = await resolvePromptDemoContext("org-1");
-    expect(result).toEqual({
-      demoIndustry: "cybersecurity",
-      demoConnectionActive: true,
-    });
+    const scope = await resolvePromptScope({ orgId: "org-1", mode: "developer" });
+    expect(scope.kind).toBe("org-with-demo");
+    if (scope.kind === "org-with-demo") {
+      expect(scope.orgId).toBe("org-1");
+      expect(scope.demoIndustry).toBe("cybersecurity");
+      expect(scope.mode).toBe("developer");
+    }
     const [sql, params] = mockInternalQuery.mock.calls[0]!;
     expect(sql).toContain("__demo__");
     expect(sql).toContain("status = 'published'");
     expect(params).toEqual(["org-1"]);
   });
 
-  it("returns industry + active=false when demo row reports inactive", async () => {
+  it("returns `org-custom-only` when demo row reports inactive", async () => {
     reset({ industry: "saas" });
     mockInternalQuery.mockImplementation(async () => [{ active: false }]);
-    const result = await resolvePromptDemoContext("org-1");
-    expect(result.demoIndustry).toBe("saas");
-    expect(result.demoConnectionActive).toBe(false);
+    const scope = await resolvePromptScope({ orgId: "org-1", mode: "published" });
+    expect(scope.kind).toBe("org-custom-only");
   });
 
-  it("returns active=false when EXISTS query returns no rows", async () => {
+  it("returns `org-custom-only` when EXISTS query returns no rows", async () => {
     reset({ industry: "saas" });
     mockInternalQuery.mockImplementation(async () => [] as unknown[]);
-    const result = await resolvePromptDemoContext("org-1");
-    expect(result.demoConnectionActive).toBe(false);
+    const scope = await resolvePromptScope({ orgId: "org-1", mode: "published" });
+    expect(scope.kind).toBe("org-custom-only");
   });
 
-  it("normalizes a missing ATLAS_DEMO_INDUSTRY setting to null", async () => {
+  it("returns `org-custom-only` when industry setting is missing even if demo is active", async () => {
     reset({ industry: undefined });
     mockInternalQuery.mockImplementation(async () => [{ active: true }]);
-    const result = await resolvePromptDemoContext("org-1");
-    expect(result.demoIndustry).toBeNull();
-    expect(result.demoConnectionActive).toBe(true);
+    const scope = await resolvePromptScope({ orgId: "org-1", mode: "published" });
+    expect(scope.kind).toBe("org-custom-only");
   });
 
   it("treats non-strict-true `active` values as inactive", async () => {
     // Defense-in-depth: some drivers have returned "t" or 1 historically;
-    // strict equality keeps demoConnectionActive pinned to real booleans.
+    // strict equality keeps the scope decision pinned to real booleans.
     reset({ industry: "saas" });
     mockInternalQuery.mockImplementation(async () =>
       // eslint-disable-next-line @typescript-eslint/no-explicit-any -- simulating loose driver output
       [{ active: "t" as any }],
     );
-    const result = await resolvePromptDemoContext("org-1");
-    expect(result.demoConnectionActive).toBe(false);
+    const scope = await resolvePromptScope({ orgId: "org-1", mode: "published" });
+    expect(scope.kind).toBe("org-custom-only");
+  });
+
+  it("defaults mode to published when undefined", async () => {
+    reset();
+    const scope = await resolvePromptScope({ orgId: undefined, mode: undefined });
+    expect(scope.mode).toBe("published");
   });
 });

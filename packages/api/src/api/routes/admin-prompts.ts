@@ -17,7 +17,7 @@ import { ErrorSchema, AuthErrorSchema, createIdParamSchema, createParamSchema, c
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 import {
   buildCollectionsListQuery,
-  resolvePromptDemoContext,
+  resolvePromptScope,
 } from "@atlas/api/lib/prompts/scoping";
 
 const log = createLogger("admin-prompts");
@@ -490,20 +490,17 @@ adminPrompts.openapi(listCollectionsRoute, async (c) => {
     const { orgId } = yield* AuthContext;
     const { atlasMode } = yield* RequestContext;
 
-    // requireOrgContext upstream guarantees orgId is set here. resolvePromptDemoContext
-    // still handles `undefined` defensively so typing stays permissive.
-    const { demoIndustry, demoConnectionActive } = yield* Effect.promise(() =>
-      resolvePromptDemoContext(orgId),
-    );
-    const { sql, params } = buildCollectionsListQuery({
-      orgId,
-      mode: atlasMode,
-      demoIndustry,
-      demoConnectionActive,
+    // requireOrgContext upstream guarantees orgId is set; resolvePromptScope
+    // falls back to the `global` variant defensively if it is not.
+    const scope = yield* Effect.tryPromise({
+      try: () => resolvePromptScope({ orgId, mode: atlasMode }),
+      catch: (err) => (err instanceof Error ? err : new Error(String(err))),
     });
-    const rows = yield* Effect.promise(() =>
-      internalQuery<Record<string, unknown>>(sql, params),
-    );
+    const { sql, params } = buildCollectionsListQuery(scope);
+    const rows = yield* Effect.tryPromise({
+      try: () => internalQuery<Record<string, unknown>>(sql, params),
+      catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+    });
     return c.json({ collections: rows.map(toPromptCollection), total: rows.length }, 200);
   }), { label: "list prompt collections" });
 });

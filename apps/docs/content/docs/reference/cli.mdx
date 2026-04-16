@@ -38,7 +38,7 @@ bun run atlas -- init [options]
 | `--enrich` | Add LLM-enriched descriptions and query patterns (requires API key) |
 | `--no-enrich` | Explicitly skip LLM enrichment |
 | `--force` | Continue even if more than 20% of tables fail to profile |
-| `--demo [simple\|cybersec\|ecommerce]` | Load a demo dataset then profile (default: `simple`) |
+| `--demo [simple\|cybersec\|ecommerce]` | Load a demo dataset then profile (default: `simple`). Alias: `--seed` |
 | `--org <orgId>` | Write to `semantic/.orgs/{orgId}/` and auto-import to DB (org-scoped mode). Requires managed auth (`DATABASE_URL` + `BETTER_AUTH_SECRET`) |
 | `--no-import` | Skip auto-import to DB in org-scoped mode (write disk only). Only meaningful with `--org` |
 

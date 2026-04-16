@@ -5,6 +5,7 @@
     "auth",
     "widget",
     "actions",
+    "admin",
     "admin-abuse-prevention",
     "admin-approval-workflows",
     "admin-audit",

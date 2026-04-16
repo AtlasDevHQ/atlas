@@ -899,6 +899,33 @@ import type {
 
 ---
 
+## Conversation Utilities
+
+The `@useatlas/types/conversation` entrypoint provides utilities for working with persisted conversation data.
+
+### `transformMessages`
+
+Converts persisted `Message[]` into a UI-ready array structurally compatible with `UIMessage` from `@ai-sdk/react`. Filters to user and assistant messages, maps content parts to text and dynamic-tool parts.
+
+```typescript
+import { transformMessages } from "@useatlas/types/conversation";
+import type { TransformedMessage } from "@useatlas/types/conversation";
+
+const uiMessages: TransformedMessage[] = transformMessages(conversation.messages);
+```
+
+Each `TransformedMessage` has:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | `string` | Message ID |
+| `role` | `"user" \| "assistant"` | Message role (system and tool messages are filtered out) |
+| `parts` | `TransformedPart[]` | Array of `{ type: "text", text }` or `{ type: "dynamic-tool", toolName, toolCallId, state, input, output }` |
+
+This is useful when building custom UIs that load persisted conversations from the API and need to render them with tool result cards (SQL results, charts, etc.).
+
+---
+
 ## See Also
 
 - [API Overview](/reference/api) — HTTP endpoints the SDK wraps

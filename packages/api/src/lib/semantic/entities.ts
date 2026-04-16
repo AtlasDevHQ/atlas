@@ -609,34 +609,156 @@ export async function promoteDraftEntities(
   return promoted.rows.length;
 }
 
+/** Reserved ID for the onboarding demo connection. */
+export const DEMO_CONNECTION_ID = "__demo__";
+
 /**
- * Archive specified connection IDs and cascade to their published entities.
- *
- * Sets `status='archived'` on both the connection rows and the semantic
- * entities referencing them. Returns the number of connections archived
- * and the number of entities cascaded.
+ * Outcome of `archiveSingleConnection` — lets the caller decide the HTTP
+ * status without re-querying. `not_found` means the connection row doesn't
+ * exist; `already_archived` means it was already `archived` (idempotent
+ * no-op); `archived` is the happy-path result with cascade counts.
  */
-export async function archiveConnectionsAndEntities(
+export type ArchiveConnectionResult =
+  | { status: "not_found" }
+  | { status: "already_archived" }
+  | { status: "archived"; entities: number; prompts: number };
+
+/**
+ * Outcome of `restoreSingleConnection`. `not_found` means the connection
+ * row doesn't exist; `not_archived` means it exists but isn't currently
+ * in the `archived` state (nothing to restore); `restored` is the
+ * happy-path result with cascade counts.
+ */
+export type RestoreConnectionResult =
+  | { status: "not_found" }
+  | { status: "not_archived" }
+  | { status: "restored"; entities: number; prompts: number };
+
+/**
+ * Archive a single connection and cascade to its semantic entities.
+ *
+ * Locks the connection row first (`SELECT ... FOR UPDATE`) so concurrent
+ * archive/restore calls serialize instead of racing. When the connection
+ * id matches `DEMO_CONNECTION_ID` and the caller passes a `demoIndustry`,
+ * built-in demo prompt collections for that industry are also archived —
+ * mirroring the publish-time demo cascade.
+ *
+ * Runs on a caller-supplied transactional client so the caller owns the
+ * BEGIN/COMMIT boundary. Returns a tagged result the route handler maps
+ * to 404 / 200-noop / 200-success.
+ */
+export async function archiveSingleConnection(
   client: TransactionalClient,
   orgId: string,
-  connectionIds: readonly string[],
-): Promise<{ connections: number; entities: number }> {
-  if (connectionIds.length === 0) return { connections: 0, entities: 0 };
-  const archivedConns = await client.query(
-    `UPDATE connections SET status = 'archived', updated_at = now()
-     WHERE org_id = $1 AND id = ANY($2::text[])
-     RETURNING id`,
-    [orgId, connectionIds as string[]],
+  connectionId: string,
+  opts?: { demoIndustry?: string | null },
+): Promise<ArchiveConnectionResult> {
+  const current = await client.query(
+    `SELECT status FROM connections WHERE org_id = $1 AND id = $2 FOR UPDATE`,
+    [orgId, connectionId],
   );
+  if (current.rows.length === 0) {
+    return { status: "not_found" };
+  }
+  const row = current.rows[0] as { status: string };
+  if (row.status === "archived") {
+    return { status: "already_archived" };
+  }
+
+  await client.query(
+    `UPDATE connections SET status = 'archived', updated_at = now()
+     WHERE org_id = $1 AND id = $2`,
+    [orgId, connectionId],
+  );
+
   const archivedEntities = await client.query(
     `UPDATE semantic_entities SET status = 'archived', updated_at = now()
-     WHERE org_id = $1 AND connection_id = ANY($2::text[]) AND status = 'published'
+     WHERE org_id = $1 AND connection_id = $2 AND status = 'published'
      RETURNING id`,
-    [orgId, connectionIds as string[]],
+    [orgId, connectionId],
   );
+
+  let promptCount = 0;
+  if (connectionId === DEMO_CONNECTION_ID && opts?.demoIndustry) {
+    const archivedPrompts = await client.query(
+      `UPDATE prompt_collections SET status = 'archived', updated_at = now()
+       WHERE org_id = $1
+         AND is_builtin = true
+         AND status = 'published'
+         AND industry = $2
+       RETURNING id`,
+      [orgId, opts.demoIndustry],
+    );
+    promptCount = archivedPrompts.rows.length;
+  }
+
   return {
-    connections: archivedConns.rows.length,
+    status: "archived",
     entities: archivedEntities.rows.length,
+    prompts: promptCount,
+  };
+}
+
+/**
+ * Restore a single archived connection and cascade entities back to
+ * `published`. Demo prompt collections for the org's industry are
+ * restored too when the id matches `DEMO_CONNECTION_ID` and the caller
+ * passes a `demoIndustry`.
+ *
+ * Locks the row to serialize with concurrent archive/restore. Returns a
+ * tagged result — both `not_found` and `not_archived` are caller-mapped
+ * to 404 (per issue #1437: restoring a live connection is a no-op, not
+ * a success).
+ */
+export async function restoreSingleConnection(
+  client: TransactionalClient,
+  orgId: string,
+  connectionId: string,
+  opts?: { demoIndustry?: string | null },
+): Promise<RestoreConnectionResult> {
+  const current = await client.query(
+    `SELECT status FROM connections WHERE org_id = $1 AND id = $2 FOR UPDATE`,
+    [orgId, connectionId],
+  );
+  if (current.rows.length === 0) {
+    return { status: "not_found" };
+  }
+  const row = current.rows[0] as { status: string };
+  if (row.status !== "archived") {
+    return { status: "not_archived" };
+  }
+
+  await client.query(
+    `UPDATE connections SET status = 'published', updated_at = now()
+     WHERE org_id = $1 AND id = $2 AND status = 'archived'`,
+    [orgId, connectionId],
+  );
+
+  const restoredEntities = await client.query(
+    `UPDATE semantic_entities SET status = 'published', updated_at = now()
+     WHERE org_id = $1 AND connection_id = $2 AND status = 'archived'
+     RETURNING id`,
+    [orgId, connectionId],
+  );
+
+  let promptCount = 0;
+  if (connectionId === DEMO_CONNECTION_ID && opts?.demoIndustry) {
+    const restoredPrompts = await client.query(
+      `UPDATE prompt_collections SET status = 'published', updated_at = now()
+       WHERE org_id = $1
+         AND is_builtin = true
+         AND status = 'archived'
+         AND industry = $2
+       RETURNING id`,
+      [orgId, opts.demoIndustry],
+    );
+    promptCount = restoredPrompts.rows.length;
+  }
+
+  return {
+    status: "restored",
+    entities: restoredEntities.rows.length,
+    prompts: promptCount,
   };
 }
 

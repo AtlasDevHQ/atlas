@@ -129,29 +129,57 @@ mock.module("@atlas/api/lib/semantic/entities", () => ({
     );
     return res.rows.length;
   },
-  archiveConnectionsAndEntities: async (
+  DEMO_CONNECTION_ID: "__demo__",
+  // Single-connection archive helper — real-fidelity stub that issues the
+  // SQL publish now loops through. Mirrors the implementation in
+  // packages/api/src/lib/semantic/entities.ts and must be kept in sync.
+  archiveSingleConnection: async (
     client: { query: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[] }> },
     orgId: string,
-    ids: readonly string[],
-  ): Promise<{ connections: number; entities: number }> => {
-    if (ids.length === 0) return { connections: 0, entities: 0 };
-    const connsRes = await client.query(
+    connectionId: string,
+    opts?: { demoIndustry?: string | null },
+  ) => {
+    const current = await client.query(
+      `SELECT status FROM connections WHERE org_id = $1 AND id = $2 FOR UPDATE`,
+      [orgId, connectionId],
+    );
+    if (current.rows.length === 0) return { status: "not_found" as const };
+    const row = current.rows[0] as { status: string };
+    if (row.status === "archived") {
+      return { status: "already_archived" as const };
+    }
+    await client.query(
       `UPDATE connections SET status = 'archived', updated_at = now()
-       WHERE org_id = $1 AND id = ANY($2::text[])
-       RETURNING id`,
-      [orgId, ids],
+       WHERE org_id = $1 AND id = $2`,
+      [orgId, connectionId],
     );
-    const entitiesRes = await client.query(
+    const archivedEntities = await client.query(
       `UPDATE semantic_entities SET status = 'archived', updated_at = now()
-       WHERE org_id = $1 AND connection_id = ANY($2::text[]) AND status = 'published'
+       WHERE org_id = $1 AND connection_id = $2 AND status = 'published'
        RETURNING id`,
-      [orgId, ids],
+      [orgId, connectionId],
     );
+    let prompts = 0;
+    if (connectionId === "__demo__" && opts?.demoIndustry) {
+      const archivedPrompts = await client.query(
+        `UPDATE prompt_collections SET status = 'archived', updated_at = now()
+         WHERE org_id = $1 AND is_builtin = true AND status = 'published' AND industry = $2
+         RETURNING id`,
+        [orgId, opts.demoIndustry],
+      );
+      prompts = archivedPrompts.rows.length;
+    }
     return {
-      connections: connsRes.rows.length,
-      entities: entitiesRes.rows.length,
+      status: "archived" as const,
+      entities: archivedEntities.rows.length,
+      prompts,
     };
   },
+  // Not exercised by publish tests but exports must exist so admin-archive.ts
+  // can load when admin.ts imports it.
+  restoreSingleConnection: mock(() =>
+    Promise.resolve({ status: "not_found" as const }),
+  ),
 }));
 
 // ── Import app AFTER mocks ────────────────────────────────────────────
@@ -338,6 +366,11 @@ describe("POST /api/v1/admin/publish — archiveConnections", () => {
     });
 
     queryHandler = async (sql) => {
+      // Single-connection helper locks the row first — report "published"
+      // so the cascade actually runs.
+      if (/SELECT\s+status\s+FROM\s+connections/i.test(sql)) {
+        return { rows: [{ status: "published" }] };
+      }
       if (/UPDATE\s+connections\s+SET\s+status\s*=\s*'archived'/i.test(sql)) {
         return { rows: [{ id: "__demo__" }] };
       }

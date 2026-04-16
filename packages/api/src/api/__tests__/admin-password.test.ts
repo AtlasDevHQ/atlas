@@ -136,8 +136,12 @@ mock.module("@atlas/api/lib/semantic/entities", () => ({
   bulkUpsertEntities: mock(() => Promise.resolve(0)),
   applyTombstones: mock(() => Promise.resolve(0)),
   promoteDraftEntities: mock(() => Promise.resolve(0)),
-  archiveConnectionsAndEntities: mock(() =>
-    Promise.resolve({ connections: 0, entities: 0 }),
+  DEMO_CONNECTION_ID: "__demo__",
+  archiveSingleConnection: mock(() =>
+    Promise.resolve({ status: "not_found" as const }),
+  ),
+  restoreSingleConnection: mock(() =>
+    Promise.resolve({ status: "not_found" as const }),
   ),
 }));
 

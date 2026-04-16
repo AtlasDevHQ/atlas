@@ -24,16 +24,14 @@ import { internalQuery, getInternalDB } from "@atlas/api/lib/db/internal";
 import {
   applyTombstones,
   promoteDraftEntities,
-  archiveConnectionsAndEntities,
+  archiveSingleConnection,
+  DEMO_CONNECTION_ID,
 } from "@atlas/api/lib/semantic/entities";
 import { runHandler } from "@atlas/api/lib/effect/hono";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 
 const log = createLogger("admin-publish");
-
-/** Reserved ID for the onboarding demo connection. */
-const DEMO_CONNECTION_ID = "__demo__";
 
 // ---------------------------------------------------------------------------
 // Request / response schemas
@@ -206,26 +204,21 @@ adminPublish.openapi(publishRoute, async (c) =>
       );
       promotedPromptCount = promotedPrompts.rows.length;
 
-      // Phase 4: archive requested connections (+ cascade to their entities)
-      const archiveResult = await archiveConnectionsAndEntities(
-        client,
-        orgId,
-        archiveIds,
-      );
-      archivedConnectionCount = archiveResult.connections;
-      archivedEntityCount = archiveResult.entities;
-
-      // Phase 4b: when demo is being archived, also archive the built-in
-      // demo prompt collections that match the org's demo industry.
-      if (archiveDemo && demoIndustry) {
-        await client.query(
-          `UPDATE prompt_collections SET status = 'archived', updated_at = now()
-           WHERE org_id = $1
-             AND is_builtin = true
-             AND status = 'published'
-             AND industry = $2`,
-          [orgId, demoIndustry],
-        );
+      // Phase 4: archive requested connections (+ cascade to their entities +
+      // demo prompt collections when the id is `__demo__`). Loops the shared
+      // single-connection helper so publish and the standalone archive
+      // endpoints stay in lockstep — see #1437. Missing or already-archived
+      // ids silently no-op (publish is best-effort for the archive list).
+      archivedConnectionCount = 0;
+      archivedEntityCount = 0;
+      for (const id of archiveIds) {
+        const archiveResult = await archiveSingleConnection(client, orgId, id, {
+          demoIndustry: id === DEMO_CONNECTION_ID ? demoIndustry : null,
+        });
+        if (archiveResult.status === "archived") {
+          archivedConnectionCount++;
+          archivedEntityCount += archiveResult.entities;
+        }
       }
 
       await client.query("COMMIT");

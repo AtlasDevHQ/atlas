@@ -87,6 +87,8 @@ export const ADMIN_ACTIONS = {
   },
   mode: {
     publish: "mode.publish",
+    archive: "mode.archive",
+    restore: "mode.restore",
   },
 } as const;
 

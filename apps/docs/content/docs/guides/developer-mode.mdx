@@ -106,6 +106,69 @@ Orgs that picked a demo during onboarding have a seeded `__demo__` connection wi
 
 ---
 
+## Archive and Restore After Go-Live
+
+Outside the publish flow, admins can archive or restore a connection at any time. The common case: after launching with real data, you archive `__demo__` to hide the demo dataset. When a new hire joins and needs to explore Atlas without touching production data, you restore it.
+
+```http
+POST /api/v1/admin/archive-connection
+Content-Type: application/json
+Authorization: Bearer <admin token>
+
+{ "connectionId": "__demo__" }
+```
+
+Response:
+
+```json
+{
+  "archived": { "connection": true, "entities": 62, "prompts": 4 }
+}
+```
+
+The archive endpoint flips the connection's status to `archived` and cascades:
+
+- Every `published` semantic entity whose `connection_id` matches the connection flips to `archived`.
+- When the id is the reserved `__demo__`, every `is_builtin = true` prompt collection whose `industry` matches the org's `demo_industry` setting also flips to `archived`.
+
+Everything runs inside a single PostgreSQL transaction. Any mid-flight failure rolls back — there is no partial state.
+
+### Restoring
+
+`POST /api/v1/admin/restore-connection` is the exact reverse. The connection, its entities, and (for `__demo__`) its built-in demo prompts flip back to `published`. Users see the restored content on their next page load.
+
+```http
+POST /api/v1/admin/restore-connection
+Content-Type: application/json
+Authorization: Bearer <admin token>
+
+{ "connectionId": "__demo__" }
+```
+
+### Idempotency and error cases
+
+| Scenario | Status | Notes |
+|----------|--------|-------|
+| Connection archived successfully | `200` | `archived.connection = true` |
+| Archiving an already-archived connection | `200` | No-op — `archived.connection = false`, cascade counts are `0` |
+| Archiving a connection that doesn't exist for the org | `404` | `not_found` |
+| Restoring an archived connection | `200` | `restored.connection = true` |
+| Restoring a connection that doesn't exist | `404` | `not_found` |
+| Restoring a connection that is not currently archived | `404` | Restore is strict — it won't silently no-op |
+| Mid-transaction failure | `500` | `archive_failed` or `restore_failed`; transaction rolls back |
+
+### Use case: training new hires on demo data
+
+When a new team member joins and the org has already launched with production data, the admin flow is:
+
+1. `POST /api/v1/admin/restore-connection` with `{ "connectionId": "__demo__" }`
+2. The new hire explores Atlas against the familiar demo dataset without touching production
+3. Once they're up to speed, the admin calls `POST /api/v1/admin/archive-connection` with `{ "connectionId": "__demo__" }` to hide the demo again
+
+The demo's semantic entities and built-in prompts travel with the connection — the dual-mode system treats `__demo__` as one logical unit.
+
+---
+
 ## Cycle Repeats
 
 Publishing clears every draft for the org. The admin's next edit — a new entity, a prompt collection, a fresh connection — starts a new draft layer on top of the newly-published state. There is one staging workflow, reused indefinitely. There is no separate "environment" to maintain.
@@ -118,3 +181,5 @@ Publishing clears every draft for the org. The admin's next edit — a new entit
 - [Semantic editor walkthrough](/guides/semantic-editor)
 - [GET /api/v1/mode](/api-reference/mode/getMode) — read the effective mode for the current request
 - [POST /api/v1/admin/publish](/api-reference/admin-mode/postAdminPublish) — auto-generated OpenAPI reference
+- [POST /api/v1/admin/archive-connection](/api-reference/admin-mode/postAdminArchiveConnection) — auto-generated OpenAPI reference
+- [POST /api/v1/admin/restore-connection](/api-reference/admin-mode/postAdminRestoreConnection) — auto-generated OpenAPI reference

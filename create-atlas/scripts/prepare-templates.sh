@@ -104,6 +104,18 @@ for tpl in docker nextjs-standalone; do
   find "$TEMPLATES/$tpl/src" -name '*.test.tsx' -delete 2>/dev/null || true
 done
 
+# Post-process types.ts — define unpublished @useatlas/types exports locally.
+# The monorepo types.ts re-exports from @useatlas/types, but the published npm
+# package may lag behind. Replace re-exports that aren't in the published version
+# with local definitions so scaffold builds don't break.
+# TODO: remove this block after publishing @useatlas/types with ATLAS_MODES + ADMIN_ROLES
+for tpl in docker nextjs-standalone; do
+  TYPES_FILE="$TEMPLATES/$tpl/src/ui/lib/types.ts"
+  if [ -f "$TYPES_FILE" ]; then
+    sed -i 's|export { AUTH_MODES, ATLAS_MODES, ADMIN_ROLES, DB_TYPES } from "@useatlas/types";|export { AUTH_MODES, DB_TYPES } from "@useatlas/types";\nexport const ATLAS_MODES = ["developer", "published"] as const;\nexport const ADMIN_ROLES = ["admin", "owner", "platform_admin"] as const;|' "$TYPES_FILE"
+  fi
+done
+
 # Brand CSS — globals.css imports ../../brand.css (project root)
 for tpl in docker nextjs-standalone; do
   cp "$MONOREPO/packages/web/brand.css" "$TEMPLATES/$tpl/brand.css"

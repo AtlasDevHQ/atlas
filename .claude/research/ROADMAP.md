@@ -1194,7 +1194,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] Bundle cybersec + ecommerce semantic directories in Docker image (#1422, PR #1441)
 - [x] Docker COPY for demo-semantic and SQL seed symlinks (#1440, PR #1441)
 - [x] Partial unique indexes on semantic_entities are NULL-unsafe for connection_id (#1444, PR #1447)
-- [x] Scaffold template layout override — strip ModeBanner for standalone deploys (PR forthcoming)
+- [x] Scaffold template layout override — strip ModeBanner for standalone deploys (079f8996)
 
 ---
 

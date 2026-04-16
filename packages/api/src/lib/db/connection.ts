@@ -1349,7 +1349,7 @@ export function getDB(): DBConnection {
 /**
  * Check whether a connection is visible to an org in the given atlas mode.
  *
- * Visibility rules (mirror PRD #1421):
+ * Visibility rules:
  * - `"default"` — config-managed, not stored in the connections table;
  *   always visible regardless of mode.
  * - Published mode — only `status = 'published'` rows are visible.

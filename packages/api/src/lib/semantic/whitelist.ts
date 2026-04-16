@@ -506,10 +506,6 @@ export function invalidateOrgWhitelist(orgId: string): void {
   _orgWhitelists.delete(`${orgId}:published`);
   _orgWhitelists.delete(`${orgId}:developer`);
   invalidateOrgSemanticIndex(orgId);
-  // Invalidate the lazily-built mode-specific semantic roots so the next
-  // explore command rebuilds from DB. Static import — sync.ts does not
-  // import from whitelist.ts, only dynamically loads listEntitiesWithOverlay
-  // from entities.ts, so no cycle.
   invalidateOrgModeRoots(orgId);
 }
 

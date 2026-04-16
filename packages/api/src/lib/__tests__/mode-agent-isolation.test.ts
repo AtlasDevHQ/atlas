@@ -1,19 +1,10 @@
 /**
- * Mode-aware agent isolation tests (#1430).
+ * Mode-aware agent isolation tests.
  *
  * Verifies that in published mode the agent has zero knowledge of draft
  * connections and entities, while in developer mode it sees the overlay.
- *
- * Covers:
- * - Connection visibility: published-only vs overlay (published + draft),
- *   archived always hidden, "default" always visible.
- * - Explore semantic root resolution per mode — mode-specific subdirectories
- *   exist so `ls entities/` returns a mode-appropriate set.
- * - Whitelist mode propagation through the agent pipeline — draft-only tables
- *   rejected in published mode, accepted in developer mode.
- *
- * Uses mock.module() to stub the internal DB and connection modules so the
- * tests exercise pure logic without a real Postgres instance.
+ * Covers the visibility predicate and mode-specific semantic root path
+ * resolution — the two primitives the agent pipeline depends on.
  */
 
 import { describe, it, expect, beforeEach, mock } from "bun:test";
@@ -31,10 +22,6 @@ type ConnectionRow = {
 let connectionRows: ConnectionRow[] = [];
 
 const mockInternalQuery = mock(async (sql: string, params?: unknown[]) => {
-  // Parse the status list from the query — we only support the query patterns
-  // used by isConnectionVisibleInMode: `SELECT id FROM connections WHERE
-  // org_id = $1 AND id = $2 AND status = 'published'` or `... AND status IN
-  // ('published', 'draft')`.
   const [orgIdParam, idParam] = (params ?? []) as string[];
 
   if (sql.includes("FROM connections")) {
@@ -117,6 +104,15 @@ describe("isConnectionVisibleInMode", () => {
     connectionRows = [];
     expect(await isConnectionVisibleInMode("org-1", "nowhere", "published")).toBe(false);
     expect(await isConnectionVisibleInMode("org-1", "nowhere", "developer")).toBe(false);
+  });
+
+  it("fails closed on internal DB error (returns false)", async () => {
+    // Highest-leverage bypass vector: a DB throw that silently allows access.
+    // The catch arm must deny, not allow.
+    mockInternalQuery.mockImplementationOnce(async () => {
+      throw new Error("simulated internal DB outage");
+    });
+    expect(await isConnectionVisibleInMode("org-1", "warehouse", "published")).toBe(false);
   });
 });
 

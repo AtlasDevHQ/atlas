@@ -308,7 +308,7 @@ export async function cleanupOrgDirectory(orgId: string): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Mode-specific semantic root (agent isolation — #1430)
+// Mode-specific semantic root (agent isolation)
 // ---------------------------------------------------------------------------
 
 /**
@@ -368,11 +368,15 @@ export async function ensureOrgModeSemanticRoot(
   const key = modeKey(orgId, mode);
   if (_modeBuilt.has(key)) return root;
 
-  // Coalesce concurrent builds
+  // Coalesce concurrent builds. If another caller is already building, wait
+  // and then re-check `_modeBuilt` — the in-flight build may have been
+  // invalidated mid-flight or failed per-file writes, in which case the
+  // waiter must itself rebuild instead of returning a stale root.
   const existing = _modeBuildLocks.get(key);
   if (existing) {
     await existing;
-    return root;
+    if (_modeBuilt.has(key)) return root;
+    return ensureOrgModeSemanticRoot(orgId, mode);
   }
 
   let resolve: () => void;
@@ -384,14 +388,17 @@ export async function ensureOrgModeSemanticRoot(
   // stale. Leave _modeBuilt unset so the next call rebuilds.
   const stampBefore = _modeInvalidationStamp.get(key) ?? 0;
   try {
-    await _buildOrgModeRoot(orgId, mode, root);
+    const result = await _buildOrgModeRoot(orgId, mode, root);
     const stampAfter = _modeInvalidationStamp.get(key) ?? 0;
-    if (stampAfter === stampBefore) {
+    // Mark as built only if BOTH: (a) stamp did not advance (no CRUD raced),
+    // and (b) every entity wrote successfully. Partial writes leave the
+    // directory in an undefined state that must not be trusted.
+    if (stampAfter === stampBefore && result.failed === 0) {
       _modeBuilt.add(key);
     } else {
       log.debug(
-        { orgId, mode, stampBefore, stampAfter },
-        "Mode-specific semantic root rebuilt but invalidated mid-build — next call will rebuild",
+        { orgId, mode, stampBefore, stampAfter, failed: result.failed },
+        "Mode-specific semantic root build incomplete — next call will rebuild",
       );
     }
   } finally {
@@ -407,7 +414,7 @@ async function _buildOrgModeRoot(
   orgId: string,
   mode: import("@useatlas/types/auth").AtlasMode,
   root: string,
-): Promise<void> {
+): Promise<{ written: number; failed: number }> {
   const { listEntities, listEntitiesWithOverlay } = await import("@atlas/api/lib/semantic/entities");
 
   const rows = mode === "published"
@@ -421,6 +428,7 @@ async function _buildOrgModeRoot(
 
   const expectedFiles = new Set<string>();
   let written = 0;
+  let failed = 0;
   for (const row of rows) {
     const subdir = entityTypeDir(row.entity_type as SemanticEntityType);
     const fileName = `${safeName(row.name)}.yml`;
@@ -430,6 +438,7 @@ async function _buildOrgModeRoot(
       await atomicWriteFile(filePath, row.yaml_content);
       written++;
     } catch (err) {
+      failed++;
       log.error(
         { orgId, mode, name: row.name, type: row.entity_type, err: err instanceof Error ? err.message : String(err) },
         "Failed to write mode-specific entity file",
@@ -440,9 +449,11 @@ async function _buildOrgModeRoot(
   await _cleanStaleFiles(root, expectedFiles);
 
   log.info(
-    { orgId, mode, entityCount: rows.length, written, path: root },
+    { orgId, mode, entityCount: rows.length, written, failed, path: root },
     "Built mode-specific semantic root",
   );
+
+  return { written, failed };
 }
 
 /** @internal Clear the mode-built cache — for testing only. */

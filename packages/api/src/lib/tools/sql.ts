@@ -402,7 +402,7 @@ function resolveConnectionEffect(
   /** Org ID used for pool routing — gated on `isOrgPoolingEnabled()` in SaaS. */
   orgId: string | undefined,
   atlasMode: import("@useatlas/types/auth").AtlasMode,
-  /** Org ID from auth context — always set when a user is logged in. Used for mode visibility. */
+  /** Org ID from auth context — undefined in unauthenticated self-hosted mode. Used for mode visibility. */
   authOrgId: string | undefined,
 ): Effect.Effect<
   { db: DBConnection; dbType: DBType },
@@ -448,21 +448,28 @@ function resolveConnectionEffect(
       return { db, dbType };
     },
     catch: (err) => {
+      // Zero-knowledge guarantee: when a caller has an org/mode context, the
+      // list of registered connections must never be surfaced — the registry
+      // is populated from every org's DB rows on boot, so exposing it would
+      // leak draft IDs across orgs and modes. Self-hosted callers without an
+      // org context still get the debug list.
+      const availableList = authOrgId ? [] : connections.list();
+      const availableSuffix = availableList.length > 0 ? availableList.join(", ") : "(none)";
+
       if (err instanceof ModeGateRejection) {
-        // Zero-knowledge guarantee: do NOT list registered connections —
-        // draft IDs would leak to published-mode users. Return an empty
-        // `available` list so the error shape stays consistent.
         return new ConnectionNotFoundError({
           message: err.message,
           connectionId: connId,
-          available: [],
+          available: availableList,
         });
       }
       if (err instanceof ConnectionNotRegisteredError) {
         return new ConnectionNotFoundError({
-          message: `Connection "${connId}" is not registered. Available: ${connections.list().join(", ") || "(none)"}`,
+          message: authOrgId
+            ? `Connection "${connId}" is not registered.`
+            : `Connection "${connId}" is not registered. Available: ${availableSuffix}`,
           connectionId: connId,
-          available: connections.list(),
+          available: availableList,
         });
       }
       if (err instanceof NoDatasourceConfiguredError) {
@@ -481,7 +488,7 @@ function resolveConnectionEffect(
       return new ConnectionNotFoundError({
         message: `Connection "${connId}" failed to initialize: ${message}`,
         connectionId: connId,
-        available: connections.list(),
+        available: availableList,
       });
     },
   });
@@ -900,8 +907,7 @@ Rules:
       // isolation applies in self-hosted single-org deployments as well as
       // SaaS, even when pool-level org isolation is disabled.
       const authOrgId = reqCtx?.user?.activeOrganizationId;
-      // Mode isolation: visible connections and whitelist depend on atlasMode.
-      // Default to "published" (most restrictive) if not set.
+      // Fail-closed default for mode: missing atlasMode implies published.
       const atlasMode = reqCtx?.atlasMode ?? "published";
 
       // Step 1: Resolve connection (tagged errors)

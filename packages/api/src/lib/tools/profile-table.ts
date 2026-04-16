@@ -38,7 +38,7 @@ export const profileTable = tool({
       const poolOrgId = connections.isOrgPoolingEnabled() ? authOrgId : undefined;
 
       // Mode isolation: reject non-visible connections before touching pools.
-      // Mirrors the gate in executeSQL (#1430).
+      // Mirrors the gate in executeSQL.
       if (authOrgId) {
         const visible = await isConnectionVisibleInMode(authOrgId, connId, atlasMode);
         if (!visible) {

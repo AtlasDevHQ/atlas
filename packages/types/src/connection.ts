@@ -11,6 +11,10 @@ export const DB_TYPES = [
 /** Database type — closed union derived from DB_TYPES. The backend's internal DBType in @atlas/api/lib/db/connection.ts is wider to accommodate plugin-registered databases. */
 export type DBType = (typeof DB_TYPES)[number]["value"];
 
+/** Valid status values for connections (developer/published mode). */
+export const CONNECTION_STATUSES = ["published", "draft", "archived"] as const;
+export type ConnectionStatus = (typeof CONNECTION_STATUSES)[number];
+
 /** Health check status for a connection. */
 export type HealthStatus = "healthy" | "degraded" | "unhealthy";
 
@@ -27,6 +31,7 @@ export interface ConnectionInfo {
   id: string;
   dbType: DBType;
   description?: string | null;
+  status?: ConnectionStatus;
   health?: ConnectionHealth;
 }
 
@@ -72,6 +77,7 @@ export interface ConnectionDetail {
   /** Broader than DBType — includes fallback "unknown" when metadata is unavailable. */
   dbType: DBType | "unknown";
   description: string | null;
+  status?: ConnectionStatus;
   health: ConnectionHealth | null;
   maskedUrl: string | null;
   schema: string | null;

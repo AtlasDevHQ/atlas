@@ -23,6 +23,7 @@ export type {
   ConnectionHealth,
   ConnectionInfo,
   ConnectionDetail,
+  ConnectionStatus,
   PoolMetrics,
   ChatErrorCode,
   ChatErrorInfo,
@@ -45,6 +46,7 @@ export type {
   AmendmentPayload,
   AmendmentType,
   PromptCollection,
+  PromptCollectionStatus,
   PromptItem,
   PromptIndustry,
   QuerySuggestion,
@@ -156,7 +158,7 @@ export { ABUSE_LEVELS, ABUSE_TRIGGERS } from "@useatlas/types";
 export { SLA_ALERT_STATUSES, SLA_ALERT_TYPES } from "@useatlas/types";
 export { ONBOARDING_EMAIL_STEPS, ONBOARDING_MILESTONES } from "@useatlas/types";
 export { PII_CATEGORIES, MASKING_STRATEGIES, PII_CONFIDENCE_LEVELS, COMPLIANCE_REPORT_TYPES } from "@useatlas/types";
-export { SHARE_EXPIRY_OPTIONS, PROMPT_INDUSTRIES, MODEL_CONFIG_PROVIDERS, APPROVAL_RULE_TYPES, APPROVAL_STATUSES, WORKSPACE_STATUSES, PLAN_TIERS, NOISY_NEIGHBOR_METRICS } from "@useatlas/types";
+export { SHARE_EXPIRY_OPTIONS, PROMPT_INDUSTRIES, PROMPT_COLLECTION_STATUSES, MODEL_CONFIG_PROVIDERS, APPROVAL_RULE_TYPES, APPROVAL_STATUSES, WORKSPACE_STATUSES, PLAN_TIERS, NOISY_NEIGHBOR_METRICS, CONNECTION_STATUSES } from "@useatlas/types";
 export { parseChatError } from "@useatlas/types/errors";
 
 // --- Web-only types (not in @useatlas/types) ---

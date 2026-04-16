@@ -115,6 +115,7 @@ function makeEntityRow(
     name,
     yaml_content: yamlContent,
     connection_id: connectionId ?? null,
+    status: "published" as const,
     created_at: "2026-01-01",
     updated_at: "2026-01-01",
   };

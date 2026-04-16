@@ -31,6 +31,14 @@ function toPromptCollection(row: Record<string, unknown>): PromptCollection {
     description: (row.description as string) ?? "",
     isBuiltin: row.is_builtin as boolean,
     sortOrder: row.sort_order as number,
+    status: (() => {
+      const s = row.status as PromptCollection["status"] | undefined;
+      if (s === undefined) {
+        log.warn({ collectionId: row.id }, "Prompt collection missing status column — defaulting to published");
+        return "published" as const;
+      }
+      return s;
+    })(),
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
   };
@@ -61,6 +69,7 @@ const PromptCollectionSchema = z.object({
   description: z.string(),
   isBuiltin: z.boolean(),
   sortOrder: z.number(),
+  status: z.string(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });

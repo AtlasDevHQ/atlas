@@ -252,10 +252,13 @@ export const connections = pgTable(
     updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow(),
     // Org scoping — composite PK with id
     orgId: text("org_id").notNull().default("__global__"),
+    // Developer/published mode status
+    status: text("status").notNull().default("published"),
   },
   (t) => [
     primaryKey({ columns: [t.id, t.orgId] }),
     index("idx_connections_org").on(t.orgId),
+    check("chk_connections_status", sql`status IN ('published', 'draft', 'archived')`),
   ],
 );
 
@@ -357,11 +360,17 @@ export const semanticEntities = pgTable(
     connectionId: text("connection_id"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    // Developer/published mode status
+    status: text("status").notNull().default("published"),
   },
   (t) => [
     uniqueIndex("idx_semantic_entities_org_type_name").on(t.orgId, t.entityType, t.name),
     index("idx_semantic_entities_org").on(t.orgId),
     index("idx_semantic_entities_org_type").on(t.orgId, t.entityType),
+    check("chk_semantic_entities_status", sql`status IN ('published', 'draft', 'draft_delete', 'archived')`),
+    uniqueIndex("uq_semantic_entity_published").on(t.orgId, t.name, t.connectionId).where(sql`status = 'published'`),
+    uniqueIndex("uq_semantic_entity_draft").on(t.orgId, t.name, t.connectionId).where(sql`status = 'draft'`),
+    uniqueIndex("uq_semantic_entity_tombstone").on(t.orgId, t.name, t.connectionId).where(sql`status = 'draft_delete'`),
   ],
 );
 
@@ -439,10 +448,13 @@ export const promptCollections = pgTable(
     sortOrder: integer("sort_order").notNull().default(0),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+    // Developer/published mode status
+    status: text("status").notNull().default("published"),
   },
   (t) => [
     index("idx_prompt_collections_org").on(t.orgId),
     index("idx_prompt_collections_builtin").on(t.isBuiltin).where(sql`is_builtin = true`),
+    check("chk_prompt_collections_status", sql`status IN ('published', 'draft', 'archived')`),
   ],
 );
 

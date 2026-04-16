@@ -14,6 +14,10 @@ const log = createLogger("semantic-entities");
 
 export type SemanticEntityType = "entity" | "metric" | "glossary" | "catalog";
 
+/** Valid status values for semantic entities in the developer/published mode system. */
+export const SEMANTIC_ENTITY_STATUSES = ["published", "draft", "draft_delete", "archived"] as const;
+export type SemanticEntityStatus = (typeof SEMANTIC_ENTITY_STATUSES)[number];
+
 export interface SemanticEntityRow {
   id: string;
   org_id: string;
@@ -21,6 +25,7 @@ export interface SemanticEntityRow {
   name: string;
   yaml_content: string;
   connection_id: string | null;
+  status: SemanticEntityStatus;
   created_at: string;
   updated_at: string;
   [key: string]: unknown;
@@ -62,7 +67,7 @@ export async function listEntities(
 
   if (entityType) {
     return internalQuery<SemanticEntityRow>(
-      `SELECT id, org_id, entity_type, name, yaml_content, connection_id, created_at, updated_at
+      `SELECT id, org_id, entity_type, name, yaml_content, connection_id, status, created_at, updated_at
        FROM semantic_entities
        WHERE org_id = $1 AND entity_type = $2
        ORDER BY name`,
@@ -71,7 +76,7 @@ export async function listEntities(
   }
 
   return internalQuery<SemanticEntityRow>(
-    `SELECT id, org_id, entity_type, name, yaml_content, connection_id, created_at, updated_at
+    `SELECT id, org_id, entity_type, name, yaml_content, connection_id, status, created_at, updated_at
      FROM semantic_entities
      WHERE org_id = $1
      ORDER BY entity_type, name`,
@@ -90,7 +95,7 @@ export async function getEntity(
   if (!hasInternalDB()) return null;
 
   const rows = await internalQuery<SemanticEntityRow>(
-    `SELECT id, org_id, entity_type, name, yaml_content, connection_id, created_at, updated_at
+    `SELECT id, org_id, entity_type, name, yaml_content, connection_id, status, created_at, updated_at
      FROM semantic_entities
      WHERE org_id = $1 AND entity_type = $2 AND name = $3`,
     [orgId, entityType, name],

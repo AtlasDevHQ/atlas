@@ -266,6 +266,7 @@ describe("migrateAuthTables", () => {
             { name: "0021_connection_org_scope.sql" },
             { name: "0022_sso_domain_verification.sql" },
             { name: "0023_admin_action_log.sql" },
+            { name: "0024_mode_status_columns.sql" },
           ],
         };
       }

@@ -14,7 +14,10 @@ import { AuthContext } from "@atlas/api/lib/effect/services";
 import { validationHook } from "./validation-hook";
 import { z } from "zod";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
+import { createLogger } from "@atlas/api/lib/logger";
 import type { PromptCollection, PromptItem } from "@useatlas/types";
+
+const log = createLogger("prompts");
 import { ErrorSchema } from "./shared-schemas";
 import { standardAuth, requestContext, type AuthEnv } from "./middleware";
 
@@ -31,6 +34,14 @@ function toPromptCollection(row: Record<string, unknown>): PromptCollection {
     description: (row.description as string) ?? "",
     isBuiltin: row.is_builtin as boolean,
     sortOrder: row.sort_order as number,
+    status: (() => {
+      const s = row.status as PromptCollection["status"] | undefined;
+      if (s === undefined) {
+        log.warn({ collectionId: row.id }, "Prompt collection missing status column — defaulting to published");
+        return "published" as const;
+      }
+      return s;
+    })(),
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
   };

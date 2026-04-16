@@ -22,8 +22,23 @@ export function useModeStatus(): {
   const query = useQuery<ModeStatusResponse>({
     queryKey: ["mode-status", apiUrl],
     queryFn: async ({ signal }) => {
-      const res = await fetch(`${apiUrl}/api/v1/mode`, { credentials, signal });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      let res: Response;
+      try {
+        res = await fetch(`${apiUrl}/api/v1/mode`, { credentials, signal });
+      } catch (err) {
+        // Network failure (offline, DNS, CORS) or AbortError on unmount —
+        // log at debug so React Query devtools + browser console agree without
+        // spamming users' consoles for expected cancellations.
+        console.debug("useModeStatus fetch failed:", err instanceof Error ? err.message : String(err));
+        throw err;
+      }
+      if (!res.ok) {
+        // Read body best-effort to preserve server-provided requestId / error
+        // code when surfacing via devtools. Parse failures are non-fatal.
+        const body = await res.text().catch(() => "");
+        console.debug(`useModeStatus HTTP ${res.status}:`, body);
+        throw new Error(`HTTP ${res.status}`);
+      }
       return (await res.json()) as ModeStatusResponse;
     },
     retry: false,

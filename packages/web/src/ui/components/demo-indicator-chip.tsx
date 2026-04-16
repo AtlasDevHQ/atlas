@@ -6,10 +6,10 @@ import { useModeStatus } from "@/ui/hooks/use-mode-status";
 
 /**
  * Display labels keyed by the `demo_industry` setting written during
- * onboarding (see `DEMO_INDUSTRIES` in `packages/api/src/api/routes/onboarding.ts`).
+ * onboarding (see `DEMO_INDUSTRIES` in `packages/api/src/api/routes/onboarding.ts:48`).
  *
- * Keep in sync with onboarding — a new industry without an entry here falls
- * through to "no chip rendered" rather than showing a raw slug to users.
+ * Fail-closed: a new industry without an entry here renders nothing rather
+ * than showing a raw slug to users.
  */
 const DEMO_INDUSTRY_LABELS: Record<string, string> = {
   saas: "SaaS CRM",

@@ -682,6 +682,8 @@ export function createPluginTestLayer(
 // ██  Request Context Service (P8)
 // ══════════════════════════════════════════════════════════════════════
 
+type AtlasMode = import("@useatlas/types/auth").AtlasMode;
+
 /**
  * Per-request context available to all Effect programs running within
  * a route handler. Bridges from Hono's `c.get("requestId")`.
@@ -689,6 +691,8 @@ export function createPluginTestLayer(
 export interface RequestContextShape {
   readonly requestId: string;
   readonly startTime: number;
+  /** Resolved mode — `developer` (shows draft/unpublished content, admin-only) or `published` (end-user surface). */
+  readonly atlasMode: AtlasMode;
 }
 
 export class RequestContext extends Context.Tag("RequestContext")<
@@ -703,10 +707,12 @@ export class RequestContext extends Context.Tag("RequestContext")<
 export function makeRequestContextLayer(
   requestId: string,
   startTime?: number,
+  atlasMode?: AtlasMode,
 ): Layer.Layer<RequestContext> {
   return Layer.succeed(RequestContext, {
     requestId,
     startTime: startTime ?? Date.now(),
+    atlasMode: atlasMode ?? "published",
   });
 }
 
@@ -717,6 +723,7 @@ export function createRequestContextTestLayer(
   return Layer.succeed(RequestContext, {
     requestId: partial.requestId ?? "test-request-id",
     startTime: partial.startTime ?? Date.now(),
+    atlasMode: partial.atlasMode ?? "published",
   });
 }
 

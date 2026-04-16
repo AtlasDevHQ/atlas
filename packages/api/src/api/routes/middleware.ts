@@ -54,6 +54,7 @@ export type AuthEnv = Env & {
   Variables: {
     authResult: AuthResult & { authenticated: true };
     requestId: string;
+    atlasMode: import("@useatlas/types/auth").AtlasMode;
   };
 };
 
@@ -258,6 +259,7 @@ export const adminAuth = createMiddleware<AuthEnv>(async (c, next) => {
   // the workspace during migration (retry, cancel, configure).
 
   c.set("authResult", authResult);
+  resolveModeForRequest(c, authResult, requestId);
   await next();
 });
 
@@ -292,6 +294,7 @@ export const platformAdminAuth = createMiddleware<AuthEnv>(async (c, next) => {
   }
 
   c.set("authResult", authResult);
+  resolveModeForRequest(c, authResult, requestId);
   await next();
 });
 
@@ -320,6 +323,7 @@ export const standardAuth = createMiddleware<AuthEnv>(async (c, next) => {
   }
 
   c.set("authResult", authResult);
+  resolveModeForRequest(c, authResult, requestId);
   await next();
 });
 
@@ -346,6 +350,90 @@ export const migrationWriteLock = createMiddleware<AuthEnv>(async (c, next) => {
 
   await next();
 });
+
+// ---------------------------------------------------------------------------
+// Mode resolution — reads atlas-mode cookie/header, enforces admin gate
+// ---------------------------------------------------------------------------
+
+/**
+ * Roles that qualify for developer mode access. Derived from ATLAS_ROLES
+ * rather than importing ADMIN_ROLES because this file is template-synced
+ * to create-atlas — the published @useatlas/types may not have ADMIN_ROLES yet.
+ */
+const ADMIN_ROLE_SET = new Set(["admin", "owner", "platform_admin"]);
+
+/**
+ * Parse the `atlas-mode` cookie from the Cookie header.
+ * Returns the raw cookie value, or undefined if not present.
+ */
+function parseModeFromCookie(cookieHeader: string | null): string | undefined {
+  if (!cookieHeader) return undefined;
+  for (const pair of cookieHeader.split(";")) {
+    const [key, ...rest] = pair.split("=");
+    if (key.trim() === "atlas-mode") {
+      return rest.join("=").trim();
+    }
+  }
+  return undefined;
+}
+
+/**
+ * Resolve the effective atlas mode for this request.
+ *
+ * Priority: `atlas-mode` cookie → `X-Atlas-Mode` header → default (`published`).
+ * Only admin/owner/platform_admin users may use `developer` mode — non-admin
+ * requests always resolve to `published` regardless of cookie/header value.
+ *
+ * Called inline by adminAuth, standardAuth, and platformAdminAuth.
+ * Exported as a pure function for testability.
+ */
+export function resolveMode(
+  cookieHeader: string | null,
+  xAtlasModeHeader: string | null,
+  authResult: AuthResult & { authenticated: true },
+): import("@useatlas/types/auth").AtlasMode {
+  const raw = parseModeFromCookie(cookieHeader) ?? xAtlasModeHeader ?? undefined;
+
+  if (raw !== "developer") return "published";
+
+  // Auth mode "none" (local dev) is an implicit admin
+  if (authResult.mode === "none") return "developer";
+
+  // Check if user has an admin-level role
+  if (authResult.user?.role && ADMIN_ROLE_SET.has(authResult.user.role)) {
+    return "developer";
+  }
+
+  return "published";
+}
+
+/**
+ * Resolve mode and log when a developer request is downgraded due to
+ * insufficient role. Used by the auth middlewares to centralize the
+ * resolve + set + log pattern.
+ */
+function resolveModeForRequest(
+  c: { req: { raw: Request }; set: (key: string, value: unknown) => void },
+  authResult: AuthResult & { authenticated: true },
+  requestId: string,
+): void {
+  const cookieHeader = c.req.raw.headers.get("cookie");
+  const xAtlasModeHeader = c.req.raw.headers.get("x-atlas-mode");
+  const mode = resolveMode(cookieHeader, xAtlasModeHeader, authResult);
+
+  // Log security-relevant downgrade: someone requested developer mode but
+  // lacks admin privileges. Could be a stale cookie, frontend bug, or probe.
+  const requestedDeveloper =
+    parseModeFromCookie(cookieHeader) === "developer" || xAtlasModeHeader === "developer";
+  if (requestedDeveloper && mode === "published") {
+    log.warn(
+      { requestId, userId: authResult.user?.id, role: authResult.user?.role },
+      "Developer mode request downgraded to published — insufficient role",
+    );
+  }
+
+  c.set("atlasMode", mode);
+}
 
 // ---------------------------------------------------------------------------
 // requestContext — wraps downstream handlers in withRequestContext

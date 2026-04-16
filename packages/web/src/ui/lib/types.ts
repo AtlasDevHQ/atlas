@@ -6,8 +6,10 @@
 
 import type { ShareMode } from "@useatlas/types";
 
-export { AUTH_MODES, DB_TYPES } from "@useatlas/types";
+export { AUTH_MODES, ATLAS_MODES, ADMIN_ROLES, DB_TYPES } from "@useatlas/types";
 export type {
+  AdminRole,
+  AtlasMode,
   AuthMode,
   Conversation,
   Message,

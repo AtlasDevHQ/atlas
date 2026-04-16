@@ -408,7 +408,7 @@ export async function runEffect<A, E>(
 /**
  * Build a Layer that bridges Hono request context → Effect Context.
  *
- * Reads `requestId` and `authResult` from `c.get()` and provides
+ * Reads `requestId`, `atlasMode`, and `authResult` from `c.get()` and provides
  * `RequestContext` + `AuthContext` as Effect services. This allows
  * Effect programs to `yield* RequestContext` or `yield* AuthContext`
  * instead of relying on runtime `c.get()` calls.
@@ -421,7 +421,10 @@ function buildContextLayer(
   const requestId = (c.get("requestId") as string | undefined);
   if (!requestId) return undefined;
 
-  const requestLayer = makeRequestContextLayer(requestId);
+  // Read resolved mode set by auth middleware (defaults to "published" if not set)
+  const atlasMode = (c.get("atlasMode") as import("@useatlas/types/auth").AtlasMode | undefined) ?? "published";
+
+  const requestLayer = makeRequestContextLayer(requestId, undefined, atlasMode);
 
   // authResult may not be set (e.g. public routes, before auth middleware)
   const authResult = c.get("authResult") as

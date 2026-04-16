@@ -548,7 +548,10 @@ See [Python Tool](/guides/python) for the full guide.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
+| `ATLAS_EMAIL_PROVIDER` | `resend` | Platform email provider: `resend`, `sendgrid`, `postmark`, `smtp`. Primarily configured via Admin > Settings, but falls back to this env var |
 | `RESEND_API_KEY` | — | Resend API key for email delivery in scheduled tasks and onboarding emails |
+| `SENDGRID_API_KEY` | — | SendGrid API key. Used when `ATLAS_EMAIL_PROVIDER=sendgrid` |
+| `POSTMARK_SERVER_TOKEN` | — | Postmark server token. Used when `ATLAS_EMAIL_PROVIDER=postmark` |
 | `ATLAS_EMAIL_FROM` | `Atlas <noreply@useatlas.dev>` | From address for scheduled task and onboarding emails |
 | `ATLAS_SMTP_URL` | — | Webhook URL for email delivery (POST JSON with `from`, `to`, `subject`, `html`). Alternative to Resend |
 | `ATLAS_ONBOARDING_EMAILS_ENABLED` | `false` | Enable automated onboarding drip campaign for new signups. Requires `DATABASE_URL` and either `RESEND_API_KEY` or `ATLAS_SMTP_URL` |
@@ -703,6 +706,7 @@ Requires `BETTER_AUTH_SECRET` for demo token signing.
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | `3001` | HTTP port for the standalone Hono API server. Most platforms (Railway, Vercel) set this automatically |
+| `ATLAS_MIGRATION_RETRIES` | `5` | Number of retry attempts for internal database migrations at startup. Retries use exponential backoff. Set `0` to disable retries (useful in tests) |
 
 ---
 

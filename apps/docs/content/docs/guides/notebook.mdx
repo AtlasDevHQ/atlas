@@ -121,12 +121,14 @@ Dashboard card tracking is stored server-side only. Without an internal database
 
 Fork from any query cell to explore an alternative analysis direction without losing your existing work.
 
-1. Click the **fork** button (branch icon) on any query cell
+1. Click the **"What if?"** button (branch icon) on any query cell that has output
 2. A new conversation is created with the history up to that cell
 3. You're navigated to the new branch where you can continue independently
 4. The original notebook is preserved unchanged
 
-When a notebook has branches, a **branch selector** appears at the top showing all branches. Click any branch to switch between them — each branch maintains its own independent cell history.
+When a notebook has branches, a **branch selector** appears at the top showing all branches. Click any branch to switch between them — each branch maintains its own independent cell history. You can **rename** a branch by clicking the pencil icon in the branch selector, or **delete** a branch via the trash icon (with a confirmation dialog).
+
+Cells that have branches show a small **gutter indicator** (branch icon) on the left edge. Hover over it to see how many branches originate from that cell.
 
 <Callout type="info">
 Forking requires server-side persistence (an internal database). Without `DATABASE_URL` configured, the fork button is disabled.

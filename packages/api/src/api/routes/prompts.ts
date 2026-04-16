@@ -31,6 +31,7 @@ function toPromptCollection(row: Record<string, unknown>): PromptCollection {
     description: (row.description as string) ?? "",
     isBuiltin: row.is_builtin as boolean,
     sortOrder: row.sort_order as number,
+    status: (row.status as PromptCollection["status"]) ?? "published",
     createdAt: String(row.created_at),
     updatedAt: String(row.updated_at),
   };

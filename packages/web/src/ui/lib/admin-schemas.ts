@@ -49,6 +49,7 @@ export const ConnectionInfoSchema = z.object({
   id: z.string(),
   dbType: z.string(),
   description: z.string().nullable().optional(),
+  status: z.string().optional(),
   health: ConnectionHealthSchema.optional(),
 }) as z.ZodType<ConnectionInfo>;
 

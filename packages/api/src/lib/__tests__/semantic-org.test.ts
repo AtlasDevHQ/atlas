@@ -57,6 +57,7 @@ function makeEntityRow(name: string, table: string, connectionId?: string) {
     name,
     yaml_content: `table: ${table}\n${connectionId ? `connection: ${connectionId}\n` : ""}`,
     connection_id: connectionId ?? null,
+    status: "published" as const,
     created_at: "2026-01-01",
     updated_at: "2026-01-01",
   };
@@ -130,6 +131,7 @@ describe("loadOrgWhitelist", () => {
           name: "bad",
           yaml_content: "{{{not valid yaml",
           connection_id: null,
+          status: "published" as const,
           created_at: "2026-01-01",
           updated_at: "2026-01-01",
         },

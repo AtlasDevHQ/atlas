@@ -4,6 +4,9 @@
 export const PROMPT_INDUSTRIES = ["saas", "ecommerce", "cybersecurity"] as const;
 export type PromptIndustry = (typeof PROMPT_INDUSTRIES)[number];
 
+/** Valid status values for prompt collections (draft/published mode). */
+export type PromptCollectionStatus = "published" | "draft" | "archived";
+
 /** Wire format for the prompt_collections table. */
 export interface PromptCollection {
   id: string;
@@ -13,6 +16,7 @@ export interface PromptCollection {
   description: string;
   isBuiltin: boolean;
   sortOrder: number;
+  status: PromptCollectionStatus;
   createdAt: string;
   updatedAt: string;
 }

@@ -8,9 +8,16 @@
 import * as fs from "fs";
 import * as path from "path";
 import type { SemanticTableDiff, SemanticDiffResponse } from "@useatlas/types";
+import type { AtlasMode } from "@useatlas/types/auth";
 import { createLogger } from "@atlas/api/lib/logger";
 import { connections } from "@atlas/api/lib/db/connection";
+import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import { getSemanticRoot, readYamlFile, discoverEntities } from "./files";
+import {
+  getOrgWhitelistedTables,
+  getWhitelistedTables,
+  loadOrgWhitelist,
+} from "./whitelist";
 
 const log = createLogger("semantic-diff");
 
@@ -144,10 +151,61 @@ export function computeDiff(
 }
 
 // ---------------------------------------------------------------------------
+// filterSnapshotsByWhitelist — scope DB snapshots to semantic layer tables
+// ---------------------------------------------------------------------------
+
+/**
+ * Filter a DB snapshot map to only include tables present in the semantic
+ * whitelist. Matches both the bare table name and any schema-qualified form
+ * (e.g. `public.users`) so whitelists that record one, the other, or both
+ * continue to work.
+ *
+ * When `allowed` is undefined, the snapshots are returned unchanged — callers
+ * that don't want scoping should pass `undefined` rather than an empty set.
+ * An empty `allowed` set means "nothing is allowed" and returns an empty map.
+ */
+export function filterSnapshotsByWhitelist(
+  snapshots: Map<string, EntitySnapshot>,
+  allowed: Set<string> | undefined,
+): Map<string, EntitySnapshot> {
+  if (!allowed) return snapshots;
+  const filtered = new Map<string, EntitySnapshot>();
+  for (const [tableName, snapshot] of snapshots) {
+    const bare = tableName.toLowerCase();
+    if (allowed.has(bare)) {
+      filtered.set(tableName, snapshot);
+      continue;
+    }
+    // Schema-qualified match — loadEntitiesFromDir stores both forms, but a
+    // future whitelist shape might only include the qualified name. Treat the
+    // DB-returned bare name as matching any `schema.tableName` form too.
+    for (const allowedName of allowed) {
+      const dot = allowedName.lastIndexOf(".");
+      if (dot >= 0 && allowedName.slice(dot + 1) === bare) {
+        filtered.set(tableName, snapshot);
+        break;
+      }
+    }
+  }
+  return filtered;
+}
+
+// ---------------------------------------------------------------------------
 // getDBSchema — query information_schema for table/column metadata
 // ---------------------------------------------------------------------------
 
-export async function getDBSchema(connectionId: string = "default"): Promise<Map<string, EntitySnapshot>> {
+/**
+ * Query information_schema for table/column metadata for a connection.
+ *
+ * When `allowedTables` is provided, the result map is filtered to only include
+ * tables present in the whitelist (both bare and schema-qualified matches).
+ * When omitted, every table in the DB is returned (legacy behavior — retained
+ * for callers that do their own scoping).
+ */
+export async function getDBSchema(
+  connectionId: string = "default",
+  allowedTables?: Set<string>,
+): Promise<Map<string, EntitySnapshot>> {
   const conn = connections.get(connectionId);
   const dbType = connections.getDBType(connectionId);
 
@@ -180,7 +238,7 @@ export async function getDBSchema(connectionId: string = "default"): Promise<Map
     snapshots.get(tableName)!.columns.set(columnName, mapSQLType(dataType));
   }
 
-  return snapshots;
+  return filterSnapshotsByWhitelist(snapshots, allowedTables);
 }
 
 // ---------------------------------------------------------------------------
@@ -241,8 +299,58 @@ export function getYAMLSnapshots(
 // runDiff — orchestrates the full diff for a connection
 // ---------------------------------------------------------------------------
 
-export async function runDiff(connectionId: string = "default"): Promise<SemanticDiffResponse> {
-  const dbSnapshots = await getDBSchema(connectionId);
+/**
+ * Options for scoping a schema diff to a specific org + mode.
+ *
+ * When `orgId` is provided, the DB snapshot is filtered to only include
+ * tables present in the org's mode-aware semantic whitelist. This prevents
+ * phantom tables from appearing in the diff when multiple orgs share a
+ * physical database (e.g. demo orgs sharing the same Postgres).
+ *
+ * When `orgId` is omitted, falls back to the file-based whitelist
+ * (`getWhitelistedTables(connectionId)`) — same source of truth the
+ * SQL execution path uses for self-hosted single-tenant deployments.
+ *
+ * Mode semantics:
+ *   - `published` — only published entities count as whitelisted
+ *   - `developer` — draft overlay is included (drafts supersede published,
+ *     tombstones hide tables, archived-connection entities are excluded)
+ *   - omitted — legacy path (no status filter, all rows including tombstones)
+ */
+export interface DiffOptions {
+  /** Organization ID for org-scoped semantic whitelist. */
+  orgId?: string;
+  /** Atlas mode — `published` (end-user) or `developer` (overlay with drafts). */
+  atlasMode?: AtlasMode;
+}
+
+export async function runDiff(
+  connectionId: string = "default",
+  options: DiffOptions = {},
+): Promise<SemanticDiffResponse> {
+  const { orgId, atlasMode } = options;
+
+  // Resolve the mode-aware whitelist for this org+connection. Falls back to
+  // the file-based whitelist when no org context is available (self-hosted).
+  let allowedTables: Set<string> | undefined;
+  if (orgId && hasInternalDB()) {
+    try {
+      await loadOrgWhitelist(orgId, atlasMode);
+      allowedTables = getOrgWhitelistedTables(orgId, connectionId, atlasMode);
+    } catch (err) {
+      // Fail closed — an empty allowed set means the diff returns no tables,
+      // which is safer than leaking the whole DB schema across tenants.
+      log.error(
+        { orgId, connectionId, atlasMode, err: err instanceof Error ? err.message : String(err) },
+        "Failed to load org whitelist — scoping diff to empty set",
+      );
+      allowedTables = new Set();
+    }
+  } else {
+    allowedTables = getWhitelistedTables(connectionId);
+  }
+
+  const dbSnapshots = await getDBSchema(connectionId, allowedTables);
   const { snapshots: yamlSnapshots, warnings } = getYAMLSnapshots(connectionId);
 
   const diff = computeDiff(dbSnapshots, yamlSnapshots);

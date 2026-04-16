@@ -99,6 +99,8 @@ Compares the live database schema against the semantic layer YAML files to detec
 
 **Multiple connections:** If multiple datasource connections are registered, a connection selector dropdown appears in the page header. The diff is re-computed when you switch connections.
 
+**Scoped to your semantic layer:** The diff only considers tables present in your organization's semantic whitelist for the active mode. In developer mode, drafts are included via the overlay; in published mode, only published entities count. This prevents phantom tables from appearing when multiple tenants share a physical database (e.g. demo orgs) and hides system tables that aren't part of the semantic layer.
+
 **API endpoint:** `GET /api/v1/admin/semantic/diff?connection=<id>` — returns structured JSON with `newTables`, `removedTables`, `tableDiffs`, `unchangedCount`, and a `summary` object.
 
 ---

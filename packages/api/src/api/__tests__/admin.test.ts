@@ -1698,10 +1698,13 @@ describe("Admin routes — semantic diff", () => {
     expect(body.summary).toEqual({ total: 5, new: 1, removed: 1, changed: 1, unchanged: 2 });
   });
 
-  it("passes connection query param to runDiff", async () => {
+  it("passes connection query param and mode/org context to runDiff", async () => {
     const res = await app.fetch(adminRequest("/api/v1/admin/semantic/diff?connection=default"));
     expect(res.status).toBe(200);
-    expect(mockRunDiff).toHaveBeenCalledWith("default");
+    expect(mockRunDiff).toHaveBeenCalledWith(
+      "default",
+      expect.objectContaining({ atlasMode: expect.any(String) }),
+    );
   });
 
   it("returns 404 for unknown connection", async () => {

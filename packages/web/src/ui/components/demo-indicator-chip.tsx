@@ -3,19 +3,7 @@
 import { Badge } from "@/components/ui/badge";
 import { useMode } from "@/ui/hooks/use-mode";
 import { useModeStatus } from "@/ui/hooks/use-mode-status";
-
-/**
- * Display labels keyed by the `demo_industry` setting written during
- * onboarding (see `DEMO_INDUSTRIES` in `packages/api/src/api/routes/onboarding.ts:48`).
- *
- * Fail-closed: a new industry without an entry here renders nothing rather
- * than showing a raw slug to users.
- */
-const DEMO_INDUSTRY_LABELS: Record<string, string> = {
-  saas: "SaaS CRM",
-  cybersecurity: "Sentinel Security",
-  ecommerce: "NovaMart",
-};
+import { demoIndustryLabel } from "@/ui/hooks/use-demo-readonly";
 
 /**
  * Subtle indicator shown to non-admin users when the org's workspace is
@@ -27,7 +15,7 @@ const DEMO_INDUSTRY_LABELS: Record<string, string> = {
  * - The user is an admin (they have the developer banner)
  * - The org has no active `__demo__` connection
  * - The org never selected a demo industry (null slug)
- * - The industry slug isn't in `DEMO_INDUSTRY_LABELS` (fail-closed)
+ * - The industry slug isn't recognized by `demoIndustryLabel` (fail-closed)
  */
 export function DemoIndicatorChip() {
   const { isAdmin, isLoading: modeLoading } = useMode();
@@ -37,10 +25,7 @@ export function DemoIndicatorChip() {
   if (isAdmin) return null;
   if (!data?.demoConnectionActive) return null;
 
-  const industry = data.demoIndustry;
-  if (!industry) return null;
-
-  const label = DEMO_INDUSTRY_LABELS[industry];
+  const label = demoIndustryLabel(data.demoIndustry);
   if (!label) return null;
 
   return (

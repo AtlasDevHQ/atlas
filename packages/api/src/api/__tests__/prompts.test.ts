@@ -29,6 +29,24 @@ const mocks = createApiTestMocks({
   },
 });
 
+// Controls `getSettingAuto("ATLAS_DEMO_INDUSTRY")` per test — set in beforeEach
+// and mutated by individual it() blocks that exercise mode-aware demo scoping.
+let demoIndustryFixture: string | undefined;
+mock.module("@atlas/api/lib/settings", () => ({
+  getSettingsForAdmin: () => [],
+  getSettingsRegistry: () => [],
+  getSettingDefinition: () => undefined,
+  setSetting: async () => {},
+  deleteSetting: async () => {},
+  getSetting: () => undefined,
+  getSettingAuto: (key: string) =>
+    key === "ATLAS_DEMO_INDUSTRY" ? demoIndustryFixture : undefined,
+  getSettingLive: async () => undefined,
+  loadSettings: async () => 0,
+  getAllSettingOverrides: async () => [],
+  _resetSettingsCache: () => {},
+}));
+
 // --- Import the app AFTER mocks ---
 
 const { app } = await import("../index");
@@ -113,7 +131,19 @@ beforeEach(() => {
   mockGetInternalDB.mockImplementation(() => ({
     query: mock(async () => ({ rows: [] })),
   }));
+  demoIndustryFixture = undefined;
 });
+
+// Drive `resolvePromptDemoContext`: returns true when the mocked query asks
+// whether `__demo__` exists for this org. Other queries resolve to `[]`.
+function mockDemoActive(active: boolean): void {
+  mocks.mockInternalQuery.mockImplementation((sql: string) => {
+    if (sql.includes("FROM connections") && sql.includes("__demo__")) {
+      return Promise.resolve([{ active }]);
+    }
+    return Promise.resolve([]);
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -205,8 +235,88 @@ describe("user-facing prompt routes", () => {
       expect(res.status).toBe(200);
       const calls = mocks.mockInternalQuery.mock.calls;
       expect(calls.length).toBeGreaterThanOrEqual(1);
-      const sql = calls[0][0] as string;
-      expect(sql).toContain("org_id IS NULL");
+      const listCall = calls.find(
+        ([sql]) => typeof sql === "string" && sql.includes("FROM prompt_collections"),
+      );
+      expect(listCall).toBeDefined();
+      expect(listCall![0] as string).toContain("org_id IS NULL");
+    });
+
+    // ─── Mode-aware demo scoping (#1438) ────────────────────────────
+
+    describe("mode + demo scoping (#1438)", () => {
+      function findListCall() {
+        return mocks.mockInternalQuery.mock.calls.find(
+          ([sql]) =>
+            typeof sql === "string" &&
+            sql.includes("FROM prompt_collections") &&
+            !sql.includes("EXISTS"),
+        );
+      }
+
+      it("published + demo active + industry: returns industry built-ins + custom", async () => {
+        demoIndustryFixture = "cybersecurity";
+        mockDemoActive(true);
+        const res = await userReq("GET", "/");
+        expect(res.status).toBe(200);
+
+        const listCall = findListCall();
+        expect(listCall).toBeDefined();
+        const sql = listCall![0] as string;
+        expect(sql).toContain("status = 'published'");
+        expect(sql).toContain("is_builtin = true AND industry = $2");
+        expect(sql).toContain("is_builtin = false AND org_id = $1");
+        expect(listCall![1]).toEqual(["org-1", "cybersecurity"]);
+      });
+
+      it("published + demo archived: hides all built-ins, returns only custom", async () => {
+        demoIndustryFixture = "cybersecurity";
+        mockDemoActive(false);
+        const res = await userReq("GET", "/");
+        expect(res.status).toBe(200);
+
+        const listCall = findListCall();
+        expect(listCall).toBeDefined();
+        const sql = listCall![0] as string;
+        expect(sql).toContain("is_builtin = false");
+        expect(sql).not.toContain("industry =");
+        expect(sql).not.toContain("org_id IS NULL OR");
+        expect(listCall![1]).toEqual(["org-1"]);
+      });
+
+      it("published + no demo industry set: hides all built-ins", async () => {
+        demoIndustryFixture = undefined;
+        mockDemoActive(false);
+        const res = await userReq("GET", "/");
+        expect(res.status).toBe(200);
+        const sql = findListCall()![0] as string;
+        expect(sql).toContain("is_builtin = false");
+        expect(sql).not.toContain("industry =");
+      });
+
+      it("developer + demo active: expands status + keeps industry filter", async () => {
+        demoIndustryFixture = "cybersecurity";
+        mockDemoActive(true);
+        const res = await userReq("GET", "/", undefined, "atlas-mode=developer");
+        expect(res.status).toBe(200);
+
+        const sql = findListCall()![0] as string;
+        expect(sql).toContain("status IN ('published', 'draft')");
+        expect(sql).not.toContain("archived");
+        expect(sql).toContain("is_builtin = true AND industry = $2");
+      });
+
+      it("developer + no demo: draft custom collections only (built-ins hidden)", async () => {
+        demoIndustryFixture = undefined;
+        mockDemoActive(false);
+        const res = await userReq("GET", "/", undefined, "atlas-mode=developer");
+        expect(res.status).toBe(200);
+
+        const sql = findListCall()![0] as string;
+        expect(sql).toContain("status IN ('published', 'draft')");
+        expect(sql).toContain("is_builtin = false");
+        expect(sql).not.toContain("industry =");
+      });
     });
   });
 
@@ -333,6 +443,55 @@ describe("admin prompt routes", () => {
       expect(listCall).toBeDefined();
       expect(listCall![0] as string).toContain("status IN ('published', 'draft')");
       expect(listCall![0] as string).not.toContain("archived");
+    });
+
+    // ─── Mode-aware demo scoping for admin list (#1438) ─────────────
+
+    describe("mode + demo scoping (#1438)", () => {
+      function findListCall() {
+        return mocks.mockInternalQuery.mock.calls.find(
+          ([sql]) =>
+            typeof sql === "string" &&
+            sql.includes("FROM prompt_collections") &&
+            !sql.includes("EXISTS"),
+        );
+      }
+
+      it("published + demo active + industry: built-ins scoped to industry + custom", async () => {
+        demoIndustryFixture = "cybersecurity";
+        mockDemoActive(true);
+        const res = await adminReq("GET", "/");
+        expect(res.status).toBe(200);
+
+        const listCall = findListCall();
+        expect(listCall).toBeDefined();
+        const sql = listCall![0] as string;
+        expect(sql).toContain("is_builtin = true AND industry = $2");
+        expect(sql).toContain("is_builtin = false AND org_id = $1");
+        expect(listCall![1]).toEqual(["org-1", "cybersecurity"]);
+      });
+
+      it("published + demo archived: only custom published", async () => {
+        demoIndustryFixture = "cybersecurity";
+        mockDemoActive(false);
+        const res = await adminReq("GET", "/");
+        expect(res.status).toBe(200);
+
+        const sql = findListCall()![0] as string;
+        expect(sql).toContain("is_builtin = false");
+        expect(sql).not.toContain("industry =");
+      });
+
+      it("developer + demo active: status IN + industry filter + custom drafts", async () => {
+        demoIndustryFixture = "cybersecurity";
+        mockDemoActive(true);
+        const res = await adminReq("GET", "/", undefined, "atlas-mode=developer");
+        expect(res.status).toBe(200);
+
+        const sql = findListCall()![0] as string;
+        expect(sql).toContain("status IN ('published', 'draft')");
+        expect(sql).toContain("is_builtin = true AND industry = $2");
+      });
     });
   });
 

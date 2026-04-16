@@ -26,7 +26,8 @@ const DEMO_INDUSTRY_LABELS: Record<string, string> = {
  * - Mode status is loading or unavailable
  * - The user is an admin (they have the developer banner)
  * - The org has no active `__demo__` connection
- * - The industry slug has no label mapping
+ * - The org never selected a demo industry (null slug)
+ * - The industry slug isn't in `DEMO_INDUSTRY_LABELS` (fail-closed)
  */
 export function DemoIndicatorChip() {
   const { isAdmin, isLoading: modeLoading } = useMode();

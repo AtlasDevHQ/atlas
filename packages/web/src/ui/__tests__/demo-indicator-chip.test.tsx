@@ -47,8 +47,12 @@ describe("DemoIndicatorChip", () => {
 
   test("renders label when demoConnectionActive with known industry", () => {
     modeStatusState = { data: activeMode("cybersecurity"), loading: false };
-    const { container } = render(<DemoIndicatorChip />);
+    const { container, getByLabelText } = render(<DemoIndicatorChip />);
     expect(container.textContent).toContain("Sentinel Security demo");
+    // Assert the accessibility attributes so a regression that drops them
+    // (e.g. switching to a generic span) fails loudly.
+    const chip = getByLabelText("Demo dataset: Sentinel Security");
+    expect(chip.getAttribute("title")).toBe("You are viewing the Sentinel Security demo dataset");
   });
 
   test("renders SaaS CRM label for saas industry", () => {

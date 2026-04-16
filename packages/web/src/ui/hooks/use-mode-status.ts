@@ -26,9 +26,12 @@ export function useModeStatus(): {
       try {
         res = await fetch(`${apiUrl}/api/v1/mode`, { credentials, signal });
       } catch (err) {
-        // Network failure (offline, DNS, CORS) or AbortError on unmount —
-        // log at debug so React Query devtools + browser console agree without
-        // spamming users' consoles for expected cancellations.
+        // Unmount / refetch abort is expected — re-throw without logging so
+        // devtools and the browser console stay quiet on normal navigation.
+        if (err instanceof DOMException && err.name === "AbortError") throw err;
+        // Network failure (offline, DNS, CORS) — log at debug so developers
+        // inspecting the browser console can correlate a missing chip to the
+        // root cause, without spamming users' consoles for expected errors.
         console.debug("useModeStatus fetch failed:", err instanceof Error ? err.message : String(err));
         throw err;
       }

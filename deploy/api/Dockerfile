@@ -55,8 +55,8 @@ WORKDIR /app
 COPY --from=deps /app ./
 COPY . .
 COPY packages/cli/data/demo-semantic semantic
-COPY packages/cli/data/cybersec-semantic data/cybersec-semantic
-COPY packages/cli/data/ecommerce-semantic data/ecommerce-semantic
+COPY packages/cli/data/seeds/cybersec/semantic data/cybersec-semantic
+COPY packages/cli/data/seeds/ecommerce/semantic data/ecommerce-semantic
 # Build @useatlas/types first (exports point to dist/) then the react widget bundle
 RUN cd packages/types && bun run build
 RUN cd packages/react && bun run build

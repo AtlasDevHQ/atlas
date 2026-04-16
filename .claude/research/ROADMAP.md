@@ -1170,7 +1170,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 
 ### Query Layer
 - [x] Published mode query filtering across connections, entities, prompts (#1426, PR #1447)
-- [x] Developer mode overlay queries — entity CTE + union queries (#1427)
+- [x] Developer mode overlay queries — entity CTE + union queries (#1427, PR #1451)
 - [ ] Write path mode-awareness — draft creation, draft edits, tombstones (#1428)
 
 ### Publishing
@@ -1181,10 +1181,10 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [ ] Agent isolation — mode-aware connection + whitelist in tool execution (#1430)
 - [ ] Semantic diff scoping — filter `getDBSchema` to whitelist (#1431)
 - [ ] Prompt library mode scoping — demo industry filtering + draft visibility (#1438)
-- [x] `GET /api/v1/mode` endpoint (#1439)
+- [x] `GET /api/v1/mode` endpoint (#1439, PR #1453)
 
 ### Frontend
-- [x] Connect page redesign — two equal-weight paths (#1432)
+- [x] Connect page redesign — two equal-weight paths (#1432, PRs #1449, #1456)
 - [x] Developer mode banner + cookie-based toggle (#1433, PR #1445)
 - [ ] Non-admin demo indicator chip (#1434)
 - [ ] Admin surface — draft/demo badges, read-only published, pending changes summary (#1435)
@@ -1194,7 +1194,8 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] Bundle cybersec + ecommerce semantic directories in Docker image (#1422, PR #1441)
 - [x] Docker COPY for demo-semantic and SQL seed symlinks (#1440, PR #1441)
 - [x] Partial unique indexes on semantic_entities are NULL-unsafe for connection_id (#1444, PR #1447)
-- [x] Scaffold template layout override — strip ModeBanner for standalone deploys (PR forthcoming)
+- [x] Scaffold template layout override — strip ModeBanner for standalone deploys (commit 079f8996)
+- [ ] Scaffold types.ts — re-exports `ADMIN_ROLES`/`ATLAS_MODES` not yet in published `@useatlas/types@0.0.10` (PR #1448)
 
 ---
 

@@ -46,7 +46,7 @@ mock.module("@atlas/api/lib/residency/readonly", () => ({
 // Imports (after mocks)
 // ---------------------------------------------------------------------------
 
-const { resolveMode } = await import("../middleware");
+const { resolveMode, buildUnionStatusClause } = await import("../middleware");
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -210,6 +210,35 @@ describe("resolveMode", () => {
 
   it("ignores invalid header value and defaults to published", () => {
     expect(resolveMode(null, "foobar", adminAuth())).toBe("published");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildUnionStatusClause — shared helper for connections and prompt collections
+// ---------------------------------------------------------------------------
+
+describe("buildUnionStatusClause", () => {
+  it("published mode restricts to status = 'published'", () => {
+    expect(buildUnionStatusClause("published")).toBe(" AND status = 'published'");
+  });
+
+  it("developer mode includes draft alongside published", () => {
+    expect(buildUnionStatusClause("developer")).toBe(" AND status IN ('published', 'draft')");
+  });
+
+  it("never returns archived in either mode (archived is always excluded)", () => {
+    expect(buildUnionStatusClause("published")).not.toContain("archived");
+    expect(buildUnionStatusClause("developer")).not.toContain("archived");
+  });
+
+  it("developer mode never surfaces draft_delete via the simple union", () => {
+    // Tombstones only apply to semantic_entities (CTE overlay). Connections
+    // and prompt collections don't use draft_delete.
+    expect(buildUnionStatusClause("developer")).not.toContain("draft_delete");
+  });
+
+  it("undefined mode defaults to published (most restrictive)", () => {
+    expect(buildUnionStatusClause(undefined)).toBe(" AND status = 'published'");
   });
 });
 

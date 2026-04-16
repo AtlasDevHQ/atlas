@@ -1170,7 +1170,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 
 ### Query Layer
 - [x] Published mode query filtering across connections, entities, prompts (#1426, PR #1447)
-- [ ] Developer mode overlay queries — entity CTE + union queries (#1427)
+- [x] Developer mode overlay queries — entity CTE + union queries (#1427)
 - [ ] Write path mode-awareness — draft creation, draft edits, tombstones (#1428)
 
 ### Publishing

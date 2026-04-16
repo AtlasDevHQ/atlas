@@ -29,6 +29,12 @@ const mockListEntities = mock(
     return Promise.resolve(storedEntities);
   },
 );
+// Developer-mode overlay: returns published + draft rows, excludes draft_delete/archived.
+// Close enough to the real CTE behavior for whitelist tests — drafts supersede drops
+// are handled at SQL level but this mock doesn't need to model tombstones for whitelisting.
+const mockListEntitiesWithOverlay = mock((_orgId: string, _entityType?: string) =>
+  Promise.resolve(storedEntities.filter((e) => e.status === "published" || e.status === "draft")),
+);
 const mockGetEntity = mock((): Promise<SemanticEntityRow | null> => Promise.resolve(null));
 const mockUpsertEntity = mock((): Promise<void> => Promise.resolve());
 const mockDeleteEntity = mock((): Promise<boolean> => Promise.resolve(false));
@@ -42,6 +48,7 @@ const SEMANTIC_ENTITY_STATUSES = ["published", "draft", "draft_delete", "archive
 
 mock.module("@atlas/api/lib/semantic/entities", () => ({
   listEntities: mockListEntities,
+  listEntitiesWithOverlay: mockListEntitiesWithOverlay,
   getEntity: mockGetEntity,
   upsertEntity: mockUpsertEntity,
   deleteEntity: mockDeleteEntity,
@@ -93,8 +100,9 @@ describe("published mode filtering", () => {
   beforeEach(() => {
     _resetOrgWhitelists();
     mockListEntities.mockReset();
+    mockListEntitiesWithOverlay.mockReset();
     storedEntities = [];
-    // Re-wire mock to filter by status
+    // Re-wire mocks to filter by status
     mockListEntities.mockImplementation(
       (_orgId: string, _entityType?: string, statusFilter?: SemanticEntityStatus) => {
         if (statusFilter) {
@@ -103,10 +111,14 @@ describe("published mode filtering", () => {
         return Promise.resolve(storedEntities);
       },
     );
+    mockListEntitiesWithOverlay.mockImplementation(
+      (_orgId: string, _entityType?: string) =>
+        Promise.resolve(storedEntities.filter((e) => e.status === "published" || e.status === "draft")),
+    );
   });
 
-  describe("listEntities statusFilter", () => {
-    it("passes statusFilter to listEntities when mode is published", async () => {
+  describe("entity loader dispatch by mode", () => {
+    it("published mode calls listEntities with 'published' status filter", async () => {
       storedEntities = [
         makeEntityRow("users", "users", "published"),
         makeEntityRow("users", "users", "draft"),
@@ -114,26 +126,27 @@ describe("published mode filtering", () => {
       ];
 
       await loadOrgWhitelist("org-1", "published");
-      // listEntities should have been called with "published" status filter
       expect(mockListEntities).toHaveBeenCalledWith("org-1", "entity", "published");
+      expect(mockListEntitiesWithOverlay).not.toHaveBeenCalled();
     });
 
-    it("does not pass statusFilter when mode is developer", async () => {
+    it("developer mode calls listEntitiesWithOverlay (not listEntities)", async () => {
       storedEntities = [
         makeEntityRow("users", "users", "published"),
         makeEntityRow("users", "users", "draft"),
       ];
 
       await loadOrgWhitelist("org-1", "developer");
-      // listEntities should have been called without status filter
-      expect(mockListEntities).toHaveBeenCalledWith("org-1", "entity", undefined);
+      expect(mockListEntitiesWithOverlay).toHaveBeenCalledWith("org-1", "entity");
+      expect(mockListEntities).not.toHaveBeenCalled();
     });
 
-    it("does not pass statusFilter when mode is omitted", async () => {
+    it("omitted mode falls back to listEntities with no status filter", async () => {
       storedEntities = [makeEntityRow("users", "users", "published")];
 
       await loadOrgWhitelist("org-1");
       expect(mockListEntities).toHaveBeenCalledWith("org-1", "entity", undefined);
+      expect(mockListEntitiesWithOverlay).not.toHaveBeenCalled();
     });
   });
 
@@ -165,8 +178,8 @@ describe("published mode filtering", () => {
     });
   });
 
-  describe("developer mode returns all entities", () => {
-    it("developer mode whitelist contains all entity tables", async () => {
+  describe("developer mode returns overlay (published + draft, no tombstones)", () => {
+    it("developer mode whitelist contains published + draft entity tables, excludes tombstones", async () => {
       storedEntities = [
         makeEntityRow("users", "users", "published"),
         makeEntityRow("orders", "orders", "draft"),
@@ -177,10 +190,11 @@ describe("published mode filtering", () => {
       const tables = result.get("default") ?? new Set();
       expect(tables.has("users")).toBe(true);
       expect(tables.has("orders")).toBe(true);
-      expect(tables.has("events")).toBe(true);
+      // draft_delete targets are hidden by the overlay CTE
+      expect(tables.has("events")).toBe(false);
     });
 
-    it("getOrgWhitelistedTables in developer mode returns all tables", async () => {
+    it("getOrgWhitelistedTables in developer mode includes drafts alongside published", async () => {
       storedEntities = [
         makeEntityRow("users", "users", "published"),
         makeEntityRow("orders", "orders", "draft"),
@@ -206,14 +220,15 @@ describe("published mode filtering", () => {
       expect(publishedTables.has("users")).toBe(true);
       expect(publishedTables.has("orders")).toBe(false);
 
-      // Load developer mode — should call listEntities again (separate cache)
+      // Load developer mode — dispatches to the overlay loader (separate cache)
       await loadOrgWhitelist("org-1", "developer");
       const devTables = getOrgWhitelistedTables("org-1", "default", "developer");
       expect(devTables.has("users")).toBe(true);
       expect(devTables.has("orders")).toBe(true);
 
-      // Both caches should coexist
-      expect(mockListEntities).toHaveBeenCalledTimes(2);
+      // Both caches should coexist — published hit listEntities, developer hit the overlay
+      expect(mockListEntities).toHaveBeenCalledTimes(1);
+      expect(mockListEntitiesWithOverlay).toHaveBeenCalledTimes(1);
     });
 
     it("published cache hit does not return developer results", async () => {
@@ -241,15 +256,17 @@ describe("published mode filtering", () => {
       // Load both caches
       await loadOrgWhitelist("org-1", "published");
       await loadOrgWhitelist("org-1", "developer");
-      expect(mockListEntities).toHaveBeenCalledTimes(2);
+      expect(mockListEntities).toHaveBeenCalledTimes(1);
+      expect(mockListEntitiesWithOverlay).toHaveBeenCalledTimes(1);
 
       // Invalidate — should clear both
       invalidateOrgWhitelist("org-1");
 
-      // Reload both — should call listEntities again (cache miss)
+      // Reload both — should hit the DB again (cache miss)
       await loadOrgWhitelist("org-1", "published");
       await loadOrgWhitelist("org-1", "developer");
-      expect(mockListEntities).toHaveBeenCalledTimes(4); // 2 original + 2 reloads
+      expect(mockListEntities).toHaveBeenCalledTimes(2);
+      expect(mockListEntitiesWithOverlay).toHaveBeenCalledTimes(2);
     });
 
     it("invalidateOrgWhitelist clears published cache even when developer cache was not loaded", async () => {

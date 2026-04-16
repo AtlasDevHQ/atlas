@@ -78,6 +78,7 @@
     "@types/js-yaml": "^4.0.9",
     "@types/pg": "^8.20.0",
     "drizzle-kit": "^0.31.10",
-    "drizzle-orm": "^0.45.2"
+    "drizzle-orm": "^0.45.2",
+    "pg-mem": "^3.0.14"
   }
 }

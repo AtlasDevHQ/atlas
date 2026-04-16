@@ -109,6 +109,91 @@ export async function listEntities(
 }
 
 /**
+ * Developer-mode overlay read for semantic entities.
+ *
+ * Returns the superposition of published + draft + draft_delete rows such that:
+ * - A `draft_delete` tombstone hides the published entity it targets (final
+ *   projection excludes tombstones)
+ * - A `draft` row supersedes a published row with the same
+ *   (org_id, name, connection_id) key
+ * - Unmodified published entities pass through
+ * - `archived` entity rows are excluded (the `status IN` filter drops them)
+ * - Entities whose parent connection is archived are also excluded
+ *
+ * The CTE uses DISTINCT ON with a status priority (draft_delete > draft >
+ * published) so exactly one row per entity key survives, then the outer
+ * SELECT drops tombstones.
+ *
+ * Used by `loadOrgWhitelist` in developer mode. Published mode uses
+ * `listEntities(..., "published")` instead — a simple status = 'published'
+ * filter is sufficient because there's at most one published row per key.
+ */
+export async function listEntitiesWithOverlay(
+  orgId: string,
+  entityType?: SemanticEntityType,
+): Promise<SemanticEntityRow[]> {
+  if (!hasInternalDB()) return [];
+
+  const baseSelect =
+    "id, org_id, entity_type, name, yaml_content, connection_id, status, created_at, updated_at";
+
+  if (entityType) {
+    return internalQuery<SemanticEntityRow>(
+      `WITH overlay AS (
+         SELECT DISTINCT ON (org_id, name, connection_id) ${baseSelect}
+         FROM semantic_entities
+         WHERE org_id = $1
+           AND entity_type = $2
+           AND status IN ('published', 'draft', 'draft_delete')
+           AND (
+             connection_id IS NULL
+             OR connection_id IN (
+               SELECT id FROM connections
+               WHERE org_id = $1 AND status IN ('published', 'draft')
+             )
+           )
+         ORDER BY org_id, name, connection_id,
+           CASE status
+             WHEN 'draft_delete' THEN 0
+             WHEN 'draft' THEN 1
+             ELSE 2
+           END
+       )
+       SELECT ${baseSelect} FROM overlay
+       WHERE status != 'draft_delete'
+       ORDER BY name`,
+      [orgId, entityType],
+    );
+  }
+
+  return internalQuery<SemanticEntityRow>(
+    `WITH overlay AS (
+       SELECT DISTINCT ON (org_id, name, connection_id) ${baseSelect}
+       FROM semantic_entities
+       WHERE org_id = $1
+         AND status IN ('published', 'draft', 'draft_delete')
+         AND (
+           connection_id IS NULL
+           OR connection_id IN (
+             SELECT id FROM connections
+             WHERE org_id = $1 AND status IN ('published', 'draft')
+           )
+         )
+       ORDER BY org_id, name, connection_id,
+         CASE status
+           WHEN 'draft_delete' THEN 0
+           WHEN 'draft' THEN 1
+           ELSE 2
+         END
+     )
+     SELECT ${baseSelect} FROM overlay
+     WHERE status != 'draft_delete'
+     ORDER BY entity_type, name`,
+    [orgId],
+  );
+}
+
+/**
  * Get a single semantic entity by org, type, and name.
  */
 export async function getEntity(

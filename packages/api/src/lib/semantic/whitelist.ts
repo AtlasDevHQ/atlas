@@ -385,11 +385,21 @@ export function _resetPluginEntities(): void {
 
 /**
  * Per-org whitelist cache: Map<cacheKey, Map<connectionId, Set<tableName>>>.
- * Cache key is `orgId` for developer mode or `${orgId}:published` for published mode.
+ * Each mode gets a distinct cache key so the three result shapes (published
+ * filter, developer overlay, no-mode legacy) can never be confused:
+ *   - `${orgId}:published` — status = 'published'
+ *   - `${orgId}:developer` — CTE overlay
+ *   - `${orgId}` — legacy path, no mode supplied (all rows incl. tombstones)
  * Populated by `loadOrgWhitelist()` before the agent loop starts.
- * Invalidated by `invalidateOrgWhitelist(orgId)` on entity CRUD (clears both modes).
+ * Invalidated by `invalidateOrgWhitelist(orgId)` on entity CRUD (clears all modes).
  */
 const _orgWhitelists = new Map<string, Map<string, Set<string>>>();
+
+function whitelistCacheKey(orgId: string, mode?: "published" | "developer"): string {
+  if (mode === "published") return `${orgId}:published`;
+  if (mode === "developer") return `${orgId}:developer`;
+  return orgId;
+}
 
 /**
  * Load the table whitelist for an org from the internal DB.
@@ -399,17 +409,21 @@ const _orgWhitelists = new Map<string, Map<string, Set<string>>>();
  *
  * @param orgId - Organization ID to load entities for.
  * @param mode - Atlas mode. When "published", only published entities are
- *   included. When "developer" (or omitted), all entities are included.
+ *   included. When "developer", drafts are overlaid on published via the
+ *   CTE in `listEntitiesWithOverlay` (drafts supersede, tombstones hide,
+ *   archived-connection entities excluded). When omitted, behaves like
+ *   developer mode without the overlay — returns all rows the DB has.
  * @returns Map of connectionId → Set<tableName>.
  */
 export async function loadOrgWhitelist(orgId: string, mode?: "published" | "developer"): Promise<Map<string, Set<string>>> {
-  const cacheKey = mode === "published" ? `${orgId}:published` : orgId;
+  const cacheKey = whitelistCacheKey(orgId, mode);
   const cached = _orgWhitelists.get(cacheKey);
   if (cached) return cached;
 
-  const { listEntities } = await import("@atlas/api/lib/semantic/entities");
-  const statusFilter = mode === "published" ? "published" as const : undefined;
-  const rows = await listEntities(orgId, "entity", statusFilter);
+  const { listEntities, listEntitiesWithOverlay } = await import("@atlas/api/lib/semantic/entities");
+  const rows = mode === "developer"
+    ? await listEntitiesWithOverlay(orgId, "entity")
+    : await listEntities(orgId, "entity", mode === "published" ? "published" : undefined);
 
   const byConnection = new Map<string, Set<string>>();
   let parseFailures = 0;
@@ -450,14 +464,18 @@ export async function loadOrgWhitelist(orgId: string, mode?: "published" | "deve
 /**
  * Get whitelisted tables for an org + connection.
  *
- * Must be called after `loadOrgWhitelist(orgId)` — returns empty set if
- * the org whitelist has not been loaded yet.
+ * Must be called after `loadOrgWhitelist(orgId, mode)` with the matching mode —
+ * each mode has a distinct cache key (see `_orgWhitelists` and `whitelistCacheKey`),
+ * so a published-mode load won't satisfy a developer-mode lookup. Returns an
+ * empty set if the requested cache has not been loaded.
  *
- * @param mode - Atlas mode. When "published", looks up the published-only cache.
- *   Omit for developer mode (all entities).
+ * @param mode - `"published"` → published-only cache; `"developer"` → overlay
+ *   cache (drafts on published, tombstones hidden, archived-connection entities
+ *   excluded); omitted → legacy cache built from `listEntities` with no status
+ *   filter (includes tombstones and archived rows).
  */
 export function getOrgWhitelistedTables(orgId: string, connectionId: string = "default", mode?: "published" | "developer"): Set<string> {
-  const cacheKey = mode === "published" ? `${orgId}:published` : orgId;
+  const cacheKey = whitelistCacheKey(orgId, mode);
   const byConnection = _orgWhitelists.get(cacheKey);
   if (!byConnection) {
     log.warn({ orgId, connectionId, mode: mode ?? "developer" }, "Org whitelist not loaded — all tables will be rejected");
@@ -481,10 +499,11 @@ export function getOrgWhitelistedTables(orgId: string, connectionId: string = "d
   return tables;
 }
 
-/** Invalidate the cached whitelist for an org (call after entity CRUD). Clears both developer and published mode caches. */
+/** Invalidate the cached whitelist for an org (call after entity CRUD). Clears every mode's cache entry. */
 export function invalidateOrgWhitelist(orgId: string): void {
   _orgWhitelists.delete(orgId);
   _orgWhitelists.delete(`${orgId}:published`);
+  _orgWhitelists.delete(`${orgId}:developer`);
   invalidateOrgSemanticIndex(orgId);
 }
 

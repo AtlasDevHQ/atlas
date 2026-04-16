@@ -465,7 +465,7 @@ Non-admin users can manage their own sessions via `GET /api/v1/sessions` and `DE
 
 ## Admin Action Audit
 
-**Route:** `/admin/actions`
+**Route:** `/admin/admin-actions`
 
 Tracks all admin mutations — settings changes, connection edits, user role changes, plugin installs, and other write operations performed through the admin console. Provides transparency into who changed what and when.
 
@@ -482,8 +482,8 @@ Each entry shows:
 - **Org-scoped** — in SaaS mode, workspace admins see only their organization's admin actions
 
 **API endpoints:**
-- `GET /api/v1/admin/actions` — paginated list with optional filters
-- `GET /api/v1/admin/actions/export` — CSV export
+- `GET /api/v1/admin/admin-actions` — paginated list with optional filters
+- `GET /api/v1/admin/admin-actions/export` — CSV export
 
 ---
 

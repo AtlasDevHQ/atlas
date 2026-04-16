@@ -919,7 +919,7 @@ Each `TransformedMessage` has:
 | Field | Type | Description |
 |-------|------|-------------|
 | `id` | `string` | Message ID |
-| `role` | `MessageRole` | `"user"` or `"assistant"` |
+| `role` | `"user" \| "assistant"` | Message role (system and tool messages are filtered out) |
 | `parts` | `TransformedPart[]` | Array of `{ type: "text", text }` or `{ type: "dynamic-tool", toolName, toolCallId, state, input, output }` |
 
 This is useful when building custom UIs that load persisted conversations from the API and need to render them with tool result cards (SQL results, charts, etc.).

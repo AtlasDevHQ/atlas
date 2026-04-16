@@ -503,12 +503,6 @@ export function registerSemanticEditorRoutes(
 
       const atlasMode = getAtlasMode(c);
 
-      // Demo entities are read-only in published mode — admins must toggle
-      // to developer mode to edit demo data.
-      if (atlasMode !== "developer" && body.connectionId === DEMO_CONNECTION_ID) {
-        return c.json(demoReadonlyResponse(requestId), 403);
-      }
-
       // Convert structured data to YAML
       const yamlContent = await entityToYaml(body);
 
@@ -524,6 +518,17 @@ export function registerSemanticEditorRoutes(
       // Fetch previous version for change summary (before upsert overwrites it)
       const previousEntity = await getEntity(orgId, "entity", name);
       const oldYaml = previousEntity?.yaml_content ?? null;
+
+      // Demo entities are read-only in published mode. Check both the
+      // incoming body (new entities pointed at __demo__) and the existing
+      // row (edits that omit connectionId but target a demo-owned entity).
+      if (
+        atlasMode !== "developer" &&
+        (body.connectionId === DEMO_CONNECTION_ID ||
+          previousEntity?.connection_id === DEMO_CONNECTION_ID)
+      ) {
+        return c.json(demoReadonlyResponse(requestId), 403);
+      }
 
       // Developer mode writes stage as drafts so the published row is
       // preserved until publish. Published mode writes the published row directly.

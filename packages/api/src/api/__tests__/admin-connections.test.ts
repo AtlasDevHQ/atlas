@@ -681,6 +681,58 @@ describe("admin connections — org scoping", () => {
       // status is the last parameter — verify it's 'draft'
       expect((params as unknown[])[(params as unknown[]).length - 1]).toBe("draft");
     });
+
+    it("revives an archived row (UPDATE, not INSERT) when PK collides", async () => {
+      // After a DELETE archives a connection, the (id, org_id) PK row remains
+      // while the in-memory registry is unregistered. Recreating with the
+      // same id must revive via UPDATE rather than 500 on PK conflict.
+      // Using id="analytics" which isn't in the default mock registry, so
+      // `connections.has("analytics")` returns false as it would in prod
+      // after unregister.
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
+        if (sql.includes("SELECT status FROM connections")) {
+          return Promise.resolve([{ status: "archived" }]);
+        }
+        return Promise.resolve([]);
+      });
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/connections", "POST", {
+          id: "analytics",
+          url: "postgresql://user:pass@host/db",
+        }),
+      );
+      expect(res.status).toBe(201);
+      const updateCall = mocks.mockInternalQuery.mock.calls.find(
+        ([sql]) =>
+          typeof sql === "string" &&
+          sql.includes("UPDATE connections") &&
+          sql.includes("status"),
+      );
+      expect(updateCall).toBeDefined();
+      const staleInsert = mocks.mockInternalQuery.mock.calls.find(
+        ([sql]) =>
+          typeof sql === "string" && sql.includes("INSERT INTO connections"),
+      );
+      expect(staleInsert).toBeUndefined();
+    });
+
+    it("returns 409 when PK collides with a non-archived row", async () => {
+      mocks.mockInternalQuery.mockImplementation((sql: string) => {
+        if (sql.includes("SELECT status FROM connections")) {
+          return Promise.resolve([{ status: "published" }]);
+        }
+        return Promise.resolve([]);
+      });
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/connections", "POST", {
+          id: "analytics",
+          url: "postgresql://user:pass@host/db",
+        }),
+      );
+      expect(res.status).toBe(409);
+      const body = (await res.json()) as Record<string, unknown>;
+      expect(body.error).toBe("conflict");
+    });
   });
 
   describe("PUT /connections/__demo__ — demo gating", () => {

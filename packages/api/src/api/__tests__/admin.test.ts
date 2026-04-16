@@ -2558,6 +2558,62 @@ describe("PUT /api/v1/admin/semantic/entities/edit/:name — mode-aware writes (
     // ON CONFLICT on the draft partial index handles update-in-place; we don't
     // need a different function — just assert that draft upsert is called once
   });
+
+  it("published mode rejects writes to demo entity via body.connectionId (403)", async () => {
+    setOrgAdmin("org-1");
+    mockGetEntityAdmin.mockResolvedValue(null);
+    const res = await app.fetch(
+      adminRequest("/api/v1/admin/semantic/entities/edit/users", "PUT", {
+        table: "users",
+        connectionId: "__demo__",
+      }),
+    );
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.error).toBe("demo_readonly");
+    expect(mockUpsertEntityAdmin).not.toHaveBeenCalled();
+    expect(mockUpsertDraftEntityAdmin).not.toHaveBeenCalled();
+  });
+
+  it("published mode rejects writes when existing row belongs to __demo__ (403)", async () => {
+    setOrgAdmin("org-1");
+    // No body.connectionId provided — the existing row's connection_id is
+    // the demo, so the edit must still be blocked.
+    mockGetEntityAdmin.mockResolvedValue({
+      id: "e-1", org_id: "org-1", entity_type: "entity", name: "users",
+      yaml_content: "table: users\n", connection_id: "__demo__", status: "published",
+      created_at: "2026-04-01T10:00:00Z", updated_at: "2026-04-01T10:00:00Z",
+    });
+    const res = await app.fetch(
+      adminRequest("/api/v1/admin/semantic/entities/edit/users", "PUT", {
+        table: "users",
+        description: "sneaky edit",
+      }),
+    );
+    expect(res.status).toBe(403);
+    expect(mockUpsertEntityAdmin).not.toHaveBeenCalled();
+  });
+
+  it("developer mode allows writes to demo entities (no 403)", async () => {
+    setOrgAdmin("org-1");
+    mockGetEntityAdmin.mockResolvedValue({
+      id: "e-1", org_id: "org-1", entity_type: "entity", name: "users",
+      yaml_content: "table: users\n", connection_id: "__demo__", status: "published",
+      created_at: "2026-04-01T10:00:00Z", updated_at: "2026-04-01T10:00:00Z",
+    });
+    const req = new Request("http://localhost/api/v1/admin/semantic/entities/edit/users", {
+      method: "PUT",
+      headers: {
+        Authorization: "Bearer test-key",
+        "Content-Type": "application/json",
+        Cookie: "atlas-mode=developer",
+      },
+      body: JSON.stringify({ table: "users", connectionId: "__demo__" }),
+    });
+    const res = await app.fetch(req);
+    expect(res.status).toBe(200);
+    expect(mockUpsertDraftEntityAdmin).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("DELETE /api/v1/admin/semantic/entities/edit/:name — mode-aware deletes (#1428)", () => {
@@ -2618,6 +2674,58 @@ describe("DELETE /api/v1/admin/semantic/entities/edit/:name — mode-aware delet
     expect(mockDeleteDraftEntityAdmin).toHaveBeenCalledTimes(1);
     expect(mockUpsertTombstoneAdmin).not.toHaveBeenCalled();
     expect(mockDeleteEntityAdmin).not.toHaveBeenCalled();
+  });
+
+  it("developer mode — discarding a tombstone calls deleteDraftEntity", async () => {
+    setOrgAdmin("org-1");
+    mockGetEntityAdmin.mockResolvedValue({
+      id: "e-tomb", org_id: "org-1", entity_type: "entity", name: "users",
+      yaml_content: "", connection_id: null, status: "draft_delete",
+      created_at: "2026-04-01T10:00:00Z", updated_at: "2026-04-01T10:00:00Z",
+    });
+    mockDeleteDraftEntityAdmin.mockResolvedValue(true);
+    const req = new Request("http://localhost/api/v1/admin/semantic/entities/edit/users", {
+      method: "DELETE",
+      headers: { Authorization: "Bearer test-key", Cookie: "atlas-mode=developer" },
+    });
+    const res = await app.fetch(req);
+    expect(res.status).toBe(200);
+    expect(mockDeleteDraftEntityAdmin).toHaveBeenCalledTimes(1);
+    expect(mockUpsertTombstoneAdmin).not.toHaveBeenCalled();
+  });
+
+  it("published mode rejects DELETE on demo-connection entity (403)", async () => {
+    setOrgAdmin("org-1");
+    mockGetEntityAdmin.mockResolvedValue({
+      id: "e-demo", org_id: "org-1", entity_type: "entity", name: "users",
+      yaml_content: "table: users\n", connection_id: "__demo__", status: "published",
+      created_at: "2026-04-01T10:00:00Z", updated_at: "2026-04-01T10:00:00Z",
+    });
+    mockDeleteEntityAdmin.mockResolvedValue(true);
+    const res = await app.fetch(
+      adminRequest("/api/v1/admin/semantic/entities/edit/users", "DELETE"),
+    );
+    expect(res.status).toBe(403);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.error).toBe("demo_readonly");
+    expect(mockDeleteEntityAdmin).not.toHaveBeenCalled();
+  });
+
+  it("developer mode allows DELETE on demo-connection entity (tombstones it)", async () => {
+    setOrgAdmin("org-1");
+    mockGetEntityAdmin.mockResolvedValue({
+      id: "e-demo", org_id: "org-1", entity_type: "entity", name: "users",
+      yaml_content: "table: users\n", connection_id: "__demo__", status: "published",
+      created_at: "2026-04-01T10:00:00Z", updated_at: "2026-04-01T10:00:00Z",
+    });
+    mockUpsertTombstoneAdmin.mockResolvedValue(undefined);
+    const req = new Request("http://localhost/api/v1/admin/semantic/entities/edit/users", {
+      method: "DELETE",
+      headers: { Authorization: "Bearer test-key", Cookie: "atlas-mode=developer" },
+    });
+    const res = await app.fetch(req);
+    expect(res.status).toBe(200);
+    expect(mockUpsertTombstoneAdmin).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -546,6 +546,20 @@ adminConnections.openapi(createConnectionRoute, async (c) => runHandler(c, "crea
     return c.json({ error: "conflict", message: `Connection "${id}" already exists.`, requestId }, 409);
   }
 
+  // Archive-aware conflict check: the archive-on-delete flow preserves rows,
+  // so the (id, org_id) PK may collide even when the registry has no entry.
+  // If an archived row already owns this PK, the INSERT below would 500;
+  // we revive it instead via UPDATE. Any other status (published/draft) is a
+  // real conflict.
+  const existingRow = await internalQuery<{ status: string }>(
+    `SELECT status FROM connections WHERE id = $1 AND org_id = $2`,
+    [id, orgId],
+  );
+  if (existingRow.length > 0 && existingRow[0].status !== "archived") {
+    return c.json({ error: "conflict", message: `Connection "${id}" already exists.`, requestId }, 409);
+  }
+  const revivingArchived = existingRow.length > 0;
+
   // Test the connection before saving
   try {
     connections.register(id, {
@@ -579,10 +593,19 @@ adminConnections.openapi(createConnectionRoute, async (c) => runHandler(c, "crea
   const status = getAtlasMode(c) === "developer" ? "draft" : "published";
 
   try {
-    await internalQuery(
-      `INSERT INTO connections (id, url, type, description, schema_name, org_id, status) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      [id, encryptedUrl, dbType, typeof description === "string" ? description : null, typeof schema === "string" ? schema : null, orgId, status],
-    );
+    if (revivingArchived) {
+      // The archived row owns the PK — revive it in place so we preserve
+      // audit/version history rather than stranding it.
+      await internalQuery(
+        `UPDATE connections SET url = $1, type = $2, description = $3, schema_name = $4, status = $5, updated_at = now() WHERE id = $6 AND org_id = $7`,
+        [encryptedUrl, dbType, typeof description === "string" ? description : null, typeof schema === "string" ? schema : null, status, id, orgId],
+      );
+    } else {
+      await internalQuery(
+        `INSERT INTO connections (id, url, type, description, schema_name, org_id, status) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [id, encryptedUrl, dbType, typeof description === "string" ? description : null, typeof schema === "string" ? schema : null, orgId, status],
+      );
+    }
   } catch (err) {
     connections.unregister(id);
     log.error({ err: err instanceof Error ? err.message : String(err), connectionId: id, requestId }, "Failed to persist connection");

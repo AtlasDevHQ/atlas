@@ -122,11 +122,23 @@ async function adminAuthAndContext(
   }
 
   // Resolve and publish atlas mode for downstream handlers. getAtlasMode(c)
-  // reads from c.get("atlasMode") — populate it once per request.
+  // reads from c.get("atlasMode") — populate it once per request and log any
+  // developer-mode request we downgraded due to insufficient role (matches
+  // the security signal emitted by `resolveModeForRequest` on the
+  // adminAuth/standardAuth middleware paths).
   if (typeof c.set === "function") {
     const cookieHeader = c.req.raw.headers.get("cookie");
     const xAtlasModeHeader = c.req.raw.headers.get("x-atlas-mode");
     const mode = resolveMode(cookieHeader, xAtlasModeHeader, authResult);
+    const requestedDeveloper =
+      (cookieHeader?.split(";").some((p) => p.trim().startsWith("atlas-mode=developer")) ?? false) ||
+      xAtlasModeHeader === "developer";
+    if (requestedDeveloper && mode === "published") {
+      log.warn(
+        { requestId, userId: authResult.user?.id, role: authResult.user?.role },
+        "Developer mode request downgraded to published — insufficient role",
+      );
+    }
     c.set("atlasMode", mode);
   }
 

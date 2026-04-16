@@ -1699,11 +1699,18 @@ describe("Admin routes — semantic diff", () => {
   });
 
   it("passes connection query param and mode/org context to runDiff", async () => {
+    // Use org-scoped admin so runDiff receives a concrete orgId; this guards
+    // the cross-tenant isolation property delivered by #1431 — if the handler
+    // ever regresses and stops forwarding `orgId`, this assertion fails.
+    setOrgScopedAdmin("org-diff-test");
     const res = await app.fetch(adminRequest("/api/v1/admin/semantic/diff?connection=default"));
     expect(res.status).toBe(200);
     expect(mockRunDiff).toHaveBeenCalledWith(
       "default",
-      expect.objectContaining({ atlasMode: expect.any(String) }),
+      expect.objectContaining({
+        atlasMode: expect.any(String),
+        orgId: "org-diff-test",
+      }),
     );
   });
 

@@ -28,7 +28,6 @@ import {
   isStrictRoutingEnabled,
 } from "@atlas/api/lib/residency/misrouting";
 import { isWorkspaceMigrating } from "@atlas/api/lib/residency/readonly";
-import { ADMIN_ROLES } from "@useatlas/types/auth";
 
 const log = createLogger("middleware");
 
@@ -356,7 +355,12 @@ export const migrationWriteLock = createMiddleware<AuthEnv>(async (c, next) => {
 // Mode resolution — reads atlas-mode cookie/header, enforces admin gate
 // ---------------------------------------------------------------------------
 
-const ADMIN_ROLE_SET = new Set<string>(ADMIN_ROLES);
+/**
+ * Roles that qualify for developer mode access. Derived from ATLAS_ROLES
+ * rather than importing ADMIN_ROLES because this file is template-synced
+ * to create-atlas — the published @useatlas/types may not have ADMIN_ROLES yet.
+ */
+const ADMIN_ROLE_SET = new Set(["admin", "owner", "platform_admin"]);
 
 /**
  * Parse the `atlas-mode` cookie from the Cookie header.

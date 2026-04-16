@@ -4,14 +4,16 @@ export type PostJsonResult =
   | { ok: true; data: Record<string, unknown> }
   | { ok: false; error: string };
 
-function getApiBase(): string {
+/** Resolve the API base URL — configured, same-origin, or dev fallback. */
+export function getApiBase(): string {
   const url = getApiUrl();
   if (url) return url;
   if (typeof window !== "undefined") return window.location.origin;
   return "http://localhost:3000";
 }
 
-function getCredentials(): RequestCredentials {
+/** Credentials mode for cross-origin vs same-origin API calls. */
+export function getCredentials(): RequestCredentials {
   return isCrossOrigin() ? "include" : "same-origin";
 }
 
@@ -58,7 +60,11 @@ export async function postJson(
   }
 
   if (!res.ok) {
-    const message = typeof data.message === "string" ? data.message : fallback;
+    // Accept either {message} or {error} — both are common Hono patterns.
+    const message =
+      typeof data.message === "string" ? data.message
+      : typeof data.error === "string" ? data.error
+      : fallback;
     return { ok: false, error: message };
   }
 

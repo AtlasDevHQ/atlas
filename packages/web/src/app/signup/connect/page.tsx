@@ -1,9 +1,8 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
-import { getApiUrl, isCrossOrigin } from "@/lib/api-url";
-import { postJson } from "@/lib/fetch-json";
+import { postJson, getApiBase, getCredentials } from "@/lib/fetch-json";
 import { detectDbLabel } from "@/lib/db-labels";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -27,17 +26,6 @@ import {
   Sparkles,
   RefreshCw,
 } from "lucide-react";
-
-function getApiBase(): string {
-  const url = getApiUrl();
-  if (url) return url;
-  if (typeof window !== "undefined") return window.location.origin;
-  return "http://localhost:3000";
-}
-
-function getCredentials(): RequestCredentials {
-  return isCrossOrigin() ? "include" : "same-origin";
-}
 
 type ConnectionStatus = "idle" | "testing" | "success" | "error";
 type DemoType = "demo" | "cybersec" | "ecommerce";
@@ -77,7 +65,7 @@ async function runHealthCheck(signal?: AbortSignal): Promise<DemoAvailability> {
     return data?.checks?.datasource?.status === "ok" ? "available" : "unavailable";
   } catch (err) {
     if (err instanceof Error && err.name === "AbortError") throw err;
-    console.debug("[signup/connect] health check failed:", {
+    console.warn("[signup/connect] health check failed:", {
       err: err instanceof Error ? err.message : String(err),
     });
     return "error";
@@ -94,16 +82,24 @@ export default function ConnectPage() {
   const [demoError, setDemoError] = useState<string | null>(null);
   const [demoAvailability, setDemoAvailability] = useState<DemoAvailability>("unknown");
   const [loadingDemo, setLoadingDemo] = useState<DemoType | null>(null);
+  // Aborts any in-flight health check (mount effect or retry click) so stale
+  // resolutions can't overwrite a newer result or setState after unmount.
+  const healthCheckAbortRef = useRef<AbortController | null>(null);
 
   // Don't silently hide the demo card on health-check failure — "error" state
   // shows a retry affordance so users can distinguish "demo not configured"
   // from "we couldn't check."
   useEffect(() => {
     const controller = new AbortController();
-    runHealthCheck(controller.signal).then(setDemoAvailability).catch((err) => {
-      if (err instanceof Error && err.name === "AbortError") return;
-      console.debug("[signup/connect] unexpected error from health-check:", err);
-    });
+    healthCheckAbortRef.current = controller;
+    runHealthCheck(controller.signal)
+      .then((result) => {
+        if (!controller.signal.aborted) setDemoAvailability(result);
+      })
+      .catch((err) => {
+        if (err instanceof Error && err.name === "AbortError") return;
+        console.warn("[signup/connect] unexpected error from health-check:", err);
+      });
     return () => controller.abort();
   }, []);
 
@@ -189,8 +185,17 @@ export default function ConnectPage() {
   }
 
   async function retryHealthCheck() {
+    healthCheckAbortRef.current?.abort();
+    const controller = new AbortController();
+    healthCheckAbortRef.current = controller;
     setDemoAvailability("unknown");
-    setDemoAvailability(await runHealthCheck());
+    try {
+      const result = await runHealthCheck(controller.signal);
+      if (!controller.signal.aborted) setDemoAvailability(result);
+    } catch (err) {
+      if (err instanceof Error && err.name === "AbortError") return;
+      console.warn("[signup/connect] unexpected error from health-check retry:", err);
+    }
   }
 
   const dbLabel = url ? detectDbLabel(url) : "Database";
@@ -314,17 +319,19 @@ export default function ConnectPage() {
               {demoAvailability === "error" ? (
                 <div
                   role="alert"
-                  className="flex items-start justify-between gap-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200"
+                  className="flex items-center justify-between gap-3 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-200"
                 >
                   <span>Couldn&apos;t check demo availability.</span>
-                  <button
+                  <Button
                     type="button"
                     onClick={retryHealthCheck}
-                    className="inline-flex shrink-0 items-center gap-1 font-medium underline-offset-2 hover:underline"
+                    variant="outline"
+                    size="sm"
+                    className="h-7 shrink-0 gap-1 border-amber-300 bg-transparent hover:bg-amber-100 dark:border-amber-800 dark:hover:bg-amber-900"
                   >
                     <RefreshCw className="size-3" />
                     Retry
-                  </button>
+                  </Button>
                 </div>
               ) : (
                 <div className="grid gap-2">

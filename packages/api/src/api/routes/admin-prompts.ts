@@ -15,7 +15,10 @@ import { internalQuery } from "@atlas/api/lib/db/internal";
 import type { PromptCollection, PromptItem } from "@useatlas/types";
 import { ErrorSchema, AuthErrorSchema, createIdParamSchema, createParamSchema, createListResponseSchema, DeletedResponseSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
-import { buildUnionStatusClause } from "./middleware";
+import {
+  buildCollectionsListQuery,
+  resolvePromptScope,
+} from "@atlas/api/lib/prompts/scoping";
 
 const log = createLogger("admin-prompts");
 
@@ -487,14 +490,17 @@ adminPrompts.openapi(listCollectionsRoute, async (c) => {
     const { orgId } = yield* AuthContext;
     const { atlasMode } = yield* RequestContext;
 
-    const statusClause = buildUnionStatusClause(atlasMode);
-
-    let rows: Record<string, unknown>[];
-    if (orgId) {
-      rows = yield* Effect.promise(() => internalQuery<Record<string, unknown>>(`SELECT * FROM prompt_collections WHERE (org_id IS NULL OR org_id = $1)${statusClause} ORDER BY sort_order ASC, created_at ASC`, [orgId]));
-    } else {
-      rows = yield* Effect.promise(() => internalQuery<Record<string, unknown>>(`SELECT * FROM prompt_collections WHERE 1=1${statusClause} ORDER BY sort_order ASC, created_at ASC`));
-    }
+    // requireOrgContext upstream guarantees orgId is set; resolvePromptScope
+    // falls back to the `global` variant defensively if it is not.
+    const scope = yield* Effect.tryPromise({
+      try: () => resolvePromptScope({ orgId, mode: atlasMode }),
+      catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+    });
+    const { sql, params } = buildCollectionsListQuery(scope);
+    const rows = yield* Effect.tryPromise({
+      try: () => internalQuery<Record<string, unknown>>(sql, params),
+      catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+    });
     return c.json({ collections: rows.map(toPromptCollection), total: rows.length }, 200);
   }), { label: "list prompt collections" });
 });

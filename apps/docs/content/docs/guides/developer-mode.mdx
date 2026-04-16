@@ -112,6 +112,18 @@ Publishing clears every draft for the org. The admin's next edit — a new entit
 
 ---
 
+## Prompt Library Scoping
+
+The prompt library (`GET /api/v1/prompts` and `GET /api/v1/admin/prompts`) filters its response based on the effective mode and the org's demo state:
+
+- **Published mode + active `__demo__` connection**: returns built-in collections matching the org's `demo_industry` setting plus any custom published collections.
+- **Published mode, demo archived**: returns only custom published collections — all built-ins are hidden regardless of industry.
+- **Developer mode**: same `(industry, custom)` split as published, but the status filter expands to include `draft` rows so admins see in-progress collections too.
+
+The frontend just renders what the API returns — there is no client-side demo-state branching to maintain.
+
+---
+
 ## Related
 
 - [Admin Console overview](/guides/admin-console)

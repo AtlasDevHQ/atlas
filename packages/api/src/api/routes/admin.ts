@@ -1250,7 +1250,7 @@ admin.openapi(getSemanticStatsRoute, async (c) => {
 });
 
 admin.openapi(getSemanticDiffRoute, async (c) => {
-  const { requestId } = await adminAuthAndContext(c);
+  const { authResult, requestId } = await adminAuthAndContext(c);
   const connectionId = c.req.query("connection") ?? "default";
 
   // Validate connection exists
@@ -1259,13 +1259,19 @@ admin.openapi(getSemanticDiffRoute, async (c) => {
     return c.json({ error: "not_found", message: `Connection "${connectionId}" not found.` }, 404);
   }
 
+  // Scope the diff to the caller's org + mode so demo orgs sharing a DB don't
+  // see phantom tables from other tenants. `adminAuthAndContext` has already
+  // resolved the mode and bound the user onto the request context.
+  const orgId = authResult.user?.activeOrganizationId;
+  const atlasMode = getAtlasMode(c);
+
   try {
-    const result = await runDiff(connectionId);
+    const result = await runDiff(connectionId, { orgId, atlasMode });
     return c.json(result, 200);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
     log.error(
-      { err: err instanceof Error ? err : new Error(String(err)), connectionId, requestId },
+      { err: err instanceof Error ? err : new Error(String(err)), connectionId, orgId, atlasMode, requestId },
       "Schema diff failed",
     );
     return c.json({ error: "internal_error", message: `Schema diff failed: ${message}` , requestId}, 500);

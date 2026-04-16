@@ -69,13 +69,14 @@ done
 
 # ── Step 2b: Copy Next.js app pages + catch-all route into docker template ──
 # The docker template is a full-stack Next.js + embedded Hono API.
-# page.tsx uses the template override (standalone AtlasChat widget)
-# rather than packages/web's native SaaS chat page.
+# page.tsx and layout.tsx use template overrides:
+# page.tsx: standalone AtlasChat widget (not SaaS native chat page)
+# layout.tsx: no ModeBanner (developer/published mode is SaaS-only)
 OVERRIDES="$ROOT/overrides"
 echo ":: Syncing Next.js app pages → docker"
 mkdir -p "$TEMPLATES/docker/src/app/api/[...route]"
 cp "$OVERRIDES/page.tsx"   "$TEMPLATES/docker/src/app/"
-cp "$WEB_APP/layout.tsx"   "$TEMPLATES/docker/src/app/"
+cp "$OVERRIDES/layout.tsx" "$TEMPLATES/docker/src/app/"
 cp "$WEB_APP/error.tsx"    "$TEMPLATES/docker/src/app/"
 cp "$WEB_APP/globals.css"  "$TEMPLATES/docker/src/app/"
 cp "$NEXTJS_EXAMPLE/src/app/api/[...route]/route.ts" \

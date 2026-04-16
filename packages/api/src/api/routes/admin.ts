@@ -91,6 +91,10 @@ const admin = new OpenAPIHono({ defaultHook: validationHook });
 /** Read requestId from middleware context. */
 const reqId = (c: { get(key: string): unknown }): string => c.get("requestId") as string;
 
+/** Read atlasMode from middleware context. Defaults to "published" when not set. */
+const getAtlasMode = (c: { get(key: string): unknown }): import("@useatlas/types/auth").AtlasMode =>
+  (c.get("atlasMode") as import("@useatlas/types/auth").AtlasMode | undefined) ?? "published";
+
 /**
  * Run admin auth preamble and bind user identity into AsyncLocalStorage.
  * Returns { authResult, requestId } for the handler to use.
@@ -1255,12 +1259,15 @@ admin.openapi(listOrgEntitiesRoute, async (c) => runHandler(c, "list org semanti
     return c.json({ error: "bad_request", message: `Invalid type. Must be one of: ${[...VALID_ENTITY_TYPES].join(", ")}` }, 400);
   }
   const entityType = rawType as "entity" | "metric" | "glossary" | "catalog" | undefined;
-  const rows = await listEntities(orgId, entityType);
+  const atlasMode = getAtlasMode(c);
+  const statusFilter = atlasMode === "published" ? "published" as const : undefined;
+  const rows = await listEntities(orgId, entityType, statusFilter);
   return c.json({
     entities: rows.map((r) => ({
       name: r.name,
       entityType: r.entity_type,
       connectionId: r.connection_id,
+      status: r.status,
       updatedAt: r.updated_at,
     })),
     total: rows.length,

@@ -368,9 +368,12 @@ export const semanticEntities = pgTable(
     index("idx_semantic_entities_org").on(t.orgId),
     index("idx_semantic_entities_org_type").on(t.orgId, t.entityType),
     check("chk_semantic_entities_status", sql`status IN ('published', 'draft', 'draft_delete', 'archived')`),
-    uniqueIndex("uq_semantic_entity_published").on(t.orgId, t.name, t.connectionId).where(sql`status = 'published'`),
-    uniqueIndex("uq_semantic_entity_draft").on(t.orgId, t.name, t.connectionId).where(sql`status = 'draft'`),
-    uniqueIndex("uq_semantic_entity_tombstone").on(t.orgId, t.name, t.connectionId).where(sql`status = 'draft_delete'`),
+    // Partial unique indexes with COALESCE(connection_id, '__default__') to handle NULLs.
+    // Managed by raw SQL migration (0025) — Drizzle uniqueIndex().on() doesn't support expressions.
+    // Kept here as regular indexes so Drizzle is aware they exist (prevents drift warnings).
+    index("uq_semantic_entity_published").on(t.orgId, t.name).where(sql`status = 'published'`),
+    index("uq_semantic_entity_draft").on(t.orgId, t.name).where(sql`status = 'draft'`),
+    index("uq_semantic_entity_tombstone").on(t.orgId, t.name).where(sql`status = 'draft_delete'`),
   ],
 );
 

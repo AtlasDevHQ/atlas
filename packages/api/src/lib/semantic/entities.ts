@@ -57,21 +57,45 @@ export async function upsertEntity(
 }
 
 /**
- * List all semantic entities for an org, optionally filtered by type.
+ * List all semantic entities for an org, optionally filtered by type and status.
+ *
+ * @param statusFilter - When provided, adds `AND status = $N` to the query.
+ *   Use `"published"` in published mode to hide draft/archived rows.
+ *   Omit (or pass undefined) in developer mode to return all rows.
  */
 export async function listEntities(
   orgId: string,
   entityType?: SemanticEntityType,
+  statusFilter?: SemanticEntityStatus,
 ): Promise<SemanticEntityRow[]> {
   if (!hasInternalDB()) return [];
 
   if (entityType) {
+    if (statusFilter) {
+      return internalQuery<SemanticEntityRow>(
+        `SELECT id, org_id, entity_type, name, yaml_content, connection_id, status, created_at, updated_at
+         FROM semantic_entities
+         WHERE org_id = $1 AND entity_type = $2 AND status = $3
+         ORDER BY name`,
+        [orgId, entityType, statusFilter],
+      );
+    }
     return internalQuery<SemanticEntityRow>(
       `SELECT id, org_id, entity_type, name, yaml_content, connection_id, status, created_at, updated_at
        FROM semantic_entities
        WHERE org_id = $1 AND entity_type = $2
        ORDER BY name`,
       [orgId, entityType],
+    );
+  }
+
+  if (statusFilter) {
+    return internalQuery<SemanticEntityRow>(
+      `SELECT id, org_id, entity_type, name, yaml_content, connection_id, status, created_at, updated_at
+       FROM semantic_entities
+       WHERE org_id = $1 AND status = $2
+       ORDER BY entity_type, name`,
+      [orgId, statusFilter],
     );
   }
 
@@ -124,23 +148,33 @@ export async function deleteEntity(
 }
 
 /**
- * Count entities for an org, optionally by type.
+ * Count entities for an org, optionally by type and status.
  */
 export async function countEntities(
   orgId: string,
   entityType?: SemanticEntityType,
+  statusFilter?: SemanticEntityStatus,
 ): Promise<number> {
   if (!hasInternalDB()) return 0;
 
-  const rows = entityType
-    ? await internalQuery<{ count: string }>(
-        `SELECT COUNT(*)::TEXT AS count FROM semantic_entities WHERE org_id = $1 AND entity_type = $2`,
-        [orgId, entityType],
-      )
-    : await internalQuery<{ count: string }>(
-        `SELECT COUNT(*)::TEXT AS count FROM semantic_entities WHERE org_id = $1`,
-        [orgId],
-      );
+  let query: string;
+  let params: unknown[];
+
+  if (entityType && statusFilter) {
+    query = `SELECT COUNT(*)::TEXT AS count FROM semantic_entities WHERE org_id = $1 AND entity_type = $2 AND status = $3`;
+    params = [orgId, entityType, statusFilter];
+  } else if (entityType) {
+    query = `SELECT COUNT(*)::TEXT AS count FROM semantic_entities WHERE org_id = $1 AND entity_type = $2`;
+    params = [orgId, entityType];
+  } else if (statusFilter) {
+    query = `SELECT COUNT(*)::TEXT AS count FROM semantic_entities WHERE org_id = $1 AND status = $2`;
+    params = [orgId, statusFilter];
+  } else {
+    query = `SELECT COUNT(*)::TEXT AS count FROM semantic_entities WHERE org_id = $1`;
+    params = [orgId];
+  }
+
+  const rows = await internalQuery<{ count: string }>(query, params);
   return parseInt(rows[0]?.count ?? "0", 10);
 }
 

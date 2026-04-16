@@ -35,24 +35,28 @@ const { app } = await import("../index");
 
 // --- Helpers ---
 
-function userReq(method: string, urlPath: string, body?: unknown) {
+function userReq(method: string, urlPath: string, body?: unknown, cookie?: string) {
   const suffix = urlPath === "/" ? "" : urlPath;
   const url = `http://localhost/api/v1/prompts${suffix}`;
-  const init: RequestInit = { method, headers: { Authorization: "Bearer test" } };
+  const headers: Record<string, string> = { Authorization: "Bearer test" };
+  if (cookie) headers.Cookie = cookie;
+  const init: RequestInit = { method, headers };
   if (body) {
     init.body = JSON.stringify(body);
-    (init.headers as Record<string, string>)["Content-Type"] = "application/json";
+    headers["Content-Type"] = "application/json";
   }
   return app.fetch(new Request(url, init));
 }
 
-function adminReq(method: string, urlPath: string, body?: unknown) {
+function adminReq(method: string, urlPath: string, body?: unknown, cookie?: string) {
   const suffix = urlPath === "/" ? "" : urlPath;
   const url = `http://localhost/api/v1/admin/prompts${suffix}`;
-  const init: RequestInit = { method, headers: { Authorization: "Bearer test" } };
+  const headers: Record<string, string> = { Authorization: "Bearer test" };
+  if (cookie) headers.Cookie = cookie;
+  const init: RequestInit = { method, headers };
   if (body) {
     init.body = JSON.stringify(body);
-    (init.headers as Record<string, string>)["Content-Type"] = "application/json";
+    headers["Content-Type"] = "application/json";
   }
   return app.fetch(new Request(url, init));
 }
@@ -160,6 +164,32 @@ describe("user-facing prompt routes", () => {
       expect(res.status).toBe(429);
       const body = (await res.json()) as Record<string, unknown>;
       expect(body.retryAfterSeconds).toBeDefined();
+    });
+
+    it("published mode restricts collections to status = 'published' (#1427 / #1455)", async () => {
+      mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([]));
+      const res = await userReq("GET", "/");
+      expect(res.status).toBe(200);
+      const calls = mocks.mockInternalQuery.mock.calls;
+      const listCall = calls.find(
+        ([sql]) => typeof sql === "string" && sql.includes("FROM prompt_collections"),
+      );
+      expect(listCall).toBeDefined();
+      expect(listCall![0] as string).toContain("status = 'published'");
+      expect(listCall![0] as string).not.toContain("status IN");
+    });
+
+    it("developer mode expands to status IN ('published', 'draft') via cookie", async () => {
+      mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([]));
+      const res = await userReq("GET", "/", undefined, "atlas-mode=developer");
+      expect(res.status).toBe(200);
+      const calls = mocks.mockInternalQuery.mock.calls;
+      const listCall = calls.find(
+        ([sql]) => typeof sql === "string" && sql.includes("FROM prompt_collections"),
+      );
+      expect(listCall).toBeDefined();
+      expect(listCall![0] as string).toContain("status IN ('published', 'draft')");
+      expect(listCall![0] as string).not.toContain("archived");
     });
 
     it("queries without org_id filter in single-tenant mode", async () => {
@@ -280,6 +310,29 @@ describe("admin prompt routes", () => {
       const body = (await res.json()) as Record<string, unknown>;
       expect(body.collections).toBeArray();
       expect(body.total).toBe(2);
+    });
+
+    it("published mode restricts to status = 'published' (#1427 / #1455)", async () => {
+      mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([]));
+      const res = await adminReq("GET", "/");
+      expect(res.status).toBe(200);
+      const listCall = mocks.mockInternalQuery.mock.calls.find(
+        ([sql]) => typeof sql === "string" && sql.includes("FROM prompt_collections"),
+      );
+      expect(listCall).toBeDefined();
+      expect(listCall![0] as string).toContain("status = 'published'");
+    });
+
+    it("developer mode expands to status IN ('published', 'draft') via cookie", async () => {
+      mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([]));
+      const res = await adminReq("GET", "/", undefined, "atlas-mode=developer");
+      expect(res.status).toBe(200);
+      const listCall = mocks.mockInternalQuery.mock.calls.find(
+        ([sql]) => typeof sql === "string" && sql.includes("FROM prompt_collections"),
+      );
+      expect(listCall).toBeDefined();
+      expect(listCall![0] as string).toContain("status IN ('published', 'draft')");
+      expect(listCall![0] as string).not.toContain("archived");
     });
   });
 

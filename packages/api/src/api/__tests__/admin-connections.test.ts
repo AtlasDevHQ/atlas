@@ -81,13 +81,12 @@ function setPlatformAdmin(orgId: string): void {
   mocks.setPlatformAdmin(orgId);
 }
 
-function adminRequest(urlPath: string, method = "GET", body?: unknown): Request {
-  const opts: RequestInit = {
-    method,
-    headers: { Authorization: "Bearer test-key" },
-  };
+function adminRequest(urlPath: string, method = "GET", body?: unknown, cookie?: string): Request {
+  const headers: Record<string, string> = { Authorization: "Bearer test-key" };
+  if (cookie) headers.Cookie = cookie;
+  const opts: RequestInit = { method, headers };
   if (body) {
-    opts.headers = { ...opts.headers, "Content-Type": "application/json" };
+    headers["Content-Type"] = "application/json";
     opts.body = JSON.stringify(body);
   }
   return new Request(`http://localhost${urlPath}`, opts);
@@ -587,6 +586,49 @@ describe("admin connections — org scoping", () => {
       const body = (await res.json()) as any;
       expect(body.id).toBe("warehouse");
       expect(body.managed).toBe(true);
+    });
+  });
+
+  // ─── GET /connections — mode-aware status clause (#1427 / #1455) ──────
+
+  describe("GET /connections — mode-aware status filter", () => {
+    function findVisibleConnectionsCall(): [string, unknown[]] | undefined {
+      const call = mocks.mockInternalQuery.mock.calls.find(
+        ([sql]) =>
+          typeof sql === "string" &&
+          sql.includes("SELECT id FROM connections WHERE org_id"),
+      );
+      return call as [string, unknown[]] | undefined;
+    }
+
+    it("published mode restricts visible connections to status = 'published'", async () => {
+      setOrgAdmin("org-alpha");
+      mocks.mockInternalQuery.mockResolvedValue([]);
+
+      const res = await app.fetch(adminRequest("/api/v1/admin/connections"));
+      expect(res.status).toBe(200);
+
+      const call = findVisibleConnectionsCall();
+      expect(call).toBeDefined();
+      expect(call![0]).toContain("status = 'published'");
+      expect(call![0]).not.toContain("status IN ('published', 'draft')");
+    });
+
+    it("developer mode expands to status IN ('published', 'draft') when cookie is set", async () => {
+      setOrgAdmin("org-alpha");
+      mocks.mockInternalQuery.mockResolvedValue([]);
+
+      const res = await app.fetch(
+        adminRequest("/api/v1/admin/connections", "GET", undefined, "atlas-mode=developer"),
+      );
+      expect(res.status).toBe(200);
+
+      const call = findVisibleConnectionsCall();
+      expect(call).toBeDefined();
+      expect(call![0]).toContain("status IN ('published', 'draft')");
+      expect(call![0]).not.toContain("status = 'published'");
+      // Archived rows are always excluded — never appears in either mode
+      expect(call![0]).not.toContain("archived");
     });
   });
 });

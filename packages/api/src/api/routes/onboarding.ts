@@ -557,7 +557,7 @@ onboarding.openapi(
         ),
         catch: (err) => err instanceof Error ? err : new Error(String(err)),
       }).pipe(Effect.catchAll((err) => {
-        log.error({ err, requestId }, "Failed to persist onboarding connection");
+        log.error({ err: err.message, requestId }, "Failed to persist onboarding connection");
         return Effect.succeed(null);
       }));
 
@@ -677,7 +677,7 @@ onboarding.openapi(
         ),
         catch: (err) => err instanceof Error ? err : new Error(String(err)),
       }).pipe(Effect.catchAll((err) => {
-        log.error({ err, requestId }, "Failed to persist demo connection");
+        log.error({ err: err.message, requestId }, "Failed to persist demo connection");
         return Effect.succeed(null);
       }));
 
@@ -731,23 +731,23 @@ onboarding.openapi(
         log.info({ orgId, demoType, imported: importResult.imported, skipped: importResult.skipped, requestId }, "Imported semantic layer for demo workspace");
       }
 
-      // Write demo_industry setting for the org
-      yield* Effect.tryPromise({
-        try: () => setSetting("ATLAS_DEMO_INDUSTRY", industry, user?.id, orgId),
-        catch: (err) => err instanceof Error ? err : new Error(String(err)),
-      }).pipe(Effect.catchAll((err) => {
-        log.warn({ err: err.message, requestId, orgId, industry }, "Failed to write demo_industry setting — non-fatal");
-        return Effect.void;
-      }));
-
-      // Seed built-in prompt collections for the matching industry
-      yield* Effect.tryPromise({
-        try: () => seedDemoPromptCollections(orgId, industry),
-        catch: (err) => err instanceof Error ? err : new Error(String(err)),
-      }).pipe(Effect.catchAll((err) => {
-        log.warn({ err: err.message, requestId, orgId, industry }, "Failed to seed demo prompt collections — non-fatal");
-        return Effect.void;
-      }));
+      // Write demo_industry setting + seed prompt collections concurrently (independent, non-fatal)
+      yield* Effect.all([
+        Effect.tryPromise({
+          try: () => setSetting("ATLAS_DEMO_INDUSTRY", industry, user?.id, orgId),
+          catch: (err) => err instanceof Error ? err : new Error(String(err)),
+        }).pipe(Effect.catchAll((err) => {
+          log.warn({ err: err.message, requestId, orgId, industry }, "Failed to write demo_industry setting — non-fatal");
+          return Effect.void;
+        })),
+        Effect.tryPromise({
+          try: () => seedDemoPromptCollections(orgId, industry),
+          catch: (err) => err instanceof Error ? err : new Error(String(err)),
+        }).pipe(Effect.catchAll((err) => {
+          log.warn({ err: err.message, requestId, orgId, industry }, "Failed to seed demo prompt collections — non-fatal");
+          return Effect.void;
+        })),
+      ], { concurrency: "unbounded" });
 
       _resetWhitelists();
 

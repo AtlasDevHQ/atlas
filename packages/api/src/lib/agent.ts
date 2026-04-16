@@ -502,6 +502,7 @@ export async function runAgent({
   const reqCtx = getRequestContext();
   const userId = reqCtx?.user?.id ?? null;
   const orgId = reqCtx?.user?.activeOrganizationId;
+  const atlasMode = reqCtx?.atlasMode ?? "published";
 
   // Resolve model: injected > workspace config (enterprise) > platform env vars
   let model: LanguageModel;
@@ -543,7 +544,7 @@ export async function runAgent({
       (orgId && hasInternalDB())
         ? Effect.all([
             Effect.tryPromise({
-              try: () => loadOrgWhitelist(orgId),
+              try: () => loadOrgWhitelist(orgId, atlasMode),
               catch: normalizeError,
             }),
             Effect.tryPromise({

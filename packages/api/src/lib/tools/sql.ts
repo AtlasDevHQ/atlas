@@ -294,9 +294,10 @@ export function validateSQL(sql: string, connectionId?: string): SQLValidationRe
   } else {
     try {
       const tables = parser.tableList(trimmed, { database: parserDatabase(dbType, connectionId) });
-      const orgId = getRequestContext()?.user?.activeOrganizationId;
+      const sqlReqCtx = getRequestContext();
+      const orgId = sqlReqCtx?.user?.activeOrganizationId;
       const allowed = orgId
-        ? getOrgWhitelistedTables(orgId, connectionId)
+        ? getOrgWhitelistedTables(orgId, connectionId, sqlReqCtx?.atlasMode)
         : getWhitelistedTables(connectionId);
 
       for (const ref of tables) {

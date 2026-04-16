@@ -120,7 +120,7 @@ export const validateProposal = tool({
         : undefined;
 
       const whitelist = orgId
-        ? getOrgWhitelistedTables(orgId)
+        ? getOrgWhitelistedTables(orgId, "default", reqCtx?.atlasMode)
         : getWhitelistedTables();
 
       if (!whitelist.has(payload.entityName.toLowerCase())) {

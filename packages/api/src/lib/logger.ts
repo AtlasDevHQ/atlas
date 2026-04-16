@@ -16,6 +16,8 @@ import type { AtlasUser } from "@atlas/api/lib/auth/types";
 interface RequestContext {
   requestId: string;
   user?: AtlasUser;
+  /** Resolved atlas mode for this request. When "published", tools should restrict to published entities only. */
+  atlasMode?: import("@useatlas/types/auth").AtlasMode;
 }
 
 const requestStore = new AsyncLocalStorage<RequestContext>();

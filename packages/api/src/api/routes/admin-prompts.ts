@@ -484,12 +484,15 @@ async function findCollection(orgId: string | undefined, collectionId: string) {
 adminPrompts.openapi(listCollectionsRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    const { atlasMode } = yield* RequestContext;
+
+    const statusClause = atlasMode === "published" ? " AND status = 'published'" : "";
 
     let rows: Record<string, unknown>[];
     if (orgId) {
-      rows = yield* Effect.promise(() => internalQuery<Record<string, unknown>>(`SELECT * FROM prompt_collections WHERE org_id IS NULL OR org_id = $1 ORDER BY sort_order ASC, created_at ASC`, [orgId]));
+      rows = yield* Effect.promise(() => internalQuery<Record<string, unknown>>(`SELECT * FROM prompt_collections WHERE (org_id IS NULL OR org_id = $1)${statusClause} ORDER BY sort_order ASC, created_at ASC`, [orgId]));
     } else {
-      rows = yield* Effect.promise(() => internalQuery<Record<string, unknown>>(`SELECT * FROM prompt_collections ORDER BY sort_order ASC, created_at ASC`));
+      rows = yield* Effect.promise(() => internalQuery<Record<string, unknown>>(`SELECT * FROM prompt_collections WHERE 1=1${statusClause} ORDER BY sort_order ASC, created_at ASC`));
     }
     return c.json({ collections: rows.map(toPromptCollection), total: rows.length }, 200);
   }), { label: "list prompt collections" });

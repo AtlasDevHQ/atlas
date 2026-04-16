@@ -384,9 +384,10 @@ export function _resetPluginEntities(): void {
 // ---------------------------------------------------------------------------
 
 /**
- * Per-org whitelist cache: Map<orgId, Map<connectionId, Set<tableName>>>.
+ * Per-org whitelist cache: Map<cacheKey, Map<connectionId, Set<tableName>>>.
+ * Cache key is `orgId` for developer mode or `${orgId}:published` for published mode.
  * Populated by `loadOrgWhitelist()` before the agent loop starts.
- * Invalidated by `invalidateOrgWhitelist(orgId)` on entity CRUD.
+ * Invalidated by `invalidateOrgWhitelist(orgId)` on entity CRUD (clears both modes).
  */
 const _orgWhitelists = new Map<string, Map<string, Set<string>>>();
 
@@ -394,17 +395,21 @@ const _orgWhitelists = new Map<string, Map<string, Set<string>>>();
  * Load the table whitelist for an org from the internal DB.
  *
  * Parses stored YAML content using the same EntityShape validation as
- * file-based loading. Results are cached per-org.
+ * file-based loading. Results are cached per-org (keyed by org + mode).
  *
  * @param orgId - Organization ID to load entities for.
+ * @param mode - Atlas mode. When "published", only published entities are
+ *   included. When "developer" (or omitted), all entities are included.
  * @returns Map of connectionId → Set<tableName>.
  */
-export async function loadOrgWhitelist(orgId: string): Promise<Map<string, Set<string>>> {
-  const cached = _orgWhitelists.get(orgId);
+export async function loadOrgWhitelist(orgId: string, mode?: "published" | "developer"): Promise<Map<string, Set<string>>> {
+  const cacheKey = mode === "published" ? `${orgId}:published` : orgId;
+  const cached = _orgWhitelists.get(cacheKey);
   if (cached) return cached;
 
   const { listEntities } = await import("@atlas/api/lib/semantic/entities");
-  const rows = await listEntities(orgId, "entity");
+  const statusFilter = mode === "published" ? "published" as const : undefined;
+  const rows = await listEntities(orgId, "entity", statusFilter);
 
   const byConnection = new Map<string, Set<string>>();
   let parseFailures = 0;
@@ -436,9 +441,9 @@ export async function loadOrgWhitelist(orgId: string): Promise<Map<string, Set<s
     log.error({ orgId, entityCount: rows.length, parseFailures }, "All org entities failed to parse — whitelist is empty");
   }
 
-  _orgWhitelists.set(orgId, byConnection);
+  _orgWhitelists.set(cacheKey, byConnection);
   const totalTables = Array.from(byConnection.values()).reduce((s, set) => s + set.size, 0);
-  log.info({ orgId, entityCount: rows.length, parsedCount: rows.length - parseFailures, tableCount: totalTables, connections: Array.from(byConnection.keys()) }, "Loaded org whitelist from DB");
+  log.info({ orgId, mode: mode ?? "developer", entityCount: rows.length, parsedCount: rows.length - parseFailures, tableCount: totalTables, connections: Array.from(byConnection.keys()) }, "Loaded org whitelist from DB");
   return byConnection;
 }
 
@@ -447,11 +452,15 @@ export async function loadOrgWhitelist(orgId: string): Promise<Map<string, Set<s
  *
  * Must be called after `loadOrgWhitelist(orgId)` — returns empty set if
  * the org whitelist has not been loaded yet.
+ *
+ * @param mode - Atlas mode. When "published", looks up the published-only cache.
+ *   Omit for developer mode (all entities).
  */
-export function getOrgWhitelistedTables(orgId: string, connectionId: string = "default"): Set<string> {
-  const byConnection = _orgWhitelists.get(orgId);
+export function getOrgWhitelistedTables(orgId: string, connectionId: string = "default", mode?: "published" | "developer"): Set<string> {
+  const cacheKey = mode === "published" ? `${orgId}:published` : orgId;
+  const byConnection = _orgWhitelists.get(cacheKey);
   if (!byConnection) {
-    log.warn({ orgId, connectionId }, "Org whitelist not loaded — all tables will be rejected");
+    log.warn({ orgId, connectionId, mode: mode ?? "developer" }, "Org whitelist not loaded — all tables will be rejected");
     return new Set();
   }
 
@@ -472,9 +481,10 @@ export function getOrgWhitelistedTables(orgId: string, connectionId: string = "d
   return tables;
 }
 
-/** Invalidate the cached whitelist for an org (call after entity CRUD). */
+/** Invalidate the cached whitelist for an org (call after entity CRUD). Clears both developer and published mode caches. */
 export function invalidateOrgWhitelist(orgId: string): void {
   _orgWhitelists.delete(orgId);
+  _orgWhitelists.delete(`${orgId}:published`);
   invalidateOrgSemanticIndex(orgId);
 }
 

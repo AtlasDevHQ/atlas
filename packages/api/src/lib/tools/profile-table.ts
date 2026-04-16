@@ -38,7 +38,7 @@ export const profileTable = tool({
         : undefined;
 
       const whitelist = orgId
-        ? getOrgWhitelistedTables(orgId)
+        ? getOrgWhitelistedTables(orgId, "default", reqCtx?.atlasMode)
         : getWhitelistedTables(connId);
 
       if (!whitelist.has(table.toLowerCase())) {

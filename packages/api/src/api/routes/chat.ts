@@ -11,7 +11,7 @@ import { runEffect } from "@atlas/api/lib/effect/hono";
 import { RequestContext } from "@atlas/api/lib/effect/services";
 import { HTTPException } from "hono/http-exception";
 import { validationHook } from "./validation-hook";
-import { withRequestId, type AuthEnv } from "./middleware";
+import { withRequestId, resolveMode, type AuthEnv } from "./middleware";
 import { z } from "zod";
 import { type UIMessage, createUIMessageStream, createUIMessageStreamResponse } from "ai";
 import { APICallError, LoadAPIKeyError, NoSuchModelError } from "ai";
@@ -296,11 +296,18 @@ chat.openapi(chatRoute, async (c) => {
     // Capture plan warning for response headers (set after stream is created)
     const planWarning = planCheck.allowed ? planCheck.warning : undefined;
   
+    // Resolve atlas mode for this request (published vs developer)
+    const atlasMode = resolveMode(
+      req.headers.get("cookie"),
+      req.headers.get("x-atlas-mode"),
+      authResult,
+    );
+
     // Bind user to AsyncLocalStorage so downstream code (logQueryAudit, etc.)
     // has access to user identity. The middleware already set up requestId context;
     // this nested call adds the user after inline auth completes.
     return withRequestContext(
-      { requestId, user: authResult.user },
+      { requestId, user: authResult.user, atlasMode },
       async () => {
         // Startup diagnostics — fast-fail with actionable errors
         const diagnostics = await validateEnvironment();

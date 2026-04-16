@@ -10,7 +10,7 @@
 import { OpenAPIHono, createRoute } from "@hono/zod-openapi";
 import { Effect } from "effect";
 import { runEffect } from "@atlas/api/lib/effect/hono";
-import { AuthContext } from "@atlas/api/lib/effect/services";
+import { AuthContext, RequestContext } from "@atlas/api/lib/effect/services";
 import { validationHook } from "./validation-hook";
 import { z } from "zod";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
@@ -167,20 +167,23 @@ prompts.use(requestContext);
 prompts.openapi(listCollectionsRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    const { atlasMode } = yield* RequestContext;
 
     if (!hasInternalDB()) {
       return c.json({ collections: [] }, 200);
     }
 
+    const statusClause = atlasMode === "published" ? " AND status = 'published'" : "";
+
     let rows: Record<string, unknown>[];
     if (orgId) {
       rows = yield* Effect.promise(() => internalQuery<Record<string, unknown>>(
-        `SELECT * FROM prompt_collections WHERE org_id IS NULL OR org_id = $1 ORDER BY sort_order ASC, created_at ASC`,
+        `SELECT * FROM prompt_collections WHERE (org_id IS NULL OR org_id = $1)${statusClause} ORDER BY sort_order ASC, created_at ASC`,
         [orgId],
       ));
     } else {
       rows = yield* Effect.promise(() => internalQuery<Record<string, unknown>>(
-        `SELECT * FROM prompt_collections WHERE org_id IS NULL ORDER BY sort_order ASC, created_at ASC`,
+        `SELECT * FROM prompt_collections WHERE org_id IS NULL${statusClause} ORDER BY sort_order ASC, created_at ASC`,
       ));
     }
 
@@ -195,22 +198,24 @@ prompts.openapi(listCollectionsRoute, async (c) => {
 prompts.openapi(getCollectionRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
+    const { atlasMode } = yield* RequestContext;
 
     if (!hasInternalDB()) {
       return c.json({ error: "not_found", message: "Prompt collection not found." }, 404);
     }
 
     const { id } = c.req.valid("param");
+    const statusClause = atlasMode === "published" ? " AND status = 'published'" : "";
 
     let collectionRows: Record<string, unknown>[];
     if (orgId) {
       collectionRows = yield* Effect.promise(() => internalQuery<Record<string, unknown>>(
-        `SELECT * FROM prompt_collections WHERE id = $1 AND (org_id IS NULL OR org_id = $2)`,
+        `SELECT * FROM prompt_collections WHERE id = $1 AND (org_id IS NULL OR org_id = $2)${statusClause}`,
         [id, orgId],
       ));
     } else {
       collectionRows = yield* Effect.promise(() => internalQuery<Record<string, unknown>>(
-        `SELECT * FROM prompt_collections WHERE id = $1 AND org_id IS NULL`,
+        `SELECT * FROM prompt_collections WHERE id = $1 AND org_id IS NULL${statusClause}`,
         [id],
       ));
     }

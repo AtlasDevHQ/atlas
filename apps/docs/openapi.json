@@ -39224,10 +39224,15 @@
                         "connections": {
                           "type": "integer",
                           "minimum": 0
+                        },
+                        "entities": {
+                          "type": "integer",
+                          "minimum": 0
                         }
                       },
                       "required": [
-                        "connections"
+                        "connections",
+                        "entities"
                       ]
                     }
                   },
@@ -39235,31 +39240,6 @@
                     "promoted",
                     "deleted",
                     "archived"
-                  ]
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Invalid request body",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "requestId": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error",
-                    "message"
                   ]
                 }
               }
@@ -39302,6 +39282,35 @@
                     },
                     "requestId": {
                       "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    },
+                    "details": {
+                      "type": "array",
+                      "items": {}
                     }
                   },
                   "required": [

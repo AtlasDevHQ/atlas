@@ -303,7 +303,9 @@ export function createApiTestMocks(
     // to drive the transactional client directly.
     applyTombstones: mock(() => Promise.resolve(0)),
     promoteDraftEntities: mock(() => Promise.resolve(0)),
-    archiveConnectionsAndEntities: mock(() => Promise.resolve(0)),
+    archiveConnectionsAndEntities: mock(() =>
+      Promise.resolve({ connections: 0, entities: 0 }),
+    ),
   }));
 
   mock.module("@atlas/api/lib/semantic/diff", () => ({

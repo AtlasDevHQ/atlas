@@ -133,20 +133,24 @@ mock.module("@atlas/api/lib/semantic/entities", () => ({
     client: { query: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[] }> },
     orgId: string,
     ids: readonly string[],
-  ): Promise<number> => {
-    if (ids.length === 0) return 0;
-    const res = await client.query(
+  ): Promise<{ connections: number; entities: number }> => {
+    if (ids.length === 0) return { connections: 0, entities: 0 };
+    const connsRes = await client.query(
       `UPDATE connections SET status = 'archived', updated_at = now()
        WHERE org_id = $1 AND id = ANY($2::text[])
        RETURNING id`,
       [orgId, ids],
     );
-    await client.query(
+    const entitiesRes = await client.query(
       `UPDATE semantic_entities SET status = 'archived', updated_at = now()
-       WHERE org_id = $1 AND connection_id = ANY($2::text[]) AND status = 'published'`,
+       WHERE org_id = $1 AND connection_id = ANY($2::text[]) AND status = 'published'
+       RETURNING id`,
       [orgId, ids],
     );
-    return res.rows.length;
+    return {
+      connections: connsRes.rows.length,
+      entities: entitiesRes.rows.length,
+    };
   },
 }));
 
@@ -256,7 +260,7 @@ describe("POST /api/v1/admin/publish — atomic promotion", () => {
     const body = (await res.json()) as {
       promoted: { connections: number; entities: number; prompts: number };
       deleted: { entities: number };
-      archived: { connections: number };
+      archived: { connections: number; entities: number };
     };
 
     expect(body.promoted.entities).toBe(2);
@@ -266,6 +270,7 @@ describe("POST /api/v1/admin/publish — atomic promotion", () => {
     expect(body.deleted.entities).toBe(1);
     // No archive requested
     expect(body.archived.connections).toBe(0);
+    expect(body.archived.entities).toBe(0);
 
     // Transaction lifecycle
     const sqls = clientQueries.map((q) => q.sql.trim().toUpperCase());
@@ -336,15 +341,29 @@ describe("POST /api/v1/admin/publish — archiveConnections", () => {
       if (/UPDATE\s+connections\s+SET\s+status\s*=\s*'archived'/i.test(sql)) {
         return { rows: [{ id: "__demo__" }] };
       }
+      // Cascade archives 3 entities for the archived connection
+      if (
+        /UPDATE\s+semantic_entities\s+SET\s+status\s*=\s*'archived'/i.test(sql)
+      ) {
+        return {
+          rows: [
+            { id: "ent-cascade-1" },
+            { id: "ent-cascade-2" },
+            { id: "ent-cascade-3" },
+          ],
+        };
+      }
       return { rows: [] };
     };
 
     const res = await app.fetch(publishReq({ archiveConnections: ["__demo__"] }));
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
-      archived: { connections: number };
+      archived: { connections: number; entities: number };
     };
     expect(body.archived.connections).toBe(1);
+    // Cascade count reflects the entities UPDATE RETURNING rowcount
+    expect(body.archived.entities).toBe(3);
 
     // Assert three archive statements fired in the transaction
     const archiveConnSql = clientQueries.find(
@@ -388,8 +407,11 @@ describe("POST /api/v1/admin/publish — archiveConnections", () => {
   it("accepts an empty archiveConnections array as a no-op", async () => {
     const res = await app.fetch(publishReq({ archiveConnections: [] }));
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { archived: { connections: number } };
+    const body = (await res.json()) as {
+      archived: { connections: number; entities: number };
+    };
     expect(body.archived.connections).toBe(0);
+    expect(body.archived.entities).toBe(0);
 
     const archiveConnSql = clientQueries.find(
       (q) => /UPDATE\s+connections\s+SET\s+status\s*=\s*'archived'/i.test(q.sql),
@@ -408,10 +430,11 @@ describe("POST /api/v1/admin/publish — atomicity", () => {
   });
 
   it("issues ROLLBACK and returns 500 when a mid-transaction statement fails", async () => {
+    const rawErrorMessage = "simulated failure: draft_delete index corrupted";
     queryHandler = async (sql) => {
       // Let BEGIN pass, fail on the first DELETE
       if (/^\s*DELETE/i.test(sql)) {
-        throw new Error("simulated failure: draft_delete index corrupted");
+        throw new Error(rawErrorMessage);
       }
       return { rows: [] };
     };
@@ -428,6 +451,9 @@ describe("POST /api/v1/admin/publish — atomicity", () => {
 
     const body = (await res.json()) as Record<string, unknown>;
     expect(typeof body.requestId).toBe("string");
+    // The raw pg error message must NOT leak to the client — only generic copy
+    expect(String(body.message ?? "")).not.toContain(rawErrorMessage);
+    expect(String(body.message ?? "")).toContain("See server logs");
   });
 
   it("includes requestId in the 500 response body", async () => {

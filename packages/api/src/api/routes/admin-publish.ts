@@ -20,11 +20,7 @@
 import { createRoute, z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
-import {
-  hasInternalDB,
-  internalQuery,
-  getInternalDB,
-} from "@atlas/api/lib/db/internal";
+import { internalQuery, getInternalDB } from "@atlas/api/lib/db/internal";
 import {
   applyTombstones,
   promoteDraftEntities,
@@ -65,6 +61,7 @@ const PublishResponseSchema = z.object({
   }),
   archived: z.object({
     connections: z.number().int().nonnegative(),
+    entities: z.number().int().nonnegative(),
   }),
 });
 
@@ -94,10 +91,6 @@ const publishRoute = createRoute({
       description: "Publish summary",
       content: { "application/json": { schema: PublishResponseSchema } },
     },
-    400: {
-      description: "Invalid request body",
-      content: { "application/json": { schema: ErrorSchema } },
-    },
     401: {
       description: "Authentication required",
       content: { "application/json": { schema: AuthErrorSchema } },
@@ -109,6 +102,16 @@ const publishRoute = createRoute({
     404: {
       description: "Internal database not configured",
       content: { "application/json": { schema: ErrorSchema } },
+    },
+    422: {
+      description: "Validation error",
+      content: {
+        "application/json": {
+          schema: ErrorSchema.extend({
+            details: z.array(z.unknown()).optional(),
+          }),
+        },
+      },
     },
     429: {
       description: "Rate limit exceeded",
@@ -133,43 +136,11 @@ adminPublish.openapi(publishRoute, async (c) =>
     const { requestId, orgId } = c.get("orgContext");
     const authResult = c.get("authResult");
 
-    if (!hasInternalDB()) {
-      return c.json(
-        {
-          error: "not_available",
-          message:
-            "Publish requires an internal database (DATABASE_URL).",
-          requestId,
-        },
-        404,
-      );
-    }
-
-    // ── Body validation ─────────────────────────────────────────────
-    const body = await c.req.json().catch((err: unknown) => {
-      log.warn(
-        {
-          err: err instanceof Error ? err.message : String(err),
-          requestId,
-        },
-        "Failed to parse JSON body in publish request",
-      );
-      return null;
-    });
-
-    const parsed = PublishRequestSchema.safeParse(body ?? {});
-    if (!parsed.success) {
-      return c.json(
-        {
-          error: "invalid_request",
-          message:
-            "archiveConnections, when provided, must be an array of non-empty strings.",
-          requestId,
-        },
-        400,
-      );
-    }
-    const archiveIds = parsed.data.archiveConnections ?? [];
+    // Body validation is handled upstream by `validationHook` (returns 422
+    // on invalid shapes) and `requireOrgContext()` (returns 404 when the
+    // internal DB is unavailable). Here we just consume the validated body.
+    const { archiveConnections } = c.req.valid("json");
+    const archiveIds = archiveConnections ?? [];
     const archiveDemo = archiveIds.includes(DEMO_CONNECTION_ID);
 
     // ── Pre-transaction: resolve demo industry if we'll archive demo ─
@@ -206,6 +177,7 @@ adminPublish.openapi(publishRoute, async (c) =>
     let promotedConnectionCount: number;
     let promotedPromptCount: number;
     let archivedConnectionCount: number;
+    let archivedEntityCount: number;
 
     try {
       await client.query("BEGIN");
@@ -235,11 +207,13 @@ adminPublish.openapi(publishRoute, async (c) =>
       promotedPromptCount = promotedPrompts.rows.length;
 
       // Phase 4: archive requested connections (+ cascade to their entities)
-      archivedConnectionCount = await archiveConnectionsAndEntities(
+      const archiveResult = await archiveConnectionsAndEntities(
         client,
         orgId,
         archiveIds,
       );
+      archivedConnectionCount = archiveResult.connections;
+      archivedEntityCount = archiveResult.entities;
 
       // Phase 4b: when demo is being archived, also archive the built-in
       // demo prompt collections that match the org's demo industry.
@@ -280,9 +254,8 @@ adminPublish.openapi(publishRoute, async (c) =>
       return c.json(
         {
           error: "publish_failed",
-          message: `Publish failed — all changes rolled back. ${
-            err instanceof Error ? err.message : String(err)
-          }`,
+          message:
+            "Publish failed — all changes rolled back. See server logs for details.",
           requestId,
         },
         500,
@@ -306,6 +279,7 @@ adminPublish.openapi(publishRoute, async (c) =>
         promotedPrompts: promotedPromptCount,
         deletedEntities: deletedEntityCount,
         archivedConnections: archivedConnectionCount,
+        archivedEntities: archivedEntityCount,
         archiveIds,
       },
     });
@@ -321,7 +295,10 @@ adminPublish.openapi(publishRoute, async (c) =>
           prompts: promotedPromptCount,
         },
         deleted: { entities: deletedEntityCount },
-        archived: { connections: archivedConnectionCount },
+        archived: {
+          connections: archivedConnectionCount,
+          entities: archivedEntityCount,
+        },
       },
       "Publish succeeded",
     );
@@ -333,7 +310,10 @@ adminPublish.openapi(publishRoute, async (c) =>
         prompts: promotedPromptCount,
       },
       deleted: { entities: deletedEntityCount },
-      archived: { connections: archivedConnectionCount },
+      archived: {
+        connections: archivedConnectionCount,
+        entities: archivedEntityCount,
+      },
     };
     return c.json(response, 200);
   }),

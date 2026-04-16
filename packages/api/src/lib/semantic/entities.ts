@@ -613,26 +613,31 @@ export async function promoteDraftEntities(
  * Archive specified connection IDs and cascade to their published entities.
  *
  * Sets `status='archived'` on both the connection rows and the semantic
- * entities referencing them. Returns the number of connections archived.
+ * entities referencing them. Returns the number of connections archived
+ * and the number of entities cascaded.
  */
 export async function archiveConnectionsAndEntities(
   client: TransactionalClient,
   orgId: string,
   connectionIds: readonly string[],
-): Promise<number> {
-  if (connectionIds.length === 0) return 0;
+): Promise<{ connections: number; entities: number }> {
+  if (connectionIds.length === 0) return { connections: 0, entities: 0 };
   const archivedConns = await client.query(
     `UPDATE connections SET status = 'archived', updated_at = now()
      WHERE org_id = $1 AND id = ANY($2::text[])
      RETURNING id`,
     [orgId, connectionIds as string[]],
   );
-  await client.query(
+  const archivedEntities = await client.query(
     `UPDATE semantic_entities SET status = 'archived', updated_at = now()
-     WHERE org_id = $1 AND connection_id = ANY($2::text[]) AND status = 'published'`,
+     WHERE org_id = $1 AND connection_id = ANY($2::text[]) AND status = 'published'
+     RETURNING id`,
     [orgId, connectionIds as string[]],
   );
-  return archivedConns.rows.length;
+  return {
+    connections: archivedConns.rows.length,
+    entities: archivedEntities.rows.length,
+  };
 }
 
 /**

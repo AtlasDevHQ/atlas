@@ -609,34 +609,184 @@ export async function promoteDraftEntities(
   return promoted.rows.length;
 }
 
+/** Reserved ID for the onboarding demo connection. */
+export const DEMO_CONNECTION_ID = "__demo__";
+
 /**
- * Archive specified connection IDs and cascade to their published entities.
+ * Outcome of `archiveSingleConnection` — lets the caller decide the HTTP
+ * status without re-querying.
  *
- * Sets `status='archived'` on both the connection rows and the semantic
- * entities referencing them. Returns the number of connections archived
- * and the number of entities cascaded.
+ * - `not_found`: the connection row doesn't exist for this org.
+ * - `already_archived`: the connection row was already `archived` when
+ *   we locked it. Cascade counts still fire (the UPDATEs filter
+ *   `status='published'`, so they're no-ops when nothing's left), so
+ *   publish-style callers that want to reconcile straggler entities or
+ *   demo prompts still get their cleanup. The route handler interprets
+ *   this as an idempotent 200 for standalone calls.
+ * - `archived`: happy-path — the connection row was flipped from non-
+ *   archived to `archived`, with cascade counts.
  */
-export async function archiveConnectionsAndEntities(
+export type ArchiveConnectionResult =
+  | { status: "not_found" }
+  | { status: "already_archived"; entities: number; prompts: number }
+  | { status: "archived"; entities: number; prompts: number };
+
+/**
+ * Outcome of `restoreSingleConnection`. `not_found` means the connection
+ * row doesn't exist; `not_archived` means it exists but isn't currently
+ * in the `archived` state — restore is strict (caller-mapped to 404),
+ * not idempotent, because restoring a live connection would be surprising
+ * and there's no cleanup work to reconcile.
+ */
+export type RestoreConnectionResult =
+  | { status: "not_found" }
+  | { status: "not_archived" }
+  | { status: "restored"; entities: number; prompts: number };
+
+/**
+ * Archive a single connection and cascade to its semantic entities.
+ *
+ * Locks the connection row first with `SELECT ... FOR UPDATE` to serialize
+ * concurrent archive/restore calls — without the lock, a mid-flight
+ * restore could cascade entities back to `published` while a competing
+ * archive flips them to `archived`, leaving the connection and entities
+ * in opposite states.
+ *
+ * When the connection id matches `DEMO_CONNECTION_ID` and the caller
+ * passes a `demoIndustry`, built-in demo prompt collections for that
+ * industry are also archived — mirroring the publish-time demo cascade.
+ *
+ * The entity + prompt cascades always run (both UPDATEs filter on
+ * `status='published'`, so they're idempotent no-ops when nothing is
+ * stale). This matters for the `already_archived` case: a publish that
+ * re-submits `archiveConnections: ["__demo__"]` after the connection
+ * row is already archived still reconciles any entities or prompts
+ * that somehow drifted back to `published`.
+ *
+ * Runs on a caller-supplied transactional client so the caller owns the
+ * BEGIN/COMMIT boundary. Callers must wrap this in a transaction — the
+ * `FOR UPDATE` lock only holds inside one.
+ */
+export async function archiveSingleConnection(
   client: TransactionalClient,
   orgId: string,
-  connectionIds: readonly string[],
-): Promise<{ connections: number; entities: number }> {
-  if (connectionIds.length === 0) return { connections: 0, entities: 0 };
-  const archivedConns = await client.query(
-    `UPDATE connections SET status = 'archived', updated_at = now()
-     WHERE org_id = $1 AND id = ANY($2::text[])
-     RETURNING id`,
-    [orgId, connectionIds as string[]],
+  connectionId: string,
+  opts?: { demoIndustry?: string | null },
+): Promise<ArchiveConnectionResult> {
+  const current = await client.query(
+    `SELECT status FROM connections WHERE org_id = $1 AND id = $2 FOR UPDATE`,
+    [orgId, connectionId],
   );
+  if (current.rows.length === 0) {
+    return { status: "not_found" };
+  }
+  const row = current.rows[0] as { status: string };
+  const wasAlreadyArchived = row.status === "archived";
+
+  // Flip the connection row only if it isn't already archived. The
+  // cascade UPDATEs below run in either case so stragglers get cleaned up.
+  if (!wasAlreadyArchived) {
+    await client.query(
+      `UPDATE connections SET status = 'archived', updated_at = now()
+       WHERE org_id = $1 AND id = $2`,
+      [orgId, connectionId],
+    );
+  }
+
   const archivedEntities = await client.query(
     `UPDATE semantic_entities SET status = 'archived', updated_at = now()
-     WHERE org_id = $1 AND connection_id = ANY($2::text[]) AND status = 'published'
+     WHERE org_id = $1 AND connection_id = $2 AND status = 'published'
      RETURNING id`,
-    [orgId, connectionIds as string[]],
+    [orgId, connectionId],
   );
+
+  let promptCount = 0;
+  if (connectionId === DEMO_CONNECTION_ID && opts?.demoIndustry) {
+    const archivedPrompts = await client.query(
+      `UPDATE prompt_collections SET status = 'archived', updated_at = now()
+       WHERE org_id = $1
+         AND is_builtin = true
+         AND status = 'published'
+         AND industry = $2
+       RETURNING id`,
+      [orgId, opts.demoIndustry],
+    );
+    promptCount = archivedPrompts.rows.length;
+  }
+
   return {
-    connections: archivedConns.rows.length,
+    status: wasAlreadyArchived ? "already_archived" : "archived",
     entities: archivedEntities.rows.length,
+    prompts: promptCount,
+  };
+}
+
+/**
+ * Restore a single archived connection and cascade entities back to
+ * `published`. Demo prompt collections for the org's industry are
+ * restored too when the id matches `DEMO_CONNECTION_ID` and the caller
+ * passes a `demoIndustry`.
+ *
+ * Locks the connection row with `SELECT ... FOR UPDATE` to serialize
+ * against a concurrent archive — same rationale as
+ * `archiveSingleConnection`. Callers must wrap this in a transaction.
+ *
+ * Returns a tagged result — both `not_found` and `not_archived` are
+ * caller-mapped to 404. Unlike archive's `already_archived`, restore
+ * is strict: asking to restore a live connection is treated as an
+ * error, not a silent success, because there's no cleanup work to
+ * reconcile and flipping a live connection to its current state is
+ * never what the caller meant.
+ */
+export async function restoreSingleConnection(
+  client: TransactionalClient,
+  orgId: string,
+  connectionId: string,
+  opts?: { demoIndustry?: string | null },
+): Promise<RestoreConnectionResult> {
+  const current = await client.query(
+    `SELECT status FROM connections WHERE org_id = $1 AND id = $2 FOR UPDATE`,
+    [orgId, connectionId],
+  );
+  if (current.rows.length === 0) {
+    return { status: "not_found" };
+  }
+  const row = current.rows[0] as { status: string };
+  if (row.status !== "archived") {
+    return { status: "not_archived" };
+  }
+
+  await client.query(
+    `UPDATE connections SET status = 'published', updated_at = now()
+     WHERE org_id = $1 AND id = $2 AND status = 'archived'`,
+    [orgId, connectionId],
+  );
+
+  const restoredEntities = await client.query(
+    `UPDATE semantic_entities SET status = 'published', updated_at = now()
+     WHERE org_id = $1 AND connection_id = $2 AND status = 'archived'
+     RETURNING id`,
+    [orgId, connectionId],
+  );
+
+  let promptCount = 0;
+  if (connectionId === DEMO_CONNECTION_ID && opts?.demoIndustry) {
+    const restoredPrompts = await client.query(
+      `UPDATE prompt_collections SET status = 'published', updated_at = now()
+       WHERE org_id = $1
+         AND is_builtin = true
+         AND status = 'archived'
+         AND industry = $2
+       RETURNING id`,
+      [orgId, opts.demoIndustry],
+    );
+    promptCount = restoredPrompts.rows.length;
+  }
+
+  return {
+    status: "restored",
+    entities: restoredEntities.rows.length,
+    prompts: promptCount,
   };
 }
 

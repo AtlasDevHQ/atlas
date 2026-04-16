@@ -87,6 +87,15 @@ export const ADMIN_ACTIONS = {
   },
   mode: {
     publish: "mode.publish",
+    archive: "mode.archive",
+    /**
+     * Archive-cascade reconciliation on an already-archived connection —
+     * the connection row didn't flip state but stragglers got cleaned up.
+     * Separated from `archive` so compliance queries counting state
+     * transitions (`action_type = 'mode.archive'`) stay clean.
+     */
+    archiveReconcile: "mode.archive_reconcile",
+    restore: "mode.restore",
   },
 } as const;
 

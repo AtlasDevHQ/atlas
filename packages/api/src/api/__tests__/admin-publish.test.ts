@@ -11,6 +11,7 @@
 
 import { describe, it, expect, beforeEach, afterAll, mock } from "bun:test";
 import { createApiTestMocks } from "@atlas/api/testing/api-test-mocks";
+import { makeArchiveRestoreStubs } from "@atlas/api/testing/archive-restore";
 
 // ── Transactional client mock ─────────────────────────────────────────
 // Each test captures the sequence of queries issued against the pool's
@@ -129,29 +130,10 @@ mock.module("@atlas/api/lib/semantic/entities", () => ({
     );
     return res.rows.length;
   },
-  archiveConnectionsAndEntities: async (
-    client: { query: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[] }> },
-    orgId: string,
-    ids: readonly string[],
-  ): Promise<{ connections: number; entities: number }> => {
-    if (ids.length === 0) return { connections: 0, entities: 0 };
-    const connsRes = await client.query(
-      `UPDATE connections SET status = 'archived', updated_at = now()
-       WHERE org_id = $1 AND id = ANY($2::text[])
-       RETURNING id`,
-      [orgId, ids],
-    );
-    const entitiesRes = await client.query(
-      `UPDATE semantic_entities SET status = 'archived', updated_at = now()
-       WHERE org_id = $1 AND connection_id = ANY($2::text[]) AND status = 'published'
-       RETURNING id`,
-      [orgId, ids],
-    );
-    return {
-      connections: connsRes.rows.length,
-      entities: entitiesRes.rows.length,
-    };
-  },
+  // Single-connection archive/restore helpers. Spread from the shared
+  // factory so admin-publish.test.ts and admin-archive-restore.test.ts
+  // stay in lockstep automatically.
+  ...makeArchiveRestoreStubs(),
 }));
 
 // ── Import app AFTER mocks ────────────────────────────────────────────
@@ -260,7 +242,7 @@ describe("POST /api/v1/admin/publish — atomic promotion", () => {
     const body = (await res.json()) as {
       promoted: { connections: number; entities: number; prompts: number };
       deleted: { entities: number };
-      archived: { connections: number; entities: number };
+      archived: { connections: number; entities: number; prompts: number };
     };
 
     expect(body.promoted.entities).toBe(2);
@@ -271,6 +253,7 @@ describe("POST /api/v1/admin/publish — atomic promotion", () => {
     // No archive requested
     expect(body.archived.connections).toBe(0);
     expect(body.archived.entities).toBe(0);
+    expect(body.archived.prompts).toBe(0);
 
     // Transaction lifecycle
     const sqls = clientQueries.map((q) => q.sql.trim().toUpperCase());
@@ -338,6 +321,11 @@ describe("POST /api/v1/admin/publish — archiveConnections", () => {
     });
 
     queryHandler = async (sql) => {
+      // Single-connection helper locks the row first — report "published"
+      // so the cascade actually runs.
+      if (/SELECT\s+status\s+FROM\s+connections/i.test(sql)) {
+        return { rows: [{ status: "published" }] };
+      }
       if (/UPDATE\s+connections\s+SET\s+status\s*=\s*'archived'/i.test(sql)) {
         return { rows: [{ id: "__demo__" }] };
       }
@@ -353,17 +341,26 @@ describe("POST /api/v1/admin/publish — archiveConnections", () => {
           ],
         };
       }
+      // Cascade archives 2 built-in demo prompts
+      if (
+        /UPDATE\s+prompt_collections\s+SET\s+status\s*=\s*'archived'/i.test(sql)
+      ) {
+        return { rows: [{ id: "prompt-1" }, { id: "prompt-2" }] };
+      }
       return { rows: [] };
     };
 
     const res = await app.fetch(publishReq({ archiveConnections: ["__demo__"] }));
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
-      archived: { connections: number; entities: number };
+      archived: { connections: number; entities: number; prompts: number };
     };
     expect(body.archived.connections).toBe(1);
-    // Cascade count reflects the entities UPDATE RETURNING rowcount
+    // Cascade counts reflect the UPDATE ... RETURNING rowcounts. Concrete
+    // values — a bare `>= 0` would be tautological (zod already enforces
+    // `z.number().int().nonnegative()` on the response schema).
     expect(body.archived.entities).toBe(3);
+    expect(body.archived.prompts).toBe(2);
 
     // Assert three archive statements fired in the transaction
     const archiveConnSql = clientQueries.find(
@@ -408,15 +405,171 @@ describe("POST /api/v1/admin/publish — archiveConnections", () => {
     const res = await app.fetch(publishReq({ archiveConnections: [] }));
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
-      archived: { connections: number; entities: number };
+      archived: { connections: number; entities: number; prompts: number };
     };
     expect(body.archived.connections).toBe(0);
     expect(body.archived.entities).toBe(0);
+    expect(body.archived.prompts).toBe(0);
 
     const archiveConnSql = clientQueries.find(
       (q) => /UPDATE\s+connections\s+SET\s+status\s*=\s*'archived'/i.test(q.sql),
     );
     expect(archiveConnSql).toBeUndefined();
+  });
+
+  it("loops over multiple archive ids, locking and cascading each", async () => {
+    // After the #1437 refactor publish loops archiveSingleConnection per
+    // id. A bug that early-returns after the first id would let the
+    // second connection stay published. Verify both connections' lock +
+    // UPDATE pair fire.
+    mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([]));
+    queryHandler = async (sql) => {
+      if (/SELECT\s+status\s+FROM\s+connections/i.test(sql)) {
+        return { rows: [{ status: "published" }] };
+      }
+      if (/UPDATE\s+connections\s+SET\s+status\s*=\s*'archived'/i.test(sql)) {
+        return { rows: [{ id: "x" }] };
+      }
+      return { rows: [] };
+    };
+
+    const res = await app.fetch(
+      publishReq({ archiveConnections: ["warehouse", "legacy"] }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      archived: { connections: number; entities: number; prompts: number };
+    };
+    expect(body.archived.connections).toBe(2);
+
+    const locks = clientQueries.filter((q) =>
+      /SELECT\s+status\s+FROM\s+connections[\s\S]*FOR\s+UPDATE/i.test(q.sql),
+    );
+    expect(locks.length).toBe(2);
+    const lockedIds = locks.map((q) => (q.params as unknown[])[1]);
+    expect(lockedIds).toContain("warehouse");
+    expect(lockedIds).toContain("legacy");
+  });
+
+  it("rolls back atomically when a later archive id in the loop fails", async () => {
+    // First id locks + archives fine, second id throws during entity
+    // cascade. The whole publish transaction must ROLLBACK — no partial
+    // commit from the first id survives.
+    mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([]));
+    let lockCalls = 0;
+    queryHandler = async (sql) => {
+      if (/SELECT\s+status\s+FROM\s+connections/i.test(sql)) {
+        lockCalls++;
+        return { rows: [{ status: "published" }] };
+      }
+      if (/UPDATE\s+semantic_entities\s+SET\s+status\s*=\s*'archived'/i.test(sql)) {
+        if (lockCalls === 2) {
+          throw new Error("cascade failure on second id");
+        }
+        return { rows: [] };
+      }
+      return { rows: [] };
+    };
+
+    const res = await app.fetch(
+      publishReq({ archiveConnections: ["first", "second"] }),
+    );
+    expect(res.status).toBe(500);
+
+    const sqls = clientQueries.map((q) => q.sql.trim().toUpperCase());
+    expect(sqls.includes("ROLLBACK")).toBe(true);
+    expect(sqls.includes("COMMIT")).toBe(false);
+  });
+
+  it("archive loop: already-archived id reconciles stragglers without bumping connection count", async () => {
+    // An id in archiveConnections is already `archived` but still has
+    // straggler entities stuck at `published` and built-in demo prompts
+    // in the same state. archiveSingleConnection should NOT flip the
+    // connection row (it's already archived) but SHOULD still cascade
+    // and return non-zero counts. Publish must accumulate those counts
+    // into archived.entities / archived.prompts while keeping
+    // archived.connections at 0, and emit the "cascade reconciled" warn.
+    mocks.mockInternalQuery.mockImplementation((sql: string) => {
+      if (sql.includes("demo_industry")) {
+        return Promise.resolve([{ value: "cybersecurity" }]);
+      }
+      return Promise.resolve([]);
+    });
+
+    queryHandler = async (sql) => {
+      if (/SELECT\s+status\s+FROM\s+connections/i.test(sql)) {
+        // Already archived — helper will NOT run the connection UPDATE
+        return { rows: [{ status: "archived" }] };
+      }
+      if (/UPDATE\s+semantic_entities\s+SET\s+status\s*=\s*'archived'/i.test(sql)) {
+        return { rows: [{ id: "straggler-1" }, { id: "straggler-2" }] };
+      }
+      if (/UPDATE\s+prompt_collections\s+SET\s+status\s*=\s*'archived'/i.test(sql)) {
+        return { rows: [{ id: "prompt-straggler-1" }] };
+      }
+      return { rows: [] };
+    };
+
+    const res = await app.fetch(publishReq({ archiveConnections: ["__demo__"] }));
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      archived: { connections: number; entities: number; prompts: number };
+    };
+    // Connection row didn't flip — no bump
+    expect(body.archived.connections).toBe(0);
+    // But cascade reconciliation surfaces in both counts
+    expect(body.archived.entities).toBe(2);
+    expect(body.archived.prompts).toBe(1);
+
+    // No connection UPDATE (the helper skips it when already archived)
+    const connUpdate = clientQueries.find((q) =>
+      /UPDATE\s+connections\s+SET\s+status\s*=\s*'archived'/i.test(q.sql),
+    );
+    expect(connUpdate).toBeUndefined();
+    // Transaction still commits cleanly
+    const sqls = clientQueries.map((q) => q.sql.trim().toUpperCase());
+    expect(sqls.includes("COMMIT")).toBe(true);
+    expect(sqls.includes("ROLLBACK")).toBe(false);
+  });
+
+  it("archive loop: not_found id does not abort the loop — subsequent ids still process", async () => {
+    // First id is not_found; second is published and should still
+    // archive. The `not_found` branch must continue, not short-circuit.
+    let lockCalls = 0;
+    queryHandler = async (sql) => {
+      if (/SELECT\s+status\s+FROM\s+connections/i.test(sql)) {
+        lockCalls++;
+        // First id: missing; second id: published
+        return lockCalls === 1 ? { rows: [] } : { rows: [{ status: "published" }] };
+      }
+      if (/UPDATE\s+connections\s+SET\s+status\s*=\s*'archived'/i.test(sql)) {
+        return { rows: [{ id: "real-id" }] };
+      }
+      return { rows: [] };
+    };
+
+    const res = await app.fetch(
+      publishReq({ archiveConnections: ["typo-id", "real-id"] }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      archived: { connections: number; entities: number; prompts: number };
+    };
+    // Only the second id archived; the first was not_found and skipped
+    expect(body.archived.connections).toBe(1);
+
+    // Both ids got locked (loop didn't early-exit)
+    const lockParams = clientQueries
+      .filter((q) =>
+        /SELECT\s+status\s+FROM\s+connections[\s\S]*FOR\s+UPDATE/i.test(q.sql),
+      )
+      .map((q) => (q.params as unknown[])[1]);
+    expect(lockParams).toEqual(["typo-id", "real-id"]);
+
+    // Transaction commits — publish is best-effort for the archive list
+    const sqls = clientQueries.map((q) => q.sql.trim().toUpperCase());
+    expect(sqls.includes("COMMIT")).toBe(true);
+    expect(sqls.includes("ROLLBACK")).toBe(false);
   });
 });
 

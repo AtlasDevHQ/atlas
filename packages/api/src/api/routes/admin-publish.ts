@@ -24,16 +24,14 @@ import { internalQuery, getInternalDB } from "@atlas/api/lib/db/internal";
 import {
   applyTombstones,
   promoteDraftEntities,
-  archiveConnectionsAndEntities,
+  archiveSingleConnection,
+  DEMO_CONNECTION_ID,
 } from "@atlas/api/lib/semantic/entities";
 import { runHandler } from "@atlas/api/lib/effect/hono";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 
 const log = createLogger("admin-publish");
-
-/** Reserved ID for the onboarding demo connection. */
-const DEMO_CONNECTION_ID = "__demo__";
 
 // ---------------------------------------------------------------------------
 // Request / response schemas
@@ -62,6 +60,7 @@ const PublishResponseSchema = z.object({
   archived: z.object({
     connections: z.number().int().nonnegative(),
     entities: z.number().int().nonnegative(),
+    prompts: z.number().int().nonnegative(),
   }),
 });
 
@@ -178,6 +177,7 @@ adminPublish.openapi(publishRoute, async (c) =>
     let promotedPromptCount: number;
     let archivedConnectionCount: number;
     let archivedEntityCount: number;
+    let archivedPromptCount: number;
 
     try {
       await client.query("BEGIN");
@@ -206,26 +206,59 @@ adminPublish.openapi(publishRoute, async (c) =>
       );
       promotedPromptCount = promotedPrompts.rows.length;
 
-      // Phase 4: archive requested connections (+ cascade to their entities)
-      const archiveResult = await archiveConnectionsAndEntities(
-        client,
-        orgId,
-        archiveIds,
-      );
-      archivedConnectionCount = archiveResult.connections;
-      archivedEntityCount = archiveResult.entities;
-
-      // Phase 4b: when demo is being archived, also archive the built-in
-      // demo prompt collections that match the org's demo industry.
-      if (archiveDemo && demoIndustry) {
-        await client.query(
-          `UPDATE prompt_collections SET status = 'archived', updated_at = now()
-           WHERE org_id = $1
-             AND is_builtin = true
-             AND status = 'published'
-             AND industry = $2`,
-          [orgId, demoIndustry],
-        );
+      // Phase 4: archive requested connections (+ cascade to their entities +
+      // demo prompt collections when the id is `__demo__`). Loops the shared
+      // single-connection helper so publish and the standalone archive
+      // endpoints stay in lockstep — see #1437.
+      archivedConnectionCount = 0;
+      archivedEntityCount = 0;
+      archivedPromptCount = 0;
+      for (const id of archiveIds) {
+        const archiveResult = await archiveSingleConnection(client, orgId, id, {
+          demoIndustry: id === DEMO_CONNECTION_ID ? demoIndustry : null,
+        });
+        // Exhaustive switch — matches the pattern in admin-archive.ts so a
+        // future ArchiveConnectionResult variant fails the `never` default
+        // at compile time instead of getting silently treated as
+        // `not_found`.
+        switch (archiveResult.status) {
+          case "archived":
+            archivedConnectionCount++;
+            archivedEntityCount += archiveResult.entities;
+            archivedPromptCount += archiveResult.prompts;
+            break;
+          case "already_archived":
+            // The connection row itself was already archived, but the
+            // helper's cascade still reconciled any straggler entities /
+            // demo prompts.
+            archivedEntityCount += archiveResult.entities;
+            archivedPromptCount += archiveResult.prompts;
+            log.warn(
+              {
+                requestId,
+                orgId,
+                connectionId: id,
+                cascadedEntities: archiveResult.entities,
+                cascadedPrompts: archiveResult.prompts,
+              },
+              "archiveConnection id already archived during publish — cascade reconciled",
+            );
+            break;
+          case "not_found":
+            // Admin passed a bogus id. Surface it in the log so ops can
+            // spot typos; publish itself still commits the rest.
+            log.warn(
+              { requestId, orgId, connectionId: id },
+              "archiveConnection id not found during publish — skipped",
+            );
+            break;
+          default: {
+            const _exhaustive: never = archiveResult;
+            throw new Error(
+              `Unhandled archive result in publish loop: ${JSON.stringify(_exhaustive)}`,
+            );
+          }
+        }
       }
 
       await client.query("COMMIT");
@@ -280,6 +313,7 @@ adminPublish.openapi(publishRoute, async (c) =>
         deletedEntities: deletedEntityCount,
         archivedConnections: archivedConnectionCount,
         archivedEntities: archivedEntityCount,
+        archivedPrompts: archivedPromptCount,
         archiveIds,
       },
     });
@@ -298,6 +332,7 @@ adminPublish.openapi(publishRoute, async (c) =>
         archived: {
           connections: archivedConnectionCount,
           entities: archivedEntityCount,
+          prompts: archivedPromptCount,
         },
       },
       "Publish succeeded",
@@ -313,6 +348,7 @@ adminPublish.openapi(publishRoute, async (c) =>
       archived: {
         connections: archivedConnectionCount,
         entities: archivedEntityCount,
+        prompts: archivedPromptCount,
       },
     };
     return c.json(response, 200);

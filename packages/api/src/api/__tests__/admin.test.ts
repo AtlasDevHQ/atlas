@@ -292,12 +292,17 @@ mock.module("@atlas/api/lib/semantic/entities", () => ({
   listVersions: mockListVersions,
   getVersion: mockGetVersion,
   generateChangeSummary: mockGenerateChangeSummary,
-  // Publish helpers (#1429) — not exercised in this file, but must exist so
-  // admin-publish.ts can resolve its imports when admin routes load.
+  // Publish / archive helpers (#1429, #1437) — not exercised here, but
+  // must exist so admin-publish.ts / admin-archive.ts can resolve their
+  // imports when admin routes load.
   applyTombstones: mock(() => Promise.resolve(0)),
   promoteDraftEntities: mock(() => Promise.resolve(0)),
-  archiveConnectionsAndEntities: mock(() =>
-    Promise.resolve({ connections: 0, entities: 0 }),
+  DEMO_CONNECTION_ID: "__demo__",
+  archiveSingleConnection: mock(() =>
+    Promise.resolve({ status: "not_found" as const }),
+  ),
+  restoreSingleConnection: mock(() =>
+    Promise.resolve({ status: "not_found" as const }),
   ),
 }));
 

@@ -114,7 +114,8 @@ export default function ConnectPage() {
       let data: TestResult;
       try {
         data = await res.json();
-      } catch {
+      } catch (parseErr) {
+        console.debug("[signup/connect] test-connection JSON parse failed:", parseErr instanceof Error ? parseErr.message : String(parseErr));
         setConnectionStatus("error");
         setConnectError("Server returned an unexpected response. Check that the API is running.");
         return;
@@ -154,17 +155,21 @@ export default function ConnectPage() {
       let data: Record<string, unknown>;
       try {
         data = await res.json() as Record<string, unknown>;
-      } catch {
+      } catch (parseErr) {
+        console.debug("[signup/connect] complete JSON parse failed:", parseErr instanceof Error ? parseErr.message : String(parseErr));
+        setConnectionStatus("error");
         setConnectError("Server returned an unexpected response. Check that the API is running.");
         return;
       }
       if (!res.ok) {
+        setConnectionStatus("error");
         setConnectError((data.message as string) ?? "Failed to save connection");
         return;
       }
 
       router.push("/signup/success");
     } catch (err) {
+      setConnectionStatus("error");
       setConnectError(
         err instanceof TypeError
           ? "Unable to reach the server"
@@ -190,7 +195,8 @@ export default function ConnectPage() {
       let data: Record<string, unknown>;
       try {
         data = await res.json() as Record<string, unknown>;
-      } catch {
+      } catch (parseErr) {
+        console.debug("[signup/connect] use-demo JSON parse failed:", parseErr instanceof Error ? parseErr.message : String(parseErr));
         setDemoError("Server returned an unexpected response.");
         return;
       }

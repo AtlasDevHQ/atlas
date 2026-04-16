@@ -12,7 +12,7 @@
 
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { Effect } from "effect";
-import { ADMIN_ROLES, type AtlasMode } from "@useatlas/types/auth";
+import type { AtlasMode } from "@useatlas/types/auth";
 import type { ModeStatusResponse, ModeDraftCounts } from "@useatlas/types/mode";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import {
@@ -24,7 +24,14 @@ import { getSettingAuto } from "@atlas/api/lib/settings";
 import { ErrorSchema } from "./shared-schemas";
 import { standardAuth, requestContext, type AuthEnv } from "./middleware";
 
-const ADMIN_ROLE_SET: ReadonlySet<string> = new Set(ADMIN_ROLES);
+/**
+ * Admin-level roles permitted to toggle into developer mode.
+ *
+ * Duplicated literal (not imported from `@useatlas/types/auth`) so this route
+ * builds against older published versions of `@useatlas/types` that don't yet
+ * export `ADMIN_ROLES`. Remove once the types package with `ADMIN_ROLES` ships.
+ */
+const ADMIN_ROLE_SET: ReadonlySet<string> = new Set(["admin", "owner", "platform_admin"]);
 
 /** Setting key holding the demo industry chosen during onboarding. */
 const DEMO_INDUSTRY_SETTING = "ATLAS_DEMO_INDUSTRY";

@@ -112,9 +112,12 @@ async function loadLibraryPrompts(
  *
  * Compose order: favorites → popular → library → cold-start. The popular
  * tier reads admin-approved suggestions only (`approval_status = 'approved'`)
- * so moderation state flows end-to-end from the queue to the empty state.
- * An empty return signals cold-start — the UI renders a single-CTA state
- * rather than an empty grid.
+ * gated by the mode-system `status` filter: non-admins see only published
+ * rows; admins in developer mode see draft + published overlaid. That
+ * keeps moderation state flowing end-to-end from the admin queue to the
+ * empty state while letting admins preview queued edits. An empty return
+ * signals cold-start — the UI renders a single-CTA state rather than an
+ * empty grid.
  */
 export async function resolveStarterPrompts(
   ctx: ResolveContext,
@@ -169,10 +172,13 @@ export async function resolveStarterPrompts(
   }
 
   // Tier 2 — popular approved. Skipped when there is no workspace context.
+  // Mode flows through to `getPopularSuggestions` so admins in developer
+  // mode see queued drafts and non-admins (downgraded upstream) see only
+  // the published surface.
   if (out.length < limit && ctx.orgId) {
     const remaining = limit - out.length;
     try {
-      const rows = await getPopularSuggestions(ctx.orgId, remaining);
+      const rows = await getPopularSuggestions(ctx.orgId, remaining, ctx.mode);
       for (const row of rows) {
         if (out.length >= limit) break;
         out.push({

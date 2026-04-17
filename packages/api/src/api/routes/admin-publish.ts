@@ -7,8 +7,11 @@
  * 1. Apply `draft_delete` tombstones (delete the targeted published rows,
  *    then delete the tombstones themselves).
  * 2. Delete published entity rows superseded by drafts (same entity key).
- * 3. Promote all `draft` rows (entities + connections + prompt collections)
- *    to `published`.
+ * 3. Promote every draft content type to `published`, in order:
+ *    3a. Entities (merged with phase 2 via `promoteDraftEntities()`).
+ *    3b. Connections.
+ *    3c. Prompt collections.
+ *    3d. Starter-prompt suggestions (`query_suggestions`) — #1478.
  * 4. If `archiveConnections` is provided, archive those connections and
  *    cascade to their entities. When the archive list includes the reserved
  *    `__demo__` ID, also archive the built-in demo prompt collections whose
@@ -54,6 +57,7 @@ const PublishResponseSchema = z.object({
     connections: z.number().int().nonnegative(),
     entities: z.number().int().nonnegative(),
     prompts: z.number().int().nonnegative(),
+    starterPrompts: z.number().int().nonnegative(),
   }),
   deleted: z.object({
     entities: z.number().int().nonnegative(),
@@ -177,6 +181,7 @@ adminPublish.openapi(publishRoute, async (c) =>
     let promotedEntityCount: number;
     let promotedConnectionCount: number;
     let promotedPromptCount: number;
+    let promotedStarterPromptCount: number;
     let archivedConnectionCount: number;
     let archivedEntityCount: number;
     let archivedPromptCount: number;
@@ -207,6 +212,18 @@ adminPublish.openapi(publishRoute, async (c) =>
         [orgId],
       );
       promotedPromptCount = promotedPrompts.rows.length;
+
+      // Phase 3d: promote draft starter-prompt suggestions. Runs in the
+      // same transaction as entities/connections/prompt collections so a
+      // partial failure rolls all four promotions back — the admin never
+      // sees some draft edits go live while others remain unpublished.
+      const promotedStarterPrompts = await client.query(
+        `UPDATE query_suggestions SET status = 'published', updated_at = now()
+         WHERE org_id = $1 AND status = 'draft'
+         RETURNING id`,
+        [orgId],
+      );
+      promotedStarterPromptCount = promotedStarterPrompts.rows.length;
 
       // Phase 4: archive requested connections (+ cascade to their entities +
       // demo prompt collections when the id is `__demo__`). Loops the shared
@@ -310,6 +327,7 @@ adminPublish.openapi(publishRoute, async (c) =>
         promotedConnections: promotedConnectionCount,
         promotedEntities: promotedEntityCount,
         promotedPrompts: promotedPromptCount,
+        promotedStarterPrompts: promotedStarterPromptCount,
         deletedEntities: deletedEntityCount,
         archivedConnections: archivedConnectionCount,
         archivedEntities: archivedEntityCount,
@@ -327,6 +345,7 @@ adminPublish.openapi(publishRoute, async (c) =>
           connections: promotedConnectionCount,
           entities: promotedEntityCount,
           prompts: promotedPromptCount,
+          starterPrompts: promotedStarterPromptCount,
         },
         deleted: { entities: deletedEntityCount },
         archived: {
@@ -343,6 +362,7 @@ adminPublish.openapi(publishRoute, async (c) =>
         connections: promotedConnectionCount,
         entities: promotedEntityCount,
         prompts: promotedPromptCount,
+        starterPrompts: promotedStarterPromptCount,
       },
       deleted: { entities: deletedEntityCount },
       archived: {

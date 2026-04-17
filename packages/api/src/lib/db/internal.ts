@@ -22,6 +22,7 @@ import { PgClient } from "@effect/sql-pg";
 import type { Pool as PgPool } from "pg";
 import { createLogger } from "@atlas/api/lib/logger";
 import { normalizeError } from "@atlas/api/lib/effect/errors";
+import { buildUnionStatusClause } from "@atlas/api/api/routes/middleware";
 
 const log = createLogger("internal-db");
 
@@ -1181,7 +1182,15 @@ export async function getSuggestionsByTables(
 
 export async function getPopularSuggestions(
   orgId: string | null,
-  limit: number = 10
+  limit: number = 10,
+  /**
+   * Mode-system filter (1.2.0): `published` (default) returns only
+   * `status = 'published'` rows — the user-facing surface. `developer`
+   * additionally includes `status = 'draft'` so admins can preview
+   * queued edits before hitting publish. Non-admin callers always land
+   * on `published` because mode resolution upstream downgrades them.
+   */
+  mode: import("@useatlas/types/auth").AtlasMode = "published",
 ): Promise<QuerySuggestionRow[]> {
   if (!hasInternalDB()) return [];
   try {
@@ -1189,12 +1198,25 @@ export async function getPopularSuggestions(
     const params: unknown[] = orgId != null ? [orgId, limit] : [limit];
     const limitIdx = params.length;
 
-    // Gated to admin-approved rows only. Pending / hidden suggestions
-    // must not surface in user-facing empty states — this is the single
-    // source of truth enforcing that contract from backend to UI.
+    // Two independent gates enforce end-to-end moderation visibility:
+    //   approval_status = 'approved' — pending / hidden rows never
+    //     surface to the empty state, regardless of mode.
+    //   status IN (...)              — the 1.2.0 mode axis: non-admin
+    //     callers are downgraded to `published` upstream by
+    //     resolveMode(), so drafts can only leak via developer-mode
+    //     admins previewing their own queue.
+    //
+    // `buildUnionStatusClause()` is the shared helper driving the same
+    // mode branch on `connections` and `prompt_collections` — reuse it
+    // here so mode semantics stay in lockstep across every
+    // user-surfaced table. It returns " AND status = 'published'" or
+    // " AND status IN ('published', 'draft')" with the leading AND +
+    // space, safe to concat directly onto the WHERE clause.
+    const statusClause = buildUnionStatusClause(mode);
+
     return await internalQuery<QuerySuggestionRow>(
       `SELECT * FROM query_suggestions
-       WHERE ${orgClause} AND approval_status = 'approved'
+       WHERE ${orgClause} AND approval_status = 'approved'${statusClause}
        ORDER BY score DESC LIMIT $${limitIdx}`,
       params
     );

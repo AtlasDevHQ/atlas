@@ -94,6 +94,7 @@ interface DraftCountFixture {
   entityEdits: number;
   entityDeletes: number;
   prompts: number;
+  starterPrompts: number;
 }
 
 let draftFixture: DraftCountFixture = {
@@ -102,6 +103,7 @@ let draftFixture: DraftCountFixture = {
   entityEdits: 0,
   entityDeletes: 0,
   prompts: 0,
+  starterPrompts: 0,
 };
 let demoActiveFixture = false;
 
@@ -117,6 +119,7 @@ const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<Recor
         { k: "entityEdits", v: draftFixture.entityEdits },
         { k: "entityDeletes", v: draftFixture.entityDeletes },
         { k: "prompts", v: draftFixture.prompts },
+        { k: "starterPrompts", v: draftFixture.starterPrompts },
       ];
     }
     return [];
@@ -207,7 +210,7 @@ describe("GET /api/v1/mode — mode resolution", () => {
   beforeEach(() => {
     asAdmin();
     mockHasInternalDBValue = true;
-    draftFixture = { connections: 0, entities: 0, entityEdits: 0, entityDeletes: 0, prompts: 0 };
+    draftFixture = { connections: 0, entities: 0, entityEdits: 0, entityDeletes: 0, prompts: 0, starterPrompts: 0 };
     demoActiveFixture = false;
     demoIndustryFixture = undefined;
   });
@@ -256,7 +259,7 @@ describe("GET /api/v1/mode — mode resolution", () => {
 describe("GET /api/v1/mode — canToggle by role", () => {
   beforeEach(() => {
     mockHasInternalDBValue = true;
-    draftFixture = { connections: 0, entities: 0, entityEdits: 0, entityDeletes: 0, prompts: 0 };
+    draftFixture = { connections: 0, entities: 0, entityEdits: 0, entityDeletes: 0, prompts: 0, starterPrompts: 0 };
     demoActiveFixture = false;
     demoIndustryFixture = undefined;
   });
@@ -294,7 +297,7 @@ describe("GET /api/v1/mode — demo state", () => {
   beforeEach(() => {
     asAdmin();
     mockHasInternalDBValue = true;
-    draftFixture = { connections: 0, entities: 0, entityEdits: 0, entityDeletes: 0, prompts: 0 };
+    draftFixture = { connections: 0, entities: 0, entityEdits: 0, entityDeletes: 0, prompts: 0, starterPrompts: 0 };
   });
 
   it("returns demoIndustry from settings", async () => {
@@ -336,7 +339,7 @@ describe("GET /api/v1/mode — draft counts", () => {
   });
 
   it("returns draftCounts=null and hasDrafts=false when no drafts exist", async () => {
-    draftFixture = { connections: 0, entities: 0, entityEdits: 0, entityDeletes: 0, prompts: 0 };
+    draftFixture = { connections: 0, entities: 0, entityEdits: 0, entityDeletes: 0, prompts: 0, starterPrompts: 0 };
     const res = await request("/api/v1/mode");
     const data = await json(res);
     expect(data.draftCounts).toBeNull();
@@ -344,7 +347,7 @@ describe("GET /api/v1/mode — draft counts", () => {
   });
 
   it("returns draftCounts and hasDrafts=true when any draft exists", async () => {
-    draftFixture = { connections: 1, entities: 0, entityEdits: 0, entityDeletes: 0, prompts: 0 };
+    draftFixture = { connections: 1, entities: 0, entityEdits: 0, entityDeletes: 0, prompts: 0, starterPrompts: 0 };
     const res = await request("/api/v1/mode");
     const data = await json(res) as { hasDrafts: boolean; draftCounts: Record<string, number> | null };
     expect(data.hasDrafts).toBe(true);
@@ -352,8 +355,8 @@ describe("GET /api/v1/mode — draft counts", () => {
     expect(data.draftCounts!.connections).toBe(1);
   });
 
-  it("includes all five draft fields with the expected counts", async () => {
-    draftFixture = { connections: 2, entities: 7, entityEdits: 3, entityDeletes: 1, prompts: 4 };
+  it("includes all six draft fields with the expected counts", async () => {
+    draftFixture = { connections: 2, entities: 7, entityEdits: 3, entityDeletes: 1, prompts: 4, starterPrompts: 5 };
     const res = await request("/api/v1/mode");
     const data = await json(res) as { draftCounts: Record<string, number> };
     expect(data.draftCounts).toMatchObject({
@@ -362,7 +365,46 @@ describe("GET /api/v1/mode — draft counts", () => {
       entityEdits: 3,
       entityDeletes: 1,
       prompts: 4,
+      starterPrompts: 5,
     });
+  });
+
+  // Regression guard for #1478: a typo in DRAFT_COUNTS_SQL (missing
+  // UNION branch, wrong key casing, wrong status literal) would let
+  // rowsToCounts() silently fall back to ZERO_COUNTS for starterPrompts
+  // without failing any other assertion. Pin the key end-to-end.
+  it("reports draftCounts.starterPrompts when only starter-prompt drafts exist", async () => {
+    draftFixture = {
+      connections: 0,
+      entities: 0,
+      entityEdits: 0,
+      entityDeletes: 0,
+      prompts: 0,
+      starterPrompts: 3,
+    };
+    const res = await request("/api/v1/mode");
+    const data = await json(res) as {
+      hasDrafts: boolean;
+      draftCounts: Record<string, number> | null;
+    };
+    expect(data.hasDrafts).toBe(true);
+    expect(data.draftCounts).not.toBeNull();
+    expect(data.draftCounts!.starterPrompts).toBe(3);
+  });
+
+  it("queries query_suggestions in the DRAFT_COUNTS_SQL UNION", async () => {
+    // A regression that dropped the starterPrompts branch would leave
+    // the SQL untouched but callers would see zero. Assert the SQL
+    // actually references query_suggestions so the phase-3d source
+    // table stays in the union.
+    await request("/api/v1/mode");
+    const calls = mockInternalQuery.mock.calls.map(([sql]) => String(sql));
+    const unionCall = calls.find(
+      (sql) => sql.includes("UNION ALL") && sql.includes("'starterPrompts'"),
+    );
+    expect(unionCall).toBeDefined();
+    expect(unionCall).toContain("FROM query_suggestions");
+    expect(unionCall).toContain("status = 'draft'");
   });
 
   it("returns draftCounts=null when no orgId is available", async () => {
@@ -388,7 +430,7 @@ describe("GET /api/v1/mode — error handling", () => {
   beforeEach(() => {
     asAdmin();
     mockHasInternalDBValue = true;
-    draftFixture = { connections: 0, entities: 0, entityEdits: 0, entityDeletes: 0, prompts: 0 };
+    draftFixture = { connections: 0, entities: 0, entityEdits: 0, entityDeletes: 0, prompts: 0, starterPrompts: 0 };
     demoActiveFixture = false;
     demoIndustryFixture = undefined;
   });

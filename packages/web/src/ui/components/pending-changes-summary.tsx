@@ -52,11 +52,12 @@ export function PendingChangesSummary({ className }: { className?: string }) {
  * counts. Exposed for tests so we can assert ordering and singular/plural
  * without rendering React.
  *
- * Ordering (connections → entities → prompts) matches the user's mental
- * model of the publish dependency chain: connections define data sources,
- * entities expose them, prompts reference them. `entityEdits` and
- * `entityDeletes` fold into `entities` so the chip stays compact — the full
- * breakdown lives in the future Publish modal.
+ * Ordering (connections → entities → prompts → starter prompts) matches
+ * the user's mental model of the publish dependency chain: connections
+ * define data sources, entities expose them, prompts reference them, and
+ * starter prompts are the empty-state surface. `entityEdits` and
+ * `entityDeletes` fold into `entities` so the chip stays compact — the
+ * full breakdown lives in the future Publish modal.
  */
 export function formatDraftSegments(counts: ModeDraftCounts): string[] {
   const segments: string[] = [];
@@ -71,6 +72,11 @@ export function formatDraftSegments(counts: ModeDraftCounts): string[] {
   if (counts.prompts > 0) {
     segments.push(pluralize(counts.prompts, "prompt", "prompts"));
   }
+  if (counts.starterPrompts > 0) {
+    segments.push(
+      pluralize(counts.starterPrompts, "starter prompt", "starter prompts"),
+    );
+  }
   return segments;
 }
 
@@ -84,6 +90,7 @@ function totalDrafts(counts: ModeDraftCounts): number {
     counts.entities +
     counts.entityEdits +
     counts.entityDeletes +
-    counts.prompts
+    counts.prompts +
+    counts.starterPrompts
   );
 }

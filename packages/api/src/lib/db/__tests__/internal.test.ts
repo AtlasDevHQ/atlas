@@ -15,6 +15,7 @@ import {
   migrateInternalDB,
   loadSavedConnections,
   cascadeWorkspaceDelete,
+  hardDeleteWorkspace,
   _resetPool,
   _resetCircuitBreaker,
   encryptUrl,
@@ -593,6 +594,86 @@ describe("cascadeWorkspaceDelete()", () => {
     _resetPool(failPool);
 
     await expect(cascadeWorkspaceDelete("org-fail")).rejects.toThrow("primary mutation failure");
+
+    expect(calls.releaseCount).toBe(1);
+    expect(calls.lastReleaseArg).toBeInstanceOf(Error);
+    expect((calls.lastReleaseArg as Error).message).toContain("ROLLBACK failed");
+  });
+});
+
+describe("hardDeleteWorkspace()", () => {
+  it("destroys the client when ROLLBACK fails after a purge transaction error", async () => {
+    const { pool: basePool } = createMockPool();
+    const calls = {
+      queries: [] as { sql: string }[],
+      releaseCount: 0,
+      lastReleaseArg: undefined as unknown,
+    };
+    let queryNum = 0;
+    const failPool = {
+      ...basePool,
+      async connect() {
+        return {
+          async query(sql: string) {
+            calls.queries.push({ sql });
+            queryNum++;
+            // BEGIN (1) passes, status check (2) returns "deleted" so purge proceeds,
+            // first cascade DELETE (3) throws, then ROLLBACK (4) also fails
+            if (queryNum === 2) return { rows: [{ workspace_status: "deleted" }] };
+            if (queryNum === 3) throw new Error("relation does not exist");
+            if (sql.trim().toUpperCase() === "ROLLBACK") {
+              throw new Error("ROLLBACK failed — socket dirty");
+            }
+            return { rows: [] };
+          },
+          release(err?: Error) {
+            calls.releaseCount++;
+            calls.lastReleaseArg = err;
+          },
+        };
+      },
+    };
+    _resetPool(failPool);
+
+    await expect(hardDeleteWorkspace("org-fail")).rejects.toThrow("relation does not exist");
+
+    expect(calls.releaseCount).toBe(1);
+    expect(calls.lastReleaseArg).toBeInstanceOf(Error);
+    expect((calls.lastReleaseArg as Error).message).toContain("ROLLBACK failed");
+  });
+
+  it("destroys the client when the pre-lock status check ROLLBACK fails", async () => {
+    // Workspace isn't in "deleted" status — the pre-transaction ROLLBACK must
+    // also be guarded. If it fails, the client is poisoned and must be destroyed.
+    const { pool: basePool } = createMockPool();
+    const calls = {
+      releaseCount: 0,
+      lastReleaseArg: undefined as unknown,
+    };
+    let queryNum = 0;
+    const failPool = {
+      ...basePool,
+      async connect() {
+        return {
+          async query(sql: string) {
+            queryNum++;
+            // BEGIN passes, status check returns "active" (not deleted), ROLLBACK fails
+            if (queryNum === 2) return { rows: [{ workspace_status: "active" }] };
+            if (sql.trim().toUpperCase() === "ROLLBACK") {
+              throw new Error("ROLLBACK failed during status guard");
+            }
+            return { rows: [] };
+          },
+          release(err?: Error) {
+            calls.releaseCount++;
+            calls.lastReleaseArg = err;
+          },
+        };
+      },
+    };
+    _resetPool(failPool);
+
+    await expect(hardDeleteWorkspace("org-active")).rejects.toThrow("not in deleted status");
 
     expect(calls.releaseCount).toBe(1);
     expect(calls.lastReleaseArg).toBeInstanceOf(Error);

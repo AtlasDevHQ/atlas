@@ -1219,7 +1219,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] Resolver + `/api/v1/starter-prompts` endpoint + cold-start empty state (#1474, PR #1492 — `StarterPromptResolver` with 4-tier compose order, library + cold-start live; favorites/popular stubbed for later slices; shared types in `@useatlas/types/starter-prompt`; id namespacing; chat empty state wired)
 
 ### Personal surface
-- [x] Per-user favorites (pin/unpin + resolver integration + pin-on-hover UX) (#1475, PR TBD — `FavoritePromptStore` with cap enforcement + duplicate detection, POST/DELETE/PATCH `/favorites` routes with 401/403/404 surfaces, resolver composes favorites ahead of library tier, empty-state Pin icon + hover unpin, hover pin affordance on user-authored messages, browser test covering pin → reload → unpin flow, `ATLAS_STARTER_PROMPT_MAX_FAVORITES` env var + config field, migration `0029_user_favorite_prompts.sql`)
+- [x] Per-user favorites (pin/unpin + resolver integration + pin-on-hover UX) (#1475, PR #1496 — `FavoritePromptStore` with cap enforcement + duplicate detection, POST/DELETE/PATCH `/favorites` routes with 401/403/404 surfaces, resolver composes favorites ahead of library tier, empty-state Pin icon + hover unpin, hover pin affordance on user-authored messages, browser test covering pin → reload → unpin flow, `ATLAS_STARTER_PROMPT_MAX_FAVORITES` env var + config field, migration `0029_user_favorite_prompts.sql`)
 
 ### Admin moderation
 - [ ] Schema migration + auto-promote + read-only admin queue (#1476)

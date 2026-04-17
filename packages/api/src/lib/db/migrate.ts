@@ -30,12 +30,13 @@ interface MigrationPool extends Queryable {
   connect(): Promise<MigrationClient>;
 }
 
-/** Minimal client interface — matches pg.PoolClient. */
+/**
+ * Minimal client interface — matches pg.PoolClient. Passing a truthy
+ * `err` to `release` tells node-postgres to destroy the socket instead
+ * of returning it to the pool.
+ */
 interface MigrationClient extends Queryable {
-  // Matches the pg.PoolClient `release(err?)` overload: passing a truthy
-  // value tells node-postgres to destroy the socket instead of returning
-  // it to the pool — see issue #1471.
-  release(err?: unknown): void;
+  release(err?: Error): void;
 }
 
 const MIGRATIONS_DIR = path.join(import.meta.dir, "migrations");
@@ -57,10 +58,8 @@ export async function runMigrations(pool: MigrationPool): Promise<number> {
   // transaction semantics.
   const client = await pool.connect();
 
-  // If any per-migration ROLLBACK fails inside the loop, we stash the
-  // error here and pass it to `client.release(err)` so pg destroys the
-  // socket instead of pooling a dirty client (#1471). Mutated via the
-  // onRollbackFailure callback passed to `_runMigrationsLocked`.
+  // A failed per-migration ROLLBACK propagates here via the callback so
+  // the client gets destroyed on release instead of pooled dirty.
   let rollbackErr: Error | null = null;
 
   try {
@@ -73,8 +72,14 @@ export async function runMigrations(pool: MigrationPool): Promise<number> {
         rollbackErr = err;
       });
     } finally {
-      await client.query("SELECT pg_advisory_unlock(hashtext('atlas_migrations'))").catch(() => {
-        // intentionally ignored: unlock may fail if connection was broken
+      await client.query("SELECT pg_advisory_unlock(hashtext('atlas_migrations'))").catch((err: unknown) => {
+        // Unlock may legitimately fail if the connection is broken (in
+        // which case the client is about to be destroyed anyway). Debug
+        // so a genuine SQL-level failure still leaves a trace.
+        log.debug(
+          { err: err instanceof Error ? err.message : String(err) },
+          "pg_advisory_unlock failed — continuing to release",
+        );
       });
     }
   } finally {
@@ -84,7 +89,7 @@ export async function runMigrations(pool: MigrationPool): Promise<number> {
 
 async function _runMigrationsLocked(
   client: MigrationClient,
-  onRollbackFailure?: (err: Error) => void,
+  onRollbackFailure: (err: Error) => void,
 ): Promise<number> {
   // Ensure tracking table exists
   await client.query(`
@@ -134,16 +139,15 @@ async function _runMigrationsLocked(
       count++;
     } catch (err) {
       await client.query("ROLLBACK").catch((rbErr: unknown) => {
-        // ROLLBACK itself can fail if the connection is broken — we report
-        // that up to the caller so the shared client gets destroyed via
-        // `release(err)` (#1471), not returned to the pool dirty.
+        // A failed ROLLBACK means the socket is dirty — propagate the
+        // error so the shared client gets destroyed on release.
         const normalized =
           rbErr instanceof Error ? rbErr : new Error(String(rbErr));
         log.warn(
           { migration: file, err: normalized.message },
           "ROLLBACK failed during migration — client will be destroyed",
         );
-        onRollbackFailure?.(normalized);
+        onRollbackFailure(normalized);
       });
       const detail = err instanceof Error ? err.message : String(err);
       log.error({ migration: file, err: detail }, "Migration failed");

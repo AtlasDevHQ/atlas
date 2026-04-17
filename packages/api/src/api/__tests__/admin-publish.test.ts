@@ -87,8 +87,11 @@ mock.module("@atlas/api/lib/settings", () => ({
   deleteSetting: async () => {},
   getSetting: () => undefined,
   getSettingAuto: (key: string) => {
-    if (throwOnGet) throw throwOnGet;
-    return key === "ATLAS_DEMO_INDUSTRY" ? (demoIndustryFixture ?? undefined) : undefined;
+    if (key === "ATLAS_DEMO_INDUSTRY") {
+      if (throwOnGet) throw throwOnGet;
+      return demoIndustryFixture ?? undefined;
+    }
+    return undefined;
   },
   getSettingLive: async () => undefined,
   loadSettings: async () => 0,
@@ -596,7 +599,7 @@ describe("POST /api/v1/admin/publish — archiveConnections", () => {
   });
 });
 
-describe("POST /api/v1/admin/publish — demo industry read (#1466, #1470)", () => {
+describe("POST /api/v1/admin/publish — demo industry read", () => {
   beforeEach(() => {
     mocks.hasInternalDB = true;
     mocks.mockInternalQuery.mockReset();
@@ -605,13 +608,10 @@ describe("POST /api/v1/admin/publish — demo industry read (#1466, #1470)", () 
     mocks.setOrgAdmin("org-alpha");
   });
 
-  it("reads ATLAS_DEMO_INDUSTRY (canonical key) via the settings cache — not a lowercase SQL literal (#1466)", async () => {
-    // Regression guard for #1466. Prior code queried `SELECT value FROM
-    // settings WHERE key = 'demo_industry'` — the lowercase key never
-    // matched the canonical `ATLAS_DEMO_INDUSTRY` row, so publish silently
-    // skipped archiving built-in demo prompts. Now the route must call
-    // getSettingAuto("ATLAS_DEMO_INDUSTRY", orgId), pick up "cybersecurity",
-    // and pass it through to the prompt-collections UPDATE.
+  it("reads via the settings cache — not via a hand-rolled SQL query against the settings table", async () => {
+    // Regression guard: a hand-rolled `SELECT … WHERE key = 'demo_industry'`
+    // missed the canonical `ATLAS_DEMO_INDUSTRY` row entirely. The route
+    // must resolve industry through getSettingAuto.
     demoIndustryFixture = "cybersecurity";
 
     queryHandler = async (sql) => {
@@ -644,15 +644,16 @@ describe("POST /api/v1/admin/publish — demo industry read (#1466, #1470)", () 
     expect((archivePromptsSql!.params as unknown[])).toContain("cybersecurity");
   });
 
-  it("surfaces 500 when the settings read fails — does NOT open the transaction (#1470)", async () => {
-    // readDemoIndustry now returns a discriminated { ok: false, err }.
-    // Callers must 500 rather than silently committing with prompts: 0 —
-    // that would leave demo prompts stranded at `published` after publish.
+  it("surfaces 500 when the settings read fails — no transaction is opened", async () => {
+    // A transient read failure must 500 rather than silently committing
+    // with prompts: 0 — otherwise demo prompts stay stranded at
+    // `published` after publish.
     throwOnGet = new Error("transient cache read failure");
 
     const res = await app.fetch(publishReq({ archiveConnections: ["__demo__"] }));
     expect(res.status).toBe(500);
     const body = (await res.json()) as Record<string, unknown>;
+    expect(body.error).toBe("publish_failed");
     expect(typeof body.requestId).toBe("string");
     // Raw cause must not leak to the caller
     expect(String(body.message ?? "")).not.toContain("transient cache read failure");
@@ -724,11 +725,10 @@ describe("POST /api/v1/admin/publish — atomicity", () => {
     expect(typeof body.requestId).toBe("string");
   });
 
-  it("rollback-failure poisons the pool — release(err) destroys the client (#1471)", async () => {
-    // Primary mutation throws, then ROLLBACK itself throws (broken socket).
-    // The handler must pass the rollback error to `client.release(err)` so
-    // node-postgres destroys the socket rather than returning a dirty
-    // client to the pool.
+  it("destroys the client on failed ROLLBACK — release(err) called with the rollback error", async () => {
+    // Primary mutation throws, then ROLLBACK itself throws (broken
+    // socket). The handler must pass the rollback error to
+    // `client.release(err)` so pg destroys the socket.
     queryHandler = async (sql) => {
       if (/^\s*DELETE/i.test(sql)) {
         throw new Error("primary mutation failure");
@@ -746,10 +746,9 @@ describe("POST /api/v1/admin/publish — atomicity", () => {
     expect((clientReleaseArg as Error).message).toContain("ROLLBACK failed");
   });
 
-  it("clean rollback (ROLLBACK succeeds) — release() called without an error arg", async () => {
-    // When ROLLBACK succeeds, the client is still safe to pool. release()
-    // must be called with no argument so node-postgres returns the client
-    // to the pool normally.
+  it("pools the client on clean ROLLBACK — release() called without an error arg", async () => {
+    // When ROLLBACK succeeds the client is safe to pool. release() must
+    // be called with no argument.
     queryHandler = async (sql) => {
       if (/^\s*DELETE/i.test(sql)) {
         throw new Error("primary mutation failure");

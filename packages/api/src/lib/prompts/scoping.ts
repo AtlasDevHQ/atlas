@@ -36,8 +36,11 @@
 import type { AtlasMode } from "@useatlas/types/auth";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { getSettingAuto } from "@atlas/api/lib/settings";
+import { DEMO_INDUSTRY_SETTING } from "@atlas/api/lib/demo-industry";
 
-export const DEMO_INDUSTRY_SETTING = "ATLAS_DEMO_INDUSTRY";
+// Re-exported so existing importers (`resolvePromptScope` callers, tests)
+// don't need to switch paths.
+export { DEMO_INDUSTRY_SETTING };
 
 /**
  * Tagged union of the three prompt-scoping scenarios.

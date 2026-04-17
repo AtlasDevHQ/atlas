@@ -22,7 +22,7 @@ import { createRoute, z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { getInternalDB } from "@atlas/api/lib/db/internal";
-import { getSettingAuto } from "@atlas/api/lib/settings";
+import { readDemoIndustry } from "@atlas/api/lib/demo-industry";
 import {
   DEMO_CONNECTION_ID,
   archiveSingleConnection,
@@ -33,24 +33,6 @@ import {
 import { runHandler } from "@atlas/api/lib/effect/hono";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
-
-/**
- * Canonical setting key for the onboarding demo industry. Mirrors the
- * constant in `routes/mode.ts` and `lib/prompts/scoping.ts`. Prior callers
- * used the lowercase literal `demo_industry` in hand-rolled SQL against
- * the settings table — that was issue #1466 and silently missed every row.
- */
-const DEMO_INDUSTRY_SETTING = "ATLAS_DEMO_INDUSTRY";
-
-/**
- * Discriminated result for `readDemoIndustry`. Distinguishes "setting
- * absent" (expected, value === null) from "read failed" (unexpected,
- * surfaced as 500 by callers) so a transient failure can't quietly leave
- * demo prompts at `published` after archive/publish commits.
- */
-type ReadDemoIndustryResult =
-  | { ok: true; value: string | null }
-  | { ok: false; err: Error };
 
 const log = createLogger("admin-archive");
 
@@ -84,37 +66,6 @@ type RestoreResponse = z.infer<typeof RestoreResponseSchema>;
 // ---------------------------------------------------------------------------
 // Shared helpers
 // ---------------------------------------------------------------------------
-
-/**
- * Read the org's `ATLAS_DEMO_INDUSTRY` setting (if any). Returns a
- * discriminated result so callers can distinguish "setting absent"
- * (`ok: true, value: null` — expected, cascade skipped) from "read
- * failed" (`ok: false` — surface as 500, see issue #1470).
- *
- * Reads go through the in-process settings cache via `getSettingAuto` —
- * using a hand-rolled SQL literal was issue #1466, which hit the wrong
- * key (`demo_industry`) and silently missed every row.
- */
-function readDemoIndustry(
-  orgId: string,
-  requestId: string,
-): ReadDemoIndustryResult {
-  try {
-    const value = getSettingAuto(DEMO_INDUSTRY_SETTING, orgId) ?? null;
-    return { ok: true, value };
-  } catch (err) {
-    const normalized = err instanceof Error ? err : new Error(String(err));
-    log.error(
-      {
-        err: normalized.message,
-        orgId,
-        requestId,
-      },
-      "Failed to read ATLAS_DEMO_INDUSTRY setting — archive/restore aborted before transaction",
-    );
-    return { ok: false, err: normalized };
-  }
-}
 
 /**
  * Map an archive helper result with cascade counts to the wire response.
@@ -292,9 +243,9 @@ adminArchive.openapi(archiveRoute, async (c) =>
     const authResult = c.get("authResult");
     const { connectionId } = c.req.valid("json");
 
-    // Resolve demo industry BEFORE opening the transaction. A failure here
-    // surfaces as 500 (issue #1470) rather than silently committing with
-    // prompts = 0 — the prior behaviour could leave demo prompts stuck at
+    // Resolve demo industry before opening the transaction. A read
+    // failure surfaces as 500 here — otherwise we'd commit the archive
+    // with prompts = 0 and strand the built-in demo prompts at
     // `published` while the connection flipped to `archived`.
     let demoIndustry: string | null = null;
     if (connectionId === DEMO_CONNECTION_ID) {
@@ -316,9 +267,10 @@ adminArchive.openapi(archiveRoute, async (c) =>
     const pool = getInternalDB();
     const client = await pool.connect();
     let result: ArchiveConnectionResult;
-    // Track whether ROLLBACK itself fails. If so we pass the error into
-    // `release(err)` so node-postgres destroys the socket rather than
-    // returning a dirty client to the pool (issue #1471).
+    // pg destroys the socket when `release(err)` is called with a truthy
+    // arg, and pools it on `release()` / `release(undefined)`. We need to
+    // destroy on a failed ROLLBACK so a dirty client doesn't poison the
+    // next borrower.
     let rollbackErr: Error | null = null;
 
     try {
@@ -359,9 +311,6 @@ adminArchive.openapi(archiveRoute, async (c) =>
         500,
       );
     } finally {
-      // Pass a non-null error to `release(err)` so pg destroys the
-      // socket on a failed ROLLBACK. A clean ROLLBACK (or a successful
-      // COMMIT) passes `undefined`, returning the client to the pool.
       client.release(rollbackErr ?? undefined);
     }
 
@@ -438,8 +387,8 @@ adminRestore.openapi(restoreRoute, async (c) =>
     const authResult = c.get("authResult");
     const { connectionId } = c.req.valid("json");
 
-    // Resolve demo industry BEFORE opening the transaction — see the
-    // matching comment in the archive handler (#1470).
+    // Mirrors the archive handler: resolve demo industry before BEGIN so
+    // a read failure surfaces as 500 without opening a transaction.
     let demoIndustry: string | null = null;
     if (connectionId === DEMO_CONNECTION_ID) {
       const industryResult = readDemoIndustry(orgId, requestId);
@@ -460,8 +409,6 @@ adminRestore.openapi(restoreRoute, async (c) =>
     const pool = getInternalDB();
     const client = await pool.connect();
     let result: RestoreConnectionResult;
-    // Mirror the archive handler — ROLLBACK-failure poisons the pool
-    // unless we pass the error into `release(err)` (issue #1471).
     let rollbackErr: Error | null = null;
 
     try {

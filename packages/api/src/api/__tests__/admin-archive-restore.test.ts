@@ -92,8 +92,14 @@ mock.module("@atlas/api/lib/settings", () => ({
   deleteSetting: async () => {},
   getSetting: () => undefined,
   getSettingAuto: (key: string) => {
-    if (throwOnGet) throw throwOnGet;
-    return key === "ATLAS_DEMO_INDUSTRY" ? (demoIndustryFixture ?? undefined) : undefined;
+    // Gate throw on the specific key under test — otherwise a future
+    // unrelated getSettingAuto read inside the handler would silently
+    // trip this and produce a false positive.
+    if (key === "ATLAS_DEMO_INDUSTRY") {
+      if (throwOnGet) throw throwOnGet;
+      return demoIndustryFixture ?? undefined;
+    }
+    return undefined;
   },
   getSettingLive: async () => undefined,
   loadSettings: async () => 0,
@@ -527,12 +533,10 @@ describe("POST /api/v1/admin/archive-connection — errors", () => {
     expect(promptUpdate).toBeUndefined();
   });
 
-  it("archive __demo__ when demo_industry read throws — surfaces 500 (#1470), does NOT open the transaction", async () => {
-    // readDemoIndustry now returns { ok: false, err } on a transient
-    // settings read failure. The handler must 500 with a requestId rather
-    // than silently committing with prompts: 0, which would leave demo
-    // prompts stuck at `published` after an archive. No transaction must
-    // be opened — the pre-transaction read is what failed.
+  it("surfaces 500 when settings read fails — no transaction is opened", async () => {
+    // A transient settings read failure must 500 rather than silently
+    // committing with prompts: 0 — otherwise demo prompts stay
+    // `published` while the connection flips to `archived`.
     throwOnGet = new Error("transient settings read failure");
 
     const res = await app.fetch(
@@ -540,6 +544,7 @@ describe("POST /api/v1/admin/archive-connection — errors", () => {
     );
     expect(res.status).toBe(500);
     const body = (await res.json()) as Record<string, unknown>;
+    expect(body.error).toBe("archive_failed");
     expect(typeof body.requestId).toBe("string");
     // Raw cause must not leak
     expect(String(body.message ?? "")).not.toContain("transient settings");
@@ -572,11 +577,9 @@ describe("POST /api/v1/admin/archive-connection — errors", () => {
     expect(clientReleaseArg).toBeUndefined();
   });
 
-  it("rollback-failure poisons the pool — release(err) destroys instead of returns (#1471)", async () => {
-    // ROLLBACK itself throws after the primary mutation fails. The dirty
-    // client must be passed to `release(err)` so node-postgres destroys
-    // the socket rather than returning it to the pool (which would poison
-    // the next borrower).
+  it("destroys the client on failed ROLLBACK — release(err) called with the rollback error", async () => {
+    // When ROLLBACK itself throws, the socket is dirty. release(err)
+    // tells pg to destroy the client instead of pooling it.
     queryHandler = async (sql) => {
       if (/SELECT\s+status\s+FROM\s+connections/i.test(sql)) {
         return { rows: [{ status: "published" }] };
@@ -775,7 +778,7 @@ describe("POST /api/v1/admin/restore-connection — errors", () => {
     mocks.hasInternalDB = true;
   });
 
-  it("restore __demo__ when demo_industry read throws — surfaces 500 (#1470)", async () => {
+  it("surfaces 500 when settings read fails — no transaction is opened", async () => {
     throwOnGet = new Error("transient settings read failure");
 
     const res = await app.fetch(
@@ -783,6 +786,7 @@ describe("POST /api/v1/admin/restore-connection — errors", () => {
     );
     expect(res.status).toBe(500);
     const body = (await res.json()) as Record<string, unknown>;
+    expect(body.error).toBe("restore_failed");
     expect(typeof body.requestId).toBe("string");
 
     // No transaction opened
@@ -790,7 +794,7 @@ describe("POST /api/v1/admin/restore-connection — errors", () => {
     expect(sqls.includes("BEGIN")).toBe(false);
   });
 
-  it("rollback-failure poisons the pool — release(err) destroys (#1471)", async () => {
+  it("destroys the client on failed ROLLBACK — release(err) called with the rollback error", async () => {
     queryHandler = async (sql) => {
       if (/SELECT\s+status\s+FROM\s+connections/i.test(sql)) {
         return { rows: [{ status: "archived" }] };

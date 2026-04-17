@@ -5,13 +5,22 @@ import { runMigrations, runSeeds } from "@atlas/api/lib/db/migrate";
 // Mock pool
 // ---------------------------------------------------------------------------
 
-function createMockPool(opts: { applied?: string[]; failOn?: string } = {}) {
+function createMockPool(
+  opts: { applied?: string[]; failOn?: string; failOnRollback?: boolean } = {},
+) {
   const queries: string[] = [];
   const params: unknown[][] = [];
+  const release = { called: false, arg: undefined as unknown };
 
   async function queryFn(sql: string, p?: unknown[]) {
     queries.push(sql);
     if (p) params.push(p);
+
+    // Simulate a broken socket on ROLLBACK to exercise the
+    // release(err)-on-failed-rollback path.
+    if (opts.failOnRollback && sql.trim().toUpperCase() === "ROLLBACK") {
+      throw new Error("Mock ROLLBACK failure — socket dirty");
+    }
 
     if (opts.failOn && sql.includes(opts.failOn)) {
       throw new Error(`Mock failure on: ${opts.failOn}`);
@@ -44,12 +53,15 @@ function createMockPool(opts: { applied?: string[]; failOn?: string } = {}) {
     async connect() {
       return {
         query: queryFn,
-        release() { /* no-op for mock */ },
+        release(err?: Error) {
+          release.called = true;
+          release.arg = err;
+        },
       };
     },
   };
 
-  return { pool, queries, params };
+  return { pool, queries, params, release };
 }
 
 // ---------------------------------------------------------------------------
@@ -145,7 +157,7 @@ describe("runMigrations", () => {
   });
 
   it("rolls back on failure and still releases lock", async () => {
-    const { pool, queries } = createMockPool({ failOn: "CREATE TABLE IF NOT EXISTS audit_log" });
+    const { pool, queries, release } = createMockPool({ failOn: "CREATE TABLE IF NOT EXISTS audit_log" });
 
     await expect(runMigrations(pool)).rejects.toThrow("Migration 0000_baseline.sql failed");
     expect(queries).toContain("BEGIN");
@@ -155,6 +167,26 @@ describe("runMigrations", () => {
     // Lock is released even on failure
     const unlockQuery = queries.find((q) => q.includes("pg_advisory_unlock"));
     expect(unlockQuery).toBeDefined();
+
+    // Clean ROLLBACK — client is safe to pool, so release() takes no arg
+    expect(release.called).toBe(true);
+    expect(release.arg).toBeUndefined();
+  });
+
+  it("destroys the client on failed ROLLBACK — release(err) called with the rollback error", async () => {
+    // Migration SQL fails AND ROLLBACK itself throws. The client must
+    // be released with the rollback error so pg destroys the socket
+    // rather than pooling a dirty connection.
+    const { pool, release } = createMockPool({
+      failOn: "CREATE TABLE IF NOT EXISTS audit_log",
+      failOnRollback: true,
+    });
+
+    await expect(runMigrations(pool)).rejects.toThrow("Migration 0000_baseline.sql failed");
+
+    expect(release.called).toBe(true);
+    expect(release.arg).toBeInstanceOf(Error);
+    expect((release.arg as Error).message).toContain("ROLLBACK failure");
   });
 
   it("rolls back when INSERT into tracking table fails", async () => {

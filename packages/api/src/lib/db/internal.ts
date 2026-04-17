@@ -118,13 +118,14 @@ export function isPlaintextUrl(value: string): boolean {
   return /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(value);
 }
 
-/** Typed interface for the internal pg.Pool — avoids importing pg at module level. */
+/**
+ * Typed interface for the internal pg.Pool — avoids importing pg at
+ * module level. Passing a truthy `err` to `release` tells node-postgres
+ * to destroy the socket instead of returning it to the pool.
+ */
 export interface InternalPoolClient {
   query(sql: string, params?: unknown[]): Promise<{ rows: Record<string, unknown>[] }>;
-  // Matches pg.PoolClient.release(err?) — passing a truthy value tells
-  // node-postgres to destroy the socket instead of returning it to the
-  // pool. Used to avoid poisoning on a failed ROLLBACK (issue #1471).
-  release(err?: Error | boolean): void;
+  release(err?: Error): void;
 }
 
 export interface InternalPool {
@@ -1365,9 +1366,8 @@ export async function cascadeWorkspaceDelete(orgId: string): Promise<{
   // Fallback: raw pool with manual transaction
   const pool = getInternalDB();
   const client = await pool.connect();
-  // If ROLLBACK itself fails the socket is dirty — pass the error to
-  // `release(err)` so pg destroys it instead of pooling a poisoned
-  // client (issue #1471).
+  // Destroy the client on a failed ROLLBACK so a dirty socket doesn't
+  // poison the next borrower.
   let rollbackErr: Error | null = null;
   try {
     await client.query("BEGIN");

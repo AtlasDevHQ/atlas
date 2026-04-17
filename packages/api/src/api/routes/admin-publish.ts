@@ -21,7 +21,7 @@ import { createRoute, z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { getInternalDB } from "@atlas/api/lib/db/internal";
-import { getSettingAuto } from "@atlas/api/lib/settings";
+import { readDemoIndustry } from "@atlas/api/lib/demo-industry";
 import {
   applyTombstones,
   promoteDraftEntities,
@@ -33,48 +33,6 @@ import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 
 const log = createLogger("admin-publish");
-
-/** Canonical setting key — mirrors `admin-archive.ts` and `mode.ts`. */
-const DEMO_INDUSTRY_SETTING = "ATLAS_DEMO_INDUSTRY";
-
-/**
- * Discriminated result for `readDemoIndustry` — see admin-archive.ts for
- * the shared rationale (issue #1470).
- */
-type ReadDemoIndustryResult =
-  | { ok: true; value: string | null }
-  | { ok: false; err: Error };
-
-/**
- * Read the org's `ATLAS_DEMO_INDUSTRY` setting through the in-process
- * settings cache. Returns `ok: false` on a transient failure so publish
- * surfaces a 500 instead of silently committing with demo prompts stuck
- * at `published` after an archive.
- *
- * Prior code hand-rolled a `SELECT … WHERE key = 'demo_industry'` query
- * that used the wrong (lowercase) key and silently skipped every row —
- * that was issue #1466.
- */
-function readDemoIndustry(
-  orgId: string,
-  requestId: string,
-): ReadDemoIndustryResult {
-  try {
-    const value = getSettingAuto(DEMO_INDUSTRY_SETTING, orgId) ?? null;
-    return { ok: true, value };
-  } catch (err) {
-    const normalized = err instanceof Error ? err : new Error(String(err));
-    log.error(
-      {
-        err: normalized.message,
-        orgId,
-        requestId,
-      },
-      "Failed to read ATLAS_DEMO_INDUSTRY setting — publish aborted before transaction",
-    );
-    return { ok: false, err: normalized };
-  }
-}
 
 // ---------------------------------------------------------------------------
 // Request / response schemas
@@ -185,12 +143,9 @@ adminPublish.openapi(publishRoute, async (c) =>
     const archiveIds = archiveConnections ?? [];
     const archiveDemo = archiveIds.includes(DEMO_CONNECTION_ID);
 
-    // ── Pre-transaction: resolve demo industry if we'll archive demo ─
-    // Kept outside the transaction because it's a simple cached read that
-    // informs whether we run the builtin-demo-prompts archive step.
-    // A failed read surfaces as 500 (not a silent `null` fallback) — see
-    // issue #1470: otherwise publish would commit with prompts = 0 and
-    // demo prompts would stay published after archive.
+    // Resolve demo industry before opening the transaction. A read
+    // failure must 500 here — otherwise publish would commit with
+    // prompts = 0 and demo prompts would stay published after archive.
     let demoIndustry: string | null = null;
     if (archiveDemo) {
       const industryResult = readDemoIndustry(orgId, requestId);
@@ -211,9 +166,9 @@ adminPublish.openapi(publishRoute, async (c) =>
     // ── Transaction ────────────────────────────────────────────────
     const pool = getInternalDB();
     const client = await pool.connect();
-    // Track whether ROLLBACK itself fails so we can pass the error into
-    // `release(err)` below — a dirty socket returned to the pool poisons
-    // the next borrower (issue #1471).
+    // pg destroys the socket when `release(err)` is called with a truthy
+    // arg. We need to destroy on a failed ROLLBACK so a dirty client
+    // doesn't poison the next borrower.
     let rollbackErr: Error | null = null;
     // Values are assigned inside the try block before either the 200
     // response or a 500 (which doesn't read them) — start as numbers for

@@ -9,15 +9,23 @@ custom surfaces — embedded experiences, Slack slash commands, internal
 tools — so users see personalized first-run suggestions anywhere Atlas
 runs, not only in the web chat.
 
-The list composes three tiers in display order:
+The list composes tiers in display order:
 
 1. **Favorites** — prompts the user has pinned (per-user, per-workspace).
-2. **Popular** — admin-approved suggestions derived from past usage.
-3. **Library** — curated prompts for the active demo industry, shown when
-   not enough favorites or popular items exist.
+   Requires both a user and workspace context; callers without either
+   (unauthenticated local dev, keys not bound to a user) simply skip this
+   tier.
+2. **Library** — curated prompts for the active workspace's demo industry,
+   used to fill any remaining slots after favorites.
 
-An empty response signals the cold-start state — the UI should render a
-single-CTA empty state rather than a prompt list.
+A **popular** tier (admin-approved suggestions from past usage) is reserved
+in the wire format and will slot in between favorites and library in a
+future release — it is not yet emitted.
+
+An empty `prompts` array signals the cold-start state — the UI should
+render a single-CTA empty state rather than a prompt list. The `cold-start`
+value in `StarterPromptProvenance` is reserved for future use; the current
+server never returns a row with that provenance.
 
 ---
 
@@ -92,14 +100,17 @@ The list is resolved from the caller's user and workspace context — the
 API key (or bearer token) you pass to `createAtlasClient` maps to a single
 user, and that user's pinned favorites appear first in the response.
 
-This has two practical implications:
+This has three practical implications:
 
 - **One key per user** — share a key across users and they will all see
   the same user's favorites. Provision one key per seat when favorites
   matter.
-- **Workspace scoping** — popular suggestions and the demo-industry
-  library are resolved against the key's workspace. Switch keys to
-  switch workspaces.
+- **Workspace scoping** — the demo-industry library is resolved against
+  the key's workspace. Switch keys to switch workspaces.
+- **Self-hosted / dev mode** — credentials that don't bind to a specific
+  user (or bind without a workspace) silently skip the favorites tier
+  and fall through to the library. You'll still get a list; it just
+  won't include any pins.
 
 For background on API-key to user binding, see
 [API Keys](/docs/guides/api-keys).

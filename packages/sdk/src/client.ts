@@ -654,10 +654,13 @@ export function createAtlasClient(options: AtlasClientOptions) {
     /**
      * Fetch the adaptive list of starter prompts for the current user.
      *
-     * The list composes favorites, approved popular suggestions, and the
-     * demo-industry library — the server returns them in final display
-     * order. User context (org, favorites) is resolved from the API key,
-     * so SDK callers see the same list the web empty state renders.
+     * The list composes favorites and the demo-industry library (a popular
+     * tier is reserved in the wire format but not yet wired on the server).
+     * The server returns prompts in final display order. User context (org,
+     * favorites) is resolved from the caller's credentials, so SDK callers
+     * see the same list the web empty state renders. An empty `prompts`
+     * array signals the cold-start state — no row with
+     * `provenance: "cold-start"` is emitted.
      */
     async getStarterPrompts(
       opts?: GetStarterPromptsOptions,

@@ -26,6 +26,7 @@ import { Sun, Moon, Monitor, Star, TableProperties, BookOpen, Send, Pin } from "
 import { SchemaExplorer } from "./schema-explorer/schema-explorer";
 import { PromptLibrary } from "./chat/prompt-library";
 import { StarterPromptList } from "./chat/starter-prompt-list";
+import type { StarterPrompt, StarterPromptsResponse } from "@useatlas/types/starter-prompt";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -144,9 +145,7 @@ export function AtlasChat() {
   const [promptLibraryOpen, setPromptLibraryOpen] = useState(false);
   // Adaptive empty-chat starter surface — backend composes the ranked
   // prompt list from favorites / popular / library tiers.
-  const [starterPrompts, setStarterPrompts] = useState<
-    Array<{ id: string; text: string; provenance: string }>
-  >([]);
+  const [starterPrompts, setStarterPrompts] = useState<StarterPrompt[]>([]);
   // Tracks the message text being pinned so the affordance disables
   // mid-flight — without this, a quick double-click fires two POSTs and
   // the second 409s after a visible success toast.
@@ -243,8 +242,8 @@ export function AtlasChat() {
       credentials,
       headers: getHeaders(),
     })
-      .then(async (res) => {
-        if (res.ok) return res.json();
+      .then(async (res): Promise<Partial<StarterPromptsResponse> | null> => {
+        if (res.ok) return res.json() as Promise<Partial<StarterPromptsResponse>>;
         // Settings read failure propagates as 500 with requestId — surface
         // the correlation id so operators can trace; the UI still falls
         // through to the cold-start CTA rather than erroring the whole
@@ -260,7 +259,7 @@ export function AtlasChat() {
       })
       .then((data) => {
         if (!cancelled && Array.isArray(data?.prompts)) {
-          setStarterPrompts(data.prompts);
+          setStarterPrompts([...data.prompts]);
         }
       })
       .catch(() => {

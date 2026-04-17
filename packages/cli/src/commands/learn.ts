@@ -17,9 +17,23 @@ import {
 export async function handleLearn(args: string[]): Promise<void> {
   const applyMode = args.includes("--apply");
   const runSuggestions = args.includes("--suggestions");
+  // Operators pass --auto-approve only when they explicitly want CLI-populated
+  // rows to skip the /admin/starter-prompts moderation queue. Without the
+  // flag, rows land as approval_status='pending' / status='draft' so an
+  // admin can review before anything surfaces to end users.
+  const autoApprove = args.includes("--auto-approve");
   const limitArg = getFlag(args, "--limit");
   const sinceArg = getFlag(args, "--since");
   const sourceArg = requireFlagIdentifier(args, "--source", "source name");
+
+  if (autoApprove && !runSuggestions) {
+    console.error(
+      pc.red(
+        "--auto-approve requires --suggestions (it only affects query suggestion rows).",
+      ),
+    );
+    process.exit(1);
+  }
 
   // Resolve semantic directories
   const semanticRoot = sourceArg
@@ -198,13 +212,51 @@ export async function handleLearn(args: string[]): Promise<void> {
       const { generateSuggestions } = await import(
         "@atlas/api/lib/learn/suggestions"
       );
-      const result = await generateSuggestions(null); // CLI runs in single-org mode
+      // CLI runs in single-org mode. Pending-by-default keeps the admin
+      // queue authoritative; --auto-approve is the documented escape hatch
+      // for operators who want rows surfaced immediately.
+      const result = await generateSuggestions(null, { autoApprove });
       console.log(
         `  Created: ${pc.bold(String(result.created))} suggestions`,
       );
       console.log(
         `  Updated: ${pc.bold(String(result.updated))} suggestions`,
       );
+      if (result.skipped > 0) {
+        // Each skip is a swallowed DB error in upsertSuggestion — the
+        // caller cannot distinguish a real write from a silent failure
+        // without this line. See the warn log for the original error.
+        console.error(
+          pc.red(
+            `  Skipped: ${result.skipped} suggestions (see warnings above). Check DATABASE_URL and the internal DB logs.`,
+          ),
+        );
+      }
+      if (autoApprove) {
+        console.log(
+          pc.yellow(
+            "  \u2713 --auto-approve: new rows are approved+published (bypassed /admin/starter-prompts review)",
+          ),
+        );
+        if (result.skipped > 0) {
+          // Operator intent under --auto-approve is explicit publication.
+          // A non-zero skip means some rows were never written, so the
+          // caller must see a non-zero exit — matching CLAUDE.md's
+          // "prefer errors over silent fallbacks" rule.
+          console.error(
+            pc.red(
+              "  --auto-approve was set but some rows failed to write. Exiting non-zero.",
+            ),
+          );
+          process.exit(1);
+        }
+      } else {
+        console.log(
+          pc.dim(
+            "  New rows are pending review in /admin/starter-prompts. Pass --auto-approve to skip.",
+          ),
+        );
+      }
     }
   } catch (err) {
     console.error(pc.red("Failed to analyze audit log."));

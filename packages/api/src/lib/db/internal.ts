@@ -1091,12 +1091,34 @@ export async function upsertSuggestion(suggestion: {
   frequency: number;
   score: number;
   lastSeenAt: Date;
+  /**
+   * When true, new rows land as `approval_status = 'approved'` and
+   * `status = 'published'` — bypassing the admin moderation queue. Used
+   * only via `atlas learn --auto-approve`, which surfaces the explicit
+   * operator intent. Existing rows are NOT retroactively approved on
+   * ON CONFLICT: the ON CONFLICT clause below only refreshes metrics,
+   * so an admin's prior hide or approve decision is preserved across
+   * re-runs.
+   */
+  autoApprove?: boolean;
 }): Promise<"created" | "updated" | "skipped"> {
   if (!hasInternalDB()) return "skipped";
+  const approvalStatus = suggestion.autoApprove ? "approved" : "pending";
+  const status = suggestion.autoApprove ? "published" : "draft";
   try {
+    // approval_status / status are written explicitly rather than relying
+    // on the column default (migration 0029). Explicit writes make the CLI
+    // contract grep-visible and immune to a future ALTER TABLE that
+    // changes the default. ON CONFLICT DO UPDATE touches only metrics —
+    // see the field comment on `autoApprove` for why.
     const rows = await internalQuery<{ id: string; created: boolean }>(
-      `INSERT INTO query_suggestions (org_id, description, pattern_sql, normalized_hash, tables_involved, primary_table, frequency, score, last_seen_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      `INSERT INTO query_suggestions (
+         org_id, description, pattern_sql, normalized_hash,
+         tables_involved, primary_table,
+         frequency, score, last_seen_at,
+         approval_status, status
+       )
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
        ON CONFLICT ON CONSTRAINT uq_query_suggestions_org_hash DO UPDATE SET
          frequency = EXCLUDED.frequency,
          score = EXCLUDED.score,
@@ -1113,6 +1135,8 @@ export async function upsertSuggestion(suggestion: {
         suggestion.frequency,
         suggestion.score,
         suggestion.lastSeenAt.toISOString(),
+        approvalStatus,
+        status,
       ]
     );
     return rows[0]?.created ? "created" : "updated";

@@ -87,14 +87,42 @@ export function _groupAuditRows(rows: AuditRow[]): Map<string, GroupedPattern> {
 
 // ── Batch generation ───────────────────────────────────────────────
 
+/**
+ * Options for batch suggestion generation.
+ *
+ * `autoApprove` is threaded down to `upsertSuggestion`. The default is
+ * `false` (pending / draft) so CLI-populated rows land in the admin
+ * moderation queue — matching the organic click-promoted path. Operators
+ * who want to skip review in self-hosted deployments pass `true` via
+ * `atlas learn --auto-approve`.
+ */
+export interface GenerateSuggestionsOptions {
+  readonly autoApprove?: boolean;
+}
+
+/**
+ * Summary returned from a batch generation run. `skipped` counts upserts
+ * that `upsertSuggestion` swallowed (internal-DB unavailable, constraint
+ * violation, connection drop — see that function's catch). The CLI reads
+ * `skipped` to distinguish a silent no-op from a successful run; when
+ * `autoApprove` is set, any non-zero `skipped` is a policy violation
+ * because the operator asked for explicit publication.
+ */
+export interface GenerateSuggestionsResult {
+  readonly created: number;
+  readonly updated: number;
+  readonly skipped: number;
+}
+
 /** Batch-generate suggestions from audit log. Idempotent via upsert. */
 export async function generateSuggestions(
-  orgId: string | null
-): Promise<{ created: number; updated: number }> {
+  orgId: string | null,
+  options: GenerateSuggestionsOptions = {}
+): Promise<GenerateSuggestionsResult> {
   const rows = await getAuditLogQueries(orgId);
   if (rows.length === 0) {
     log.info({ orgId }, "No audit log entries found for suggestion generation");
-    return { created: 0, updated: 0 };
+    return { created: 0, updated: 0, skipped: 0 };
   }
 
   const groups = _groupAuditRows(rows);
@@ -116,6 +144,8 @@ export async function generateSuggestions(
 
   let created = 0;
   let updated = 0;
+  let skipped = 0;
+  const autoApprove = options.autoApprove === true;
 
   for (const pattern of filtered) {
     const score = scoreSuggestion(pattern.count, pattern.lastSeen);
@@ -129,11 +159,16 @@ export async function generateSuggestions(
       frequency: pattern.count,
       score,
       lastSeenAt: pattern.lastSeen,
+      autoApprove,
     });
     if (result === "created") created++;
     else if (result === "updated") updated++;
+    else skipped++;
   }
 
-  log.info({ orgId, created, updated, total: filtered.length }, "Suggestion generation complete");
-  return { created, updated };
+  log.info(
+    { orgId, created, updated, skipped, total: filtered.length, autoApprove },
+    "Suggestion generation complete"
+  );
+  return { created, updated, skipped };
 }

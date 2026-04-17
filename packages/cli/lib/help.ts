@@ -274,6 +274,11 @@ export const SUBCOMMAND_HELP: Record<string, SubcommandHelp> = {
           "Generate query suggestions from the audit log (stored in the query_suggestions table). Can be combined with --apply, --since, --limit, and --source",
       },
       {
+        flag: "--auto-approve",
+        description:
+          "With --suggestions: skip the /admin/starter-prompts moderation queue and write new rows as approved+published. Requires explicit operator intent — default is pending/draft",
+      },
+      {
         flag: "--limit <n>",
         description:
           "Max audit log entries to analyze (default: 1000)",
@@ -294,6 +299,7 @@ export const SUBCOMMAND_HELP: Record<string, SubcommandHelp> = {
       "atlas learn --apply",
       "atlas learn --since 2026-03-01 --limit 500",
       "atlas learn --source warehouse",
+      "atlas learn --suggestions --auto-approve",
     ],
   },
   improve: {

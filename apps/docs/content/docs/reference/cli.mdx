@@ -526,6 +526,7 @@ bun run atlas -- learn [options]
 | `--since <date>` | Only analyze queries after this date (ISO 8601, e.g. `2026-03-01`) |
 | `--source <name>` | Read from/write to `semantic/{name}/` subdirectory |
 | `--suggestions` | Generate query suggestions from the audit log (stored in the `query_suggestions` table). Can be combined with `--apply` and other flags |
+| `--auto-approve` | With `--suggestions`: skip the admin moderation queue and write new rows as `approved` + `published`. Requires explicit operator intent — default is `pending` + `draft` |
 
 **Requires** `DATABASE_URL` to be set (the audit log lives in the internal database).
 
@@ -533,6 +534,14 @@ Proposals include:
 - **Query patterns** — frequently-used SQL not yet documented in entity YAML
 - **Join discoveries** — table pairs queried together but with no join defined
 - **Glossary terms** — column aliases used often enough to warrant a glossary entry
+
+### Suggestion moderation
+
+When you pass `--suggestions`, Atlas batch-generates rows in the `query_suggestions` table from the audit log. By default, CLI-populated rows land as `approval_status = 'pending'` and `status = 'draft'` so they surface in the `/admin/starter-prompts` Pending tab. An admin reviews and approves each row before it becomes visible in any surface that consumes `GET /api/v1/starter-prompts` — the chat empty state, the `@useatlas/react` widget, `atlas.getStarterPrompts()` via the SDK, and the notebook new-cell empty state.
+
+This matches the organic auto-promote path: click-threshold promoted suggestions also land as pending and wait for admin review. The CLI and the click-driven path feed the same moderation queue.
+
+Pass `--auto-approve` to bypass the queue — new rows write `approval_status = 'approved'` and `status = 'published'` and surface immediately. Use this only when you intentionally want to skip review (e.g. a self-hosted instance seeding its starter prompts from a trusted audit log in one shot). Existing rows are never retroactively approved on re-run: the `ON CONFLICT` clause preserves an admin's prior hide or approve decision, so calling `--auto-approve` only affects rows created by that invocation.
 
 ```bash
 # Preview proposals (dry run, the default)
@@ -544,8 +553,11 @@ atlas learn --apply
 # Only analyze recent queries
 atlas learn --since 2026-03-01 --limit 500
 
-# Generate query suggestions from audit log
+# Generate query suggestions from audit log — new rows are pending review
 atlas learn --suggestions
+
+# Skip the moderation queue — new rows are approved + published
+atlas learn --suggestions --auto-approve
 ```
 
 ## improve

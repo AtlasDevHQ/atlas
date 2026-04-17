@@ -537,7 +537,7 @@ Proposals include:
 
 ### Suggestion moderation
 
-When you pass `--suggestions`, Atlas batch-generates rows in the `query_suggestions` table from the audit log. By default, CLI-populated rows land as `approval_status = 'pending'` and `status = 'draft'` so they surface in the `/admin/starter-prompts` Pending tab. An admin reviews and approves each row before it becomes visible in the chat empty state or the `@useatlas/react` widget.
+When you pass `--suggestions`, Atlas batch-generates rows in the `query_suggestions` table from the audit log. By default, CLI-populated rows land as `approval_status = 'pending'` and `status = 'draft'` so they surface in the `/admin/starter-prompts` Pending tab. An admin reviews and approves each row before it becomes visible in any surface that consumes `GET /api/v1/starter-prompts` — the chat empty state, the `@useatlas/react` widget, `atlas.getStarterPrompts()` via the SDK, and the notebook new-cell empty state.
 
 This matches the organic auto-promote path: click-threshold promoted suggestions also land as pending and wait for admin review. The CLI and the click-driven path feed the same moderation queue.
 

@@ -84,6 +84,8 @@ export const COMMANDS: Record<string, CommandSpec> = {
       "--limit": "Max audit log entries to analyze",
       "--since": "Only analyze queries after this date",
       "--source": "Read from/write to semantic/{name}/ subdirectory",
+      "--suggestions": "Generate query suggestions from audit log",
+      "--auto-approve": "With --suggestions: skip admin moderation queue",
     },
   },
   improve: {

@@ -1,8 +1,39 @@
-import { NotebookPen } from "lucide-react";
+"use client";
 
-export function NotebookEmptyState() {
+import { NotebookPen } from "lucide-react";
+import { StarterPromptList } from "../chat/starter-prompt-list";
+import { useStarterPromptsQuery } from "@/ui/hooks/use-starter-prompts-query";
+
+interface NotebookEmptyStateProps {
+  apiUrl: string;
+  isCrossOrigin: boolean;
+  getHeaders: () => Record<string, string>;
+  /** Invoked with the prompt text when the user clicks a starter prompt. */
+  onSelectPrompt: (text: string) => void;
+  /**
+   * Gates the query until the auth transport has resolved. Without this,
+   * the first mount fires the request before auth headers are ready.
+   */
+  enabled: boolean;
+}
+
+export function NotebookEmptyState({
+  apiUrl,
+  isCrossOrigin,
+  getHeaders,
+  onSelectPrompt,
+  enabled,
+}: NotebookEmptyStateProps) {
+  const query = useStarterPromptsQuery({
+    apiUrl,
+    isCrossOrigin,
+    getHeaders,
+    enabled,
+  });
+  const prompts = query.data ?? [];
+
   return (
-    <div className="flex flex-1 flex-col items-center justify-center gap-4 p-8 text-center">
+    <div className="flex flex-1 flex-col items-center justify-center gap-6 p-8 text-center">
       <div className="flex size-16 items-center justify-center rounded-2xl bg-zinc-100 dark:bg-zinc-800">
         <NotebookPen className="size-8 text-zinc-400" />
       </div>
@@ -11,9 +42,15 @@ export function NotebookEmptyState() {
           Start your analysis
         </h2>
         <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">
-          Ask a question below to create your first cell.
+          Pick a starter prompt or type a question below to create your first cell.
         </p>
       </div>
+      <StarterPromptList
+        prompts={prompts}
+        onSelect={onSelectPrompt}
+        isLoading={query.isLoading}
+        coldStartMessage="Ask your first question below — we'll learn from your team's queries and surface their best starters here."
+      />
     </div>
   );
 }

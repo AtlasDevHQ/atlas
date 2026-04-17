@@ -32,9 +32,16 @@ interface NotebookShellProps {
   focusCellId?: string;
   /** When provided, enables the "Share as Report" button. Returns the share token. */
   onShareAsReport?: () => Promise<string>;
+  /** Starter-prompts fetch config — forwarded to the empty-state query. */
+  starterPrompts: {
+    apiUrl: string;
+    isCrossOrigin: boolean;
+    getHeaders: () => Record<string, string>;
+    enabled: boolean;
+  };
 }
 
-export function NotebookShell({ notebook, focusCellId, onShareAsReport }: NotebookShellProps) {
+export function NotebookShell({ notebook, focusCellId, onShareAsReport, starterPrompts }: NotebookShellProps) {
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const anyRunning = notebook.cells.some((c) => c.status === "running");
   const editingCellId = notebook.cells.find((c) => c.editing)?.id ?? null;
@@ -250,7 +257,13 @@ export function NotebookShell({ notebook, focusCellId, onShareAsReport }: Notebo
           )}
 
           {notebook.cells.length === 0 ? (
-            <NotebookEmptyState />
+            <NotebookEmptyState
+              apiUrl={starterPrompts.apiUrl}
+              isCrossOrigin={starterPrompts.isCrossOrigin}
+              getHeaders={starterPrompts.getHeaders}
+              enabled={starterPrompts.enabled}
+              onSelectPrompt={(text) => notebook.appendCell(text)}
+            />
           ) : (
             <Sortable
               value={notebook.cells}

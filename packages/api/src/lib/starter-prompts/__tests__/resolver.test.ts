@@ -13,6 +13,7 @@
  *   - coldWindowDays runtime guard (non-finite / non-integer / zero rejected)
  */
 import { describe, it, expect, beforeEach, mock } from "bun:test";
+import type { FavoritePromptRow } from "../favorite-store";
 
 // ── Module mocks (must run before importing the resolver) ────────────────
 
@@ -24,9 +25,37 @@ const mockInternalQuery = mock(
   async (_sql: string, _params?: unknown[]) => [] as unknown[],
 );
 
+// Favorites tier — mocked at the store boundary so resolver tests do not
+// have to care about SQL shape.
+let favoritesFixture: FavoritePromptRow[] = [];
+let favoritesReadErrorFixture: Error | null = null;
+const mockListFavorites = mock(
+  async (_userId: string, _orgId: string) => {
+    if (favoritesReadErrorFixture) throw favoritesReadErrorFixture;
+    return favoritesFixture;
+  },
+);
+
 mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => hasInternalDBFixture,
   internalQuery: mockInternalQuery,
+}));
+
+mock.module("../favorite-store", () => ({
+  // Mock every export to satisfy Bun's mock.module partial-mock rule (CLAUDE.md).
+  FAVORITE_TEXT_MAX_LENGTH: 2000,
+  FavoriteCapError: class FavoriteCapError extends Error {
+    public readonly _tag = "FavoriteCapError" as const;
+    constructor(public readonly cap: number) { super(`cap ${cap}`); }
+  },
+  DuplicateFavoriteError: class DuplicateFavoriteError extends Error {
+    public readonly _tag = "DuplicateFavoriteError" as const;
+    constructor() { super("duplicate"); }
+  },
+  listFavorites: mockListFavorites,
+  createFavorite: mock(async () => { throw new Error("createFavorite not used in resolver tests"); }),
+  deleteFavorite: mock(async () => ({ status: "not_found" as const })),
+  updateFavoritePosition: mock(async () => ({ status: "not_found" as const })),
 }));
 
 mock.module("@atlas/api/lib/settings", () => ({
@@ -56,9 +85,24 @@ beforeEach(() => {
   demoIndustryFixture = undefined;
   demoReadErrorFixture = null;
   hasInternalDBFixture = true;
+  favoritesFixture = [];
+  favoritesReadErrorFixture = null;
   mockInternalQuery.mockClear();
   mockInternalQuery.mockImplementation(async () => [] as unknown[]);
+  mockListFavorites.mockClear();
 });
+
+function favRow(overrides: Partial<FavoritePromptRow> = {}): FavoritePromptRow {
+  return {
+    id: "fav-1",
+    userId: "user-1",
+    orgId: "org-1",
+    text: "favorite text",
+    position: 1,
+    createdAt: new Date("2026-04-17T00:00:00Z"),
+    ...overrides,
+  };
+}
 
 describe("resolveStarterPrompts — cold-start", () => {
   it("returns empty when no demo industry set", async () => {
@@ -198,22 +242,108 @@ describe("resolveStarterPrompts — library tier", () => {
   });
 });
 
-describe("resolveStarterPrompts — compose-order contract", () => {
-  // Locks the invariant that only the library tier emits rows in this slice.
-  // When #1475 / #1476 / #1477 land, these tests will need updating in lock-step
-  // with their new emit behavior — if they silently drift, we catch it here.
-  it("never emits favorite-provenance rows in this slice", async () => {
+describe("resolveStarterPrompts — favorites tier (#1475)", () => {
+  it("emits favorites first, tagged with provenance='favorite' and namespaced ids", async () => {
+    favoritesFixture = [
+      favRow({ id: "fav-a", text: "pinned 1", position: 3 }),
+      favRow({ id: "fav-b", text: "pinned 2", position: 2 }),
+    ];
+    mockInternalQuery.mockImplementation(async () => []);
+
+    const result = await resolveStarterPrompts(baseCtx());
+
+    expect(result).toEqual([
+      { id: "favorite:fav-a", text: "pinned 1", provenance: "favorite" },
+      { id: "favorite:fav-b", text: "pinned 2", provenance: "favorite" },
+    ]);
+  });
+
+  it("places favorites ahead of library tier when both have rows", async () => {
+    favoritesFixture = [favRow({ id: "fav-a", text: "my pin" })];
     demoIndustryFixture = "cybersecurity";
     mockInternalQuery.mockImplementation(async () => [
-      { id: "item-x", question: "library row" },
+      { id: "lib-1", question: "library row" },
     ]);
 
     const result = await resolveStarterPrompts(baseCtx());
 
-    expect(result.some((p) => p.provenance === "favorite")).toBe(false);
+    expect(result.map((p) => p.provenance)).toEqual(["favorite", "library"]);
+    expect(result[0]).toMatchObject({ id: "favorite:fav-a" });
+    expect(result[1]).toMatchObject({ id: "library:lib-1" });
   });
 
-  it("never emits popular-provenance rows in this slice", async () => {
+  it("preserves the store's ordering — resolver does not resort favorites", async () => {
+    // listFavorites is the sort authority (position DESC, created_at DESC).
+    // The resolver is a pure composer; re-sorting here would mask store bugs.
+    favoritesFixture = [
+      favRow({ id: "fav-a", text: "third" }),
+      favRow({ id: "fav-b", text: "first" }),
+      favRow({ id: "fav-c", text: "second" }),
+    ];
+
+    const result = await resolveStarterPrompts(baseCtx());
+
+    expect(result.map((p) => p.text)).toEqual(["third", "first", "second"]);
+  });
+
+  it("stops consuming library slots when favorites fill the limit", async () => {
+    favoritesFixture = [
+      favRow({ id: "fav-a", text: "1" }),
+      favRow({ id: "fav-b", text: "2" }),
+      favRow({ id: "fav-c", text: "3" }),
+      favRow({ id: "fav-d", text: "4" }),
+    ];
+    demoIndustryFixture = "cybersecurity";
+    mockInternalQuery.mockImplementation(async () => []);
+
+    const result = await resolveStarterPrompts(baseCtx({ limit: 3 }));
+
+    expect(result).toHaveLength(3);
+    expect(result.every((p) => p.provenance === "favorite")).toBe(true);
+    // With favorites exceeding the limit the library query must not be issued.
+    expect(mockInternalQuery).not.toHaveBeenCalled();
+  });
+
+  it("asks the library for only the remaining slots after favorites", async () => {
+    favoritesFixture = [favRow({ id: "fav-a", text: "pin" })];
+    demoIndustryFixture = "cybersecurity";
+    mockInternalQuery.mockImplementation(async () => []);
+
+    await resolveStarterPrompts(baseCtx({ limit: 6 }));
+
+    const [, params] = mockInternalQuery.mock.calls[0]!;
+    // limit = 6 total, 1 favorite consumed → library requests 5.
+    expect(params![3]).toBe(5);
+  });
+
+  it("skips the favorites tier when userId is null (no session)", async () => {
+    favoritesFixture = [favRow()];
+
+    const result = await resolveStarterPrompts(baseCtx({ userId: null }));
+
+    expect(mockListFavorites).not.toHaveBeenCalled();
+    expect(result).toEqual([]);
+  });
+
+  it("swallows listFavorites failure and continues to library (cold-start fallback)", async () => {
+    // Pins are an optimization; a transient DB hiccup on the favorites
+    // read must not black out the whole empty state.
+    favoritesReadErrorFixture = new Error("transient connection error");
+    demoIndustryFixture = "cybersecurity";
+    mockInternalQuery.mockImplementation(async () => [
+      { id: "lib-1", question: "library row" },
+    ]);
+
+    const result = await resolveStarterPrompts(baseCtx());
+
+    expect(result).toEqual([
+      { id: "library:lib-1", text: "library row", provenance: "library" },
+    ]);
+  });
+});
+
+describe("resolveStarterPrompts — compose-order contract", () => {
+  it("never emits popular-provenance rows until #1476 lands", async () => {
     demoIndustryFixture = "cybersecurity";
     mockInternalQuery.mockImplementation(async () => [
       { id: "item-y", question: "library row" },
@@ -224,8 +354,7 @@ describe("resolveStarterPrompts — compose-order contract", () => {
     expect(result.some((p) => p.provenance === "popular")).toBe(false);
   });
 
-  it("never emits cold-start-provenance rows in this slice", async () => {
-    // Cold-start is expressed as an empty list, not a synthesized row.
+  it("never emits cold-start-provenance rows (cold-start = empty list)", async () => {
     demoIndustryFixture = undefined;
 
     const result = await resolveStarterPrompts(baseCtx());

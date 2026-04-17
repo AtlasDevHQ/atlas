@@ -22,7 +22,7 @@ import { ShareDialog } from "./chat/share-dialog";
 import { ConversationSidebar } from "./conversations/conversation-sidebar";
 import { ChangePasswordDialog } from "./admin/change-password-dialog";
 import { usePasswordStatus } from "@/ui/hooks/use-password-status";
-import { Sun, Moon, Monitor, Star, TableProperties, BookOpen, Send } from "lucide-react";
+import { Sun, Moon, Monitor, Star, TableProperties, BookOpen, Send, Pin, PinOff } from "lucide-react";
 import { SchemaExplorer } from "./schema-explorer/schema-explorer";
 import { PromptLibrary } from "./chat/prompt-library";
 import {
@@ -142,10 +142,14 @@ export function AtlasChat() {
   const [schemaExplorerOpen, setSchemaExplorerOpen] = useState(false);
   const [promptLibraryOpen, setPromptLibraryOpen] = useState(false);
   // Adaptive empty-chat starter surface — backend composes the ranked
-  // prompt list from favorites / popular / library tiers (#1474).
+  // prompt list from favorites / popular / library tiers (#1474, #1475).
   const [starterPrompts, setStarterPrompts] = useState<
     Array<{ id: string; text: string; provenance: string }>
   >([]);
+  // Pending-pin state: tracks which message text the user is currently
+  // pinning, so the affordance can disable mid-flight and the empty state
+  // can optimistically reflect the new favorite without a refetch.
+  const [pinningText, setPinningText] = useState<string | null>(null);
   const [suggestionsLoading, setSuggestionsLoading] = useState(false);
   const [relatedSuggestions, setRelatedSuggestions] = useState<QuerySuggestion[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -325,6 +329,87 @@ export function AtlasChat() {
     const isNearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 100;
     if (isNearBottom) el.scrollTop = el.scrollHeight;
   }, [messages, status]);
+
+  async function handlePin(text: string) {
+    if (!text.trim()) return;
+    setPinningText(text);
+    try {
+      const res = await fetch(`${apiUrl}/api/v1/starter-prompts/favorites`, {
+        method: "POST",
+        credentials,
+        headers: { "Content-Type": "application/json", ...getHeaders() },
+        body: JSON.stringify({ text }),
+      });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => ({}))) as {
+          error?: string;
+          message?: string;
+          requestId?: string;
+        };
+        // 409 duplicate: silently succeed — the pin is already there.
+        if (res.status === 409) {
+          setTransientWarning("Already pinned.");
+          setTimeout(() => setTransientWarning(""), 3000);
+          return;
+        }
+        const msg = body.message ?? "Failed to pin starter prompt.";
+        console.warn("pin failed:", res.status, body.requestId, msg);
+        setTransientWarning(msg);
+        setTimeout(() => setTransientWarning(""), 5000);
+        return;
+      }
+      const body = (await res.json()) as {
+        favorite: { id: string; text: string; position: number };
+      };
+      // Optimistic insert: prepend favorite at the top of the empty-state
+      // grid so the user sees it immediately without a refetch. The full
+      // refetch on next empty-state entry reconciles.
+      setStarterPrompts((prev) => [
+        { id: `favorite:${body.favorite.id}`, text: body.favorite.text, provenance: "favorite" },
+        ...prev.filter((p) => !(p.provenance === "favorite" && p.text === body.favorite.text)),
+      ]);
+      setTransientWarning("Pinned as starter prompt.");
+      setTimeout(() => setTransientWarning(""), 3000);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn("pin request failed:", msg);
+      setTransientWarning("Failed to pin starter prompt.");
+      setTimeout(() => setTransientWarning(""), 5000);
+    } finally {
+      setPinningText(null);
+    }
+  }
+
+  async function handleUnpin(favoriteId: string) {
+    // favoriteId arrives as the namespaced id "favorite:<raw>". Strip.
+    const raw = favoriteId.startsWith("favorite:")
+      ? favoriteId.slice("favorite:".length)
+      : favoriteId;
+    try {
+      const res = await fetch(
+        `${apiUrl}/api/v1/starter-prompts/favorites/${encodeURIComponent(raw)}`,
+        {
+          method: "DELETE",
+          credentials,
+          headers: getHeaders(),
+        },
+      );
+      if (!res.ok && res.status !== 404) {
+        // 404 is fine — the pin is gone either way.
+        const body = (await res.json().catch(() => ({}))) as { requestId?: string };
+        console.warn("unpin failed:", res.status, body.requestId);
+        setTransientWarning("Failed to unpin starter prompt.");
+        setTimeout(() => setTransientWarning(""), 5000);
+        return;
+      }
+      setStarterPrompts((prev) => prev.filter((p) => p.id !== favoriteId));
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn("unpin request failed:", msg);
+      setTransientWarning("Failed to unpin starter prompt.");
+      setTimeout(() => setTransientWarning(""), 5000);
+    }
+  }
 
   function handleSend(text: string) {
     if (!text.trim()) return;
@@ -510,16 +595,44 @@ export function AtlasChat() {
                       </div>
                       {starterPrompts.length > 0 ? (
                         <div className="grid w-full max-w-lg grid-cols-1 gap-2 sm:grid-cols-2">
-                          {starterPrompts.map((prompt) => (
-                            <Button
-                              key={prompt.id}
-                              variant="outline"
-                              onClick={() => handleSend(prompt.text)}
-                              className="h-auto whitespace-normal justify-start rounded-lg px-3 py-2.5 text-left text-sm"
-                            >
-                              {prompt.text}
-                            </Button>
-                          ))}
+                          {starterPrompts.map((prompt) => {
+                            const isFavorite = prompt.provenance === "favorite";
+                            return (
+                              <div
+                                key={prompt.id}
+                                className="group relative"
+                                data-testid={`starter-prompt-${prompt.provenance}`}
+                              >
+                                <Button
+                                  variant="outline"
+                                  onClick={() => handleSend(prompt.text)}
+                                  className="h-auto w-full whitespace-normal justify-start rounded-lg px-3 py-2.5 pr-9 text-left text-sm"
+                                >
+                                  {isFavorite && (
+                                    <Pin
+                                      className="mr-2 size-3.5 shrink-0 text-primary"
+                                      aria-hidden="true"
+                                    />
+                                  )}
+                                  <span className="flex-1">{prompt.text}</span>
+                                </Button>
+                                {isFavorite && (
+                                  <button
+                                    type="button"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      void handleUnpin(prompt.id);
+                                    }}
+                                    className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded-md p-1.5 text-zinc-400 opacity-0 transition-opacity hover:bg-zinc-100 hover:text-zinc-700 focus-visible:opacity-100 group-hover:opacity-100 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
+                                    aria-label={`Unpin "${prompt.text}"`}
+                                    data-testid="unpin-favorite"
+                                  >
+                                    <PinOff className="size-3.5" />
+                                  </button>
+                                )}
+                              </div>
+                            );
+                          })}
                         </div>
                       ) : (
                         !suggestionsLoading && (
@@ -542,16 +655,37 @@ export function AtlasChat() {
 
                   {messages.map((m, msgIndex) => {
                     if (m.role === "user") {
+                      const userText = m.parts
+                        ?.filter((p): p is { type: "text"; text: string } => p.type === "text")
+                        .map((p) => p.text)
+                        .join("\n")
+                        .trim() ?? "";
+                      const canPin = userText.length > 0;
+                      const pinDisabled = pinningText === userText;
                       return (
-                        <div key={m.id} className="flex justify-end" role="article" aria-label="Message from you">
-                          <div className="max-w-[85%] rounded-xl bg-primary px-4 py-3 text-sm text-primary-foreground">
-                            {m.parts?.map((part, i) =>
-                              part.type === "text" ? (
-                                <p key={i} className="whitespace-pre-wrap">
-                                  {part.text}
-                                </p>
-                              ) : null,
+                        <div key={m.id} className="group flex justify-end" role="article" aria-label="Message from you">
+                          <div className="flex items-start gap-1.5">
+                            {canPin && (
+                              <button
+                                type="button"
+                                onClick={() => { void handlePin(userText); }}
+                                disabled={pinDisabled}
+                                className="mt-1.5 rounded-md p-1.5 text-zinc-400 opacity-0 transition-opacity hover:bg-zinc-100 hover:text-primary focus-visible:opacity-100 group-hover:opacity-100 disabled:pointer-events-none dark:hover:bg-zinc-800"
+                                aria-label="Pin as starter prompt"
+                                data-testid="pin-user-message"
+                              >
+                                <Pin className="size-3.5" />
+                              </button>
                             )}
+                            <div className="max-w-[85%] rounded-xl bg-primary px-4 py-3 text-sm text-primary-foreground">
+                              {m.parts?.map((part, i) =>
+                                part.type === "text" ? (
+                                  <p key={i} className="whitespace-pre-wrap">
+                                    {part.text}
+                                  </p>
+                                ) : null,
+                              )}
+                            </div>
                           </div>
                         </div>
                       );

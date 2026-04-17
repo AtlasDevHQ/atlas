@@ -397,6 +397,11 @@ const AtlasConfigSchema = z.object({
      * queue for learned-popular prompts in later slices. Default: 90.
      */
     coldWindowDays: z.number().int().positive().default(90),
+    /**
+     * Hard cap on per-user pinned starter prompts (#1475). Attempting to
+     * pin past this cap returns a user-visible error. Default: 10.
+     */
+    maxFavorites: z.number().int().positive().default(10),
   }).optional(),
 
   /**
@@ -475,7 +480,7 @@ export interface ResolvedConfig {
   /** Dynamic learning configuration. */
   learn?: { confidenceThreshold: number };
   /** Adaptive starter prompt configuration. */
-  starterPrompts?: { coldWindowDays: number };
+  starterPrompts?: { coldWindowDays: number; maxFavorites: number };
   /** Enterprise feature gating. */
   enterprise?: { enabled: boolean; licenseKey?: string };
   /** Data residency configuration for region-based routing. */
@@ -662,13 +667,16 @@ export function configFromEnv(): ResolvedConfig {
         },
       };
     })()),
-    // Starter prompt config from env vars (#1474)
+    // Starter prompt config from env vars (#1474, #1475)
     ...((() => {
       const coldWindow = parseInt(process.env.ATLAS_STARTER_PROMPT_COLD_WINDOW_DAYS ?? "", 10);
+      const maxFavs = parseInt(process.env.ATLAS_STARTER_PROMPT_MAX_FAVORITES ?? "", 10);
       return {
         starterPrompts: {
           coldWindowDays:
             Number.isFinite(coldWindow) && coldWindow > 0 ? coldWindow : 90,
+          maxFavorites:
+            Number.isFinite(maxFavs) && maxFavs > 0 ? maxFavs : 10,
         },
       };
     })()),

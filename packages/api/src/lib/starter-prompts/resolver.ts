@@ -25,6 +25,7 @@ import type {
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { readDemoIndustry } from "@atlas/api/lib/demo-industry";
 import { createLogger } from "@atlas/api/lib/logger";
+import { listFavorites } from "./favorite-store";
 
 export type { StarterPrompt, StarterPromptProvenance };
 
@@ -135,7 +136,35 @@ export async function resolveStarterPrompts(
 
   const out: StarterPrompt[] = [];
 
-  // Tier 1 — favorites. Filled in by #1475 (per-user pins, always top-ranked).
+  // Tier 1 — favorites. Per-user pins (#1475). Always top-ranked and
+  // mode-agnostic: a pin works for its owner even if the underlying
+  // popular suggestion was later hidden by an admin.
+  if (ctx.userId && ctx.orgId) {
+    try {
+      const favorites = await listFavorites(ctx.userId, ctx.orgId);
+      for (const fav of favorites) {
+        if (out.length >= limit) break;
+        out.push({
+          id: makePromptId("favorite", fav.id),
+          text: fav.text,
+          provenance: "favorite" as const,
+        });
+      }
+    } catch (err) {
+      // Pins are an optimization, not a hard dependency. A transient
+      // read failure must not black out the whole empty state — fall
+      // through to popular / library / cold-start instead.
+      log.error(
+        {
+          err: err instanceof Error ? err.message : String(err),
+          userId: ctx.userId,
+          orgId: ctx.orgId,
+          requestId: ctx.requestId,
+        },
+        "Failed to load favorite starter prompts — continuing to lower tiers",
+      );
+    }
+  }
 
   // Tier 2 — popular approved. Filled in by #1476 (schema) + #1477 (UX).
 

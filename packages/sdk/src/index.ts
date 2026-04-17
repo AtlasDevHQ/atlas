@@ -74,3 +74,9 @@ export {
   type StarterPromptsResponse,
   type GetStarterPromptsOptions,
 } from "./client";
+
+export {
+  fetchStarterPrompts,
+  type FetchStarterPromptsConfig,
+  type FetchStarterPromptsCredentials,
+} from "./fetch-starter-prompts";

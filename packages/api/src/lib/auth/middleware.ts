@@ -147,6 +147,20 @@ export function _setValidatorOverrides(overrides: {
   _byotOverride = overrides.byot ?? null;
 }
 
+type SSOEnforcementResult = { enforced: boolean; ssoRedirectUrl?: string } | null;
+
+let _ssoEnforcementOverride:
+  | ((emailDomain: string) => Promise<SSOEnforcementResult>)
+  | null = null;
+
+/** @internal — test-only. Override the SSO enforcement lookup so tests can
+ * exercise the 403/500 branches without touching the internal Postgres DB. */
+export function _setSSOEnforcementOverride(
+  override: ((emailDomain: string) => Promise<SSOEnforcementResult>) | null,
+): void {
+  _ssoEnforcementOverride = override;
+}
+
 /**
  * Categorize an auth error for diagnostic logging.
  * Helps operators quickly identify whether a failure is a database issue,
@@ -179,7 +193,9 @@ async function checkSSOEnforcement(userLabel: string): Promise<AuthResult | null
     const domain = extractEmailDomain(userLabel);
     if (!domain) return null;
 
-    const enforcement = await Effect.runPromise(isSSOEnforcedForDomain(domain));
+    const enforcement = _ssoEnforcementOverride
+      ? await _ssoEnforcementOverride(domain)
+      : await Effect.runPromise(isSSOEnforcedForDomain(domain));
     if (!enforcement || !enforcement.enforced) return null;
 
     log.warn({ domain, userId: userLabel }, "Password login blocked — SSO enforcement active for domain");

@@ -8,6 +8,7 @@ import {
   rateLimitCleanupTick,
   getClientIP,
   _setValidatorOverrides,
+  _setSSOEnforcementOverride,
 } from "../middleware";
 
 // Mock validators — injected via _setValidatorOverrides (no mock.module needed)
@@ -41,9 +42,11 @@ describe("authenticateRequest()", () => {
     delete process.env.BETTER_AUTH_SECRET;
     delete process.env.ATLAS_API_KEY;
     delete process.env.ATLAS_AUTH_MODE;
-    // Unset DATABASE_URL so checkSSOEnforcement's hasInternalDB() short-circuits.
-    // Otherwise the managed-auth path tries a real Postgres query and the
-    // fail-closed catch turns this into a flaky `authenticated: false` result.
+    // Unset DATABASE_URL so the managed-auth SSO enforcement check (in
+    // ee/auth/sso) short-circuits before touching Postgres. Otherwise the
+    // fail-closed catch flips a passing test into a flaky `authenticated: false`
+    // 500. Tests that need to exercise the SSO branch use
+    // _setSSOEnforcementOverride below instead of a real DB.
     delete process.env.DATABASE_URL;
     resetAuthModeCache();
     _setValidatorOverrides({
@@ -84,6 +87,7 @@ describe("authenticateRequest()", () => {
 
     resetAuthModeCache();
     _setValidatorOverrides({ managed: null, byot: null });
+    _setSSOEnforcementOverride(null);
   });
 
   function makeRequest(headers?: Record<string, string>): Request {
@@ -195,6 +199,50 @@ describe("authenticateRequest()", () => {
     if (!result.authenticated) {
       expect(result.status).toBe(500);
       expect(result.error).toContain("Authentication service error");
+    }
+  });
+
+  it("mode 'managed' with SSO enforcement blocks login with 403 + redirect", async () => {
+    process.env.BETTER_AUTH_SECRET = "some-secret-for-managed-auth-32chars!!";
+    resetAuthModeCache();
+
+    mockValidateManaged.mockResolvedValueOnce({
+      authenticated: true as const,
+      mode: "managed" as const,
+      user: { id: "usr_1", mode: "managed" as const, label: "alice@enforced.com" },
+    });
+    _setSSOEnforcementOverride(async (domain) => {
+      expect(domain).toBe("enforced.com");
+      return { enforced: true, ssoRedirectUrl: "https://idp.enforced.com/sso" };
+    });
+
+    const result = await authenticateRequest(makeRequest());
+    expect(result.authenticated).toBe(false);
+    if (!result.authenticated) {
+      expect(result.status).toBe(403);
+      expect(result.error).toContain("SSO is required");
+      expect(result.ssoRedirectUrl).toBe("https://idp.enforced.com/sso");
+    }
+  });
+
+  it("mode 'managed' with SSO enforcement check throwing fails closed with 500", async () => {
+    process.env.BETTER_AUTH_SECRET = "some-secret-for-managed-auth-32chars!!";
+    resetAuthModeCache();
+
+    mockValidateManaged.mockResolvedValueOnce({
+      authenticated: true as const,
+      mode: "managed" as const,
+      user: { id: "usr_1", mode: "managed" as const, label: "alice@enforced.com" },
+    });
+    _setSSOEnforcementOverride(async () => {
+      throw new Error("DB unreachable");
+    });
+
+    const result = await authenticateRequest(makeRequest());
+    expect(result.authenticated).toBe(false);
+    if (!result.authenticated) {
+      expect(result.status).toBe(500);
+      expect(result.error).toContain("Unable to verify SSO enforcement");
     }
   });
 

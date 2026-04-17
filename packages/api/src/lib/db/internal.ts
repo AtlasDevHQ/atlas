@@ -1174,9 +1174,13 @@ export async function getPopularSuggestions(
     const params: unknown[] = orgId != null ? [orgId, limit] : [limit];
     const limitIdx = params.length;
 
-    // Gated to admin-approved rows only. Pending / hidden suggestions
-    // must not surface in user-facing empty states — this is the single
-    // source of truth enforcing that contract from backend to UI.
+    // Two independent gates enforce end-to-end moderation visibility:
+    //   approval_status = 'approved' — pending / hidden rows never
+    //     surface to the empty state, regardless of mode.
+    //   status IN (...)              — the 1.2.0 mode axis: non-admin
+    //     callers are downgraded to `published` upstream by
+    //     resolveMode(), so drafts can only leak via developer-mode
+    //     admins previewing their own queue.
     //
     // `buildUnionStatusClause()` is the shared helper driving the same
     // mode branch on `connections` and `prompt_collections` — reuse it

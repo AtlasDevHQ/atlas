@@ -7,8 +7,11 @@
  * 1. Apply `draft_delete` tombstones (delete the targeted published rows,
  *    then delete the tombstones themselves).
  * 2. Delete published entity rows superseded by drafts (same entity key).
- * 3. Promote all `draft` rows (entities + connections + prompt collections
- *    + starter-prompt suggestions) to `published`.
+ * 3. Promote every draft content type to `published`, in order:
+ *    3a. Entities (merged with phase 2 via `promoteDraftEntities()`).
+ *    3b. Connections.
+ *    3c. Prompt collections.
+ *    3d. Starter-prompt suggestions (`query_suggestions`) — #1478.
  * 4. If `archiveConnections` is provided, archive those connections and
  *    cascade to their entities. When the archive list includes the reserved
  *    `__demo__` ID, also archive the built-in demo prompt collections whose

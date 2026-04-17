@@ -718,3 +718,63 @@ describe("mode participation — author writes status based on atlasMode", () =>
     expect(captureInsertStatusParam()).toBe("published");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Security boundary — non-admin with a forged developer cookie (#1478)
+//
+// resolveMode() in middleware.ts downgrades non-admins from any
+// `atlas-mode=developer` cookie to `published`. But the mutation routes
+// are gated by `adminAuth` first, so a non-admin should never reach the
+// handler at all. Assert the 403 boundary holds even when the forged
+// cookie is present — a regression that reordered middleware could
+// otherwise let a member stage a draft on the admin surface.
+// ---------------------------------------------------------------------------
+
+describe("mode participation — non-admin write path is rejected at auth", () => {
+  beforeEach(() => {
+    mocks.mockAuthenticateRequest.mockImplementation(() =>
+      Promise.resolve({
+        authenticated: true,
+        mode: "simple-key",
+        user: {
+          id: "member-1",
+          mode: "simple-key",
+          label: "Member",
+          role: "member",
+          activeOrganizationId: "org-alpha",
+        },
+      }),
+    );
+    mocks.mockInternalQuery.mockReset();
+    mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([]));
+  });
+
+  for (const verb of ["approve", "hide", "unhide"] as const) {
+    it(`returns 403 on ${verb} even with atlas-mode=developer cookie`, async () => {
+      const res = await postNoBody(
+        `/api/v1/admin/starter-prompts/sug-1/${verb}`,
+        { Cookie: "atlas-mode=developer" },
+      );
+      expect(res.status).toBe(403);
+      // No SQL should have run — the mutation never reached the handler.
+      const sawUpdate = mocks.mockInternalQuery.mock.calls.some(
+        ([sql]) => typeof sql === "string" && /UPDATE/i.test(sql),
+      );
+      expect(sawUpdate).toBe(false);
+    });
+  }
+
+  it("returns 403 on author even with atlas-mode=developer cookie", async () => {
+    const res = await postBody(
+      "/api/v1/admin/starter-prompts/author",
+      { text: "Attempted drafted author" },
+      { Cookie: "atlas-mode=developer" },
+    );
+    expect(res.status).toBe(403);
+    const sawInsert = mocks.mockInternalQuery.mock.calls.some(
+      ([sql]) =>
+        typeof sql === "string" && sql.includes("INSERT INTO query_suggestions"),
+    );
+    expect(sawInsert).toBe(false);
+  });
+});

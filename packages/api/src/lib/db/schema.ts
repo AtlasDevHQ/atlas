@@ -480,6 +480,25 @@ export const promptItems = pgTable(
   ],
 );
 
+export const userFavoritePrompts = pgTable(
+  "user_favorite_prompts",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: text("user_id").notNull(),
+    orgId: text("org_id").notNull(),
+    text: text("text").notNull(),
+    position: doublePrecision("position").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // Prevent the same user from pinning the same text twice in a workspace.
+    // md5() wrap keeps the btree key short so long messages don't blow the
+    // 8191-byte page-tuple limit. See migration 0029.
+    uniqueIndex("uq_user_favorite_prompts").on(t.userId, t.orgId, sql`md5(${t.text})`),
+    index("idx_user_favorite_prompts_user_org").on(t.userId, t.orgId, t.position.desc(), t.createdAt.desc()),
+  ],
+);
+
 // ---------------------------------------------------------------------------
 // Query suggestions
 // ---------------------------------------------------------------------------

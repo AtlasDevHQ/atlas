@@ -538,6 +538,7 @@ Scheduled task execution. Can also be configured via [`atlas.config.ts`](/refere
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ATLAS_STARTER_PROMPT_COLD_WINDOW_DAYS` | `90` | Window in days applied to `prompt_collections.created_at` by the adaptive starter-prompt resolver (`GET /api/v1/starter-prompts`). Bounds the library tier used when chat is empty. Can also be set via [`atlas.config.ts`](/reference/config#starter-prompts) |
+| `ATLAS_STARTER_PROMPT_MAX_FAVORITES` | `10` | Hard cap on per-user pinned starter prompts (`POST /api/v1/starter-prompts/favorites`). Applies per user per workspace. Returns a user-visible error when attempting to pin past this cap. Can also be set via [`atlas.config.ts`](/reference/config#starter-prompts) |
 
 ---
 

@@ -1,9 +1,9 @@
 /**
- * Integration tests for GET /api/v1/starter-prompts (#1474).
+ * Integration tests for the `/api/v1/starter-prompts` surface.
  *
  * Exercises route wiring end-to-end: auth gate → config → resolver →
- * response shape. Resolver has deeper unit coverage in
- * `packages/api/src/lib/starter-prompts/__tests__/resolver.test.ts`.
+ * response shape, plus the /favorites CRUD endpoints. Resolver and
+ * store have deeper unit coverage in their own __tests__/ dirs.
  */
 
 import {
@@ -15,6 +15,14 @@ import {
   mock,
 } from "bun:test";
 import { createApiTestMocks } from "@atlas/api/testing/api-test-mocks";
+import {
+  FavoriteCapError,
+  DuplicateFavoriteError,
+  InvalidFavoriteTextError,
+  type DeleteResult,
+  type UpdatePositionResult,
+  type FavoritePromptRow,
+} from "@atlas/api/lib/starter-prompts/favorite-store";
 
 // ── Module mocks (must run before importing the app) ────────────────────
 
@@ -39,6 +47,59 @@ mock.module("@atlas/api/lib/settings", () => ({
   _resetSettingsCache: () => {},
 }));
 
+// Favorites-store mocks — route tests exercise the HTTP contract, not the
+// store's SQL shape (covered exhaustively in favorite-store.test.ts).
+const mockListFavorites = mock(
+  async (_userId: string, _orgId: string) => [] as FavoritePromptRow[],
+);
+const mockCreateFavorite = mock(
+  async (
+    input: { userId: string; orgId: string; text: string },
+    _cap: number,
+  ): Promise<FavoritePromptRow> => ({
+    id: "fav-new",
+    userId: input.userId,
+    orgId: input.orgId,
+    text: input.text.trim(),
+    position: 1,
+    createdAt: new Date("2026-04-17T00:00:00Z"),
+  }),
+);
+const mockDeleteFavorite = mock(
+  async (_input: { id: string; userId: string; orgId: string }): Promise<DeleteResult> => ({
+    status: "ok",
+  }),
+);
+const mockUpdateFavoritePosition = mock(
+  async (input: {
+    id: string;
+    userId: string;
+    orgId: string;
+    position: number;
+  }): Promise<UpdatePositionResult> => ({
+    status: "ok",
+    favorite: {
+      id: input.id,
+      userId: input.userId,
+      orgId: input.orgId,
+      text: "pinned",
+      position: input.position,
+      createdAt: new Date("2026-04-17T00:00:00Z"),
+    },
+  }),
+);
+
+mock.module("@atlas/api/lib/starter-prompts/favorite-store", () => ({
+  FAVORITE_TEXT_MAX_LENGTH: 2000,
+  FavoriteCapError,
+  DuplicateFavoriteError,
+  InvalidFavoriteTextError,
+  listFavorites: mockListFavorites,
+  createFavorite: mockCreateFavorite,
+  deleteFavorite: mockDeleteFavorite,
+  updateFavoritePosition: mockUpdateFavoritePosition,
+}));
+
 // Import the app AFTER mocks.
 const { app } = await import("../index");
 
@@ -50,6 +111,23 @@ function req(path: string, headers: Record<string, string> = {}) {
       headers: { Authorization: "Bearer test", ...headers },
     }),
   );
+}
+
+function jsonReq(
+  method: "POST" | "DELETE" | "PATCH",
+  path: string,
+  body?: unknown,
+) {
+  const url = `http://localhost${path}`;
+  const init: RequestInit = {
+    method,
+    headers: {
+      Authorization: "Bearer test",
+      "Content-Type": "application/json",
+    },
+  };
+  if (body !== undefined) init.body = JSON.stringify(body);
+  return app.fetch(new Request(url, init));
 }
 
 afterAll(() => {
@@ -75,6 +153,31 @@ beforeEach(() => {
   mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([]));
   mocks.mockCheckRateLimit.mockImplementation(() => ({ allowed: true }));
   demoIndustryFixture = undefined;
+  mockListFavorites.mockReset();
+  mockListFavorites.mockImplementation(async () => []);
+  mockCreateFavorite.mockReset();
+  mockCreateFavorite.mockImplementation(async (input, _cap) => ({
+    id: "fav-new",
+    userId: input.userId,
+    orgId: input.orgId,
+    text: input.text.trim(),
+    position: 1,
+    createdAt: new Date("2026-04-17T00:00:00Z"),
+  }));
+  mockDeleteFavorite.mockReset();
+  mockDeleteFavorite.mockImplementation(async () => ({ status: "ok" }));
+  mockUpdateFavoritePosition.mockReset();
+  mockUpdateFavoritePosition.mockImplementation(async (input) => ({
+    status: "ok",
+    favorite: {
+      id: input.id,
+      userId: input.userId,
+      orgId: input.orgId,
+      text: "pinned",
+      position: input.position,
+      createdAt: new Date("2026-04-17T00:00:00Z"),
+    },
+  }));
 });
 
 describe("GET /api/v1/starter-prompts", () => {
@@ -167,5 +270,202 @@ describe("GET /api/v1/starter-prompts", () => {
     expect(sqlCalls.length).toBeGreaterThan(0);
     const [, params] = sqlCalls[0]!;
     expect(params![2]).toBe("90");
+  });
+});
+
+// ── Favorites endpoints ─────────────────────────────────────────────────
+
+describe("POST /api/v1/starter-prompts/favorites", () => {
+  it("returns 401 when unauthenticated", async () => {
+    mocks.mockAuthenticateRequest.mockImplementation(() =>
+      Promise.resolve({ authenticated: false, error: "Invalid token", status: 401 }),
+    );
+
+    const res = await jsonReq("POST", "/api/v1/starter-prompts/favorites", {
+      text: "Anything",
+    });
+
+    expect(res.status).toBe(401);
+    expect(mockCreateFavorite).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when body is missing text", async () => {
+    const res = await jsonReq("POST", "/api/v1/starter-prompts/favorites", {});
+
+    expect(res.status).toBe(400);
+    expect(mockCreateFavorite).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when text is empty string", async () => {
+    const res = await jsonReq("POST", "/api/v1/starter-prompts/favorites", {
+      text: "",
+    });
+
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 200 and the created favorite on success", async () => {
+    const res = await jsonReq("POST", "/api/v1/starter-prompts/favorites", {
+      text: "My pinned question",
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      favorite: { id: string; text: string; position: number; createdAt: string };
+    };
+    expect(body.favorite.text).toBe("My pinned question");
+    expect(body.favorite.id).toBeTruthy();
+    expect(typeof body.favorite.createdAt).toBe("string");
+    expect(mockCreateFavorite).toHaveBeenCalledTimes(1);
+  });
+
+  it("passes the configured max-favorites cap through to the store", async () => {
+    await jsonReq("POST", "/api/v1/starter-prompts/favorites", {
+      text: "x",
+    });
+
+    const [, cap] = mockCreateFavorite.mock.calls[0]!;
+    expect(cap).toBe(10);
+  });
+
+  it("returns 409 when the store throws DuplicateFavoriteError", async () => {
+    mockCreateFavorite.mockImplementation(async () => {
+      throw new DuplicateFavoriteError();
+    });
+
+    const res = await jsonReq("POST", "/api/v1/starter-prompts/favorites", {
+      text: "dup",
+    });
+
+    expect(res.status).toBe(409);
+    const body = (await res.json()) as { error: string; message: string };
+    expect(body.error).toBe("duplicate_favorite");
+  });
+
+  it("returns 400 'invalid_favorite_text' when the store throws InvalidFavoriteTextError", async () => {
+    mockCreateFavorite.mockImplementation(async () => {
+      throw new InvalidFavoriteTextError("Pin text must not be empty");
+    });
+
+    const res = await jsonReq("POST", "/api/v1/starter-prompts/favorites", {
+      text: "will-throw-from-store",
+    });
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string; message: string };
+    expect(body.error).toBe("invalid_favorite_text");
+  });
+
+  it("returns 400 with user-safe message when the cap is exceeded", async () => {
+    mockCreateFavorite.mockImplementation(async () => {
+      throw new FavoriteCapError(10);
+    });
+
+    const res = await jsonReq("POST", "/api/v1/starter-prompts/favorites", {
+      text: "over-cap",
+    });
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string; message: string };
+    expect(body.error).toBe("favorite_cap_exceeded");
+    expect(body.message).toContain("10");
+  });
+});
+
+describe("DELETE /api/v1/starter-prompts/favorites/:id", () => {
+  it("returns 401 when unauthenticated", async () => {
+    mocks.mockAuthenticateRequest.mockImplementation(() =>
+      Promise.resolve({ authenticated: false, error: "Invalid token", status: 401 }),
+    );
+
+    const res = await jsonReq("DELETE", "/api/v1/starter-prompts/favorites/fav-1");
+
+    expect(res.status).toBe(401);
+    expect(mockDeleteFavorite).not.toHaveBeenCalled();
+  });
+
+  it("returns 204 on successful delete", async () => {
+    const res = await jsonReq("DELETE", "/api/v1/starter-prompts/favorites/fav-1");
+
+    expect(res.status).toBe(204);
+  });
+
+  it("returns 404 when the favorite does not exist", async () => {
+    mockDeleteFavorite.mockImplementation(async () => ({ status: "not_found" }));
+
+    const res = await jsonReq("DELETE", "/api/v1/starter-prompts/favorites/missing");
+
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 403 when attempting to unpin another user's favorite", async () => {
+    mockDeleteFavorite.mockImplementation(async () => ({ status: "forbidden" }));
+
+    const res = await jsonReq("DELETE", "/api/v1/starter-prompts/favorites/other");
+
+    expect(res.status).toBe(403);
+  });
+});
+
+describe("PATCH /api/v1/starter-prompts/favorites/:id", () => {
+  it("returns 401 when unauthenticated", async () => {
+    mocks.mockAuthenticateRequest.mockImplementation(() =>
+      Promise.resolve({ authenticated: false, error: "Invalid token", status: 401 }),
+    );
+
+    const res = await jsonReq("PATCH", "/api/v1/starter-prompts/favorites/fav-1", {
+      position: 2,
+    });
+
+    expect(res.status).toBe(401);
+    expect(mockUpdateFavoritePosition).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when body is missing position", async () => {
+    const res = await jsonReq("PATCH", "/api/v1/starter-prompts/favorites/fav-1", {});
+
+    expect(res.status).toBe(400);
+  });
+
+  it("returns 400 when position is NaN or Infinity", async () => {
+    for (const bad of [Number.NaN, Number.POSITIVE_INFINITY]) {
+      const res = await jsonReq("PATCH", "/api/v1/starter-prompts/favorites/fav-1", {
+        position: bad,
+      });
+      // NaN/Infinity serialize as null in JSON — schema rejects as 400.
+      expect(res.status).toBe(400);
+    }
+  });
+
+  it("returns 200 with the updated favorite", async () => {
+    const res = await jsonReq("PATCH", "/api/v1/starter-prompts/favorites/fav-1", {
+      position: 5.5,
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      favorite: { id: string; position: number };
+    };
+    expect(body.favorite.position).toBe(5.5);
+  });
+
+  it("returns 404 when the favorite does not exist", async () => {
+    mockUpdateFavoritePosition.mockImplementation(async () => ({ status: "not_found" }));
+
+    const res = await jsonReq("PATCH", "/api/v1/starter-prompts/favorites/missing", {
+      position: 1,
+    });
+
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 403 when attempting to reorder another user's favorite", async () => {
+    mockUpdateFavoritePosition.mockImplementation(async () => ({ status: "forbidden" }));
+
+    const res = await jsonReq("PATCH", "/api/v1/starter-prompts/favorites/other", {
+      position: 1,
+    });
+
+    expect(res.status).toBe(403);
   });
 });

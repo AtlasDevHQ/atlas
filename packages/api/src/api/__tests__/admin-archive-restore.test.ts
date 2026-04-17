@@ -18,6 +18,16 @@ import { describe, it, expect, beforeEach, afterAll, mock } from "bun:test";
 import { createApiTestMocks } from "@atlas/api/testing/api-test-mocks";
 import { makeArchiveRestoreStubs } from "@atlas/api/testing/archive-restore";
 
+// Controls `getSettingAuto("ATLAS_DEMO_INDUSTRY", orgId)` per test. Tests
+// that need to drive the demo-prompt cascade mutate these before invoking
+// the route. `throwOnGet` simulates a transient cache-read failure so the
+// route can surface 500 (issue #1470) rather than silently swallowing it.
+// Declared here; the `mock.module` override is registered AFTER
+// `createApiTestMocks` below — otherwise the factory's own mock overrides
+// ours.
+let demoIndustryFixture: string | null = null;
+let throwOnGet: Error | null = null;
+
 // ── Transactional client mock ─────────────────────────────────────────
 
 interface ClientQuery {
@@ -27,11 +37,15 @@ interface ClientQuery {
 
 interface MockClient {
   query: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[] }>;
-  release: () => void;
+  release: (err?: unknown) => void;
 }
 
 let clientQueries: ClientQuery[] = [];
 let clientReleased = false;
+// Captures the argument passed to `client.release(err?)`. When non-undefined,
+// node-postgres destroys the socket instead of returning it to the pool —
+// this is what we assert for issue #1471 (ROLLBACK-failure poisoning).
+let clientReleaseArg: unknown = undefined;
 let queryHandler: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[] }> = async () => ({ rows: [] });
 
 function makeMockClient(): MockClient {
@@ -40,8 +54,9 @@ function makeMockClient(): MockClient {
       clientQueries.push({ sql, params });
       return queryHandler(sql, params);
     },
-    release: () => {
+    release: (err?: unknown) => {
       clientReleased = true;
+      clientReleaseArg = err;
     },
   };
 }
@@ -65,6 +80,32 @@ const mocks = createApiTestMocks({
     getInternalDB: mockGetInternalDB,
   },
 });
+
+// Override the default settings mock from createApiTestMocks so tests
+// can drive getSettingAuto("ATLAS_DEMO_INDUSTRY") and simulate a transient
+// read failure. Registered AFTER createApiTestMocks so it wins.
+mock.module("@atlas/api/lib/settings", () => ({
+  getSettingsForAdmin: () => [],
+  getSettingsRegistry: () => [],
+  getSettingDefinition: () => undefined,
+  setSetting: async () => {},
+  deleteSetting: async () => {},
+  getSetting: () => undefined,
+  getSettingAuto: (key: string) => {
+    // Gate throw on the specific key under test — otherwise a future
+    // unrelated getSettingAuto read inside the handler would silently
+    // trip this and produce a false positive.
+    if (key === "ATLAS_DEMO_INDUSTRY") {
+      if (throwOnGet) throw throwOnGet;
+      return demoIndustryFixture ?? undefined;
+    }
+    return undefined;
+  },
+  getSettingLive: async () => undefined,
+  loadSettings: async () => 0,
+  getAllSettingOverrides: async () => [],
+  _resetSettingsCache: () => {},
+}));
 
 // Replace the default no-op semantic/entities mock with full-fidelity
 // archive/restore stubs that issue real SQL against our transactional
@@ -111,7 +152,10 @@ function makeReq(path: "archive-connection" | "restore-connection", body?: unkno
 function resetClient(): void {
   clientQueries = [];
   clientReleased = false;
+  clientReleaseArg = undefined;
   queryHandler = async () => ({ rows: [] });
+  demoIndustryFixture = null;
+  throwOnGet = null;
 }
 
 afterAll(() => {
@@ -205,13 +249,8 @@ describe("POST /api/v1/admin/archive-connection — cascade", () => {
   });
 
   it("archives __demo__ and cascades to entities + demo builtin prompts", async () => {
-    // Pre-transaction read of demo_industry
-    mocks.mockInternalQuery.mockImplementation((sql: string) => {
-      if (sql.includes("demo_industry")) {
-        return Promise.resolve([{ value: "cybersecurity" }]);
-      }
-      return Promise.resolve([]);
-    });
+    // Pre-transaction read of ATLAS_DEMO_INDUSTRY via getSettingAuto cache
+    demoIndustryFixture = "cybersecurity";
 
     queryHandler = async (sql) => {
       if (/SELECT\s+status\s+FROM\s+connections/i.test(sql)) {
@@ -462,10 +501,10 @@ describe("POST /api/v1/admin/archive-connection — errors", () => {
   });
 
   it("archive __demo__ with no demo_industry setting — skips prompt cascade, still returns 200", async () => {
-    // The readDemoIndustry helper returns null when the setting row is
-    // missing. The endpoint proceeds without touching prompt_collections
+    // readDemoIndustry returns { ok: true, value: null } when the setting
+    // is unset. The endpoint proceeds without touching prompt_collections
     // (no UPDATE fires) and reports prompts: 0.
-    mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([]));
+    demoIndustryFixture = null;
 
     queryHandler = async (sql) => {
       if (/SELECT\s+status\s+FROM\s+connections/i.test(sql)) {
@@ -494,35 +533,75 @@ describe("POST /api/v1/admin/archive-connection — errors", () => {
     expect(promptUpdate).toBeUndefined();
   });
 
-  it("archive __demo__ when demo_industry read throws — logs warn, skips prompt cascade, still returns 200", async () => {
-    // readDemoIndustry catches failures from internalQuery and returns
-    // null. A transient settings read failure should NOT fail the
-    // archive — the connection + entity cascade still commits.
-    mocks.mockInternalQuery.mockImplementation(() =>
-      Promise.reject(new Error("transient settings read failure")),
-    );
+  it("surfaces 500 when settings read fails — no transaction is opened", async () => {
+    // A transient settings read failure must 500 rather than silently
+    // committing with prompts: 0 — otherwise demo prompts stay
+    // `published` while the connection flips to `archived`.
+    throwOnGet = new Error("transient settings read failure");
 
+    const res = await app.fetch(
+      makeReq("archive-connection", { connectionId: "__demo__" }),
+    );
+    expect(res.status).toBe(500);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.error).toBe("archive_failed");
+    expect(typeof body.requestId).toBe("string");
+    // Raw cause must not leak
+    expect(String(body.message ?? "")).not.toContain("transient settings");
+
+    // No BEGIN — the failure happened before the transaction started
+    const sqls = clientQueries.map((q) => q.sql.trim().toUpperCase());
+    expect(sqls.includes("BEGIN")).toBe(false);
+    expect(sqls.includes("ROLLBACK")).toBe(false);
+    expect(sqls.includes("COMMIT")).toBe(false);
+  });
+
+  it("clean rollback — release() called with no argument (client safe to pool)", async () => {
+    // Primary UPDATE fails, but ROLLBACK succeeds. Client is clean, so
+    // release() must be called without an error arg.
     queryHandler = async (sql) => {
       if (/SELECT\s+status\s+FROM\s+connections/i.test(sql)) {
         return { rows: [{ status: "published" }] };
+      }
+      if (/^\s*UPDATE/i.test(sql)) {
+        throw new Error("primary mutation failure");
       }
       return { rows: [] };
     };
 
     const res = await app.fetch(
-      makeReq("archive-connection", { connectionId: "__demo__" }),
+      makeReq("archive-connection", { connectionId: "warehouse" }),
     );
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as {
-      archived: { connection: boolean; entities: number; prompts: number };
-    };
-    expect(body.archived.connection).toBe(true);
-    expect(body.archived.prompts).toBe(0);
+    expect(res.status).toBe(500);
+    expect(clientReleased).toBe(true);
+    expect(clientReleaseArg).toBeUndefined();
+  });
 
-    const promptUpdate = clientQueries.find((q) =>
-      /UPDATE\s+prompt_collections/i.test(q.sql),
+  it("destroys the client on failed ROLLBACK — release(err) called with the rollback error", async () => {
+    // When ROLLBACK itself throws, the socket is dirty. release(err)
+    // tells pg to destroy the client instead of pooling it.
+    queryHandler = async (sql) => {
+      if (/SELECT\s+status\s+FROM\s+connections/i.test(sql)) {
+        return { rows: [{ status: "published" }] };
+      }
+      if (/^\s*UPDATE/i.test(sql)) {
+        throw new Error("primary mutation failure");
+      }
+      if (/^\s*ROLLBACK/i.test(sql)) {
+        throw new Error("ROLLBACK failed — socket dirty");
+      }
+      return { rows: [] };
+    };
+
+    const res = await app.fetch(
+      makeReq("archive-connection", { connectionId: "warehouse" }),
     );
-    expect(promptUpdate).toBeUndefined();
+    expect(res.status).toBe(500);
+    expect(clientReleased).toBe(true);
+    // The argument to release() must be a Error instance — node-postgres
+    // treats any truthy value as "destroy me".
+    expect(clientReleaseArg).toBeInstanceOf(Error);
+    expect((clientReleaseArg as Error).message).toContain("ROLLBACK failed");
   });
 });
 
@@ -538,12 +617,7 @@ describe("POST /api/v1/admin/restore-connection — cascade", () => {
   });
 
   it("restores __demo__ and brings entities + demo prompts back to published", async () => {
-    mocks.mockInternalQuery.mockImplementation((sql: string) => {
-      if (sql.includes("demo_industry")) {
-        return Promise.resolve([{ value: "cybersecurity" }]);
-      }
-      return Promise.resolve([]);
-    });
+    demoIndustryFixture = "cybersecurity";
 
     queryHandler = async (sql) => {
       if (/SELECT\s+status\s+FROM\s+connections/i.test(sql)) {
@@ -702,5 +776,44 @@ describe("POST /api/v1/admin/restore-connection — errors", () => {
     );
     expect(res.status).toBe(404);
     mocks.hasInternalDB = true;
+  });
+
+  it("surfaces 500 when settings read fails — no transaction is opened", async () => {
+    throwOnGet = new Error("transient settings read failure");
+
+    const res = await app.fetch(
+      makeReq("restore-connection", { connectionId: "__demo__" }),
+    );
+    expect(res.status).toBe(500);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body.error).toBe("restore_failed");
+    expect(typeof body.requestId).toBe("string");
+
+    // No transaction opened
+    const sqls = clientQueries.map((q) => q.sql.trim().toUpperCase());
+    expect(sqls.includes("BEGIN")).toBe(false);
+  });
+
+  it("destroys the client on failed ROLLBACK — release(err) called with the rollback error", async () => {
+    queryHandler = async (sql) => {
+      if (/SELECT\s+status\s+FROM\s+connections/i.test(sql)) {
+        return { rows: [{ status: "archived" }] };
+      }
+      if (/^\s*UPDATE/i.test(sql)) {
+        throw new Error("primary mutation failure");
+      }
+      if (/^\s*ROLLBACK/i.test(sql)) {
+        throw new Error("ROLLBACK failed — socket dirty");
+      }
+      return { rows: [] };
+    };
+
+    const res = await app.fetch(
+      makeReq("restore-connection", { connectionId: "warehouse" }),
+    );
+    expect(res.status).toBe(500);
+    expect(clientReleased).toBe(true);
+    expect(clientReleaseArg).toBeInstanceOf(Error);
+    expect((clientReleaseArg as Error).message).toContain("ROLLBACK failed");
   });
 });

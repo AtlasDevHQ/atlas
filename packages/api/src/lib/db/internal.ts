@@ -118,10 +118,14 @@ export function isPlaintextUrl(value: string): boolean {
   return /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(value);
 }
 
-/** Typed interface for the internal pg.Pool — avoids importing pg at module level. */
+/**
+ * Typed interface for the internal pg.Pool — avoids importing pg at
+ * module level. Passing a truthy `err` to `release` tells node-postgres
+ * to destroy the socket instead of returning it to the pool.
+ */
 export interface InternalPoolClient {
   query(sql: string, params?: unknown[]): Promise<{ rows: Record<string, unknown>[] }>;
-  release(): void;
+  release(err?: Error): void;
 }
 
 export interface InternalPool {
@@ -1376,6 +1380,9 @@ export async function cascadeWorkspaceDelete(orgId: string): Promise<{
   // Fallback: raw pool with manual transaction
   const pool = getInternalDB();
   const client = await pool.connect();
+  // Destroy the client on a failed ROLLBACK so a dirty socket doesn't
+  // poison the next borrower.
+  let rollbackErr: Error | null = null;
   try {
     await client.query("BEGIN");
     const [convResult, seResult, lpResult, qsResult, stResult, settingsResult] = await Promise.all([
@@ -1396,12 +1403,16 @@ export async function cascadeWorkspaceDelete(orgId: string): Promise<{
       settings: settingsResult.rows.length,
     };
   } catch (err) {
-    await client.query("ROLLBACK").catch(() => {
-      // intentionally ignored: ROLLBACK failure after a failed transaction is non-actionable
+    await client.query("ROLLBACK").catch((rbErr: unknown) => {
+      rollbackErr = rbErr instanceof Error ? rbErr : new Error(String(rbErr));
+      log.warn(
+        { orgId, err: rollbackErr.message },
+        "ROLLBACK failed during cascadeWorkspaceDelete — client will be destroyed",
+      );
     });
     throw err;
   } finally {
-    client.release();
+    client.release(rollbackErr ?? undefined);
   }
 }
 

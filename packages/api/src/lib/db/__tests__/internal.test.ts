@@ -33,6 +33,9 @@ function createMockPool() {
     onEvents: [] as { event: "error"; listener: (err: Error) => void }[],
     connectCount: 0,
     releaseCount: 0,
+    // The last argument passed to `client.release(err?)`. Truthy means pg
+    // destroys the socket instead of pooling it.
+    lastReleaseArg: undefined as unknown,
   };
   let queryResult: { rows: Record<string, unknown>[] } = { rows: [] };
   let queryError: Error | null = null;
@@ -52,7 +55,10 @@ function createMockPool() {
       calls.connectCount++;
       return {
         query: queryFn,
-        release() { calls.releaseCount++; },
+        release(err?: Error) {
+          calls.releaseCount++;
+          calls.lastReleaseArg = err;
+        },
       };
     },
     on(event: "error", listener: (err: Error) => void) {
@@ -533,7 +539,10 @@ describe("cascadeWorkspaceDelete()", () => {
             if (queryNum === 2) throw new Error("relation does not exist");
             return { rows: [] };
           },
-          release() { calls.releaseCount++; },
+          release(err?: Error) {
+            calls.releaseCount++;
+            calls.lastReleaseArg = err;
+          },
         };
       },
       on: txPool.on,
@@ -546,6 +555,48 @@ describe("cascadeWorkspaceDelete()", () => {
     const rollbackQuery = calls.queries.find((q) => q.sql === "ROLLBACK");
     expect(rollbackQuery).toBeDefined();
     expect(calls.releaseCount).toBe(1);
+    // Clean ROLLBACK — client pooled (no error arg)
+    expect(calls.lastReleaseArg).toBeUndefined();
+  });
+
+  it("destroys the client on failed ROLLBACK — release(err) called with the rollback error", async () => {
+    // Primary query fails AND ROLLBACK itself throws. The dirty socket
+    // must be destroyed via release(err) rather than pooled.
+    const { pool: txPool } = createMockPool();
+    const calls = {
+      queries: [] as { sql: string }[],
+      releaseCount: 0,
+      lastReleaseArg: undefined as unknown,
+    };
+    let queryNum = 0;
+    const failPool = {
+      ...txPool,
+      async connect() {
+        return {
+          async query(sql: string) {
+            calls.queries.push({ sql });
+            queryNum++;
+            // Let BEGIN pass; fail on first cascade query; also fail ROLLBACK
+            if (queryNum === 2) throw new Error("primary mutation failure");
+            if (sql.trim().toUpperCase() === "ROLLBACK") {
+              throw new Error("ROLLBACK failed — socket dirty");
+            }
+            return { rows: [] };
+          },
+          release(err?: Error) {
+            calls.releaseCount++;
+            calls.lastReleaseArg = err;
+          },
+        };
+      },
+    };
+    _resetPool(failPool);
+
+    await expect(cascadeWorkspaceDelete("org-fail")).rejects.toThrow("primary mutation failure");
+
+    expect(calls.releaseCount).toBe(1);
+    expect(calls.lastReleaseArg).toBeInstanceOf(Error);
+    expect((calls.lastReleaseArg as Error).message).toContain("ROLLBACK failed");
   });
 });
 

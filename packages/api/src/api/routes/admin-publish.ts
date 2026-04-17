@@ -20,7 +20,8 @@
 import { createRoute, z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
-import { internalQuery, getInternalDB } from "@atlas/api/lib/db/internal";
+import { getInternalDB } from "@atlas/api/lib/db/internal";
+import { readDemoIndustry } from "@atlas/api/lib/demo-industry";
 import {
   applyTombstones,
   promoteDraftEntities,
@@ -142,32 +143,33 @@ adminPublish.openapi(publishRoute, async (c) =>
     const archiveIds = archiveConnections ?? [];
     const archiveDemo = archiveIds.includes(DEMO_CONNECTION_ID);
 
-    // ── Pre-transaction: resolve demo industry if we'll archive demo ─
-    // Kept outside the transaction because it's a simple read that informs
-    // whether we run the builtin-demo-prompts archive step.
+    // Resolve demo industry before opening the transaction. A read
+    // failure must 500 here — otherwise publish would commit with
+    // prompts = 0 and demo prompts would stay published after archive.
     let demoIndustry: string | null = null;
     if (archiveDemo) {
-      try {
-        const rows = await internalQuery<{ value: string }>(
-          `SELECT value FROM settings WHERE org_id = $1 AND key = 'demo_industry'`,
-          [orgId],
-        );
-        demoIndustry = rows[0]?.value ?? null;
-      } catch (err) {
-        log.warn(
+      const industryResult = readDemoIndustry(orgId, requestId);
+      if (!industryResult.ok) {
+        return c.json(
           {
-            err: err instanceof Error ? err.message : String(err),
-            orgId,
+            error: "publish_failed",
+            message:
+              "Publish failed — could not read demo industry setting. See server logs for details.",
             requestId,
           },
-          "Failed to read demo_industry setting — demo prompts will not be archived",
+          500,
         );
       }
+      demoIndustry = industryResult.value;
     }
 
     // ── Transaction ────────────────────────────────────────────────
     const pool = getInternalDB();
     const client = await pool.connect();
+    // pg destroys the socket when `release(err)` is called with a truthy
+    // arg. We need to destroy on a failed ROLLBACK so a dirty client
+    // doesn't poison the next borrower.
+    let rollbackErr: Error | null = null;
     // Values are assigned inside the try block before either the 200
     // response or a 500 (which doesn't read them) — start as numbers for
     // type inference without seeding a read-before-write warning.
@@ -263,17 +265,15 @@ adminPublish.openapi(publishRoute, async (c) =>
 
       await client.query("COMMIT");
     } catch (err) {
-      await client.query("ROLLBACK").catch((rollbackErr: unknown) => {
+      await client.query("ROLLBACK").catch((rbErr: unknown) => {
+        rollbackErr = rbErr instanceof Error ? rbErr : new Error(String(rbErr));
         log.warn(
           {
-            err:
-              rollbackErr instanceof Error
-                ? rollbackErr.message
-                : String(rollbackErr),
+            err: rollbackErr.message,
             orgId,
             requestId,
           },
-          "ROLLBACK failed after publish error",
+          "ROLLBACK failed after publish error — client will be destroyed",
         );
       });
       log.error(
@@ -294,7 +294,7 @@ adminPublish.openapi(publishRoute, async (c) =>
         500,
       );
     } finally {
-      client.release();
+      client.release(rollbackErr ?? undefined);
     }
 
     // ── Audit + response ────────────────────────────────────────────

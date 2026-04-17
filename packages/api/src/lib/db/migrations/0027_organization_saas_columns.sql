@@ -1,4 +1,4 @@
--- Backfill SaaS columns on the Better Auth organization table.
+-- 0027 — Backfill SaaS columns on the Better Auth organization table.
 --
 -- Background (#1472): 0000_baseline.sql and 0020_plan_tier_rename.sql wrap
 -- their organization-table ALTERs in `IF EXISTS (... table_name = 'organization')`.

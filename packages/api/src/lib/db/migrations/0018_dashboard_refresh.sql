@@ -1,4 +1,4 @@
--- Dashboard auto-refresh: add scheduler pickup columns
+-- 0018 — Dashboard auto-refresh: add scheduler pickup columns
 ALTER TABLE dashboards ADD COLUMN IF NOT EXISTS last_refresh_at TIMESTAMPTZ;
 ALTER TABLE dashboards ADD COLUMN IF NOT EXISTS next_refresh_at TIMESTAMPTZ;
 

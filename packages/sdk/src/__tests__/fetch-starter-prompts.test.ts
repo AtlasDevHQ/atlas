@@ -1,4 +1,4 @@
-import { describe, test, expect, afterAll, mock } from "bun:test";
+import { describe, test, expect, afterAll, afterEach, mock } from "bun:test";
 import { fetchStarterPrompts, type FetchStarterPromptsConfig } from "../fetch-starter-prompts";
 
 type FetchCall = [input: string | URL | Request, init?: RequestInit];
@@ -6,6 +6,16 @@ type FetchCall = [input: string | URL | Request, init?: RequestInit];
 const originalFetch = globalThis.fetch;
 afterAll(() => {
   globalThis.fetch = originalFetch;
+});
+
+const originalWarn = console.warn;
+function installWarnSpy() {
+  const spy = mock((..._args: unknown[]) => {});
+  console.warn = spy as typeof console.warn;
+  return spy;
+}
+afterEach(() => {
+  console.warn = originalWarn;
 });
 
 function installFetchResponse(response: Response) {
@@ -66,7 +76,7 @@ describe("fetchStarterPrompts — happy path", () => {
     expect(String(calls[0]?.[0])).toBe("https://api.example.com/api/v1/starter-prompts?limit=8");
   });
 
-  test("uses a default limit when none is supplied", async () => {
+  test("uses the documented default limit of 6 when none is supplied", async () => {
     const calls = installFetchResponse(
       new Response(JSON.stringify({ prompts: [], total: 0 }), {
         status: 200,
@@ -76,7 +86,23 @@ describe("fetchStarterPrompts — happy path", () => {
 
     await fetchStarterPrompts(BASE_CONFIG);
 
-    expect(String(calls[0]?.[0])).toContain("limit=");
+    expect(String(calls[0]?.[0])).toContain("limit=6");
+  });
+
+  test("defaults headers to {} when omitted", async () => {
+    const calls = installFetchResponse(
+      new Response(JSON.stringify({ prompts: [], total: 0 }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    await fetchStarterPrompts({
+      apiUrl: "https://api.example.com",
+      credentials: "same-origin",
+    });
+
+    expect(calls[0]?.[1]?.headers).toEqual({});
   });
 
   test("forwards credentials and headers to fetch", async () => {
@@ -137,19 +163,41 @@ describe("fetchStarterPrompts — malformed happy-path bodies", () => {
     const result = await fetchStarterPrompts(BASE_CONFIG);
     expect(result).toEqual([]);
   });
+
+  test("returns [] and warns when a 200 response has a malformed JSON body", async () => {
+    installFetchResponse(
+      new Response("<html>not json</html>", {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const warn = installWarnSpy();
+
+    const result = await fetchStarterPrompts(BASE_CONFIG);
+
+    expect(result).toEqual([]);
+    expect(warn.mock.calls.length).toBeGreaterThan(0);
+    const message = String(warn.mock.calls[0]?.[0]);
+    expect(message).toMatch(/200/);
+    expect(message).toMatch(/not valid JSON/);
+  });
 });
 
 describe("fetchStarterPrompts — 5xx soft-fail", () => {
-  test("returns [] on 500 Internal Server Error", async () => {
+  test("returns [] on 500 and logs the requestId for ops correlation", async () => {
     installFetchResponse(
       new Response(JSON.stringify({ error: "boom", requestId: "req-500" }), {
         status: 500,
         headers: { "Content-Type": "application/json" },
       }),
     );
+    const warn = installWarnSpy();
 
     const result = await fetchStarterPrompts(BASE_CONFIG);
+
     expect(result).toEqual([]);
+    expect(warn.mock.calls.length).toBe(1);
+    expect(String(warn.mock.calls[0]?.[0])).toMatch(/req-500/);
   });
 
   test("returns [] on 503 Service Unavailable with non-JSON proxy body", async () => {
@@ -166,7 +214,7 @@ describe("fetchStarterPrompts — 5xx soft-fail", () => {
 });
 
 describe("fetchStarterPrompts — 4xx throws", () => {
-  test("throws on 401 with requestId in the message", async () => {
+  test("throws on 401 with status and requestId in a single message", async () => {
     installFetchResponse(
       new Response(JSON.stringify({ error: "unauthorized", requestId: "req-abc" }), {
         status: 401,
@@ -174,8 +222,10 @@ describe("fetchStarterPrompts — 4xx throws", () => {
       }),
     );
 
-    await expect(fetchStarterPrompts(BASE_CONFIG)).rejects.toThrow(/401/);
-    await expect(fetchStarterPrompts(BASE_CONFIG)).rejects.toThrow(/req-abc/);
+    const err = await fetchStarterPrompts(BASE_CONFIG).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toMatch(/401/);
+    expect((err as Error).message).toMatch(/req-abc/);
   });
 
   test("throws on 403 without requestId when body is not JSON", async () => {
@@ -183,9 +233,9 @@ describe("fetchStarterPrompts — 4xx throws", () => {
       new Response("forbidden", { status: 403, statusText: "Forbidden" }),
     );
 
-    const promise = fetchStarterPrompts(BASE_CONFIG);
-    await expect(promise).rejects.toThrow(/403/);
-    await expect(fetchStarterPrompts(BASE_CONFIG)).rejects.not.toThrow(/requestId/);
+    const err = await fetchStarterPrompts(BASE_CONFIG).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toBe("Starter prompts 403 Forbidden");
   });
 
   test("throws on 429 rate limit", async () => {
@@ -199,20 +249,55 @@ describe("fetchStarterPrompts — 4xx throws", () => {
 
     await expect(fetchStarterPrompts(BASE_CONFIG)).rejects.toThrow(/429/);
   });
+
+  test("falls back to '(no status text)' when statusText is empty", async () => {
+    installFetchResponse(new Response("x", { status: 418 }));
+
+    const err = await fetchStarterPrompts(BASE_CONFIG).catch((e: unknown) => e);
+    expect((err as Error).message).toContain("(no status text)");
+  });
+
+  test("ignores requestId when body is JSON but not an object (e.g. 'null')", async () => {
+    installFetchResponse(
+      new Response("null", {
+        status: 400,
+        statusText: "Bad Request",
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    const err = await fetchStarterPrompts(BASE_CONFIG).catch((e: unknown) => e);
+    expect((err as Error).message).toBe("Starter prompts 400 Bad Request");
+  });
 });
 
 describe("fetchStarterPrompts — network failure", () => {
   test("throws with wrapped cause when fetch itself rejects", async () => {
     const networkError = new TypeError("Failed to fetch");
     installFetchError(networkError);
+    const warn = installWarnSpy();
 
-    try {
-      await fetchStarterPrompts(BASE_CONFIG);
-      throw new Error("expected fetchStarterPrompts to throw");
-    } catch (err) {
-      expect(err).toBeInstanceOf(Error);
-      expect((err as Error).message).toMatch(/Failed to fetch/);
-      expect((err as Error).cause).toBe(networkError);
-    }
+    const err = await fetchStarterPrompts(BASE_CONFIG).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toMatch(/Failed to fetch/);
+    expect((err as Error).cause).toBe(networkError);
+    expect(warn.mock.calls.length).toBe(1);
+  });
+
+  test("does not warn when the caller aborts (AbortError)", async () => {
+    const abortError = new DOMException("The operation was aborted.", "AbortError");
+    installFetchError(abortError);
+    const warn = installWarnSpy();
+    const controller = new AbortController();
+    controller.abort();
+
+    const err = await fetchStarterPrompts({
+      ...BASE_CONFIG,
+      signal: controller.signal,
+    }).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).cause).toBe(abortError);
+    expect(warn.mock.calls.length).toBe(0);
   });
 });

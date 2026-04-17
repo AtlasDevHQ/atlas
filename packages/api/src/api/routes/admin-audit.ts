@@ -13,7 +13,7 @@ import { HTTPException } from "hono/http-exception";
 import { createLogger } from "@atlas/api/lib/logger";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { AuthContext } from "@atlas/api/lib/effect/services";
-import { internalQuery } from "@atlas/api/lib/db/internal";
+import { internalQuery, queryEffect } from "@atlas/api/lib/db/internal";
 import { ErrorSchema, AuthErrorSchema, parsePagination, escapeIlike } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 
@@ -475,12 +475,12 @@ adminAudit.openapi(auditVolumeRoute, async (c) => {
       throw new HTTPException(400, { res: Response.json({ error: "invalid_request", message: range.error, requestId: c.get("requestId") as string }, { status: 400 }) });
     }
 
-    const rows = yield* Effect.promise(() => internalQuery<{ day: string; count: string; errors: string }>(
+    const rows = yield* queryEffect<{ day: string; count: string; errors: string }>(
       `SELECT DATE(timestamp) as day, COUNT(*) as count, COUNT(*) FILTER (WHERE NOT success) as errors
        FROM audit_log ${range.where}
        GROUP BY DATE(timestamp) ORDER BY day`,
       range.params,
-    ));
+    );
 
     return c.json({
       volume: rows.map((r) => ({
@@ -501,7 +501,7 @@ adminAudit.openapi(auditSlowRoute, async (c) => {
       throw new HTTPException(400, { res: Response.json({ error: "invalid_request", message: range.error, requestId: c.get("requestId") as string }, { status: 400 }) });
     }
 
-    const rows = yield* Effect.promise(() => internalQuery<{
+    const rows = yield* queryEffect<{
       query: string; avg_duration: string; max_duration: string; count: string;
     }>(
       `SELECT LEFT(sql, 200) as query, ROUND(AVG(duration_ms)) as avg_duration,
@@ -509,7 +509,7 @@ adminAudit.openapi(auditSlowRoute, async (c) => {
        FROM audit_log ${range.where}
        GROUP BY LEFT(sql, 200) ORDER BY AVG(duration_ms) DESC LIMIT 20`,
       range.params,
-    ));
+    );
 
     return c.json({
       queries: rows.map((r) => ({
@@ -531,7 +531,7 @@ adminAudit.openapi(auditFrequentRoute, async (c) => {
       throw new HTTPException(400, { res: Response.json({ error: "invalid_request", message: range.error, requestId: c.get("requestId") as string }, { status: 400 }) });
     }
 
-    const rows = yield* Effect.promise(() => internalQuery<{
+    const rows = yield* queryEffect<{
       query: string; count: string; avg_duration: string; error_count: string;
     }>(
       `SELECT LEFT(sql, 200) as query, COUNT(*) as count,
@@ -540,7 +540,7 @@ adminAudit.openapi(auditFrequentRoute, async (c) => {
        FROM audit_log ${range.where}
        GROUP BY LEFT(sql, 200) ORDER BY COUNT(*) DESC LIMIT 20`,
       range.params,
-    ));
+    );
 
     return c.json({
       queries: rows.map((r) => ({
@@ -563,13 +563,13 @@ adminAudit.openapi(auditErrorsRoute, async (c) => {
     }
 
     const errorCondition = `${range.where} AND NOT success`;
-    const rows = yield* Effect.promise(() => internalQuery<{ error: string; count: string }>(
+    const rows = yield* queryEffect<{ error: string; count: string }>(
       `SELECT COALESCE(LEFT(error, 150), 'Unknown error') as error, COUNT(*) as count
        FROM audit_log ${errorCondition}
        GROUP BY COALESCE(LEFT(error, 150), 'Unknown error')
        ORDER BY COUNT(*) DESC LIMIT 20`,
       range.params,
-    ));
+    );
 
     return c.json({
       errors: rows.map((r) => ({
@@ -589,7 +589,7 @@ adminAudit.openapi(auditUsersRoute, async (c) => {
       throw new HTTPException(400, { res: Response.json({ error: "invalid_request", message: range.error, requestId: c.get("requestId") as string }, { status: 400 }) });
     }
 
-    const rows = yield* Effect.promise(() => internalQuery<{
+    const rows = yield* queryEffect<{
       user_id: string; user_email: string | null; count: string;
       avg_duration: string; error_count: string;
     }>(
@@ -602,7 +602,7 @@ adminAudit.openapi(auditUsersRoute, async (c) => {
        GROUP BY COALESCE(a.user_id, 'anonymous'), u.email
        ORDER BY COUNT(*) DESC LIMIT 50`,
       range.params,
-    ));
+    );
 
     return c.json({
       users: rows.map((r) => {

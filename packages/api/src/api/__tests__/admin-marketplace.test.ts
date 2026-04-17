@@ -124,17 +124,25 @@ mock.module("@atlas/ee/auth/ip-allowlist", () => ({
 // --- Internal DB mock ---
 
 let mockHasInternalDB = true;
-let mockQueryResults: Map<string, unknown[]> = new Map();
+// Map SQL fragment → rows (normal case) or Error (rejection). Using a union
+// means tests can set `mockQueryResults.set("prompt_catalog", new Error("db down"))`
+// and drive both the internalQuery and queryEffect mocks down the failure path.
+let mockQueryResults: Map<string, unknown[] | Error> = new Map();
 
-function setQueryResult(pattern: string, rows: unknown[]) {
+function setQueryResult(pattern: string, rows: unknown[] | Error) {
   mockQueryResults.set(pattern, rows);
 }
 
-function findQueryResult(sql: string): unknown[] {
+function findQueryResult(sql: string): unknown[] | Error {
   for (const [pattern, rows] of mockQueryResults) {
     if (sql.includes(pattern)) return rows;
   }
   return [];
+}
+
+function invokeInternalQueryMock(sql: string): Promise<unknown[]> {
+  const result = findQueryResult(sql);
+  return result instanceof Error ? Promise.reject(result) : Promise.resolve(result);
 }
 
 mock.module("@atlas/api/lib/db/internal", () => ({
@@ -144,7 +152,12 @@ mock.module("@atlas/api/lib/db/internal", () => ({
     end: async () => {},
     on: () => {},
   }),
-  internalQuery: (_sql: string, _params?: unknown[]) => Promise.resolve(findQueryResult(_sql)),
+  internalQuery: (sql: string, _params?: unknown[]) => invokeInternalQueryMock(sql),
+  queryEffect: (sql: string) => ({
+    [Symbol.iterator]: function* (): Generator<unknown, unknown> {
+      return yield { _tag: "EffectPromise", fn: () => invokeInternalQueryMock(sql) };
+    },
+  }),
   internalExecute: () => {},
   setWorkspaceRegion: mock(async () => {}),
   insertSemanticAmendment: mock(async () => "mock-amendment-id"),

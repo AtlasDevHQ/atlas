@@ -134,7 +134,15 @@ mock.module("@atlas/api/lib/auth/detect", () => ({
 // --- Internal DB mock ---
 
 let mockHasInternalDB = true;
-let mockInternalQueryResult: unknown[] = [];
+// Either a data array (resolves) or an Error (rejects) — shared between the
+// internalQuery and queryEffect mocks so tests can exercise DB rejection paths.
+let mockInternalQueryResult: unknown[] | Error = [];
+
+function invokeInternalQueryMock(): Promise<unknown[]> {
+  return mockInternalQueryResult instanceof Error
+    ? Promise.reject(mockInternalQueryResult)
+    : Promise.resolve(mockInternalQueryResult);
+}
 
 mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => mockHasInternalDB,
@@ -143,7 +151,12 @@ mock.module("@atlas/api/lib/db/internal", () => ({
     end: async () => {},
     on: () => {},
   }),
-  internalQuery: () => Promise.resolve(mockInternalQueryResult),
+  internalQuery: invokeInternalQueryMock,
+  queryEffect: () => ({
+    [Symbol.iterator]: function* (): Generator<unknown, unknown> {
+      return yield { _tag: "EffectPromise", fn: invokeInternalQueryMock };
+    },
+  }),
   internalExecute: () => {},
   getWorkspaceRegion: () => Promise.resolve(null),
   setWorkspaceRegion: () => Promise.resolve({ assigned: true }),

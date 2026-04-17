@@ -10,7 +10,7 @@ import { createRoute, z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { AuthContext } from "@atlas/api/lib/effect/services";
-import { internalQuery } from "@atlas/api/lib/db/internal";
+import { internalQuery, queryEffect } from "@atlas/api/lib/db/internal";
 import { detectAuthMode } from "@atlas/api/lib/auth/detect";
 import { ErrorSchema, AuthErrorSchema, parsePagination, escapeIlike } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
@@ -250,7 +250,7 @@ adminSessions.openapi(deleteSessionRoute, async (c) => {
     }
 
     // Only delete if the session belongs to a member of the active org
-    const deleted = yield* Effect.promise(() => internalQuery<{ id: string }>(
+    const deleted = yield* queryEffect<{ id: string }>(
       `DELETE FROM session s
        USING member m
        WHERE s.id = $1
@@ -258,7 +258,7 @@ adminSessions.openapi(deleteSessionRoute, async (c) => {
          AND m."organizationId" = $2
        RETURNING s.id`,
       [sessionId, orgId],
-    ));
+    );
     if (deleted.length === 0) {
       return c.json({ error: "not_found", message: "Session not found.", requestId }, 404);
     }
@@ -280,7 +280,7 @@ adminSessions.openapi(deleteUserSessionsRoute, async (c) => {
     }
 
     // Only delete sessions where the user is a member of the active org
-    const deleted = yield* Effect.promise(() => internalQuery<{ id: string }>(
+    const deleted = yield* queryEffect<{ id: string }>(
       `DELETE FROM session s
        USING member m
        WHERE s."userId" = $1
@@ -288,7 +288,7 @@ adminSessions.openapi(deleteUserSessionsRoute, async (c) => {
          AND m."organizationId" = $2
        RETURNING s.id`,
       [userId, orgId],
-    ));
+    );
     if (deleted.length === 0) {
       return c.json({ error: "not_found", message: "No sessions found for this user.", requestId }, 404);
     }

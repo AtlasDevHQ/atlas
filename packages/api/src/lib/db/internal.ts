@@ -436,6 +436,21 @@ export async function internalQuery<T extends Record<string, unknown>>(
   return result.rows as T[];
 }
 
+/**
+ * `Effect.promise(() => internalQuery(...))` hides DB rejections in the defect
+ * channel; route handlers should use `queryEffect` so failures land in the
+ * typed `E: Error` channel and can be caught or mapped downstream.
+ */
+export function queryEffect<T extends Record<string, unknown>>(
+  sqlStr: string,
+  params?: unknown[],
+): Effect.Effect<T[], Error> {
+  return Effect.tryPromise({
+    try: () => internalQuery<T>(sqlStr, params),
+    catch: normalizeError,
+  });
+}
+
 let _consecutiveFailures = 0;
 const MAX_CONSECUTIVE_FAILURES = 5;
 let _circuitOpen = false;

@@ -135,5 +135,6 @@ export {
   InternalDB,
   makeInternalDBLive,
   createInternalDBTestLayer,
+  queryEffect,
   type InternalDBShape,
 } from "@atlas/api/lib/db/internal";

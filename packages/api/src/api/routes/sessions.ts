@@ -13,7 +13,7 @@ import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
 import { validationHook } from "./validation-hook";
 import { z } from "zod";
 import { createLogger } from "@atlas/api/lib/logger";
-import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
+import { hasInternalDB, queryEffect } from "@atlas/api/lib/db/internal";
 import { detectAuthMode } from "@atlas/api/lib/auth/detect";
 import { ErrorSchema } from "./shared-schemas";
 import { standardAuth, requestContext, type AuthEnv } from "./middleware";
@@ -142,7 +142,7 @@ sessions.openapi(listSessionsRoute, async (c) => {
 
     const userId = user.id;
 
-    const rows = yield* Effect.promise(() => internalQuery<{
+    const rows = yield* queryEffect<{
       id: string;
       createdAt: string;
       updatedAt: string;
@@ -156,7 +156,7 @@ sessions.openapi(listSessionsRoute, async (c) => {
        ORDER BY "updatedAt" DESC
        LIMIT 100`,
       [userId],
-    ));
+    );
 
     return c.json({
       sessions: rows.map((r) => ({
@@ -186,16 +186,16 @@ sessions.openapi(revokeSessionRoute, async (c) => {
 
     // Atomic delete scoped to the current user — returns empty if
     // the session doesn't exist or belongs to another user.
-    const deleted = yield* Effect.promise(() => internalQuery<{ id: string }>(
+    const deleted = yield* queryEffect<{ id: string }>(
       `DELETE FROM session WHERE id = $1 AND "userId" = $2 RETURNING id`,
       [sessionId, userId],
-    ));
+    );
     if (deleted.length === 0) {
       // Distinguish "not found" from "wrong user" for a clear error message
-      const exists = yield* Effect.promise(() => internalQuery<{ userId: string }>(
+      const exists = yield* queryEffect<{ userId: string }>(
         `SELECT "userId" FROM session WHERE id = $1`,
         [sessionId],
-      ));
+      );
       if (exists.length === 0) {
         return c.json({ error: "not_found", message: "Session not found." }, 404);
       }

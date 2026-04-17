@@ -12,6 +12,7 @@ import {
   closeInternalDB,
   internalQuery,
   internalExecute,
+  queryEffect,
   migrateInternalDB,
   loadSavedConnections,
   cascadeWorkspaceDelete,
@@ -167,6 +168,57 @@ describe("internal DB module", () => {
       await expect(internalQuery("SELECT * FROM missing")).rejects.toThrow(
         "relation does not exist",
       );
+    });
+  });
+
+  describe("queryEffect()", () => {
+    it("resolves with typed rows on success", async () => {
+      process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/atlas";
+      const { pool } = createMockPool();
+      pool._setResult({ rows: [{ id: "abc", count: 42 }] });
+      _resetPool(pool);
+
+      const rows = await Effect.runPromise(
+        queryEffect<{ id: string; count: number }>("SELECT id, count FROM t WHERE id = $1", ["abc"]),
+      );
+      expect(rows).toEqual([{ id: "abc", count: 42 }]);
+    });
+
+    it("surfaces rejection in the typed error channel", async () => {
+      process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/atlas";
+      const { pool } = createMockPool();
+      pool._setError(new Error("connection terminated"));
+      _resetPool(pool);
+
+      const exit = await Effect.runPromiseExit(queryEffect("SELECT 1"));
+      expect(exit._tag).toBe("Failure");
+      // Fail cause — the typed E: Error channel, not a defect
+      const result = await Effect.runPromise(Effect.either(queryEffect("SELECT 1")));
+      expect(result._tag).toBe("Left");
+      if (result._tag === "Left") {
+        expect(result.left).toBeInstanceOf(Error);
+        expect(result.left.message).toBe("connection terminated");
+      }
+    });
+
+    it("normalizes non-Error thrown values", async () => {
+      process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/atlas";
+      const { pool: base } = createMockPool();
+      const pool = {
+        ...base,
+        async query() {
+          // Throw a plain string — queryEffect should normalize via normalizeError
+          throw "raw string thrown";
+        },
+      };
+      _resetPool(pool);
+
+      const result = await Effect.runPromise(Effect.either(queryEffect("SELECT 1")));
+      expect(result._tag).toBe("Left");
+      if (result._tag === "Left") {
+        expect(result.left).toBeInstanceOf(Error);
+        expect(result.left.message).toBe("raw string thrown");
+      }
     });
   });
 

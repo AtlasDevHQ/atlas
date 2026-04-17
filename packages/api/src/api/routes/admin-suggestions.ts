@@ -9,7 +9,7 @@ import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { AuthContext } from "@atlas/api/lib/effect/services";
-import { internalQuery, deleteSuggestion } from "@atlas/api/lib/db/internal";
+import { deleteSuggestion, queryEffect } from "@atlas/api/lib/db/internal";
 import { toQuerySuggestion } from "@atlas/api/lib/learn/suggestion-helpers";
 import type { QuerySuggestionRow } from "@atlas/api/lib/db/internal";
 import { ErrorSchema, AuthErrorSchema, parsePagination, createIdParamSchema, createListResponseSchema } from "./shared-schemas";
@@ -138,15 +138,15 @@ adminSuggestions.openapi(listSuggestionsRoute, async (c) => {
     params.push(limit, offset);
     const limitIdx = idx;
     const offsetIdx = idx + 1;
-    const rows = yield* Effect.promise(() => internalQuery<QuerySuggestionRow>(
+    const rows = yield* queryEffect<QuerySuggestionRow>(
       `SELECT * FROM query_suggestions ${where} ORDER BY score DESC LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
       params
-    ));
+    );
 
-    const countRows = yield* Effect.promise(() => internalQuery<{ count: string }>(
+    const countRows = yield* queryEffect<{ count: string }>(
       `SELECT COUNT(*) as count FROM query_suggestions ${where}`,
       filterParams
-    ));
+    );
 
     const total = parseInt(countRows[0]?.count ?? "0", 10);
 

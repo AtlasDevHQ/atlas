@@ -12,7 +12,7 @@ import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
-import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
+import { hasInternalDB, queryEffect } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 import {
   triggerMigrationExecution,
@@ -439,25 +439,23 @@ adminResidency.openapi(getMigrationStatusRoute, async (c) => {
         return c.json({ error: "not_available", message: "Migration tracking requires an internal database.", requestId }, 404);
       }
 
-      const rows = yield* Effect.promise(() =>
-        internalQuery<{
-          id: string;
-          workspace_id: string;
-          source_region: string;
-          target_region: string;
-          status: string;
-          requested_by: string | null;
-          requested_at: string;
-          completed_at: string | null;
-          error_message: string | null;
-        }>(
-          `SELECT id, workspace_id, source_region, target_region, status, requested_by, requested_at, completed_at, error_message
-           FROM region_migrations
-           WHERE workspace_id = $1
-           ORDER BY requested_at DESC
-           LIMIT 1`,
-          [orgId],
-        ),
+      const rows = yield* queryEffect<{
+        id: string;
+        workspace_id: string;
+        source_region: string;
+        target_region: string;
+        status: string;
+        requested_by: string | null;
+        requested_at: string;
+        completed_at: string | null;
+        error_message: string | null;
+      }>(
+        `SELECT id, workspace_id, source_region, target_region, status, requested_by, requested_at, completed_at, error_message
+         FROM region_migrations
+         WHERE workspace_id = $1
+         ORDER BY requested_at DESC
+         LIMIT 1`,
+        [orgId],
       );
 
       const row = rows[0];
@@ -534,13 +532,11 @@ adminResidency.openapi(requestMigrationRoute, async (c) => {
       }
 
       // Check for existing pending/in_progress migration
-      const existing = yield* Effect.promise(() =>
-        internalQuery<{ id: string; status: string }>(
-          `SELECT id, status FROM region_migrations
-           WHERE workspace_id = $1 AND status IN ('pending', 'in_progress')
-           LIMIT 1`,
-          [orgId],
-        ),
+      const existing = yield* queryEffect<{ id: string; status: string }>(
+        `SELECT id, status FROM region_migrations
+         WHERE workspace_id = $1 AND status IN ('pending', 'in_progress')
+         LIMIT 1`,
+        [orgId],
       );
       if (existing.length > 0) {
         return c.json({
@@ -551,13 +547,11 @@ adminResidency.openapi(requestMigrationRoute, async (c) => {
       }
 
       // Rate limit: one migration per 30 days
-      const recent = yield* Effect.promise(() =>
-        internalQuery<{ id: string }>(
-          `SELECT id FROM region_migrations
-           WHERE workspace_id = $1 AND requested_at > NOW() - INTERVAL '30 days'
-           LIMIT 1`,
-          [orgId],
-        ),
+      const recent = yield* queryEffect<{ id: string }>(
+        `SELECT id FROM region_migrations
+         WHERE workspace_id = $1 AND requested_at > NOW() - INTERVAL '30 days'
+         LIMIT 1`,
+        [orgId],
       );
       if (recent.length > 0) {
         return c.json({
@@ -573,12 +567,10 @@ adminResidency.openapi(requestMigrationRoute, async (c) => {
 
       const requestedBy = user?.id ?? null;
 
-      yield* Effect.promise(() =>
-        internalQuery(
-          `INSERT INTO region_migrations (id, workspace_id, source_region, target_region, status, requested_by, requested_at)
-           VALUES ($1, $2, $3, $4, 'pending', $5, $6)`,
-          [migrationId, orgId, assignment.region, targetRegion, requestedBy, now],
-        ),
+      yield* queryEffect(
+        `INSERT INTO region_migrations (id, workspace_id, source_region, target_region, status, requested_by, requested_at)
+         VALUES ($1, $2, $3, $4, 'pending', $5, $6)`,
+        [migrationId, orgId, assignment.region, targetRegion, requestedBy, now],
       );
 
       log.info(
@@ -638,22 +630,20 @@ adminResidency.openapi(retryMigrationRoute, async (c) => {
       triggerMigrationExecution(id);
 
       // Fetch updated migration to return
-      const rows = yield* Effect.promise(() =>
-        internalQuery<{
-          id: string;
-          workspace_id: string;
-          source_region: string;
-          target_region: string;
-          status: string;
-          requested_by: string | null;
-          requested_at: string;
-          completed_at: string | null;
-          error_message: string | null;
-        }>(
-          `SELECT id, workspace_id, source_region, target_region, status, requested_by, requested_at, completed_at, error_message
-           FROM region_migrations WHERE id = $1 AND workspace_id = $2`,
-          [id, orgId],
-        ),
+      const rows = yield* queryEffect<{
+        id: string;
+        workspace_id: string;
+        source_region: string;
+        target_region: string;
+        status: string;
+        requested_by: string | null;
+        requested_at: string;
+        completed_at: string | null;
+        error_message: string | null;
+      }>(
+        `SELECT id, workspace_id, source_region, target_region, status, requested_by, requested_at, completed_at, error_message
+         FROM region_migrations WHERE id = $1 AND workspace_id = $2`,
+        [id, orgId],
       );
 
       const row = rows[0];

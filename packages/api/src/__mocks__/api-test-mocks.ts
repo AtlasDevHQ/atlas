@@ -31,6 +31,21 @@ import {
 import * as fs from "fs";
 import * as path from "path";
 
+/**
+ * Wraps a Promise-returning `internalQuery` mock as an `Effect` so tests
+ * that override `@atlas/api/lib/db/internal` via `mock.module()` can
+ * supply a `queryEffect` export without repeating the tryPromise boilerplate.
+ */
+export function makeQueryEffectMock(
+  internalQueryMock: (sql: string, params?: unknown[]) => Promise<unknown[]>,
+) {
+  return <T extends Record<string, unknown>>(sql: string, params?: unknown[]) =>
+    Effect.tryPromise({
+      try: () => internalQueryMock(sql, params) as Promise<T[]>,
+      catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+    });
+}
+
 // ── Types ───────────────────────────────────────────────────────────
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- intentionally generic mock function type for test overrides
@@ -218,6 +233,11 @@ export function createApiTestMocks(
   const internalDefaults: Record<string, unknown> = {
     hasInternalDB: () => _hasInternalDB,
     internalQuery: mockInternalQuery,
+    queryEffect: (sql: string, params?: unknown[]) =>
+      Effect.tryPromise({
+        try: () => mockInternalQuery(sql, params),
+        catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+      }),
     internalExecute: mockInternalExecute,
     getInternalDB: mock(() => ({})),
     closeInternalDB: mock(async () => {}),

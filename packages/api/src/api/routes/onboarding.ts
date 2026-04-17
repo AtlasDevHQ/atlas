@@ -19,7 +19,7 @@ import { z } from "zod";
 import { createLogger } from "@atlas/api/lib/logger";
 import { detectAuthMode } from "@atlas/api/lib/auth/detect";
 import { connections, detectDBType, resolveDatasourceUrl } from "@atlas/api/lib/db/connection";
-import { hasInternalDB, internalQuery, encryptUrl } from "@atlas/api/lib/db/internal";
+import { hasInternalDB, internalQuery, queryEffect, encryptUrl } from "@atlas/api/lib/db/internal";
 import { maskConnectionUrl } from "@atlas/api/lib/security";
 import { _resetWhitelists } from "@atlas/api/lib/semantic";
 import { importFromDisk } from "@atlas/api/lib/semantic/sync";
@@ -1074,10 +1074,10 @@ onboarding.openapi(tourStatusRoute, async (c) => {
       return c.json({ error: "auth_error", message: "No user ID in session.", requestId }, 401);
     }
 
-    const rows = yield* Effect.promise(() => internalQuery<{ tour_completed_at: string | null }>(
+    const rows = yield* queryEffect<{ tour_completed_at: string | null }>(
       `SELECT tour_completed_at FROM user_onboarding WHERE user_id = $1`,
       [userId],
-    ));
+    );
     const row = rows[0];
     return c.json({
       tourCompleted: !!row?.tour_completed_at,
@@ -1108,12 +1108,12 @@ onboarding.openapi(tourCompleteRoute, async (c) => {
     }
 
     const now = new Date().toISOString();
-    yield* Effect.promise(() => internalQuery(
+    yield* queryEffect(
       `INSERT INTO user_onboarding (user_id, tour_completed_at)
        VALUES ($1, $2)
        ON CONFLICT (user_id) DO UPDATE SET tour_completed_at = $2`,
       [userId, now],
-    ));
+    );
     log.info({ requestId, userId }, "Tour marked as completed");
     return c.json({ tourCompleted: true, tourCompletedAt: now }, 200);
   }), { label: "save tour completion" });
@@ -1140,10 +1140,10 @@ onboarding.openapi(tourResetRoute, async (c) => {
       return c.json({ error: "auth_error", message: "No user ID in session.", requestId }, 401);
     }
 
-    yield* Effect.promise(() => internalQuery(
+    yield* queryEffect(
       `UPDATE user_onboarding SET tour_completed_at = NULL WHERE user_id = $1`,
       [userId],
-    ));
+    );
     log.info({ requestId, userId }, "Tour reset for replay");
     return c.json({ tourCompleted: false, tourCompletedAt: null }, 200);
   }), { label: "reset tour" });

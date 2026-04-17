@@ -217,7 +217,7 @@ const AuthorBodySchema = z.object({
 
 // ---------------------------------------------------------------------------
 // Shared mutation response definitions — approve/hide/unhide share the same
-// 200/401/403/404/500 shape. `author` overrides responses (adds 400/409,
+// 200/401/403/404/429/500 shape. `author` overrides responses (adds 400/409,
 // drops the :id path).
 // ---------------------------------------------------------------------------
 
@@ -361,7 +361,7 @@ function respondApprovalResult(
   verb: "approve" | "hide" | "unhide",
 ) {
   if (outcome.status === "ok") {
-    return c.json({ suggestion: toQuerySuggestion(outcome.row) }, 200);
+    return c.json({ suggestion: outcome.suggestion }, 200);
   }
   if (outcome.status === "forbidden") {
     return c.json(
@@ -385,8 +385,6 @@ function respondApprovalResult(
 
 adminStarterPrompts.openapi(approveRoute, async (c) =>
   runHandler(c, "approve starter prompt", async () => {
-    // Read requestId + user id up front so we can stamp approved_by and
-    // return a correlating requestId on failure paths.
     const authResult = c.get("authResult");
     const userId = authResult.user?.id ?? "unknown";
     const { orgId, requestId } = c.get("orgContext");
@@ -464,8 +462,8 @@ adminStarterPrompts.openapi(authorRoute, async (c) =>
     const { text } = c.req.valid("json");
 
     try {
-      const row = await createApprovedSuggestion({ orgId, userId, text });
-      return c.json({ suggestion: toQuerySuggestion(row) }, 200);
+      const suggestion = await createApprovedSuggestion({ orgId, userId, text });
+      return c.json({ suggestion }, 200);
     } catch (err) {
       if (err instanceof InvalidSuggestionTextError) {
         return c.json(

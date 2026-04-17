@@ -227,7 +227,7 @@ describe("GET /api/v1/admin/starter-prompts/queue — buckets", () => {
     expect(body.approved[0]?.status).toBe("draft");
   });
 
-  it("null-org admin (platform admin without active org) uses IS NULL scoping", async () => {
+  it("null-org admin (no active organization) is rejected by requireOrgContext", async () => {
     mocks.mockAuthenticateRequest.mockImplementation(() =>
       Promise.resolve({
         authenticated: true,
@@ -237,8 +237,8 @@ describe("GET /api/v1/admin/starter-prompts/queue — buckets", () => {
           mode: "simple-key",
           label: "Admin",
           role: "admin",
-          // No activeOrganizationId — simulates the null-org branch in
-          // the route's orgClause construction.
+          // No activeOrganizationId — simulates the null-org branch that
+          // the shared requireOrgContext() middleware must gate.
           activeOrganizationId: undefined,
         },
       }),
@@ -247,10 +247,11 @@ describe("GET /api/v1/admin/starter-prompts/queue — buckets", () => {
 
     const res = await req("/api/v1/admin/starter-prompts/queue");
 
-    // requireOrgContext returns 400 when no active org; we assert the
-    // contract holds so the untested null-org branch in the SQL builder
-    // is flagged if future code paths expose it.
-    expect([200, 400]).toContain(res.status);
+    // The queue endpoint is org-scoped; platform admins without an active
+    // workspace must select one before the queue is meaningful. A
+    // regression letting 200 through here would silently return another
+    // org's queue when the middleware stopped enforcing activeOrg.
+    expect(res.status).toBe(400);
   });
 });
 
@@ -410,6 +411,16 @@ describe("POST /api/v1/admin/starter-prompts/:id/approve", () => {
 });
 
 describe("POST /api/v1/admin/starter-prompts/:id/hide", () => {
+  it("returns 401 when unauthenticated", async () => {
+    mocks.mockAuthenticateRequest.mockImplementation(() =>
+      Promise.resolve({ authenticated: false, error: "Missing token", status: 401 }),
+    );
+
+    const res = await postNoBody("/api/v1/admin/starter-prompts/sug-1/hide");
+
+    expect(res.status).toBe(401);
+  });
+
   it("returns 403 for non-admins", async () => {
     mocks.mockAuthenticateRequest.mockImplementation(() =>
       Promise.resolve({
@@ -474,6 +485,38 @@ describe("POST /api/v1/admin/starter-prompts/:id/hide", () => {
       suggestion: { approvalStatus: string };
     };
     expect(body.suggestion.approvalStatus).toBe("pending");
+  });
+});
+
+describe("POST /api/v1/admin/starter-prompts/:id/unhide — auth", () => {
+  it("returns 401 when unauthenticated", async () => {
+    mocks.mockAuthenticateRequest.mockImplementation(() =>
+      Promise.resolve({ authenticated: false, error: "Missing token", status: 401 }),
+    );
+
+    const res = await postNoBody("/api/v1/admin/starter-prompts/sug-1/unhide");
+
+    expect(res.status).toBe(401);
+  });
+
+  it("returns 403 for non-admins", async () => {
+    mocks.mockAuthenticateRequest.mockImplementation(() =>
+      Promise.resolve({
+        authenticated: true,
+        mode: "simple-key",
+        user: {
+          id: "member-1",
+          mode: "simple-key",
+          label: "Member",
+          role: "member",
+          activeOrganizationId: "org-alpha",
+        },
+      }),
+    );
+
+    const res = await postNoBody("/api/v1/admin/starter-prompts/sug-1/unhide");
+
+    expect(res.status).toBe(403);
   });
 });
 

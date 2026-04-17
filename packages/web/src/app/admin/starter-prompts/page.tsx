@@ -305,9 +305,8 @@ function StarterPromptsContent() {
   const threshold = data?.threshold ?? 3;
   const coldWindowDays = data?.coldWindowDays ?? 90;
 
-  // Per-row mutation state — tracks which row id is currently flight so
-  // the row's buttons render a spinner without locking the whole tab.
   const [pendingRowId, setPendingRowId] = useState<string | null>(null);
+  const [rowActionError, setRowActionError] = useState<string | null>(null);
 
   const { mutate: mutateRow } = useAdminMutation<{ suggestion: QueueItem }>({
     method: "POST",
@@ -316,12 +315,19 @@ function StarterPromptsContent() {
 
   async function handleRowAction(action: RowAction, id: string) {
     setPendingRowId(id);
+    setRowActionError(null);
     try {
-      await mutateRow({
+      const result = await mutateRow({
         path: `/api/v1/admin/starter-prompts/${encodeURIComponent(id)}/${action}`,
         body: {},
         itemId: id,
       });
+      // Surface failures (403 cross-org, 404, 500) so the admin sees why
+      // the row didn't move between tabs. Without this branch, the
+      // spinner stops and the UI appears to succeed.
+      if (!result.ok) {
+        setRowActionError(result.error);
+      }
     } finally {
       setPendingRowId(null);
     }
@@ -371,6 +377,23 @@ function StarterPromptsContent() {
             </CardDescription>
           </CardHeader>
           <CardContent>
+            {rowActionError && (
+              <div
+                role="alert"
+                data-testid="starter-prompt-row-action-error"
+                className="mb-4 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive flex items-start justify-between gap-3"
+              >
+                <span>{rowActionError}</span>
+                <button
+                  type="button"
+                  onClick={() => setRowActionError(null)}
+                  className="text-xs underline opacity-70 hover:opacity-100"
+                  aria-label="Dismiss error"
+                >
+                  Dismiss
+                </button>
+              </div>
+            )}
             <Tabs defaultValue="pending">
               <TabsList>
                 <TabsTrigger value="pending">

@@ -120,8 +120,8 @@ describe("approveSuggestion", () => {
 
     expect(result.status).toBe("ok");
     if (result.status !== "ok") throw new Error("unreachable");
-    expect(result.row.approval_status).toBe("approved");
-    expect(result.row.approved_by).toBe("admin-1");
+    expect(result.suggestion.approvalStatus).toBe("approved");
+    expect(result.suggestion.approvedBy).toBe("admin-1");
 
     const updateCall = mockInternalQuery.mock.calls.find(
       ([sql]) => typeof sql === "string" && sql.includes("UPDATE"),
@@ -192,9 +192,9 @@ describe("hideSuggestion", () => {
 
     expect(result.status).toBe("ok");
     if (result.status !== "ok") throw new Error("unreachable");
-    expect(result.row.approval_status).toBe("hidden");
+    expect(result.suggestion.approvalStatus).toBe("hidden");
     // History preservation: approved_by/approved_at are not reset by hide.
-    expect(result.row.approved_by).toBe("admin-prior");
+    expect(result.suggestion.approvedBy).toBe("admin-prior");
 
     const updateCall = mockInternalQuery.mock.calls.find(
       ([sql]) => typeof sql === "string" && sql.includes("UPDATE"),
@@ -262,7 +262,7 @@ describe("unhideSuggestion", () => {
 
     expect(result.status).toBe("ok");
     if (result.status !== "ok") throw new Error("unreachable");
-    expect(result.row.approval_status).toBe("pending");
+    expect(result.suggestion.approvalStatus).toBe("pending");
 
     const updateCall = mockInternalQuery.mock.calls.find(
       ([sql]) => typeof sql === "string" && sql.includes("UPDATE"),
@@ -328,16 +328,16 @@ describe("createApprovedSuggestion", () => {
       return [];
     });
 
-    const row = await createApprovedSuggestion({
+    const suggestion = await createApprovedSuggestion({
       orgId: "org-1",
       userId: "admin-1",
       text: "Admin-authored question",
     });
 
-    expect(row.approval_status).toBe("approved");
-    expect(row.status).toBe("published");
-    expect(row.approved_by).toBe("admin-1");
-    expect(row.description).toBe("Admin-authored question");
+    expect(suggestion.approvalStatus).toBe("approved");
+    expect(suggestion.status).toBe("published");
+    expect(suggestion.approvedBy).toBe("admin-1");
+    expect(suggestion.description).toBe("Admin-authored question");
 
     const insertCall = mockInternalQuery.mock.calls.find(
       ([sql]) => typeof sql === "string" && sql.includes("INSERT"),

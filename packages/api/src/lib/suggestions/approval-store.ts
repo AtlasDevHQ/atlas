@@ -13,12 +13,14 @@
  * the pending queue, so the suggestion is ready to surface immediately.
  */
 import crypto from "node:crypto";
+import type { QuerySuggestion } from "@useatlas/types";
 import { createLogger } from "@atlas/api/lib/logger";
 import {
   hasInternalDB,
   internalQuery,
   type QuerySuggestionRow,
 } from "@atlas/api/lib/db/internal";
+import { toQuerySuggestion } from "@atlas/api/lib/learn/suggestion-helpers";
 
 const log = createLogger("approval-store");
 
@@ -28,7 +30,7 @@ export const SUGGESTION_TEXT_MAX_LENGTH = 2000;
 const PG_UNIQUE_VIOLATION = "23505";
 
 // ---------------------------------------------------------------------------
-// Typed errors — tagged for Effect / runHandler mapping without instanceof
+// Typed errors
 // ---------------------------------------------------------------------------
 
 /**
@@ -38,7 +40,6 @@ const PG_UNIQUE_VIOLATION = "23505";
  * get a typed failure instead of a generic 500.
  */
 export class InvalidSuggestionTextError extends Error {
-  public readonly _tag = "InvalidSuggestionTextError" as const;
   constructor(message: string) {
     super(message);
     this.name = "InvalidSuggestionTextError";
@@ -52,7 +53,6 @@ export class InvalidSuggestionTextError extends Error {
  * approve the pending row, unhide the hidden one, etc.
  */
 export class DuplicateSuggestionError extends Error {
-  public readonly _tag = "DuplicateSuggestionError" as const;
   constructor() {
     super(
       "A suggestion with this text already exists. Open the moderation queue to approve or unhide it.",
@@ -67,12 +67,16 @@ export class DuplicateSuggestionError extends Error {
 
 /**
  * 3-way outcome for approve / hide / unhide:
- *   - ok        → 200 with the updated row
+ *   - ok        → 200 with the updated suggestion (wire DTO, camelCase)
  *   - not_found → 404 (no row with that id)
  *   - forbidden → 403 (row exists but belongs to a different org)
+ *
+ * The `suggestion` field carries the wire-facing `QuerySuggestion` DTO
+ * (not the raw `QuerySuggestionRow` snake_case shape) so callers —
+ * routes, SDK, MCP — never re-implement the row→DTO mapping.
  */
 export type ApprovalResult =
-  | { readonly status: "ok"; readonly row: QuerySuggestionRow }
+  | { readonly status: "ok"; readonly suggestion: QuerySuggestion }
   | { readonly status: "not_found" }
   | { readonly status: "forbidden" };
 
@@ -134,7 +138,13 @@ export async function approveSuggestion(input: {
   readonly orgId: string;
   readonly userId: string;
 }): Promise<ApprovalResult> {
-  if (!hasInternalDB()) return { status: "not_found" };
+  if (!hasInternalDB()) {
+    log.warn(
+      { suggestionId: input.id },
+      "approveSuggestion short-circuiting: internal DB not configured",
+    );
+    return { status: "not_found" };
+  }
 
   const access = await classifyAccess(input.id, input.orgId);
   if (access !== "ok") return { status: access };
@@ -154,7 +164,7 @@ export async function approveSuggestion(input: {
     [input.id, input.userId, input.orgId],
   );
   if (rows.length === 0) return { status: "not_found" };
-  return { status: "ok", row: rows[0] };
+  return { status: "ok", suggestion: toQuerySuggestion(rows[0]) };
 }
 
 /**
@@ -166,7 +176,13 @@ export async function hideSuggestion(input: {
   readonly id: string;
   readonly orgId: string;
 }): Promise<ApprovalResult> {
-  if (!hasInternalDB()) return { status: "not_found" };
+  if (!hasInternalDB()) {
+    log.warn(
+      { suggestionId: input.id },
+      "hideSuggestion short-circuiting: internal DB not configured",
+    );
+    return { status: "not_found" };
+  }
 
   const access = await classifyAccess(input.id, input.orgId);
   if (access !== "ok") return { status: access };
@@ -180,7 +196,7 @@ export async function hideSuggestion(input: {
     [input.id, input.orgId],
   );
   if (rows.length === 0) return { status: "not_found" };
-  return { status: "ok", row: rows[0] };
+  return { status: "ok", suggestion: toQuerySuggestion(rows[0]) };
 }
 
 /**
@@ -193,7 +209,13 @@ export async function unhideSuggestion(input: {
   readonly id: string;
   readonly orgId: string;
 }): Promise<ApprovalResult> {
-  if (!hasInternalDB()) return { status: "not_found" };
+  if (!hasInternalDB()) {
+    log.warn(
+      { suggestionId: input.id },
+      "unhideSuggestion short-circuiting: internal DB not configured",
+    );
+    return { status: "not_found" };
+  }
 
   const access = await classifyAccess(input.id, input.orgId);
   if (access !== "ok") return { status: access };
@@ -207,7 +229,7 @@ export async function unhideSuggestion(input: {
     [input.id, input.orgId],
   );
   if (rows.length === 0) return { status: "not_found" };
-  return { status: "ok", row: rows[0] };
+  return { status: "ok", suggestion: toQuerySuggestion(rows[0]) };
 }
 
 /**
@@ -222,7 +244,7 @@ export async function createApprovedSuggestion(input: {
   readonly orgId: string;
   readonly userId: string;
   readonly text: string;
-}): Promise<QuerySuggestionRow> {
+}): Promise<QuerySuggestion> {
   const trimmed = input.text.trim();
   if (trimmed.length === 0) {
     throw new InvalidSuggestionTextError(
@@ -270,7 +292,7 @@ export async function createApprovedSuggestion(input: {
     if (rows.length === 0) {
       throw new Error("INSERT RETURNING returned no rows");
     }
-    return rows[0];
+    return toQuerySuggestion(rows[0]);
   } catch (err) {
     const code = (err as { code?: string }).code;
     if (code === PG_UNIQUE_VIOLATION) {

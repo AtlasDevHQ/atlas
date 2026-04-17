@@ -168,10 +168,7 @@ export async function resolveStarterPrompts(
     }
   }
 
-  // Tier 2 — popular approved. Gated at the SQL boundary to
-  // `approval_status = 'approved'` so pending / hidden rows never leak
-  // into user-facing empty states. Skipped when there is no workspace
-  // context — popular is inherently org-scoped.
+  // Tier 2 — popular approved. Skipped when there is no workspace context.
   if (out.length < limit && ctx.orgId) {
     const remaining = limit - out.length;
     try {

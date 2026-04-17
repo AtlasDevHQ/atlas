@@ -1175,7 +1175,10 @@ export async function getPopularSuggestions(
       params
     );
   } catch (err) {
-    log.warn({ err: err instanceof Error ? err.message : String(err) }, "Failed to get popular suggestions");
+    // Bump to error so alerting picks up a connectivity/query failure.
+    // Callers cannot distinguish [] = no approved rows vs [] = DB outage —
+    // making this log.error ensures the failure is surfaced out-of-band.
+    log.error({ err: err instanceof Error ? err.message : String(err) }, "Failed to get popular suggestions");
     return [];
   }
 }

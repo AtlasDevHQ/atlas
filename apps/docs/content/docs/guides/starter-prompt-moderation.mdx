@@ -86,7 +86,7 @@ If the same text already exists (same `normalized_hash` in this workspace), the 
 
 Approved starter prompts surface in two places:
 
-- **Chat empty state** — admins see approved rows with a subtle "Popular" badge, between any pinned favorites and the demo-industry library.
+- **Chat empty state** — all signed-in users see approved rows tagged with a subtle "Popular" badge, slotted between their pinned favorites and the demo-industry library.
 - **`/api/v1/suggestions/popular`** — the public popular-suggestions API returns only approved rows so SDK and widget consumers stay in sync with moderation.
 
 Pending and hidden rows never leave the admin boundary.

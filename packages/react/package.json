@@ -98,6 +98,7 @@
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@types/react-syntax-highlighter": "^15.5.13",
+    "@useatlas/sdk": "workspace:*",
     "ai": "^6.0.141",
     "exceljs": "^4.4.0",
     "happy-dom": "20.8.9",

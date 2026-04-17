@@ -1,12 +1,12 @@
 {
   "name": "@useatlas/sdk",
-  "version": "0.0.10",
+  "version": "0.0.11",
   "description": "TypeScript SDK for the Atlas text-to-SQL agent API",
   "type": "module",
   "scripts": {
     "build": "rm -rf dist && bun build src/index.ts src/client.ts --outdir dist --target node --packages external && bun x tsc -p tsconfig.build.json",
     "prepublishOnly": "bun run build",
-    "test": "bun test src/__tests__/client.test.ts src/__tests__/stream.test.ts src/__tests__/integration.test.ts src/__tests__/stream-integration.test.ts"
+    "test": "bun test src/__tests__/client.test.ts src/__tests__/stream.test.ts src/__tests__/integration.test.ts src/__tests__/stream-integration.test.ts src/__tests__/fetch-starter-prompts.test.ts"
   },
   "exports": {
     ".": {

@@ -1,7 +1,8 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import type { StarterPrompt, StarterPromptsResponse } from "@useatlas/types/starter-prompt";
+import { fetchStarterPrompts } from "@useatlas/sdk";
+import type { StarterPrompt } from "@useatlas/types/starter-prompt";
 import { useAtlasContext } from "../context";
 
 const STARTER_PROMPTS_LIMIT = 6;
@@ -22,60 +23,17 @@ interface UseStarterPromptsQueryOptions {
  */
 export function useStarterPromptsQuery({ enabled, apiKey }: UseStarterPromptsQueryOptions) {
   const { apiUrl, isCrossOrigin } = useAtlasContext();
-  const credentials: "include" | "omit" | "same-origin" = isCrossOrigin ? "include" : "same-origin";
 
   return useQuery<StarterPrompt[]>({
     queryKey: ["atlas", "starter-prompts", apiUrl],
-    queryFn: async ({ signal }) => {
-      const headers: Record<string, string> = {};
-      if (apiKey) headers["Authorization"] = `Bearer ${apiKey}`;
-
-      let res: Response;
-      try {
-        res = await fetch(`${apiUrl}/api/v1/starter-prompts?limit=${STARTER_PROMPTS_LIMIT}`, {
-          credentials,
-          headers,
-          signal,
-        });
-      } catch (err) {
-        const msg = err instanceof Error ? err.message : String(err);
-        console.warn("[Atlas] Starter prompts fetch failed:", msg);
-        throw new Error(`Starter prompts fetch failed: ${msg}`, { cause: err });
-      }
-
-      if (!res.ok) {
-        // Distinguish 4xx (actionable client error — auth, rate limit) from
-        // 5xx (transient server fault). For 5xx, soft-fail with [] so the
-        // empty state stays usable. For 4xx, throw so the embedder can see
-        // the failure in DevTools and React Query state.
-        const statusText = res.statusText || "(no status text)";
-        let bodyText: string;
-        try {
-          bodyText = await res.text();
-        } catch (err) {
-          bodyText = `<failed to read body: ${err instanceof Error ? err.message : String(err)}>`;
-        }
-        let requestId: string | undefined;
-        try {
-          requestId = (JSON.parse(bodyText) as { requestId?: string }).requestId;
-        } catch {
-          // intentionally ignored: body is not JSON (e.g. HTML proxy error page)
-        }
-        const requestIdSuffix = requestId ? ` (requestId: ${requestId})` : "";
-        if (res.status >= 500) {
-          console.warn(
-            `[Atlas] Starter prompts ${res.status} ${statusText}${requestIdSuffix}; falling back to empty list`,
-          );
-          return [];
-        }
-        throw new Error(
-          `Starter prompts ${res.status} ${statusText}${requestIdSuffix}`,
-        );
-      }
-
-      const data = (await res.json()) as Partial<StarterPromptsResponse>;
-      return Array.isArray(data?.prompts) ? [...data.prompts] : [];
-    },
+    queryFn: ({ signal }) =>
+      fetchStarterPrompts({
+        apiUrl,
+        credentials: isCrossOrigin ? "include" : "same-origin",
+        headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
+        signal,
+        limit: STARTER_PROMPTS_LIMIT,
+      }),
     enabled,
     retry: 1,
     staleTime: 60_000,

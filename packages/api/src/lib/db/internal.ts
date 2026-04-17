@@ -22,7 +22,7 @@ import { PgClient } from "@effect/sql-pg";
 import type { Pool as PgPool } from "pg";
 import { createLogger } from "@atlas/api/lib/logger";
 import { normalizeError } from "@atlas/api/lib/effect/errors";
-import { buildUnionStatusClause } from "@atlas/api/api/routes/middleware";
+import { buildUnionStatusClause } from "@atlas/api/lib/mode";
 
 const log = createLogger("internal-db");
 

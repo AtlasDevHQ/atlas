@@ -48,6 +48,7 @@ Configure the widget via `data-*` attributes on the script tag:
 | `data-theme` | No | `"light"` | `"light"` or `"dark"` |
 | `data-position` | No | `"bottom-right"` | `"bottom-right"` or `"bottom-left"` |
 | `data-show-branding` | No | `"true"` | Set to `"false"` to hide the "Powered by Atlas" badge |
+| `data-starter-prompts` | No | -- | JSON-encoded array of strings. Overrides the adaptive starter-prompt list. When set, the widget skips `/api/v1/starter-prompts` entirely. Invalid JSON or non-string entries are dropped silently. See [Starter Prompts](#starter-prompts) below. |
 
 ### Event Callbacks
 
@@ -82,6 +83,58 @@ Bind callbacks by setting `data-on-*` attributes to the name of a global functio
   data-on-error="onAtlasError"
 ></script>
 ```
+
+## Starter Prompts
+
+When the widget renders an empty chat, it shows a grid of suggested prompts. By default the list is **adaptive** — the widget calls `GET /api/v1/starter-prompts` and renders the resolved list of the user's pinned favorites, the workspace's approved popular queries, and an industry-curated fallback. Pinned prompts render with a small pin icon; other tiers render as plain suggestions.
+
+For embedded placements where you want a hardcoded list — for example, a marketing-site demo or a docs-page widget tied to a specific scenario — pass the `data-starter-prompts` attribute (script tag) or the `starterPrompts` prop (`@useatlas/react`):
+
+<Tabs items={["Script tag", "React component"]}>
+<Tab value="Script tag">
+```html
+<!-- Override starter prompts with a static list. The JSON value must be
+     a flat array of strings — wrap in single quotes so the embedded
+     double quotes parse correctly. -->
+<script
+  src="https://your-atlas-api.example.com/widget.js"
+  data-api-url="https://your-atlas-api.example.com"
+  data-starter-prompts='["What was last month'\''s revenue?","Top 5 customers by order count","Which products are out of stock?"]'
+></script>
+```
+</Tab>
+<Tab value="React component">
+```tsx
+import { AtlasChat } from "@useatlas/react";
+import "@useatlas/react/styles.css";
+
+<AtlasChat
+  apiUrl="https://your-atlas-api.example.com"
+  starterPrompts={[
+    "What was last month's revenue?",
+    "Top 5 customers by order count",
+    "Which products are out of stock?",
+  ]}
+/>
+```
+</Tab>
+</Tabs>
+
+<Callout type="warn">
+When `starterPrompts` is supplied (script tag attribute or React prop), the widget **does not call `/api/v1/starter-prompts`**. This is intentional — overrides exist precisely so embedded contexts can avoid issuing a user-identifying request from the host page. An empty array (`[]`) is treated as "render no suggestions" and still suppresses the fetch.
+</Callout>
+
+### Default empty state
+
+Without an override the widget shows three tiers of suggestions:
+
+- **Pinned (favorites)** — questions the user pinned from their own chat history. Marked with a pin icon. Always on top.
+- **Popular** — workspace-approved queries scored by frequency and click-through. No icon.
+- **Library** — industry-curated fallback (drawn from the prompt library) when the user has no pins and the workspace has no approved popular queries yet.
+
+When all three tiers are empty, the widget renders a one-line nudge ("Ask your first question below to get started") rather than a stale grid.
+
+---
 
 ## Programmatic API
 

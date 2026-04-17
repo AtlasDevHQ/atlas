@@ -12,7 +12,7 @@
  * require a prior `bun run build` in packages/react/.
  */
 
-import { describe, it, expect, mock } from "bun:test";
+import { describe, it, expect, mock, beforeAll, afterAll, beforeEach } from "bun:test";
 import { Hono } from "hono";
 import * as realFs from "node:fs";
 
@@ -31,7 +31,7 @@ const mockedFs = {
 };
 mock.module("node:fs", () => ({ ...mockedFs, default: mockedFs }));
 
-const { widget, sanitizeLogoUrl, sanitizeAccent } = await import(
+const { widget, sanitizeLogoUrl, sanitizeAccent, sanitizeStarterPrompts } = await import(
   "../routes/widget"
 );
 
@@ -816,3 +816,179 @@ describe("sanitizeAccent", () => {
     expect(sanitizeAccent("")).toBe("");
   });
 });
+
+// ---------------------------------------------------------------------------
+// starterPrompts query param — privacy boundary
+//
+// `null` (not `[]`) is the sentinel for "no override → fetch from API".
+// A non-null array — even an empty one — means "skip the fetch entirely".
+// Distinguishing those two cases is the whole privacy guarantee, so the
+// tests exercise the boundary explicitly.
+// ---------------------------------------------------------------------------
+
+describe("sanitizeStarterPrompts", () => {
+  it("returns null when raw is empty (no override)", () => {
+    expect(sanitizeStarterPrompts("")).toBeNull();
+  });
+
+  it("returns null on invalid JSON", () => {
+    expect(sanitizeStarterPrompts("not-json")).toBeNull();
+    expect(sanitizeStarterPrompts("{")).toBeNull();
+  });
+
+  it("returns null when JSON value is not an array", () => {
+    expect(sanitizeStarterPrompts('{"foo":"bar"}')).toBeNull();
+    expect(sanitizeStarterPrompts('"a string"')).toBeNull();
+    expect(sanitizeStarterPrompts("42")).toBeNull();
+  });
+
+  it("returns parsed array of strings on a valid JSON array", () => {
+    expect(sanitizeStarterPrompts('["one","two"]')).toEqual(["one", "two"]);
+  });
+
+  it("drops non-string entries silently", () => {
+    expect(sanitizeStarterPrompts('["one",2,null,"two"]')).toEqual(["one", "two"]);
+  });
+
+  it("drops empty / whitespace-only entries", () => {
+    expect(sanitizeStarterPrompts('["one","","   ","two"]')).toEqual(["one", "two"]);
+  });
+
+  it("returns an empty array when valid JSON has zero usable entries", () => {
+    // Embedder explicitly opted in to overrides but supplied nothing usable —
+    // we still suppress the fetch (privacy guarantee), so the result is `[]`
+    // not `null`.
+    expect(sanitizeStarterPrompts('["","   "]')).toEqual([]);
+    expect(sanitizeStarterPrompts("[]")).toEqual([]);
+  });
+
+  it("trims whitespace and slices each string to 500 chars", () => {
+    const long = "a".repeat(800);
+    const [parsed] = sanitizeStarterPrompts(JSON.stringify([`  ${long}  `])) ?? [];
+    expect(parsed?.length).toBe(500);
+  });
+
+  it("caps the array at 32 entries to bound HTML response size", () => {
+    const many = Array.from({ length: 50 }, (_, i) => `prompt-${i}`);
+    const result = sanitizeStarterPrompts(JSON.stringify(many));
+    expect(result?.length).toBe(32);
+  });
+
+  it("returns null when raw exceeds 8KB to prevent oversized payloads", () => {
+    // An 8KB+ raw string is a smell — embedder is either mis-using the API
+    // or attempting to inflate the HTML response.
+    const giant = "x".repeat(9 * 1024);
+    expect(sanitizeStarterPrompts(JSON.stringify([giant]))).toBeNull();
+  });
+});
+
+describe("sanitizeStarterPrompts — observability", () => {
+  // Suppress console noise from intentional log paths under test.
+  const originalWarn = console.warn;
+  const captured: string[] = [];
+  beforeAll(() => {
+    console.warn = (...args: unknown[]) => {
+      captured.push(args.map((a) => (typeof a === "string" ? a : String(a))).join(" "));
+    };
+  });
+  afterAll(() => {
+    console.warn = originalWarn;
+  });
+  beforeEach(() => {
+    captured.length = 0;
+  });
+
+  it("logs a warning when raw input exceeds 8KB", () => {
+    const giant = "x".repeat(9 * 1024);
+    sanitizeStarterPrompts(JSON.stringify([giant]));
+    expect(captured.some((m) => m.includes("exceeds 8KB"))).toBe(true);
+  });
+
+  it("logs a warning when JSON is malformed", () => {
+    sanitizeStarterPrompts("not-json-at-all");
+    expect(captured.some((m) => m.includes("not valid JSON"))).toBe(true);
+  });
+
+  it("logs a warning when JSON is a non-array value", () => {
+    sanitizeStarterPrompts('{"prompts":["x"]}');
+    expect(captured.some((m) => m.includes("non-array"))).toBe(true);
+  });
+
+  it("does NOT log when the input is absent (no override is the default)", () => {
+    sanitizeStarterPrompts("");
+    expect(captured).toHaveLength(0);
+  });
+});
+
+describe("widget HTML — starterPrompts wiring", () => {
+  it("emits a null starterPrompts in the embedded config when query param is absent", async () => {
+    const res = await app.fetch(widgetRequest());
+    const html = await res.text();
+    // The atlas-config script element holds the JSON config the inline
+    // mount script reads. When no override, starterPrompts should be null
+    // so the widget falls back to fetching /api/v1/starter-prompts.
+    const configMatch = html.match(/<script id="atlas-config" type="application\/json">(.+?)<\/script>/);
+    expect(configMatch).not.toBeNull();
+    const config = JSON.parse(configMatch![1]);
+    expect(config.starterPrompts).toBeNull();
+  });
+
+  it("forwards a valid starterPrompts array into the embedded config", async () => {
+    const res = await app.fetch(
+      widgetRequest({ starterPrompts: '["What was last month\'s revenue?","Top 5 customers"]' }),
+    );
+    const html = await res.text();
+    const configMatch = html.match(/<script id="atlas-config" type="application\/json">(.+?)<\/script>/);
+    const config = JSON.parse(configMatch![1]);
+    expect(config.starterPrompts).toEqual([
+      "What was last month's revenue?",
+      "Top 5 customers",
+    ]);
+  });
+
+  it("falls back to null when starterPrompts query param is malformed", async () => {
+    const res = await app.fetch(widgetRequest({ starterPrompts: "not-json" }));
+    const html = await res.text();
+    const configMatch = html.match(/<script id="atlas-config" type="application\/json">(.+?)<\/script>/);
+    const config = JSON.parse(configMatch![1]);
+    expect(config.starterPrompts).toBeNull();
+  });
+
+  it("preserves an empty array (zero-prompt embed) — must still suppress the fetch", async () => {
+    const res = await app.fetch(widgetRequest({ starterPrompts: "[]" }));
+    const html = await res.text();
+    const configMatch = html.match(/<script id="atlas-config" type="application\/json">(.+?)<\/script>/);
+    const config = JSON.parse(configMatch![1]);
+    // Empty array is meaningful: "embedder opted in to overrides but
+    // wants nothing rendered — definitely don't fetch."
+    expect(Array.isArray(config.starterPrompts)).toBe(true);
+    expect(config.starterPrompts).toEqual([]);
+  });
+
+  it("inline mount script preserves the Array.isArray(...) ? ... : void 0 translation", async () => {
+    const res = await app.fetch(widgetRequest());
+    const html = await res.text();
+    // This single line is the privacy boundary inside the iframe — it
+    // turns `cfg.starterPrompts === null` into the React prop `undefined`
+    // (fetch path) while keeping any array (including []) as-is (skip-fetch
+    // path). A typo like `cfg.starterPrompts ?? void 0` would silently
+    // re-enable the fetch when the value is null. Pinning the line keeps
+    // accidental refactors visible.
+    expect(html).toContain("Array.isArray(cfg.starterPrompts)?cfg.starterPrompts:void 0");
+  });
+
+  it("oversized starterPrompts query param falls back to null (fetch from API) — pinned regression", async () => {
+    // Documents the current fail-open behavior: an oversized override
+    // payload silently re-enables the user-identifying request. The
+    // operator-side warning emitted by sanitizeStarterPrompts is the
+    // mitigation; if we ever switch to fail-closed (e.g. render no
+    // suggestions), update this test alongside.
+    const giant = "x".repeat(9 * 1024);
+    const res = await app.fetch(widgetRequest({ starterPrompts: JSON.stringify([giant]) }));
+    const html = await res.text();
+    const configMatch = html.match(/<script id="atlas-config" type="application\/json">(.+?)<\/script>/);
+    const config = JSON.parse(configMatch![1]);
+    expect(config.starterPrompts).toBeNull();
+  });
+});
+

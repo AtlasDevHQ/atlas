@@ -573,6 +573,67 @@ describe("GET /widget.js", () => {
     expect(script).toContain("function onHostMessage(e)");
     expect(script).toContain("function onEscape(e)");
   });
+
+  // --- data-starter-prompts forwarding ---
+
+  it("reads data-starter-prompts from the script tag", async () => {
+    const script = await getScript();
+    expect(script).toContain('s.getAttribute("data-starter-prompts")');
+  });
+
+  it("parses data-starter-prompts as JSON before forwarding", async () => {
+    const script = await getScript();
+    expect(script).toContain("JSON.parse(starterPromptsRaw)");
+  });
+
+  it("appends starterPrompts query param to iframe src when supplied", async () => {
+    const script = await getScript();
+    expect(script).toContain('"&starterPrompts="+encodeURIComponent(JSON.stringify(cleaned))');
+  });
+
+  it("warns and drops the override when JSON is invalid (does not crash)", async () => {
+    const script = await getScript();
+    expect(script).toContain("[Atlas] data-starter-prompts is not valid JSON");
+  });
+
+  it("warns when the parsed value is not an array", async () => {
+    const script = await getScript();
+    expect(script).toContain(
+      "[Atlas] data-starter-prompts must be a JSON array of strings; ignoring",
+    );
+  });
+
+  it("filters out non-string entries before forwarding", async () => {
+    const script = await getScript();
+    // The IIFE walks the parsed array and keeps only string entries with
+    // non-empty trimmed text — this prevents the iframe from receiving
+    // garbage like `[null, 42, ""]`.
+    expect(script).toContain('typeof spv==="string"&&spv.trim().length>0');
+  });
+
+  it("warns when a parsed array filters down to zero usable strings", async () => {
+    const script = await getScript();
+    // Without this guard, an embedder passing `[null, 42]` would see no
+    // prompts render and have no console feedback explaining why.
+    expect(script).toContain("contained no usable strings");
+  });
+
+  it("treats empty data-starter-prompts attribute as absent (truthy guard)", async () => {
+    const script = await getScript();
+    // `if(starterPromptsRaw)` short-circuits on `""`, so an empty attribute
+    // emits no starterPrompts param and the widget falls back to the
+    // adaptive fetch — same as no attribute at all.
+    expect(script).toContain("if(starterPromptsRaw){");
+  });
+
+  it("forwards a valid empty array (preserves the privacy boundary at the loader)", async () => {
+    const script = await getScript();
+    // The encoded param is appended for any valid JSON array — including
+    // []. There must be no `if (cleaned.length > 0)` guard here, otherwise
+    // an empty array would silently re-enable the API fetch.
+    expect(script).toContain('"&starterPrompts="+encodeURIComponent(JSON.stringify(cleaned))');
+    expect(script).not.toMatch(/cleaned\.length\s*>\s*0\s*\)\s*starterPromptsParam\s*=/);
+  });
 });
 
 describe("GET /widget.d.ts", () => {

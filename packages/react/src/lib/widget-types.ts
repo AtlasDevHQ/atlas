@@ -107,6 +107,22 @@ export interface AtlasWidgetConfig {
    * Set to `"false"` to hide the badge. Value is case-sensitive.
    */
   showBranding?: string;
+  /**
+   * JSON-encoded array of strings to override the adaptive starter prompts (optional).
+   *
+   * When supplied, the widget renders the provided list and skips the
+   * `/api/v1/starter-prompts` request entirely. Use this for embedded
+   * placements that should never trigger a user-identifying request from
+   * the host page.
+   *
+   * Invalid JSON or non-string entries are dropped with a console warning.
+   *
+   * @example
+   * ```html
+   * <script ... data-starter-prompts='["What was last month'\''s revenue?","Top 5 customers"]'></script>
+   * ```
+   */
+  starterPrompts?: string;
 }
 
 // ---------------------------------------------------------------------------

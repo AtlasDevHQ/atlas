@@ -4,6 +4,7 @@ import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport, isToolUIPart } from "ai";
 import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { useQuery, QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import type { StarterPrompt } from "@useatlas/types/starter-prompt";
 import type { AuthMode } from "../lib/types";
 import type { ToolRenderers } from "../lib/tool-renderer-types";
 import { AtlasContext, useAtlasContext, ActionAuthProvider, noopAuthClient, type AtlasAuthClient } from "../context";
@@ -15,12 +16,12 @@ import { ManagedAuthCard } from "./chat/managed-auth-card";
 import { TypingIndicator } from "./chat/typing-indicator";
 import { ToolPart } from "./chat/tool-part";
 import { Markdown } from "./chat/markdown";
-import { STARTER_PROMPTS } from "./chat/starter-prompts";
 import { FollowUpChips } from "./chat/follow-up-chips";
 import { ConversationSidebar } from "./conversations/conversation-sidebar";
 import { ChangePasswordDialog } from "./admin/change-password-dialog";
 import { useHealthQuery } from "../hooks/use-health-query";
-import { Sun, Moon, Monitor, Star, TableProperties, Send } from "lucide-react";
+import { useStarterPromptsQuery } from "../hooks/use-starter-prompts-query";
+import { Sun, Moon, Monitor, Star, TableProperties, Pin, Send } from "lucide-react";
 import { SchemaExplorer } from "./schema-explorer/schema-explorer";
 import {
   DropdownMenu,
@@ -57,6 +58,21 @@ export interface AtlasChatProps {
   conversationsEndpoint?: string;
   /** Show "Powered by Atlas" badge at the bottom of the chat. Defaults to true. Automatically hidden when enterprise white-label branding (hideAtlasBranding) is active. */
   showBranding?: boolean;
+  /**
+   * Optional static starter prompts to render in the empty state.
+   *
+   * When supplied, the widget will NOT call `/api/v1/starter-prompts` —
+   * the override must not leak a user-identifying request from embedded
+   * contexts. Each string renders as a flat suggestion chip with no
+   * provenance badge. Pass `undefined` (the default) to fetch the adaptive
+   * list from the server instead. Pass `[]` to render no suggestions and
+   * still suppress the fetch.
+   *
+   * Caps: the iframe / script-tag path enforces 32 entries × 500 chars at
+   * the server. The direct React-component path is uncapped — the consumer
+   * owns their own UI.
+   */
+  starterPrompts?: readonly string[];
 }
 
 /** No-op auth client for non-managed auth modes. */
@@ -168,6 +184,7 @@ export function AtlasChat(props: AtlasChatProps) {
     chatEndpoint = "/api/v1/chat",
     conversationsEndpoint = "/api/v1/conversations",
     showBranding = true,
+    starterPrompts: starterPromptsOverride,
   } = props;
 
   // Apply theme from props on mount and when it changes
@@ -199,6 +216,7 @@ export function AtlasChat(props: AtlasChatProps) {
           chatEndpoint={chatEndpoint}
           conversationsEndpoint={conversationsEndpoint}
           showBranding={showBranding}
+          starterPromptsOverride={starterPromptsOverride}
         />
       </AtlasContext.Provider>
     </QueryClientProvider>
@@ -228,6 +246,7 @@ function AtlasChatInner({
   chatEndpoint,
   conversationsEndpoint,
   showBranding,
+  starterPromptsOverride,
 }: {
   propApiKey?: string;
   sidebar: boolean;
@@ -236,6 +255,7 @@ function AtlasChatInner({
   chatEndpoint: string;
   conversationsEndpoint: string;
   showBranding: boolean;
+  starterPromptsOverride?: readonly string[];
 }) {
   const { apiUrl, isCrossOrigin, authClient } = useAtlasContext();
   const dark = useDarkMode();
@@ -424,6 +444,39 @@ function AtlasChatInner({
 
   const isLoading = status === "streaming" || status === "submitted";
 
+  // Fetch the adaptive starter prompts for the empty state. The query is
+  // disabled when the embedder supplies a static `starterPrompts` prop —
+  // the override must NOT trigger a user-identifying request from embedded
+  // contexts.
+  const starterPromptsQuery = useStarterPromptsQuery({
+    enabled: starterPromptsOverride === undefined,
+    apiKey,
+  });
+  const fetchedStarterPrompts: StarterPrompt[] = starterPromptsQuery.data ?? [];
+  const overrideStarterPrompts: StarterPrompt[] | null = useMemo(() => {
+    if (starterPromptsOverride === undefined) return null;
+    const cleaned: string[] = [];
+    let dropped = 0;
+    for (const text of starterPromptsOverride) {
+      if (typeof text === "string" && text.trim().length > 0) cleaned.push(text);
+      else dropped++;
+    }
+    // Symmetric with the loader IIFE / server sanitizer — a host app passing
+    // partially-malformed data (e.g. nulls from an upstream API) loses
+    // entries silently otherwise.
+    if (dropped > 0) {
+      console.warn(
+        `[Atlas] AtlasChat starterPrompts prop: dropped ${dropped} non-string or empty entr${dropped === 1 ? "y" : "ies"}`,
+      );
+    }
+    return cleaned.map((text, idx) => ({
+      id: `override:${idx}`,
+      text,
+      provenance: "library" as const,
+    }));
+  }, [starterPromptsOverride]);
+  const starterPromptsList: StarterPrompt[] = overrideStarterPrompts ?? fetchedStarterPrompts;
+
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
@@ -595,18 +648,36 @@ function AtlasChatInner({
                           Ask a question about your data to get started
                         </p>
                       </div>
-                      <div className="grid w-full max-w-lg grid-cols-1 gap-2 sm:grid-cols-2">
-                        {STARTER_PROMPTS.map((prompt) => (
-                          <Button
-                            key={prompt}
-                            variant="outline"
-                            onClick={() => handleSend(prompt)}
-                            className="h-auto whitespace-normal justify-start rounded-lg px-3 py-2.5 text-left text-sm"
-                          >
-                            {prompt}
-                          </Button>
-                        ))}
-                      </div>
+                      {starterPromptsList.length > 0 ? (
+                        <div className="grid w-full max-w-lg grid-cols-1 gap-2 sm:grid-cols-2">
+                          {starterPromptsList.map((prompt) => {
+                            const isFavorite = prompt.provenance === "favorite";
+                            return (
+                              <Button
+                                key={prompt.id}
+                                variant="outline"
+                                onClick={() => handleSend(prompt.text)}
+                                className="h-auto whitespace-normal justify-start rounded-lg px-3 py-2.5 text-left text-sm"
+                                data-testid={`starter-prompt-${prompt.provenance}`}
+                              >
+                                {isFavorite && (
+                                  <Pin
+                                    className="mr-2 size-3.5 shrink-0 text-primary"
+                                    aria-hidden="true"
+                                  />
+                                )}
+                                <span className="flex-1">{prompt.text}</span>
+                              </Button>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        !starterPromptsQuery.isLoading && (
+                          <p className="max-w-sm text-center text-sm text-zinc-500 dark:text-zinc-500">
+                            Ask your first question below to get started.
+                          </p>
+                        )
+                      )}
                     </div>
                   )}
 

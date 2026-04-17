@@ -71,6 +71,7 @@ function App() {
 | `chatEndpoint` | `string` | `"/api/v1/chat"` | Custom chat API endpoint path. Combined with `apiUrl` for the full URL. |
 | `conversationsEndpoint` | `string` | `"/api/v1/conversations"` | Custom conversations API endpoint path. Used for listing and loading conversations. |
 | `showBranding` | `boolean` | `true` | Show "Powered by Atlas" badge below the chat input. Set to `false` to hide. Automatically hidden when enterprise white-label branding is active. |
+| `starterPrompts` | `string[]` | — | Override the adaptive empty-state prompt list with a static set of strings. When supplied, the widget **does not call** `/api/v1/starter-prompts` — overrides exist precisely so embedded contexts can avoid issuing a user-identifying request. Pass `[]` to render no suggestions and still skip the fetch. Omit the prop to fetch the resolved list of favorites + popular + library prompts from the server. |
 
 ### Auth Mode Detection
 

@@ -37,17 +37,29 @@ interface MigrationClient extends Queryable {
 
 const MIGRATIONS_DIR = path.join(import.meta.dir, "migrations");
 
+/** Options for `runMigrations`. */
+export interface RunMigrationsOptions {
+  /**
+   * Filenames to skip without recording in `__atlas_migrations`. Used to keep
+   * migrations that depend on tables created by external systems (e.g. Better
+   * Auth's `organization` table) out of deployments where those tables do not
+   * exist. Skipped files are picked up automatically on a future boot once the
+   * dependency is in place. See #1472.
+   */
+  skip?: string[];
+}
+
 /**
  * Run all pending migrations against the given pool.
  *
  * 1. Creates the tracking table if it doesn't exist.
  * 2. Reads all `*.sql` files from the migrations directory, sorted by name.
- * 3. Skips files already recorded in `__atlas_migrations`.
+ * 3. Skips files already recorded in `__atlas_migrations` and any in `options.skip`.
  * 4. Executes each pending file inside a transaction.
  *
  * Returns the number of migrations applied (0 if already up-to-date).
  */
-export async function runMigrations(pool: MigrationPool): Promise<number> {
+export async function runMigrations(pool: MigrationPool, options: RunMigrationsOptions = {}): Promise<number> {
   // Use a dedicated connection so the advisory lock, all transactions,
   // and the unlock all happen on the same session. Without this, pg pool
   // could dispatch queries to different connections, breaking lock and
@@ -60,7 +72,7 @@ export async function runMigrations(pool: MigrationPool): Promise<number> {
     await client.query("SELECT pg_advisory_lock(hashtext('atlas_migrations'))");
 
     try {
-      return await _runMigrationsLocked(client);
+      return await _runMigrationsLocked(client, options.skip ?? []);
     } finally {
       await client.query("SELECT pg_advisory_unlock(hashtext('atlas_migrations'))").catch(() => {
         // intentionally ignored: unlock may fail if connection was broken
@@ -71,7 +83,8 @@ export async function runMigrations(pool: MigrationPool): Promise<number> {
   }
 }
 
-async function _runMigrationsLocked(client: MigrationClient): Promise<number> {
+async function _runMigrationsLocked(client: MigrationClient, skip: string[]): Promise<number> {
+  const skipSet = new Set(skip);
   // Ensure tracking table exists
   await client.query(`
     CREATE TABLE IF NOT EXISTS __atlas_migrations (
@@ -93,6 +106,20 @@ async function _runMigrationsLocked(client: MigrationClient): Promise<number> {
 
   if (files.length === 0) return 0;
 
+  // Surface stale skip entries — a typo here would silently no-op a guard,
+  // letting a migration that should have been skipped fall through to a
+  // misleading SQL failure. This is exactly the failure mode #1472 invented
+  // the skip list to prevent.
+  const filesSet = new Set(files);
+  for (const name of skipSet) {
+    if (!filesSet.has(name)) {
+      log.warn(
+        { migration: name },
+        "Skip-list entry does not match any migration file — typo or stale reference?",
+      );
+    }
+  }
+
   // Get already-applied migrations
   const { rows } = await client.query("SELECT name FROM __atlas_migrations ORDER BY name");
   const applied = new Set(rows.map((r) => r.name as string));
@@ -100,6 +127,10 @@ async function _runMigrationsLocked(client: MigrationClient): Promise<number> {
   let count = 0;
   for (const file of files) {
     if (applied.has(file)) continue;
+    if (skipSet.has(file)) {
+      log.debug({ migration: file }, "Skipping migration (caller-supplied skip list)");
+      continue;
+    }
 
     const filePath = path.join(MIGRATIONS_DIR, file);
     const sql = fs.readFileSync(filePath, "utf-8");

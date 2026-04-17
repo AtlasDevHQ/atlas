@@ -1,5 +1,9 @@
 import { describe, it, expect } from "bun:test";
+import * as fs from "fs";
+import * as path from "path";
 import { runMigrations, runSeeds } from "@atlas/api/lib/db/migrate";
+
+const MIGRATIONS_DIR = path.join(import.meta.dir, "..", "migrations");
 
 // ---------------------------------------------------------------------------
 // Mock pool
@@ -62,7 +66,7 @@ describe("runMigrations", () => {
 
     const count = await runMigrations(pool);
 
-    expect(count).toBe(27);
+    expect(count).toBe(28);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -118,6 +122,7 @@ describe("runMigrations", () => {
         "0024_mode_status_columns.sql",
         "0025_fix_null_unsafe_indexes.sql",
         "0026_drop_legacy_semantic_entity_index.sql",
+        "0027_organization_saas_columns.sql",
       ],
     });
 
@@ -221,6 +226,88 @@ describe("runMigrations", () => {
     for (const table of expectedTables) {
       expect(baselineSql).toContain(table);
     }
+  });
+
+  it("skips files listed in options.skip without recording them", async () => {
+    const { pool, queries, params } = createMockPool();
+
+    const skip = ["0027_organization_saas_columns.sql"];
+    await runMigrations(pool, { skip });
+
+    // The 0027 SQL never runs — match the issue reference unique to 0027.
+    const orgSaasMigration = queries.find((q) => q.includes("issues/1472"));
+    expect(orgSaasMigration).toBeUndefined();
+
+    // The 0027 row is not recorded as applied
+    const insertedNames = params
+      .filter((p) => p.length === 1 && typeof p[0] === "string")
+      .map((p) => p[0] as string);
+    expect(insertedNames).not.toContain("0027_organization_saas_columns.sql");
+
+    // Other migrations still applied (baseline recorded)
+    expect(insertedNames).toContain("0000_baseline.sql");
+  });
+
+  it("does not crash when skip-list entries don't match any migration file", async () => {
+    // A typo in the skip list (#1472) silently no-ops the safeguard. The
+    // runner emits a warning but must not fail the boot; otherwise a stale
+    // entry would bring the server down.
+    const { pool, params } = createMockPool();
+
+    await expect(runMigrations(pool, { skip: ["0099_does_not_exist.sql"] })).resolves.toBeNumber();
+
+    // Real migrations still recorded.
+    const insertedNames = params
+      .filter((p) => p.length === 1 && typeof p[0] === "string")
+      .map((p) => p[0] as string);
+    expect(insertedNames).toContain("0000_baseline.sql");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: 0027_organization_saas_columns.sql
+// ---------------------------------------------------------------------------
+
+describe("0027_organization_saas_columns.sql", () => {
+  const filePath = path.join(MIGRATIONS_DIR, "0027_organization_saas_columns.sql");
+
+  it("file exists in the migrations directory", () => {
+    expect(fs.existsSync(filePath)).toBe(true);
+  });
+
+  it("ALTERs organization unconditionally with all SaaS columns", () => {
+    const sql = fs.readFileSync(filePath, "utf-8");
+
+    // The point of 0027 is that it does NOT silently skip when organization
+    // is missing — that was the bug in 0000/0020. So the SQL must NOT wrap
+    // ALTERs in a conditional `IF EXISTS (... table_name = 'organization')` skip.
+    // It may use IF NOT EXISTS at the column level for idempotency on existing installs.
+    const hasSilentSkip = /IF EXISTS\s*\(\s*SELECT\s+1\s+FROM\s+information_schema\.tables\s+WHERE\s+table_name\s*=\s*'organization'\s*\)\s+THEN\s+ALTER/i.test(sql);
+    expect(hasSilentSkip).toBe(false);
+
+    // All required SaaS columns
+    expect(sql).toContain("workspace_status");
+    expect(sql).toContain("plan_tier");
+    expect(sql).toContain("byot");
+    expect(sql).toContain("stripe_customer_id");
+    expect(sql).toContain("trial_ends_at");
+    expect(sql).toContain("suspended_at");
+    expect(sql).toContain("deleted_at");
+    expect(sql).toContain("region");
+    expect(sql).toContain("region_assigned_at");
+
+    // Idempotent on existing installs
+    expect(sql).toMatch(/ADD COLUMN IF NOT EXISTS/i);
+  });
+
+  it("raises a clear error if organization table is missing", () => {
+    const sql = fs.readFileSync(filePath, "utf-8");
+
+    // Must fail loudly — surface the boot-ordering bug rather than silently
+    // marking the migration applied with no columns added (the 0000/0020 bug).
+    expect(sql).toMatch(/RAISE\s+EXCEPTION/i);
+    expect(sql).toContain("organization");
+    expect(sql).toContain("1472");
   });
 });
 

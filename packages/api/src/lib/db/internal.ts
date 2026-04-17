@@ -596,6 +596,9 @@ function warnIfSharedDatabase(): void {
   }
 }
 
+/** Migrations that depend on Better Auth's organization table (#1472). */
+const ORG_DEPENDENT_MIGRATIONS = ["0027_organization_saas_columns.sql"];
+
 /**
  * Idempotent migration: runs versioned SQL migrations from `migrations/`
  * directory, then applies data seeds.
@@ -606,6 +609,11 @@ function warnIfSharedDatabase(): void {
  * Retries up to 5 times with exponential backoff (1s, 2s, 4s, 8s, 16s) to
  * handle serverless Postgres cold starts on Railway where the DB may take
  * several seconds to wake up.
+ *
+ * In non-managed auth modes, migrations that depend on Better Auth's
+ * `organization` table are skipped — Better Auth never creates it, so
+ * applying them would fail. They get picked up automatically if the
+ * deployment later switches to managed auth. See #1472.
  */
 export async function migrateInternalDB(): Promise<void> {
   // Warn when DATABASE_URL and ATLAS_DATASOURCE_URL resolve to the same
@@ -617,13 +625,19 @@ export async function migrateInternalDB(): Promise<void> {
   const pool = getInternalDB();
 
   const { runMigrations, runSeeds } = await import("@atlas/api/lib/db/migrate");
+  // Dynamic import — db/internal is imported by lower-level modules in the
+  // dependency graph (e.g. logger sinks, effect services), so a static import
+  // of auth/detect → config triggers a circular evaluation order that breaks
+  // module-link in some test runners (mcp test suite). See #1487.
+  const { detectAuthMode } = await import("@atlas/api/lib/auth/detect");
+  const skip = detectAuthMode() === "managed" ? [] : ORG_DEPENDENT_MIGRATIONS;
 
   // Retry with backoff for serverless Postgres cold starts (Railway).
   // Set ATLAS_MIGRATION_RETRIES=0 to disable retries (e.g. in tests).
   const maxRetries = parseInt(process.env.ATLAS_MIGRATION_RETRIES ?? "5", 10);
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      await runMigrations(pool);
+      await runMigrations(pool, { skip });
       break;
     } catch (err) {
       if (attempt === maxRetries) throw err;

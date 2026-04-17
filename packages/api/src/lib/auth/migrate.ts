@@ -38,8 +38,10 @@ export function getMigrationError(): string | null {
  *   3. Load saved connections, plugin settings, abuse state.
  *   4. Bootstrap admin, seed dev user, backfill password-change flag.
  *
- * Step 1 must precede step 2 — see #1472. In non-managed mode the Better Auth
- * step is skipped and Atlas migrations skip the org-dependent files.
+ * Step 1 must precede step 2 — see #1472. In non-managed mode step 1 is
+ * skipped; the Atlas migration runner independently skips org-dependent
+ * files based on `detectAuthMode()`, so 0027 is not attempted without
+ * Better Auth having created the table.
  */
 export async function migrateAuthTables(): Promise<void> {
   if (_migrated) return;
@@ -58,14 +60,16 @@ export async function migrateAuthTables(): Promise<void> {
 
       // Add password_change_required column to Better Auth's user table.
       // Must run AFTER Better Auth migrations (which create the "user" table).
+      // If this fails, Better Auth's migration likely misreported success and
+      // managed auth itself may be broken — log loudly.
       try {
         await internalQuery(
           `ALTER TABLE "user" ADD COLUMN IF NOT EXISTS password_change_required BOOLEAN NOT NULL DEFAULT false`,
         );
       } catch (err) {
-        log.warn(
+        log.error(
           { err: err instanceof Error ? err.message : String(err) },
-          "Could not add password_change_required column — password change enforcement will be skipped",
+          "Could not add password_change_required column — Better Auth user table may be missing or unwritable; password change enforcement will be skipped",
         );
       }
     } catch (err) {
@@ -117,13 +121,33 @@ export async function migrateAuthTables(): Promise<void> {
   }
 
   // 4. Bootstrap + seed (managed mode only — needs Better Auth `user` table).
+  //    Each phase has its own internal try/catch; the wrappers here catch
+  //    unexpected programming errors (e.g. API surface drift) so a failure in
+  //    one phase doesn't skip the next.
   if (auth) {
     try {
       await bootstrapAdminUser();
+    } catch (err) {
+      log.error(
+        { err: err instanceof Error ? err.message : String(err) },
+        "Bootstrap admin promotion failed unexpectedly — admin console may be inaccessible",
+      );
+    }
+    try {
       await seedDevUser(auth);
+    } catch (err) {
+      log.error(
+        { err: err instanceof Error ? err.message : String(err) },
+        "Dev user seed failed unexpectedly — first-run admin/org/demo data may be missing",
+      );
+    }
+    try {
       await backfillPasswordChangeFlag();
     } catch (err) {
-      log.error({ err }, "Admin bootstrap or dev seed failed — managed auth still functional");
+      log.error(
+        { err: err instanceof Error ? err.message : String(err) },
+        "Backfill password-change flag failed unexpectedly",
+      );
     }
   }
 

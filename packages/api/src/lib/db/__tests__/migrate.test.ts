@@ -247,6 +247,21 @@ describe("runMigrations", () => {
     // Other migrations still applied (baseline recorded)
     expect(insertedNames).toContain("0000_baseline.sql");
   });
+
+  it("does not crash when skip-list entries don't match any migration file", async () => {
+    // A typo in the skip list (#1472) silently no-ops the safeguard. The
+    // runner emits a warning but must not fail the boot; otherwise a stale
+    // entry would bring the server down.
+    const { pool, params } = createMockPool();
+
+    await expect(runMigrations(pool, { skip: ["0099_does_not_exist.sql"] })).resolves.toBeNumber();
+
+    // Real migrations still recorded.
+    const insertedNames = params
+      .filter((p) => p.length === 1 && typeof p[0] === "string")
+      .map((p) => p[0] as string);
+    expect(insertedNames).toContain("0000_baseline.sql");
+  });
 });
 
 // ---------------------------------------------------------------------------

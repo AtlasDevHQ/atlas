@@ -106,6 +106,20 @@ async function _runMigrationsLocked(client: MigrationClient, skip: string[]): Pr
 
   if (files.length === 0) return 0;
 
+  // Surface stale skip entries — a typo here would silently no-op a guard,
+  // letting a migration that should have been skipped fall through to a
+  // misleading SQL failure. This is exactly the failure mode #1472 invented
+  // the skip list to prevent.
+  const filesSet = new Set(files);
+  for (const name of skipSet) {
+    if (!filesSet.has(name)) {
+      log.warn(
+        { migration: name },
+        "Skip-list entry does not match any migration file — typo or stale reference?",
+      );
+    }
+  }
+
   // Get already-applied migrations
   const { rows } = await client.query("SELECT name FROM __atlas_migrations ORDER BY name");
   const applied = new Set(rows.map((r) => r.name as string));

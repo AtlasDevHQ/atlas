@@ -548,3 +548,26 @@ Tracking module-deepening refactors discovered by the `improve-codebase-architec
 - `@useatlas/react` fully adopted with `QueryClientProvider` + `useHealthQuery`
 
 **Category:** Custom fetch-and-state hooks replaced with library that provides deep module behavior (caching, deduplication, lifecycle management) behind a simple `useQuery`/`useMutation` interface.
+
+---
+
+## 25. Consolidate starter-prompts fetch discipline into shared SDK helper
+
+**Date:** 2026-04-17
+**Issue:** #1505
+**PR:** #1511
+
+**Problem:** Two TanStack hooks — one in `packages/web/src/ui/hooks/use-starter-prompts-query.ts` (90 lines) and one in `packages/react/src/hooks/use-starter-prompts-query.ts` (83 lines) — duplicated verbatim the same starter-prompts fetch discipline: 5xx→[] soft-fail, 4xx→throw with `requestId` extraction, network-error wrapping with `cause` preservation, `Array.isArray` guard on the response body. Any bug fix in one would silently miss the other, and a PR-review pass surfaced a silent-failure bug (unwrapped `res.json()` on the 200 path that threw bare `SyntaxError` on malformed bodies) that existed in both hooks. The drift risk was compounding: #1504 had just migrated chat to one of the hooks, #1480 had added a notebook surface, and #1479 had added a widget surface — four consumers of the same policy.
+
+**Solution:** Extracted `fetchStarterPrompts(config)` as a pure helper in `@useatlas/sdk` alongside the existing typed `atlas.getStarterPrompts()` method (which throws on all non-2xx — correct for typed-error SDK consumers; the new helper soft-fails 5xx — correct for empty-state UX). Both hooks collapsed into thin `useQuery` wrappers that only differ in how they source `apiUrl` / `credentials` / `headers` from their respective contexts. Five-agent PR review caught the `res.json()` silent-failure and an AbortError-noise issue; both fixed in the same PR before merge.
+
+**Impact:**
+- **-125 net lines in the hooks** (173 combined → 88 combined). The 82 lines added to the SDK replace policy that used to exist twice.
+- **Web hook: 90 → 47 lines. React hook: 83 → 41 lines.** Both are now pure transport plumbing.
+- **18 unit tests** in the SDK (up from 13 during PR review) covering 5xx soft-fail, 4xx throw with `requestId`, malformed JSON on 200, AbortError-quiet, JSON-primitive bodies, empty `statusText` fallback, `headers` default, `limit` default, credentials/headers/signal forwarding, and network-error `cause` preservation.
+- **Bug fix shipped inline:** `res.json()` on 200 path now wrapped — malformed bodies soft-fail to `[]` + warn instead of throwing `SyntaxError`.
+- **AbortError silencing:** React Query cancellation / component unmount no longer spams dev consoles while still propagating the abort for correct classification.
+- **Single policy location** for any future starter-prompts fetch tuning (retry, auth, timeout) — both surfaces automatically inherit.
+- Follows 1.2.1's shared `<StarterPromptList>` component pattern (#1480) at the data-access layer.
+
+**Category:** Duplicated policy across sibling modules absorbed into a deep module with a narrow interface (`FetchStarterPromptsConfig` → `Promise<StarterPrompt[]>`). The asymmetry with `atlas.getStarterPrompts()` is deliberate and documented inline: two fetch surfaces serving two distinct consumer shapes.

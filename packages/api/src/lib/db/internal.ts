@@ -22,6 +22,7 @@ import { PgClient } from "@effect/sql-pg";
 import type { Pool as PgPool } from "pg";
 import { createLogger } from "@atlas/api/lib/logger";
 import { normalizeError } from "@atlas/api/lib/effect/errors";
+import { detectAuthMode } from "@atlas/api/lib/auth/detect";
 
 const log = createLogger("internal-db");
 
@@ -625,7 +626,6 @@ export async function migrateInternalDB(): Promise<void> {
   const pool = getInternalDB();
 
   const { runMigrations, runSeeds } = await import("@atlas/api/lib/db/migrate");
-  const { detectAuthMode } = await import("@atlas/api/lib/auth/detect");
   const skip = detectAuthMode() === "managed" ? [] : ORG_DEPENDENT_MIGRATIONS;
 
   // Retry with backoff for serverless Postgres cold starts (Railway).

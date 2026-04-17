@@ -1201,6 +1201,31 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 
 ---
 
+## 1.2.1 — Adaptive Starter Prompts
+
+**Replace hardcoded starter prompt grid with an adaptive surface.** Composes per-user favorites, admin-moderated popular queries, and industry-filtered fallback. Participates in the 1.2.0 draft/published mode system so admins control what their team sees. PRD: #1473. Milestone: #35.
+
+### Foundation
+- [ ] Resolver + `/api/v1/starter-prompts` endpoint + cold-start empty state (#1474)
+
+### Personal surface
+- [ ] Per-user favorites (pin/unpin + resolver integration + pin-on-hover UX) (#1475)
+
+### Admin moderation
+- [ ] Schema migration + auto-promote + read-only admin queue (#1476)
+- [ ] Admin moderation UX — approve/hide/unhide + author form (#1477)
+- [ ] 1.2.0 mode participation + CLAUDE.md Content Mode System rule (#1478)
+
+### Other surfaces
+- [ ] Widget empty state + `starterPrompts` prop override (#1479)
+- [ ] Notebook new-cell empty state (#1480)
+- [ ] SDK `atlas.getStarterPrompts()` method (#1481)
+
+### CLI
+- [ ] `atlas learn` populates pending approval queue (#1482)
+
+---
+
 ## Ideas / Backlog
 
 _Untracked ideas. Create issues when committing to work._

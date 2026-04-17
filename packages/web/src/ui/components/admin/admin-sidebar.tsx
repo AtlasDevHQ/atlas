@@ -90,6 +90,7 @@ const navGroups: NavGroup[] = [
       { href: "/admin/model-config", label: "AI Provider", requiredRole: "platform_admin" },
       { href: "/admin/learned-patterns", label: "Learned Patterns" },
       { href: "/admin/prompts", label: "Prompt Library" },
+      { href: "/admin/starter-prompts", label: "Starter Prompts" },
       { href: "/admin/actions", label: "Actions" },
     ],
   },

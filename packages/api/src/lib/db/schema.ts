@@ -497,6 +497,13 @@ export const querySuggestions = pgTable(
     frequency: integer("frequency").notNull().default(1),
     clickedCount: integer("clicked_count").notNull().default(0),
     score: real("score").notNull().default(0),
+    // Moderation lifecycle — pending | approved | hidden. Orthogonal to
+    // `status` (which gates 1.2.0 mode publication). See approval-service.ts.
+    approvalStatus: text("approval_status").notNull().default("pending"),
+    status: text("status").notNull().default("draft"),
+    approvedBy: text("approved_by"),
+    approvedAt: timestamp("approved_at", { withTimezone: true }),
+    distinctUserClicks: integer("distinct_user_clicks").notNull().default(0),
     lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -507,6 +514,24 @@ export const querySuggestions = pgTable(
     index("idx_query_suggestions_org_table").on(t.orgId, t.primaryTable),
     index("idx_query_suggestions_org_score").on(t.orgId, sql`score DESC`),
     index("idx_query_suggestions_tables").using("gin", t.tablesInvolved),
+    index("idx_query_suggestions_approval_queue").on(t.orgId, t.approvalStatus, sql`last_seen_at DESC`),
+  ],
+);
+
+// ---------------------------------------------------------------------------
+// Starter-prompt moderation — distinct-user click tracking (#1476)
+// ---------------------------------------------------------------------------
+
+export const suggestionUserClicks = pgTable(
+  "suggestion_user_clicks",
+  {
+    suggestionId: uuid("suggestion_id").notNull(),
+    userId: text("user_id").notNull(),
+    firstClickedAt: timestamp("first_clicked_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("pk_suggestion_user_clicks").on(t.suggestionId, t.userId),
+    index("idx_suggestion_user_clicks_suggestion_clicked").on(t.suggestionId, sql`first_clicked_at DESC`),
   ],
 );
 

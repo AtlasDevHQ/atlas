@@ -1047,6 +1047,13 @@ export interface QuerySuggestionRow {
   frequency: number;
   clicked_count: number;
   score: number;
+  /** Moderation lifecycle — pending | approved | hidden (#1476). */
+  approval_status: "pending" | "approved" | "hidden";
+  /** 1.2.0 mode lifecycle — draft | published | archived. */
+  status: "draft" | "published" | "archived";
+  approved_by: string | null;
+  approved_at: string | null;
+  distinct_user_clicks: number;
   last_seen_at: string;
   created_at: string;
   updated_at: string;
@@ -1170,18 +1177,62 @@ export async function getPopularSuggestions(
   }
 }
 
+/**
+ * Record a click on a query suggestion (fire-and-forget).
+ *
+ * Always bumps `clicked_count`. When `userId` is provided, also records
+ * a row in `suggestion_user_clicks` with a (suggestion_id, user_id)
+ * primary key so repeat clicks from the same user are deduplicated. On
+ * the first click from a given user, `distinct_user_clicks` is
+ * incremented atomically via a CTE so the counter cannot drift from the
+ * join table.
+ *
+ * The auto-promote decision is policy-only (see
+ * `@atlas/api/lib/suggestions/approval-service`) — this function only
+ * maintains the counter that policy reads. The queue endpoint applies
+ * the threshold + window at read time.
+ */
 export function incrementSuggestionClick(
   id: string,
-  orgId: string | null
+  orgId: string | null,
+  userId: string | null = null,
 ): void {
   if (!hasInternalDB()) return;
   const orgClause = orgId != null ? "org_id = $1" : "org_id IS NULL";
-  const params: unknown[] = orgId != null ? [orgId, id] : [id];
-  const idIdx = params.length;
+
+  if (userId == null) {
+    // Legacy path — no distinct-user tracking.
+    const params: unknown[] = orgId != null ? [orgId, id] : [id];
+    const idIdx = params.length;
+    internalExecute(
+      `UPDATE query_suggestions SET clicked_count = clicked_count + 1 WHERE ${orgClause} AND id = $${idIdx}`,
+      params,
+    );
+    return;
+  }
+
+  // Distinct-user tracking path: upsert click row, then bump counters
+  // atomically. `ON CONFLICT DO NOTHING` makes the insert idempotent
+  // per (suggestion_id, user_id); the UPDATE adds to
+  // distinct_user_clicks only when the insert actually produced a row.
+  const orgParam = orgId;
+  const params: unknown[] =
+    orgParam != null ? [orgParam, id, userId] : [id, userId];
+  const idIdx = orgParam != null ? 2 : 1;
+  const userIdx = orgParam != null ? 3 : 2;
 
   internalExecute(
-    `UPDATE query_suggestions SET clicked_count = clicked_count + 1 WHERE ${orgClause} AND id = $${idIdx}`,
-    params
+    `WITH inserted AS (
+       INSERT INTO suggestion_user_clicks (suggestion_id, user_id)
+       VALUES ($${idIdx}, $${userIdx})
+       ON CONFLICT (suggestion_id, user_id) DO NOTHING
+       RETURNING 1
+     )
+     UPDATE query_suggestions SET
+       clicked_count = clicked_count + 1,
+       distinct_user_clicks = distinct_user_clicks + (SELECT COUNT(*) FROM inserted)::int
+     WHERE ${orgClause} AND id = $${idIdx}`,
+    params,
   );
 }
 

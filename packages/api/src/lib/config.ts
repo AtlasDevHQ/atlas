@@ -394,9 +394,16 @@ const AtlasConfigSchema = z.object({
     /**
      * Cold-start window (days) applied to `prompt_collections.created_at`
      * when the resolver pulls the library tier. Also bounds the approval
-     * queue for learned-popular prompts in later slices. Default: 90.
+     * queue for learned-popular prompts — only suggestions with a recent
+     * `last_seen_at` are eligible for auto-promotion. Default: 90.
      */
     coldWindowDays: z.number().int().positive().default(90),
+    /**
+     * Distinct-user click threshold that auto-promotes a learned suggestion
+     * into the admin approval queue. Clicks are counted once per user
+     * within the cold window. Default: 3 (#1476, PRD #1473).
+     */
+    autoPromoteClicks: z.number().int().positive().default(3),
   }).optional(),
 
   /**
@@ -475,7 +482,7 @@ export interface ResolvedConfig {
   /** Dynamic learning configuration. */
   learn?: { confidenceThreshold: number };
   /** Adaptive starter prompt configuration. */
-  starterPrompts?: { coldWindowDays: number };
+  starterPrompts?: { coldWindowDays: number; autoPromoteClicks: number };
   /** Enterprise feature gating. */
   enterprise?: { enabled: boolean; licenseKey?: string };
   /** Data residency configuration for region-based routing. */
@@ -662,13 +669,16 @@ export function configFromEnv(): ResolvedConfig {
         },
       };
     })()),
-    // Starter prompt config from env vars (#1474)
+    // Starter prompt config from env vars (#1474, #1476)
     ...((() => {
       const coldWindow = parseInt(process.env.ATLAS_STARTER_PROMPT_COLD_WINDOW_DAYS ?? "", 10);
+      const autoPromote = parseInt(process.env.ATLAS_STARTER_PROMPT_AUTO_PROMOTE_CLICKS ?? "", 10);
       return {
         starterPrompts: {
           coldWindowDays:
             Number.isFinite(coldWindow) && coldWindow > 0 ? coldWindow : 90,
+          autoPromoteClicks:
+            Number.isFinite(autoPromote) && autoPromote > 0 ? autoPromote : 3,
         },
       };
     })()),

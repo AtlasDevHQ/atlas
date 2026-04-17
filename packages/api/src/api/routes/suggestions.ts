@@ -213,14 +213,15 @@ suggestions.openapi(listPopularRoute, async (c) => {
 suggestions.openapi(trackClickRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { requestId } = yield* RequestContext;
-    const { orgId } = yield* AuthContext;
+    const { orgId, user } = yield* AuthContext;
 
     const resolvedOrgId = orgId ?? null;
+    const resolvedUserId = user?.id ?? null;
     const { id } = c.req.valid("param");
 
     // Fire-and-forget: always return 204
     try {
-      incrementSuggestionClick(id, resolvedOrgId);
+      incrementSuggestionClick(id, resolvedOrgId, resolvedUserId);
     } catch (err) {
       log.warn(
         { err: err instanceof Error ? err.message : String(err), requestId },

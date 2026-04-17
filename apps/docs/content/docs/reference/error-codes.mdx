@@ -86,7 +86,7 @@ The `ChatErrorCode` catalog above is scoped to the chat-stream endpoint — the 
 | `invalid_favorite_text` | 400 | Favorite text is empty, too long, or otherwise malformed | Fix the client-side validation; trim whitespace and enforce length limits before POSTing | No |
 
 <Callout>
-These codes appear only on the specific endpoints listed — they won't reach the chat stream. If you're only consuming the chat API via `@useatlas/sdk`'s `query()` / `stream()` methods, you won't see them. They surface on `GET /api/v1/admin/connections`, `POST /api/v1/starter-prompts/favorites`, any write that hits the regional middleware, and other admin-scoped routes.
+These codes aren't part of the exhaustively-typed `ChatErrorCode` catalog, so the SDK's `isChatErrorCode()` / `isRetryableError()` guards return `false` / `undefined` for them. Parse the raw `error` field yourself when calling endpoints that may return them: `POST /api/v1/starter-prompts/favorites`, `/api/v1/admin/connections/*`, `/api/v1/admin/semantic/*`, and any write request that hits the regional-routing or migration middleware (including the chat stream itself for `workspace_migrating` / `misdirected_request`).
 </Callout>
 
 ---

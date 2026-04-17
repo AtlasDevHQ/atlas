@@ -381,6 +381,29 @@ ATLAS_LEARN_CONFIDENCE_THRESHOLD=0.7
 
 ---
 
+## Starter Prompts
+
+Configure the adaptive starter-prompt resolver that powers the empty-chat surface (`GET /api/v1/starter-prompts`). Composes per-user favorites, admin-approved popular queries, and a demo-industry library into a single ordered list.
+
+```typescript
+export default defineConfig({
+  starterPrompts: {
+    coldWindowDays: 90,  // default: 90
+  },
+});
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `coldWindowDays` | `number` | `90` | Window in days applied to `prompt_collections.created_at` when the library tier is populated. Also bounds the approval queue for learned-popular prompts in later slices |
+
+**Env var equivalent:**
+```bash
+ATLAS_STARTER_PROMPT_COLD_WINDOW_DAYS=90
+```
+
+---
+
 ## RLS (Row-Level Security)
 
 Define RLS policies that inject WHERE clauses on every query based on user JWT claims. Each policy specifies which tables it applies to, which column to filter on, and which JWT claim provides the value.
@@ -960,6 +983,7 @@ export default defineConfig({
 | `pool` | `object` | — | Per-org connection pool isolation ([details](#per-org-pool-isolation)) |
 | `semanticIndex` | `object` | — | Semantic index configuration ([details](#semantic-index)) |
 | `learn` | `object` | — | Dynamic learning configuration ([details](#dynamic-learning)) |
+| `starterPrompts` | `object` | — | Adaptive starter prompt configuration ([details](#starter-prompts)) |
 | `enterprise` | `object` | `{ enabled: false }` | Enterprise feature gating ([details](#enterprise)) |
 | `deployMode` | `"auto" \| "saas" \| "self-hosted"` | `"auto"` | Deployment mode. `saas` enables hosted product features (enterprise-gated). `auto` detects from environment |
 | `residency` | `object` | — | Data residency region routing (enterprise-gated) |

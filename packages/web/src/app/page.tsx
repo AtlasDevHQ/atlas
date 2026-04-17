@@ -18,7 +18,6 @@ import { FollowUpChips } from "@/ui/components/chat/follow-up-chips";
 import { ToolPart } from "@/ui/components/chat/tool-part";
 import { Markdown } from "@/ui/components/chat/markdown";
 import { TypingIndicator } from "@/ui/components/chat/typing-indicator";
-import { STARTER_PROMPTS } from "@/ui/components/chat/starter-prompts";
 import { SchemaExplorer } from "@/ui/components/schema-explorer/schema-explorer";
 import { ShareDialog } from "@/ui/components/chat/share-dialog";
 import { PromptLibrary } from "@/ui/components/chat/prompt-library";
@@ -61,6 +60,11 @@ function ChatPage() {
   const [schemaExplorerOpen, setSchemaExplorerOpen] = useState(false);
   const [promptLibraryOpen, setPromptLibraryOpen] = useState(false);
   const [fetchErrorDismissed, setFetchErrorDismissed] = useState(false);
+  // Adaptive empty-chat starter surface (#1474).
+  const [starterPrompts, setStarterPrompts] = useState<
+    Array<{ id: string; text: string; provenance: string }>
+  >([]);
+  const [starterPromptsLoading, setStarterPromptsLoading] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const lastLoadedIdRef = useRef<string | null>(null);
 
@@ -121,6 +125,33 @@ function ChatPage() {
   const { messages, setMessages, sendMessage, status, error: chatError } = useChat({ transport });
 
   const isLoading = status === "streaming" || status === "submitted";
+
+  // Fetch adaptive starter prompts for the empty state (#1474)
+  useEffect(() => {
+    if (messages.length > 0) return;
+    let cancelled = false;
+    setStarterPromptsLoading(true);
+    const apiUrl = getApiUrl();
+    const credentials: RequestCredentials = isCrossOrigin() ? "include" : "same-origin";
+    fetch(`${apiUrl}/api/v1/starter-prompts?limit=6`, {
+      credentials,
+      headers: getHeaders(),
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (!cancelled && Array.isArray(data?.prompts)) {
+          setStarterPrompts(data.prompts);
+        }
+      })
+      .catch(() => {
+        // intentionally ignored: starter prompts are non-critical;
+        // empty list → cold-start CTA renders instead.
+      })
+      .finally(() => {
+        if (!cancelled) setStarterPromptsLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, [messages.length, getHeaders]);
 
   useEffect(() => {
     const el = scrollRef.current;
@@ -340,18 +371,26 @@ function ChatPage() {
                           Ask a question about your data to get started
                         </p>
                       </div>
-                      <div className="grid w-full max-w-lg grid-cols-1 gap-2 sm:grid-cols-2">
-                        {STARTER_PROMPTS.map((prompt) => (
-                          <Button
-                            key={prompt}
-                            variant="outline"
-                            onClick={() => handleSend(prompt)}
-                            className="h-auto whitespace-normal justify-start rounded-lg px-3 py-2.5 text-left text-sm"
-                          >
-                            {prompt}
-                          </Button>
-                        ))}
-                      </div>
+                      {starterPrompts.length > 0 ? (
+                        <div className="grid w-full max-w-lg grid-cols-1 gap-2 sm:grid-cols-2">
+                          {starterPrompts.map((prompt) => (
+                            <Button
+                              key={prompt.id}
+                              variant="outline"
+                              onClick={() => handleSend(prompt.text)}
+                              className="h-auto whitespace-normal justify-start rounded-lg px-3 py-2.5 text-left text-sm"
+                            >
+                              {prompt.text}
+                            </Button>
+                          ))}
+                        </div>
+                      ) : (
+                        !starterPromptsLoading && (
+                          <p className="max-w-sm text-center text-sm text-zinc-500 dark:text-zinc-500">
+                            Ask your first question below — we&apos;ll learn from your team&apos;s queries and surface their best starters here.
+                          </p>
+                        )
+                      )}
                     </div>
                   )}
 

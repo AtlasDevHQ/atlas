@@ -1,0 +1,124 @@
+---
+title: Starter Prompts
+description: Fetch the adaptive starter-prompt list from @useatlas/sdk.
+---
+
+Use `atlas.getStarterPrompts()` to fetch the same resolved list of starter
+prompts that the Atlas web empty state renders. This is the bridge for
+custom surfaces — embedded experiences, Slack slash commands, internal
+tools — so users see personalized first-run suggestions anywhere Atlas
+runs, not only in the web chat.
+
+The list composes tiers in display order:
+
+1. **Favorites** — prompts the user has pinned (per-user, per-workspace).
+   Requires both a user and workspace context; callers without either
+   (unauthenticated local dev, keys not bound to a user) simply skip this
+   tier.
+2. **Library** — curated prompts for the active workspace's demo industry,
+   used to fill any remaining slots after favorites.
+
+A **popular** tier (admin-approved suggestions from past usage) is reserved
+in the wire format and will slot in between favorites and library in a
+future release — it is not yet emitted.
+
+An empty `prompts` array signals the cold-start state — the UI should
+render a single-CTA empty state rather than a prompt list. The `cold-start`
+value in `StarterPromptProvenance` is reserved for future use; the current
+server never returns a row with that provenance.
+
+---
+
+## Method
+
+```typescript
+atlas.getStarterPrompts(options?: { limit?: number }): Promise<StarterPromptsResponse>
+```
+
+### Options
+
+| Field   | Type     | Default | Notes                                            |
+| ------- | -------- | ------- | ------------------------------------------------ |
+| `limit` | `number` | `6`     | Maximum number of prompts. Server clamps to 1–50. |
+
+### Response
+
+```typescript
+interface StarterPromptsResponse {
+  readonly prompts: ReadonlyArray<StarterPrompt>;
+  readonly total: number;
+}
+
+interface StarterPrompt {
+  readonly id: string;
+  readonly text: string;
+  readonly provenance: StarterPromptProvenance;
+}
+
+type StarterPromptProvenance =
+  | "favorite"
+  | "popular"
+  | "library"
+  | "cold-start";
+```
+
+The `id` is namespaced by tier (e.g. `library:<uuid>`, `favorite:<pinId>`)
+so two tiers returning rows with the same raw id never collide on
+client-side keys.
+
+`provenance` is useful for badging or telemetry — e.g. render a pin icon
+next to favorites, or track which tier a user clicked.
+
+---
+
+## Example
+
+```typescript
+import { createAtlasClient } from "@useatlas/sdk";
+
+const atlas = createAtlasClient({
+  baseUrl: "https://api.example.com",
+  apiKey: process.env.ATLAS_API_KEY!,
+});
+
+const { prompts, total } = await atlas.getStarterPrompts({ limit: 5 });
+
+if (total === 0) {
+  renderColdStartCta();
+} else {
+  for (const p of prompts) {
+    console.log(`[${p.provenance}] ${p.text}`);
+  }
+}
+```
+
+---
+
+## User context
+
+The list is resolved from the caller's user and workspace context — the
+API key (or bearer token) you pass to `createAtlasClient` maps to a single
+user, and that user's pinned favorites appear first in the response.
+
+This has three practical implications:
+
+- **One key per user** — share a key across users and they will all see
+  the same user's favorites. Provision one key per seat when favorites
+  matter.
+- **Workspace scoping** — the demo-industry library is resolved against
+  the key's workspace. Switch keys to switch workspaces.
+- **Self-hosted / dev mode** — credentials that don't bind to a specific
+  user (or bind without a workspace) silently skip the favorites tier
+  and fall through to the library. You'll still get a list; it just
+  won't include any pins.
+
+For background on API-key to user binding, see
+[API Keys](/docs/guides/api-keys).
+
+---
+
+## See also
+
+- [SDK Reference](/docs/reference/sdk) — full method index
+- [API Keys](/docs/guides/api-keys) — creating and managing keys
+- `GET /api/v1/starter-prompts` — underlying REST endpoint

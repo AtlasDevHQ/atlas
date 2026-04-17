@@ -224,6 +224,32 @@ export const MOCK_VALIDATE_SQL_VALID = {
   tables: ["users"],
 };
 
+/**
+ * Most-recent-request capture for `GET /api/v1/starter-prompts`. Tests
+ * assert on the URL to verify the SDK forwards (or omits) query params
+ * correctly. Wrapped in a getter + setter so consumers always read the
+ * current value rather than a stale import binding.
+ */
+let lastStarterPromptsRequestUrl: string | null = null;
+
+export function getLastStarterPromptsRequestUrl(): string | null {
+  return lastStarterPromptsRequestUrl;
+}
+
+export function resetStarterPromptsCapture(): void {
+  lastStarterPromptsRequestUrl = null;
+}
+
+export const MOCK_STARTER_PROMPTS = {
+  prompts: [
+    { id: "favorite:fav-1", text: "Top users by revenue", provenance: "favorite" as const },
+    { id: "popular:pop-1", text: "Daily active users this week", provenance: "popular" as const },
+    { id: "library:lib-1", text: "Recent signup trend", provenance: "library" as const },
+    { id: "library:lib-2", text: "Churn rate by plan", provenance: "library" as const },
+  ],
+  total: 4,
+};
+
 export const MOCK_VALIDATE_SQL_INVALID = {
   valid: false,
   errors: [
@@ -669,6 +695,17 @@ async function handleRequest(req: Request): Promise<Response> {
     const authErr = checkAuth(req);
     if (authErr) return authErr;
     return json(MOCK_TABLES_RESPONSE);
+  }
+
+  // ---- GET /api/v1/starter-prompts ----
+  if (method === "GET" && pathname === "/api/v1/starter-prompts") {
+    const authErr = checkAuth(req);
+    if (authErr) return authErr;
+    lastStarterPromptsRequestUrl = req.url;
+    const rawLimit = url.searchParams.get("limit");
+    const all = MOCK_STARTER_PROMPTS.prompts;
+    const sliced = rawLimit != null ? all.slice(0, Number(rawLimit)) : all;
+    return json({ prompts: sliced, total: sliced.length });
   }
 
   // ---- POST /api/v1/validate-sql ----

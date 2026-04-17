@@ -21,7 +21,8 @@
 import { createRoute, z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
-import { internalQuery, getInternalDB } from "@atlas/api/lib/db/internal";
+import { getInternalDB } from "@atlas/api/lib/db/internal";
+import { getSettingAuto } from "@atlas/api/lib/settings";
 import {
   DEMO_CONNECTION_ID,
   archiveSingleConnection,
@@ -32,6 +33,24 @@ import {
 import { runHandler } from "@atlas/api/lib/effect/hono";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
+
+/**
+ * Canonical setting key for the onboarding demo industry. Mirrors the
+ * constant in `routes/mode.ts` and `lib/prompts/scoping.ts`. Prior callers
+ * used the lowercase literal `demo_industry` in hand-rolled SQL against
+ * the settings table — that was issue #1466 and silently missed every row.
+ */
+const DEMO_INDUSTRY_SETTING = "ATLAS_DEMO_INDUSTRY";
+
+/**
+ * Discriminated result for `readDemoIndustry`. Distinguishes "setting
+ * absent" (expected, value === null) from "read failed" (unexpected,
+ * surfaced as 500 by callers) so a transient failure can't quietly leave
+ * demo prompts at `published` after archive/publish commits.
+ */
+type ReadDemoIndustryResult =
+  | { ok: true; value: string | null }
+  | { ok: false; err: Error };
 
 const log = createLogger("admin-archive");
 
@@ -67,30 +86,33 @@ type RestoreResponse = z.infer<typeof RestoreResponseSchema>;
 // ---------------------------------------------------------------------------
 
 /**
- * Read the org's `demo_industry` setting (if any). Failures are logged and
- * treated as "no industry" — the route proceeds without a demo prompt
- * cascade in that case.
+ * Read the org's `ATLAS_DEMO_INDUSTRY` setting (if any). Returns a
+ * discriminated result so callers can distinguish "setting absent"
+ * (`ok: true, value: null` — expected, cascade skipped) from "read
+ * failed" (`ok: false` — surface as 500, see issue #1470).
+ *
+ * Reads go through the in-process settings cache via `getSettingAuto` —
+ * using a hand-rolled SQL literal was issue #1466, which hit the wrong
+ * key (`demo_industry`) and silently missed every row.
  */
-async function readDemoIndustry(
+function readDemoIndustry(
   orgId: string,
   requestId: string,
-): Promise<string | null> {
+): ReadDemoIndustryResult {
   try {
-    const rows = await internalQuery<{ value: string }>(
-      `SELECT value FROM settings WHERE org_id = $1 AND key = 'demo_industry'`,
-      [orgId],
-    );
-    return rows[0]?.value ?? null;
+    const value = getSettingAuto(DEMO_INDUSTRY_SETTING, orgId) ?? null;
+    return { ok: true, value };
   } catch (err) {
-    log.warn(
+    const normalized = err instanceof Error ? err : new Error(String(err));
+    log.error(
       {
-        err: err instanceof Error ? err.message : String(err),
+        err: normalized.message,
         orgId,
         requestId,
       },
-      "Failed to read demo_industry setting — demo prompt cascade skipped",
+      "Failed to read ATLAS_DEMO_INDUSTRY setting — archive/restore aborted before transaction",
     );
-    return null;
+    return { ok: false, err: normalized };
   }
 }
 
@@ -270,14 +292,34 @@ adminArchive.openapi(archiveRoute, async (c) =>
     const authResult = c.get("authResult");
     const { connectionId } = c.req.valid("json");
 
-    const demoIndustry =
-      connectionId === DEMO_CONNECTION_ID
-        ? await readDemoIndustry(orgId, requestId)
-        : null;
+    // Resolve demo industry BEFORE opening the transaction. A failure here
+    // surfaces as 500 (issue #1470) rather than silently committing with
+    // prompts = 0 — the prior behaviour could leave demo prompts stuck at
+    // `published` while the connection flipped to `archived`.
+    let demoIndustry: string | null = null;
+    if (connectionId === DEMO_CONNECTION_ID) {
+      const industryResult = readDemoIndustry(orgId, requestId);
+      if (!industryResult.ok) {
+        return c.json(
+          {
+            error: "archive_failed",
+            message:
+              "Archive failed — could not read demo industry setting. See server logs for details.",
+            requestId,
+          },
+          500,
+        );
+      }
+      demoIndustry = industryResult.value;
+    }
 
     const pool = getInternalDB();
     const client = await pool.connect();
     let result: ArchiveConnectionResult;
+    // Track whether ROLLBACK itself fails. If so we pass the error into
+    // `release(err)` so node-postgres destroys the socket rather than
+    // returning a dirty client to the pool (issue #1471).
+    let rollbackErr: Error | null = null;
 
     try {
       await client.query("BEGIN");
@@ -286,18 +328,16 @@ adminArchive.openapi(archiveRoute, async (c) =>
       });
       await client.query("COMMIT");
     } catch (err) {
-      await client.query("ROLLBACK").catch((rollbackErr: unknown) => {
+      await client.query("ROLLBACK").catch((rbErr: unknown) => {
+        rollbackErr = rbErr instanceof Error ? rbErr : new Error(String(rbErr));
         log.warn(
           {
-            err:
-              rollbackErr instanceof Error
-                ? rollbackErr.message
-                : String(rollbackErr),
+            err: rollbackErr.message,
             orgId,
             connectionId,
             requestId,
           },
-          "ROLLBACK failed after archive error",
+          "ROLLBACK failed after archive error — client will be destroyed",
         );
       });
       log.error(
@@ -319,7 +359,10 @@ adminArchive.openapi(archiveRoute, async (c) =>
         500,
       );
     } finally {
-      client.release();
+      // Pass a non-null error to `release(err)` so pg destroys the
+      // socket on a failed ROLLBACK. A clean ROLLBACK (or a successful
+      // COMMIT) passes `undefined`, returning the client to the pool.
+      client.release(rollbackErr ?? undefined);
     }
 
     // Exhaustive switch on the tagged result — adding a new variant to
@@ -395,14 +438,31 @@ adminRestore.openapi(restoreRoute, async (c) =>
     const authResult = c.get("authResult");
     const { connectionId } = c.req.valid("json");
 
-    const demoIndustry =
-      connectionId === DEMO_CONNECTION_ID
-        ? await readDemoIndustry(orgId, requestId)
-        : null;
+    // Resolve demo industry BEFORE opening the transaction — see the
+    // matching comment in the archive handler (#1470).
+    let demoIndustry: string | null = null;
+    if (connectionId === DEMO_CONNECTION_ID) {
+      const industryResult = readDemoIndustry(orgId, requestId);
+      if (!industryResult.ok) {
+        return c.json(
+          {
+            error: "restore_failed",
+            message:
+              "Restore failed — could not read demo industry setting. See server logs for details.",
+            requestId,
+          },
+          500,
+        );
+      }
+      demoIndustry = industryResult.value;
+    }
 
     const pool = getInternalDB();
     const client = await pool.connect();
     let result: RestoreConnectionResult;
+    // Mirror the archive handler — ROLLBACK-failure poisons the pool
+    // unless we pass the error into `release(err)` (issue #1471).
+    let rollbackErr: Error | null = null;
 
     try {
       await client.query("BEGIN");
@@ -411,18 +471,16 @@ adminRestore.openapi(restoreRoute, async (c) =>
       });
       await client.query("COMMIT");
     } catch (err) {
-      await client.query("ROLLBACK").catch((rollbackErr: unknown) => {
+      await client.query("ROLLBACK").catch((rbErr: unknown) => {
+        rollbackErr = rbErr instanceof Error ? rbErr : new Error(String(rbErr));
         log.warn(
           {
-            err:
-              rollbackErr instanceof Error
-                ? rollbackErr.message
-                : String(rollbackErr),
+            err: rollbackErr.message,
             orgId,
             connectionId,
             requestId,
           },
-          "ROLLBACK failed after restore error",
+          "ROLLBACK failed after restore error — client will be destroyed",
         );
       });
       log.error(
@@ -444,7 +502,7 @@ adminRestore.openapi(restoreRoute, async (c) =>
         500,
       );
     } finally {
-      client.release();
+      client.release(rollbackErr ?? undefined);
     }
 
     // Exhaustive switch — adding a new RestoreConnectionResult variant

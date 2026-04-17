@@ -13,6 +13,14 @@ import { describe, it, expect, beforeEach, afterAll, mock } from "bun:test";
 import { createApiTestMocks } from "@atlas/api/testing/api-test-mocks";
 import { makeArchiveRestoreStubs } from "@atlas/api/testing/archive-restore";
 
+// Controls the value `getSettingAuto("ATLAS_DEMO_INDUSTRY", orgId)` returns
+// per test. `throwOnGet` simulates a transient settings cache failure so the
+// route can surface 500 per issue #1470 (discriminated result).
+// The `mock.module` override is registered AFTER createApiTestMocks below
+// so it wins over the factory's default undefined-returning stub.
+let demoIndustryFixture: string | null = null;
+let throwOnGet: Error | null = null;
+
 // ── Transactional client mock ─────────────────────────────────────────
 // Each test captures the sequence of queries issued against the pool's
 // checked-out client so we can assert BEGIN/COMMIT/ROLLBACK + per-step SQL.
@@ -24,11 +32,14 @@ interface ClientQuery {
 
 interface MockClient {
   query: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[] }>;
-  release: () => void;
+  release: (err?: unknown) => void;
 }
 
 let clientQueries: ClientQuery[] = [];
 let clientReleased = false;
+// Captures the argument passed to `client.release(err?)`. node-postgres
+// destroys the socket when this is truthy — asserted for issue #1471.
+let clientReleaseArg: unknown = undefined;
 let queryHandler: (sql: string, params?: unknown[]) => Promise<{ rows: unknown[] }> = async () => ({ rows: [] });
 
 function makeMockClient(): MockClient {
@@ -37,8 +48,9 @@ function makeMockClient(): MockClient {
       clientQueries.push({ sql, params });
       return queryHandler(sql, params);
     },
-    release: () => {
+    release: (err?: unknown) => {
       clientReleased = true;
+      clientReleaseArg = err;
     },
   };
 }
@@ -62,6 +74,27 @@ const mocks = createApiTestMocks({
     getInternalDB: mockGetInternalDB,
   },
 });
+
+// Override the default settings mock from createApiTestMocks so tests
+// can drive getSettingAuto("ATLAS_DEMO_INDUSTRY") via `demoIndustryFixture`
+// and simulate a transient read failure via `throwOnGet`. Registered
+// AFTER createApiTestMocks so this override wins.
+mock.module("@atlas/api/lib/settings", () => ({
+  getSettingsForAdmin: () => [],
+  getSettingsRegistry: () => [],
+  getSettingDefinition: () => undefined,
+  setSetting: async () => {},
+  deleteSetting: async () => {},
+  getSetting: () => undefined,
+  getSettingAuto: (key: string) => {
+    if (throwOnGet) throw throwOnGet;
+    return key === "ATLAS_DEMO_INDUSTRY" ? (demoIndustryFixture ?? undefined) : undefined;
+  },
+  getSettingLive: async () => undefined,
+  loadSettings: async () => 0,
+  getAllSettingOverrides: async () => [],
+  _resetSettingsCache: () => {},
+}));
 
 // Override the semantic/entities mock with full-fidelity stubs matching
 // the real helper signatures. The factory mocks semantic/entities with
@@ -158,7 +191,10 @@ function publishReq(body?: unknown, cookie?: string): Request {
 function resetClient(): void {
   clientQueries = [];
   clientReleased = false;
+  clientReleaseArg = undefined;
   queryHandler = async () => ({ rows: [] });
+  demoIndustryFixture = null;
+  throwOnGet = null;
 }
 
 afterAll(() => {
@@ -312,13 +348,10 @@ describe("POST /api/v1/admin/publish — archiveConnections", () => {
   });
 
   it("archives listed connections, cascades entities, and archives demo prompts", async () => {
-    // Mock internalQuery used to read demo_industry setting (outside txn)
-    mocks.mockInternalQuery.mockImplementation((sql: string) => {
-      if (sql.includes("demo_industry")) {
-        return Promise.resolve([{ value: "cybersecurity" }]);
-      }
-      return Promise.resolve([]);
-    });
+    // Demo industry is read via getSettingAuto("ATLAS_DEMO_INDUSTRY", orgId)
+    // — the canonical key (#1466). Prior code hit a lowercase SQL literal
+    // which silently missed the row.
+    demoIndustryFixture = "cybersecurity";
 
     queryHandler = async (sql) => {
       // Single-connection helper locks the row first — report "published"
@@ -385,12 +418,7 @@ describe("POST /api/v1/admin/publish — archiveConnections", () => {
   });
 
   it("skips prompt-archival step when the __demo__ connection is NOT in archiveConnections", async () => {
-    mocks.mockInternalQuery.mockImplementation((sql: string) => {
-      if (sql.includes("demo_industry")) {
-        return Promise.resolve([{ value: "cybersecurity" }]);
-      }
-      return Promise.resolve([]);
-    });
+    demoIndustryFixture = "cybersecurity";
 
     const res = await app.fetch(publishReq({ archiveConnections: ["warehouse"] }));
     expect(res.status).toBe(200);
@@ -489,12 +517,7 @@ describe("POST /api/v1/admin/publish — archiveConnections", () => {
     // and return non-zero counts. Publish must accumulate those counts
     // into archived.entities / archived.prompts while keeping
     // archived.connections at 0, and emit the "cascade reconciled" warn.
-    mocks.mockInternalQuery.mockImplementation((sql: string) => {
-      if (sql.includes("demo_industry")) {
-        return Promise.resolve([{ value: "cybersecurity" }]);
-      }
-      return Promise.resolve([]);
-    });
+    demoIndustryFixture = "cybersecurity";
 
     queryHandler = async (sql) => {
       if (/SELECT\s+status\s+FROM\s+connections/i.test(sql)) {
@@ -573,6 +596,84 @@ describe("POST /api/v1/admin/publish — archiveConnections", () => {
   });
 });
 
+describe("POST /api/v1/admin/publish — demo industry read (#1466, #1470)", () => {
+  beforeEach(() => {
+    mocks.hasInternalDB = true;
+    mocks.mockInternalQuery.mockReset();
+    mocks.mockInternalQuery.mockResolvedValue([]);
+    resetClient();
+    mocks.setOrgAdmin("org-alpha");
+  });
+
+  it("reads ATLAS_DEMO_INDUSTRY (canonical key) via the settings cache — not a lowercase SQL literal (#1466)", async () => {
+    // Regression guard for #1466. Prior code queried `SELECT value FROM
+    // settings WHERE key = 'demo_industry'` — the lowercase key never
+    // matched the canonical `ATLAS_DEMO_INDUSTRY` row, so publish silently
+    // skipped archiving built-in demo prompts. Now the route must call
+    // getSettingAuto("ATLAS_DEMO_INDUSTRY", orgId), pick up "cybersecurity",
+    // and pass it through to the prompt-collections UPDATE.
+    demoIndustryFixture = "cybersecurity";
+
+    queryHandler = async (sql) => {
+      if (/SELECT\s+status\s+FROM\s+connections/i.test(sql)) {
+        return { rows: [{ status: "published" }] };
+      }
+      if (/UPDATE\s+connections\s+SET\s+status\s*=\s*'archived'/i.test(sql)) {
+        return { rows: [{ id: "__demo__" }] };
+      }
+      if (/UPDATE\s+prompt_collections\s+SET\s+status\s*=\s*'archived'/i.test(sql)) {
+        return { rows: [{ id: "prompt-1" }] };
+      }
+      return { rows: [] };
+    };
+
+    const res = await app.fetch(publishReq({ archiveConnections: ["__demo__"] }));
+    expect(res.status).toBe(200);
+
+    // The pre-transaction read must NOT hit the settings table directly.
+    // Route pulls from the cache via getSettingAuto — internalQuery should
+    // never see a demo_industry query.
+    const calls = mocks.mockInternalQuery.mock.calls.map((c) => String(c[0] ?? ""));
+    expect(calls.some((sql) => /demo_industry/i.test(sql))).toBe(false);
+
+    // Prompt cascade fired with the industry parameter
+    const archivePromptsSql = clientQueries.find((q) =>
+      /UPDATE\s+prompt_collections\s+SET\s+status\s*=\s*'archived'/i.test(q.sql),
+    );
+    expect(archivePromptsSql).toBeDefined();
+    expect((archivePromptsSql!.params as unknown[])).toContain("cybersecurity");
+  });
+
+  it("surfaces 500 when the settings read fails — does NOT open the transaction (#1470)", async () => {
+    // readDemoIndustry now returns a discriminated { ok: false, err }.
+    // Callers must 500 rather than silently committing with prompts: 0 —
+    // that would leave demo prompts stranded at `published` after publish.
+    throwOnGet = new Error("transient cache read failure");
+
+    const res = await app.fetch(publishReq({ archiveConnections: ["__demo__"] }));
+    expect(res.status).toBe(500);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(typeof body.requestId).toBe("string");
+    // Raw cause must not leak to the caller
+    expect(String(body.message ?? "")).not.toContain("transient cache read failure");
+
+    // Transaction must not open — the failure is pre-transaction
+    const sqls = clientQueries.map((q) => q.sql.trim().toUpperCase());
+    expect(sqls.includes("BEGIN")).toBe(false);
+    expect(sqls.includes("ROLLBACK")).toBe(false);
+  });
+
+  it("does NOT read demo industry when archiveConnections excludes __demo__", async () => {
+    // Only runs the read when __demo__ is being archived — otherwise the
+    // setting is irrelevant to this publish.
+    throwOnGet = new Error("should not be called");
+
+    const res = await app.fetch(publishReq({ archiveConnections: ["warehouse"] }));
+    // Must 200 — the settings read was never attempted
+    expect(res.status).toBe(200);
+  });
+});
+
 describe("POST /api/v1/admin/publish — atomicity", () => {
   beforeEach(() => {
     mocks.hasInternalDB = true;
@@ -621,6 +722,47 @@ describe("POST /api/v1/admin/publish — atomicity", () => {
     const body = (await res.json()) as Record<string, unknown>;
     expect(body.requestId).toBeDefined();
     expect(typeof body.requestId).toBe("string");
+  });
+
+  it("rollback-failure poisons the pool — release(err) destroys the client (#1471)", async () => {
+    // Primary mutation throws, then ROLLBACK itself throws (broken socket).
+    // The handler must pass the rollback error to `client.release(err)` so
+    // node-postgres destroys the socket rather than returning a dirty
+    // client to the pool.
+    queryHandler = async (sql) => {
+      if (/^\s*DELETE/i.test(sql)) {
+        throw new Error("primary mutation failure");
+      }
+      if (/^\s*ROLLBACK/i.test(sql)) {
+        throw new Error("ROLLBACK failed — socket dirty");
+      }
+      return { rows: [] };
+    };
+
+    const res = await app.fetch(publishReq());
+    expect(res.status).toBe(500);
+    expect(clientReleased).toBe(true);
+    expect(clientReleaseArg).toBeInstanceOf(Error);
+    expect((clientReleaseArg as Error).message).toContain("ROLLBACK failed");
+  });
+
+  it("clean rollback (ROLLBACK succeeds) — release() called without an error arg", async () => {
+    // When ROLLBACK succeeds, the client is still safe to pool. release()
+    // must be called with no argument so node-postgres returns the client
+    // to the pool normally.
+    queryHandler = async (sql) => {
+      if (/^\s*DELETE/i.test(sql)) {
+        throw new Error("primary mutation failure");
+      }
+      return { rows: [] };
+    };
+
+    const res = await app.fetch(publishReq());
+    expect(res.status).toBe(500);
+    expect(clientReleased).toBe(true);
+    // release() called with no arg means "return to pool" — the client is
+    // clean because ROLLBACK succeeded.
+    expect(clientReleaseArg).toBeUndefined();
   });
 });
 

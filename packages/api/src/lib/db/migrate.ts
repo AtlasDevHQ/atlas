@@ -32,7 +32,10 @@ interface MigrationPool extends Queryable {
 
 /** Minimal client interface — matches pg.PoolClient. */
 interface MigrationClient extends Queryable {
-  release(): void;
+  // Matches the pg.PoolClient `release(err?)` overload: passing a truthy
+  // value tells node-postgres to destroy the socket instead of returning
+  // it to the pool — see issue #1471.
+  release(err?: unknown): void;
 }
 
 const MIGRATIONS_DIR = path.join(import.meta.dir, "migrations");
@@ -54,24 +57,35 @@ export async function runMigrations(pool: MigrationPool): Promise<number> {
   // transaction semantics.
   const client = await pool.connect();
 
+  // If any per-migration ROLLBACK fails inside the loop, we stash the
+  // error here and pass it to `client.release(err)` so pg destroys the
+  // socket instead of pooling a dirty client (#1471). Mutated via the
+  // onRollbackFailure callback passed to `_runMigrationsLocked`.
+  let rollbackErr: Error | null = null;
+
   try {
     // Acquire an advisory lock so concurrent server instances don't race.
     // hashtext('atlas_migrations') produces a stable int4 key.
     await client.query("SELECT pg_advisory_lock(hashtext('atlas_migrations'))");
 
     try {
-      return await _runMigrationsLocked(client);
+      return await _runMigrationsLocked(client, (err) => {
+        rollbackErr = err;
+      });
     } finally {
       await client.query("SELECT pg_advisory_unlock(hashtext('atlas_migrations'))").catch(() => {
         // intentionally ignored: unlock may fail if connection was broken
       });
     }
   } finally {
-    client.release();
+    client.release(rollbackErr ?? undefined);
   }
 }
 
-async function _runMigrationsLocked(client: MigrationClient): Promise<number> {
+async function _runMigrationsLocked(
+  client: MigrationClient,
+  onRollbackFailure?: (err: Error) => void,
+): Promise<number> {
   // Ensure tracking table exists
   await client.query(`
     CREATE TABLE IF NOT EXISTS __atlas_migrations (
@@ -119,8 +133,17 @@ async function _runMigrationsLocked(client: MigrationClient): Promise<number> {
       await client.query("COMMIT");
       count++;
     } catch (err) {
-      await client.query("ROLLBACK").catch(() => {
-        // intentionally ignored: ROLLBACK may fail if connection is broken
+      await client.query("ROLLBACK").catch((rbErr: unknown) => {
+        // ROLLBACK itself can fail if the connection is broken — we report
+        // that up to the caller so the shared client gets destroyed via
+        // `release(err)` (#1471), not returned to the pool dirty.
+        const normalized =
+          rbErr instanceof Error ? rbErr : new Error(String(rbErr));
+        log.warn(
+          { migration: file, err: normalized.message },
+          "ROLLBACK failed during migration — client will be destroyed",
+        );
+        onRollbackFailure?.(normalized);
       });
       const detail = err instanceof Error ? err.message : String(err);
       log.error({ migration: file, err: detail }, "Migration failed");

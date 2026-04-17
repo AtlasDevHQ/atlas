@@ -168,8 +168,9 @@ function sanitizeStarterPrompts(raw: string): StarterPromptsOverride {
   // embedder / open-redirect chain. ~32 prompts × 200 chars ≈ 6.4KB upper
   // bound; the per-string slice below enforces the rest.
   if (raw.length > 8 * 1024) {
-    console.warn(
-      `[Atlas] starterPrompts query param exceeds 8KB (${raw.length} bytes); dropping override — widget will fetch the adaptive list instead`,
+    log.warn(
+      { bytes: raw.length, limit: 8 * 1024 },
+      "starterPrompts query param exceeds 8KB; dropping override — widget will fetch the adaptive list instead",
     );
     return null;
   }
@@ -177,15 +178,15 @@ function sanitizeStarterPrompts(raw: string): StarterPromptsOverride {
   try {
     parsed = JSON.parse(raw);
   } catch (err) {
-    console.warn(
-      "[Atlas] starterPrompts query param is not valid JSON; dropping override:",
-      err instanceof Error ? err.message : String(err),
+    log.warn(
+      { err: err instanceof Error ? err.message : String(err) },
+      "starterPrompts query param is not valid JSON; dropping override",
     );
     return null;
   }
   if (!Array.isArray(parsed)) {
-    console.warn(
-      "[Atlas] starterPrompts query param parsed to non-array; expected JSON array of strings",
+    log.warn(
+      "starterPrompts query param parsed to non-array; expected JSON array of strings",
     );
     return null;
   }

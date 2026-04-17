@@ -15,6 +15,11 @@
  *   data-on-query-complete (optional) — global function name called on query completion
  *   data-on-error          (optional) — global function name called on widget error
  *   data-show-branding     (optional, default "true") — "false" hides the "Powered by Atlas" badge
+ *   data-starter-prompts   (optional) — JSON-encoded array of strings to override the
+ *                                       adaptive starter-prompt list. When set, the widget
+ *                                       does NOT call /api/v1/starter-prompts and renders
+ *                                       the supplied array as a flat list. Invalid JSON or
+ *                                       non-string entries are dropped with a console warning.
  *
  * Programmatic API (available on window.Atlas after script loads):
  *   Atlas.open()              — opens the widget panel
@@ -69,6 +74,29 @@ var position=s.getAttribute("data-position")||"bottom-right";
 if(position!=="bottom-right"&&position!=="bottom-left")position="bottom-right";
 var showBranding=s.getAttribute("data-show-branding");
 var brandingParam=showBranding==="false"?"&showBranding=false":"";
+
+/* data-starter-prompts: JSON array of strings forwarded as a query param.
+   Drops the param entirely on parse failure rather than silently sending
+   the empty list, which has different semantics than "no override". */
+var starterPromptsParam="";
+var starterPromptsRaw=s.getAttribute("data-starter-prompts");
+if(starterPromptsRaw){
+  try{
+    var parsed=JSON.parse(starterPromptsRaw);
+    if(Array.isArray(parsed)){
+      var cleaned=[];
+      for(var spi=0;spi<parsed.length;spi++){
+        var spv=parsed[spi];
+        if(typeof spv==="string"&&spv.trim().length>0)cleaned.push(spv);
+      }
+      starterPromptsParam="&starterPrompts="+encodeURIComponent(JSON.stringify(cleaned));
+    }else{
+      console.warn("[Atlas] data-starter-prompts must be a JSON array of strings; ignoring");
+    }
+  }catch(spErr){
+    console.warn("[Atlas] data-starter-prompts is not valid JSON; ignoring:",spErr&&spErr.message?spErr.message:String(spErr));
+  }
+}
 
 var isRight=position==="bottom-right";
 var isOpen=false;
@@ -139,7 +167,7 @@ var wrap=document.createElement("div");
 wrap.className="atlas-wl-frame-wrap";
 
 var iframe=document.createElement("iframe");
-var iframeSrc=apiUrl.replace(/\\/$/,"")+"/widget?position=inline&theme="+encodeURIComponent(theme)+brandingParam;
+var iframeSrc=apiUrl.replace(/\\/$/,"")+"/widget?position=inline&theme="+encodeURIComponent(theme)+brandingParam+starterPromptsParam;
 iframe.src=iframeSrc;
 iframe.setAttribute("title","Atlas Chat");
 iframe.setAttribute("allow","clipboard-write");

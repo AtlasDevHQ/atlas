@@ -573,6 +573,43 @@ describe("GET /widget.js", () => {
     expect(script).toContain("function onHostMessage(e)");
     expect(script).toContain("function onEscape(e)");
   });
+
+  // --- data-starter-prompts forwarding (issue #1479) ---
+
+  it("reads data-starter-prompts from the script tag", async () => {
+    const script = await getScript();
+    expect(script).toContain('s.getAttribute("data-starter-prompts")');
+  });
+
+  it("parses data-starter-prompts as JSON before forwarding", async () => {
+    const script = await getScript();
+    expect(script).toContain("JSON.parse(starterPromptsRaw)");
+  });
+
+  it("appends starterPrompts query param to iframe src when supplied", async () => {
+    const script = await getScript();
+    expect(script).toContain('"&starterPrompts="+encodeURIComponent(JSON.stringify(cleaned))');
+  });
+
+  it("warns and drops the override when JSON is invalid (does not crash)", async () => {
+    const script = await getScript();
+    expect(script).toContain("[Atlas] data-starter-prompts is not valid JSON");
+  });
+
+  it("warns when the parsed value is not an array", async () => {
+    const script = await getScript();
+    expect(script).toContain(
+      "[Atlas] data-starter-prompts must be a JSON array of strings; ignoring",
+    );
+  });
+
+  it("filters out non-string entries before forwarding", async () => {
+    const script = await getScript();
+    // The IIFE walks the parsed array and keeps only string entries with
+    // non-empty trimmed text — this prevents the iframe from receiving
+    // garbage like `[null, 42, ""]`.
+    expect(script).toContain('typeof spv==="string"&&spv.trim().length>0');
+  });
 });
 
 describe("GET /widget.d.ts", () => {

@@ -22,6 +22,10 @@
  *   welcome      — welcome message shown before first user message
  *   initialQuery — auto-sends this query on first open
  *   showBranding — "true" (default) or "false"; hides "Powered by Atlas" badge when "false"
+ *   starterPrompts — JSON-encoded array of strings (URL-encoded). When supplied,
+ *                    overrides the adaptive starter-prompt list and the widget
+ *                    skips the /api/v1/starter-prompts call entirely. Invalid
+ *                    or oversized values are dropped silently.
  *
  * postMessage API (from parent window only — e.source === window.parent):
  *   { type: "theme", value: "dark" | "light" }     — "system" not supported via postMessage
@@ -130,6 +134,38 @@ function sanitizeAccent(raw: string): string {
   return HEX_COLOR_RE.test(raw) ? raw : "";
 }
 
+/**
+ * Parse the `starterPrompts` query param into a clean string array.
+ *
+ * Returns `null` (NOT `[]`) when the override is absent, malformed, or empty
+ * after filtering. The widget treats `null` as "fetch from API" and a non-null
+ * array — even an empty one would be a no-network override — as "skip fetch".
+ * Returning `null` in the malformed case keeps the safe default.
+ */
+function sanitizeStarterPrompts(raw: string): string[] | null {
+  if (!raw) return null;
+  // Cap raw length to prevent oversized HTML responses from a malicious
+  // embedder / open-redirect chain. ~32 prompts × 200 chars ≈ 6.4KB upper
+  // bound; the per-string slice below enforces the rest.
+  if (raw.length > 8 * 1024) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(parsed)) return null;
+  const cleaned: string[] = [];
+  for (const entry of parsed) {
+    if (typeof entry !== "string") continue;
+    const trimmed = entry.trim();
+    if (!trimmed) continue;
+    cleaned.push(trimmed.slice(0, 500));
+    if (cleaned.length >= 32) break;
+  }
+  return cleaned;
+}
+
 // ---------------------------------------------------------------------------
 // Widget HTML builder
 // ---------------------------------------------------------------------------
@@ -143,6 +179,8 @@ function buildWidgetHTML(config: {
   welcome: string;
   initialQuery: string;
   showBranding: boolean;
+  /** When `null` the widget fetches from `/api/v1/starter-prompts`; otherwise it renders this static list and makes no network call. */
+  starterPrompts: string[] | null;
 }): string {
   // Escape < to \u003c to prevent XSS via </script> injection in the JSON blob
   const configJSON = JSON.stringify(config).replace(/</g, "\\u003c");
@@ -223,7 +261,11 @@ class EB extends Component{
 function render(){
   if(!state.visible){el.dataset.hidden="";return}
   delete el.dataset.hidden;
-  root.render(createElement(EB,null,createElement(AtlasChat,{apiUrl,apiKey:state.apiKey||void 0,theme:state.theme,showBranding:cfg.showBranding!==false})));
+  // cfg.starterPrompts is null when no override was supplied — pass undefined
+  // to the component so it falls back to fetching /api/v1/starter-prompts.
+  // A non-null array (even empty) means "skip the fetch".
+  const starterPromptsProp=Array.isArray(cfg.starterPrompts)?cfg.starterPrompts:void 0;
+  root.render(createElement(EB,null,createElement(AtlasChat,{apiUrl,apiKey:state.apiKey||void 0,theme:state.theme,showBranding:cfg.showBranding!==false,starterPrompts:starterPromptsProp})));
 }
 
 /** Replace the default Atlas logo element with a custom <img>.
@@ -408,6 +450,7 @@ widget.get("/", (c) => {
   const rawWelcome = c.req.query("welcome") ?? "";
   const rawInitialQuery = c.req.query("initialQuery") ?? "";
   const rawShowBranding = c.req.query("showBranding") ?? "true";
+  const rawStarterPrompts = c.req.query("starterPrompts") ?? "";
 
   const theme = VALID_THEMES.has(rawTheme) ? rawTheme : "system";
   const apiUrl = sanitizeApiUrl(rawApiUrl);
@@ -419,14 +462,15 @@ widget.get("/", (c) => {
   const welcome = rawWelcome.slice(0, 500);
   const initialQuery = rawInitialQuery.slice(0, 500);
   const showBranding = rawShowBranding !== "false";
+  const starterPrompts = sanitizeStarterPrompts(rawStarterPrompts);
 
   // Allow embedding as iframe from any origin
   c.header("Content-Security-Policy", "frame-ancestors *");
   c.header("Access-Control-Allow-Origin", "*");
 
   return c.html(
-    buildWidgetHTML({ theme, apiUrl, position, logo, accent, welcome, initialQuery, showBranding }),
+    buildWidgetHTML({ theme, apiUrl, position, logo, accent, welcome, initialQuery, showBranding, starterPrompts }),
   );
 });
 
-export { widget, sanitizeLogoUrl, sanitizeAccent };
+export { widget, sanitizeLogoUrl, sanitizeAccent, sanitizeStarterPrompts };

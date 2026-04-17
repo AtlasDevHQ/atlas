@@ -42,3 +42,12 @@ export type {
   AtlasWidgetConfig,
   AtlasWidgetCommand,
 } from "./lib/widget-types";
+
+// Starter prompt types — re-exported from @useatlas/types so embedders
+// can type the optional `starterPrompts` override prop and any
+// custom rendering they layer on top of `/api/v1/starter-prompts`.
+export type {
+  StarterPrompt,
+  StarterPromptProvenance,
+  StarterPromptsResponse,
+} from "@useatlas/types/starter-prompt";

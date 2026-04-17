@@ -1,5 +1,5 @@
 /**
- * Adaptive starter prompt resolver (#1474, PRD #1473).
+ * Adaptive starter prompt resolver.
  *
  * Composes up to four tiers into a single ranked list for an empty chat
  * state:
@@ -9,13 +9,9 @@
  *                workspace's demo industry
  *   cold-start — signaled by an empty return when none of the above emit
  *
- * This slice only implements `library` and the cold-start empty case.
- * Follow-up slices (tracked in the 1.2.1 milestone) fill in the first two
- * branches without changing the compose order or the caller contract.
- *
- * Pure except for the two reads it must make — the demo industry (via the
- * settings cache) and the prompt library (via internal DB). No side effects;
- * failures in either read are explicitly classified below.
+ * Failures on the favorites or library tiers fall through to lower tiers
+ * (those tiers are optimizations). Failures on the settings read propagate
+ * — a transient cache miss would otherwise masquerade as a cold-start state.
  */
 import type { AtlasMode } from "@useatlas/types/auth";
 import type {
@@ -25,6 +21,7 @@ import type {
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { readDemoIndustry } from "@atlas/api/lib/demo-industry";
 import { createLogger } from "@atlas/api/lib/logger";
+import { listFavorites } from "./favorite-store";
 
 export type { StarterPrompt, StarterPromptProvenance };
 
@@ -135,16 +132,45 @@ export async function resolveStarterPrompts(
 
   const out: StarterPrompt[] = [];
 
-  // Tier 1 — favorites. Filled in by #1475 (per-user pins, always top-ranked).
+  // Tier 1 — favorites. Always top-ranked and mode-agnostic: a pin
+  // works for its owner even if the underlying popular suggestion was
+  // later hidden by an admin.
+  if (ctx.userId && ctx.orgId) {
+    try {
+      const favorites = await listFavorites(ctx.userId, ctx.orgId);
+      for (const fav of favorites) {
+        if (out.length >= limit) break;
+        out.push({
+          id: makePromptId("favorite", fav.id),
+          text: fav.text,
+          provenance: "favorite" as const,
+        });
+      }
+    } catch (err) {
+      // Pins are an optimization, not a hard dependency. A transient
+      // read failure must not black out the whole empty state — fall
+      // through to popular / library / cold-start instead.
+      log.error(
+        {
+          err: err instanceof Error ? err.message : String(err),
+          userId: ctx.userId,
+          orgId: ctx.orgId,
+          requestId: ctx.requestId,
+        },
+        "Failed to load favorite starter prompts — continuing to lower tiers",
+      );
+    }
+  }
 
-  // Tier 2 — popular approved. Filled in by #1476 (schema) + #1477 (UX).
+  // Tier 2 — popular approved. Not yet wired; the tier slot exists
+  // here so its eventual insertion doesn't reshuffle the compose order.
 
   // Tier 3 — library (demo-industry curated collections).
   if (out.length < limit && ctx.orgId) {
     const industryResult = readDemoIndustry(ctx.orgId, ctx.requestId);
     if (!industryResult.ok) {
       // Propagate: callers map to 500. A transient settings read failure
-      // must not masquerade as cold-start (per #1470).
+      // must not masquerade as cold-start.
       throw industryResult.err;
     }
     const demoIndustry = industryResult.value;

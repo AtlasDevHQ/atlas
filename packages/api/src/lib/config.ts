@@ -391,7 +391,7 @@ const AtlasConfigSchema = z.object({
 
   /**
    * Adaptive starter prompt configuration. Controls the empty-chat grid
-   * that replaces the hardcoded `STARTER_PROMPTS` constant.
+   * served by the resolver behind `GET /api/v1/starter-prompts`.
    */
   starterPrompts: z.object({
     /**
@@ -407,6 +407,11 @@ const AtlasConfigSchema = z.object({
      * within the cold window.
      */
     autoPromoteClicks: z.number().int().positive().default(DEFAULT_AUTO_PROMOTE_CLICKS),
+    /**
+     * Hard cap on per-user pinned starter prompts. Attempting to pin past
+     * this cap returns a user-visible error. Default: 10.
+     */
+    maxFavorites: z.number().int().positive().default(10),
   }).optional(),
 
   /**
@@ -485,7 +490,7 @@ export interface ResolvedConfig {
   /** Dynamic learning configuration. */
   learn?: { confidenceThreshold: number };
   /** Adaptive starter prompt configuration. */
-  starterPrompts?: { coldWindowDays: number; autoPromoteClicks: number };
+  starterPrompts?: { coldWindowDays: number; autoPromoteClicks: number; maxFavorites: number };
   /** Enterprise feature gating. */
   enterprise?: { enabled: boolean; licenseKey?: string };
   /** Data residency configuration for region-based routing. */
@@ -676,12 +681,15 @@ export function configFromEnv(): ResolvedConfig {
     ...((() => {
       const coldWindow = parseInt(process.env.ATLAS_STARTER_PROMPT_COLD_WINDOW_DAYS ?? "", 10);
       const autoPromote = parseInt(process.env.ATLAS_STARTER_PROMPT_AUTO_PROMOTE_CLICKS ?? "", 10);
+      const maxFavs = parseInt(process.env.ATLAS_STARTER_PROMPT_MAX_FAVORITES ?? "", 10);
       return {
         starterPrompts: {
           coldWindowDays:
             Number.isFinite(coldWindow) && coldWindow > 0 ? coldWindow : DEFAULT_COLD_WINDOW_DAYS,
           autoPromoteClicks:
             Number.isFinite(autoPromote) && autoPromote > 0 ? autoPromote : DEFAULT_AUTO_PROMOTE_CLICKS,
+          maxFavorites:
+            Number.isFinite(maxFavs) && maxFavs > 0 ? maxFavs : 10,
         },
       };
     })()),

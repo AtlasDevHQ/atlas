@@ -1207,7 +1207,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] Signup-connect error-isolation tests double-counting Next.js dev-tools alert (#1488, PR #1489 — scoped queries to `<main>`)
 - [x] Obsidian plugin doc — stale `/api/chat` → `/api/v1/chat` (#1491, surfaced by docs audit)
 - [x] Migrate `internalQuery` call sites from `Effect.promise` to `Effect.tryPromise` (#1468, PR #1493 — 37 sites across 15 routes; extracted `queryEffect<T>()` helper in `@atlas/api/lib/effect` with normalized catch; `makeQueryEffectMock` test helper; found during #1465 silent-failure review)
-- [ ] Pre-existing flaky middleware test `mode 'managed' with valid session returns authenticated` (#1483 — not a 1.2.0 blocker; milestone stripped, tracked standalone)
+- [x] Pre-existing flaky middleware test `mode 'managed' with valid session returns authenticated` (#1483 — fixed by isolating from internal DB so SSO enforcement check short-circuits)
 
 ---
 
@@ -1219,7 +1219,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] Resolver + `/api/v1/starter-prompts` endpoint + cold-start empty state (#1474, PR #1492 — `StarterPromptResolver` with 4-tier compose order, library + cold-start live; favorites/popular stubbed for later slices; shared types in `@useatlas/types/starter-prompt`; id namespacing; chat empty state wired)
 
 ### Personal surface
-- [ ] Per-user favorites (pin/unpin + resolver integration + pin-on-hover UX) (#1475)
+- [x] Per-user favorites (pin/unpin + resolver integration + pin-on-hover UX) (#1475, PR #1496 — `FavoritePromptStore` with cap enforcement + duplicate detection, POST/DELETE/PATCH `/favorites` routes with 401/403/404 surfaces, resolver composes favorites ahead of library tier, empty-state Pin icon + hover unpin, hover pin affordance on user-authored messages, browser test covering pin → reload → unpin flow, `ATLAS_STARTER_PROMPT_MAX_FAVORITES` env var + config field, migration `0029_user_favorite_prompts.sql`)
 
 ### Admin moderation
 - [x] Schema migration + auto-promote + read-only admin queue (#1476)

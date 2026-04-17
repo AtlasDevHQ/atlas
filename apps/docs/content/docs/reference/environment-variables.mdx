@@ -539,6 +539,7 @@ Scheduled task execution. Can also be configured via [`atlas.config.ts`](/refere
 |----------|---------|-------------|
 | `ATLAS_STARTER_PROMPT_COLD_WINDOW_DAYS` | `90` | Window in days applied to `prompt_collections.created_at` by the adaptive starter-prompt resolver (`GET /api/v1/starter-prompts`). Also bounds the auto-promote eligibility window — suggestions whose most recent activity is older than this window do not surface in the admin moderation queue. Can also be set via [`atlas.config.ts`](/reference/config#starter-prompts) |
 | `ATLAS_STARTER_PROMPT_AUTO_PROMOTE_CLICKS` | `3` | Distinct-user click threshold that auto-promotes a learned suggestion into the admin approval queue at `GET /api/v1/admin/starter-prompts/queue`. Clicks are counted once per user; repeat clicks from the same user do not advance the counter. Can also be set via [`atlas.config.ts`](/reference/config#starter-prompts) |
+| `ATLAS_STARTER_PROMPT_MAX_FAVORITES` | `10` | Hard cap on per-user pinned starter prompts (`POST /api/v1/starter-prompts/favorites`). Applies per user per workspace. Returns a user-visible error when attempting to pin past this cap. Can also be set via [`atlas.config.ts`](/reference/config#starter-prompts) |
 
 ---
 

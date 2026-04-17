@@ -11,6 +11,16 @@ declare const navigator: { onLine?: boolean } | undefined;
 
 // Note: `not_available` is intentionally excluded — it is an admin/CRUD code,
 // not a chat error code. The SDK defines it separately in AtlasErrorCode.
+//
+// Scope: this catalog covers codes the chat-stream endpoint emits. Admin / mode /
+// favorites / regional-routing routes return their own codes (`demo_readonly`,
+// `workspace_migrating`, `misdirected_request`, `duplicate_favorite`,
+// `favorite_cap_exceeded`, `invalid_favorite_text`, etc.). Those are catalogued
+// in `apps/docs/content/docs/reference/error-codes.mdx` under the
+// "Route-Response Error Codes" section. When adding a non-chat error code to a
+// route, document it there rather than widening CHAT_ERROR_CODES — the
+// compile-time exhaustiveness check here exists specifically to keep the chat
+// surface tight.
 export const CHAT_ERROR_CODES = [
   "auth_error",
   "session_expired",

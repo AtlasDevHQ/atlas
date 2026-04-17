@@ -1238,6 +1238,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [ ] Migrate `atlas-chat.tsx` to `useStarterPromptsQuery` + TanStack pin/unpin (#1504 — chat still uses `useEffect`+`useState` pattern; scoped as follow-up per "no behavior change in chat" in PR #1501)
 - [ ] Consolidate duplicated fetch logic between `@useatlas/react` and `packages/web` hooks (#1505 — both encode the same 5xx soft-fail / 4xx throw discipline; extract to SDK or types)
 - [ ] Migration 0030 internal header still reads `-- 0029` (#1502 — pre-existing drift from #1476 rebase; filename-based runner is unaffected)
+- [ ] Document 1.2.0 / 1.2.1 route-response error codes (#1507 — surfaced by /docs-audit; new "Route-Response Error Codes" section in `error-codes.mdx` with `demo_readonly`, `workspace_migrating`, `misdirected_request`, `duplicate_favorite`, `favorite_cap_exceeded`, `invalid_favorite_text`, plus cross-ref comment in `packages/types/src/errors.ts` pointing readers to the broader docs page when adding future non-chat codes)
 
 ---
 

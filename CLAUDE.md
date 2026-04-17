@@ -38,6 +38,7 @@ Guidance for Claude Code when working in this repository.
 - [ ] **shadcn/ui v2** — New-york style, neutral base, Lucide icons. **Always use shadcn/ui primitives** — never hand-roll equivalent components. Install: `bun x shadcn@latest add <component>` from `packages/web/`. Uses `cn()` from `@/lib/utils`
 - [ ] **Server external packages** — `pg`, `mysql2`, `@clickhouse/client`, `@duckdb/node-api`, `snowflake-sdk`, `jsforce`, `just-bash`, `pino`, `pino-pretty`, `stripe` must stay in `serverExternalPackages` in the `create-atlas` template
 - [ ] **Frontend is a pure HTTP client** — `@atlas/web` does NOT depend on `@atlas/api`. Shared types live in `@useatlas/types` and are re-exported via `packages/web/src/ui/lib/types.ts`
+- [ ] **`lib/` must not import from `api/routes/`** — Within `packages/api`, the data / helper layer (`src/lib/**`) must stay above the Hono route layer (`src/api/**`). Inverted imports transitively pull auth / logger / middleware into every `lib/` consumer and break pre-existing partial `mock.module()` mocks in unrelated tests. If a route-layer helper is needed in `lib/`, extract the pure function to a new `lib/*.ts` module and have the route layer re-export it (see `lib/mode.ts` ↔ `api/routes/middleware.ts`)
 - [ ] **nuqs for URL state** — Use [nuqs](https://nuqs.47ng.com/) for URL state (pagination, filters, selected items). Define parsers in `search-params.ts` next to the page. Transient UI state stays as `useState`
 - [ ] **React Compiler handles memoization** — Do not add `useMemo`, `useCallback`, or `React.memo` for performance. Only use `useMemo` for correctness (stable references), `React.memo` with custom comparators for semantic equality
 - [ ] **No async waterfalls** — Use `Promise.all([a(), b()])` for independent awaits
@@ -62,7 +63,7 @@ Guidance for Claude Code when working in this repository.
 
 ### Agent Tools
 - [ ] **Tools return structured data** — `executeSQL` returns `{ columns, rows }`
-- [ ] **Explore is read-only** — Only `ls`, `cat`, `grep`, `find` on `semantic/`. No writes, no shell escapes. Sandbox backends: Vercel sandbox > nsjail > sidecar > just-bash (dev fallback)
+- [ ] **Explore is read-only** — Only `ls`, `cat`, `grep`, `find` on `semantic/`. No writes, no shell escapes. Sandbox backend priority is documented once under **Security (General)** above — don't duplicate it here
 - [ ] **Agent max steps** — `stopWhen: stepCountIs(getAgentMaxSteps())` in `streamText`. Default 25, configurable via `ATLAS_AGENT_MAX_STEPS` (range 1–100)
 - [ ] **Semantic layer drives the agent** — Read entity YAMLs before writing SQL
 
@@ -73,7 +74,7 @@ Guidance for Claude Code when working in this repository.
 
 ### Content Mode System
 - [ ] **New user-surfaced content tables opt into the mode system** — Any new table that holds content end-users see (prompts, connections, semantic entities, dashboards, reports, starter prompts, etc.) must include a `status` column with the `draft` / `published` / `archived` enum and a matching `CHECK` constraint. Default new rows to `draft` unless there's an explicit reason to bypass the pending-changes banner
-- [ ] **Participate in mode resolution middleware** — Read handlers that expose the content to non-admins must gate by `status = 'published'`. Admin handlers in developer mode should overlay `status IN ('draft', 'published')` via the existing mode helpers (see `buildUnionStatusClause()` / `resolveMode()` in `packages/api/src/api/routes/middleware.ts`). Write handlers must honor the caller's `atlasMode` when choosing the status value
+- [ ] **Participate in mode resolution middleware** — Read handlers that expose the content to non-admins must gate by `status = 'published'`. Admin handlers in developer mode should overlay `status IN ('draft', 'published')` via the existing mode helpers: `buildUnionStatusClause()` lives in `packages/api/src/lib/mode.ts` (pure helper, safe for `lib/` callers); `resolveMode()` lives in `packages/api/src/api/routes/middleware.ts`. Write handlers must honor the caller's `atlasMode` when choosing the status value
 - [ ] **Visible to the atomic publish endpoint** — `/api/v1/admin/publish` is the single place drafts become visible to everyone. A new content table must have its drafts promoted inside the existing transaction (phase 3 in `admin-publish.ts`), and its draft count surfaced in `/api/v1/mode` `draftCounts` so the banner stays accurate. Partial failure rolls every table back — never stamp a content table's drafts to published outside the publish transaction
 - [ ] **Carve-outs must be explicit and justified** — A table that bypasses mode (e.g. `user_favorite_prompts`, where pins are per-user and must never be a shared-workspace draft) needs a comment explaining why in the schema file. If in doubt, opt in: retrofitting mode after launch is painful
 

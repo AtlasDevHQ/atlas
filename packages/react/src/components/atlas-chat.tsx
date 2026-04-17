@@ -65,9 +65,14 @@ export interface AtlasChatProps {
    * the override must not leak a user-identifying request from embedded
    * contexts. Each string renders as a flat suggestion chip with no
    * provenance badge. Pass `undefined` (the default) to fetch the adaptive
-   * list from the server instead.
+   * list from the server instead. Pass `[]` to render no suggestions and
+   * still suppress the fetch.
+   *
+   * Caps: the iframe / script-tag path enforces 32 entries × 500 chars at
+   * the server. The direct React-component path is uncapped — the consumer
+   * owns their own UI.
    */
-  starterPrompts?: string[];
+  starterPrompts?: readonly string[];
 }
 
 /** No-op auth client for non-managed auth modes. */
@@ -250,7 +255,7 @@ function AtlasChatInner({
   chatEndpoint: string;
   conversationsEndpoint: string;
   showBranding: boolean;
-  starterPromptsOverride?: string[];
+  starterPromptsOverride?: readonly string[];
 }) {
   const { apiUrl, isCrossOrigin, authClient } = useAtlasContext();
   const dark = useDarkMode();
@@ -442,7 +447,7 @@ function AtlasChatInner({
   // Fetch the adaptive starter prompts for the empty state. The query is
   // disabled when the embedder supplies a static `starterPrompts` prop —
   // the override must NOT trigger a user-identifying request from embedded
-  // contexts (per #1479 acceptance criteria).
+  // contexts.
   const starterPromptsQuery = useStarterPromptsQuery({
     enabled: starterPromptsOverride === undefined,
     apiKey,
@@ -450,9 +455,25 @@ function AtlasChatInner({
   const fetchedStarterPrompts: StarterPrompt[] = starterPromptsQuery.data ?? [];
   const overrideStarterPrompts: StarterPrompt[] | null = useMemo(() => {
     if (starterPromptsOverride === undefined) return null;
-    return starterPromptsOverride
-      .filter((text): text is string => typeof text === "string" && text.trim().length > 0)
-      .map((text, idx) => ({ id: `override:${idx}`, text, provenance: "library" as const }));
+    const cleaned: string[] = [];
+    let dropped = 0;
+    for (const text of starterPromptsOverride) {
+      if (typeof text === "string" && text.trim().length > 0) cleaned.push(text);
+      else dropped++;
+    }
+    // Symmetric with the loader IIFE / server sanitizer — a host app passing
+    // partially-malformed data (e.g. nulls from an upstream API) loses
+    // entries silently otherwise.
+    if (dropped > 0) {
+      console.warn(
+        `[Atlas] AtlasChat starterPrompts prop: dropped ${dropped} non-string or empty entr${dropped === 1 ? "y" : "ies"}`,
+      );
+    }
+    return cleaned.map((text, idx) => ({
+      id: `override:${idx}`,
+      text,
+      provenance: "library" as const,
+    }));
   }, [starterPromptsOverride]);
   const starterPromptsList: StarterPrompt[] = overrideStarterPrompts ?? fetchedStarterPrompts;
 

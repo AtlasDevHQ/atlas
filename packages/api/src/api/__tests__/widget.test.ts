@@ -12,7 +12,7 @@
  * require a prior `bun run build` in packages/react/.
  */
 
-import { describe, it, expect, mock } from "bun:test";
+import { describe, it, expect, mock, beforeAll, afterAll, beforeEach } from "bun:test";
 import { Hono } from "hono";
 import * as realFs from "node:fs";
 
@@ -818,7 +818,7 @@ describe("sanitizeAccent", () => {
 });
 
 // ---------------------------------------------------------------------------
-// starterPrompts query param — issue #1479
+// starterPrompts query param — privacy boundary
 //
 // `null` (not `[]`) is the sentinel for "no override → fetch from API".
 // A non-null array — even an empty one — means "skip the fetch entirely".
@@ -882,6 +882,44 @@ describe("sanitizeStarterPrompts", () => {
   });
 });
 
+describe("sanitizeStarterPrompts — observability", () => {
+  // Suppress console noise from intentional log paths under test.
+  const originalWarn = console.warn;
+  const captured: string[] = [];
+  beforeAll(() => {
+    console.warn = (...args: unknown[]) => {
+      captured.push(args.map((a) => (typeof a === "string" ? a : String(a))).join(" "));
+    };
+  });
+  afterAll(() => {
+    console.warn = originalWarn;
+  });
+  beforeEach(() => {
+    captured.length = 0;
+  });
+
+  it("logs a warning when raw input exceeds 8KB", () => {
+    const giant = "x".repeat(9 * 1024);
+    sanitizeStarterPrompts(JSON.stringify([giant]));
+    expect(captured.some((m) => m.includes("exceeds 8KB"))).toBe(true);
+  });
+
+  it("logs a warning when JSON is malformed", () => {
+    sanitizeStarterPrompts("not-json-at-all");
+    expect(captured.some((m) => m.includes("not valid JSON"))).toBe(true);
+  });
+
+  it("logs a warning when JSON is a non-array value", () => {
+    sanitizeStarterPrompts('{"prompts":["x"]}');
+    expect(captured.some((m) => m.includes("non-array"))).toBe(true);
+  });
+
+  it("does NOT log when the input is absent (no override is the default)", () => {
+    sanitizeStarterPrompts("");
+    expect(captured).toHaveLength(0);
+  });
+});
+
 describe("widget HTML — starterPrompts wiring", () => {
   it("emits a null starterPrompts in the embedded config when query param is absent", async () => {
     const res = await app.fetch(widgetRequest());
@@ -925,6 +963,32 @@ describe("widget HTML — starterPrompts wiring", () => {
     // wants nothing rendered — definitely don't fetch."
     expect(Array.isArray(config.starterPrompts)).toBe(true);
     expect(config.starterPrompts).toEqual([]);
+  });
+
+  it("inline mount script preserves the Array.isArray(...) ? ... : void 0 translation", async () => {
+    const res = await app.fetch(widgetRequest());
+    const html = await res.text();
+    // This single line is the privacy boundary inside the iframe — it
+    // turns `cfg.starterPrompts === null` into the React prop `undefined`
+    // (fetch path) while keeping any array (including []) as-is (skip-fetch
+    // path). A typo like `cfg.starterPrompts ?? void 0` would silently
+    // re-enable the fetch when the value is null. Pinning the line keeps
+    // accidental refactors visible.
+    expect(html).toContain("Array.isArray(cfg.starterPrompts)?cfg.starterPrompts:void 0");
+  });
+
+  it("oversized starterPrompts query param falls back to null (fetch from API) — pinned regression", async () => {
+    // Documents the current fail-open behavior: an oversized override
+    // payload silently re-enables the user-identifying request. The
+    // operator-side warning emitted by sanitizeStarterPrompts is the
+    // mitigation; if we ever switch to fail-closed (e.g. render no
+    // suggestions), update this test alongside.
+    const giant = "x".repeat(9 * 1024);
+    const res = await app.fetch(widgetRequest({ starterPrompts: JSON.stringify([giant]) }));
+    const html = await res.text();
+    const configMatch = html.match(/<script id="atlas-config" type="application\/json">(.+?)<\/script>/);
+    const config = JSON.parse(configMatch![1]);
+    expect(config.starterPrompts).toBeNull();
   });
 });
 

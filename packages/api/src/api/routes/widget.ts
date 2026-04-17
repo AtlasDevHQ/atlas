@@ -135,26 +135,60 @@ function sanitizeAccent(raw: string): string {
 }
 
 /**
+ * Sentinel-bearing return type for {@link sanitizeStarterPrompts}.
+ *
+ * - `null` — no override was supplied (or the supplied value couldn't be
+ *   used). The widget falls back to `/api/v1/starter-prompts`.
+ * - `string[]` — embedder opted in to overrides. The widget renders this
+ *   list (even if empty) and **does not** call `/api/v1/starter-prompts`.
+ *
+ * The `null` vs `[]` distinction is the privacy boundary; callers must
+ * preserve it across every transformation.
+ */
+type StarterPromptsOverride = string[] | null;
+
+/**
  * Parse the `starterPrompts` query param into a clean string array.
  *
- * Returns `null` (NOT `[]`) when the override is absent, malformed, or empty
- * after filtering. The widget treats `null` as "fetch from API" and a non-null
- * array — even an empty one would be a no-network override — as "skip fetch".
- * Returning `null` in the malformed case keeps the safe default.
+ * Returns `null` when the override is **absent, oversized, or fails to
+ * parse as a JSON array**. A valid JSON array — even one that filters
+ * down to zero usable entries — returns `[]`. The widget treats `null`
+ * as "fetch from API" and any non-null array (including `[]`) as
+ * "skip fetch".
+ *
+ * Failure mode: a malformed override falls back to `null`, which **does**
+ * trigger the user-identifying API call. This is intentional for embedder
+ * compatibility but means an embedder can lose their privacy guarantee
+ * silently. Every fallback path therefore logs a warning so operators can
+ * detect a misconfigured embedder before users notice.
  */
-function sanitizeStarterPrompts(raw: string): string[] | null {
+function sanitizeStarterPrompts(raw: string): StarterPromptsOverride {
   if (!raw) return null;
   // Cap raw length to prevent oversized HTML responses from a malicious
   // embedder / open-redirect chain. ~32 prompts × 200 chars ≈ 6.4KB upper
   // bound; the per-string slice below enforces the rest.
-  if (raw.length > 8 * 1024) return null;
+  if (raw.length > 8 * 1024) {
+    console.warn(
+      `[Atlas] starterPrompts query param exceeds 8KB (${raw.length} bytes); dropping override — widget will fetch the adaptive list instead`,
+    );
+    return null;
+  }
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
-  } catch {
+  } catch (err) {
+    console.warn(
+      "[Atlas] starterPrompts query param is not valid JSON; dropping override:",
+      err instanceof Error ? err.message : String(err),
+    );
     return null;
   }
-  if (!Array.isArray(parsed)) return null;
+  if (!Array.isArray(parsed)) {
+    console.warn(
+      "[Atlas] starterPrompts query param parsed to non-array; expected JSON array of strings",
+    );
+    return null;
+  }
   const cleaned: string[] = [];
   for (const entry of parsed) {
     if (typeof entry !== "string") continue;
@@ -179,8 +213,8 @@ function buildWidgetHTML(config: {
   welcome: string;
   initialQuery: string;
   showBranding: boolean;
-  /** When `null` the widget fetches from `/api/v1/starter-prompts`; otherwise it renders this static list and makes no network call. */
-  starterPrompts: string[] | null;
+  /** See {@link StarterPromptsOverride}: `null` triggers the API fetch; any array (including `[]`) suppresses it. */
+  starterPrompts: StarterPromptsOverride;
 }): string {
   // Escape < to \u003c to prevent XSS via </script> injection in the JSON blob
   const configJSON = JSON.stringify(config).replace(/</g, "\\u003c");

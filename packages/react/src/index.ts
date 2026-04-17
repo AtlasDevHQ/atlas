@@ -50,4 +50,5 @@ export type {
   StarterPrompt,
   StarterPromptProvenance,
   StarterPromptsResponse,
+  FavoriteStarterPrompt,
 } from "@useatlas/types/starter-prompt";

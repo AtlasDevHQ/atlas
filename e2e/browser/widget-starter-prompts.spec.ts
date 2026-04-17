@@ -6,7 +6,7 @@ declare const window: any;
 const API_URL = process.env.ATLAS_API_URL ?? "http://localhost:3001";
 
 /**
- * Widget starter-prompts override behavior — issue #1479.
+ * Widget starter-prompts override behavior.
  *
  * Two correctness checks:
  *
@@ -128,5 +128,84 @@ test.describe("Widget starter-prompts override", () => {
     await page.locator(".atlas-wl-bubble").waitFor({ timeout: 10_000 });
     const src = await page.locator(".atlas-wl-frame-wrap iframe").getAttribute("src");
     expect(src).not.toContain("starterPrompts=");
+  });
+
+  test("data-starter-prompts='[]' forwards as starterPrompts=%5B%5D AND suppresses the fetch", async ({
+    page,
+  }) => {
+    // The empty-array case is the most important behavioral test in the
+    // suite — the privacy invariant says "any opted-in override skips
+    // the fetch, including an empty one". A regression that adds
+    // `if (cleaned.length > 0)` would silently re-enable the API call
+    // and only this test would catch it end-to-end.
+    const observed: string[] = [];
+    await page.route("**/api/v1/starter-prompts**", async (route) => {
+      observed.push(route.request().url());
+      await route.continue();
+    });
+
+    await page.setContent(widgetPage({ "data-starter-prompts": "[]" }));
+    const bubble = page.locator(".atlas-wl-bubble");
+    await bubble.waitFor({ timeout: 10_000 });
+
+    const src = await page.locator(".atlas-wl-frame-wrap iframe").getAttribute("src");
+    expect(src).toContain("starterPrompts=");
+    const url = new URL(src!);
+    expect(JSON.parse(url.searchParams.get("starterPrompts")!)).toEqual([]);
+
+    // Open the bubble so the iframe mounts AtlasChat. Even with an empty
+    // override list, the starter-prompts endpoint must not be called.
+    await bubble.click();
+    // Give the iframe time to boot and have a chance to (incorrectly) fetch.
+    await page.waitForTimeout(2_000);
+    expect(observed).toEqual([]);
+  });
+
+  test("data-starter-prompts='[null,42,\"\"]' forwards as [] (privacy preserved on all-bad input)", async ({
+    page,
+  }) => {
+    const observed: string[] = [];
+    await page.route("**/api/v1/starter-prompts**", async (route) => {
+      observed.push(route.request().url());
+      await route.continue();
+    });
+
+    await page.setContent(
+      widgetPage({ "data-starter-prompts": '[null, 42, ""]' }),
+    );
+    const bubble = page.locator(".atlas-wl-bubble");
+    await bubble.waitFor({ timeout: 10_000 });
+
+    const src = await page.locator(".atlas-wl-frame-wrap iframe").getAttribute("src");
+    expect(src).toContain("starterPrompts=");
+    const url = new URL(src!);
+    expect(JSON.parse(url.searchParams.get("starterPrompts")!)).toEqual([]);
+
+    await bubble.click();
+    await page.waitForTimeout(2_000);
+    expect(observed).toEqual([]);
+  });
+
+  test("empty data-starter-prompts='' attribute is treated as absent (fetch from API)", async ({
+    page,
+  }) => {
+    await page.setContent(widgetPage({ "data-starter-prompts": "" }));
+    await page.locator(".atlas-wl-bubble").waitFor({ timeout: 10_000 });
+    const src = await page.locator(".atlas-wl-frame-wrap iframe").getAttribute("src");
+    // No param = absent = fetch path. An embedder server-rendering the
+    // attribute as empty string should not accidentally suppress the fetch.
+    expect(src).not.toContain("starterPrompts=");
+  });
+
+  test("data-starter-prompts='[\"  \",\"real\"]' filters whitespace before forwarding", async ({
+    page,
+  }) => {
+    await page.setContent(
+      widgetPage({ "data-starter-prompts": '["  ","real"]' }),
+    );
+    await page.locator(".atlas-wl-bubble").waitFor({ timeout: 10_000 });
+    const src = await page.locator(".atlas-wl-frame-wrap iframe").getAttribute("src");
+    const url = new URL(src!);
+    expect(JSON.parse(url.searchParams.get("starterPrompts")!)).toEqual(["real"]);
   });
 });

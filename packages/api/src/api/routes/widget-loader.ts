@@ -75,9 +75,12 @@ if(position!=="bottom-right"&&position!=="bottom-left")position="bottom-right";
 var showBranding=s.getAttribute("data-show-branding");
 var brandingParam=showBranding==="false"?"&showBranding=false":"";
 
-/* data-starter-prompts: JSON array of strings forwarded as a query param.
-   Drops the param entirely on parse failure rather than silently sending
-   the empty list, which has different semantics than "no override". */
+/* data-starter-prompts: JSON array of strings forwarded as &starterPrompts to the iframe.
+   Parse failure or non-array values drop the param entirely so the widget falls back
+   to /api/v1/starter-prompts. A valid array — even one that's empty after filtering —
+   is forwarded as-is, which the iframe treats as "embedder opted in to overrides;
+   skip the fetch". A separate warning fires when filtering drops every entry so
+   embedders learn their attribute parsed but produced nothing usable. */
 var starterPromptsParam="";
 var starterPromptsRaw=s.getAttribute("data-starter-prompts");
 if(starterPromptsRaw){
@@ -88,6 +91,9 @@ if(starterPromptsRaw){
       for(var spi=0;spi<parsed.length;spi++){
         var spv=parsed[spi];
         if(typeof spv==="string"&&spv.trim().length>0)cleaned.push(spv);
+      }
+      if(parsed.length>0&&cleaned.length===0){
+        console.warn("[Atlas] data-starter-prompts contained no usable strings (every entry was empty or non-string); the widget will render an empty grid and skip the API fetch");
       }
       starterPromptsParam="&starterPrompts="+encodeURIComponent(JSON.stringify(cleaned));
     }else{

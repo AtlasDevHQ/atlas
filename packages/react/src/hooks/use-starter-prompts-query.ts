@@ -44,17 +44,33 @@ export function useStarterPromptsQuery({ enabled, apiKey }: UseStarterPromptsQue
       }
 
       if (!res.ok) {
-        // 5xx responses include a requestId for log correlation; surface it
-        // so operators can trace, then return [] so the empty state still
-        // renders rather than the whole UI erroring out.
-        const body = (await res.json().catch(() => ({}))) as { requestId?: string };
-        console.warn(
-          "[Atlas] Starter prompts endpoint returned",
-          res.status,
-          "requestId:",
-          body.requestId,
+        // Distinguish 4xx (actionable client error — auth, rate limit) from
+        // 5xx (transient server fault). For 5xx, soft-fail with [] so the
+        // empty state stays usable. For 4xx, throw so the embedder can see
+        // the failure in DevTools and React Query state.
+        const statusText = res.statusText || "(no status text)";
+        let bodyText: string;
+        try {
+          bodyText = await res.text();
+        } catch (err) {
+          bodyText = `<failed to read body: ${err instanceof Error ? err.message : String(err)}>`;
+        }
+        let requestId: string | undefined;
+        try {
+          requestId = (JSON.parse(bodyText) as { requestId?: string }).requestId;
+        } catch {
+          // intentionally ignored: body is not JSON (e.g. HTML proxy error page)
+        }
+        const requestIdSuffix = requestId ? ` (requestId: ${requestId})` : "";
+        if (res.status >= 500) {
+          console.warn(
+            `[Atlas] Starter prompts ${res.status} ${statusText}${requestIdSuffix}; falling back to empty list`,
+          );
+          return [];
+        }
+        throw new Error(
+          `Starter prompts ${res.status} ${statusText}${requestIdSuffix}`,
         );
-        return [];
       }
 
       const data = (await res.json()) as Partial<StarterPromptsResponse>;

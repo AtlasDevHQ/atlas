@@ -1,5 +1,5 @@
 /**
- * Widget empty-state starter-prompts behavior — issue #1479.
+ * Widget empty-state starter-prompts behavior.
  *
  * Two paths:
  *
@@ -123,7 +123,7 @@ describe("AtlasChat empty state — starter prompts", () => {
 
     // Health is still fetched; assert ONLY that the starter-prompts endpoint
     // was never hit. This is the privacy-correctness guarantee for the
-    // override path (issue #1479).
+    // override path.
     await waitFor(() => {
       expect(capturedRequests.find((r) => r.url.includes("/api/health"))).toBeDefined();
     });
@@ -144,9 +144,12 @@ describe("AtlasChat empty state — starter prompts", () => {
     expect(queryAllByTestId("starter-prompt-favorite")).toHaveLength(0);
   });
 
-  it("override drops empty / non-string entries safely", async () => {
+  it("override drops empty / non-string entries safely AND still suppresses the fetch", async () => {
     // Mixed array with an empty string and whitespace — both should be
-    // dropped before render rather than producing empty buttons.
+    // dropped before render rather than producing empty buttons. The "any
+    // override → no fetch" semantic must hold even when filtering removes
+    // every entry except one (a regression where "all entries dropped →
+    // fall back to fetch" sneaks in must break this test).
     const overrides = ["Valid prompt", "", "   "];
     const { findAllByTestId } = render(
       <AtlasChat apiUrl="https://api.example.com" starterPrompts={overrides} />,
@@ -155,6 +158,11 @@ describe("AtlasChat empty state — starter prompts", () => {
     const rows = await findAllByTestId("starter-prompt-library", undefined, { timeout: 5_000 });
     expect(rows.length).toBe(1);
     expect(rows[0].textContent ?? "").toContain("Valid prompt");
+
+    await waitFor(() => {
+      expect(capturedRequests.find((r) => r.url.includes("/api/health"))).toBeDefined();
+    });
+    expect(capturedRequests.find((r) => r.url.includes("/api/v1/starter-prompts"))).toBeUndefined();
   });
 
   it("empty override array still suppresses the network call (zero-prompt embed)", async () => {

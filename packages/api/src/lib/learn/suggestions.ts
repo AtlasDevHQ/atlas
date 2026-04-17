@@ -100,15 +100,29 @@ export interface GenerateSuggestionsOptions {
   readonly autoApprove?: boolean;
 }
 
+/**
+ * Summary returned from a batch generation run. `skipped` counts upserts
+ * that `upsertSuggestion` swallowed (internal-DB unavailable, constraint
+ * violation, connection drop — see that function's catch). The CLI reads
+ * `skipped` to distinguish a silent no-op from a successful run; when
+ * `autoApprove` is set, any non-zero `skipped` is a policy violation
+ * because the operator asked for explicit publication.
+ */
+export interface GenerateSuggestionsResult {
+  readonly created: number;
+  readonly updated: number;
+  readonly skipped: number;
+}
+
 /** Batch-generate suggestions from audit log. Idempotent via upsert. */
 export async function generateSuggestions(
   orgId: string | null,
   options: GenerateSuggestionsOptions = {}
-): Promise<{ created: number; updated: number }> {
+): Promise<GenerateSuggestionsResult> {
   const rows = await getAuditLogQueries(orgId);
   if (rows.length === 0) {
     log.info({ orgId }, "No audit log entries found for suggestion generation");
-    return { created: 0, updated: 0 };
+    return { created: 0, updated: 0, skipped: 0 };
   }
 
   const groups = _groupAuditRows(rows);
@@ -130,6 +144,7 @@ export async function generateSuggestions(
 
   let created = 0;
   let updated = 0;
+  let skipped = 0;
   const autoApprove = options.autoApprove === true;
 
   for (const pattern of filtered) {
@@ -148,11 +163,12 @@ export async function generateSuggestions(
     });
     if (result === "created") created++;
     else if (result === "updated") updated++;
+    else skipped++;
   }
 
   log.info(
-    { orgId, created, updated, total: filtered.length, autoApprove },
+    { orgId, created, updated, skipped, total: filtered.length, autoApprove },
     "Suggestion generation complete"
   );
-  return { created, updated };
+  return { created, updated, skipped };
 }

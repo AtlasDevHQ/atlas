@@ -222,12 +222,34 @@ export async function handleLearn(args: string[]): Promise<void> {
       console.log(
         `  Updated: ${pc.bold(String(result.updated))} suggestions`,
       );
+      if (result.skipped > 0) {
+        // Each skip is a swallowed DB error in upsertSuggestion — the
+        // caller cannot distinguish a real write from a silent failure
+        // without this line. See the warn log for the original error.
+        console.error(
+          pc.red(
+            `  Skipped: ${result.skipped} suggestions (see warnings above). Check DATABASE_URL and the internal DB logs.`,
+          ),
+        );
+      }
       if (autoApprove) {
         console.log(
           pc.yellow(
             "  \u2713 --auto-approve: new rows are approved+published (bypassed /admin/starter-prompts review)",
           ),
         );
+        if (result.skipped > 0) {
+          // Operator intent under --auto-approve is explicit publication.
+          // A non-zero skip means some rows were never written, so the
+          // caller must see a non-zero exit — matching CLAUDE.md's
+          // "prefer errors over silent fallbacks" rule.
+          console.error(
+            pc.red(
+              "  --auto-approve was set but some rows failed to write. Exiting non-zero.",
+            ),
+          );
+          process.exit(1);
+        }
       } else {
         console.log(
           pc.dim(

@@ -33,6 +33,26 @@ import type {
 // Re-export so callers have a single import site for the policy + its types.
 export type { SuggestionApprovalStatus, SuggestionStatus };
 
+/**
+ * Runtime tuples matching the types above. Kept in the api package
+ * rather than `@useatlas/types` because the scaffold template installs
+ * `@useatlas/types` from the registry — exporting new runtime values
+ * there would require a coordinated publish before scaffold CI
+ * succeeds. Type aliases are erased at compile time and have no such
+ * constraint.
+ */
+export const SUGGESTION_APPROVAL_STATUSES = [
+  "pending",
+  "approved",
+  "hidden",
+] as const satisfies readonly SuggestionApprovalStatus[];
+
+export const SUGGESTION_STATUSES = [
+  "draft",
+  "published",
+  "archived",
+] as const satisfies readonly SuggestionStatus[];
+
 /** Config driving the auto-promote decision. */
 export interface AutoPromoteConfig {
   /**

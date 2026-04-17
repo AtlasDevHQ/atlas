@@ -6,12 +6,10 @@
  * Orthogonal to {@link SuggestionStatus}: an approved entry may still be a
  * draft awaiting publish. The two axes are independent.
  */
-export const SUGGESTION_APPROVAL_STATUSES = ["pending", "approved", "hidden"] as const;
-export type SuggestionApprovalStatus = (typeof SUGGESTION_APPROVAL_STATUSES)[number];
+export type SuggestionApprovalStatus = "pending" | "approved" | "hidden";
 
 /** Mode-system lifecycle shared with connections, entities, and prompt collections. */
-export const SUGGESTION_STATUSES = ["draft", "published", "archived"] as const;
-export type SuggestionStatus = (typeof SUGGESTION_STATUSES)[number];
+export type SuggestionStatus = "draft" | "published" | "archived";
 
 export interface QuerySuggestion {
   id: string;

@@ -18,11 +18,9 @@ import { getConfig } from "@atlas/api/lib/config";
 import {
   DEFAULT_AUTO_PROMOTE_CLICKS,
   DEFAULT_COLD_WINDOW_DAYS,
-} from "@atlas/api/lib/suggestions/approval-service";
-import {
   SUGGESTION_APPROVAL_STATUSES,
   SUGGESTION_STATUSES,
-} from "@useatlas/types";
+} from "@atlas/api/lib/suggestions/approval-service";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 

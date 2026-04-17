@@ -33,10 +33,26 @@ import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { StatCard } from "@/ui/components/admin/stat-card";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { Sparkles, CheckCircle2, EyeOff, Clock } from "lucide-react";
-import {
-  SUGGESTION_APPROVAL_STATUSES,
-  SUGGESTION_STATUSES,
+import type {
+  SuggestionApprovalStatus,
+  SuggestionStatus,
 } from "@useatlas/types";
+
+// Inline runtime tuples. The matching `as const` arrays live in the api
+// package (packages/api/src/lib/suggestions/approval-service) as the
+// canonical source; we can't pull them from `@useatlas/types` because the
+// scaffold template installs that package from the registry.
+const SUGGESTION_APPROVAL_STATUSES = [
+  "pending",
+  "approved",
+  "hidden",
+] as const satisfies readonly SuggestionApprovalStatus[];
+
+const SUGGESTION_STATUSES = [
+  "draft",
+  "published",
+  "archived",
+] as const satisfies readonly SuggestionStatus[];
 
 const QueueItemSchema = z.object({
   id: z.string(),

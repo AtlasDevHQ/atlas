@@ -1,4 +1,4 @@
--- Rename legacy plan tiers to new per-seat pricing tiers.
+-- 0020 — Rename legacy plan tiers to new per-seat pricing tiers.
 -- team → starter, enterprise → business.
 --
 -- The plan_tier column is added conditionally in 0000_baseline.sql (inside an

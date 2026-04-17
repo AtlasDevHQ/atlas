@@ -1,4 +1,4 @@
--- Dashboards: persistent collections of query result cards
+-- 0017 — Dashboards: persistent collections of query result cards
 CREATE TABLE IF NOT EXISTS dashboards (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   org_id TEXT,

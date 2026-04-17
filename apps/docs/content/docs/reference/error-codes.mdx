@@ -65,6 +65,32 @@ These codes are returned by billing enforcement and workspace status middleware.
 
 ---
 
+## Route-Response Error Codes
+
+The `ChatErrorCode` catalog above is scoped to the chat-stream endpoint — the agent loop enforces it exhaustively at compile time via `Record<ChatErrorCode, boolean>` in [`packages/types/src/errors.ts`](https://github.com/AtlasDevHQ/atlas/blob/main/packages/types/src/errors.ts). Admin, mode, favorites, and regional-routing endpoints return additional codes that follow the same `{ error, message, requestId }` envelope but aren't consumed by the agent's retry logic. Clients parsing responses from those endpoints should handle the codes below.
+
+### Mode & workspace state
+
+| Code | HTTP Status | Trigger | Fix | Retryable |
+|------|-------------|---------|-----|-----------|
+| `demo_readonly` | 403 | Write against the `__demo__` connection while in published mode | Switch to developer mode to manage demo content. See [Developer Mode](/guides/developer-mode) | No |
+| `workspace_migrating` | 409 | Write attempted while the workspace's data is being moved to a new region | Transient — retry once the migration completes (typically minutes). See [Data Residency](/platform-ops/data-residency) | Yes |
+| `misdirected_request` | 421 | Request reached a regional API that doesn't hold this workspace's data | Use the `correctApiUrl` field in the response body to retarget. The SDK can be initialized with the correct regional URL once and cached. See [Regional API](/platform-ops/regional-api) | No |
+
+### Starter-prompt favorites
+
+| Code | HTTP Status | Trigger | Fix | Retryable |
+|------|-------------|---------|-----|-----------|
+| `duplicate_favorite` | 409 | Pinning a prompt whose text already exists in the caller's favorites | Already pinned — no action needed | No |
+| `favorite_cap_exceeded` | 400 | User has pinned the maximum number of favorites | Unpin a prompt first, or raise `ATLAS_STARTER_PROMPT_MAX_FAVORITES` (self-hosted) | No |
+| `invalid_favorite_text` | 400 | Favorite text is empty, too long, or otherwise malformed | Fix the client-side validation; trim whitespace and enforce length limits before POSTing | No |
+
+<Callout>
+These codes aren't part of the exhaustively-typed `ChatErrorCode` catalog, so the SDK's `isChatErrorCode()` / `isRetryableError()` guards return `false` / `undefined` for them. Parse the raw `error` field yourself when calling endpoints that may return them: `POST /api/v1/starter-prompts/favorites`, `/api/v1/admin/connections/*`, `/api/v1/admin/semantic/*`, and any write request that hits the regional-routing or migration middleware (including the chat stream itself for `workspace_migrating` / `misdirected_request`).
+</Callout>
+
+---
+
 ## Client Error Codes (ClientErrorCode)
 
 These codes are detected **client-side** by the SDK and chat UI before parsing a server response. They represent network-level failures or HTTP status patterns.

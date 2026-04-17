@@ -1592,6 +1592,9 @@ export interface HardDeleteResult {
 export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResult> {
   const pool = getInternalDB();
   const client = await pool.connect();
+  // Destroy the client on a failed ROLLBACK so a dirty socket doesn't poison
+  // the next borrower (matches cascadeWorkspaceDelete + admin-archive/publish).
+  let rollbackErr: Error | null = null;
 
   try {
     await client.query("BEGIN");
@@ -1605,7 +1608,13 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
     );
     const status = (statusCheck.rows[0] as Record<string, unknown> | undefined)?.workspace_status;
     if (statusCheck.rows.length === 0 || status !== "deleted") {
-      await client.query("ROLLBACK");
+      await client.query("ROLLBACK").catch((rbErr: unknown) => {
+        rollbackErr = rbErr instanceof Error ? rbErr : new Error(String(rbErr));
+        log.warn(
+          { orgId, err: rollbackErr.message },
+          "ROLLBACK failed during hardDeleteWorkspace status check — client will be destroyed",
+        );
+      });
       throw new Error("Workspace is not in deleted status — purge aborted");
     }
 
@@ -1817,14 +1826,15 @@ export async function hardDeleteWorkspace(orgId: string): Promise<HardDeleteResu
       organization,
     };
   } catch (err) {
-    await client.query("ROLLBACK").catch((rollbackErr) => {
+    await client.query("ROLLBACK").catch((rbErr: unknown) => {
+      rollbackErr = rbErr instanceof Error ? rbErr : new Error(String(rbErr));
       log.warn(
-        { err: rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr), orgId },
-        "ROLLBACK failed after purge transaction error — verify data integrity",
+        { orgId, err: rollbackErr.message },
+        "ROLLBACK failed after purge transaction error — client will be destroyed",
       );
     });
     throw err;
   } finally {
-    client.release();
+    client.release(rollbackErr ?? undefined);
   }
 }

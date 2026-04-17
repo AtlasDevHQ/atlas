@@ -3,11 +3,13 @@
 import { useChat } from "@ai-sdk/react";
 import { isToolUIPart, getToolName } from "ai";
 import { useState, useRef, useEffect, useCallback } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import type { PythonProgressData } from "./chat/python-result-card";
 import { useAtlasConfig } from "../context";
 import { useThemeMode, setTheme, type ThemeMode } from "../hooks/use-dark-mode";
 import { useAtlasTransport } from "../hooks/use-atlas-transport";
 import { useConversations } from "../hooks/use-conversations";
+import { useStarterPromptsQuery } from "../hooks/use-starter-prompts-query";
 import { ErrorBanner } from "./chat/error-banner";
 import { ApiKeyBar } from "./chat/api-key-bar";
 import { TypingIndicator } from "./chat/typing-indicator";
@@ -26,7 +28,7 @@ import { Sun, Moon, Monitor, Star, TableProperties, BookOpen, Send, Pin } from "
 import { SchemaExplorer } from "./schema-explorer/schema-explorer";
 import { PromptLibrary } from "./chat/prompt-library";
 import { StarterPromptList } from "./chat/starter-prompt-list";
-import type { StarterPrompt, StarterPromptsResponse } from "@useatlas/types/starter-prompt";
+import type { StarterPrompt } from "@useatlas/types/starter-prompt";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -143,14 +145,10 @@ export function AtlasChat() {
   const [passwordDialogDismissed, setPasswordDialogDismissed] = useState(false);
   const [schemaExplorerOpen, setSchemaExplorerOpen] = useState(false);
   const [promptLibraryOpen, setPromptLibraryOpen] = useState(false);
-  // Adaptive empty-chat starter surface — backend composes the ranked
-  // prompt list from favorites / popular / library tiers.
-  const [starterPrompts, setStarterPrompts] = useState<StarterPrompt[]>([]);
   // Tracks the message text being pinned so the affordance disables
   // mid-flight — without this, a quick double-click fires two POSTs and
   // the second 409s after a visible success toast.
   const [pinningText, setPinningText] = useState<string | null>(null);
-  const [suggestionsLoading, setSuggestionsLoading] = useState(false);
   const [relatedSuggestions, setRelatedSuggestions] = useState<QuerySuggestion[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -233,45 +231,20 @@ export function AtlasChat() {
 
   const isLoading = status === "streaming" || status === "submitted";
 
-  // Fetch adaptive starter prompts for the empty state
-  useEffect(() => {
-    if (messages.length > 0) return;
-    let cancelled = false;
-    setSuggestionsLoading(true);
-    fetch(`${apiUrl}/api/v1/starter-prompts?limit=6`, {
-      credentials,
-      headers: getHeaders(),
-    })
-      .then(async (res): Promise<Partial<StarterPromptsResponse> | null> => {
-        if (res.ok) return res.json() as Promise<Partial<StarterPromptsResponse>>;
-        // Settings read failure propagates as 500 with requestId — surface
-        // the correlation id so operators can trace; the UI still falls
-        // through to the cold-start CTA rather than erroring the whole
-        // empty state.
-        const body = (await res.json().catch(() => ({}))) as { requestId?: string };
-        console.warn(
-          "starter-prompts endpoint returned",
-          res.status,
-          "requestId:",
-          body.requestId,
-        );
-        return null;
-      })
-      .then((data) => {
-        if (!cancelled && Array.isArray(data?.prompts)) {
-          setStarterPrompts([...data.prompts]);
-        }
-      })
-      .catch(() => {
-        // intentionally ignored: network/parse failures on starter prompts
-        // are non-critical — HTTP 5xx is logged above, and an empty list
-        // renders the single-CTA cold-start UI.
-      })
-      .finally(() => {
-        if (!cancelled) setSuggestionsLoading(false);
-      });
-    return () => { cancelled = true; };
-  }, [messages.length, apiUrl, credentials, getHeaders]);
+  // Adaptive empty-chat starter surface — backend composes the ranked
+  // prompt list from favorites / popular / library tiers. TanStack Query
+  // handles 4xx/5xx fallback (5xx soft-fails to []) and is shared with
+  // the notebook empty state via a stable queryKey so pins made here
+  // reflect immediately when the user navigates between surfaces.
+  const queryClient = useQueryClient();
+  const starterPromptsQueryKey = ["atlas", "starter-prompts", apiUrl] as const;
+  const starterPromptsQuery = useStarterPromptsQuery({
+    apiUrl,
+    isCrossOrigin,
+    getHeaders,
+    enabled: messages.length === 0 && authResolved,
+  });
+  const starterPrompts = starterPromptsQuery.data ?? [];
 
   // Fetch related suggestions after a completed query with SQL results
   useEffect(() => {
@@ -347,12 +320,11 @@ export function AtlasChat() {
           requestId?: string;
         };
         if (res.status === 409) {
-          // Duplicate: the pin already exists server-side, so our local
-          // `starterPrompts` is stale. Force a refetch on next empty-state
-          // entry by clearing it — the useEffect watching messages.length
-          // will repopulate.
+          // Duplicate: the pin already exists server-side, so our cache
+          // is stale. Invalidate so the next empty-state render refetches
+          // the authoritative list.
           console.warn("pin duplicate:", body.requestId);
-          setStarterPrompts([]);
+          await queryClient.invalidateQueries({ queryKey: starterPromptsQueryKey });
           setTransientWarning("Already pinned — it'll show up in a new chat.");
           setTimeout(() => setTransientWarning(""), 4000);
           return;
@@ -367,12 +339,20 @@ export function AtlasChat() {
         favorite: { id: string; text: string; position: number };
       };
       // Optimistic insert: prepend favorite at the top of the empty-state
-      // grid so the user sees it immediately without a refetch. The full
-      // refetch on next empty-state entry reconciles.
-      setStarterPrompts((prev) => [
-        { id: `favorite:${body.favorite.id}`, text: body.favorite.text, provenance: "favorite" },
-        ...prev.filter((p) => !(p.provenance === "favorite" && p.text === body.favorite.text)),
-      ]);
+      // grid so the user sees it immediately without a refetch. The next
+      // empty-state re-entry reconciles via the hook's own refetch
+      // semantics.
+      queryClient.setQueryData<StarterPrompt[]>(starterPromptsQueryKey, (prev) => {
+        const base = prev ?? [];
+        return [
+          {
+            id: `favorite:${body.favorite.id}`,
+            text: body.favorite.text,
+            provenance: "favorite",
+          },
+          ...base.filter((p) => !(p.provenance === "favorite" && p.text === body.favorite.text)),
+        ];
+      });
       setTransientWarning("Pinned as starter prompt.");
       setTimeout(() => setTransientWarning(""), 3000);
     } catch (err) {
@@ -414,7 +394,9 @@ export function AtlasChat() {
         setTimeout(() => setTransientWarning(""), 5000);
         return;
       }
-      setStarterPrompts((prev) => prev.filter((p) => p.id !== favoriteId));
+      queryClient.setQueryData<StarterPrompt[]>(starterPromptsQueryKey, (prev) =>
+        (prev ?? []).filter((p) => p.id !== favoriteId),
+      );
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.warn("unpin request failed:", msg);
@@ -609,7 +591,7 @@ export function AtlasChat() {
                         prompts={starterPrompts}
                         onSelect={handleSend}
                         onUnpin={(id) => { void handleUnpin(id); }}
-                        isLoading={suggestionsLoading}
+                        isLoading={starterPromptsQuery.isLoading}
                       />
                       <Button
                         variant="link"

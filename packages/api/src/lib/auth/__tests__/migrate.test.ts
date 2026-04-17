@@ -36,16 +36,19 @@ function createTrackingPool(opts: { shouldThrow?: boolean } = {}) {
 // Mock auth instance for Better Auth migration tracking
 // ---------------------------------------------------------------------------
 
-function createTrackingAuth(opts: { shouldThrow?: boolean } = {}) {
+function createTrackingAuth(opts: { shouldThrow?: boolean; onMigrate?: () => void } = {}) {
   let migrationCount = 0;
   return {
     instance: {
       $context: Promise.resolve({
         runMigrations: async () => {
           if (opts.shouldThrow) throw new Error("Better Auth migration error");
+          opts.onMigrate?.();
           migrationCount++;
         },
       }),
+      // Stub so the api access in seedDevUser doesn't throw — tests don't assert seed behavior.
+      api: {},
     },
     getMigrationCount: () => migrationCount,
   };
@@ -269,6 +272,7 @@ describe("migrateAuthTables", () => {
             { name: "0024_mode_status_columns.sql" },
             { name: "0025_fix_null_unsafe_indexes.sql" },
             { name: "0026_drop_legacy_semantic_entity_index.sql" },
+            { name: "0027_organization_saas_columns.sql" },
           ],
         };
       }
@@ -288,5 +292,91 @@ describe("migrateAuthTables", () => {
 
     // Should NOT have a BEGIN/COMMIT since all migrations were already applied
     expect(queries).not.toContain("BEGIN");
+  });
+
+  it("runs Better Auth migrations BEFORE Atlas internal migrations in managed mode (#1472)", async () => {
+    // Reproduces the boot-ordering bug: if Atlas migrations run before Better Auth
+    // creates the organization table, the conditional ALTERs in 0000/0020 silently
+    // skip and get marked applied, leaving organization missing SaaS columns forever.
+    process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/atlas";
+    process.env.BETTER_AUTH_SECRET = "a".repeat(32);
+
+    let betterAuthRanAt: number | null = null;
+    let firstAtlasQueryAt: number | null = null;
+    let counter = 0;
+
+    const queries: string[] = [];
+    async function queryFn(sql: string) {
+      const ts = ++counter;
+      queries.push(sql);
+      // First non-locking query that touches Atlas internal tables marks the start
+      // of the Atlas migration phase. The advisory lock + tracking-table CREATE
+      // are part of runMigrations(), so observing any of these means Atlas
+      // migrations have begun.
+      if (firstAtlasQueryAt === null && (sql.includes("__atlas_migrations") || sql.includes("pg_advisory_lock"))) {
+        firstAtlasQueryAt = ts;
+      }
+      return { rows: [] };
+    }
+    const pool = {
+      query: queryFn,
+      async connect() {
+        return { query: queryFn, release() {} };
+      },
+      async end() {},
+      on() {},
+    };
+    _resetPool(pool);
+
+    const { instance } = createTrackingAuth({
+      onMigrate: () => {
+        betterAuthRanAt = ++counter;
+      },
+    });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any -- injecting partial auth mock for testing
+    _setAuthInstance(instance as any);
+
+    await migrateAuthTables();
+
+    expect(betterAuthRanAt).not.toBeNull();
+    expect(firstAtlasQueryAt).not.toBeNull();
+    expect(betterAuthRanAt!).toBeLessThan(firstAtlasQueryAt!);
+  });
+
+  it("skips 0027_organization_saas_columns.sql in non-managed mode", async () => {
+    // In non-managed mode, Better Auth never creates the organization table.
+    // Migration 0027's unconditional ALTER would fail with a misleading error.
+    // The runner must be told to skip it.
+    process.env.DATABASE_URL = "postgresql://user:pass@localhost:5432/atlas";
+    delete process.env.BETTER_AUTH_SECRET;
+
+    const queries: string[] = [];
+    const params: unknown[][] = [];
+    async function queryFn(sql: string, p?: unknown[]) {
+      queries.push(sql);
+      if (p) params.push(p);
+      return { rows: [] };
+    }
+    const pool = {
+      query: queryFn,
+      async connect() {
+        return { query: queryFn, release() {} };
+      },
+      async end() {},
+      on() {},
+    };
+    _resetPool(pool);
+
+    await migrateAuthTables();
+
+    // 0027 SQL never runs — match the issue reference unique to that file
+    const orgSaasMigration = queries.find((q) => q.includes("issues/1472"));
+    expect(orgSaasMigration).toBeUndefined();
+
+    // 0027 is not recorded as applied
+    const insertedNames = params
+      .filter((p) => p.length === 1 && typeof p[0] === "string")
+      .map((p) => p[0] as string);
+    expect(insertedNames).not.toContain("0027_organization_saas_columns.sql");
   });
 });

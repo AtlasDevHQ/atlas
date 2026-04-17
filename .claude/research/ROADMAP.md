@@ -1223,7 +1223,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 
 ### Admin moderation
 - [x] Schema migration + auto-promote + read-only admin queue (#1476)
-- [ ] Admin moderation UX — approve/hide/unhide + author form (#1477)
+- [x] Admin moderation UX — approve/hide/unhide + author form (#1477)
 - [ ] 1.2.0 mode participation + CLAUDE.md Content Mode System rule (#1478)
 
 ### Other surfaces

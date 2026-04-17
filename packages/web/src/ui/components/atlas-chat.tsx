@@ -609,6 +609,7 @@ export function AtlasChat() {
                         <div className="grid w-full max-w-lg grid-cols-1 gap-2 sm:grid-cols-2">
                           {starterPrompts.map((prompt) => {
                             const isFavorite = prompt.provenance === "favorite";
+                            const isPopular = prompt.provenance === "popular";
                             return (
                               <div
                                 key={prompt.id}
@@ -627,6 +628,15 @@ export function AtlasChat() {
                                     />
                                   )}
                                   <span className="flex-1">{prompt.text}</span>
+                                  {isPopular && (
+                                    <span
+                                      className="ml-2 shrink-0 rounded-sm bg-zinc-100 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400"
+                                      aria-label="Popular prompt"
+                                      data-testid="starter-prompt-popular-badge"
+                                    >
+                                      Popular
+                                    </span>
+                                  )}
                                 </Button>
                                 {isFavorite && (
                                   <button

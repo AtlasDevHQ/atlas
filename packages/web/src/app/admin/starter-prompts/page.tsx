@@ -1,16 +1,17 @@
 "use client";
 
 /**
- * Read-only admin surface for the starter-prompt moderation queue.
+ * Admin surface for starter-prompt moderation.
  *
- * This page renders the `approval_status` axis (pending / approved /
- * hidden). The orthogonal `status` axis (draft / published / archived)
- * appears as a per-row badge. The canonical state-matrix explainer
- * lives with the decision policy in
+ * Renders the `approval_status` axis (pending / approved / hidden) with
+ * per-row actions (Approve / Hide / Unhide) and an author form on the
+ * Pending tab for direct seeding. The orthogonal `status` axis (draft /
+ * published / archived) appears as a per-row badge. The canonical
+ * state-matrix explainer lives with the decision policy in
  * `@atlas/api/lib/suggestions/approval-service`.
  */
 
-import { Suspense } from "react";
+import { Suspense, useState } from "react";
 import { z } from "zod";
 import {
   Card,
@@ -20,6 +21,8 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Table,
@@ -32,7 +35,8 @@ import {
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { StatCard } from "@/ui/components/admin/stat-card";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
-import { Sparkles, CheckCircle2, EyeOff, Clock } from "lucide-react";
+import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { Sparkles, CheckCircle2, EyeOff, Clock, Loader2 } from "lucide-react";
 import type {
   SuggestionApprovalStatus,
   SuggestionStatus,
@@ -92,6 +96,8 @@ const QueueResponseSchema = z.object({
 
 type QueueResponse = z.infer<typeof QueueResponseSchema>;
 
+type RowAction = "approve" | "hide" | "unhide";
+
 function formatDate(iso: string | null): string {
   if (!iso) return "—";
   const d = new Date(iso);
@@ -103,12 +109,61 @@ function formatDate(iso: string | null): string {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Per-row action buttons
+// ---------------------------------------------------------------------------
+
+function RowActions({
+  row,
+  actions,
+  onMutate,
+  pending,
+}: {
+  row: QueueItem;
+  actions: readonly RowAction[];
+  onMutate: (action: RowAction, id: string) => void;
+  pending: string | null;
+}) {
+  const isPending = pending === row.id;
+
+  return (
+    <div className="flex gap-2 justify-end">
+      {actions.map((action) => {
+        const label = action === "approve" ? "Approve" : action === "hide" ? "Hide" : "Unhide";
+        const variant = action === "hide" ? "outline" : "default";
+        return (
+          <Button
+            key={action}
+            size="sm"
+            variant={variant}
+            disabled={isPending}
+            onClick={() => onMutate(action, row.id)}
+            data-testid={`starter-prompt-${action}-${row.id}`}
+          >
+            {isPending ? <Loader2 className="w-3 h-3 animate-spin" /> : label}
+          </Button>
+        );
+      })}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Queue table (per-tab)
+// ---------------------------------------------------------------------------
+
 function QueueTable({
   rows,
   emptyMessage,
+  actions,
+  onMutate,
+  pendingRowId,
 }: {
   rows: QueueItem[];
   emptyMessage: string;
+  actions: readonly RowAction[];
+  onMutate: (action: RowAction, id: string) => void;
+  pendingRowId: string | null;
 }) {
   if (rows.length === 0) {
     return (
@@ -127,6 +182,7 @@ function QueueTable({
           <TableHead className="text-right">Frequency</TableHead>
           <TableHead>Mode</TableHead>
           <TableHead>Last seen</TableHead>
+          <TableHead className="text-right">Actions</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -147,12 +203,95 @@ function QueueTable({
             <TableCell className="text-muted-foreground">
               {formatDate(row.lastSeenAt)}
             </TableCell>
+            <TableCell className="text-right">
+              <RowActions
+                row={row}
+                actions={actions}
+                onMutate={onMutate}
+                pending={pendingRowId}
+              />
+            </TableCell>
           </TableRow>
         ))}
       </TableBody>
     </Table>
   );
 }
+
+// ---------------------------------------------------------------------------
+// Author form — seeds the empty state without waiting for organic clicks
+// ---------------------------------------------------------------------------
+
+function AuthorForm({
+  onAuthored,
+}: {
+  onAuthored: () => void;
+}) {
+  const [text, setText] = useState("");
+  const { mutate, saving, error, clearError } = useAdminMutation<{
+    suggestion: QueueItem;
+  }>({
+    path: "/api/v1/admin/starter-prompts/author",
+    method: "POST",
+    invalidates: onAuthored,
+  });
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    const trimmed = text.trim();
+    if (trimmed.length === 0) return;
+    const result = await mutate({ body: { text: trimmed } });
+    if (result.ok) {
+      setText("");
+    }
+  }
+
+  return (
+    <form onSubmit={handleSubmit} className="space-y-2">
+      <div>
+        <label htmlFor="author-text" className="text-sm font-medium">
+          Author a new starter prompt
+        </label>
+        <p className="text-xs text-muted-foreground mt-0.5">
+          Skips the pending queue — the prompt lands in Approved immediately
+          and surfaces to users in the empty state.
+        </p>
+      </div>
+      <Textarea
+        id="author-text"
+        placeholder="e.g. Which accounts renewed this quarter?"
+        value={text}
+        onChange={(e) => {
+          setText(e.target.value);
+          if (error) clearError();
+        }}
+        rows={2}
+        disabled={saving}
+        data-testid="starter-prompt-author-text"
+      />
+      {error && (
+        <p className="text-xs text-destructive" role="alert">
+          {error}
+        </p>
+      )}
+      <div className="flex items-center justify-end gap-2">
+        <Button
+          type="submit"
+          size="sm"
+          disabled={saving || text.trim().length === 0}
+          data-testid="starter-prompt-author-submit"
+        >
+          {saving ? <Loader2 className="w-3 h-3 animate-spin mr-1.5" /> : null}
+          Author prompt
+        </Button>
+      </div>
+    </form>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Page
+// ---------------------------------------------------------------------------
 
 function StarterPromptsContent() {
   const { data, loading, error, refetch } = useAdminFetch<QueueResponse>(
@@ -165,6 +304,28 @@ function StarterPromptsContent() {
   const hidden = data?.hidden ?? [];
   const threshold = data?.threshold ?? 3;
   const coldWindowDays = data?.coldWindowDays ?? 90;
+
+  // Per-row mutation state — tracks which row id is currently flight so
+  // the row's buttons render a spinner without locking the whole tab.
+  const [pendingRowId, setPendingRowId] = useState<string | null>(null);
+
+  const { mutate: mutateRow } = useAdminMutation<{ suggestion: QueueItem }>({
+    method: "POST",
+    invalidates: refetch,
+  });
+
+  async function handleRowAction(action: RowAction, id: string) {
+    setPendingRowId(id);
+    try {
+      await mutateRow({
+        path: `/api/v1/admin/starter-prompts/${encodeURIComponent(id)}/${action}`,
+        body: {},
+        itemId: id,
+      });
+    } finally {
+      setPendingRowId(null);
+    }
+  }
 
   return (
     <AdminContentWrapper loading={loading} error={error} onRetry={refetch}>
@@ -203,7 +364,7 @@ function StarterPromptsContent() {
               <CardTitle>Moderation queue</CardTitle>
             </div>
             <CardDescription>
-              Read-only view. The row status badge shows the publish mode
+              The row status badge shows the publish mode
               (draft / published / archived); the tab grouping shows the
               moderation state (pending / approved / hidden). The two axes
               are independent.
@@ -222,22 +383,34 @@ function StarterPromptsContent() {
                   Hidden <span className="ml-1.5 text-xs opacity-70">({hidden.length})</span>
                 </TabsTrigger>
               </TabsList>
-              <TabsContent value="pending" className="mt-4">
+              <TabsContent value="pending" className="mt-4 space-y-4">
+                <div className="rounded-md border bg-muted/20 p-4">
+                  <AuthorForm onAuthored={refetch} />
+                </div>
                 <QueueTable
                   rows={pending}
                   emptyMessage={`No suggestions have crossed the ${threshold}-click threshold within the last ${coldWindowDays} days.`}
+                  actions={["approve", "hide"]}
+                  onMutate={handleRowAction}
+                  pendingRowId={pendingRowId}
                 />
               </TabsContent>
               <TabsContent value="approved" className="mt-4">
                 <QueueTable
                   rows={approved}
                   emptyMessage="No approved starter prompts yet."
+                  actions={["hide"]}
+                  onMutate={handleRowAction}
+                  pendingRowId={pendingRowId}
                 />
               </TabsContent>
               <TabsContent value="hidden" className="mt-4">
                 <QueueTable
                   rows={hidden}
                   emptyMessage="No hidden starter prompts."
+                  actions={["unhide"]}
+                  onMutate={handleRowAction}
+                  pendingRowId={pendingRowId}
                 />
               </TabsContent>
             </Tabs>

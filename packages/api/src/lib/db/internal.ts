@@ -1165,8 +1165,13 @@ export async function getPopularSuggestions(
     const params: unknown[] = orgId != null ? [orgId, limit] : [limit];
     const limitIdx = params.length;
 
+    // Gated to admin-approved rows only. Pending / hidden suggestions
+    // must not surface in user-facing empty states — this is the single
+    // source of truth enforcing that contract from backend to UI.
     return await internalQuery<QuerySuggestionRow>(
-      `SELECT * FROM query_suggestions WHERE ${orgClause} ORDER BY score DESC LIMIT $${limitIdx}`,
+      `SELECT * FROM query_suggestions
+       WHERE ${orgClause} AND approval_status = 'approved'
+       ORDER BY score DESC LIMIT $${limitIdx}`,
       params
     );
   } catch (err) {

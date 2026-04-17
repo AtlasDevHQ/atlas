@@ -299,3 +299,278 @@ describe("GET /api/v1/admin/starter-prompts/queue — click-threshold path", () 
     expect(body.pending[0]?.distinctUserClicks).toBe(3);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Mutation routes (slice #1477): approve / hide / unhide / author
+// ---------------------------------------------------------------------------
+
+function postNoBody(path: string) {
+  return req(path, { method: "POST" });
+}
+
+function postBody(path: string, body: unknown) {
+  const url = `http://localhost${path}`;
+  return app.fetch(
+    new Request(url, {
+      method: "POST",
+      headers: {
+        Authorization: "Bearer test",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    }),
+  );
+}
+
+describe("POST /api/v1/admin/starter-prompts/:id/approve", () => {
+  it("returns 401 when unauthenticated", async () => {
+    mocks.mockAuthenticateRequest.mockImplementation(() =>
+      Promise.resolve({ authenticated: false, error: "Missing token", status: 401 }),
+    );
+
+    const res = await postNoBody("/api/v1/admin/starter-prompts/sug-1/approve");
+
+    expect(res.status).toBe(401);
+  });
+
+  it("returns 403 when authenticated user is not an admin", async () => {
+    mocks.mockAuthenticateRequest.mockImplementation(() =>
+      Promise.resolve({
+        authenticated: true,
+        mode: "simple-key",
+        user: {
+          id: "member-1",
+          mode: "simple-key",
+          label: "Member",
+          role: "member",
+          activeOrganizationId: "org-alpha",
+        },
+      }),
+    );
+
+    const res = await postNoBody("/api/v1/admin/starter-prompts/sug-1/approve");
+
+    expect(res.status).toBe(403);
+  });
+
+  it("returns 404 when the suggestion does not exist", async () => {
+    mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+      if (sql.includes("SELECT org_id")) return [];
+      return [];
+    });
+
+    const res = await postNoBody("/api/v1/admin/starter-prompts/missing/approve");
+
+    expect(res.status).toBe(404);
+  });
+
+  it("returns 403 when the suggestion belongs to a different org", async () => {
+    mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+      if (sql.includes("SELECT org_id")) return [{ org_id: "org-other" }];
+      return [];
+    });
+
+    const res = await postNoBody("/api/v1/admin/starter-prompts/sug-1/approve");
+
+    expect(res.status).toBe(403);
+  });
+
+  it("returns 200 with the updated row stamped with approved_by/approved_at", async () => {
+    mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+      if (sql.includes("SELECT org_id")) return [{ org_id: "org-alpha" }];
+      if (sql.includes("UPDATE")) {
+        return [
+          row({
+            id: "sug-1",
+            approval_status: "approved",
+            approved_by: "admin-1",
+            approved_at: "2026-04-17T00:00:00.000Z",
+          }),
+        ];
+      }
+      return [];
+    });
+
+    const res = await postNoBody("/api/v1/admin/starter-prompts/sug-1/approve");
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      suggestion: {
+        id: string;
+        approvalStatus: string;
+        approvedBy: string | null;
+        approvedAt: string | null;
+      };
+    };
+    expect(body.suggestion.id).toBe("sug-1");
+    expect(body.suggestion.approvalStatus).toBe("approved");
+    expect(body.suggestion.approvedBy).toBe("admin-1");
+    expect(body.suggestion.approvedAt).toBe("2026-04-17T00:00:00.000Z");
+  });
+});
+
+describe("POST /api/v1/admin/starter-prompts/:id/hide", () => {
+  it("returns 403 for non-admins", async () => {
+    mocks.mockAuthenticateRequest.mockImplementation(() =>
+      Promise.resolve({
+        authenticated: true,
+        mode: "simple-key",
+        user: {
+          id: "member-1",
+          mode: "simple-key",
+          label: "Member",
+          role: "member",
+          activeOrganizationId: "org-alpha",
+        },
+      }),
+    );
+
+    const res = await postNoBody("/api/v1/admin/starter-prompts/sug-1/hide");
+
+    expect(res.status).toBe(403);
+  });
+
+  it("returns 200 with approvalStatus=hidden after a successful hide", async () => {
+    mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+      if (sql.includes("SELECT org_id")) return [{ org_id: "org-alpha" }];
+      if (sql.includes("UPDATE")) {
+        return [row({ approval_status: "hidden" })];
+      }
+      return [];
+    });
+
+    const res = await postNoBody("/api/v1/admin/starter-prompts/sug-1/hide");
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      suggestion: { approvalStatus: string };
+    };
+    expect(body.suggestion.approvalStatus).toBe("hidden");
+  });
+
+  it("hide → unhide cycle returns the row to pending state", async () => {
+    // First hide
+    mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+      if (sql.includes("SELECT org_id")) return [{ org_id: "org-alpha" }];
+      if (sql.includes("UPDATE")) {
+        return [row({ approval_status: "hidden" })];
+      }
+      return [];
+    });
+    const hideRes = await postNoBody("/api/v1/admin/starter-prompts/sug-1/hide");
+    expect(hideRes.status).toBe(200);
+
+    // Then unhide — goes back to pending (per user story 12: hide is reversible)
+    mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+      if (sql.includes("SELECT org_id")) return [{ org_id: "org-alpha" }];
+      if (sql.includes("UPDATE")) {
+        return [row({ approval_status: "pending" })];
+      }
+      return [];
+    });
+    const unhideRes = await postNoBody("/api/v1/admin/starter-prompts/sug-1/unhide");
+    expect(unhideRes.status).toBe(200);
+    const body = (await unhideRes.json()) as {
+      suggestion: { approvalStatus: string };
+    };
+    expect(body.suggestion.approvalStatus).toBe("pending");
+  });
+});
+
+describe("POST /api/v1/admin/starter-prompts/author", () => {
+  it("returns 401 when unauthenticated", async () => {
+    mocks.mockAuthenticateRequest.mockImplementation(() =>
+      Promise.resolve({ authenticated: false, error: "Missing token", status: 401 }),
+    );
+
+    const res = await postBody("/api/v1/admin/starter-prompts/author", {
+      text: "What does this table contain?",
+    });
+
+    expect(res.status).toBe(401);
+  });
+
+  it("returns 403 for non-admins", async () => {
+    mocks.mockAuthenticateRequest.mockImplementation(() =>
+      Promise.resolve({
+        authenticated: true,
+        mode: "simple-key",
+        user: {
+          id: "member-1",
+          mode: "simple-key",
+          label: "Member",
+          role: "member",
+          activeOrganizationId: "org-alpha",
+        },
+      }),
+    );
+
+    const res = await postBody("/api/v1/admin/starter-prompts/author", {
+      text: "What does this table contain?",
+    });
+
+    expect(res.status).toBe(403);
+  });
+
+  it("returns 422 when text is empty (Zod validation at route boundary)", async () => {
+    // The shared validation-hook returns 422 for all schema failures — the
+    // in-service InvalidSuggestionTextError (400) only fires for callers
+    // that bypass the route layer (SDK / MCP).
+    const res = await postBody("/api/v1/admin/starter-prompts/author", { text: "" });
+
+    expect(res.status).toBe(422);
+  });
+
+  it("returns 200 with a newly-approved row (approval_status=approved, status=published)", async () => {
+    mocks.mockInternalQuery.mockImplementation(async (sql: string) => {
+      if (sql.includes("INSERT INTO query_suggestions")) {
+        return [
+          row({
+            id: "new-sug",
+            description: "Admin-authored question",
+            approval_status: "approved",
+            status: "published",
+            approved_by: "admin-1",
+            approved_at: "2026-04-17T00:00:00.000Z",
+          }),
+        ];
+      }
+      return [];
+    });
+
+    const res = await postBody("/api/v1/admin/starter-prompts/author", {
+      text: "Admin-authored question",
+    });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      suggestion: {
+        id: string;
+        description: string;
+        approvalStatus: string;
+        status: string;
+        approvedBy: string | null;
+      };
+    };
+    expect(body.suggestion.approvalStatus).toBe("approved");
+    expect(body.suggestion.status).toBe("published");
+    expect(body.suggestion.description).toBe("Admin-authored question");
+    expect(body.suggestion.approvedBy).toBe("admin-1");
+  });
+
+  it("returns 409 when the same text already exists (PG unique-violation)", async () => {
+    mocks.mockInternalQuery.mockImplementation(async () => {
+      const err = new Error(
+        "duplicate key value violates unique constraint",
+      ) as Error & { code?: string };
+      err.code = "23505";
+      throw err;
+    });
+
+    const res = await postBody("/api/v1/admin/starter-prompts/author", {
+      text: "A duplicate of a pending suggestion",
+    });
+
+    expect(res.status).toBe(409);
+  });
+});

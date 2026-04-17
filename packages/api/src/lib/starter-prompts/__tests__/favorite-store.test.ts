@@ -1,5 +1,5 @@
 /**
- * Unit tests for `FavoritePromptStore` (#1475, PRD #1473).
+ * Unit tests for the per-user favorite prompts store.
  *
  * Covers:
  *   - listFavorites: ordering (position DESC, created_at DESC), scoping by user + org
@@ -27,6 +27,7 @@ const {
   updateFavoritePosition,
   FavoriteCapError,
   DuplicateFavoriteError,
+  InvalidFavoriteTextError,
   FAVORITE_TEXT_MAX_LENGTH,
 } = await import("../favorite-store");
 
@@ -77,10 +78,10 @@ describe("listFavorites", () => {
 // ── createFavorite ─────────────────────────────────────────────────────
 
 describe("createFavorite", () => {
-  it("rejects empty or whitespace-only text", async () => {
+  it("rejects empty or whitespace-only text with InvalidFavoriteTextError", async () => {
     await expect(
       createFavorite({ userId: "user-1", orgId: "org-1", text: "  " }, 10),
-    ).rejects.toThrow(/text must not be empty/);
+    ).rejects.toBeInstanceOf(InvalidFavoriteTextError);
     expect(mockInternalQuery).not.toHaveBeenCalled();
   });
 
@@ -116,6 +117,33 @@ describe("createFavorite", () => {
     ).rejects.toBeInstanceOf(FavoriteCapError);
   });
 
+  it("allows the pin that lands exactly at cap-1 (cap off-by-one guard)", async () => {
+    // Pins the boundary: with cap=10 and existing=9, the INSERT must run.
+    // A flip from `>= cap` to `> cap` would pass every other cap test and
+    // only break here.
+    let insertReached = false;
+    mockInternalQuery.mockImplementation(async (sql: string) => {
+      if (sql.includes("COUNT")) return [{ count: "9" }];
+      insertReached = true;
+      return [{
+        id: "f-boundary",
+        user_id: "user-1",
+        org_id: "org-1",
+        text: "at cap minus one",
+        position: 10,
+        created_at: new Date(),
+      }];
+    });
+
+    const result = await createFavorite(
+      { userId: "user-1", orgId: "org-1", text: "at cap minus one" },
+      10,
+    );
+
+    expect(insertReached).toBe(true);
+    expect(result.id).toBe("f-boundary");
+  });
+
   it("throws DuplicateFavoriteError when the unique index rejects the insert", async () => {
     mockInternalQuery.mockImplementation(async (sql: string) => {
       if (sql.includes("COUNT")) return [{ count: "1" }];
@@ -129,12 +157,12 @@ describe("createFavorite", () => {
     ).rejects.toBeInstanceOf(DuplicateFavoriteError);
   });
 
-  it("rejects text longer than FAVORITE_TEXT_MAX_LENGTH", async () => {
+  it("rejects text longer than FAVORITE_TEXT_MAX_LENGTH with InvalidFavoriteTextError", async () => {
     const tooLong = "x".repeat(FAVORITE_TEXT_MAX_LENGTH + 1);
 
     await expect(
       createFavorite({ userId: "user-1", orgId: "org-1", text: tooLong }, 10),
-    ).rejects.toThrow(/too long/);
+    ).rejects.toBeInstanceOf(InvalidFavoriteTextError);
     expect(mockInternalQuery).not.toHaveBeenCalled();
   });
 

@@ -1,18 +1,15 @@
 /**
- * FavoritePromptStore — per-user pinned starter prompts (#1475, PRD #1473).
+ * Per-user pinned starter prompts, scoped to (userId, orgId).
  *
- * The personal-productivity tier of the adaptive starter-prompt surface.
- * Pins are per-user and per-workspace: always render for the owner, never
- * moderated by the admin queue, never drafted in the 1.2.0 mode system.
+ * Pins are personal-productivity shortcuts that always render for their
+ * owner regardless of workspace-level moderation state. The store owns:
  *
- * This module owns:
- *   - list / create / delete / updatePosition against `user_favorite_prompts`
- *   - cap enforcement (configurable, default 10 per user-workspace)
- *   - duplicate detection (unique index catches, we translate to a typed error)
- *   - text trimming + length cap (DB is not the cap; service is, so ops can
- *     raise the default via config without a migration)
- *   - forbidden vs not_found differentiation on cross-user access, so the
+ *   - a forbidden-vs-not-found distinction on cross-user access, so the
  *     route layer can return 403 instead of leaking existence via 404
+ *   - cap + text-length enforcement in-service rather than in-schema, so
+ *     operators can raise the default via env/config without a migration
+ *   - translation of Postgres 23505 unique-violation into a typed
+ *     DuplicateFavoriteError for explicit client handling
  */
 import { createLogger } from "@atlas/api/lib/logger";
 import {
@@ -68,6 +65,29 @@ export class DuplicateFavoriteError extends Error {
   }
 }
 
+/**
+ * Text validation failure — empty / whitespace-only / longer than the
+ * service-level cap. The Zod schema in the route is the primary validator;
+ * this tagged type exists so SDK / MCP / CLI callers that bypass the route
+ * get a 400 instead of a generic 500.
+ */
+export class InvalidFavoriteTextError extends Error {
+  public readonly _tag = "InvalidFavoriteTextError" as const;
+  constructor(message: string) {
+    super(message);
+    this.name = "InvalidFavoriteTextError";
+  }
+}
+
+/**
+ * Exhaustive tag union for the typed errors this store throws. Lets a
+ * caller do `switch (err._tag)` without reaching for `instanceof`.
+ */
+export type FavoriteStoreErrorTag =
+  | FavoriteCapError["_tag"]
+  | DuplicateFavoriteError["_tag"]
+  | InvalidFavoriteTextError["_tag"];
+
 export type DeleteResult =
   | { status: "ok" }
   | { status: "not_found" }
@@ -78,7 +98,17 @@ export type UpdatePositionResult =
   | { status: "not_found" }
   | { status: "forbidden" };
 
-interface RawRow extends Record<string, unknown> {
+/**
+ * Shape of a row returned by the Postgres pool. `position` arrives as
+ * either a number or string depending on driver config; `created_at`
+ * likewise varies (Date from @effect/sql, string from raw pg fallback).
+ * `toRow` normalizes both.
+ *
+ * Not extending `Record<string, unknown>` — the index signature would
+ * defeat excess-property checks and allow key typos to compile silently.
+ * The cast at the `internalQuery` call site is narrow and justified.
+ */
+interface RawRow {
   id: string;
   user_id: string;
   org_id: string;
@@ -86,6 +116,9 @@ interface RawRow extends Record<string, unknown> {
   position: number | string;
   created_at: Date | string;
 }
+
+/** Narrowly-scoped alias for the internalQuery<T> generic constraint. */
+type RawRowQueryShape = RawRow & Record<string, unknown>;
 
 function toRow(row: RawRow): FavoritePromptRow {
   return {
@@ -113,7 +146,7 @@ export async function listFavorites(
 ): Promise<FavoritePromptRow[]> {
   if (!hasInternalDB()) return [];
 
-  const rows = await internalQuery<RawRow>(
+  const rows = await internalQuery<RawRowQueryShape>(
     `SELECT id, user_id, org_id, text, position, created_at
      FROM user_favorite_prompts
      WHERE user_id = $1 AND org_id = $2
@@ -136,10 +169,10 @@ export async function createFavorite(
 ): Promise<FavoritePromptRow> {
   const trimmed = input.text.trim();
   if (trimmed.length === 0) {
-    throw new Error("Pin text must not be empty");
+    throw new InvalidFavoriteTextError("Pin text must not be empty");
   }
   if (trimmed.length > FAVORITE_TEXT_MAX_LENGTH) {
-    throw new Error(
+    throw new InvalidFavoriteTextError(
       `Pin text is too long (${trimmed.length} > ${FAVORITE_TEXT_MAX_LENGTH} chars)`,
     );
   }
@@ -168,7 +201,7 @@ export async function createFavorite(
   }
 
   try {
-    const rows = await internalQuery<RawRow>(
+    const rows = await internalQuery<RawRowQueryShape>(
       `INSERT INTO user_favorite_prompts (user_id, org_id, text, position)
        VALUES (
          $1, $2, $3,
@@ -282,7 +315,7 @@ export async function updateFavoritePosition(input: {
   }
 
   // See `deleteFavorite` for rationale on the (user_id, org_id) predicate.
-  const rows = await internalQuery<RawRow>(
+  const rows = await internalQuery<RawRowQueryShape>(
     `UPDATE user_favorite_prompts
      SET position = $4
      WHERE id = $1 AND user_id = $2 AND org_id = $3

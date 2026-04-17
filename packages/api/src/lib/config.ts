@@ -386,20 +386,18 @@ const AtlasConfigSchema = z.object({
   }).optional(),
 
   /**
-   * Adaptive starter prompt configuration (#1474, PRD #1473). Controls
-   * the empty-chat grid that replaces the hardcoded `STARTER_PROMPTS`
-   * constant.
+   * Adaptive starter prompt configuration. Controls the empty-chat grid
+   * served by the resolver behind `GET /api/v1/starter-prompts`.
    */
   starterPrompts: z.object({
     /**
      * Cold-start window (days) applied to `prompt_collections.created_at`
-     * when the resolver pulls the library tier. Also bounds the approval
-     * queue for learned-popular prompts in later slices. Default: 90.
+     * when the resolver pulls the library tier. Default: 90.
      */
     coldWindowDays: z.number().int().positive().default(90),
     /**
-     * Hard cap on per-user pinned starter prompts (#1475). Attempting to
-     * pin past this cap returns a user-visible error. Default: 10.
+     * Hard cap on per-user pinned starter prompts. Attempting to pin past
+     * this cap returns a user-visible error. Default: 10.
      */
     maxFavorites: z.number().int().positive().default(10),
   }).optional(),
@@ -667,7 +665,7 @@ export function configFromEnv(): ResolvedConfig {
         },
       };
     })()),
-    // Starter prompt config from env vars (#1474, #1475)
+    // Starter prompt config from env vars
     ...((() => {
       const coldWindow = parseInt(process.env.ATLAS_STARTER_PROMPT_COLD_WINDOW_DAYS ?? "", 10);
       const maxFavs = parseInt(process.env.ATLAS_STARTER_PROMPT_MAX_FAVORITES ?? "", 10);

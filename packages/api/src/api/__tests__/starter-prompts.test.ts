@@ -1,9 +1,9 @@
 /**
- * Integration tests for GET /api/v1/starter-prompts (#1474).
+ * Integration tests for the `/api/v1/starter-prompts` surface.
  *
  * Exercises route wiring end-to-end: auth gate → config → resolver →
- * response shape. Resolver has deeper unit coverage in
- * `packages/api/src/lib/starter-prompts/__tests__/resolver.test.ts`.
+ * response shape, plus the /favorites CRUD endpoints. Resolver and
+ * store have deeper unit coverage in their own __tests__/ dirs.
  */
 
 import {
@@ -18,6 +18,7 @@ import { createApiTestMocks } from "@atlas/api/testing/api-test-mocks";
 import {
   FavoriteCapError,
   DuplicateFavoriteError,
+  InvalidFavoriteTextError,
   type DeleteResult,
   type UpdatePositionResult,
   type FavoritePromptRow,
@@ -92,6 +93,7 @@ mock.module("@atlas/api/lib/starter-prompts/favorite-store", () => ({
   FAVORITE_TEXT_MAX_LENGTH: 2000,
   FavoriteCapError,
   DuplicateFavoriteError,
+  InvalidFavoriteTextError,
   listFavorites: mockListFavorites,
   createFavorite: mockCreateFavorite,
   deleteFavorite: mockDeleteFavorite,
@@ -271,7 +273,7 @@ describe("GET /api/v1/starter-prompts", () => {
   });
 });
 
-// ── Favorites endpoints (#1475) ─────────────────────────────────────────
+// ── Favorites endpoints ─────────────────────────────────────────────────
 
 describe("POST /api/v1/starter-prompts/favorites", () => {
   it("returns 401 when unauthenticated", async () => {
@@ -338,6 +340,20 @@ describe("POST /api/v1/starter-prompts/favorites", () => {
     expect(res.status).toBe(409);
     const body = (await res.json()) as { error: string; message: string };
     expect(body.error).toBe("duplicate_favorite");
+  });
+
+  it("returns 400 'invalid_favorite_text' when the store throws InvalidFavoriteTextError", async () => {
+    mockCreateFavorite.mockImplementation(async () => {
+      throw new InvalidFavoriteTextError("Pin text must not be empty");
+    });
+
+    const res = await jsonReq("POST", "/api/v1/starter-prompts/favorites", {
+      text: "will-throw-from-store",
+    });
+
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string; message: string };
+    expect(body.error).toBe("invalid_favorite_text");
   });
 
   it("returns 400 with user-safe message when the cap is exceeded", async () => {

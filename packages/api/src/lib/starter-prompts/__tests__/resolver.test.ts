@@ -1,15 +1,16 @@
 /**
- * Unit tests for `resolveStarterPrompts` (#1474).
+ * Unit tests for `resolveStarterPrompts`.
  *
  * Covers:
  *   - cold-start: no demo industry / null orgId / empty library
- *   - library: demo industry set → prompts from prompt_items, dev-mode end-to-end
+ *   - favorites tier: ordering, limit consumption, failure fallthrough
+ *   - library tier: demo-industry filter, dev-mode draft visibility
  *   - limit clamping: MAX_LIMIT, zero, negative, NaN, Infinity, non-integer
  *   - provenance tags and id namespacing (library:<uuid>)
  *   - cold-window filter passed as SQL param; built-ins exempt in SQL body
- *   - compose-order contract: favorites + popular tiers do NOT emit
+ *   - compose-order contract: popular tier does not emit yet
  *   - library SQL failure → empty tier (cold-start fallback)
- *   - settings read failure → propagates (callers 500 per #1470)
+ *   - settings read failure → propagates rather than masquerading as cold-start
  *   - coldWindowDays runtime guard (non-finite / non-integer / zero rejected)
  */
 import { describe, it, expect, beforeEach, mock } from "bun:test";
@@ -242,7 +243,7 @@ describe("resolveStarterPrompts — library tier", () => {
   });
 });
 
-describe("resolveStarterPrompts — favorites tier (#1475)", () => {
+describe("resolveStarterPrompts — favorites tier", () => {
   it("emits favorites first, tagged with provenance='favorite' and namespaced ids", async () => {
     favoritesFixture = [
       favRow({ id: "fav-a", text: "pinned 1", position: 3 }),
@@ -343,7 +344,7 @@ describe("resolveStarterPrompts — favorites tier (#1475)", () => {
 });
 
 describe("resolveStarterPrompts — compose-order contract", () => {
-  it("never emits popular-provenance rows until #1476 lands", async () => {
+  it("never emits popular-provenance rows while the popular tier is unwired", async () => {
     demoIndustryFixture = "cybersecurity";
     mockInternalQuery.mockImplementation(async () => [
       { id: "item-y", question: "library row" },
@@ -365,7 +366,7 @@ describe("resolveStarterPrompts — compose-order contract", () => {
 
 describe("resolveStarterPrompts — error handling", () => {
   it("propagates settings read failures so the endpoint can 500", async () => {
-    // Per #1470 pattern: don't silently mask a transient read failure.
+    // Don't silently mask a transient settings-read failure.
     demoReadErrorFixture = new Error("settings cache unreachable");
 
     await expect(resolveStarterPrompts(baseCtx())).rejects.toThrow(

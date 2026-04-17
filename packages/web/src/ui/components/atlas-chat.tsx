@@ -142,13 +142,13 @@ export function AtlasChat() {
   const [schemaExplorerOpen, setSchemaExplorerOpen] = useState(false);
   const [promptLibraryOpen, setPromptLibraryOpen] = useState(false);
   // Adaptive empty-chat starter surface — backend composes the ranked
-  // prompt list from favorites / popular / library tiers (#1474, #1475).
+  // prompt list from favorites / popular / library tiers.
   const [starterPrompts, setStarterPrompts] = useState<
     Array<{ id: string; text: string; provenance: string }>
   >([]);
-  // Pending-pin state: tracks which message text the user is currently
-  // pinning, so the affordance can disable mid-flight and the empty state
-  // can optimistically reflect the new favorite without a refetch.
+  // Tracks the message text being pinned so the affordance disables
+  // mid-flight — without this, a quick double-click fires two POSTs and
+  // the second 409s after a visible success toast.
   const [pinningText, setPinningText] = useState<string | null>(null);
   const [suggestionsLoading, setSuggestionsLoading] = useState(false);
   const [relatedSuggestions, setRelatedSuggestions] = useState<QuerySuggestion[]>([]);
@@ -233,7 +233,7 @@ export function AtlasChat() {
 
   const isLoading = status === "streaming" || status === "submitted";
 
-  // Fetch adaptive starter prompts for the empty state (#1474)
+  // Fetch adaptive starter prompts for the empty state
   useEffect(() => {
     if (messages.length > 0) return;
     let cancelled = false;
@@ -244,10 +244,10 @@ export function AtlasChat() {
     })
       .then(async (res) => {
         if (res.ok) return res.json();
-        // Backend returns 500 (with requestId) when settings read fails — per
-        // the resolver's propagate-failure contract. Surface the correlation
-        // id so operators can trace; the UI still falls through to the
-        // cold-start CTA rather than erroring the whole empty state.
+        // Settings read failure propagates as 500 with requestId — surface
+        // the correlation id so operators can trace; the UI still falls
+        // through to the cold-start CTA rather than erroring the whole
+        // empty state.
         const body = (await res.json().catch(() => ({}))) as { requestId?: string };
         console.warn(
           "starter-prompts endpoint returned",
@@ -346,14 +346,19 @@ export function AtlasChat() {
           message?: string;
           requestId?: string;
         };
-        // 409 duplicate: silently succeed — the pin is already there.
         if (res.status === 409) {
-          setTransientWarning("Already pinned.");
-          setTimeout(() => setTransientWarning(""), 3000);
+          // Duplicate: the pin already exists server-side, so our local
+          // `starterPrompts` is stale. Force a refetch on next empty-state
+          // entry by clearing it — the useEffect watching messages.length
+          // will repopulate.
+          console.warn("pin duplicate:", body.requestId);
+          setStarterPrompts([]);
+          setTransientWarning("Already pinned — it'll show up in a new chat.");
+          setTimeout(() => setTransientWarning(""), 4000);
           return;
         }
         const msg = body.message ?? "Failed to pin starter prompt.";
-        console.warn("pin failed:", res.status, body.requestId, msg);
+        console.warn("pin failed:", res.status, res.statusText, body.requestId, msg);
         setTransientWarning(msg);
         setTimeout(() => setTransientWarning(""), 5000);
         return;
@@ -381,7 +386,9 @@ export function AtlasChat() {
   }
 
   async function handleUnpin(favoriteId: string) {
-    // favoriteId arrives as the namespaced id "favorite:<raw>". Strip.
+    // Strip the "favorite:" namespace the resolver prepends — tiers can
+    // share raw UUID space so the wire id is prefixed for React keys,
+    // but the DELETE endpoint takes the unprefixed DB id.
     const raw = favoriteId.startsWith("favorite:")
       ? favoriteId.slice("favorite:".length)
       : favoriteId;
@@ -397,7 +404,12 @@ export function AtlasChat() {
       if (!res.ok && res.status !== 404) {
         // 404 is fine — the pin is gone either way.
         const body = (await res.json().catch(() => ({}))) as { requestId?: string };
-        console.warn("unpin failed:", res.status, body.requestId);
+        console.warn(
+          "unpin failed:",
+          res.status,
+          res.statusText,
+          body.requestId ?? "(no requestId — non-JSON body)",
+        );
         setTransientWarning("Failed to unpin starter prompt.");
         setTimeout(() => setTransientWarning(""), 5000);
         return;

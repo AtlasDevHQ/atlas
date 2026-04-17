@@ -2,14 +2,13 @@ import { test, expect } from "@playwright/test";
 import { askQuestion, ensureChatReady, startNewChat } from "./helpers";
 
 /**
- * Per-user favorites browser test (#1475).
+ * Per-user favorites — pin → persist → unpin flow.
  *
- * Exercises the pin → appear in empty state → reload → unpin flow end to end:
- * the user asks a question (creating a user-authored chat message), hovers to
+ * User asks a question (creating a user-authored chat message), hovers to
  * reveal the pin affordance, pins it, starts a new chat, confirms the pin
- * shows in the empty-state grid with its Pin icon, reloads the page (proving
- * the pin is server-persisted, not just optimistic state), and unpins from
- * the empty state itself — covering user stories 6, 7, and 8 from PRD #1473.
+ * shows in the empty-state grid with its Pin icon, reloads the page
+ * (proving the pin is server-persisted, not just optimistic state), and
+ * unpins from the empty state itself.
  */
 test.describe("Starter prompt favorites @llm", () => {
   // Pin/unpin requests are fast, but this test makes a real agent call

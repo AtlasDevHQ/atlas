@@ -1,15 +1,10 @@
 /**
- * `/api/v1/starter-prompts` — adaptive empty-chat starter surface (#1474, #1475, PRD #1473).
+ * Routes backing the adaptive empty-chat starter surface.
  *
- * Routes:
- *   GET    /                  — resolved, ranked list (favorites → popular → library → cold-start)
- *   POST   /favorites         — pin text for the current user (#1475)
- *   DELETE /favorites/:id     — unpin
- *   PATCH  /favorites/:id     — update position (reorder primitive)
- *
- * Favorites do NOT participate in the 1.2.0 draft/published mode. Pins are
- * personal productivity, instant for the owner regardless of admin moderation
- * state on popular suggestions. This is an explicit carve-out from the PRD.
+ * Favorites are per-user and mode-agnostic: a pin always renders for its
+ * owner regardless of admin moderation on popular suggestions. The list
+ * endpoint composes tiers in the resolver; the /favorites/* endpoints
+ * are the CRUD surface for the personal-productivity tier.
  */
 
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
@@ -26,6 +21,7 @@ import {
   AuthContext,
 } from "@atlas/api/lib/effect/services";
 import { getConfig } from "@atlas/api/lib/config";
+import { createLogger } from "@atlas/api/lib/logger";
 import { resolveStarterPrompts } from "@atlas/api/lib/starter-prompts/resolver";
 import {
   createFavorite,
@@ -33,6 +29,7 @@ import {
   updateFavoritePosition,
   FavoriteCapError,
   DuplicateFavoriteError,
+  InvalidFavoriteTextError,
   FAVORITE_TEXT_MAX_LENGTH,
   type FavoritePromptRow,
 } from "@atlas/api/lib/starter-prompts/favorite-store";
@@ -65,7 +62,7 @@ const FavoriteSchema = z.object({
   id: z.string().min(1),
   text: z.string().min(1),
   position: z.number(),
-  createdAt: z.string(),
+  createdAt: z.string().datetime(),
 });
 
 const CreateFavoriteBodySchema = z.object({
@@ -240,6 +237,8 @@ const patchFavoriteRoute = createRoute({
 // Router
 // ---------------------------------------------------------------------------
 
+const log = createLogger("starter-prompts-route");
+
 const starterPrompts = new OpenAPIHono<AuthEnv>();
 
 starterPrompts.use("/*", standardAuth);
@@ -290,6 +289,7 @@ type CreateOutcome =
   | { kind: "created"; favorite: FavoritePromptRow }
   | { kind: "cap_exceeded"; message: string }
   | { kind: "duplicate"; message: string }
+  | { kind: "invalid_text"; message: string }
   | { kind: "missing_org" };
 
 starterPrompts.openapi(createFavoriteRoute, async (c) => {
@@ -303,9 +303,9 @@ starterPrompts.openapi(createFavoriteRoute, async (c) => {
 
     const { text } = c.req.valid("json");
 
-    // Typed failures (cap, duplicate) are expected control flow for this
-    // route, not defects. Catch at the Promise boundary so they land in
-    // the success channel as discriminated outcomes.
+    // Typed failures (cap, duplicate, invalid_text) are expected control
+    // flow for this route, not defects. Catch at the Promise boundary so
+    // they land in the success channel as discriminated outcomes.
     const outcome = yield* Effect.tryPromise<CreateOutcome, Error>({
       try: async (): Promise<CreateOutcome> => {
         try {
@@ -321,11 +321,23 @@ starterPrompts.openapi(createFavoriteRoute, async (c) => {
           if (err instanceof DuplicateFavoriteError) {
             return { kind: "duplicate", message: err.message };
           }
+          if (err instanceof InvalidFavoriteTextError) {
+            return { kind: "invalid_text", message: err.message };
+          }
           throw err instanceof Error ? err : new Error(String(err));
         }
       },
       catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-    });
+    }).pipe(
+      Effect.tapError((err) =>
+        Effect.sync(() =>
+          log.error(
+            { err: err.message, userId: user.id, orgId, requestId },
+            "createFavorite failed",
+          ),
+        ),
+      ),
+    );
 
     return { outcome, requestId };
   });
@@ -348,6 +360,12 @@ starterPrompts.openapi(createFavoriteRoute, async (c) => {
   if (outcome.kind === "cap_exceeded") {
     return c.json(
       { error: "favorite_cap_exceeded", message: outcome.message, requestId },
+      400,
+    );
+  }
+  if (outcome.kind === "invalid_text") {
+    return c.json(
+      { error: "invalid_favorite_text", message: outcome.message, requestId },
       400,
     );
   }
@@ -380,7 +398,16 @@ starterPrompts.openapi(deleteFavoriteRoute, async (c) => {
     const result = yield* Effect.tryPromise({
       try: () => deleteFavorite({ id, userId: user.id, orgId }),
       catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-    });
+    }).pipe(
+      Effect.tapError((err) =>
+        Effect.sync(() =>
+          log.error(
+            { err: err.message, favoriteId: id, userId: user.id, orgId, requestId },
+            "deleteFavorite failed",
+          ),
+        ),
+      ),
+    );
     return { kind: result.status, requestId };
   });
 
@@ -425,7 +452,16 @@ starterPrompts.openapi(patchFavoriteRoute, async (c) => {
       try: () =>
         updateFavoritePosition({ id, userId: user.id, orgId, position }),
       catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-    });
+    }).pipe(
+      Effect.tapError((err) =>
+        Effect.sync(() =>
+          log.error(
+            { err: err.message, favoriteId: id, userId: user.id, orgId, requestId },
+            "updateFavoritePosition failed",
+          ),
+        ),
+      ),
+    );
 
     if (result.status === "ok") {
       return {

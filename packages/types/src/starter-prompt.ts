@@ -1,10 +1,9 @@
 /**
- * Adaptive starter prompt types (#1474, PRD #1473).
+ * Adaptive starter prompt types.
  *
- * Wire format for `GET /api/v1/starter-prompts` and its SDK / widget / notebook
- * consumers. Lives in `@useatlas/types` so the SDK (`@useatlas/sdk`), React
- * embeddable (`@useatlas/react`), and web frontend can all import the same
- * shape without redeclaring.
+ * Wire format for `GET /api/v1/starter-prompts` and its SDK / widget /
+ * notebook consumers. Lives in `@useatlas/types` so the SDK, React
+ * embeddable, and web frontend share a single shape.
  */
 
 /** Source of a starter prompt. Used for UI badging and telemetry. */
@@ -33,7 +32,7 @@ export interface StarterPromptsResponse {
 }
 
 /**
- * A user-pinned starter prompt (#1475).
+ * A user-pinned starter prompt.
  *
  * Returned by the favorites endpoints so the UI can display + unpin. The
  * id is the raw database id (not namespaced like `StarterPrompt.id`) so

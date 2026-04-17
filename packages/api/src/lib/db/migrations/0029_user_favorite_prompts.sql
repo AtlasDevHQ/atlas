@@ -1,19 +1,12 @@
--- 0029 — per-user favorite starter prompts (#1475, PRD #1473).
+-- 0029 — per-user favorite starter prompts.
 --
--- Personal-productivity tier for the adaptive starter-prompt surface. A user
--- pins text from their own chat history and it always renders ahead of the
--- popular and library tiers in their empty state — even if an admin later
--- hides the underlying popular suggestion. This is an explicit carve-out
--- from the 1.2.0 draft/published mode system: pins are per-user, instant,
--- never drafted.
+-- The hard cap on pins-per-user is enforced in the service layer rather than
+-- at the schema so the default (10) can be raised per deployment via
+-- ATLAS_STARTER_PROMPT_MAX_FAVORITES without a schema migration.
 --
--- The hard cap on pins-per-user is enforced in `FavoritePromptStore` rather
--- than at the schema layer so the default (10) can be raised per deployment
--- via ATLAS_STARTER_PROMPT_MAX_FAVORITES without a migration.
---
--- `position` is a DOUBLE PRECISION to keep reorders O(1) — inserting between
--- two pins only requires writing the mean of their positions, not renumbering
--- the whole row. Created pins get MAX(position) + 1 so newest sorts first.
+-- `position` is DOUBLE PRECISION so a future drag-handle reorder can write a
+-- float between two neighbors without renumbering the whole row. Today's
+-- create path writes MAX(position) + 1 so new pins sort to the top.
 
 CREATE TABLE IF NOT EXISTS user_favorite_prompts (
   id         UUID             PRIMARY KEY DEFAULT gen_random_uuid(),

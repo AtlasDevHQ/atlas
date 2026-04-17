@@ -224,6 +224,22 @@ export const MOCK_VALIDATE_SQL_VALID = {
   tables: ["users"],
 };
 
+/**
+ * Most-recent-request capture for `GET /api/v1/starter-prompts`. Tests
+ * assert on the URL to verify the SDK forwards (or omits) query params
+ * correctly. Wrapped in a getter + setter so consumers always read the
+ * current value rather than a stale import binding.
+ */
+let lastStarterPromptsRequestUrl: string | null = null;
+
+export function getLastStarterPromptsRequestUrl(): string | null {
+  return lastStarterPromptsRequestUrl;
+}
+
+export function resetStarterPromptsCapture(): void {
+  lastStarterPromptsRequestUrl = null;
+}
+
 export const MOCK_STARTER_PROMPTS = {
   prompts: [
     { id: "favorite:fav-1", text: "Top users by revenue", provenance: "favorite" as const },
@@ -685,6 +701,7 @@ async function handleRequest(req: Request): Promise<Response> {
   if (method === "GET" && pathname === "/api/v1/starter-prompts") {
     const authErr = checkAuth(req);
     if (authErr) return authErr;
+    lastStarterPromptsRequestUrl = req.url;
     const rawLimit = url.searchParams.get("limit");
     const all = MOCK_STARTER_PROMPTS.prompts;
     const sliced = rawLimit != null ? all.slice(0, Number(rawLimit)) : all;

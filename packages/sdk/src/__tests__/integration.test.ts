@@ -22,6 +22,8 @@ import {
   MOCK_TABLES_RESPONSE,
   MOCK_VALIDATE_SQL_VALID,
   MOCK_STARTER_PROMPTS,
+  getLastStarterPromptsRequestUrl,
+  resetStarterPromptsCapture,
   type MockServer,
 } from "./mock-server";
 
@@ -503,6 +505,25 @@ describe("getStarterPrompts()", () => {
     expect(result.prompts.map((p) => p.text)).toEqual(
       MOCK_STARTER_PROMPTS.prompts.map((p) => p.text),
     );
+  });
+
+  test("no-args call does not send a `limit` query param", async () => {
+    resetStarterPromptsCapture();
+    await client().getStarterPrompts();
+
+    const captured = getLastStarterPromptsRequestUrl();
+    expect(captured).not.toBeNull();
+    const url = new URL(captured as string);
+    expect(url.searchParams.has("limit")).toBe(false);
+    expect(url.search).toBe("");
+  });
+
+  test("empty server response surfaces as cold-start shape { prompts: [], total: 0 }", async () => {
+    // mock-server returns `slice(0, 0)` → [] when limit=0 is forwarded
+    const result = await client().getStarterPrompts({ limit: 0 });
+
+    expect(result.prompts).toEqual([]);
+    expect(result.total).toBe(0);
   });
 
   test("ordering matches a direct HTTP fetch against the same endpoint", async () => {

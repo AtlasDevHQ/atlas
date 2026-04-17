@@ -1202,7 +1202,9 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] Organization SaaS columns skipped on first-boot migrations — blocks `checkResourceLimit` (#1472, PR #1484 — reordered Better Auth before Atlas migrations, added `0027_organization_saas_columns.sql`, `skip` list for non-managed deploys)
 
 ### Follow-ups
-- [ ] Rollback poisoning: `hardDeleteWorkspace` and naked ROLLBACK in internal.ts (#1485 — same pattern as #1471, out of scope in PR #1486)
+- [x] Rollback poisoning: `hardDeleteWorkspace` and naked ROLLBACK in internal.ts (#1485, PR #1490 — tracks `rollbackErr` at both sites, passes to `client.release(err)`)
+- [x] Semantic entity unique index missing `entity_type` — us/apac internal DB `INTERNAL_DB_UNREACHABLE` live incident (#1489 — migration 0028, applied directly to prod + shipped as durable fix)
+- [x] Signup-connect error-isolation tests double-counting Next.js dev-tools alert (#1488, PR #1489 — scoped queries to `<main>`)
 - [ ] Pre-existing flaky middleware test `mode 'managed' with valid session returns authenticated` (#1483 — discovered during CI gate for #1472)
 
 ---

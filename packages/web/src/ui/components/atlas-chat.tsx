@@ -13,7 +13,6 @@ import { ApiKeyBar } from "./chat/api-key-bar";
 import { TypingIndicator } from "./chat/typing-indicator";
 import { ToolPart } from "./chat/tool-part";
 import { Markdown } from "./chat/markdown";
-import { STARTER_PROMPTS } from "./chat/starter-prompts";
 import { FollowUpChips } from "./chat/follow-up-chips";
 import { SuggestionChips } from "./chat/suggestion-chips";
 import { DeveloperChatEmptyState } from "./chat/developer-empty-state";
@@ -142,7 +141,11 @@ export function AtlasChat() {
   const [passwordDialogDismissed, setPasswordDialogDismissed] = useState(false);
   const [schemaExplorerOpen, setSchemaExplorerOpen] = useState(false);
   const [promptLibraryOpen, setPromptLibraryOpen] = useState(false);
-  const [popularSuggestions, setPopularSuggestions] = useState<QuerySuggestion[]>([]);
+  // Adaptive empty-chat starter surface — backend composes the ranked
+  // prompt list from favorites / popular / library tiers (#1474).
+  const [starterPrompts, setStarterPrompts] = useState<
+    Array<{ id: string; text: string; provenance: string }>
+  >([]);
   const [suggestionsLoading, setSuggestionsLoading] = useState(false);
   const [relatedSuggestions, setRelatedSuggestions] = useState<QuerySuggestion[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -226,23 +229,39 @@ export function AtlasChat() {
 
   const isLoading = status === "streaming" || status === "submitted";
 
-  // Fetch popular suggestions for the empty state
+  // Fetch adaptive starter prompts for the empty state (#1474)
   useEffect(() => {
     if (messages.length > 0) return;
     let cancelled = false;
     setSuggestionsLoading(true);
-    fetch(`${apiUrl}/api/v1/suggestions/popular?limit=6`, {
+    fetch(`${apiUrl}/api/v1/starter-prompts?limit=6`, {
       credentials,
       headers: getHeaders(),
     })
-      .then((res) => (res.ok ? res.json() : null))
+      .then(async (res) => {
+        if (res.ok) return res.json();
+        // Backend returns 500 (with requestId) when settings read fails — per
+        // the resolver's propagate-failure contract. Surface the correlation
+        // id so operators can trace; the UI still falls through to the
+        // cold-start CTA rather than erroring the whole empty state.
+        const body = (await res.json().catch(() => ({}))) as { requestId?: string };
+        console.warn(
+          "starter-prompts endpoint returned",
+          res.status,
+          "requestId:",
+          body.requestId,
+        );
+        return null;
+      })
       .then((data) => {
-        if (!cancelled && data?.suggestions) {
-          setPopularSuggestions(data.suggestions);
+        if (!cancelled && Array.isArray(data?.prompts)) {
+          setStarterPrompts(data.prompts);
         }
       })
       .catch(() => {
-        // intentionally ignored: suggestions are non-critical
+        // intentionally ignored: network/parse failures on starter prompts
+        // are non-critical — HTTP 5xx is logged above, and an empty list
+        // renders the single-CTA cold-start UI.
       })
       .finally(() => {
         if (!cancelled) setSuggestionsLoading(false);
@@ -489,24 +508,26 @@ export function AtlasChat() {
                           Ask a question about your data to get started
                         </p>
                       </div>
-                      <SuggestionChips
-                        suggestions={popularSuggestions}
-                        onSelect={handleSuggestionSelect}
-                        loading={suggestionsLoading}
-                        label="Popular queries"
-                      />
-                      <div className="grid w-full max-w-lg grid-cols-1 gap-2 sm:grid-cols-2">
-                        {STARTER_PROMPTS.map((prompt) => (
-                          <Button
-                            key={prompt}
-                            variant="outline"
-                            onClick={() => handleSend(prompt)}
-                            className="h-auto whitespace-normal justify-start rounded-lg px-3 py-2.5 text-left text-sm"
-                          >
-                            {prompt}
-                          </Button>
-                        ))}
-                      </div>
+                      {starterPrompts.length > 0 ? (
+                        <div className="grid w-full max-w-lg grid-cols-1 gap-2 sm:grid-cols-2">
+                          {starterPrompts.map((prompt) => (
+                            <Button
+                              key={prompt.id}
+                              variant="outline"
+                              onClick={() => handleSend(prompt.text)}
+                              className="h-auto whitespace-normal justify-start rounded-lg px-3 py-2.5 text-left text-sm"
+                            >
+                              {prompt.text}
+                            </Button>
+                          ))}
+                        </div>
+                      ) : (
+                        !suggestionsLoading && (
+                          <p className="max-w-sm text-center text-sm text-zinc-500 dark:text-zinc-500">
+                            Ask your first question below — we&apos;ll learn from your team&apos;s queries and surface their best starters here.
+                          </p>
+                        )
+                      )}
                       <Button
                         variant="link"
                         onClick={() => setPromptLibraryOpen(true)}

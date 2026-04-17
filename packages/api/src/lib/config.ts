@@ -386,6 +386,20 @@ const AtlasConfigSchema = z.object({
   }).optional(),
 
   /**
+   * Adaptive starter prompt configuration (#1474, PRD #1473). Controls
+   * the empty-chat grid that replaces the hardcoded `STARTER_PROMPTS`
+   * constant.
+   */
+  starterPrompts: z.object({
+    /**
+     * Cold-start window (days) applied to `prompt_collections.created_at`
+     * when the resolver pulls the library tier. Also bounds the approval
+     * queue for learned-popular prompts in later slices. Default: 90.
+     */
+    coldWindowDays: z.number().int().positive().default(90),
+  }).optional(),
+
+  /**
    * Enterprise feature gating. When enabled, enterprise-only features
    * in `/ee` are unlocked at runtime. A license key is required for
    * production use. AGPL core is completely unaffected when this is
@@ -460,6 +474,8 @@ export interface ResolvedConfig {
   cache?: { enabled: boolean; ttl: number; maxSize: number };
   /** Dynamic learning configuration. */
   learn?: { confidenceThreshold: number };
+  /** Adaptive starter prompt configuration. */
+  starterPrompts?: { coldWindowDays: number };
   /** Enterprise feature gating. */
   enterprise?: { enabled: boolean; licenseKey?: string };
   /** Data residency configuration for region-based routing. */
@@ -643,6 +659,16 @@ export function configFromEnv(): ResolvedConfig {
       return {
         learn: {
           confidenceThreshold: Number.isFinite(threshold) && threshold >= 0 && threshold <= 1 ? threshold : 0.7,
+        },
+      };
+    })()),
+    // Starter prompt config from env vars (#1474)
+    ...((() => {
+      const coldWindow = parseInt(process.env.ATLAS_STARTER_PROMPT_COLD_WINDOW_DAYS ?? "", 10);
+      return {
+        starterPrompts: {
+          coldWindowDays:
+            Number.isFinite(coldWindow) && coldWindow > 0 ? coldWindow : 90,
         },
       };
     })()),
@@ -1003,6 +1029,7 @@ export function validateAndResolve(raw: unknown): ResolvedConfig {
     ...(config.pool ? { pool: config.pool } : {}),
     ...(config.cache ? { cache: config.cache } : {}),
     ...(config.learn ? { learn: config.learn } : {}),
+    ...(config.starterPrompts ? { starterPrompts: config.starterPrompts } : {}),
     ...(config.enterprise ? { enterprise: config.enterprise } : {}),
     ...(config.residency ? { residency: config.residency } : {}),
     source: "file",

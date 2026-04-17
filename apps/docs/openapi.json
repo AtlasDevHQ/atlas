@@ -7376,6 +7376,117 @@
         "operationId": "getMode"
       }
     },
+    "/api/v1/starter-prompts": {
+      "get": {
+        "tags": [
+          "Starter Prompts"
+        ],
+        "summary": "Get adaptive starter prompts",
+        "description": "Returns the ordered list of starter prompts for the current context, composing favorites, approved popular suggestions, and the demo-industry library. An empty list signals the cold-start state — the client renders a single-CTA empty state.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "description": "Maximum number of prompts to return (1–50, default 6).",
+              "example": "6"
+            },
+            "required": false,
+            "description": "Maximum number of prompts to return (1–50, default 6).",
+            "name": "limit",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Resolved starter prompts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "prompts": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "text": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "provenance": {
+                            "type": "string",
+                            "enum": [
+                              "favorite",
+                              "popular",
+                              "library",
+                              "cold-start"
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "text",
+                          "provenance"
+                        ]
+                      }
+                    },
+                    "total": {
+                      "type": "integer",
+                      "minimum": 0
+                    }
+                  },
+                  "required": [
+                    "prompts",
+                    "total"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getStarterPrompts"
+      }
+    },
     "/api/v1/onboarding/social-providers": {
       "get": {
         "tags": [
@@ -56049,6 +56160,9 @@
     },
     {
       "name": "Slack"
+    },
+    {
+      "name": "Starter Prompts"
     },
     {
       "name": "Suggestions"

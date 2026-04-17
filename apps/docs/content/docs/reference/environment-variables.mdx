@@ -533,6 +533,14 @@ Scheduled task execution. Can also be configured via [`atlas.config.ts`](/refere
 
 ---
 
+## Starter Prompts
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `ATLAS_STARTER_PROMPT_COLD_WINDOW_DAYS` | `90` | Window in days applied to `prompt_collections.created_at` by the adaptive starter-prompt resolver (`GET /api/v1/starter-prompts`). Bounds the library tier used when chat is empty. Can also be set via [`atlas.config.ts`](/reference/config#starter-prompts) |
+
+---
+
 ## Python Tool
 
 | Variable | Default | Description |

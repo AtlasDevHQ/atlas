@@ -55,12 +55,14 @@ setup("authenticate as admin", async ({ page }) => {
   }
 
   let loggedIn = await tryLogin(E2E_PASSWORD);
+  let usedDefaultPassword = false;
 
   if (!loggedIn) {
     // Clear the error and try with default password
     await page.goto("/");
     await emailInput.waitFor({ timeout: 15_000 });
     loggedIn = await tryLogin(DEFAULT_PASSWORD);
+    usedDefaultPassword = loggedIn;
   }
 
   if (!loggedIn) {
@@ -71,18 +73,27 @@ setup("authenticate as admin", async ({ page }) => {
     );
   }
 
-  // Handle password change dialog if it appears (only on first login with default password)
-  const changePasswordTitle = page.locator("text=Change your password");
-  if (await changePasswordTitle.isVisible({ timeout: 3_000 }).catch(() => false)) {
-    const newPwInput = page.locator('input[placeholder="At least 8 characters"]');
-    await newPwInput.fill(E2E_PASSWORD);
-
-    // Confirm password — 3rd password input in the form
-    const passwordInputs = page.locator('form input[type="password"]');
-    await passwordInputs.nth(2).fill(E2E_PASSWORD);
-
-    await page.locator('button:has-text("Change password")').click();
-    await expect(changePasswordTitle).toBeHidden({ timeout: 10_000 });
+  // When login succeeded with the default password, rotate it to E2E_PASSWORD so
+  // all subsequent tests can log in deterministically. The UI may or may not
+  // surface a "Change your password" dialog depending on session state — call
+  // the admin API directly so we don't depend on that UI flow.
+  if (usedDefaultPassword) {
+    const res = await page.request.post("/api/v1/admin/me/password", {
+      data: { currentPassword: DEFAULT_PASSWORD, newPassword: E2E_PASSWORD },
+    });
+    if (!res.ok()) {
+      throw new Error(
+        `Failed to rotate admin password from default to e2e via API. ` +
+        `Status: ${res.status()}. Body: ${await res.text()}`,
+      );
+    }
+    // If the rotation dialog is modal-blocking the app, dismiss it now — it should
+    // auto-close once the password_change_required flag is cleared, but be defensive.
+    const changeDialog = page.locator("text=Change your password");
+    if (await changeDialog.isVisible({ timeout: 2_000 }).catch(() => false)) {
+      await page.reload();
+      await page.locator('input[placeholder="Ask a question about your data..."]').waitFor({ timeout: 15_000 });
+    }
   }
 
   // Dismiss the guided tour if it appears (fresh DB / first login)

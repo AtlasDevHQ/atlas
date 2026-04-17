@@ -102,6 +102,9 @@ test.describe("Signup connect — demo availability", () => {
 });
 
 test.describe("Signup connect — error isolation", () => {
+  // Scope alert queries to <main> — Next.js dev tools inject a root-level
+  // role="alert" indicator for build errors/warnings that would otherwise be
+  // counted alongside the app's alerts.
   test("demo failure produces exactly one alert on the demo card", async ({ page }) => {
     await mockHealth(page, "ok");
     await mockOnboarding(page, {
@@ -109,13 +112,15 @@ test.describe("Signup connect — error isolation", () => {
     });
     await page.goto(PATH);
 
+    const main = page.getByRole("main");
+
     // Before: no alerts
-    await expect(page.getByRole("alert")).toHaveCount(0);
+    await expect(main.getByRole("alert")).toHaveCount(0);
 
     await page.getByRole("button", { name: /Use SaaS CRM demo dataset/ }).click();
 
     // After: exactly one alert, carrying the demo error
-    const alert = page.getByRole("alert");
+    const alert = main.getByRole("alert");
     await expect(alert).toHaveCount(1);
     await expect(alert).toContainText("demo setup failed");
   });
@@ -127,12 +132,13 @@ test.describe("Signup connect — error isolation", () => {
     });
     await page.goto(PATH);
 
-    await expect(page.getByRole("alert")).toHaveCount(0);
+    const main = page.getByRole("main");
+    await expect(main.getByRole("alert")).toHaveCount(0);
 
     await page.getByLabel("Connection URL").fill("postgresql://u:p@h:5432/db");
     await page.getByRole("button", { name: "Test connection" }).click();
 
-    const alert = page.getByRole("alert");
+    const alert = main.getByRole("alert");
     await expect(alert).toHaveCount(1);
     await expect(alert).toContainText("connection refused");
   });
@@ -148,16 +154,18 @@ test.describe("Signup connect — error isolation", () => {
     });
     await page.goto(PATH);
 
+    const main = page.getByRole("main");
+
     await page.getByLabel("Connection URL").fill("postgresql://u:p@h:5432/db");
     await page.getByRole("button", { name: "Test connection" }).click();
 
     // Success status pill appears
-    await expect(page.getByRole("status")).toContainText(/Connected to PostgreSQL in 12ms/);
+    await expect(main.getByRole("status")).toContainText(/Connected to PostgreSQL in 12ms/);
 
     await page.getByRole("button", { name: "Continue" }).click();
 
     // Error alert appears and the success pill is gone — never both
-    await expect(page.getByRole("alert")).toContainText("save failed");
-    await expect(page.getByRole("status")).toHaveCount(0);
+    await expect(main.getByRole("alert")).toContainText("save failed");
+    await expect(main.getByRole("status")).toHaveCount(0);
   });
 });

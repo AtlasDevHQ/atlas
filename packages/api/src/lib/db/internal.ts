@@ -22,6 +22,7 @@ import { PgClient } from "@effect/sql-pg";
 import type { Pool as PgPool } from "pg";
 import { createLogger } from "@atlas/api/lib/logger";
 import { normalizeError } from "@atlas/api/lib/effect/errors";
+import { buildUnionStatusClause } from "@atlas/api/api/routes/middleware";
 
 const log = createLogger("internal-db");
 
@@ -1177,17 +1178,17 @@ export async function getPopularSuggestions(
     // must not surface in user-facing empty states — this is the single
     // source of truth enforcing that contract from backend to UI.
     //
-    // The `status` predicate participates in the 1.2.0 mode system: dev
-    // mode overlays drafts on top of published rows, published mode
-    // hides drafts entirely. Archived rows never surface here.
-    const statusClause =
-      mode === "developer"
-        ? "status IN ('published', 'draft')"
-        : "status = 'published'";
+    // `buildUnionStatusClause()` is the shared helper driving the same
+    // mode branch on `connections` and `prompt_collections` — reuse it
+    // here so mode semantics stay in lockstep across every
+    // user-surfaced table. It returns " AND status = 'published'" or
+    // " AND status IN ('published', 'draft')" with the leading AND +
+    // space, safe to concat directly onto the WHERE clause.
+    const statusClause = buildUnionStatusClause(mode);
 
     return await internalQuery<QuerySuggestionRow>(
       `SELECT * FROM query_suggestions
-       WHERE ${orgClause} AND approval_status = 'approved' AND ${statusClause}
+       WHERE ${orgClause} AND approval_status = 'approved'${statusClause}
        ORDER BY score DESC LIMIT $${limitIdx}`,
       params
     );

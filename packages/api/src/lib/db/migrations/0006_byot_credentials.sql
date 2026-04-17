@@ -1,4 +1,4 @@
--- 0005_byot_credentials.sql
+-- 0006_byot_credentials.sql
 --
 -- BYOT (Bring Your Own Token) support for Teams and Discord integrations.
 -- Adds credential columns so workspace admins can connect without

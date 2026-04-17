@@ -1,4 +1,4 @@
--- 0029 — Starter-prompt approval queue columns (#1476, PRD #1473)
+-- 0030 — Starter-prompt approval queue columns (#1476, PRD #1473)
 --
 -- Adds the approval + mode columns on query_suggestions and the
 -- (suggestion_id, user_id) dedup table that backs distinct-user click

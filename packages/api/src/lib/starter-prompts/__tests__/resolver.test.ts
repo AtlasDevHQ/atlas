@@ -26,6 +26,25 @@ const mockInternalQuery = mock(
   async (_sql: string, _params?: unknown[]) => [] as unknown[],
 );
 
+// Popular tier — mocked at the helper boundary so resolver tests don't
+// need to know the SQL shape. Each test sets `popularFixture` or
+// `popularReadErrorFixture` to drive behavior.
+let popularFixture: Array<{ id: string; description: string }> = [];
+let popularReadErrorFixture: Error | null = null;
+const mockGetPopularSuggestions = mock(
+  async (_orgId: string | null, _limit?: number) => {
+    if (popularReadErrorFixture) throw popularReadErrorFixture;
+    // Return rows shaped loosely like QuerySuggestionRow — the resolver
+    // only reads id + description.
+    return popularFixture.map((r) => ({
+      id: r.id,
+      description: r.description,
+      // Pad with enough fields for the row shape without asserting them here.
+      approval_status: "approved" as const,
+    }));
+  },
+);
+
 // Favorites tier — mocked at the store boundary so resolver tests do not
 // have to care about SQL shape.
 let favoritesFixture: FavoritePromptRow[] = [];
@@ -40,6 +59,7 @@ const mockListFavorites = mock(
 mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => hasInternalDBFixture,
   internalQuery: mockInternalQuery,
+  getPopularSuggestions: mockGetPopularSuggestions,
 }));
 
 mock.module("../favorite-store", () => ({
@@ -88,8 +108,11 @@ beforeEach(() => {
   hasInternalDBFixture = true;
   favoritesFixture = [];
   favoritesReadErrorFixture = null;
+  popularFixture = [];
+  popularReadErrorFixture = null;
   mockInternalQuery.mockClear();
   mockInternalQuery.mockImplementation(async () => [] as unknown[]);
+  mockGetPopularSuggestions.mockClear();
   mockListFavorites.mockClear();
 });
 
@@ -343,18 +366,100 @@ describe("resolveStarterPrompts — favorites tier", () => {
   });
 });
 
-describe("resolveStarterPrompts — compose-order contract", () => {
-  it("never emits popular-provenance rows while the popular tier is unwired", async () => {
+describe("resolveStarterPrompts — popular tier (approved-only)", () => {
+  it("emits popular-provenance rows with namespaced ids between favorites and library", async () => {
+    favoritesFixture = [favRow({ id: "fav-a", text: "my pin" })];
+    popularFixture = [
+      { id: "pop-1", description: "approved popular row" },
+      { id: "pop-2", description: "another approved row" },
+    ];
     demoIndustryFixture = "cybersecurity";
     mockInternalQuery.mockImplementation(async () => [
-      { id: "item-y", question: "library row" },
+      { id: "lib-1", question: "library row" },
     ]);
 
     const result = await resolveStarterPrompts(baseCtx());
 
-    expect(result.some((p) => p.provenance === "popular")).toBe(false);
+    expect(result.map((p) => p.provenance)).toEqual([
+      "favorite",
+      "popular",
+      "popular",
+      "library",
+    ]);
+    expect(result[1]).toMatchObject({
+      id: "popular:pop-1",
+      text: "approved popular row",
+      provenance: "popular",
+    });
+    expect(result[2]).toMatchObject({
+      id: "popular:pop-2",
+      text: "another approved row",
+    });
   });
 
+  it("passes orgId and remaining limit to getPopularSuggestions", async () => {
+    favoritesFixture = [favRow({ id: "fav-a", text: "pin" })];
+    demoIndustryFixture = "cybersecurity";
+
+    await resolveStarterPrompts(baseCtx({ limit: 6 }));
+
+    expect(mockGetPopularSuggestions).toHaveBeenCalled();
+    const callArgs = mockGetPopularSuggestions.mock.calls[0]!;
+    expect(callArgs[0]).toBe("org-1");
+    // 6 total, 1 favorite consumed → popular requests up to 5.
+    expect(callArgs[1]).toBe(5);
+  });
+
+  it("stops consuming library slots when popular fills the limit", async () => {
+    popularFixture = [
+      { id: "pop-1", description: "r1" },
+      { id: "pop-2", description: "r2" },
+      { id: "pop-3", description: "r3" },
+    ];
+    demoIndustryFixture = "cybersecurity";
+    mockInternalQuery.mockImplementation(async () => [
+      { id: "lib-1", question: "library — should not appear" },
+    ]);
+
+    const result = await resolveStarterPrompts(baseCtx({ limit: 3 }));
+
+    expect(result.map((p) => p.provenance)).toEqual([
+      "popular",
+      "popular",
+      "popular",
+    ]);
+    // Library query must not fire when popular already saturates the limit.
+    expect(mockInternalQuery).not.toHaveBeenCalled();
+  });
+
+  it("falls through to library when the popular read fails", async () => {
+    // Popular is an optimization, not a hard dependency. A transient
+    // read failure must not black out the empty state — fall through to
+    // library / cold-start.
+    popularReadErrorFixture = new Error("transient popular query failure");
+    demoIndustryFixture = "cybersecurity";
+    mockInternalQuery.mockImplementation(async () => [
+      { id: "lib-1", question: "library row" },
+    ]);
+
+    const result = await resolveStarterPrompts(baseCtx());
+
+    expect(result).toEqual([
+      { id: "library:lib-1", text: "library row", provenance: "library" },
+    ]);
+  });
+
+  it("skips the popular tier when orgId is null (no workspace)", async () => {
+    popularFixture = [{ id: "pop-1", description: "should not appear" }];
+
+    const result = await resolveStarterPrompts(baseCtx({ orgId: null }));
+
+    expect(mockGetPopularSuggestions).not.toHaveBeenCalled();
+    expect(result).toEqual([]);
+  });
+});
+
+describe("resolveStarterPrompts — compose-order contract", () => {
   it("never emits cold-start-provenance rows (cold-start = empty list)", async () => {
     demoIndustryFixture = undefined;
 

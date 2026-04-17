@@ -1,0 +1,114 @@
+---
+title: Starter Prompt Moderation
+description: Review auto-promoted query suggestions, approve them into the empty state, hide low-quality ones, and directly author new starter prompts from the admin console.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Starter prompts are the short question buttons users see in the chat empty state. Atlas learns them from real engagement — when a suggestion crosses a distinct-user click threshold, it enters the moderation queue for an admin to approve, hide, or ignore. Admins can also author new starter prompts directly.
+
+This page walks through the moderation workflow from the admin console.
+
+<Callout title="Prerequisites">
+- A user with the `admin` role (see [Custom roles](/guides/custom-roles))
+- An internal database configured (`DATABASE_URL`) — starter-prompt moderation lives in the internal DB, not the user datasource
+</Callout>
+
+---
+
+## State matrix
+
+Every entry in the queue carries two independent state axes:
+
+| Axis              | Values                                  | Purpose                               |
+| ----------------- | --------------------------------------- | ------------------------------------- |
+| `approval_status` | `pending` · `approved` · `hidden`       | Moderation lifecycle (this page)      |
+| `status`          | `draft` · `published` · `archived`      | Mode-system participation (dev/prod)  |
+
+The axes are independent. An admin-authored row lands in `approved` + `published` so it surfaces immediately. A row learned from engagement starts as `pending` + `draft` and waits for review.
+
+---
+
+## Route
+
+**`/admin/starter-prompts`**
+
+The page opens on the Pending tab, which shows suggestions that have crossed the auto-promote threshold (default 3 distinct users within 90 days). Two other tabs surface Approved and Hidden rows.
+
+---
+
+## Approving a pending suggestion
+
+1. Open the **Pending** tab.
+2. Review the description, click counts, and last-seen date.
+3. Click **Approve** on the row.
+
+The row moves to the Approved tab. Atlas stamps the row with `approved_by` (your user id) and `approved_at` (the current time), then makes the suggestion available to the `/api/v1/suggestions/popular` endpoint and the chat empty state as a **Popular** prompt.
+
+Approve is idempotent — re-approving an already-approved row bumps `approved_at` only.
+
+---
+
+## Hiding a suggestion
+
+1. From the **Pending** or **Approved** tab, click **Hide** on the row.
+2. The row moves to the Hidden tab.
+
+`approved_by` and `approved_at` are preserved across hide → unhide so nothing is lost about the original review. The auto-promote policy will not re-promote a hidden row; the admin is the only path back.
+
+---
+
+## Unhiding a suggestion
+
+1. Open the **Hidden** tab.
+2. Click **Unhide** on the row.
+
+The row returns to the Pending tab. An admin can approve it or leave it for another click cycle to bring it back into the queue.
+
+---
+
+## Authoring a new starter prompt
+
+The Pending tab has an **Author a new starter prompt** form at the top. Use it to seed the empty state without waiting for organic engagement.
+
+1. Type the question text (for example, "Which accounts renewed this quarter?").
+2. Click **Author prompt**.
+
+Atlas creates a new row with `approval_status = 'approved'` and `status = 'published'` — the prompt skips the pending queue and lands in Approved immediately, ready to surface to users.
+
+<Callout type="info">
+If the same text already exists (same `normalized_hash` in this workspace), the server returns 409. Open the Pending or Hidden tab, find the existing row, and approve or unhide it instead.
+</Callout>
+
+---
+
+## What users see
+
+Approved starter prompts surface in two places:
+
+- **Chat empty state** — all signed-in users see approved rows tagged with a subtle "Popular" badge, slotted between their pinned favorites and the demo-industry library.
+- **`/api/v1/suggestions/popular`** — the public popular-suggestions API returns only approved rows so SDK and widget consumers stay in sync with moderation.
+
+Pending and hidden rows never leave the admin boundary.
+
+---
+
+## API
+
+The admin UI is a thin layer over four endpoints. Each requires `role = 'admin'`.
+
+| Endpoint                                               | Effect                                                           |
+| ------------------------------------------------------ | ---------------------------------------------------------------- |
+| `POST /api/v1/admin/starter-prompts/:id/approve`       | Sets `approval_status = 'approved'`, stamps `approved_by/_at`    |
+| `POST /api/v1/admin/starter-prompts/:id/hide`          | Sets `approval_status = 'hidden'` (preserves history)            |
+| `POST /api/v1/admin/starter-prompts/:id/unhide`        | Sets `approval_status = 'pending'`                               |
+| `POST /api/v1/admin/starter-prompts/author`            | Creates `approved` + `published` row; body `{ "text": "…" }`     |
+
+See the [API reference](/api-reference/admin-starter-prompts) for full request/response schemas.
+
+---
+
+## Related
+
+- [Admin Console](/guides/admin-console) — full admin UI overview
+- [Custom roles](/guides/custom-roles) — who can access the moderation queue

@@ -18,7 +18,11 @@ import type {
   StarterPrompt,
   StarterPromptProvenance,
 } from "@useatlas/types/starter-prompt";
-import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
+import {
+  hasInternalDB,
+  internalQuery,
+  getPopularSuggestions,
+} from "@atlas/api/lib/db/internal";
 import { readDemoIndustry } from "@atlas/api/lib/demo-industry";
 import { createLogger } from "@atlas/api/lib/logger";
 import { listFavorites } from "./favorite-store";
@@ -106,9 +110,11 @@ async function loadLibraryPrompts(
 /**
  * Resolve the ordered starter-prompt list for the given context.
  *
- * Compose order: favorites → popular → library → cold-start. Favorites and
- * popular are stubs in this slice; library and the empty cold-start case
- * are live.
+ * Compose order: favorites → popular → library → cold-start. The popular
+ * tier reads admin-approved suggestions only (`approval_status = 'approved'`)
+ * so moderation state flows end-to-end from the queue to the empty state.
+ * An empty return signals cold-start — the UI renders a single-CTA state
+ * rather than an empty grid.
  */
 export async function resolveStarterPrompts(
   ctx: ResolveContext,
@@ -162,8 +168,33 @@ export async function resolveStarterPrompts(
     }
   }
 
-  // Tier 2 — popular approved. Not yet wired; the tier slot exists
-  // here so its eventual insertion doesn't reshuffle the compose order.
+  // Tier 2 — popular approved. Skipped when there is no workspace context.
+  if (out.length < limit && ctx.orgId) {
+    const remaining = limit - out.length;
+    try {
+      const rows = await getPopularSuggestions(ctx.orgId, remaining);
+      for (const row of rows) {
+        if (out.length >= limit) break;
+        out.push({
+          id: makePromptId("popular", row.id),
+          text: row.description,
+          provenance: "popular" as const,
+        });
+      }
+    } catch (err) {
+      // Popular is an optimization, not a hard dependency. A transient
+      // read failure must not black out the whole empty state — fall
+      // through to library / cold-start instead.
+      log.error(
+        {
+          err: err instanceof Error ? err.message : String(err),
+          orgId: ctx.orgId,
+          requestId: ctx.requestId,
+        },
+        "Failed to load popular starter prompts — continuing to library tier",
+      );
+    }
+  }
 
   // Tier 3 — library (demo-industry curated collections).
   if (out.length < limit && ctx.orgId) {

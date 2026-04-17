@@ -1223,7 +1223,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 
 ### Admin moderation
 - [x] Schema migration + auto-promote + read-only admin queue (#1476, PR #1495 — orthogonal state matrix on `query_suggestions` (`approval_status` × `status`), `SuggestionApprovalService.checkAutoPromote` pure decision function with below/already-promoted/outside-window/already-reviewed reasons, `incrementSuggestionClick(userId)` with atomic upsert + CTE for distinct-user tracking, `GET /api/v1/admin/starter-prompts/queue` returning pending/approved/hidden buckets, read-only 3-tab admin page at `/admin/starter-prompts`, migration `0030_starter_prompt_approval.sql` (rebased over #1496's 0029), `ATLAS_STARTER_PROMPT_AUTO_PROMOTE_CLICKS` (default 3) + `ATLAS_STARTER_PROMPT_COLD_WINDOW_DAYS` (default 90) configs)
-- [ ] Admin moderation UX — approve/hide/unhide + author form (#1477)
+- [x] Admin moderation UX — approve/hide/unhide + author form (#1477)
 - [ ] 1.2.0 mode participation + CLAUDE.md Content Mode System rule (#1478)
 
 ### Other surfaces

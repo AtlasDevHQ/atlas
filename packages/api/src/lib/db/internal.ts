@@ -1165,12 +1165,20 @@ export async function getPopularSuggestions(
     const params: unknown[] = orgId != null ? [orgId, limit] : [limit];
     const limitIdx = params.length;
 
+    // Gated to admin-approved rows only. Pending / hidden suggestions
+    // must not surface in user-facing empty states — this is the single
+    // source of truth enforcing that contract from backend to UI.
     return await internalQuery<QuerySuggestionRow>(
-      `SELECT * FROM query_suggestions WHERE ${orgClause} ORDER BY score DESC LIMIT $${limitIdx}`,
+      `SELECT * FROM query_suggestions
+       WHERE ${orgClause} AND approval_status = 'approved'
+       ORDER BY score DESC LIMIT $${limitIdx}`,
       params
     );
   } catch (err) {
-    log.warn({ err: err instanceof Error ? err.message : String(err) }, "Failed to get popular suggestions");
+    // Bump to error so alerting picks up a connectivity/query failure.
+    // Callers cannot distinguish [] = no approved rows vs [] = DB outage —
+    // making this log.error ensures the failure is surfaced out-of-band.
+    log.error({ err: err instanceof Error ? err.message : String(err) }, "Failed to get popular suggestions");
     return [];
   }
 }

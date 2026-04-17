@@ -1,24 +1,13 @@
 "use client";
 
 /**
- * Admin starter-prompt moderation queue (read-only, slice #1476).
+ * Read-only admin surface for the starter-prompt moderation queue.
  *
- * # State matrix
- *
- * Starter-prompt suggestions carry two orthogonal state dimensions:
- *
- *   | Axis            | Values                         | Meaning                      |
- *   |-----------------|--------------------------------|------------------------------|
- *   | approval_status | pending / approved / hidden    | Moderation lifecycle         |
- *   | status          | draft / published / archived   | 1.2.0 mode participation     |
- *
- * An approved suggestion can still be `draft` (awaiting publish) or
- * `published`. A draft suggestion can be `pending`, `approved`, or
- * `hidden`. The axes are independent — do not conflate them.
- *
- * This page surfaces the **approval_status** axis only. Mutations
- * (approve / hide / restore) and the publish bridge to `status` land in
- * slice #1477.
+ * This page renders the `approval_status` axis (pending / approved /
+ * hidden). The orthogonal `status` axis (draft / published / archived)
+ * appears as a per-row badge. The canonical state-matrix explainer
+ * lives with the decision policy in
+ * `@atlas/api/lib/suggestions/approval-service`.
  */
 
 import { Suspense } from "react";
@@ -44,6 +33,10 @@ import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { StatCard } from "@/ui/components/admin/stat-card";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { Sparkles, CheckCircle2, EyeOff, Clock } from "lucide-react";
+import {
+  SUGGESTION_APPROVAL_STATUSES,
+  SUGGESTION_STATUSES,
+} from "@useatlas/types";
 
 const QueueItemSchema = z.object({
   id: z.string(),
@@ -57,8 +50,8 @@ const QueueItemSchema = z.object({
   clickedCount: z.number(),
   distinctUserClicks: z.number(),
   score: z.number(),
-  approvalStatus: z.enum(["pending", "approved", "hidden"]),
-  status: z.enum(["draft", "published", "archived"]),
+  approvalStatus: z.enum(SUGGESTION_APPROVAL_STATUSES),
+  status: z.enum(SUGGESTION_STATUSES),
   approvedBy: z.string().nullable(),
   approvedAt: z.string().nullable(),
   lastSeenAt: z.string(),
@@ -194,12 +187,10 @@ function StarterPromptsContent() {
               <CardTitle>Moderation queue</CardTitle>
             </div>
             <CardDescription>
-              Read-only view. Approve and hide actions ship in a follow-up
-              release. <span className="font-medium">approval_status</span>{" "}
-              (pending / approved / hidden) and{" "}
-              <span className="font-medium">status</span>{" "}
-              (draft / published / archived) are independent axes — an
-              approved prompt may still be a draft awaiting publish.
+              Read-only view. The row status badge shows the publish mode
+              (draft / published / archived); the tab grouping shows the
+              moderation state (pending / approved / hidden). The two axes
+              are independent.
             </CardDescription>
           </CardHeader>
           <CardContent>

@@ -31,6 +31,10 @@ import type { ConnectionRegistry } from "./db/connection";
 import type { ToolRegistry } from "./tools/registry";
 import { ACTION_APPROVAL_MODES, type ActionApprovalMode } from "@atlas/api/lib/action-types";
 import { ATLAS_ROLES } from "@atlas/api/lib/auth/types";
+import {
+  DEFAULT_AUTO_PROMOTE_CLICKS,
+  DEFAULT_COLD_WINDOW_DAYS,
+} from "@atlas/api/lib/suggestions/approval-service";
 
 // ---------------------------------------------------------------------------
 // Sandbox backend names (used in config validation and explore backend selection)
@@ -386,24 +390,23 @@ const AtlasConfigSchema = z.object({
   }).optional(),
 
   /**
-   * Adaptive starter prompt configuration (#1474, PRD #1473). Controls
-   * the empty-chat grid that replaces the hardcoded `STARTER_PROMPTS`
-   * constant.
+   * Adaptive starter prompt configuration. Controls the empty-chat grid
+   * that replaces the hardcoded `STARTER_PROMPTS` constant.
    */
   starterPrompts: z.object({
     /**
      * Cold-start window (days) applied to `prompt_collections.created_at`
      * when the resolver pulls the library tier. Also bounds the approval
      * queue for learned-popular prompts — only suggestions with a recent
-     * `last_seen_at` are eligible for auto-promotion. Default: 90.
+     * `last_seen_at` are eligible for auto-promotion.
      */
-    coldWindowDays: z.number().int().positive().default(90),
+    coldWindowDays: z.number().int().positive().default(DEFAULT_COLD_WINDOW_DAYS),
     /**
      * Distinct-user click threshold that auto-promotes a learned suggestion
      * into the admin approval queue. Clicks are counted once per user
-     * within the cold window. Default: 3 (#1476, PRD #1473).
+     * within the cold window.
      */
-    autoPromoteClicks: z.number().int().positive().default(3),
+    autoPromoteClicks: z.number().int().positive().default(DEFAULT_AUTO_PROMOTE_CLICKS),
   }).optional(),
 
   /**
@@ -669,16 +672,16 @@ export function configFromEnv(): ResolvedConfig {
         },
       };
     })()),
-    // Starter prompt config from env vars (#1474, #1476)
+    // Starter prompt config from env vars
     ...((() => {
       const coldWindow = parseInt(process.env.ATLAS_STARTER_PROMPT_COLD_WINDOW_DAYS ?? "", 10);
       const autoPromote = parseInt(process.env.ATLAS_STARTER_PROMPT_AUTO_PROMOTE_CLICKS ?? "", 10);
       return {
         starterPrompts: {
           coldWindowDays:
-            Number.isFinite(coldWindow) && coldWindow > 0 ? coldWindow : 90,
+            Number.isFinite(coldWindow) && coldWindow > 0 ? coldWindow : DEFAULT_COLD_WINDOW_DAYS,
           autoPromoteClicks:
-            Number.isFinite(autoPromote) && autoPromote > 0 ? autoPromote : 3,
+            Number.isFinite(autoPromote) && autoPromote > 0 ? autoPromote : DEFAULT_AUTO_PROMOTE_CLICKS,
         },
       };
     })()),

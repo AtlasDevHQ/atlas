@@ -1037,27 +1037,25 @@ export interface ApprovedPatternRow {
 
 /** Row shape for query_suggestions table. */
 export interface QuerySuggestionRow {
-  id: string;
-  org_id: string | null;
-  description: string;
-  pattern_sql: string;
-  normalized_hash: string;
-  tables_involved: string; // JSONB string, parse to string[]
-  primary_table: string | null;
-  frequency: number;
-  clicked_count: number;
-  score: number;
-  /** Moderation lifecycle — pending | approved | hidden (#1476). */
-  approval_status: "pending" | "approved" | "hidden";
-  /** 1.2.0 mode lifecycle — draft | published | archived. */
-  status: "draft" | "published" | "archived";
-  approved_by: string | null;
-  approved_at: string | null;
-  distinct_user_clicks: number;
-  last_seen_at: string;
-  created_at: string;
-  updated_at: string;
-  [key: string]: unknown;
+  readonly id: string;
+  readonly org_id: string | null;
+  readonly description: string;
+  readonly pattern_sql: string;
+  readonly normalized_hash: string;
+  readonly tables_involved: string; // JSONB string, parse to string[]
+  readonly primary_table: string | null;
+  readonly frequency: number;
+  readonly clicked_count: number;
+  readonly score: number;
+  readonly approval_status: import("@useatlas/types").SuggestionApprovalStatus;
+  readonly status: import("@useatlas/types").SuggestionStatus;
+  readonly approved_by: string | null;
+  readonly approved_at: string | null;
+  readonly distinct_user_clicks: number;
+  readonly last_seen_at: string;
+  readonly created_at: string;
+  readonly updated_at: string;
+  readonly [key: string]: unknown;
 }
 
 /**
@@ -1201,7 +1199,6 @@ export function incrementSuggestionClick(
   const orgClause = orgId != null ? "org_id = $1" : "org_id IS NULL";
 
   if (userId == null) {
-    // Legacy path — no distinct-user tracking.
     const params: unknown[] = orgId != null ? [orgId, id] : [id];
     const idIdx = params.length;
     internalExecute(

@@ -2,15 +2,9 @@
  * Admin starter-prompt moderation routes.
  *
  * Mounted under /api/v1/admin/starter-prompts. All routes require admin role.
- *
- * State matrix (see also migration 0029 and approval-service.ts):
- *   approval_status : pending | approved | hidden    (moderation lifecycle)
- *   status          : draft   | published | archived (1.2.0 mode lifecycle)
- * The two axes are orthogonal — an approved entry may still be `draft`
- * (awaiting publish) or `published`.
- *
- * This slice (#1476) ships the read-only queue only. Approve/hide
- * mutations land in #1477.
+ * Read-only queue over pending / approved / hidden buckets. The canonical
+ * explainer for the state matrix lives with the policy in
+ * `@atlas/api/lib/suggestions/approval-service`.
  */
 
 import { Effect } from "effect";
@@ -21,6 +15,14 @@ import { queryEffect } from "@atlas/api/lib/db/internal";
 import type { QuerySuggestionRow } from "@atlas/api/lib/db/internal";
 import { toQuerySuggestion } from "@atlas/api/lib/learn/suggestion-helpers";
 import { getConfig } from "@atlas/api/lib/config";
+import {
+  DEFAULT_AUTO_PROMOTE_CLICKS,
+  DEFAULT_COLD_WINDOW_DAYS,
+} from "@atlas/api/lib/suggestions/approval-service";
+import {
+  SUGGESTION_APPROVAL_STATUSES,
+  SUGGESTION_STATUSES,
+} from "@useatlas/types";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 
@@ -40,8 +42,8 @@ const QueueItemSchema = z.object({
   clickedCount: z.number(),
   distinctUserClicks: z.number(),
   score: z.number(),
-  approvalStatus: z.enum(["pending", "approved", "hidden"]),
-  status: z.enum(["draft", "published", "archived"]),
+  approvalStatus: z.enum(SUGGESTION_APPROVAL_STATUSES),
+  status: z.enum(SUGGESTION_STATUSES),
   approvedBy: z.string().nullable(),
   approvedAt: z.string().nullable(),
   lastSeenAt: z.string(),
@@ -102,43 +104,6 @@ const listQueueRoute = createRoute({
 });
 
 // ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-interface QueueItem {
-  id: string;
-  orgId: string | null;
-  description: string;
-  patternSql: string;
-  normalizedHash: string;
-  tablesInvolved: string[];
-  primaryTable: string | null;
-  frequency: number;
-  clickedCount: number;
-  distinctUserClicks: number;
-  score: number;
-  approvalStatus: "pending" | "approved" | "hidden";
-  status: "draft" | "published" | "archived";
-  approvedBy: string | null;
-  approvedAt: string | null;
-  lastSeenAt: string;
-  createdAt: string;
-  updatedAt: string;
-}
-
-function toQueueItem(row: QuerySuggestionRow): QueueItem {
-  const base = toQuerySuggestion(row);
-  return {
-    ...base,
-    distinctUserClicks: row.distinct_user_clicks ?? 0,
-    approvalStatus: row.approval_status,
-    status: row.status,
-    approvedBy: row.approved_by,
-    approvedAt: row.approved_at,
-  };
-}
-
-// ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
 
@@ -146,27 +111,25 @@ export const adminStarterPrompts = createAdminRouter();
 
 adminStarterPrompts.use(requireOrgContext());
 
-// GET /queue — list pending / approved / hidden buckets
 adminStarterPrompts.openapi(listQueueRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
 
     const orgIdVal = orgId ?? null;
     const config = getConfig();
-    const threshold = config?.starterPrompts?.autoPromoteClicks ?? 3;
-    const coldWindowDays = config?.starterPrompts?.coldWindowDays ?? 90;
+    const threshold = config?.starterPrompts?.autoPromoteClicks ?? DEFAULT_AUTO_PROMOTE_CLICKS;
+    const coldWindowDays = config?.starterPrompts?.coldWindowDays ?? DEFAULT_COLD_WINDOW_DAYS;
 
     const orgClause = orgIdVal != null ? "org_id = $1" : "org_id IS NULL";
     const baseParams: unknown[] = orgIdVal != null ? [orgIdVal] : [];
-
-    // Pending bucket: crossed the auto-promote threshold within the cold
-    // window. last_seen_at is the latest pattern-match timestamp; if a
-    // suggestion's last activity is outside the window it has aged out.
-    const pendingParams = [...baseParams, threshold, coldWindowDays];
     const thresholdIdx = baseParams.length + 1;
     const windowIdx = baseParams.length + 2;
+    const pendingParams = [...baseParams, threshold, coldWindowDays];
 
-    const pendingRows = yield* queryEffect<QuerySuggestionRow>(
+    // Pending bucket filters to rows that crossed the threshold within
+    // the cold window. `last_seen_at` is the most recent pattern-match
+    // timestamp — rows with older activity have aged out.
+    const pendingQuery = queryEffect<QuerySuggestionRow>(
       `SELECT * FROM query_suggestions
        WHERE ${orgClause}
          AND approval_status = 'pending'
@@ -177,7 +140,7 @@ adminStarterPrompts.openapi(listQueueRoute, async (c) => {
       pendingParams,
     );
 
-    const approvedRows = yield* queryEffect<QuerySuggestionRow>(
+    const approvedQuery = queryEffect<QuerySuggestionRow>(
       `SELECT * FROM query_suggestions
        WHERE ${orgClause} AND approval_status = 'approved'
        ORDER BY approved_at DESC NULLS LAST, last_seen_at DESC
@@ -185,7 +148,7 @@ adminStarterPrompts.openapi(listQueueRoute, async (c) => {
       baseParams,
     );
 
-    const hiddenRows = yield* queryEffect<QuerySuggestionRow>(
+    const hiddenQuery = queryEffect<QuerySuggestionRow>(
       `SELECT * FROM query_suggestions
        WHERE ${orgClause} AND approval_status = 'hidden'
        ORDER BY updated_at DESC
@@ -193,9 +156,14 @@ adminStarterPrompts.openapi(listQueueRoute, async (c) => {
       baseParams,
     );
 
-    const pending = pendingRows.map(toQueueItem);
-    const approved = approvedRows.map(toQueueItem);
-    const hidden = hiddenRows.map(toQueueItem);
+    const [pendingRows, approvedRows, hiddenRows] = yield* Effect.all(
+      [pendingQuery, approvedQuery, hiddenQuery],
+      { concurrency: "unbounded" },
+    );
+
+    const pending = pendingRows.map(toQuerySuggestion);
+    const approved = approvedRows.map(toQuerySuggestion);
+    const hidden = hiddenRows.map(toQuerySuggestion);
 
     return c.json(
       {

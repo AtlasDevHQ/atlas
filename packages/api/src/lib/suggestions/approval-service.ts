@@ -1,30 +1,46 @@
 /**
- * SuggestionApprovalService — click-threshold auto-promotion.
+ * Click-threshold auto-promotion policy for `query_suggestions`.
  *
- * The `query_suggestions` table holds two orthogonal state axes (see
- * migration 0029 and the admin queue page for the full explainer):
+ * # State matrix (canonical explainer)
  *
- *   approval_status : pending | approved | hidden    (moderation lifecycle)
- *   status          : draft   | published | archived (1.2.0 mode lifecycle)
+ * A suggestion row carries two orthogonal state axes:
+ *
+ *   | Axis            | Values                         | Purpose                      |
+ *   |-----------------|--------------------------------|------------------------------|
+ *   | approval_status | pending / approved / hidden    | Moderation lifecycle         |
+ *   | status          | draft / published / archived   | Mode-system participation    |
+ *
+ * The axes are independent. An approved suggestion may still be `draft`
+ * (awaiting publish) or `published`. A draft suggestion may be any
+ * `approval_status`. Migration 0029 enforces the enum sets via CHECK
+ * constraints.
+ *
+ * # Auto-promote decision
  *
  * A row defaults to `approval_status = 'pending'` / `status = 'draft'`.
- * This slice (#1476) owns the **auto-promote** decision: when the count
- * of distinct users who clicked a pending suggestion crosses the
- * configured threshold within the cold window, the entry becomes
- * eligible for the admin queue. Approve/hide mutations land in slice
- * #1477.
- *
- * The decision is expressed as a pure function so tests can cover the
- * threshold arithmetic, window boundary, and no-duplicate-promote
- * invariant without touching the database.
+ * When enough distinct users click a `pending` row within the cold
+ * window, it becomes eligible for the admin queue. This module owns the
+ * decision as a pure function so tests can cover threshold arithmetic,
+ * window boundary, and the no-duplicate-promotion invariant without
+ * touching the database.
  */
 
-export type ApprovalStatus = "pending" | "approved" | "hidden";
-export type SuggestionStatus = "draft" | "published" | "archived";
+import type {
+  SuggestionApprovalStatus,
+  SuggestionStatus,
+} from "@useatlas/types";
+
+// Re-export so callers have a single import site for the policy + its types.
+export type { SuggestionApprovalStatus, SuggestionStatus };
 
 /** Config driving the auto-promote decision. */
 export interface AutoPromoteConfig {
-  /** Distinct-user click threshold. When prior < threshold <= next, promotion fires. */
+  /**
+   * Distinct-user click threshold. Promotion fires only on the exact
+   * transition from `priorDistinctUserClicks < threshold` to
+   * `nextDistinctUserClicks >= threshold`. Subsequent clicks with a
+   * prior count already at/above threshold are no-ops.
+   */
   readonly autoPromoteClicks: number;
   /** Cold window in days. Clicks older than this don't count toward eligibility. */
   readonly coldWindowDays: number;
@@ -32,7 +48,7 @@ export interface AutoPromoteConfig {
 
 /** Input to the auto-promote check. */
 export interface AutoPromoteInput {
-  readonly approvalStatus: ApprovalStatus;
+  readonly approvalStatus: SuggestionApprovalStatus;
   /** Distinct-user clicks before the current click landed. */
   readonly priorDistinctUserClicks: number;
   /** Distinct-user clicks after the current click landed. */
@@ -102,3 +118,15 @@ export function checkAutoPromote(
 
   return { promoted: true };
 }
+
+// ---------------------------------------------------------------------------
+// Defaults — shared between config schema (Zod defaults) and the queue route
+// (fallback when config has not loaded). Keeping them in one place prevents
+// the two sites from drifting.
+// ---------------------------------------------------------------------------
+
+/** Default distinct-user click threshold for auto-promotion. */
+export const DEFAULT_AUTO_PROMOTE_CLICKS = 3;
+
+/** Default cold window in days for eligibility and the resolver library tier. */
+export const DEFAULT_COLD_WINDOW_DAYS = 90;

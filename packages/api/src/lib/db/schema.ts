@@ -497,10 +497,17 @@ export const querySuggestions = pgTable(
     frequency: integer("frequency").notNull().default(1),
     clickedCount: integer("clicked_count").notNull().default(0),
     score: real("score").notNull().default(0),
-    // Moderation lifecycle — pending | approved | hidden. Orthogonal to
-    // `status` (which gates 1.2.0 mode publication). See approval-service.ts.
-    approvalStatus: text("approval_status").notNull().default("pending"),
-    status: text("status").notNull().default("draft"),
+    // CHECK constraint in the migration restricts values to the
+    // SuggestionApprovalStatus / SuggestionStatus enum sets. The `$type`
+    // on the Drizzle column tightens the ORM's inferred type to match.
+    approvalStatus: text("approval_status")
+      .$type<import("@useatlas/types").SuggestionApprovalStatus>()
+      .notNull()
+      .default("pending"),
+    status: text("status")
+      .$type<import("@useatlas/types").SuggestionStatus>()
+      .notNull()
+      .default("draft"),
     approvedBy: text("approved_by"),
     approvedAt: timestamp("approved_at", { withTimezone: true }),
     distinctUserClicks: integer("distinct_user_clicks").notNull().default(0),
@@ -519,18 +526,20 @@ export const querySuggestions = pgTable(
 );
 
 // ---------------------------------------------------------------------------
-// Starter-prompt moderation — distinct-user click tracking (#1476)
+// Starter-prompt moderation — distinct-user click tracking
 // ---------------------------------------------------------------------------
 
 export const suggestionUserClicks = pgTable(
   "suggestion_user_clicks",
   {
-    suggestionId: uuid("suggestion_id").notNull(),
+    suggestionId: uuid("suggestion_id")
+      .notNull()
+      .references(() => querySuggestions.id, { onDelete: "cascade" }),
     userId: text("user_id").notNull(),
     firstClickedAt: timestamp("first_clicked_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
-    index("pk_suggestion_user_clicks").on(t.suggestionId, t.userId),
+    primaryKey({ columns: [t.suggestionId, t.userId] }),
     index("idx_suggestion_user_clicks_suggestion_clicked").on(t.suggestionId, sql`first_clicked_at DESC`),
   ],
 );

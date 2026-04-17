@@ -1,15 +1,3 @@
-/**
- * Unit tests for the auto-promote decision function.
- *
- * These exercise the load-bearing invariants:
- *   1. Threshold arithmetic — promotion fires on the exact transition
- *      from below-threshold to at-or-above-threshold, not before and
- *      not after.
- *   2. Window boundary — clicks older than the cold window don't count.
- *   3. No duplicate promotion — once promoted, repeated calls are no-ops.
- *   4. Approved/hidden rows cannot be re-promoted (admin review is final).
- */
-
 import { describe, it, expect } from "bun:test";
 import {
   checkAutoPromote,

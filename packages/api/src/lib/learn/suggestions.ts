@@ -87,9 +87,23 @@ export function _groupAuditRows(rows: AuditRow[]): Map<string, GroupedPattern> {
 
 // ── Batch generation ───────────────────────────────────────────────
 
+/**
+ * Options for batch suggestion generation.
+ *
+ * `autoApprove` is threaded down to `upsertSuggestion`. The default is
+ * `false` (pending / draft) so CLI-populated rows land in the admin
+ * moderation queue — matching the organic click-promoted path. Operators
+ * who want to skip review in self-hosted deployments pass `true` via
+ * `atlas learn --auto-approve`.
+ */
+export interface GenerateSuggestionsOptions {
+  readonly autoApprove?: boolean;
+}
+
 /** Batch-generate suggestions from audit log. Idempotent via upsert. */
 export async function generateSuggestions(
-  orgId: string | null
+  orgId: string | null,
+  options: GenerateSuggestionsOptions = {}
 ): Promise<{ created: number; updated: number }> {
   const rows = await getAuditLogQueries(orgId);
   if (rows.length === 0) {
@@ -116,6 +130,7 @@ export async function generateSuggestions(
 
   let created = 0;
   let updated = 0;
+  const autoApprove = options.autoApprove === true;
 
   for (const pattern of filtered) {
     const score = scoreSuggestion(pattern.count, pattern.lastSeen);
@@ -129,11 +144,15 @@ export async function generateSuggestions(
       frequency: pattern.count,
       score,
       lastSeenAt: pattern.lastSeen,
+      autoApprove,
     });
     if (result === "created") created++;
     else if (result === "updated") updated++;
   }
 
-  log.info({ orgId, created, updated, total: filtered.length }, "Suggestion generation complete");
+  log.info(
+    { orgId, created, updated, total: filtered.length, autoApprove },
+    "Suggestion generation complete"
+  );
   return { created, updated };
 }

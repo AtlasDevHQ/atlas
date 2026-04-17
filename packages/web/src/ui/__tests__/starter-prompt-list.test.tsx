@@ -19,7 +19,6 @@ describe("StarterPromptList", () => {
       <StarterPromptList prompts={sample} onSelect={() => {}} />,
     );
     const buttons = getAllByRole("button");
-    // Three prompts → three chip buttons (no unpin buttons without onUnpin).
     expect(buttons.length).toBe(3);
     expect(buttons[0]!.textContent).toContain("Pinned question");
     expect(buttons[1]!.textContent).toContain("Trending question");
@@ -30,8 +29,7 @@ describe("StarterPromptList", () => {
     const { queryByTestId } = render(
       <StarterPromptList prompts={sample} onSelect={() => {}} />,
     );
-    // Stable hooks for Playwright + downstream telemetry; provenance is the
-    // contract the chat test already asserts.
+    // Stable DOM hooks for Playwright + downstream telemetry.
     expect(queryByTestId("starter-prompt-favorite")).not.toBeNull();
     expect(queryByTestId("starter-prompt-popular")).not.toBeNull();
     expect(queryByTestId("starter-prompt-library")).not.toBeNull();

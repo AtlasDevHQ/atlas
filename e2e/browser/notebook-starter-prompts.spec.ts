@@ -17,9 +17,6 @@ import { dismissTourIfVisible } from "./helpers";
 test.describe("Notebook new-cell starter prompts", () => {
   test("renders mocked API response with correct ordering and provenance", async ({ page }) => {
     // Ordering is part of the contract — favorite → popular → library.
-    // Provenance-specific UI: Pin icon (favorite), Popular badge (popular),
-    // no decoration (library). Matching these three tiers exercises every
-    // render path StarterPromptList exposes.
     await page.route("**/api/v1/starter-prompts**", async (route) => {
       await route.fulfill({
         status: 200,
@@ -82,16 +79,16 @@ test.describe("Notebook new-cell starter prompts", () => {
       });
     });
 
-    // Mock the chat endpoint so this test doesn't require an LLM.
-    // The useChat transport sends the user message to /api/v1/chat; we reply
-    // with a minimal data-stream payload so the stream closes cleanly.
+    // Observe (don't block) chat POSTs so we can assert the prompt text
+    // round-trips through the transport — an "empty state disappeared"
+    // check alone would pass even if the request body were mangled.
+    const chatBodies: string[] = [];
     await page.route("**/api/v1/chat", async (route) => {
+      chatBodies.push(route.request().postData() ?? "");
       await route.fulfill({
         status: 200,
         headers: { "x-conversation-id": "mock-conv-1" },
         contentType: "text/event-stream",
-        // A bare close frame is enough — the user cell renders from client state
-        // the moment sendMessage fires; we just need the stream not to hang.
         body: "",
       });
     });
@@ -103,18 +100,20 @@ test.describe("Notebook new-cell starter prompts", () => {
     await expect(chip).toBeVisible({ timeout: 15_000 });
     await chip.click();
 
-    // The clicked prompt text becomes the first cell's user message. The
-    // empty state disappears and a cell with the prompt text renders.
-    await expect(
-      page.getByRole("heading", { name: "Start your analysis" }),
-    ).toBeHidden({ timeout: 10_000 });
-    // Cells render under role="region" with aria-label "Cell N". The prompt
-    // text appears inside the cell input display.
     await expect(
       page.locator('[role="region"][aria-label="Cell 1"]'),
     ).toBeVisible({ timeout: 10_000 });
     await expect(
       page.locator('[role="region"][aria-label="Cell 1"]').getByText("Count orders by status"),
     ).toBeVisible();
+
+    // Confirm the chat POST carried the prompt text — guards against a
+    // regression where the empty state renders + clears locally but
+    // sendMessage gets called with stale or empty input.
+    await expect
+      .poll(() => chatBodies.some((b) => b.includes("Count orders by status")), {
+        timeout: 5_000,
+      })
+      .toBe(true);
   });
 });

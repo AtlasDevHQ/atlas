@@ -47,7 +47,7 @@ export function useStarterPromptsQuery({
         );
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        console.warn("Starter prompts fetch failed:", msg);
+        console.warn("[Atlas] Starter prompts fetch failed:", msg);
         throw new Error(`Starter prompts fetch failed: ${msg}`, { cause: err });
       }
 
@@ -71,7 +71,7 @@ export function useStarterPromptsQuery({
         const requestIdSuffix = requestId ? ` (requestId: ${requestId})` : "";
         if (res.status >= 500) {
           console.warn(
-            `Starter prompts ${res.status} ${res.statusText}${requestIdSuffix}; falling back to empty list`,
+            `[Atlas] Starter prompts ${res.status} ${res.statusText}${requestIdSuffix}; falling back to empty list`,
           );
           return [];
         }

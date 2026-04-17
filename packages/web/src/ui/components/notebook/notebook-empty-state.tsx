@@ -1,10 +1,11 @@
 "use client";
 
 import { NotebookPen } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { StarterPromptList } from "../chat/starter-prompt-list";
 import { useStarterPromptsQuery } from "@/ui/hooks/use-starter-prompts-query";
 
-interface NotebookEmptyStateProps {
+export interface NotebookEmptyStateProps {
   apiUrl: string;
   isCrossOrigin: boolean;
   getHeaders: () => Record<string, string>;
@@ -45,12 +46,31 @@ export function NotebookEmptyState({
           Pick a starter prompt or type a question below to create your first cell.
         </p>
       </div>
-      <StarterPromptList
-        prompts={prompts}
-        onSelect={onSelectPrompt}
-        isLoading={query.isLoading}
-        coldStartMessage="Ask your first question below — we'll learn from your team's queries and surface their best starters here."
-      />
+      {query.isError ? (
+        // The hook intentionally throws on 4xx (auth / rate limit) so the
+        // user sees a retry path rather than the generic cold-start CTA,
+        // which would mask the actual failure.
+        <div
+          className="flex flex-col items-center gap-2 text-sm text-zinc-500 dark:text-zinc-400"
+          data-testid="starter-prompts-error"
+        >
+          <p>Couldn&apos;t load starter prompts.</p>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => { void query.refetch(); }}
+          >
+            Retry
+          </Button>
+        </div>
+      ) : (
+        <StarterPromptList
+          prompts={prompts}
+          onSelect={onSelectPrompt}
+          isLoading={query.isLoading}
+          coldStartMessage="Ask your first question below — we'll learn from your team's queries and surface their best starters here."
+        />
+      )}
     </div>
   );
 }

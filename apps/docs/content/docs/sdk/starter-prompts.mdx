@@ -117,6 +117,37 @@ For background on API-key to user binding, see
 
 ---
 
+## `fetchStarterPrompts` helper
+
+The SDK also exports a standalone `fetchStarterPrompts(config)` helper with
+different error semantics from `atlas.getStarterPrompts()`:
+
+| Surface                        | On 5xx         | On 4xx | Use when…                                               |
+| ------------------------------ | -------------- | ------ | ------------------------------------------------------- |
+| `atlas.getStarterPrompts()`    | throws         | throws | You want typed errors (CLI, programmatic, tools).       |
+| `fetchStarterPrompts(config)`  | returns `[]`   | throws | You're rendering an empty-state UI and a red banner is worse than a cold-start CTA. |
+
+```typescript
+import { fetchStarterPrompts } from "@useatlas/sdk";
+
+const prompts = await fetchStarterPrompts({
+  apiUrl: "https://api.example.com",
+  credentials: "same-origin",
+  headers: { Authorization: `Bearer ${apiKey}` },
+  signal: controller.signal,
+  limit: 6,
+});
+```
+
+This is what the built-in web chat and `@useatlas/react` widget empty
+states use internally via TanStack Query hooks. A 200 response with a
+malformed JSON body also soft-fails to `[]` — the helper's contract is
+"if the server didn't deliver a usable list, render the cold-start CTA."
+Network errors and 4xx responses still throw so React Query classifies
+them correctly.
+
+---
+
 ## See also
 
 - [SDK Reference](/docs/reference/sdk) — full method index

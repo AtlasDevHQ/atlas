@@ -76,7 +76,7 @@ Both the modal and code blocks display query results as HTML tables. Tables are 
 
 ## How It Works
 
-The plugin uses a lightweight streaming client (`src/client.ts`) that connects to the Atlas `/api/chat` endpoint. It parses a subset of the Vercel AI SDK data stream protocol — text deltas, tool results, errors, and finish signals — and emits typed events:
+The plugin uses a lightweight streaming client (`src/client.ts`) that connects to the Atlas `/api/v1/chat` endpoint. It parses a subset of the Vercel AI SDK data stream protocol — text deltas, tool results, errors, and finish signals — and emits typed events:
 
 | Event | Description |
 |-------|-------------|

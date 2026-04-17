@@ -273,6 +273,7 @@ describe("migrateAuthTables", () => {
             { name: "0025_fix_null_unsafe_indexes.sql" },
             { name: "0026_drop_legacy_semantic_entity_index.sql" },
             { name: "0027_organization_saas_columns.sql" },
+            { name: "0028_fix_semantic_entity_uniqueness.sql" },
           ],
         };
       }

@@ -330,7 +330,17 @@ function NotebookContent() {
                 </Button>
               </div>
             )}
-            <NotebookShell notebook={notebook} focusCellId={focusCellId} onShareAsReport={handleShareAsReport} />
+            <NotebookShell
+              notebook={notebook}
+              focusCellId={focusCellId}
+              onShareAsReport={handleShareAsReport}
+              starterPrompts={{
+                apiUrl: getApiUrl(),
+                isCrossOrigin: isCrossOrigin(),
+                getHeaders,
+                enabled: authResolved,
+              }}
+            />
           </main>
         </div>
       </div>

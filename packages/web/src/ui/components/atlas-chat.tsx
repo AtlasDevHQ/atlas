@@ -22,9 +22,11 @@ import { ShareDialog } from "./chat/share-dialog";
 import { ConversationSidebar } from "./conversations/conversation-sidebar";
 import { ChangePasswordDialog } from "./admin/change-password-dialog";
 import { usePasswordStatus } from "@/ui/hooks/use-password-status";
-import { Sun, Moon, Monitor, Star, TableProperties, BookOpen, Send, Pin, PinOff } from "lucide-react";
+import { Sun, Moon, Monitor, Star, TableProperties, BookOpen, Send, Pin } from "lucide-react";
 import { SchemaExplorer } from "./schema-explorer/schema-explorer";
 import { PromptLibrary } from "./chat/prompt-library";
+import { StarterPromptList } from "./chat/starter-prompt-list";
+import type { StarterPrompt, StarterPromptsResponse } from "@useatlas/types/starter-prompt";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -143,9 +145,7 @@ export function AtlasChat() {
   const [promptLibraryOpen, setPromptLibraryOpen] = useState(false);
   // Adaptive empty-chat starter surface — backend composes the ranked
   // prompt list from favorites / popular / library tiers.
-  const [starterPrompts, setStarterPrompts] = useState<
-    Array<{ id: string; text: string; provenance: string }>
-  >([]);
+  const [starterPrompts, setStarterPrompts] = useState<StarterPrompt[]>([]);
   // Tracks the message text being pinned so the affordance disables
   // mid-flight — without this, a quick double-click fires two POSTs and
   // the second 409s after a visible success toast.
@@ -242,8 +242,8 @@ export function AtlasChat() {
       credentials,
       headers: getHeaders(),
     })
-      .then(async (res) => {
-        if (res.ok) return res.json();
+      .then(async (res): Promise<Partial<StarterPromptsResponse> | null> => {
+        if (res.ok) return res.json() as Promise<Partial<StarterPromptsResponse>>;
         // Settings read failure propagates as 500 with requestId — surface
         // the correlation id so operators can trace; the UI still falls
         // through to the cold-start CTA rather than erroring the whole
@@ -259,7 +259,7 @@ export function AtlasChat() {
       })
       .then((data) => {
         if (!cancelled && Array.isArray(data?.prompts)) {
-          setStarterPrompts(data.prompts);
+          setStarterPrompts([...data.prompts]);
         }
       })
       .catch(() => {
@@ -605,64 +605,12 @@ export function AtlasChat() {
                           Ask a question about your data to get started
                         </p>
                       </div>
-                      {starterPrompts.length > 0 ? (
-                        <div className="grid w-full max-w-lg grid-cols-1 gap-2 sm:grid-cols-2">
-                          {starterPrompts.map((prompt) => {
-                            const isFavorite = prompt.provenance === "favorite";
-                            const isPopular = prompt.provenance === "popular";
-                            return (
-                              <div
-                                key={prompt.id}
-                                className="group relative"
-                                data-testid={`starter-prompt-${prompt.provenance}`}
-                              >
-                                <Button
-                                  variant="outline"
-                                  onClick={() => handleSend(prompt.text)}
-                                  className="h-auto w-full whitespace-normal justify-start rounded-lg px-3 py-2.5 pr-9 text-left text-sm"
-                                >
-                                  {isFavorite && (
-                                    <Pin
-                                      className="mr-2 size-3.5 shrink-0 text-primary"
-                                      aria-hidden="true"
-                                    />
-                                  )}
-                                  <span className="flex-1">{prompt.text}</span>
-                                  {isPopular && (
-                                    <span
-                                      className="ml-2 shrink-0 rounded-sm bg-zinc-100 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide text-zinc-500 dark:bg-zinc-800 dark:text-zinc-400"
-                                      aria-label="Popular prompt"
-                                      data-testid="starter-prompt-popular-badge"
-                                    >
-                                      Popular
-                                    </span>
-                                  )}
-                                </Button>
-                                {isFavorite && (
-                                  <button
-                                    type="button"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      void handleUnpin(prompt.id);
-                                    }}
-                                    className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded-md p-1.5 text-zinc-400 opacity-0 transition-opacity hover:bg-zinc-100 hover:text-zinc-700 focus-visible:opacity-100 group-hover:opacity-100 dark:hover:bg-zinc-800 dark:hover:text-zinc-200"
-                                    aria-label={`Unpin "${prompt.text}"`}
-                                    data-testid="unpin-favorite"
-                                  >
-                                    <PinOff className="size-3.5" />
-                                  </button>
-                                )}
-                              </div>
-                            );
-                          })}
-                        </div>
-                      ) : (
-                        !suggestionsLoading && (
-                          <p className="max-w-sm text-center text-sm text-zinc-500 dark:text-zinc-500">
-                            Ask your first question below — we&apos;ll learn from your team&apos;s queries and surface their best starters here.
-                          </p>
-                        )
-                      )}
+                      <StarterPromptList
+                        prompts={starterPrompts}
+                        onSelect={handleSend}
+                        onUnpin={(id) => { void handleUnpin(id); }}
+                        isLoading={suggestionsLoading}
+                      />
                       <Button
                         variant="link"
                         onClick={() => setPromptLibraryOpen(true)}

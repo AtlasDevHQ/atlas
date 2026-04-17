@@ -20,6 +20,7 @@
     "@ai-sdk/provider": "^3.0.8",
     "@ai-sdk/react": "^3.0.143",
     "@useatlas/react": "^0.0.7",
+    "@useatlas/sdk": "^0.0.11",
     "@useatlas/types": "^0.0.11",
     "ai": "^6.0.141",
     "@better-auth/api-key": "^1.5.6",

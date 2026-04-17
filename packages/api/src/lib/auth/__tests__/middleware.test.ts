@@ -34,12 +34,17 @@ describe("authenticateRequest()", () => {
   const origBetterAuth = process.env.BETTER_AUTH_SECRET;
   const origApiKey = process.env.ATLAS_API_KEY;
   const origAuthMode = process.env.ATLAS_AUTH_MODE;
+  const origDatabaseUrl = process.env.DATABASE_URL;
 
   beforeEach(() => {
     delete process.env.ATLAS_AUTH_JWKS_URL;
     delete process.env.BETTER_AUTH_SECRET;
     delete process.env.ATLAS_API_KEY;
     delete process.env.ATLAS_AUTH_MODE;
+    // Unset DATABASE_URL so checkSSOEnforcement's hasInternalDB() short-circuits.
+    // Otherwise the managed-auth path tries a real Postgres query and the
+    // fail-closed catch turns this into a flaky `authenticated: false` result.
+    delete process.env.DATABASE_URL;
     resetAuthModeCache();
     _setValidatorOverrides({
       managed: mockValidateManaged,
@@ -73,6 +78,9 @@ describe("authenticateRequest()", () => {
 
     if (origAuthMode !== undefined) process.env.ATLAS_AUTH_MODE = origAuthMode;
     else delete process.env.ATLAS_AUTH_MODE;
+
+    if (origDatabaseUrl !== undefined) process.env.DATABASE_URL = origDatabaseUrl;
+    else delete process.env.DATABASE_URL;
 
     resetAuthModeCache();
     _setValidatorOverrides({ managed: null, byot: null });

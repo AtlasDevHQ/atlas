@@ -488,8 +488,12 @@ function isSaasMode(): boolean {
     const { getConfig } = require("@atlas/api/lib/config") as { getConfig: () => { deployMode?: string } | null };
     return getConfig()?.deployMode === "saas";
   } catch (err) {
-    // intentionally ignored: config module may not be ready during early module init
-    console.debug("isSaasMode: config not yet available:", err instanceof Error ? err.message : String(err));
+    // Config module may not be ready during early module init — that's expected.
+    // Log at debug so it's quiet in normal operation but visible when diagnosing.
+    log.debug(
+      { err: err instanceof Error ? err.message : String(err) },
+      "isSaasMode: config not yet available; treating as non-SaaS",
+    );
     return false;
   }
 }

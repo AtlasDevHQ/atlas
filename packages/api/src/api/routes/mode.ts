@@ -46,6 +46,7 @@ const DraftCountsSchema = z.object({
   entityEdits: z.number().int().nonnegative(),
   entityDeletes: z.number().int().nonnegative(),
   prompts: z.number().int().nonnegative(),
+  starterPrompts: z.number().int().nonnegative(),
 });
 
 const ModeStatusSchema = z.object({
@@ -119,6 +120,10 @@ const DRAFT_COUNTS_SQL = `
   SELECT 'prompts'::text,             COUNT(*)::int
     FROM prompt_collections
     WHERE org_id = $1 AND status = 'draft'
+  UNION ALL
+  SELECT 'starterPrompts'::text,      COUNT(*)::int
+    FROM query_suggestions
+    WHERE org_id = $1 AND status = 'draft'
 `;
 
 const DEMO_ACTIVE_SQL = `
@@ -135,6 +140,7 @@ const ZERO_COUNTS: ModeDraftCounts = {
   entityEdits: 0,
   entityDeletes: 0,
   prompts: 0,
+  starterPrompts: 0,
 };
 
 function rowsToCounts(rows: ReadonlyArray<{ k: string; v: number }>): ModeDraftCounts {
@@ -153,7 +159,8 @@ function totalDrafts(counts: ModeDraftCounts): number {
     counts.entities +
     counts.entityEdits +
     counts.entityDeletes +
-    counts.prompts
+    counts.prompts +
+    counts.starterPrompts
   );
 }
 

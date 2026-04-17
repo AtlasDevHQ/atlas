@@ -25,7 +25,16 @@ Every entry in the queue carries two independent state axes:
 | `approval_status` | `pending` · `approved` · `hidden`       | Moderation lifecycle (this page)      |
 | `status`          | `draft` · `published` · `archived`      | Mode-system participation (dev/prod)  |
 
-The axes are independent. An admin-authored row lands in `approved` + `published` so it surfaces immediately. A row learned from engagement starts as `pending` + `draft` and waits for review.
+The axes are independent. Organic suggestions learned from engagement start as `pending` + `draft` and wait for review. Admin-authored rows always land in `approved` — the admin is the review — and take their `status` from the caller's mode (see below).
+
+### Mode participation
+
+Every moderation mutation (approve / hide / unhide / author) also writes the `status` axis based on the admin's current mode:
+
+- **Published mode** — mutations write `status = 'published'` and take effect immediately for all users.
+- **Developer mode** — mutations write `status = 'draft'`. The change is visible to admins previewing in developer mode, but non-admin users continue to see the pre-edit state until you hit **Publish** in the mode banner. Publish promotes all queued drafts across connections, entities, prompt collections, and starter prompts in a single atomic transaction — a mid-publish failure rolls everything back.
+
+This is why the pending-changes banner surfaces a `N starter prompts` segment when you've queued edits in developer mode.
 
 ---
 
@@ -74,7 +83,7 @@ The Pending tab has an **Author a new starter prompt** form at the top. Use it t
 1. Type the question text (for example, "Which accounts renewed this quarter?").
 2. Click **Author prompt**.
 
-Atlas creates a new row with `approval_status = 'approved'` and `status = 'published'` — the prompt skips the pending queue and lands in Approved immediately, ready to surface to users.
+Atlas creates a new row with `approval_status = 'approved'`. The `status` axis follows your current mode: `published` in published mode (the prompt surfaces immediately) or `draft` in developer mode (queued for the next publish).
 
 <Callout type="info">
 If the same text already exists (same `normalized_hash` in this workspace), the server returns 409. Open the Pending or Hidden tab, find the existing row, and approve or unhide it instead.
@@ -89,7 +98,7 @@ Approved starter prompts surface in two places:
 - **Chat empty state** — all signed-in users see approved rows tagged with a subtle "Popular" badge, slotted between their pinned favorites and the demo-industry library.
 - **`/api/v1/suggestions/popular`** — the public popular-suggestions API returns only approved rows so SDK and widget consumers stay in sync with moderation.
 
-Pending and hidden rows never leave the admin boundary.
+Pending and hidden rows never leave the admin boundary. Draft rows — edits queued in developer mode — are visible only to admins previewing in developer mode until the next publish.
 
 ---
 
@@ -97,12 +106,14 @@ Pending and hidden rows never leave the admin boundary.
 
 The admin UI is a thin layer over four endpoints. Each requires `role = 'admin'`.
 
-| Endpoint                                               | Effect                                                           |
-| ------------------------------------------------------ | ---------------------------------------------------------------- |
-| `POST /api/v1/admin/starter-prompts/:id/approve`       | Sets `approval_status = 'approved'`, stamps `approved_by/_at`    |
-| `POST /api/v1/admin/starter-prompts/:id/hide`          | Sets `approval_status = 'hidden'` (preserves history)            |
-| `POST /api/v1/admin/starter-prompts/:id/unhide`        | Sets `approval_status = 'pending'`                               |
-| `POST /api/v1/admin/starter-prompts/author`            | Creates `approved` + `published` row; body `{ "text": "…" }`     |
+| Endpoint                                               | Effect                                                                              |
+| ------------------------------------------------------ | ----------------------------------------------------------------------------------- |
+| `POST /api/v1/admin/starter-prompts/:id/approve`       | Sets `approval_status = 'approved'`, stamps `approved_by/_at`, sets `status` by mode |
+| `POST /api/v1/admin/starter-prompts/:id/hide`          | Sets `approval_status = 'hidden'` (preserves history), sets `status` by mode        |
+| `POST /api/v1/admin/starter-prompts/:id/unhide`        | Sets `approval_status = 'pending'`, sets `status` by mode                           |
+| `POST /api/v1/admin/starter-prompts/author`            | Creates `approved` row; `status` follows mode; body `{ "text": "…" }`               |
+
+Every mutation writes `status = 'draft'` when called from developer mode and `'published'` otherwise. Draft starter prompts land in `draftCounts.starterPrompts` on `GET /api/v1/mode` and promote atomically via `POST /api/v1/admin/publish`.
 
 See the [API reference](/api-reference/admin-starter-prompts) for full request/response schemas.
 

@@ -35,6 +35,7 @@ function counts(partial: Partial<ModeDraftCounts> = {}): ModeDraftCounts {
     entityEdits: 0,
     entityDeletes: 0,
     prompts: 0,
+    starterPrompts: 0,
     ...partial,
   };
 }
@@ -59,6 +60,15 @@ describe("formatDraftSegments", () => {
     expect(formatDraftSegments(counts({ prompts: 5 }))).toEqual(["5 prompts"]);
   });
 
+  test("pluralizes starter prompt correctly", () => {
+    expect(formatDraftSegments(counts({ starterPrompts: 1 }))).toEqual([
+      "1 starter prompt",
+    ]);
+    expect(formatDraftSegments(counts({ starterPrompts: 4 }))).toEqual([
+      "4 starter prompts",
+    ]);
+  });
+
   test("folds entities + entityEdits + entityDeletes into a single entity total", () => {
     const segments = formatDraftSegments(
       counts({ entities: 3, entityEdits: 2, entityDeletes: 1 }),
@@ -66,11 +76,16 @@ describe("formatDraftSegments", () => {
     expect(segments).toEqual(["6 entities"]);
   });
 
-  test("orders segments connections -> entities -> prompts", () => {
+  test("orders segments connections -> entities -> prompts -> starter prompts", () => {
     const segments = formatDraftSegments(
-      counts({ connections: 1, entities: 4, prompts: 2 }),
+      counts({ connections: 1, entities: 4, prompts: 2, starterPrompts: 3 }),
     );
-    expect(segments).toEqual(["1 connection", "4 entities", "2 prompts"]);
+    expect(segments).toEqual([
+      "1 connection",
+      "4 entities",
+      "2 prompts",
+      "3 starter prompts",
+    ]);
   });
 
   test("skips zero-count buckets", () => {

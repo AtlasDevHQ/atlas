@@ -32,7 +32,11 @@ const mockInternalQuery = mock(
 let popularFixture: Array<{ id: string; description: string }> = [];
 let popularReadErrorFixture: Error | null = null;
 const mockGetPopularSuggestions = mock(
-  async (_orgId: string | null, _limit?: number) => {
+  async (
+    _orgId: string | null,
+    _limit?: number,
+    _mode?: "developer" | "published",
+  ) => {
     if (popularReadErrorFixture) throw popularReadErrorFixture;
     // Return rows shaped loosely like QuerySuggestionRow — the resolver
     // only reads id + description.
@@ -397,7 +401,7 @@ describe("resolveStarterPrompts — popular tier (approved-only)", () => {
     });
   });
 
-  it("passes orgId and remaining limit to getPopularSuggestions", async () => {
+  it("passes orgId, remaining limit, and mode to getPopularSuggestions", async () => {
     favoritesFixture = [favRow({ id: "fav-a", text: "pin" })];
     demoIndustryFixture = "cybersecurity";
 
@@ -408,6 +412,18 @@ describe("resolveStarterPrompts — popular tier (approved-only)", () => {
     expect(callArgs[0]).toBe("org-1");
     // 6 total, 1 favorite consumed → popular requests up to 5.
     expect(callArgs[1]).toBe(5);
+    // Mode threads through from the route to the store so the published
+    // surface never leaks draft rows to non-admins.
+    expect(callArgs[2]).toBe("published");
+  });
+
+  it("threads developer mode into getPopularSuggestions so drafts overlay in the admin view", async () => {
+    demoIndustryFixture = "cybersecurity";
+
+    await resolveStarterPrompts(baseCtx({ mode: "developer" }));
+
+    const callArgs = mockGetPopularSuggestions.mock.calls[0]!;
+    expect(callArgs[2]).toBe("developer");
   });
 
   it("stops consuming library slots when popular fills the limit", async () => {

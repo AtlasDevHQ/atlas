@@ -1157,7 +1157,15 @@ export async function getSuggestionsByTables(
 
 export async function getPopularSuggestions(
   orgId: string | null,
-  limit: number = 10
+  limit: number = 10,
+  /**
+   * Mode-system filter (1.2.0): `published` (default) returns only
+   * `status = 'published'` rows — the user-facing surface. `developer`
+   * additionally includes `status = 'draft'` so admins can preview
+   * queued edits before hitting publish. Non-admin callers always land
+   * on `published` because mode resolution upstream downgrades them.
+   */
+  mode: import("@useatlas/types/auth").AtlasMode = "published",
 ): Promise<QuerySuggestionRow[]> {
   if (!hasInternalDB()) return [];
   try {
@@ -1168,9 +1176,18 @@ export async function getPopularSuggestions(
     // Gated to admin-approved rows only. Pending / hidden suggestions
     // must not surface in user-facing empty states — this is the single
     // source of truth enforcing that contract from backend to UI.
+    //
+    // The `status` predicate participates in the 1.2.0 mode system: dev
+    // mode overlays drafts on top of published rows, published mode
+    // hides drafts entirely. Archived rows never surface here.
+    const statusClause =
+      mode === "developer"
+        ? "status IN ('published', 'draft')"
+        : "status = 'published'";
+
     return await internalQuery<QuerySuggestionRow>(
       `SELECT * FROM query_suggestions
-       WHERE ${orgClause} AND approval_status = 'approved'
+       WHERE ${orgClause} AND approval_status = 'approved' AND ${statusClause}
        ORDER BY score DESC LIMIT $${limitIdx}`,
       params
     );

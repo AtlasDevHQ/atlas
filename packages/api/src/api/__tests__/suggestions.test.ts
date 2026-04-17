@@ -252,6 +252,48 @@ describe("suggestions routes", () => {
       const callArgs = mockGetPopularSuggestions.mock.calls[0] as unknown[];
       expect(callArgs[0]).toBe("org-1");
     });
+
+    // ─── Mode participation (#1478) ────────────────────────────────
+    //
+    // The default member-role mock always resolves to `published` mode
+    // regardless of cookie/header — resolveMode() downgrades non-admin
+    // callers. The admin-mode branch is covered end-to-end via the
+    // admin-starter-prompts tests; here we assert that a non-admin
+    // caller never sees draft rows leak into /popular.
+
+    it("passes mode='published' to the store for a member caller (even with dev-mode cookie)", async () => {
+      mockGetPopularSuggestions.mockImplementation(() => Promise.resolve([]));
+      const res = await app.fetch(
+        new Request("http://localhost/api/v1/suggestions/popular", {
+          method: "GET",
+          headers: {
+            Authorization: "Bearer test",
+            Cookie: "atlas-mode=developer",
+          },
+        }),
+      );
+      expect(res.status).toBe(200);
+      const callArgs = mockGetPopularSuggestions.mock.calls[0] as unknown[];
+      // Third arg is the resolved atlasMode; member role was downgraded.
+      expect(callArgs[2]).toBe("published");
+    });
+
+    it("passes mode='developer' to the store when an admin caller sets the cookie", async () => {
+      mocks.setOrgAdmin("org-1");
+      mockGetPopularSuggestions.mockImplementation(() => Promise.resolve([]));
+      const res = await app.fetch(
+        new Request("http://localhost/api/v1/suggestions/popular", {
+          method: "GET",
+          headers: {
+            Authorization: "Bearer test",
+            Cookie: "atlas-mode=developer",
+          },
+        }),
+      );
+      expect(res.status).toBe(200);
+      const callArgs = mockGetPopularSuggestions.mock.calls[0] as unknown[];
+      expect(callArgs[2]).toBe("developer");
+    });
   });
 
   // ─── POST /:id/click ──────────────────────────────────────────────

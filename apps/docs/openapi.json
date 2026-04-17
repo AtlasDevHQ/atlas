@@ -7313,6 +7313,10 @@
                         "prompts": {
                           "type": "integer",
                           "minimum": 0
+                        },
+                        "starterPrompts": {
+                          "type": "integer",
+                          "minimum": 0
                         }
                       },
                       "required": [
@@ -7320,7 +7324,8 @@
                         "entities",
                         "entityEdits",
                         "entityDeletes",
-                        "prompts"
+                        "prompts",
+                        "starterPrompts"
                       ]
                     }
                   },
@@ -41172,12 +41177,17 @@
                         "prompts": {
                           "type": "integer",
                           "minimum": 0
+                        },
+                        "starterPrompts": {
+                          "type": "integer",
+                          "minimum": 0
                         }
                       },
                       "required": [
                         "connections",
                         "entities",
-                        "prompts"
+                        "prompts",
+                        "starterPrompts"
                       ]
                     },
                     "deleted": {

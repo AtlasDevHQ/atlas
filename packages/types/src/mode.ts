@@ -22,6 +22,8 @@ export interface ModeDraftCounts {
   readonly entityDeletes: number;
   /** Draft prompt collections (status = 'draft'). */
   readonly prompts: number;
+  /** Draft starter-prompt suggestions (status = 'draft'). */
+  readonly starterPrompts: number;
 }
 
 /**

@@ -780,3 +780,112 @@ describe("POST /api/v1/admin/publish — internal DB unavailable", () => {
     mocks.hasInternalDB = true;
   });
 });
+
+// ---------------------------------------------------------------------------
+// 1.2.0 mode participation — starter prompts (#1478)
+//
+// Phase 3d promotes draft `query_suggestions` rows alongside connections /
+// entities / prompt collections in the same transaction. Verifies the
+// UPDATE shape, the atomic-rollback property, and the `promoted.starterPrompts`
+// summary field.
+// ---------------------------------------------------------------------------
+
+describe("POST /api/v1/admin/publish — starter prompts phase (#1478)", () => {
+  beforeEach(() => {
+    mocks.hasInternalDB = true;
+    mocks.mockInternalQuery.mockReset();
+    mocks.mockInternalQuery.mockResolvedValue([]);
+    resetClient();
+    mocks.setOrgAdmin("org-alpha");
+  });
+
+  it("promotes 3 draft query_suggestions rows atomically and returns the count", async () => {
+    queryHandler = async (sql) => {
+      if (/UPDATE\s+query_suggestions\s+SET\s+status\s*=\s*'published'/i.test(sql)) {
+        return {
+          rows: [
+            { id: "sug-draft-1" },
+            { id: "sug-draft-2" },
+            { id: "sug-draft-3" },
+          ],
+        };
+      }
+      return { rows: [] };
+    };
+
+    const res = await app.fetch(publishReq());
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      promoted: {
+        connections: number;
+        entities: number;
+        prompts: number;
+        starterPrompts: number;
+      };
+    };
+    expect(body.promoted.starterPrompts).toBe(3);
+
+    // SQL must run inside the same BEGIN/COMMIT block as the other phases
+    const sqls = clientQueries.map((q) => q.sql);
+    const beginIdx = sqls.findIndex((s) => /^\s*BEGIN/i.test(s));
+    const commitIdx = sqls.findIndex((s) => /^\s*COMMIT/i.test(s));
+    const starterPromptIdx = sqls.findIndex((s) =>
+      /UPDATE\s+query_suggestions/i.test(s),
+    );
+    expect(beginIdx).toBeGreaterThanOrEqual(0);
+    expect(commitIdx).toBeGreaterThan(beginIdx);
+    expect(starterPromptIdx).toBeGreaterThan(beginIdx);
+    expect(starterPromptIdx).toBeLessThan(commitIdx);
+  });
+
+  it("scopes the starter-prompts UPDATE by org_id", async () => {
+    await app.fetch(publishReq());
+    const starterPromptSql = clientQueries.find((q) =>
+      /UPDATE\s+query_suggestions/i.test(q.sql),
+    );
+    expect(starterPromptSql).toBeDefined();
+    expect((starterPromptSql!.params as unknown[])[0]).toBe("org-alpha");
+  });
+
+  it("returns 0 and still commits when no drafts exist", async () => {
+    // Default empty queryHandler — every UPDATE returns 0 rows.
+    const res = await app.fetch(publishReq());
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      promoted: { starterPrompts: number };
+    };
+    expect(body.promoted.starterPrompts).toBe(0);
+    const sqls = clientQueries.map((q) => q.sql.trim().toUpperCase());
+    expect(sqls.includes("COMMIT")).toBe(true);
+    expect(sqls.includes("ROLLBACK")).toBe(false);
+  });
+
+  it("rolls back atomically when the starter-prompts UPDATE fails — no other phase survives", async () => {
+    // Drive the entity / connection / prompt phases to succeed, then fail
+    // at starter-prompts. The whole publish must rollback — a bug that
+    // committed earlier phases before the starter-prompts UPDATE would
+    // leave connections / prompts promoted without their starter prompts,
+    // violating the atomic contract.
+    queryHandler = async (sql) => {
+      if (/UPDATE\s+semantic_entities\s+SET\s+status\s*=\s*'published'/i.test(sql)) {
+        return { rows: [{ id: "ent-1" }] };
+      }
+      if (/UPDATE\s+connections\s+SET\s+status\s*=\s*'published'/i.test(sql)) {
+        return { rows: [{ id: "conn-1" }] };
+      }
+      if (/UPDATE\s+prompt_collections\s+SET\s+status\s*=\s*'published'/i.test(sql)) {
+        return { rows: [{ id: "prompt-1" }] };
+      }
+      if (/UPDATE\s+query_suggestions\s+SET\s+status\s*=\s*'published'/i.test(sql)) {
+        throw new Error("simulated starter-prompts failure");
+      }
+      return { rows: [] };
+    };
+
+    const res = await app.fetch(publishReq());
+    expect(res.status).toBe(500);
+    const sqls = clientQueries.map((q) => q.sql.trim().toUpperCase());
+    expect(sqls.includes("ROLLBACK")).toBe(true);
+    expect(sqls.includes("COMMIT")).toBe(false);
+  });
+});

@@ -388,10 +388,11 @@ adminStarterPrompts.openapi(approveRoute, async (c) =>
     const authResult = c.get("authResult");
     const userId = authResult.user?.id ?? "unknown";
     const { orgId, requestId } = c.get("orgContext");
+    const atlasMode = c.get("atlasMode");
     const { id } = c.req.valid("param");
 
     try {
-      const outcome = await approveSuggestion({ id, orgId, userId });
+      const outcome = await approveSuggestion({ id, orgId, userId, mode: atlasMode });
       return respondApprovalResult(c, outcome, requestId, "approve");
     } catch (err) {
       log.error(
@@ -411,10 +412,11 @@ adminStarterPrompts.openapi(approveRoute, async (c) =>
 adminStarterPrompts.openapi(hideRoute, async (c) =>
   runHandler(c, "hide starter prompt", async () => {
     const { orgId, requestId } = c.get("orgContext");
+    const atlasMode = c.get("atlasMode");
     const { id } = c.req.valid("param");
 
     try {
-      const outcome = await hideSuggestion({ id, orgId });
+      const outcome = await hideSuggestion({ id, orgId, mode: atlasMode });
       return respondApprovalResult(c, outcome, requestId, "hide");
     } catch (err) {
       log.error(
@@ -434,10 +436,11 @@ adminStarterPrompts.openapi(hideRoute, async (c) =>
 adminStarterPrompts.openapi(unhideRoute, async (c) =>
   runHandler(c, "unhide starter prompt", async () => {
     const { orgId, requestId } = c.get("orgContext");
+    const atlasMode = c.get("atlasMode");
     const { id } = c.req.valid("param");
 
     try {
-      const outcome = await unhideSuggestion({ id, orgId });
+      const outcome = await unhideSuggestion({ id, orgId, mode: atlasMode });
       return respondApprovalResult(c, outcome, requestId, "unhide");
     } catch (err) {
       log.error(
@@ -459,10 +462,11 @@ adminStarterPrompts.openapi(authorRoute, async (c) =>
     const authResult = c.get("authResult");
     const userId = authResult.user?.id ?? "unknown";
     const { orgId, requestId } = c.get("orgContext");
+    const atlasMode = c.get("atlasMode");
     const { text } = c.req.valid("json");
 
     try {
-      const suggestion = await createApprovedSuggestion({ orgId, userId, text });
+      const suggestion = await createApprovedSuggestion({ orgId, userId, text, mode: atlasMode });
       return c.json({ suggestion }, 200);
     } catch (err) {
       if (err instanceof InvalidSuggestionTextError) {

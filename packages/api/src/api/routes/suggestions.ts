@@ -195,6 +195,7 @@ suggestions.openapi(listSuggestionsRoute, async (c) => {
 // GET /popular — top suggestions across all tables
 suggestions.openapi(listPopularRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
+    const { atlasMode } = yield* RequestContext;
     const { orgId } = yield* AuthContext;
 
     if (!hasInternalDB()) {
@@ -204,7 +205,13 @@ suggestions.openapi(listPopularRoute, async (c) => {
     const { limit } = parsePagination(c, { limit: 10, maxLimit: 50 });
     const resolvedOrgId = orgId ?? null;
 
-    const rows = yield* Effect.promise(() => getPopularSuggestions(resolvedOrgId, limit));
+    // Mode is enforced upstream: non-admins have `atlasMode === 'published'`
+    // after resolveMode() downgrades the header/cookie. Passing it through
+    // here means the draft-overlay is admin-only without a role check at
+    // this layer.
+    const rows = yield* Effect.promise(() =>
+      getPopularSuggestions(resolvedOrgId, limit, atlasMode),
+    );
     return c.json({ suggestions: rows.map(toQuerySuggestion), total: rows.length }, 200);
   }), { label: "fetch suggestions" });
 });

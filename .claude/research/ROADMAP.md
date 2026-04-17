@@ -1175,12 +1175,12 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 
 ### Publishing
 - [x] Atomic publish endpoint with `archiveConnections` parameter (#1429, PR #1464)
-- [x] Archive/restore connection endpoints with entity cascade (#1437)
+- [x] Archive/restore connection endpoints with entity cascade (#1437, PR #1469)
 
 ### Agent & Data
 - [x] Agent isolation — mode-aware connection + whitelist in tool execution (#1430, PR #1460)
 - [x] Semantic diff scoping — filter `getDBSchema` to whitelist (#1431, PR #1462)
-- [x] Prompt library mode scoping — demo industry filtering + draft visibility (#1438)
+- [x] Prompt library mode scoping — demo industry filtering + draft visibility (#1438, PR #1465)
 - [x] `GET /api/v1/mode` endpoint (#1439, PR #1453)
 
 ### Frontend
@@ -1188,7 +1188,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] Developer mode banner + cookie-based toggle (#1433, PR #1445)
 - [x] Non-admin demo indicator chip (#1434, PR #1459)
 - [x] Admin surface — draft/demo badges, read-only published, pending changes summary (#1435, PR #1463)
-- [x] Empty states in developer mode (#1436)
+- [x] Empty states in developer mode (#1436, PR #1467)
 
 ### Bug Fixes
 - [x] Bundle cybersec + ecommerce semantic directories in Docker image (#1422, PR #1441)
@@ -1196,6 +1196,8 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] Partial unique indexes on semantic_entities are NULL-unsafe for connection_id (#1444, PR #1447)
 - [x] Scaffold template layout override — strip ModeBanner for standalone deploys (commit 079f8996)
 - [x] Scaffold types.ts — `ADMIN_ROLES`/`ATLAS_MODES` missing from published `@useatlas/types` (PRs #1457, #1458 — bumped to `0.0.11`, consumer refs updated; #1448 closed as superseded)
+- [ ] `admin-publish` reads `demo_industry` setting with wrong key — Phase 4b skips demo-prompt archive (#1466)
+- [ ] `readDemoIndustry` silent fallback drops prompt cascade on read failure (#1470)
 
 ---
 

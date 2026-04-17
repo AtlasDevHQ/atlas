@@ -19981,6 +19981,467 @@
         "operationId": "deleteAdminSuggestionsById"
       }
     },
+    "/api/v1/admin/starter-prompts/queue": {
+      "get": {
+        "tags": [
+          "Admin — Starter Prompts"
+        ],
+        "summary": "Get starter-prompt moderation queue",
+        "description": "Returns pending, approved, and hidden starter-prompt suggestions for the admin's organization. The `pending` bucket filters to suggestions that crossed the auto-promote click threshold within the cold window.",
+        "responses": {
+          "200": {
+            "description": "Moderation queue buckets",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "pending": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "orgId": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "description": {
+                            "type": "string"
+                          },
+                          "patternSql": {
+                            "type": "string"
+                          },
+                          "normalizedHash": {
+                            "type": "string"
+                          },
+                          "tablesInvolved": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "primaryTable": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "frequency": {
+                            "type": "number"
+                          },
+                          "clickedCount": {
+                            "type": "number"
+                          },
+                          "distinctUserClicks": {
+                            "type": "number"
+                          },
+                          "score": {
+                            "type": "number"
+                          },
+                          "approvalStatus": {
+                            "type": "string",
+                            "enum": [
+                              "pending",
+                              "approved",
+                              "hidden"
+                            ]
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "draft",
+                              "published",
+                              "archived"
+                            ]
+                          },
+                          "approvedBy": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "approvedAt": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "lastSeenAt": {
+                            "type": "string"
+                          },
+                          "createdAt": {
+                            "type": "string"
+                          },
+                          "updatedAt": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "orgId",
+                          "description",
+                          "patternSql",
+                          "normalizedHash",
+                          "tablesInvolved",
+                          "primaryTable",
+                          "frequency",
+                          "clickedCount",
+                          "distinctUserClicks",
+                          "score",
+                          "approvalStatus",
+                          "status",
+                          "approvedBy",
+                          "approvedAt",
+                          "lastSeenAt",
+                          "createdAt",
+                          "updatedAt"
+                        ]
+                      }
+                    },
+                    "approved": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "orgId": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "description": {
+                            "type": "string"
+                          },
+                          "patternSql": {
+                            "type": "string"
+                          },
+                          "normalizedHash": {
+                            "type": "string"
+                          },
+                          "tablesInvolved": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "primaryTable": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "frequency": {
+                            "type": "number"
+                          },
+                          "clickedCount": {
+                            "type": "number"
+                          },
+                          "distinctUserClicks": {
+                            "type": "number"
+                          },
+                          "score": {
+                            "type": "number"
+                          },
+                          "approvalStatus": {
+                            "type": "string",
+                            "enum": [
+                              "pending",
+                              "approved",
+                              "hidden"
+                            ]
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "draft",
+                              "published",
+                              "archived"
+                            ]
+                          },
+                          "approvedBy": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "approvedAt": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "lastSeenAt": {
+                            "type": "string"
+                          },
+                          "createdAt": {
+                            "type": "string"
+                          },
+                          "updatedAt": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "orgId",
+                          "description",
+                          "patternSql",
+                          "normalizedHash",
+                          "tablesInvolved",
+                          "primaryTable",
+                          "frequency",
+                          "clickedCount",
+                          "distinctUserClicks",
+                          "score",
+                          "approvalStatus",
+                          "status",
+                          "approvedBy",
+                          "approvedAt",
+                          "lastSeenAt",
+                          "createdAt",
+                          "updatedAt"
+                        ]
+                      }
+                    },
+                    "hidden": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "orgId": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "description": {
+                            "type": "string"
+                          },
+                          "patternSql": {
+                            "type": "string"
+                          },
+                          "normalizedHash": {
+                            "type": "string"
+                          },
+                          "tablesInvolved": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          },
+                          "primaryTable": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "frequency": {
+                            "type": "number"
+                          },
+                          "clickedCount": {
+                            "type": "number"
+                          },
+                          "distinctUserClicks": {
+                            "type": "number"
+                          },
+                          "score": {
+                            "type": "number"
+                          },
+                          "approvalStatus": {
+                            "type": "string",
+                            "enum": [
+                              "pending",
+                              "approved",
+                              "hidden"
+                            ]
+                          },
+                          "status": {
+                            "type": "string",
+                            "enum": [
+                              "draft",
+                              "published",
+                              "archived"
+                            ]
+                          },
+                          "approvedBy": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "approvedAt": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "lastSeenAt": {
+                            "type": "string"
+                          },
+                          "createdAt": {
+                            "type": "string"
+                          },
+                          "updatedAt": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "orgId",
+                          "description",
+                          "patternSql",
+                          "normalizedHash",
+                          "tablesInvolved",
+                          "primaryTable",
+                          "frequency",
+                          "clickedCount",
+                          "distinctUserClicks",
+                          "score",
+                          "approvalStatus",
+                          "status",
+                          "approvedBy",
+                          "approvedAt",
+                          "lastSeenAt",
+                          "createdAt",
+                          "updatedAt"
+                        ]
+                      }
+                    },
+                    "counts": {
+                      "type": "object",
+                      "properties": {
+                        "pending": {
+                          "type": "integer"
+                        },
+                        "approved": {
+                          "type": "integer"
+                        },
+                        "hidden": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "pending",
+                        "approved",
+                        "hidden"
+                      ]
+                    },
+                    "threshold": {
+                      "type": "integer"
+                    },
+                    "coldWindowDays": {
+                      "type": "integer"
+                    }
+                  },
+                  "required": [
+                    "pending",
+                    "approved",
+                    "hidden",
+                    "counts",
+                    "threshold",
+                    "coldWindowDays"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Forbidden — admin role required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "getAdminStarterPromptsQueue"
+      }
+    },
     "/api/v1/admin/usage": {
       "get": {
         "tags": [
@@ -56540,6 +57001,9 @@
     },
     {
       "name": "Admin — Settings"
+    },
+    {
+      "name": "Admin — Starter Prompts"
     },
     {
       "name": "Admin — Suggestions"

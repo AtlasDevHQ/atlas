@@ -516,6 +516,20 @@ export const querySuggestions = pgTable(
     frequency: integer("frequency").notNull().default(1),
     clickedCount: integer("clicked_count").notNull().default(0),
     score: real("score").notNull().default(0),
+    // CHECK constraint in the migration restricts values to the
+    // SuggestionApprovalStatus / SuggestionStatus enum sets. The `$type`
+    // on the Drizzle column tightens the ORM's inferred type to match.
+    approvalStatus: text("approval_status")
+      .$type<import("@useatlas/types").SuggestionApprovalStatus>()
+      .notNull()
+      .default("pending"),
+    status: text("status")
+      .$type<import("@useatlas/types").SuggestionStatus>()
+      .notNull()
+      .default("draft"),
+    approvedBy: text("approved_by"),
+    approvedAt: timestamp("approved_at", { withTimezone: true }),
+    distinctUserClicks: integer("distinct_user_clicks").notNull().default(0),
     lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -526,6 +540,26 @@ export const querySuggestions = pgTable(
     index("idx_query_suggestions_org_table").on(t.orgId, t.primaryTable),
     index("idx_query_suggestions_org_score").on(t.orgId, sql`score DESC`),
     index("idx_query_suggestions_tables").using("gin", t.tablesInvolved),
+    index("idx_query_suggestions_approval_queue").on(t.orgId, t.approvalStatus, sql`last_seen_at DESC`),
+  ],
+);
+
+// ---------------------------------------------------------------------------
+// Starter-prompt moderation — distinct-user click tracking
+// ---------------------------------------------------------------------------
+
+export const suggestionUserClicks = pgTable(
+  "suggestion_user_clicks",
+  {
+    suggestionId: uuid("suggestion_id")
+      .notNull()
+      .references(() => querySuggestions.id, { onDelete: "cascade" }),
+    userId: text("user_id").notNull(),
+    firstClickedAt: timestamp("first_clicked_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.suggestionId, t.userId] }),
+    index("idx_suggestion_user_clicks_suggestion_clicked").on(t.suggestionId, sql`first_clicked_at DESC`),
   ],
 );
 

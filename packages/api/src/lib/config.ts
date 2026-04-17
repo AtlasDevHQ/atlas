@@ -31,6 +31,10 @@ import type { ConnectionRegistry } from "./db/connection";
 import type { ToolRegistry } from "./tools/registry";
 import { ACTION_APPROVAL_MODES, type ActionApprovalMode } from "@atlas/api/lib/action-types";
 import { ATLAS_ROLES } from "@atlas/api/lib/auth/types";
+import {
+  DEFAULT_AUTO_PROMOTE_CLICKS,
+  DEFAULT_COLD_WINDOW_DAYS,
+} from "@atlas/api/lib/suggestions/approval-service";
 
 // ---------------------------------------------------------------------------
 // Sandbox backend names (used in config validation and explore backend selection)
@@ -392,9 +396,17 @@ const AtlasConfigSchema = z.object({
   starterPrompts: z.object({
     /**
      * Cold-start window (days) applied to `prompt_collections.created_at`
-     * when the resolver pulls the library tier. Default: 90.
+     * when the resolver pulls the library tier. Also bounds the approval
+     * queue for learned-popular prompts — only suggestions with a recent
+     * `last_seen_at` are eligible for auto-promotion.
      */
-    coldWindowDays: z.number().int().positive().default(90),
+    coldWindowDays: z.number().int().positive().default(DEFAULT_COLD_WINDOW_DAYS),
+    /**
+     * Distinct-user click threshold that auto-promotes a learned suggestion
+     * into the admin approval queue. Clicks are counted once per user
+     * within the cold window.
+     */
+    autoPromoteClicks: z.number().int().positive().default(DEFAULT_AUTO_PROMOTE_CLICKS),
     /**
      * Hard cap on per-user pinned starter prompts. Attempting to pin past
      * this cap returns a user-visible error. Default: 10.
@@ -478,7 +490,7 @@ export interface ResolvedConfig {
   /** Dynamic learning configuration. */
   learn?: { confidenceThreshold: number };
   /** Adaptive starter prompt configuration. */
-  starterPrompts?: { coldWindowDays: number; maxFavorites: number };
+  starterPrompts?: { coldWindowDays: number; autoPromoteClicks: number; maxFavorites: number };
   /** Enterprise feature gating. */
   enterprise?: { enabled: boolean; licenseKey?: string };
   /** Data residency configuration for region-based routing. */
@@ -668,11 +680,14 @@ export function configFromEnv(): ResolvedConfig {
     // Starter prompt config from env vars
     ...((() => {
       const coldWindow = parseInt(process.env.ATLAS_STARTER_PROMPT_COLD_WINDOW_DAYS ?? "", 10);
+      const autoPromote = parseInt(process.env.ATLAS_STARTER_PROMPT_AUTO_PROMOTE_CLICKS ?? "", 10);
       const maxFavs = parseInt(process.env.ATLAS_STARTER_PROMPT_MAX_FAVORITES ?? "", 10);
       return {
         starterPrompts: {
           coldWindowDays:
-            Number.isFinite(coldWindow) && coldWindow > 0 ? coldWindow : 90,
+            Number.isFinite(coldWindow) && coldWindow > 0 ? coldWindow : DEFAULT_COLD_WINDOW_DAYS,
+          autoPromoteClicks:
+            Number.isFinite(autoPromote) && autoPromote > 0 ? autoPromote : DEFAULT_AUTO_PROMOTE_CLICKS,
           maxFavorites:
             Number.isFinite(maxFavs) && maxFavs > 0 ? maxFavs : 10,
         },

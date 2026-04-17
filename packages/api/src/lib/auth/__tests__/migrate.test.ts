@@ -275,6 +275,7 @@ describe("migrateAuthTables", () => {
             { name: "0027_organization_saas_columns.sql" },
             { name: "0028_fix_semantic_entity_uniqueness.sql" },
             { name: "0029_user_favorite_prompts.sql" },
+            { name: "0030_starter_prompt_approval.sql" },
           ],
         };
       }

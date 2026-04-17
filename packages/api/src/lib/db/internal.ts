@@ -1037,20 +1037,25 @@ export interface ApprovedPatternRow {
 
 /** Row shape for query_suggestions table. */
 export interface QuerySuggestionRow {
-  id: string;
-  org_id: string | null;
-  description: string;
-  pattern_sql: string;
-  normalized_hash: string;
-  tables_involved: string; // JSONB string, parse to string[]
-  primary_table: string | null;
-  frequency: number;
-  clicked_count: number;
-  score: number;
-  last_seen_at: string;
-  created_at: string;
-  updated_at: string;
-  [key: string]: unknown;
+  readonly id: string;
+  readonly org_id: string | null;
+  readonly description: string;
+  readonly pattern_sql: string;
+  readonly normalized_hash: string;
+  readonly tables_involved: string; // JSONB string, parse to string[]
+  readonly primary_table: string | null;
+  readonly frequency: number;
+  readonly clicked_count: number;
+  readonly score: number;
+  readonly approval_status: import("@useatlas/types").SuggestionApprovalStatus;
+  readonly status: import("@useatlas/types").SuggestionStatus;
+  readonly approved_by: string | null;
+  readonly approved_at: string | null;
+  readonly distinct_user_clicks: number;
+  readonly last_seen_at: string;
+  readonly created_at: string;
+  readonly updated_at: string;
+  readonly [key: string]: unknown;
 }
 
 /**
@@ -1170,18 +1175,61 @@ export async function getPopularSuggestions(
   }
 }
 
+/**
+ * Record a click on a query suggestion (fire-and-forget).
+ *
+ * Always bumps `clicked_count`. When `userId` is provided, also records
+ * a row in `suggestion_user_clicks` with a (suggestion_id, user_id)
+ * primary key so repeat clicks from the same user are deduplicated. On
+ * the first click from a given user, `distinct_user_clicks` is
+ * incremented atomically via a CTE so the counter cannot drift from the
+ * join table.
+ *
+ * The auto-promote decision is policy-only (see
+ * `@atlas/api/lib/suggestions/approval-service`) — this function only
+ * maintains the counter that policy reads. The queue endpoint applies
+ * the threshold + window at read time.
+ */
 export function incrementSuggestionClick(
   id: string,
-  orgId: string | null
+  orgId: string | null,
+  userId: string | null = null,
 ): void {
   if (!hasInternalDB()) return;
   const orgClause = orgId != null ? "org_id = $1" : "org_id IS NULL";
-  const params: unknown[] = orgId != null ? [orgId, id] : [id];
-  const idIdx = params.length;
+
+  if (userId == null) {
+    const params: unknown[] = orgId != null ? [orgId, id] : [id];
+    const idIdx = params.length;
+    internalExecute(
+      `UPDATE query_suggestions SET clicked_count = clicked_count + 1 WHERE ${orgClause} AND id = $${idIdx}`,
+      params,
+    );
+    return;
+  }
+
+  // Distinct-user tracking path: upsert click row, then bump counters
+  // atomically. `ON CONFLICT DO NOTHING` makes the insert idempotent
+  // per (suggestion_id, user_id); the UPDATE adds to
+  // distinct_user_clicks only when the insert actually produced a row.
+  const orgParam = orgId;
+  const params: unknown[] =
+    orgParam != null ? [orgParam, id, userId] : [id, userId];
+  const idIdx = orgParam != null ? 2 : 1;
+  const userIdx = orgParam != null ? 3 : 2;
 
   internalExecute(
-    `UPDATE query_suggestions SET clicked_count = clicked_count + 1 WHERE ${orgClause} AND id = $${idIdx}`,
-    params
+    `WITH inserted AS (
+       INSERT INTO suggestion_user_clicks (suggestion_id, user_id)
+       VALUES ($${idIdx}, $${userIdx})
+       ON CONFLICT (suggestion_id, user_id) DO NOTHING
+       RETURNING 1
+     )
+     UPDATE query_suggestions SET
+       clicked_count = clicked_count + 1,
+       distinct_user_clicks = distinct_user_clicks + (SELECT COUNT(*) FROM inserted)::int
+     WHERE ${orgClause} AND id = $${idIdx}`,
+    params,
   );
 }
 

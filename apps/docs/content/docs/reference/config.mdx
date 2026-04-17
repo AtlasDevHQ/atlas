@@ -388,20 +388,23 @@ Configure the adaptive starter-prompt resolver that powers the empty-chat surfac
 ```typescript
 export default defineConfig({
   starterPrompts: {
-    coldWindowDays: 90,  // default: 90
-    maxFavorites: 10,    // default: 10
+    coldWindowDays: 90,     // default: 90
+    autoPromoteClicks: 3,   // default: 3
+    maxFavorites: 10,       // default: 10
   },
 });
 ```
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `coldWindowDays` | `number` | `90` | Window in days applied to `prompt_collections.created_at` when the library tier is populated. Also bounds the approval queue for learned-popular prompts in later slices |
+| `coldWindowDays` | `number` | `90` | Window in days applied to `prompt_collections.created_at` when the library tier is populated. Also bounds the auto-promote eligibility window — suggestions whose most recent activity is older than this window do not appear in the moderation queue |
+| `autoPromoteClicks` | `number` | `3` | Distinct-user click threshold that auto-promotes a learned suggestion into the admin approval queue. Clicks are counted once per user |
 | `maxFavorites` | `number` | `10` | Hard cap on per-user pinned starter prompts (`POST /api/v1/starter-prompts/favorites`). Applies per user per workspace |
 
 **Env var equivalents:**
 ```bash
 ATLAS_STARTER_PROMPT_COLD_WINDOW_DAYS=90
+ATLAS_STARTER_PROMPT_AUTO_PROMOTE_CLICKS=3
 ATLAS_STARTER_PROMPT_MAX_FAVORITES=10
 ```
 

@@ -7410,10 +7410,12 @@
                         "type": "object",
                         "properties": {
                           "id": {
-                            "type": "string"
+                            "type": "string",
+                            "minLength": 1
                           },
                           "text": {
-                            "type": "string"
+                            "type": "string",
+                            "minLength": 1
                           },
                           "provenance": {
                             "type": "string",

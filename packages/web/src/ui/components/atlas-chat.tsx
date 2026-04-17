@@ -141,9 +141,8 @@ export function AtlasChat() {
   const [passwordDialogDismissed, setPasswordDialogDismissed] = useState(false);
   const [schemaExplorerOpen, setSchemaExplorerOpen] = useState(false);
   const [promptLibraryOpen, setPromptLibraryOpen] = useState(false);
-  // Adaptive empty-chat starter surface (#1474). Replaces the hardcoded
-  // STARTER_PROMPTS grid + a separate /api/v1/suggestions/popular call with a
-  // single /api/v1/starter-prompts fetch that the backend composes.
+  // Adaptive empty-chat starter surface — backend composes the ranked
+  // prompt list from favorites / popular / library tiers (#1474).
   const [starterPrompts, setStarterPrompts] = useState<
     Array<{ id: string; text: string; provenance: string }>
   >([]);
@@ -239,15 +238,30 @@ export function AtlasChat() {
       credentials,
       headers: getHeaders(),
     })
-      .then((res) => (res.ok ? res.json() : null))
+      .then(async (res) => {
+        if (res.ok) return res.json();
+        // Backend returns 500 (with requestId) when settings read fails — per
+        // the resolver's propagate-failure contract. Surface the correlation
+        // id so operators can trace; the UI still falls through to the
+        // cold-start CTA rather than erroring the whole empty state.
+        const body = (await res.json().catch(() => ({}))) as { requestId?: string };
+        console.warn(
+          "starter-prompts endpoint returned",
+          res.status,
+          "requestId:",
+          body.requestId,
+        );
+        return null;
+      })
       .then((data) => {
         if (!cancelled && Array.isArray(data?.prompts)) {
           setStarterPrompts(data.prompts);
         }
       })
       .catch(() => {
-        // intentionally ignored: empty-state prompts are non-critical;
-        // an empty list renders the single-CTA cold-start UI.
+        // intentionally ignored: network/parse failures on starter prompts
+        // are non-critical — HTTP 5xx is logged above, and an empty list
+        // renders the single-CTA cold-start UI.
       })
       .finally(() => {
         if (!cancelled) setSuggestionsLoading(false);

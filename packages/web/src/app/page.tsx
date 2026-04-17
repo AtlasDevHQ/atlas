@@ -60,7 +60,8 @@ function ChatPage() {
   const [schemaExplorerOpen, setSchemaExplorerOpen] = useState(false);
   const [promptLibraryOpen, setPromptLibraryOpen] = useState(false);
   const [fetchErrorDismissed, setFetchErrorDismissed] = useState(false);
-  // Adaptive empty-chat starter surface (#1474).
+  // Adaptive empty-chat starter surface — backend composes the ranked
+  // prompt list from favorites / popular / library tiers (#1474).
   const [starterPrompts, setStarterPrompts] = useState<
     Array<{ id: string; text: string; provenance: string }>
   >([]);
@@ -137,15 +138,29 @@ function ChatPage() {
       credentials,
       headers: getHeaders(),
     })
-      .then((res) => (res.ok ? res.json() : null))
+      .then(async (res) => {
+        if (res.ok) return res.json();
+        // Backend 5xx (e.g. settings read failure propagated per #1470) —
+        // log the correlation id so operators can trace. UI still falls
+        // through to the cold-start CTA.
+        const body = (await res.json().catch(() => ({}))) as { requestId?: string };
+        console.warn(
+          "starter-prompts endpoint returned",
+          res.status,
+          "requestId:",
+          body.requestId,
+        );
+        return null;
+      })
       .then((data) => {
         if (!cancelled && Array.isArray(data?.prompts)) {
           setStarterPrompts(data.prompts);
         }
       })
       .catch(() => {
-        // intentionally ignored: starter prompts are non-critical;
-        // empty list → cold-start CTA renders instead.
+        // intentionally ignored: network/parse failures are non-critical —
+        // HTTP 5xx is logged above, and an empty list renders the
+        // single-CTA cold-start UI.
       })
       .finally(() => {
         if (!cancelled) setStarterPromptsLoading(false);

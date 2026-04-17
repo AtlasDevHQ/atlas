@@ -3,14 +3,14 @@
  *
  * Returns the resolved, ordered list of starter prompts for the current
  * user/org/mode context, each tagged with `provenance` so the UI can badge
- * or group. For this slice only `library` (demo-industry curated prompts)
- * and the cold-start empty case are emitted; favorites and approved-popular
- * tiers come in later slices (#1475–#1477).
+ * or group. Only the `library` (demo-industry curated prompts) and empty
+ * cold-start cases emit today; favorites and popular tiers arrive in later
+ * 1.2.1 slices.
  */
 
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
 import { Effect } from "effect";
-import type { AtlasMode } from "@useatlas/types/auth";
+import type { StarterPromptsResponse } from "@useatlas/types/starter-prompt";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import {
   RequestContext,
@@ -18,17 +18,27 @@ import {
 } from "@atlas/api/lib/effect/services";
 import { getConfig } from "@atlas/api/lib/config";
 import { resolveStarterPrompts } from "@atlas/api/lib/starter-prompts/resolver";
-import { ErrorSchema, parsePagination } from "./shared-schemas";
+import { AuthErrorSchema, ErrorSchema, parsePagination } from "./shared-schemas";
 import { standardAuth, requestContext, type AuthEnv } from "./middleware";
 
 // ---------------------------------------------------------------------------
 // Schemas
 // ---------------------------------------------------------------------------
 
+// Sole source of truth for the provenance enum — used by both the Zod schema
+// below and (transitively via `@useatlas/types/starter-prompt`) the resolver
+// output. If this list grows, update the TS union in the types package too.
+const STARTER_PROMPT_PROVENANCE = [
+  "favorite",
+  "popular",
+  "library",
+  "cold-start",
+] as const;
+
 const StarterPromptSchema = z.object({
-  id: z.string(),
-  text: z.string(),
-  provenance: z.enum(["favorite", "popular", "library", "cold-start"]),
+  id: z.string().min(1),
+  text: z.string().min(1),
+  provenance: z.enum(STARTER_PROMPT_PROVENANCE),
 });
 
 const StarterPromptsResponseSchema = z.object({
@@ -61,7 +71,7 @@ const listStarterPromptsRoute = createRoute({
     },
     401: {
       description: "Authentication required",
-      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+      content: { "application/json": { schema: AuthErrorSchema } },
     },
     500: {
       description: "Internal server error",
@@ -92,7 +102,7 @@ starterPrompts.openapi(listStarterPromptsRoute, async (c) => {
         resolveStarterPrompts({
           orgId: orgId ?? null,
           userId: user?.id ?? null,
-          mode: atlasMode satisfies AtlasMode,
+          mode: atlasMode,
           limit,
           coldWindowDays,
           requestId,
@@ -100,7 +110,7 @@ starterPrompts.openapi(listStarterPromptsRoute, async (c) => {
       catch: (err) => (err instanceof Error ? err : new Error(String(err))),
     });
 
-    return { prompts, total: prompts.length };
+    return { prompts, total: prompts.length } satisfies StarterPromptsResponse;
   });
 
   const body = await runEffect(c, program, { label: "resolve starter prompts" });

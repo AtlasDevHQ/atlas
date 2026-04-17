@@ -1,10 +1,9 @@
 /**
  * Integration tests for GET /api/v1/starter-prompts (#1474).
  *
- * Exercises the route wiring end-to-end: auth gate → config → resolver →
- * response shape. The resolver itself has thorough unit coverage in
- * packages/api/src/lib/starter-prompts/__tests__/resolver.test.ts; here
- * we cover the HTTP contract.
+ * Exercises route wiring end-to-end: auth gate → config → resolver →
+ * response shape. Resolver has deeper unit coverage in
+ * `packages/api/src/lib/starter-prompts/__tests__/resolver.test.ts`.
  */
 
 import {
@@ -30,7 +29,9 @@ mock.module("@atlas/api/lib/settings", () => ({
   setSetting: async () => {},
   deleteSetting: async () => {},
   getSetting: () => undefined,
-  getSettingAuto: (key: string) =>
+  // Real signature is (key: string, orgId?: string). Mirror it so per-org
+  // stubs work end-to-end if a future test needs them.
+  getSettingAuto: (key: string, _orgId?: string) =>
     key === "ATLAS_DEMO_INDUSTRY" ? demoIndustryFixture : undefined,
   getSettingLive: async () => undefined,
   loadSettings: async () => 0,
@@ -98,7 +99,7 @@ describe("GET /api/v1/starter-prompts", () => {
     expect(body.total).toBe(0);
   });
 
-  it("returns library prompts for the workspace's demo industry", async () => {
+  it("returns library prompts with namespaced ids for the workspace's demo industry", async () => {
     demoIndustryFixture = "cybersecurity";
     mocks.mockInternalQuery.mockImplementation(async () => [
       { id: "item-1", question: "How many open incidents this week?" },
@@ -114,21 +115,19 @@ describe("GET /api/v1/starter-prompts", () => {
     };
     expect(body.total).toBe(2);
     expect(body.prompts).toEqual([
-      { id: "item-1", text: "How many open incidents this week?", provenance: "library" },
-      { id: "item-2", text: "Which hosts have unpatched CVEs?", provenance: "library" },
+      { id: "library:item-1", text: "How many open incidents this week?", provenance: "library" },
+      { id: "library:item-2", text: "Which hosts have unpatched CVEs?", provenance: "library" },
     ]);
   });
 
-  it("honors limit query parameter (clamped to 50)", async () => {
+  it("clamps limit query parameter to MAX_LIMIT=50", async () => {
     demoIndustryFixture = "ecommerce";
 
     await req("/api/v1/starter-prompts?limit=100");
 
-    // Resolver clamps to 50 before calling internalQuery
     const sqlCalls = mocks.mockInternalQuery.mock.calls;
     expect(sqlCalls.length).toBeGreaterThan(0);
     const [, params] = sqlCalls[0]!;
-    // Expected params order: industry, orgId, coldWindowDays, limit
     expect(params![3]).toBe(50);
   });
 
@@ -141,5 +140,32 @@ describe("GET /api/v1/starter-prompts", () => {
     expect(sqlCalls.length).toBeGreaterThan(0);
     const [, params] = sqlCalls[0]!;
     expect(params![3]).toBe(6);
+  });
+
+  it("falls back to default limit=6 when limit=0 / negative / non-numeric", async () => {
+    demoIndustryFixture = "ecommerce";
+
+    for (const bad of ["0", "-5", "abc"]) {
+      mocks.mockInternalQuery.mockClear();
+      mocks.mockInternalQuery.mockImplementation(() => Promise.resolve([]));
+
+      await req(`/api/v1/starter-prompts?limit=${bad}`);
+
+      const sqlCalls = mocks.mockInternalQuery.mock.calls;
+      expect(sqlCalls.length).toBe(1);
+      const [, params] = sqlCalls[0]!;
+      expect(params![3]).toBe(6);
+    }
+  });
+
+  it("passes the default coldWindowDays (90) to the resolver when config is absent", async () => {
+    demoIndustryFixture = "cybersecurity";
+
+    await req("/api/v1/starter-prompts");
+
+    const sqlCalls = mocks.mockInternalQuery.mock.calls;
+    expect(sqlCalls.length).toBeGreaterThan(0);
+    const [, params] = sqlCalls[0]!;
+    expect(params![2]).toBe("90");
   });
 });

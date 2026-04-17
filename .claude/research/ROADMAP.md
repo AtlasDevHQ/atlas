@@ -1196,9 +1196,14 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] Partial unique indexes on semantic_entities are NULL-unsafe for connection_id (#1444, PR #1447)
 - [x] Scaffold template layout override — strip ModeBanner for standalone deploys (commit 079f8996)
 - [x] Scaffold types.ts — `ADMIN_ROLES`/`ATLAS_MODES` missing from published `@useatlas/types` (PRs #1457, #1458 — bumped to `0.0.11`, consumer refs updated; #1448 closed as superseded)
-- [ ] `admin-publish` reads `demo_industry` setting with wrong key — Phase 4b skips demo-prompt archive (#1466)
-- [ ] `readDemoIndustry` silent fallback drops prompt cascade on read failure (#1470)
-- [ ] Organization SaaS columns skipped on first-boot migrations — blocks `checkResourceLimit` (#1472)
+- [x] `admin-publish` reads `demo_industry` setting with wrong key — Phase 4b skips demo-prompt archive (#1466, PR #1486)
+- [x] `readDemoIndustry` silent fallback drops prompt cascade on read failure (#1470, PR #1486 — extracted to `lib/demo-industry.ts` with discriminated `{ ok, value | err }` result)
+- [x] `client.release()` after ROLLBACK failure may return poisoned connection to pool (#1471, PR #1486 — four sites: admin-archive, admin-publish, migrate, internal.cascadeWorkspaceDelete)
+- [x] Organization SaaS columns skipped on first-boot migrations — blocks `checkResourceLimit` (#1472, PR #1484 — reordered Better Auth before Atlas migrations, added `0027_organization_saas_columns.sql`, `skip` list for non-managed deploys)
+
+### Follow-ups
+- [ ] Rollback poisoning: `hardDeleteWorkspace` and naked ROLLBACK in internal.ts (#1485 — same pattern as #1471, out of scope in PR #1486)
+- [ ] Pre-existing flaky middleware test `mode 'managed' with valid session returns authenticated` (#1483 — discovered during CI gate for #1472)
 
 ---
 

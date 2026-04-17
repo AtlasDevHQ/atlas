@@ -30,11 +30,60 @@ export function getMigrationError(): string | null {
  *
  * Safe to call multiple times — only runs once (idempotent guard).
  * Also runs the internal DB migration (audit_log table).
+ *
+ * Boot ordering (managed auth, with internal DB):
+ *   1. Better Auth migrations — create `organization`, `user`, `session`, etc.
+ *   2. Atlas internal DB migrations — can ALTER `organization` (e.g. 0027) now
+ *      that Better Auth has created it.
+ *   3. Load saved connections, plugin settings, abuse state.
+ *   4. Bootstrap admin, seed dev user, backfill password-change flag.
+ *
+ * Step 1 must precede step 2 — see #1472. In non-managed mode step 1 is
+ * skipped; the Atlas migration runner independently skips org-dependent
+ * files based on `detectAuthMode()`, so 0027 is not attempted without
+ * Better Auth having created the table.
  */
 export async function migrateAuthTables(): Promise<void> {
   if (_migrated) return;
 
-  // Internal DB migration (audit_log) — runs regardless of auth mode
+  const authMode = detectAuthMode();
+  let auth: Awaited<ReturnType<typeof getAuthInstanceLazy>> | null = null;
+
+  // 1. Better Auth migrations — must run BEFORE Atlas internal migrations so
+  //    that Atlas's organization-table ALTERs (e.g. 0027) find the table.
+  if (authMode === "managed" && hasInternalDB()) {
+    try {
+      auth = await getAuthInstanceLazy();
+      const ctx = await auth.$context;
+      await ctx.runMigrations();
+      log.info("Better Auth migration complete");
+
+      // Add password_change_required column to Better Auth's user table.
+      // Must run AFTER Better Auth migrations (which create the "user" table).
+      // If this fails, Better Auth's migration likely misreported success and
+      // managed auth itself may be broken — log loudly.
+      try {
+        await internalQuery(
+          `ALTER TABLE "user" ADD COLUMN IF NOT EXISTS password_change_required BOOLEAN NOT NULL DEFAULT false`,
+        );
+      } catch (err) {
+        log.error(
+          { err: err instanceof Error ? err.message : String(err) },
+          "Could not add password_change_required column — Better Auth user table may be missing or unwritable; password change enforcement will be skipped",
+        );
+      }
+    } catch (err) {
+      log.error({ err }, "Better Auth migration failed — managed auth may not work");
+      _migrationError = "Connected to the internal database but Better Auth migration failed. Managed auth may not work. Check database permissions (CREATE TABLE).";
+    }
+  } else if (authMode === "managed" && !hasInternalDB()) {
+    log.error(
+      "Managed auth mode requires DATABASE_URL for session storage. Skipping auth migration.",
+    );
+  }
+
+  // 2. Internal DB migration (audit_log, etc.) — runs regardless of auth mode.
+  //    In non-managed modes the runner skips org-dependent migrations (#1472).
   if (hasInternalDB()) {
     try {
       const { migrateInternalDB } = await import("@atlas/api/lib/db/internal");
@@ -45,7 +94,7 @@ export async function migrateAuthTables(): Promise<void> {
       // Don't block server start — audit will fall back to pino-only
     }
 
-    // Load admin-managed connections (separate from migration so failures don't conflate)
+    // 3. Load admin-managed connections (separate from migration so failures don't conflate)
     try {
       const { loadSavedConnections } = await import("@atlas/api/lib/db/internal");
       await loadSavedConnections();
@@ -71,47 +120,43 @@ export async function migrateAuthTables(): Promise<void> {
     }
   }
 
-  // Better Auth migration — only in managed mode
-  const authMode = detectAuthMode();
-  if (authMode !== "managed") {
-    _migrated = true;
-    return;
-  }
-
-  if (!hasInternalDB()) {
-    log.error(
-      "Managed auth mode requires DATABASE_URL for session storage. Skipping auth migration.",
-    );
-    _migrated = true;
-    return;
-  }
-
-  try {
-    const { getAuthInstance } = await import("@atlas/api/lib/auth/server");
-    const auth = getAuthInstance();
-    const ctx = await auth.$context;
-    await ctx.runMigrations();
-    log.info("Better Auth migration complete");
-
-    // Add password_change_required column to Better Auth's user table.
-    // Must run AFTER Better Auth migrations (which create the "user" table).
+  // 4. Bootstrap + seed (managed mode only — needs Better Auth `user` table).
+  //    Each phase has its own internal try/catch; the wrappers here catch
+  //    unexpected programming errors (e.g. API surface drift) so a failure in
+  //    one phase doesn't skip the next.
+  if (auth) {
     try {
-      await internalQuery(
-        `ALTER TABLE "user" ADD COLUMN IF NOT EXISTS password_change_required BOOLEAN NOT NULL DEFAULT false`,
+      await bootstrapAdminUser();
+    } catch (err) {
+      log.error(
+        { err: err instanceof Error ? err.message : String(err) },
+        "Bootstrap admin promotion failed unexpectedly — admin console may be inaccessible",
       );
-    } catch {
-      log.warn("Could not add password_change_required column — password change enforcement will be skipped");
     }
-
-    await bootstrapAdminUser();
-    await seedDevUser(auth);
-    await backfillPasswordChangeFlag();
-  } catch (err) {
-    log.error({ err }, "Better Auth migration failed — managed auth may not work");
-    _migrationError = "Connected to the internal database but Better Auth migration failed. Managed auth may not work. Check database permissions (CREATE TABLE).";
+    try {
+      await seedDevUser(auth);
+    } catch (err) {
+      log.error(
+        { err: err instanceof Error ? err.message : String(err) },
+        "Dev user seed failed unexpectedly — first-run admin/org/demo data may be missing",
+      );
+    }
+    try {
+      await backfillPasswordChangeFlag();
+    } catch (err) {
+      log.error(
+        { err: err instanceof Error ? err.message : String(err) },
+        "Backfill password-change flag failed unexpectedly",
+      );
+    }
   }
 
   _migrated = true;
+}
+
+async function getAuthInstanceLazy() {
+  const { getAuthInstance } = await import("@atlas/api/lib/auth/server");
+  return getAuthInstance();
 }
 
 /**

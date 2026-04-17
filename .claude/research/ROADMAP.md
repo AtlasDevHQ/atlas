@@ -1198,6 +1198,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] Scaffold types.ts — `ADMIN_ROLES`/`ATLAS_MODES` missing from published `@useatlas/types` (PRs #1457, #1458 — bumped to `0.0.11`, consumer refs updated; #1448 closed as superseded)
 - [ ] `admin-publish` reads `demo_industry` setting with wrong key — Phase 4b skips demo-prompt archive (#1466)
 - [ ] `readDemoIndustry` silent fallback drops prompt cascade on read failure (#1470)
+- [ ] Organization SaaS columns skipped on first-boot migrations — blocks `checkResourceLimit` (#1472)
 
 ---
 

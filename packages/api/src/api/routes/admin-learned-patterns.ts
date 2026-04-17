@@ -12,7 +12,7 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
-import { internalQuery } from "@atlas/api/lib/db/internal";
+import { internalQuery, queryEffect } from "@atlas/api/lib/db/internal";
 import { LEARNED_PATTERN_STATUSES, type LearnedPattern } from "@useatlas/types";
 import { invalidatePatternCache } from "@atlas/api/lib/learn/pattern-cache";
 import { ErrorSchema, AuthErrorSchema, parsePagination, createIdParamSchema, createListResponseSchema, DeletedResponseSchema } from "./shared-schemas";
@@ -408,7 +408,7 @@ adminLearnedPatterns.openapi(listPatternsRoute, async (c) => {
 
     const whereClause = `WHERE ${whereParts.join(" AND ")}`;
     const countParams = [...params];
-    const countRows = yield* Effect.promise(() => internalQuery<{ count: string }>(`SELECT COUNT(*) as count FROM learned_patterns ${whereClause}`, countParams));
+    const countRows = yield* queryEffect<{ count: string }>(`SELECT COUNT(*) as count FROM learned_patterns ${whereClause}`, countParams);
     const total = parseInt(countRows[0]?.count ?? "0", 10);
 
     const selectParams = [...params];
@@ -416,7 +416,7 @@ adminLearnedPatterns.openapi(listPatternsRoute, async (c) => {
     const limitIdx = nextIdx;
     selectParams.push(offset);
     const offsetIdx = limitIdx + 1;
-    const rows = yield* Effect.promise(() => internalQuery<Record<string, unknown>>(`SELECT * FROM learned_patterns ${whereClause} ORDER BY created_at DESC LIMIT $${limitIdx} OFFSET $${offsetIdx}`, selectParams));
+    const rows = yield* queryEffect<Record<string, unknown>>(`SELECT * FROM learned_patterns ${whereClause} ORDER BY created_at DESC LIMIT $${limitIdx} OFFSET $${offsetIdx}`, selectParams);
 
     return c.json({ patterns: rows.map(toLearnedPattern), total, limit, offset }, 200);
   }), { label: "list learned patterns" });
@@ -433,7 +433,7 @@ adminLearnedPatterns.openapi(getPatternRoute, async (c) => {
     const { id } = c.req.valid("param");
     const params: unknown[] = [id];
     const org = orgFilter(orgId, params, params.length + 1);
-    const rows = yield* Effect.promise(() => internalQuery<Record<string, unknown>>(`SELECT * FROM learned_patterns WHERE id = $1 AND ${org.clause}`, params));
+    const rows = yield* queryEffect<Record<string, unknown>>(`SELECT * FROM learned_patterns WHERE id = $1 AND ${org.clause}`, params);
     if (rows.length === 0) return c.json({ error: "not_found", message: "Learned pattern not found." }, 404);
     return c.json(toLearnedPattern(rows[0]), 200);
   }), { label: "get learned pattern" });
@@ -453,7 +453,7 @@ adminLearnedPatterns.openapi(updatePatternRoute, async (c) => {
 
     const checkParams: unknown[] = [id];
     const org = orgFilter(orgId, checkParams, checkParams.length + 1);
-    const existing = yield* Effect.promise(() => internalQuery<Record<string, unknown>>(`SELECT * FROM learned_patterns WHERE id = $1 AND ${org.clause}`, checkParams));
+    const existing = yield* queryEffect<Record<string, unknown>>(`SELECT * FROM learned_patterns WHERE id = $1 AND ${org.clause}`, checkParams);
     if (existing.length === 0) return c.json({ error: "not_found", message: "Learned pattern not found." }, 404);
 
     const setClauses: string[] = ["updated_at = now()"];
@@ -466,7 +466,7 @@ adminLearnedPatterns.openapi(updatePatternRoute, async (c) => {
     const idIdx = paramIdx;
     paramIdx++;
     const updateOrg = orgFilter(orgId, updateParams, paramIdx);
-    const updated = yield* Effect.promise(() => internalQuery<Record<string, unknown>>(`UPDATE learned_patterns SET ${setClauses.join(", ")} WHERE id = $${idIdx} AND ${updateOrg.clause} RETURNING *`, updateParams));
+    const updated = yield* queryEffect<Record<string, unknown>>(`UPDATE learned_patterns SET ${setClauses.join(", ")} WHERE id = $${idIdx} AND ${updateOrg.clause} RETURNING *`, updateParams);
     if (updated.length === 0) return c.json({ error: "not_found", message: "Pattern was deleted before update completed." }, 404);
 
     if (status === "approved") {
@@ -502,12 +502,12 @@ adminLearnedPatterns.openapi(deletePatternRoute, async (c) => {
     const { id } = c.req.valid("param");
     const checkParams: unknown[] = [id];
     const org = orgFilter(orgId, checkParams, checkParams.length + 1);
-    const existing = yield* Effect.promise(() => internalQuery<Record<string, unknown>>(`SELECT id FROM learned_patterns WHERE id = $1 AND ${org.clause}`, checkParams));
+    const existing = yield* queryEffect<Record<string, unknown>>(`SELECT id FROM learned_patterns WHERE id = $1 AND ${org.clause}`, checkParams);
     if (existing.length === 0) return c.json({ error: "not_found", message: "Learned pattern not found." }, 404);
 
     const deleteParams: unknown[] = [id];
     const deleteOrg = orgFilter(orgId, deleteParams, deleteParams.length + 1);
-    yield* Effect.promise(() => internalQuery(`DELETE FROM learned_patterns WHERE id = $1 AND ${deleteOrg.clause}`, deleteParams));
+    yield* queryEffect(`DELETE FROM learned_patterns WHERE id = $1 AND ${deleteOrg.clause}`, deleteParams);
     invalidatePatternCache(orgId ?? null);
 
     logAdminAction({

@@ -11,6 +11,7 @@ import { createLogger } from "@atlas/api/lib/logger";
 import {
   hasInternalDB,
   internalQuery,
+  queryEffect,
   getWorkspaceDetails,
   updateWorkspaceStatus,
   updateWorkspacePlanTier,
@@ -545,9 +546,9 @@ adminOrgs.openapi(getOrgRoute, async (c) => {
     const { id: orgId } = c.req.valid("param");
     if (!hasInternalDB()) return c.json({ error: "not_available", message: "No internal database configured." }, 404);
 
-    const orgs = yield* Effect.promise(() => internalQuery<Record<string, unknown>>(
+    const orgs = yield* queryEffect<Record<string, unknown>>(
       `SELECT id, name, slug, logo, metadata, "createdAt", workspace_status, plan_tier, suspended_at, deleted_at FROM organization WHERE id = $1`, [orgId],
-    ));
+    );
     if (orgs.length === 0) return c.json({ error: "not_found", message: "Organization not found." }, 404);
     const org = orgs[0];
 

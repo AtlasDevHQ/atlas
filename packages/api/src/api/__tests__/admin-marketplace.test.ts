@@ -145,6 +145,11 @@ mock.module("@atlas/api/lib/db/internal", () => ({
     on: () => {},
   }),
   internalQuery: (_sql: string, _params?: unknown[]) => Promise.resolve(findQueryResult(_sql)),
+  queryEffect: (sql: string) => ({
+    [Symbol.iterator]: function* (): Generator<unknown, unknown> {
+      return yield { _tag: "EffectPromise", fn: () => Promise.resolve(findQueryResult(sql)) };
+    },
+  }),
   internalExecute: () => {},
   setWorkspaceRegion: mock(async () => {}),
   insertSemanticAmendment: mock(async () => "mock-amendment-id"),

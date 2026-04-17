@@ -11,7 +11,7 @@ import { createRoute, z } from "@hono/zod-openapi";
 import { createLogger } from "@atlas/api/lib/logger";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
-import { internalQuery } from "@atlas/api/lib/db/internal";
+import { internalQuery, queryEffect } from "@atlas/api/lib/db/internal";
 import type { PromptCollection, PromptItem } from "@useatlas/types";
 import { ErrorSchema, AuthErrorSchema, createIdParamSchema, createParamSchema, createListResponseSchema, DeletedResponseSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
@@ -497,10 +497,7 @@ adminPrompts.openapi(listCollectionsRoute, async (c) => {
       catch: (err) => (err instanceof Error ? err : new Error(String(err))),
     });
     const { sql, params } = buildCollectionsListQuery(scope);
-    const rows = yield* Effect.tryPromise({
-      try: () => internalQuery<Record<string, unknown>>(sql, params),
-      catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-    });
+    const rows = yield* queryEffect<Record<string, unknown>>(sql, params);
     return c.json({ collections: rows.map(toPromptCollection), total: rows.length }, 200);
   }), { label: "list prompt collections" });
 });
@@ -528,7 +525,7 @@ adminPrompts.openapi(createCollectionRoute, async (c) => {
     // until the admin publishes; published mode creates them live.
     const status = atlasMode === "developer" ? "draft" : "published";
 
-    const rows = yield* Effect.promise(() => internalQuery<Record<string, unknown>>(`INSERT INTO prompt_collections (org_id, name, industry, description, is_builtin, status) VALUES ($1, $2, $3, $4, false, $5) RETURNING *`, [orgId ?? null, name, industry, description, status]));
+    const rows = yield* queryEffect<Record<string, unknown>>(`INSERT INTO prompt_collections (org_id, name, industry, description, is_builtin, status) VALUES ($1, $2, $3, $4, false, $5) RETURNING *`, [orgId ?? null, name, industry, description, status]);
     return c.json(toPromptCollection(rows[0]), 201);
   }), { label: "create prompt collection" });
 });
@@ -565,7 +562,7 @@ adminPrompts.openapi(updateCollectionRoute, async (c) => {
     updateParams.push(id);
     const idIdx = paramIdx;
 
-    const updated = yield* Effect.promise(() => internalQuery<Record<string, unknown>>(`UPDATE prompt_collections SET ${setClauses.join(", ")} WHERE id = $${idIdx} RETURNING *`, updateParams));
+    const updated = yield* queryEffect<Record<string, unknown>>(`UPDATE prompt_collections SET ${setClauses.join(", ")} WHERE id = $${idIdx} RETURNING *`, updateParams);
     if (updated.length === 0) return c.json({ error: "not_found", message: "Collection was deleted before update completed." }, 404);
     return c.json(toPromptCollection(updated[0]), 200);
   }), { label: "update prompt collection" });
@@ -582,7 +579,7 @@ adminPrompts.openapi(deleteCollectionRoute, async (c) => {
     if (existing.length === 0) return c.json({ error: "not_found", message: "Prompt collection not found." }, 404);
     if (existing[0].is_builtin === true) return c.json({ error: "forbidden", message: "Built-in collections cannot be modified.", requestId }, 403);
 
-    yield* Effect.promise(() => internalQuery(`DELETE FROM prompt_collections WHERE id = $1`, [id]));
+    yield* queryEffect(`DELETE FROM prompt_collections WHERE id = $1`, [id]);
     return c.json({ deleted: true }, 200);
   }), { label: "delete prompt collection" });
 });
@@ -612,11 +609,11 @@ adminPrompts.openapi(createItemRoute, async (c) => {
 
     let sortOrder: number;
     if (typeof body.sort_order === "number") { sortOrder = body.sort_order; } else {
-      const maxRows = yield* Effect.promise(() => internalQuery<{ max: number | null }>(`SELECT MAX(sort_order) as max FROM prompt_items WHERE collection_id = $1`, [collectionId]));
+      const maxRows = yield* queryEffect<{ max: number | null }>(`SELECT MAX(sort_order) as max FROM prompt_items WHERE collection_id = $1`, [collectionId]);
       sortOrder = (maxRows[0]?.max ?? -1) + 1;
     }
 
-    const rows = yield* Effect.promise(() => internalQuery<Record<string, unknown>>(`INSERT INTO prompt_items (collection_id, question, description, category, sort_order) VALUES ($1, $2, $3, $4, $5) RETURNING *`, [collectionId, question, description, category, sortOrder]));
+    const rows = yield* queryEffect<Record<string, unknown>>(`INSERT INTO prompt_items (collection_id, question, description, category, sort_order) VALUES ($1, $2, $3, $4, $5) RETURNING *`, [collectionId, question, description, category, sortOrder]);
     return c.json(toPromptItem(rows[0]), 201);
   }), { label: "create prompt item" });
 });
@@ -632,7 +629,7 @@ adminPrompts.openapi(updateItemRoute, async (c) => {
     if (collection.length === 0) return c.json({ error: "not_found", message: "Prompt collection not found." }, 404);
     if (collection[0].is_builtin === true) return c.json({ error: "forbidden", message: "Built-in collections cannot be modified.", requestId }, 403);
 
-    const existingItem = yield* Effect.promise(() => internalQuery<Record<string, unknown>>(`SELECT * FROM prompt_items WHERE id = $1 AND collection_id = $2`, [itemId, collectionId]));
+    const existingItem = yield* queryEffect<Record<string, unknown>>(`SELECT * FROM prompt_items WHERE id = $1 AND collection_id = $2`, [itemId, collectionId]);
     if (existingItem.length === 0) return c.json({ error: "not_found", message: "Prompt item not found." }, 404);
 
     const bodyResult = yield* Effect.tryPromise({
@@ -656,7 +653,7 @@ adminPrompts.openapi(updateItemRoute, async (c) => {
     updateParams.push(itemId);
     const idIdx = paramIdx;
 
-    const updated = yield* Effect.promise(() => internalQuery<Record<string, unknown>>(`UPDATE prompt_items SET ${setClauses.join(", ")} WHERE id = $${idIdx} RETURNING *`, updateParams));
+    const updated = yield* queryEffect<Record<string, unknown>>(`UPDATE prompt_items SET ${setClauses.join(", ")} WHERE id = $${idIdx} RETURNING *`, updateParams);
     if (updated.length === 0) return c.json({ error: "not_found", message: "Item was deleted before update completed." }, 404);
     return c.json(toPromptItem(updated[0]), 200);
   }), { label: "update prompt item" });
@@ -673,10 +670,10 @@ adminPrompts.openapi(deleteItemRoute, async (c) => {
     if (collection.length === 0) return c.json({ error: "not_found", message: "Prompt collection not found." }, 404);
     if (collection[0].is_builtin === true) return c.json({ error: "forbidden", message: "Built-in collections cannot be modified.", requestId }, 403);
 
-    const existingItem = yield* Effect.promise(() => internalQuery<Record<string, unknown>>(`SELECT id FROM prompt_items WHERE id = $1 AND collection_id = $2`, [itemId, collectionId]));
+    const existingItem = yield* queryEffect<Record<string, unknown>>(`SELECT id FROM prompt_items WHERE id = $1 AND collection_id = $2`, [itemId, collectionId]);
     if (existingItem.length === 0) return c.json({ error: "not_found", message: "Prompt item not found." }, 404);
 
-    yield* Effect.promise(() => internalQuery(`DELETE FROM prompt_items WHERE id = $1`, [itemId]));
+    yield* queryEffect(`DELETE FROM prompt_items WHERE id = $1`, [itemId]);
     return c.json({ deleted: true }, 200);
   }), { label: "delete prompt item" });
 });
@@ -702,7 +699,7 @@ adminPrompts.openapi(reorderItemsRoute, async (c) => {
     const itemIds = body.itemIds as string[] | undefined;
     if (!Array.isArray(itemIds) || itemIds.length === 0) return c.json({ error: "bad_request", message: "itemIds must be a non-empty array of item IDs." }, 400);
 
-    const existingItems = yield* Effect.promise(() => internalQuery<{ id: string }>(`SELECT id FROM prompt_items WHERE collection_id = $1`, [collectionId]));
+    const existingItems = yield* queryEffect<{ id: string }>(`SELECT id FROM prompt_items WHERE collection_id = $1`, [collectionId]);
     const existingIds = new Set(existingItems.map((r) => r.id));
     const providedIds = new Set(itemIds);
 
@@ -710,7 +707,7 @@ adminPrompts.openapi(reorderItemsRoute, async (c) => {
     for (const id of itemIds) { if (!existingIds.has(id)) return c.json({ error: "bad_request", message: `Item ID "${id}" does not belong to this collection.` }, 400); }
 
     for (let i = 0; i < itemIds.length; i++) {
-      yield* Effect.promise(() => internalQuery(`UPDATE prompt_items SET sort_order = $1, updated_at = now() WHERE id = $2`, [i, itemIds[i]]));
+      yield* queryEffect(`UPDATE prompt_items SET sort_order = $1, updated_at = now() WHERE id = $2`, [i, itemIds[i]]);
     }
     return c.json({ reordered: true }, 200);
   }), { label: "reorder prompt items" });

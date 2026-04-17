@@ -13,6 +13,7 @@
 import { describe, it, expect, beforeEach, afterEach, mock, type Mock } from "bun:test";
 import { Effect } from "effect";
 import { createConnectionMock } from "@atlas/api/testing/connection";
+import { makeQueryEffectMock } from "@atlas/api/testing/api-test-mocks";
 
 // --- Mocks ---
 
@@ -77,6 +78,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: mockHasInternalDB,
   getInternalDB: () => ({ query: async () => ({ rows: [] }) }),
   internalQuery: mockInternalQuery,
+  queryEffect: makeQueryEffectMock(mockInternalQuery),
   internalExecute: () => {},
   encryptUrl: mockEncryptUrl,
   decryptUrl: (url: string) => url,

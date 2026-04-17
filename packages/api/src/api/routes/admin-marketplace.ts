@@ -14,7 +14,7 @@ import { createRoute, z } from "@hono/zod-openapi";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { RequestContext } from "@atlas/api/lib/effect/services";
 import { createLogger } from "@atlas/api/lib/logger";
-import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
+import { hasInternalDB, internalQuery, queryEffect } from "@atlas/api/lib/db/internal";
 import { PLAN_TIERS, type PlanTier } from "@useatlas/types";
 import {
   ErrorSchema,
@@ -291,9 +291,7 @@ platformCatalog.openapi(listCatalogRoute, async (c) => {
       if (!hasInternalDB()) {
         return c.json({ error: "not_available", message: "No internal database configured.", requestId }, 404);
       }
-      const rows = yield* Effect.promise(() =>
-        internalQuery<CatalogRow>("SELECT * FROM plugin_catalog ORDER BY created_at DESC"),
-      );
+      const rows = yield* queryEffect<CatalogRow>("SELECT * FROM plugin_catalog ORDER BY created_at DESC");
       return c.json({ entries: rows.map(catalogRowToJson), total: rows.length }, 200);
     }),
     { label: "list plugin catalog" },
@@ -313,31 +311,27 @@ platformCatalog.openapi(createCatalogRoute, async (c) => {
       const id = crypto.randomUUID();
 
       // Check slug uniqueness
-      const existing = yield* Effect.promise(() =>
-        internalQuery<{ id: string }>("SELECT id FROM plugin_catalog WHERE slug = $1", [body.slug]),
-      );
+      const existing = yield* queryEffect<{ id: string }>("SELECT id FROM plugin_catalog WHERE slug = $1", [body.slug]);
       if (existing.length > 0) {
         return c.json({ error: "conflict", message: `A catalog entry with slug "${body.slug}" already exists.`, requestId }, 409);
       }
 
-      const rows = yield* Effect.promise(() =>
-        internalQuery<CatalogRow>(
-          `INSERT INTO plugin_catalog (id, name, slug, description, type, npm_package, icon_url, config_schema, min_plan, enabled)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-           RETURNING *`,
-          [
-            id,
-            body.name,
-            body.slug,
-            body.description ?? null,
-            body.type,
-            body.npmPackage ?? null,
-            body.iconUrl ?? null,
-            body.configSchema ? JSON.stringify(body.configSchema) : null,
-            body.minPlan,
-            body.enabled,
-          ],
-        ),
+      const rows = yield* queryEffect<CatalogRow>(
+        `INSERT INTO plugin_catalog (id, name, slug, description, type, npm_package, icon_url, config_schema, min_plan, enabled)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         RETURNING *`,
+        [
+          id,
+          body.name,
+          body.slug,
+          body.description ?? null,
+          body.type,
+          body.npmPackage ?? null,
+          body.iconUrl ?? null,
+          body.configSchema ? JSON.stringify(body.configSchema) : null,
+          body.minPlan,
+          body.enabled,
+        ],
       );
       if (rows.length === 0) {
         return c.json({ error: "internal_error", message: "Failed to create catalog entry — no row returned.", requestId }, 500);
@@ -382,11 +376,9 @@ platformCatalog.openapi(updateCatalogRoute, async (c) => {
       setClauses.push(`updated_at = now()`);
       params.push(id);
 
-      const rows = yield* Effect.promise(() =>
-        internalQuery<CatalogRow>(
-          `UPDATE plugin_catalog SET ${setClauses.join(", ")} WHERE id = $${paramIdx} RETURNING *`,
-          params,
-        ),
+      const rows = yield* queryEffect<CatalogRow>(
+        `UPDATE plugin_catalog SET ${setClauses.join(", ")} WHERE id = $${paramIdx} RETURNING *`,
+        params,
       );
 
       if (rows.length === 0) {
@@ -410,9 +402,7 @@ platformCatalog.openapi(deleteCatalogRoute, async (c) => {
       }
 
       const { id } = c.req.valid("param");
-      const rows = yield* Effect.promise(() =>
-        internalQuery<{ id: string }>("DELETE FROM plugin_catalog WHERE id = $1 RETURNING id", [id]),
-      );
+      const rows = yield* queryEffect<{ id: string }>("DELETE FROM plugin_catalog WHERE id = $1 RETURNING id", [id]);
 
       if (rows.length === 0) {
         return c.json({ error: "not_found", message: `Catalog entry "${id}" not found.`, requestId }, 404);
@@ -583,11 +573,9 @@ workspaceMarketplace.openapi(installRoute, async (c) => {
       const body = c.req.valid("json");
 
       // Fetch catalog entry
-      const catalogRows = yield* Effect.promise(() =>
-        internalQuery<CatalogRow>(
-          "SELECT * FROM plugin_catalog WHERE id = $1 AND enabled = true",
-          [body.catalogId],
-        ),
+      const catalogRows = yield* queryEffect<CatalogRow>(
+        "SELECT * FROM plugin_catalog WHERE id = $1 AND enabled = true",
+        [body.catalogId],
       );
       if (catalogRows.length === 0) {
         return c.json({ error: "not_found", message: `Catalog entry "${body.catalogId}" not found or disabled.`, requestId }, 404);
@@ -622,16 +610,14 @@ workspaceMarketplace.openapi(installRoute, async (c) => {
       const userId = authResult?.user?.id ?? null;
 
       const id = crypto.randomUUID();
-      const rows = yield* Effect.promise(() =>
-        internalQuery<WorkspacePluginRow>(
-          `INSERT INTO workspace_plugins (id, workspace_id, catalog_id, config, installed_by)
-           VALUES ($1, $2, $3, $4, $5)
-           RETURNING *, (SELECT name FROM plugin_catalog WHERE id = $3) AS name,
-                       (SELECT slug FROM plugin_catalog WHERE id = $3) AS slug,
-                       (SELECT type FROM plugin_catalog WHERE id = $3) AS type,
-                       (SELECT description FROM plugin_catalog WHERE id = $3) AS description`,
-          [id, orgId, body.catalogId, JSON.stringify(body.config ?? {}), userId],
-        ),
+      const rows = yield* queryEffect<WorkspacePluginRow>(
+        `INSERT INTO workspace_plugins (id, workspace_id, catalog_id, config, installed_by)
+         VALUES ($1, $2, $3, $4, $5)
+         RETURNING *, (SELECT name FROM plugin_catalog WHERE id = $3) AS name,
+                     (SELECT slug FROM plugin_catalog WHERE id = $3) AS slug,
+                     (SELECT type FROM plugin_catalog WHERE id = $3) AS type,
+                     (SELECT description FROM plugin_catalog WHERE id = $3) AS description`,
+        [id, orgId, body.catalogId, JSON.stringify(body.config ?? {}), userId],
       );
 
       if (rows.length === 0) {
@@ -653,11 +639,9 @@ workspaceMarketplace.openapi(uninstallRoute, async (c) => {
       const { orgId } = c.var.orgContext;
       const { id } = c.req.valid("param");
 
-      const rows = yield* Effect.promise(() =>
-        internalQuery<{ id: string }>(
-          "DELETE FROM workspace_plugins WHERE id = $1 AND workspace_id = $2 RETURNING id",
-          [id, orgId],
-        ),
+      const rows = yield* queryEffect<{ id: string }>(
+        "DELETE FROM workspace_plugins WHERE id = $1 AND workspace_id = $2 RETURNING id",
+        [id, orgId],
       );
 
       if (rows.length === 0) {
@@ -681,16 +665,14 @@ workspaceMarketplace.openapi(updateConfigRoute, async (c) => {
       const { id } = c.req.valid("param");
       const body = c.req.valid("json");
 
-      const rows = yield* Effect.promise(() =>
-        internalQuery<WorkspacePluginRow>(
-          `UPDATE workspace_plugins SET config = $1
-           WHERE id = $2 AND workspace_id = $3
-           RETURNING *, (SELECT name FROM plugin_catalog WHERE id = workspace_plugins.catalog_id) AS name,
-                       (SELECT slug FROM plugin_catalog WHERE id = workspace_plugins.catalog_id) AS slug,
-                       (SELECT type FROM plugin_catalog WHERE id = workspace_plugins.catalog_id) AS type,
-                       (SELECT description FROM plugin_catalog WHERE id = workspace_plugins.catalog_id) AS description`,
-          [JSON.stringify(body.config), id, orgId],
-        ),
+      const rows = yield* queryEffect<WorkspacePluginRow>(
+        `UPDATE workspace_plugins SET config = $1
+         WHERE id = $2 AND workspace_id = $3
+         RETURNING *, (SELECT name FROM plugin_catalog WHERE id = workspace_plugins.catalog_id) AS name,
+                     (SELECT slug FROM plugin_catalog WHERE id = workspace_plugins.catalog_id) AS slug,
+                     (SELECT type FROM plugin_catalog WHERE id = workspace_plugins.catalog_id) AS type,
+                     (SELECT description FROM plugin_catalog WHERE id = workspace_plugins.catalog_id) AS description`,
+        [JSON.stringify(body.config), id, orgId],
       );
 
       if (rows.length === 0) {

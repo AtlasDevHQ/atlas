@@ -436,6 +436,24 @@ export async function internalQuery<T extends Record<string, unknown>>(
   return result.rows as T[];
 }
 
+/**
+ * Effect-wrapped `internalQuery`.
+ *
+ * Use in `Effect.gen` route handlers instead of `Effect.promise(() => internalQuery(...))`:
+ * `Effect.promise` hides rejections from the Effect error channel (they become unchecked
+ * defects). `queryEffect` uses `Effect.tryPromise` with normalized catch so DB errors
+ * stay typed as `Error` and can be caught / mapped downstream.
+ */
+export function queryEffect<T extends Record<string, unknown>>(
+  sqlStr: string,
+  params?: unknown[],
+): Effect.Effect<T[], Error> {
+  return Effect.tryPromise({
+    try: () => internalQuery<T>(sqlStr, params),
+    catch: normalizeError,
+  });
+}
+
 let _consecutiveFailures = 0;
 const MAX_CONSECUTIVE_FAILURES = 5;
 let _circuitOpen = false;

@@ -144,6 +144,11 @@ mock.module("@atlas/api/lib/db/internal", () => ({
     on: () => {},
   }),
   internalQuery: () => Promise.resolve(mockInternalQueryResult),
+  queryEffect: () => ({
+    [Symbol.iterator]: function* (): Generator<unknown, unknown> {
+      return yield { _tag: "EffectPromise", fn: () => Promise.resolve(mockInternalQueryResult) };
+    },
+  }),
   internalExecute: () => {},
   getWorkspaceRegion: () => Promise.resolve(null),
   setWorkspaceRegion: () => Promise.resolve({ assigned: true }),

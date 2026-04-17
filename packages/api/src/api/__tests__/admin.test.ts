@@ -8,6 +8,7 @@
  */
 
 import { createConnectionMock } from "@atlas/api/testing/connection";
+import { makeQueryEffectMock } from "@atlas/api/testing/api-test-mocks";
 import {
   describe,
   it,
@@ -209,6 +210,7 @@ const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unkno
 mock.module("@atlas/api/lib/db/internal", () => ({
   hasInternalDB: () => mockHasInternalDB,
   internalQuery: mockInternalQuery,
+  queryEffect: makeQueryEffectMock(mockInternalQuery),
   internalExecute: mock(() => {}),
   getInternalDB: mock(() => ({})),
   closeInternalDB: mock(async () => {}),

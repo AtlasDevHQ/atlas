@@ -29,6 +29,7 @@ import {
 import {
   hasInternalDB,
   internalQuery,
+  queryEffect,
   getWorkspaceDetails,
   updateWorkspaceStatus,
   updateWorkspacePlanTier,
@@ -379,7 +380,7 @@ platformAdmin.openapi(listWorkspacesRoute, async (c) => {
       return c.json({ error: "not_configured", message: "Internal database not configured.", requestId }, 404);
     }
 
-    const rows = yield* Effect.promise(() => internalQuery<{
+    const rows = yield* queryEffect<{
       id: string;
       name: string;
       slug: string;
@@ -415,7 +416,7 @@ platformAdmin.openapi(listWorkspacesRoute, async (c) => {
        LEFT JOIN (SELECT org_id, COUNT(*)::int AS cnt FROM connections GROUP BY org_id) cn ON cn.org_id = o.id
        LEFT JOIN (SELECT org_id, COUNT(*)::int AS cnt FROM scheduled_tasks WHERE enabled = true GROUP BY org_id) st ON st.org_id = o.id
        ORDER BY o."createdAt" DESC`,
-    ));
+    );
 
     const workspaces = rows.map((row) => ({
       id: row.id,
@@ -774,9 +775,9 @@ platformAdmin.openapi(platformStatsRoute, async (c) => {
     ]));
 
     // MRR: sum of PLAN_MRR for each active workspace's plan tier
-    const mrrRows = yield* Effect.promise(() => internalQuery<{ plan_tier: string; cnt: number }>(
+    const mrrRows = yield* queryEffect<{ plan_tier: string; cnt: number }>(
       `SELECT plan_tier, COUNT(*)::int AS cnt FROM organization WHERE workspace_status = 'active' GROUP BY plan_tier`,
-    ));
+    );
     const mrr = mrrRows.reduce((sum, row) => sum + (PLAN_MRR[row.plan_tier] ?? 0) * row.cnt, 0);
 
     return c.json({
@@ -801,7 +802,7 @@ platformAdmin.openapi(noisyNeighborsRoute, async (c) => {
     }
 
     // Get current period usage for each active workspace
-    const rows = yield* Effect.promise(() => internalQuery<{
+    const rows = yield* queryEffect<{
       id: string;
       name: string;
       plan_tier: PlanTier;
@@ -820,7 +821,7 @@ platformAdmin.openapi(noisyNeighborsRoute, async (c) => {
          AND us.period = 'monthly'
          AND us.period_start = date_trunc('month', now())
        WHERE o.workspace_status = 'active'`,
-    ));
+    );
 
     if (rows.length === 0) {
       return c.json({ neighbors: [], medians: { queries: 0, tokens: 0, storage: 0 } }, 200);

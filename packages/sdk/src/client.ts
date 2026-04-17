@@ -31,6 +31,9 @@ export type {
   ScheduledTaskRun,
   TableInfo,
   TableColumn,
+  StarterPrompt,
+  StarterPromptProvenance,
+  StarterPromptsResponse,
 } from "@useatlas/types";
 
 import type {
@@ -48,6 +51,7 @@ import type {
   ScheduledTask,
   ScheduledTaskWithRuns,
   ScheduledTaskRun,
+  StarterPromptsResponse,
   TableInfo,
 } from "@useatlas/types";
 import { isChatErrorCode, isRetryableError } from "@useatlas/types";
@@ -162,6 +166,15 @@ export interface ShareConversationResponse {
 
 export interface ListTablesResponse {
   tables: TableInfo[];
+}
+
+// ---------------------------------------------------------------------------
+// Starter prompts
+// ---------------------------------------------------------------------------
+
+export interface GetStarterPromptsOptions {
+  /** Maximum number of prompts to return (server clamps to 1–50, default 6). */
+  limit?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -636,6 +649,27 @@ export function createAtlasClient(options: AtlasClientOptions) {
     async listTables(): Promise<ListTablesResponse> {
       const res = await get("/api/v1/tables");
       return unwrap<ListTablesResponse>(res);
+    },
+
+    /**
+     * Fetch the adaptive list of starter prompts for the current user.
+     *
+     * The list composes favorites and the demo-industry library (a popular
+     * tier is reserved in the wire format but not yet wired on the server).
+     * The server returns prompts in final display order. User context (org,
+     * favorites) is resolved from the caller's credentials, so SDK callers
+     * see the same list the web empty state renders. An empty `prompts`
+     * array signals the cold-start state — no row with
+     * `provenance: "cold-start"` is emitted.
+     */
+    async getStarterPrompts(
+      opts?: GetStarterPromptsOptions,
+    ): Promise<StarterPromptsResponse> {
+      const params = new URLSearchParams();
+      if (opts?.limit != null) params.set("limit", String(opts.limit));
+      const qs = params.toString();
+      const res = await get(`/api/v1/starter-prompts${qs ? `?${qs}` : ""}`);
+      return unwrap<StarterPromptsResponse>(res);
     },
 
     /**

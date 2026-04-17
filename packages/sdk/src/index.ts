@@ -69,4 +69,8 @@ export {
   type ListTablesResponse,
   type TableInfo,
   type TableColumn,
+  type StarterPrompt,
+  type StarterPromptProvenance,
+  type StarterPromptsResponse,
+  type GetStarterPromptsOptions,
 } from "./client";

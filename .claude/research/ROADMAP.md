@@ -1207,7 +1207,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] Signup-connect error-isolation tests double-counting Next.js dev-tools alert (#1488, PR #1489 — scoped queries to `<main>`)
 - [x] Obsidian plugin doc — stale `/api/chat` → `/api/v1/chat` (#1491, surfaced by docs audit)
 - [x] Migrate `internalQuery` call sites from `Effect.promise` to `Effect.tryPromise` (#1468, PR #1493 — 37 sites across 15 routes; extracted `queryEffect<T>()` helper in `@atlas/api/lib/effect` with normalized catch; `makeQueryEffectMock` test helper; found during #1465 silent-failure review)
-- [ ] Pre-existing flaky middleware test `mode 'managed' with valid session returns authenticated` (#1483 — not a 1.2.0 blocker; milestone stripped, tracked standalone)
+- [x] Pre-existing flaky middleware test `mode 'managed' with valid session returns authenticated` (#1483 — fixed by isolating from internal DB so SSO enforcement check short-circuits)
 
 ---
 

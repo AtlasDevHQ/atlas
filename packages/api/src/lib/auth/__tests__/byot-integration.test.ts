@@ -23,6 +23,7 @@ let jwksUrl: string;
 const origJwksUrl = process.env.ATLAS_AUTH_JWKS_URL;
 const origIssuer = process.env.ATLAS_AUTH_ISSUER;
 const origAudience = process.env.ATLAS_AUTH_AUDIENCE;
+const origDatabaseUrl = process.env.DATABASE_URL;
 
 beforeAll(async () => {
   // Generate two RS256 key pairs — one for the JWKS server, one to simulate wrong-key signing
@@ -65,6 +66,10 @@ beforeEach(() => {
   process.env.ATLAS_AUTH_JWKS_URL = jwksUrl;
   process.env.ATLAS_AUTH_ISSUER = TEST_ISSUER;
   process.env.ATLAS_AUTH_AUDIENCE = TEST_AUDIENCE;
+  // Defensive: validateBYOT doesn't itself touch the internal DB, but unsetting
+  // DATABASE_URL keeps these tests immune to any future SSO/internal-DB hooks
+  // added to the BYOT path (mirrors middleware.test.ts).
+  delete process.env.DATABASE_URL;
   resetJWKSCache();
 });
 
@@ -77,6 +82,9 @@ afterEach(() => {
 
   if (origAudience !== undefined) process.env.ATLAS_AUTH_AUDIENCE = origAudience;
   else delete process.env.ATLAS_AUTH_AUDIENCE;
+
+  if (origDatabaseUrl !== undefined) process.env.DATABASE_URL = origDatabaseUrl;
+  else delete process.env.DATABASE_URL;
 
   resetJWKSCache();
 });

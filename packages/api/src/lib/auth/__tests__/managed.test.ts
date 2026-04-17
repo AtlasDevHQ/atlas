@@ -6,15 +6,23 @@ import { _setAuthInstance } from "../server";
 const mockGetSession = mock((): Promise<any> => Promise.resolve(null));
 
 describe("validateManaged()", () => {
+  const origDatabaseUrl = process.env.DATABASE_URL;
+
   beforeEach(() => {
     mockGetSession.mockReset();
     // Inject a fake auth instance whose api.getSession is our mock
     // eslint-disable-next-line @typescript-eslint/no-explicit-any -- injecting partial auth mock for testing
     _setAuthInstance({ api: { getSession: mockGetSession } } as any);
+    // Defensive: validateManaged doesn't itself touch the internal DB, but
+    // unsetting DATABASE_URL keeps these tests immune to any future
+    // internal-DB hooks added to managed validation (mirrors middleware.test.ts).
+    delete process.env.DATABASE_URL;
   });
 
   afterEach(() => {
     _setAuthInstance(null);
+    if (origDatabaseUrl !== undefined) process.env.DATABASE_URL = origDatabaseUrl;
+    else delete process.env.DATABASE_URL;
   });
 
   function makeRequest(headers?: Record<string, string>): Request {

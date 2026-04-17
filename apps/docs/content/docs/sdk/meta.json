@@ -1,0 +1,8 @@
+{
+  "title": "SDK Guides",
+  "description": "Task-focused guides for the @useatlas/sdk TypeScript client",
+  "icon": "Code",
+  "pages": [
+    "starter-prompts"
+  ]
+}

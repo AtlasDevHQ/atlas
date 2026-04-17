@@ -21,6 +21,7 @@ import {
   MOCK_SCHEDULED_TASK_RUNS,
   MOCK_TABLES_RESPONSE,
   MOCK_VALIDATE_SQL_VALID,
+  MOCK_STARTER_PROMPTS,
   type MockServer,
 } from "./mock-server";
 
@@ -475,6 +476,57 @@ describe("listTables()", () => {
   test("401 unauthorized → AtlasError", async () => {
     try {
       await badClient().listTables();
+      expect.unreachable("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(AtlasError);
+      expect((err as AtlasError).status).toBe(401);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getStarterPrompts()
+// ---------------------------------------------------------------------------
+
+describe("getStarterPrompts()", () => {
+  test("returns resolved prompts with { text, provenance } preserving server order", async () => {
+    const result = await client().getStarterPrompts();
+
+    expect(result.total).toBe(MOCK_STARTER_PROMPTS.total);
+    expect(result.prompts).toHaveLength(MOCK_STARTER_PROMPTS.prompts.length);
+    expect(result.prompts.map((p) => p.provenance)).toEqual([
+      "favorite",
+      "popular",
+      "library",
+      "library",
+    ]);
+    expect(result.prompts.map((p) => p.text)).toEqual(
+      MOCK_STARTER_PROMPTS.prompts.map((p) => p.text),
+    );
+  });
+
+  test("ordering matches a direct HTTP fetch against the same endpoint", async () => {
+    const sdkResult = await client().getStarterPrompts({ limit: 3 });
+    const direct = await fetch(`${baseUrl}/api/v1/starter-prompts?limit=3`, {
+      headers: { Authorization: `Bearer ${VALID_API_KEY}` },
+    });
+    const directBody = (await direct.json()) as typeof sdkResult;
+
+    expect(sdkResult.total).toBe(directBody.total);
+    expect(sdkResult.prompts).toEqual(directBody.prompts);
+  });
+
+  test("respects limit param via query string", async () => {
+    const result = await client().getStarterPrompts({ limit: 2 });
+
+    expect(result.prompts).toHaveLength(2);
+    expect(result.prompts[0].text).toBe(MOCK_STARTER_PROMPTS.prompts[0].text);
+    expect(result.prompts[1].text).toBe(MOCK_STARTER_PROMPTS.prompts[1].text);
+  });
+
+  test("401 unauthorized → AtlasError", async () => {
+    try {
+      await badClient().getStarterPrompts();
       expect.unreachable("should have thrown");
     } catch (err) {
       expect(err).toBeInstanceOf(AtlasError);

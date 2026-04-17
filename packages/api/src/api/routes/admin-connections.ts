@@ -17,7 +17,7 @@ import { runHandler } from "@atlas/api/lib/effect/hono";
 import { checkResourceLimit } from "@atlas/api/lib/billing/enforcement";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
-import { buildUnionStatusClause } from "./middleware";
+import { buildUnionStatusClause } from "@atlas/api/lib/mode";
 
 const log = createLogger("admin-connections");
 

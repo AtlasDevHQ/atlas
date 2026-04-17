@@ -377,25 +377,7 @@ export function parseModeFromCookie(cookieHeader: string | null): string | undef
   return undefined;
 }
 
-/**
- * Build the SQL status clause for a query over `connections` or
- * `prompt_collections`.
- *
- * - Published mode: `AND status = 'published'`
- * - Developer mode: `AND status IN ('published', 'draft')` — drafts overlay,
- *   archived rows always excluded
- *
- * Returns a leading-space string ready to concatenate into a WHERE clause.
- * Not used for `semantic_entities`; that table needs the full CTE overlay
- * (see `listEntitiesWithOverlay` in `lib/semantic/entities.ts`).
- */
-export function buildUnionStatusClause(
-  mode: import("@useatlas/types/auth").AtlasMode | undefined,
-): string {
-  return mode === "developer"
-    ? " AND status IN ('published', 'draft')"
-    : " AND status = 'published'";
-}
+export { buildUnionStatusClause } from "@atlas/api/lib/mode";
 
 /**
  * Resolve the effective atlas mode for this request.

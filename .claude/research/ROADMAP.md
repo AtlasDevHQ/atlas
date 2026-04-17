@@ -1215,7 +1215,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 **Replace hardcoded starter prompt grid with an adaptive surface.** Composes per-user favorites, admin-moderated popular queries, and industry-filtered fallback. Participates in the 1.2.0 draft/published mode system so admins control what their team sees. PRD: #1473. Milestone: #35.
 
 ### Foundation
-- [ ] Resolver + `/api/v1/starter-prompts` endpoint + cold-start empty state (#1474)
+- [x] Resolver + `/api/v1/starter-prompts` endpoint + cold-start empty state (#1474, PR #1492 — `StarterPromptResolver` with 4-tier compose order, library + cold-start live; favorites/popular stubbed for later slices; shared types in `@useatlas/types/starter-prompt`; id namespacing; chat empty state wired)
 
 ### Personal surface
 - [ ] Per-user favorites (pin/unpin + resolver integration + pin-on-hover UX) (#1475)

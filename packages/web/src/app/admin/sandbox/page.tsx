@@ -131,9 +131,8 @@ const PROVIDERS: Record<SandboxProviderKey, ProviderInfo> = {
 const PROVIDER_KEYS = Object.keys(PROVIDERS) as SandboxProviderKey[];
 
 // ── Shared design primitives ──────────────────────────────────────
-// Mirrors the copies in admin/branding, admin/custom-domain, admin/integrations.
-// The duplicates are load-bearing until extraction; do not drift them.
-// TODO: extract to @/ui/components/admin/ in a dedicated refactor PR.
+// Intentionally duplicated in several admin pages until the shape is stable
+// enough to extract. Tracked in #1551.
 
 type StatusKind = "connected" | "ready" | "disconnected" | "unavailable";
 
@@ -348,8 +347,7 @@ function InlineError({ children }: { children: ReactNode }) {
 }
 
 /**
- * Progressive-disclosure helper for provider rows. Mirrors the shape in
- * admin/integrations: auto-collapses on `connected`, clears the owning
+ * Progressive-disclosure helper for provider rows. Clears the owning
  * mutation error on explicit collapse so the X can never silently hide
  * a failure the user hasn't seen.
  */
@@ -360,6 +358,8 @@ function useDisclosure(connected: boolean, onCollapseCleanup?: () => void) {
   const panelId = useId();
   const prev = useRef(false);
 
+  // Auto-collapse once the provider becomes connected so a later disconnect
+  // doesn't reopen under stale `expanded=true`.
   useEffect(() => {
     if (connected) setExpanded(false);
   }, [connected]);
@@ -643,6 +643,19 @@ function ProviderRow({
       setFieldValues({});
     });
 
+  // `useDisclosure`'s auto-collapse fires `setExpanded(false)` directly, without
+  // running `onCollapseCleanup`. Reset locally on connect so a later disconnect
+  // + re-expand doesn't pre-fill the credential inputs with the token the user
+  // just saved.
+  const clearConnectError = connectMutation.clearError;
+  useEffect(() => {
+    if (isConnected) {
+      clearConnectError();
+      setValidationError(null);
+      setFieldValues({});
+    }
+  }, [isConnected, clearConnectError]);
+
   const showFull = isConnected || expanded;
 
   if (!showFull) {
@@ -785,9 +798,12 @@ function ProviderRow({
                 placeholder={field.placeholder}
                 className={field.type === "password" ? "font-mono text-sm" : undefined}
                 value={fieldValues[field.key] ?? ""}
-                onChange={(e) =>
-                  setFieldValues((prev) => ({ ...prev, [field.key]: e.target.value }))
-                }
+                onChange={(e) => {
+                  setFieldValues((prev) => ({ ...prev, [field.key]: e.target.value }));
+                  // Clear prior client-side validation so a stale "required"
+                  // message can't mask a fresh server error on resubmit.
+                  if (validationError) setValidationError(null);
+                }}
               />
             </div>
           ))}
@@ -875,6 +891,8 @@ function SelfHostedSandboxView({
             <Button
               size="sm"
               onClick={async () => {
+                // `"__default__"` is a Select sentinel: picking it clears the
+                // workspace override so the platform default takes over.
                 const effectiveBackend =
                   selectedBackend === "__default__" ? "" : selectedBackend;
                 if (effectiveBackend) {
@@ -886,7 +904,7 @@ function SelfHostedSandboxView({
                   await onSetSidecarUrl(sidecarUrl);
                 }
               }}
-              disabled={saving || (!hasChanges && !hasOverride)}
+              disabled={saving || !hasChanges}
             >
               {saving ? (
                 <Loader2 className="mr-1.5 size-3.5 animate-spin" />

@@ -393,6 +393,7 @@ export default function UsersPage() {
     await invite.mutate({
       body: { email: values.email, role: values.role },
       onSuccess: (data) => {
+        if (!data) return;
         setInviteResult({ inviteUrl: data.inviteUrl, emailSent: data.emailSent, emailError: data.emailError, email: values.email });
         setInvitationsVersion((v) => v + 1);
       },

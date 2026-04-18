@@ -164,6 +164,7 @@ function ConnectionFormDialog({
     const data = await testMutation.mutate({
       body: { url, schema: schemaVal || undefined },
       onSuccess: (d) => {
+        if (!d) return;
         setTestResult({
           ok: d.status === "healthy",
           message: d.status === "healthy"

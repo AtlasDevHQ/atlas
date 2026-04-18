@@ -35,6 +35,7 @@ import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { combineMutationErrors } from "@/ui/lib/mutation-errors";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { useDeployMode } from "@/ui/hooks/use-deploy-mode";
 import { formatDateTime } from "@/lib/format";
@@ -412,8 +413,11 @@ export default function SandboxPage() {
     invalidates: refetch,
   });
 
-  const mutationError =
-    saveMutation.error ?? saveUrlMutation.error ?? resetMutation.error;
+  const mutationError = combineMutationErrors([
+    saveMutation.error,
+    saveUrlMutation.error,
+    resetMutation.error,
+  ]);
 
   function clearMutationError() {
     saveMutation.clearError();

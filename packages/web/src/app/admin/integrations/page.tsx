@@ -364,7 +364,7 @@ function InlineError({ children }: { children: ReactNode }) {
  * Disclosure state for a progressive-disclosure integration card.
  *
  * Encapsulates four concerns that would otherwise repeat across every card:
- *  - expand/collapse state and a stable panel id for `aria-controls`
+ *  - expand/collapse state and a stable id applied to the rendered panel
  *  - moving focus into the revealed panel's first field on expand
  *  - returning focus to the trigger button on collapse
  *  - auto-collapsing once the integration becomes `connected` so a future
@@ -892,7 +892,6 @@ function SlackCard({
               size="sm"
               variant="outline"
               aria-expanded={false}
-              aria-controls={panelId}
               onClick={() => setExpanded(true)}
             >
               <Plus className="mr-1.5 size-3.5" />
@@ -1031,7 +1030,6 @@ function TeamsCard({
               size="sm"
               variant="outline"
               aria-expanded={false}
-              aria-controls={panelId}
               onClick={() => setExpanded(true)}
             >
               <Plus className="mr-1.5 size-3.5" />
@@ -1160,7 +1158,6 @@ function DiscordCard({
               size="sm"
               variant="outline"
               aria-expanded={false}
-              aria-controls={panelId}
               onClick={() => setExpanded(true)}
             >
               <Plus className="mr-1.5 size-3.5" />
@@ -1279,7 +1276,6 @@ function TelegramCard({
               size="sm"
               variant="outline"
               aria-expanded={false}
-              aria-controls={panelId}
               onClick={() => setExpanded(true)}
             >
               <Plus className="mr-1.5 size-3.5" />
@@ -1446,7 +1442,6 @@ function GChatCard({
               size="sm"
               variant="outline"
               aria-expanded={false}
-              aria-controls={panelId}
               onClick={() => setExpanded(true)}
             >
               <Plus className="mr-1.5 size-3.5" />
@@ -1621,7 +1616,6 @@ function GitHubCard({
               size="sm"
               variant="outline"
               aria-expanded={false}
-              aria-controls={panelId}
               onClick={() => setExpanded(true)}
             >
               <Plus className="mr-1.5 size-3.5" />
@@ -1785,7 +1779,6 @@ function LinearCard({
               size="sm"
               variant="outline"
               aria-expanded={false}
-              aria-controls={panelId}
               onClick={() => setExpanded(true)}
             >
               <Plus className="mr-1.5 size-3.5" />
@@ -1950,7 +1943,6 @@ function WhatsAppCard({
               size="sm"
               variant="outline"
               aria-expanded={false}
-              aria-controls={panelId}
               onClick={() => setExpanded(true)}
             >
               <Plus className="mr-1.5 size-3.5" />

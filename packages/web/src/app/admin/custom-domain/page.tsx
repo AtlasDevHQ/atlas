@@ -362,7 +362,10 @@ function CustomDomainPageContent() {
   }
 
   const mutationError = verifyError ?? removeError;
-  const clearMutationError = verifyError ? clearVerifyError : clearRemoveError;
+  function clearMutationError() {
+    clearVerifyError();
+    clearRemoveError();
+  }
 
   function statusKindFor(d: CustomDomain): StatusKind {
     if (d.status === "verified") return "connected";

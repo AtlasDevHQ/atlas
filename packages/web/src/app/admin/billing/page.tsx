@@ -85,10 +85,8 @@ interface BillingStatus {
 }
 
 // ── Shared Design Primitives ──────────────────────────────────────
-//
-// Lifted from admin/integrations after the first /revamp pass. If a third
-// admin page adopts the same shape, extract these into
-// packages/web/src/ui/components/admin/.
+// Local copies of admin/integrations primitives. Promote to
+// @/ui/components/admin/ once a third page reuses them.
 
 type StatusKind = "connected" | "disconnected" | "unavailable";
 
@@ -759,7 +757,6 @@ function ModelRow({ data, onSaved }: { data: BillingStatus; onSaved: () => void 
             size="sm"
             variant="outline"
             aria-expanded={false}
-            aria-controls={panelId}
             onClick={() => setExpanded(true)}
           >
             <Plus className="mr-1.5 size-3.5" />
@@ -828,7 +825,6 @@ function ByotRow({
 
   return (
     <div className="space-y-2">
-      <InlineError>{error}</InlineError>
       <CompactRow
         icon={Zap}
         title="Bring your own token"
@@ -852,6 +848,7 @@ function ByotRow({
           </div>
         }
       />
+      <InlineError>{error}</InlineError>
     </div>
   );
 }

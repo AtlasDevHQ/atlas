@@ -1,33 +1,15 @@
 "use client";
 
-import { useState } from "react";
+import {
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type ComponentType,
+  type ReactNode,
+  type RefObject,
+} from "react";
 import { z } from "zod";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -39,6 +21,16 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
@@ -52,9 +44,12 @@ import {
   Cloud,
   Cpu,
   Loader2,
+  Plus,
   RotateCcw,
   Save,
   Server,
+  Trash2,
+  X,
 } from "lucide-react";
 
 // ── Types ─────────────────────────────────────────────────────────
@@ -94,14 +89,20 @@ type SandboxStatus = z.infer<typeof SandboxStatusSchema>;
 interface ProviderInfo {
   label: string;
   description: string;
-  icon: typeof Cloud;
-  fields: { key: string; label: string; type: "text" | "password"; placeholder: string; required: boolean }[];
+  icon: ComponentType<{ className?: string }>;
+  fields: {
+    key: string;
+    label: string;
+    type: "text" | "password";
+    placeholder: string;
+    required: boolean;
+  }[];
 }
 
 const PROVIDERS: Record<SandboxProviderKey, ProviderInfo> = {
   vercel: {
     label: "Vercel Sandbox",
-    description: "Firecracker microVM with network isolation. Bring your own Vercel account.",
+    description: "Firecracker microVM with network isolation.",
     icon: Cpu,
     fields: [
       { key: "accessToken", label: "Access Token", type: "password", placeholder: "vercel_...", required: true },
@@ -110,7 +111,7 @@ const PROVIDERS: Record<SandboxProviderKey, ProviderInfo> = {
   },
   e2b: {
     label: "E2B",
-    description: "Ephemeral cloud sandboxes with sub-second startup. Bring your own API key.",
+    description: "Ephemeral cloud sandboxes with sub-second startup.",
     icon: Box,
     fields: [
       { key: "apiKey", label: "API Key", type: "password", placeholder: "e2b_...", required: true },
@@ -118,7 +119,7 @@ const PROVIDERS: Record<SandboxProviderKey, ProviderInfo> = {
   },
   daytona: {
     label: "Daytona",
-    description: "Cloud-hosted development sandboxes. Bring your own API key.",
+    description: "Cloud-hosted development sandboxes.",
     icon: Server,
     fields: [
       { key: "apiKey", label: "API Key", type: "password", placeholder: "daytona_...", required: true },
@@ -128,6 +129,260 @@ const PROVIDERS: Record<SandboxProviderKey, ProviderInfo> = {
 };
 
 const PROVIDER_KEYS = Object.keys(PROVIDERS) as SandboxProviderKey[];
+
+// ── Shared design primitives ──────────────────────────────────────
+// Mirrors the copies in admin/branding, admin/custom-domain, admin/integrations.
+// The duplicates are load-bearing until extraction; do not drift them.
+// TODO: extract to @/ui/components/admin/ in a dedicated refactor PR.
+
+type StatusKind = "connected" | "ready" | "disconnected" | "unavailable";
+
+function StatusDot({ kind, className }: { kind: StatusKind; className?: string }) {
+  return (
+    <span
+      aria-hidden
+      className={cn(
+        "relative inline-flex size-1.5 shrink-0 rounded-full",
+        kind === "connected" &&
+          "bg-primary shadow-[0_0_0_3px_color-mix(in_oklch,var(--primary)_15%,transparent)]",
+        kind === "ready" && "bg-primary/70",
+        kind === "disconnected" && "bg-muted-foreground/40",
+        kind === "unavailable" &&
+          "bg-muted-foreground/20 outline-1 outline-dashed outline-muted-foreground/30",
+        className,
+      )}
+    >
+      {kind === "connected" && (
+        <span className="absolute inset-0 rounded-full bg-primary/60 motion-safe:animate-ping" />
+      )}
+    </span>
+  );
+}
+
+function StatusPill({ kind, label }: { kind: StatusKind; label: string }) {
+  return (
+    <span
+      className={cn(
+        "flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-[0.08em]",
+        kind === "connected" && "text-primary",
+        kind === "ready" && "text-primary/80",
+        (kind === "disconnected" || kind === "unavailable") && "text-muted-foreground",
+      )}
+    >
+      <StatusDot kind={kind} />
+      {label}
+    </span>
+  );
+}
+
+function SectionHeading({ title, description }: { title: string; description: string }) {
+  return (
+    <div className="mb-3">
+      <h2 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+        {title}
+      </h2>
+      <p className="mt-0.5 text-xs text-muted-foreground/80">{description}</p>
+    </div>
+  );
+}
+
+function CompactRow({
+  icon: Icon,
+  title,
+  description,
+  status,
+  action,
+}: {
+  icon: ComponentType<{ className?: string }>;
+  title: string;
+  description: ReactNode;
+  status: StatusKind;
+  action?: ReactNode;
+}) {
+  return (
+    <div
+      className={cn(
+        "group flex items-center gap-3 rounded-xl border bg-card/40 px-3.5 py-2.5 transition-colors",
+        "hover:bg-card/70 hover:border-border/80",
+        status === "unavailable" && "opacity-60",
+      )}
+    >
+      <span className="grid size-8 shrink-0 place-items-center rounded-lg border bg-background/40 text-muted-foreground">
+        <Icon className="size-4" />
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <h3 className="truncate text-sm font-semibold leading-tight tracking-tight">
+            {title}
+          </h3>
+          <StatusDot kind={status} />
+        </div>
+        <p className="mt-0.5 truncate text-xs text-muted-foreground">{description}</p>
+      </div>
+      {action && <div className="shrink-0">{action}</div>}
+    </div>
+  );
+}
+
+function ProviderShell({
+  id,
+  icon: Icon,
+  title,
+  description,
+  status,
+  trailing,
+  onCollapse,
+  children,
+  actions,
+  panelRef,
+}: {
+  id?: string;
+  icon: ComponentType<{ className?: string }>;
+  title: string;
+  description: ReactNode;
+  status: StatusKind;
+  trailing?: ReactNode;
+  onCollapse?: () => void;
+  children?: ReactNode;
+  actions?: ReactNode;
+  panelRef?: RefObject<HTMLElement | null>;
+}) {
+  return (
+    <section
+      id={id}
+      ref={panelRef}
+      className={cn(
+        "relative flex flex-col overflow-hidden rounded-xl border bg-card/60 transition-colors",
+        status === "connected" && "border-primary/20",
+        status === "ready" && "border-primary/10",
+      )}
+    >
+      {status === "connected" && (
+        <span
+          aria-hidden
+          className="pointer-events-none absolute left-0 top-4 bottom-4 w-px bg-linear-to-b from-transparent via-primary to-transparent opacity-70"
+        />
+      )}
+      <header className="flex items-start gap-3 p-4 pb-3">
+        <span
+          className={cn(
+            "grid size-9 shrink-0 place-items-center rounded-lg border bg-background/40",
+            status === "connected" && "border-primary/30 text-primary",
+            status === "ready" && "border-primary/20 text-primary/80",
+            (status === "disconnected" || status === "unavailable") && "text-muted-foreground",
+          )}
+        >
+          <Icon className="size-4" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <h3 className="truncate text-sm font-semibold leading-tight tracking-tight">
+              {title}
+            </h3>
+            {trailing ? (
+              <div className="ml-auto flex items-center gap-1.5">{trailing}</div>
+            ) : status === "connected" ? (
+              <span className="ml-auto">
+                <StatusPill kind="connected" label="Live" />
+              </span>
+            ) : onCollapse ? (
+              <button
+                type="button"
+                aria-label="Cancel"
+                onClick={onCollapse}
+                className="ml-auto -m-1 grid size-6 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              >
+                <X className="size-3.5" />
+              </button>
+            ) : null}
+          </div>
+          <p className="mt-0.5 text-xs leading-snug text-muted-foreground">{description}</p>
+        </div>
+      </header>
+      {children != null && (
+        <div className="flex-1 space-y-4 px-4 pb-3 text-sm">{children}</div>
+      )}
+      {actions && (
+        <footer className="flex flex-wrap items-center justify-end gap-2 border-t border-border/50 bg-muted/20 px-4 py-2.5">
+          {actions}
+        </footer>
+      )}
+    </section>
+  );
+}
+
+function DetailRow({
+  label,
+  value,
+  mono,
+}: {
+  label: string;
+  value: ReactNode;
+  mono?: boolean;
+}) {
+  return (
+    <div className="flex items-baseline justify-between gap-3 py-1 text-xs">
+      <span className="shrink-0 text-muted-foreground">{label}</span>
+      <span className={cn("min-w-0 text-right", mono ? "font-mono text-[11px]" : "font-medium")}>
+        {value}
+      </span>
+    </div>
+  );
+}
+
+function DetailList({ children }: { children: ReactNode }) {
+  return (
+    <div className="rounded-lg border bg-muted/20 px-3 py-1.5 divide-y divide-border/50">
+      {children}
+    </div>
+  );
+}
+
+function InlineError({ children }: { children: ReactNode }) {
+  if (!children) return null;
+  return (
+    <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+      {children}
+    </div>
+  );
+}
+
+/**
+ * Progressive-disclosure helper for provider rows. Mirrors the shape in
+ * admin/integrations: auto-collapses on `connected`, clears the owning
+ * mutation error on explicit collapse so the X can never silently hide
+ * a failure the user hasn't seen.
+ */
+function useDisclosure(connected: boolean, onCollapseCleanup?: () => void) {
+  const [expanded, setExpanded] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const panelRef = useRef<HTMLElement | null>(null);
+  const panelId = useId();
+  const prev = useRef(false);
+
+  useEffect(() => {
+    if (connected) setExpanded(false);
+  }, [connected]);
+
+  useEffect(() => {
+    if (expanded && !prev.current) {
+      const first = panelRef.current?.querySelector<HTMLElement>(
+        "input:not([disabled]), textarea:not([disabled])",
+      );
+      first?.focus();
+    } else if (!expanded && prev.current) {
+      triggerRef.current?.focus();
+    }
+    prev.current = expanded;
+  }, [expanded]);
+
+  const collapse = () => {
+    setExpanded(false);
+    onCollapseCleanup?.();
+  };
+
+  return { expanded, setExpanded, collapse, triggerRef, panelRef, panelId };
+}
 
 // ── Page ──────────────────────────────────────────────────────────
 
@@ -160,22 +415,25 @@ export default function SandboxPage() {
   const mutationError =
     saveMutation.error ?? saveUrlMutation.error ?? resetMutation.error;
 
+  function clearMutationError() {
+    saveMutation.clearError();
+    saveUrlMutation.clearError();
+    resetMutation.clearError();
+  }
+
   return (
     <div className="p-6">
-    <ErrorBoundary>
-      <div className="space-y-6">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">
+      <ErrorBoundary>
+        <div className="mx-auto mb-8 max-w-3xl">
+          <h1 className="text-2xl font-semibold tracking-tight">
             {isSaas ? "Execution Environment" : "Sandbox"}
           </h1>
-          <p className="text-muted-foreground">
+          <p className="mt-1 text-sm text-muted-foreground">
             {isSaas
-              ? "Connect and manage sandbox providers for code execution and data exploration."
-              : "Configure the sandbox backend used for the explore and Python tools."}
+              ? "Atlas runs code in isolated sandboxes. Use the managed one, or connect your own cloud."
+              : "Choose how the explore and Python tools execute commands for this workspace."}
           </p>
         </div>
-
-        {mutationError && <ErrorBanner message={mutationError} />}
 
         <AdminContentWrapper
           loading={loading}
@@ -185,59 +443,68 @@ export default function SandboxPage() {
           emptyTitle="Sandbox unavailable"
           emptyDescription="No sandbox status available."
         >
-          {data &&
-            (isSaas ? (
-              <SandboxIntegrationGrid
-                status={data}
-                onSelectBackend={async (backendId) => {
-                  await saveMutation.mutate({ body: { value: backendId } });
-                }}
-                onRefetch={refetch}
-                saving={saveMutation.saving}
+          <div className="mx-auto max-w-3xl space-y-8">
+            {mutationError && (
+              <ErrorBanner
+                message={mutationError}
+                onRetry={clearMutationError}
+                actionLabel="Dismiss"
               />
-            ) : (
-              <SandboxConfigCard
-                status={data}
-                onSelectBackend={async (backendId) => {
-                  await saveMutation.mutate({ body: { value: backendId } });
-                }}
-                onSetSidecarUrl={async (url) => {
-                  await saveUrlMutation.mutate({ body: { value: url } });
-                }}
-                onReset={async () => {
-                  await Promise.all([
-                    resetMutation.mutate({
-                      path: "/api/v1/admin/settings/ATLAS_SANDBOX_BACKEND",
-                    }),
-                    resetMutation.mutate({
-                      path: "/api/v1/admin/settings/ATLAS_SANDBOX_URL",
-                    }),
-                  ]);
-                }}
-                saving={
-                  saveMutation.saving ||
-                  saveUrlMutation.saving ||
-                  resetMutation.saving
-                }
-              />
-            ))}
+            )}
+
+            {data &&
+              (isSaas ? (
+                <SaasSandboxView
+                  status={data}
+                  onSelectBackend={(backendId) =>
+                    saveMutation.mutate({ body: { value: backendId } })
+                  }
+                  onRefetch={refetch}
+                  saving={saveMutation.saving}
+                />
+              ) : (
+                <SelfHostedSandboxView
+                  status={data}
+                  onSelectBackend={(backendId) =>
+                    saveMutation.mutate({ body: { value: backendId } })
+                  }
+                  onSetSidecarUrl={(url) =>
+                    saveUrlMutation.mutate({ body: { value: url } })
+                  }
+                  onReset={async () => {
+                    await Promise.all([
+                      resetMutation.mutate({
+                        path: "/api/v1/admin/settings/ATLAS_SANDBOX_BACKEND",
+                      }),
+                      resetMutation.mutate({
+                        path: "/api/v1/admin/settings/ATLAS_SANDBOX_URL",
+                      }),
+                    ]);
+                  }}
+                  saving={
+                    saveMutation.saving ||
+                    saveUrlMutation.saving ||
+                    resetMutation.saving
+                  }
+                />
+              ))}
+          </div>
         </AdminContentWrapper>
-      </div>
-    </ErrorBoundary>
+      </ErrorBoundary>
     </div>
   );
 }
 
-// ── SaaS Integration Grid ─────────────────────────────────────────
+// ── SaaS view ─────────────────────────────────────────────────────
 
-function SandboxIntegrationGrid({
+function SaasSandboxView({
   status,
   onSelectBackend,
   onRefetch,
   saving,
 }: {
   status: SandboxStatus;
-  onSelectBackend: (backendId: string) => Promise<void>;
+  onSelectBackend: (backendId: string) => Promise<unknown>;
   onRefetch: () => void;
   saving: boolean;
 }) {
@@ -247,91 +514,91 @@ function SandboxIntegrationGrid({
     !connected.some((p) => p.provider === status.workspaceOverride);
 
   return (
-    <div className="grid gap-4 md:grid-cols-2">
-      {/* Atlas Cloud Sandbox — always first */}
-      <ManagedSandboxCard
-        isActive={isManagedActive}
-        onSelect={async () => onSelectBackend("sidecar")}
-        saving={saving}
-      />
+    <>
+      <section>
+        <SectionHeading
+          title="Managed"
+          description="Atlas-hosted container service. No setup — always available."
+        />
+        <ManagedSandboxShell
+          isActive={isManagedActive}
+          onSelect={() => onSelectBackend("sidecar")}
+          saving={saving}
+        />
+      </section>
 
-      {/* BYOC provider cards */}
-      {PROVIDER_KEYS.map((key) => {
-        const provider = connected.find((p) => p.provider === key);
-        return (
-          <ProviderCard
-            key={key}
-            providerKey={key}
-            connection={provider ?? null}
-            isActive={provider?.isActive ?? false}
-            onSelect={async () => onSelectBackend(key)}
-            onRefetch={onRefetch}
-            saving={saving}
-          />
-        );
-      })}
-    </div>
+      <section>
+        <SectionHeading
+          title="Bring your own cloud"
+          description="Connect your own provider for isolated execution you control."
+        />
+        <div className="space-y-2">
+          {PROVIDER_KEYS.map((key) => {
+            const provider = connected.find((p) => p.provider === key);
+            return (
+              <ProviderRow
+                key={key}
+                providerKey={key}
+                connection={provider ?? null}
+                isActive={provider?.isActive ?? false}
+                onSelect={() => onSelectBackend(key)}
+                onRefetch={onRefetch}
+                saving={saving}
+              />
+            );
+          })}
+        </div>
+      </section>
+    </>
   );
 }
 
-// ── Managed Sandbox Card ──────────────────────────────────────────
+// ── Managed Sandbox ───────────────────────────────────────────────
 
-function ManagedSandboxCard({
+function ManagedSandboxShell({
   isActive,
   onSelect,
   saving,
 }: {
   isActive: boolean;
-  onSelect: () => Promise<void>;
+  onSelect: () => Promise<unknown>;
   saving: boolean;
 }) {
+  const status: StatusKind = isActive ? "connected" : "ready";
   return (
-    <Card
-      className={cn(
-        "transition-colors",
-        isActive && "ring-2 ring-primary border-primary",
-      )}
-    >
-      <CardHeader className="pb-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Cloud className="size-5 text-muted-foreground" />
-            <CardTitle className="text-base">Atlas Cloud Sandbox</CardTitle>
-          </div>
-          <div className="flex gap-1.5">
-            <Badge variant="secondary" className="text-[10px]">
-              Recommended
-            </Badge>
-            {isActive && (
-              <Badge variant="default" className="bg-green-600 text-[10px]">
-                Active
-              </Badge>
-            )}
-          </div>
-        </div>
-        <CardDescription>
-          Managed container service with HTTP isolation. No setup required.
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
-        {isActive ? (
-          <p className="text-sm text-muted-foreground">
-            This is your current execution environment.
-          </p>
+    <ProviderShell
+      icon={Cloud}
+      title="Atlas Cloud Sandbox"
+      description="Managed container service with HTTP isolation. Recommended for most workspaces."
+      status={status}
+      trailing={
+        isActive ? (
+          <StatusPill kind="connected" label="Live" />
         ) : (
+          <StatusPill kind="ready" label="Available" />
+        )
+      }
+      actions={
+        !isActive && (
           <Button size="sm" onClick={onSelect} disabled={saving}>
             {saving && <Loader2 className="mr-1.5 size-3.5 animate-spin" />}
-            Select
+            Use this
           </Button>
-        )}
-      </CardContent>
-    </Card>
+        )
+      }
+    >
+      {isActive ? null : (
+        <p className="text-xs text-muted-foreground">
+          Switch back here anytime — no credentials required.
+        </p>
+      )}
+    </ProviderShell>
   );
 }
 
-// ── BYOC Provider Card ────────────────────────────────────────────
+// ── BYOC Provider Row ─────────────────────────────────────────────
 
-function ProviderCard({
+function ProviderRow({
   providerKey,
   connection,
   isActive,
@@ -342,153 +609,19 @@ function ProviderCard({
   providerKey: SandboxProviderKey;
   connection: ConnectedProvider | null;
   isActive: boolean;
-  onSelect: () => Promise<void>;
+  onSelect: () => Promise<unknown>;
   onRefetch: () => void;
   saving: boolean;
 }) {
   const info = PROVIDERS[providerKey];
-  const Icon = info.icon;
   const isConnected = !!connection;
-  const [connectOpen, setConnectOpen] = useState(false);
+  const status: StatusKind = isActive ? "connected" : isConnected ? "ready" : "disconnected";
 
   const disconnectMutation = useAdminMutation({
     path: `/api/v1/admin/sandbox/disconnect/${providerKey}`,
     method: "DELETE",
     invalidates: onRefetch,
   });
-
-  return (
-    <>
-      <Card
-        className={cn(
-          "transition-colors",
-          isActive && "ring-2 ring-primary border-primary",
-        )}
-      >
-        <CardHeader className="pb-3">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <Icon className="size-5 text-muted-foreground" />
-              <CardTitle className="text-base">{info.label}</CardTitle>
-            </div>
-            {isActive ? (
-              <Badge variant="default" className="bg-green-600 text-[10px]">
-                Active
-              </Badge>
-            ) : isConnected ? (
-              <Badge variant="secondary" className="text-[10px]">
-                Connected
-              </Badge>
-            ) : null}
-          </div>
-          <CardDescription>{info.description}</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {isConnected && (
-            <div className="space-y-2 text-sm">
-              {connection.displayName && (
-                <div className="flex justify-between">
-                  <span className="text-muted-foreground">Account</span>
-                  <span className="font-medium">{connection.displayName}</span>
-                </div>
-              )}
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Connected</span>
-                <span>{formatDateTime(connection.connectedAt)}</span>
-              </div>
-            </div>
-          )}
-
-          {disconnectMutation.error && (
-            <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-              {disconnectMutation.error}
-            </div>
-          )}
-
-          <div className="flex gap-2">
-            {!isConnected && (
-              <Button size="sm" onClick={() => setConnectOpen(true)}>
-                Connect
-              </Button>
-            )}
-
-            {isConnected && !isActive && (
-              <Button size="sm" onClick={onSelect} disabled={saving}>
-                {saving && <Loader2 className="mr-1.5 size-3.5 animate-spin" />}
-                Select
-              </Button>
-            )}
-
-            {isConnected && (
-              <AlertDialog>
-                <AlertDialogTrigger asChild>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={disconnectMutation.saving}
-                  >
-                    {disconnectMutation.saving && (
-                      <Loader2 className="mr-1.5 size-3.5 animate-spin" />
-                    )}
-                    Disconnect
-                  </Button>
-                </AlertDialogTrigger>
-                <AlertDialogContent>
-                  <AlertDialogHeader>
-                    <AlertDialogTitle>
-                      Disconnect {info.label}?
-                    </AlertDialogTitle>
-                    <AlertDialogDescription>
-                      This will remove your {info.label} credentials.
-                      {isActive &&
-                        " Since this is your active sandbox, execution will fall back to Atlas Cloud Sandbox."}
-                    </AlertDialogDescription>
-                  </AlertDialogHeader>
-                  <AlertDialogFooter>
-                    <AlertDialogCancel>Cancel</AlertDialogCancel>
-                    <AlertDialogAction
-                      onClick={async () => {
-                        await disconnectMutation.mutate({});
-                      }}
-                      className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-                    >
-                      Disconnect
-                    </AlertDialogAction>
-                  </AlertDialogFooter>
-                </AlertDialogContent>
-              </AlertDialog>
-            )}
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Connect dialog */}
-      <ConnectDialog
-        providerKey={providerKey}
-        open={connectOpen}
-        onOpenChange={setConnectOpen}
-        onRefetch={onRefetch}
-      />
-    </>
-  );
-}
-
-// ── Connect Dialog ────────────────────────────────────────────────
-
-function ConnectDialog({
-  providerKey,
-  open,
-  onOpenChange,
-  onRefetch,
-}: {
-  providerKey: SandboxProviderKey;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  onRefetch: () => void;
-}) {
-  const info = PROVIDERS[providerKey];
-  const [fieldValues, setFieldValues] = useState<Record<string, string>>({});
-  const [validationError, setValidationError] = useState<string | null>(null);
 
   const connectMutation = useAdminMutation<{
     connected: boolean;
@@ -500,116 +633,179 @@ function ConnectDialog({
     invalidates: onRefetch,
   });
 
-  function resetForm() {
-    setFieldValues({});
-    setValidationError(null);
-    connectMutation.clearError();
+  const [fieldValues, setFieldValues] = useState<Record<string, string>>({});
+  const [validationError, setValidationError] = useState<string | null>(null);
+
+  const { expanded, setExpanded, collapse, triggerRef, panelRef, panelId } =
+    useDisclosure(isConnected, () => {
+      connectMutation.clearError();
+      setValidationError(null);
+      setFieldValues({});
+    });
+
+  const showFull = isConnected || expanded;
+
+  if (!showFull) {
+    return (
+      <CompactRow
+        icon={info.icon}
+        title={info.label}
+        description={info.description}
+        status={status}
+        action={
+          <Button
+            ref={triggerRef}
+            size="sm"
+            variant="outline"
+            aria-expanded={false}
+            onClick={() => setExpanded(true)}
+          >
+            <Plus className="mr-1.5 size-3.5" />
+            Connect
+          </Button>
+        }
+      />
+    );
   }
 
-  async function handleSubmit() {
+  async function handleConnect() {
     setValidationError(null);
-
-    // Client-side required field check
     for (const field of info.fields) {
       if (field.required && !fieldValues[field.key]?.trim()) {
         setValidationError(`${field.label} is required`);
         return;
       }
     }
-
     const credentials: Record<string, string> = {};
     for (const field of info.fields) {
       const val = fieldValues[field.key]?.trim();
       if (val) credentials[field.key] = val;
     }
-
-    const result = await connectMutation.mutate({
-      body: { credentials },
-    });
-
-    if (result.ok) {
-      resetForm();
-      onOpenChange(false);
-    } else {
-      setValidationError(result.error);
-    }
+    const result = await connectMutation.mutate({ body: { credentials } });
+    if (!result.ok) setValidationError(result.error);
   }
 
   return (
-    <Dialog
-      open={open}
-      onOpenChange={(v) => {
-        if (!v) resetForm();
-        onOpenChange(v);
-      }}
+    <ProviderShell
+      id={panelId}
+      panelRef={panelRef}
+      icon={info.icon}
+      title={info.label}
+      description={info.description}
+      status={status}
+      trailing={
+        isActive ? (
+          <StatusPill kind="connected" label="Live" />
+        ) : isConnected ? (
+          <StatusPill kind="ready" label="Connected" />
+        ) : undefined
+      }
+      onCollapse={!isConnected ? collapse : undefined}
+      actions={
+        isConnected ? (
+          <>
+            {!isActive && (
+              <Button size="sm" onClick={onSelect} disabled={saving}>
+                {saving && <Loader2 className="mr-1.5 size-3.5 animate-spin" />}
+                Use this
+              </Button>
+            )}
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="text-muted-foreground"
+                  disabled={disconnectMutation.saving}
+                >
+                  {disconnectMutation.saving ? (
+                    <Loader2 className="mr-1.5 size-3.5 animate-spin" />
+                  ) : (
+                    <Trash2 className="mr-1.5 size-3.5" />
+                  )}
+                  Disconnect
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>Disconnect {info.label}?</AlertDialogTitle>
+                  <AlertDialogDescription>
+                    This removes your {info.label} credentials.
+                    {isActive &&
+                      " Since this is your active sandbox, execution will fall back to Atlas Cloud Sandbox."}
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Cancel</AlertDialogCancel>
+                  <AlertDialogAction
+                    onClick={async () => {
+                      await disconnectMutation.mutate({});
+                    }}
+                    className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                  >
+                    Disconnect
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
+          </>
+        ) : (
+          <Button size="sm" onClick={handleConnect} disabled={connectMutation.saving}>
+            {connectMutation.saving && (
+              <Loader2 className="mr-1.5 size-3.5 animate-spin" />
+            )}
+            Validate & connect
+          </Button>
+        )
+      }
     >
-      <DialogContent>
-        <DialogHeader>
-          <DialogTitle>Connect {info.label}</DialogTitle>
-          <DialogDescription>
-            Enter your credentials. They will be validated against the provider
-            API before saving.
-          </DialogDescription>
-        </DialogHeader>
-
-        <div className="space-y-4 py-2">
+      {isConnected ? (
+        <DetailList>
+          {connection.displayName && (
+            <DetailRow label="Account" value={connection.displayName} />
+          )}
+          <DetailRow label="Connected" value={formatDateTime(connection.connectedAt)} />
+          {connection.validatedAt && (
+            <DetailRow label="Validated" value={formatDateTime(connection.validatedAt)} />
+          )}
+        </DetailList>
+      ) : (
+        <div className="space-y-3">
           {info.fields.map((field) => (
-            <div key={field.key} className="space-y-2">
-              <Label htmlFor={`connect-${field.key}`}>
+            <div key={field.key} className="space-y-1">
+              <Label htmlFor={`${providerKey}-${field.key}`}>
                 {field.label}
                 {!field.required && (
-                  <span className="ml-1 text-xs text-muted-foreground">
-                    (optional)
-                  </span>
+                  <span className="ml-1 text-xs text-muted-foreground">(optional)</span>
                 )}
               </Label>
               <Input
-                id={`connect-${field.key}`}
+                id={`${providerKey}-${field.key}`}
                 type={field.type}
                 placeholder={field.placeholder}
+                className={field.type === "password" ? "font-mono text-sm" : undefined}
                 value={fieldValues[field.key] ?? ""}
                 onChange={(e) =>
-                  setFieldValues((prev) => ({
-                    ...prev,
-                    [field.key]: e.target.value,
-                  }))
+                  setFieldValues((prev) => ({ ...prev, [field.key]: e.target.value }))
                 }
               />
             </div>
           ))}
-
-          {(validationError ?? connectMutation.error) && (
-            <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-              {validationError ?? connectMutation.error}
-            </div>
-          )}
+          <p className="text-[11px] text-muted-foreground">
+            Credentials are validated against the provider API before saving.
+          </p>
         </div>
+      )}
 
-        <DialogFooter>
-          <Button
-            variant="outline"
-            onClick={() => {
-              resetForm();
-              onOpenChange(false);
-            }}
-          >
-            Cancel
-          </Button>
-          <Button onClick={handleSubmit} disabled={connectMutation.saving}>
-            {connectMutation.saving && (
-              <Loader2 className="mr-1.5 size-3.5 animate-spin" />
-            )}
-            Validate & Connect
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+      <InlineError>{validationError ?? connectMutation.error}</InlineError>
+      <InlineError>{disconnectMutation.error}</InlineError>
+    </ProviderShell>
   );
 }
 
-// ── Sandbox Config Card (self-hosted) ─────────────────────────────
+// ── Self-hosted view ──────────────────────────────────────────────
 
-function SandboxConfigCard({
+function SelfHostedSandboxView({
   status,
   onSelectBackend,
   onSetSidecarUrl,
@@ -617,17 +813,15 @@ function SandboxConfigCard({
   saving,
 }: {
   status: SandboxStatus;
-  onSelectBackend: (backendId: string) => Promise<void>;
-  onSetSidecarUrl: (url: string) => Promise<void>;
+  onSelectBackend: (backendId: string) => Promise<unknown>;
+  onSetSidecarUrl: (url: string) => Promise<unknown>;
   onReset: () => Promise<void>;
   saving: boolean;
 }) {
   const [selectedBackend, setSelectedBackend] = useState(
     status.workspaceOverride ?? "",
   );
-  const [sidecarUrl, setSidecarUrl] = useState(
-    status.workspaceSidecarUrl ?? "",
-  );
+  const [sidecarUrl, setSidecarUrl] = useState(status.workspaceSidecarUrl ?? "");
 
   const availableBackends = status.availableBackends.filter((b) => b.available);
   const showSidecarUrl =
@@ -636,53 +830,87 @@ function SandboxConfigCard({
   const hasChanges =
     (selectedBackend && selectedBackend !== (status.workspaceOverride ?? "")) ||
     sidecarUrl !== (status.workspaceSidecarUrl ?? "");
+  const hasOverride = Boolean(status.workspaceOverride);
+  const shellStatus: StatusKind = hasOverride ? "connected" : "ready";
 
   return (
-    <Card>
-      <CardHeader>
-        <div className="flex items-center justify-between">
-          <div>
-            <CardTitle>Sandbox Backend</CardTitle>
-            <CardDescription>
-              Choose how the explore and Python tools execute commands.
-            </CardDescription>
-          </div>
-          <Badge variant="outline" className="text-xs">
-            Active: {status.activeBackend}
-          </Badge>
-        </div>
-      </CardHeader>
-      <CardContent className="space-y-6">
-        {/* Current status */}
-        <div className="rounded-md border bg-muted/50 p-4">
-          <div className="grid gap-2 text-sm">
-            <div className="flex justify-between">
-              <span className="text-muted-foreground">Platform default</span>
-              <span className="font-medium">{status.platformDefault}</span>
-            </div>
-            {status.workspaceOverride && (
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">
-                  Workspace override
-                </span>
-                <Badge variant="secondary" className="text-xs">
-                  {status.workspaceOverride}
-                </Badge>
-              </div>
+    <section>
+      <SectionHeading
+        title="Backend"
+        description="Select which backend executes explore and Python tool calls."
+      />
+      <ProviderShell
+        icon={Server}
+        title="Sandbox backend"
+        description={
+          hasOverride
+            ? `This workspace overrides the platform default.`
+            : `Using the platform default (${status.platformDefault}).`
+        }
+        status={shellStatus}
+        trailing={
+          <StatusPill
+            kind={shellStatus}
+            label={hasOverride ? "Override" : "Default"}
+          />
+        }
+        actions={
+          <>
+            {hasOverride && (
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-muted-foreground"
+                onClick={async () => {
+                  await onReset();
+                  setSelectedBackend("");
+                  setSidecarUrl("");
+                }}
+                disabled={saving}
+              >
+                <RotateCcw className="mr-1.5 size-3.5" />
+                Reset
+              </Button>
             )}
-            {status.workspaceSidecarUrl && (
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">
-                  Custom sidecar URL
-                </span>
-                <code className="text-xs">{status.workspaceSidecarUrl}</code>
-              </div>
-            )}
-          </div>
-        </div>
+            <Button
+              size="sm"
+              onClick={async () => {
+                const effectiveBackend =
+                  selectedBackend === "__default__" ? "" : selectedBackend;
+                if (effectiveBackend) {
+                  await onSelectBackend(effectiveBackend);
+                } else {
+                  await onReset();
+                }
+                if (sidecarUrl && showSidecarUrl && effectiveBackend) {
+                  await onSetSidecarUrl(sidecarUrl);
+                }
+              }}
+              disabled={saving || (!hasChanges && !hasOverride)}
+            >
+              {saving ? (
+                <Loader2 className="mr-1.5 size-3.5 animate-spin" />
+              ) : (
+                <Save className="mr-1.5 size-3.5" />
+              )}
+              Save
+            </Button>
+          </>
+        }
+      >
+        <DetailList>
+          <DetailRow label="Active" value={status.activeBackend} mono />
+          <DetailRow label="Platform default" value={status.platformDefault} mono />
+          {status.workspaceSidecarUrl && (
+            <DetailRow
+              label="Sidecar URL"
+              value={status.workspaceSidecarUrl}
+              mono
+            />
+          )}
+        </DetailList>
 
-        {/* Backend selector */}
-        <div className="space-y-2">
+        <div className="space-y-1.5">
           <Label htmlFor="sandbox-backend">Backend</Label>
           <Select value={selectedBackend} onValueChange={setSelectedBackend}>
             <SelectTrigger id="sandbox-backend" aria-label="Sandbox backend">
@@ -700,69 +928,30 @@ function SandboxConfigCard({
               ))}
             </SelectContent>
           </Select>
-          <p className="text-xs text-muted-foreground">
+          <p className="text-[11px] text-muted-foreground">
             {availableBackends.length === 0
               ? "No sandbox backends are available in this deployment."
-              : "Select which sandbox backend this workspace uses for the explore and Python tools."}
+              : "Select a backend for this workspace, or fall back to the platform default."}
           </p>
         </div>
 
-        {/* Sidecar URL (conditional) */}
         {showSidecarUrl && (
-          <div className="space-y-2">
+          <div className="space-y-1.5">
             <Label htmlFor="sidecar-url">Sidecar URL</Label>
             <Input
               id="sidecar-url"
               type="url"
               placeholder="https://sandbox.example.com"
+              className="font-mono text-sm"
               value={sidecarUrl}
               onChange={(e) => setSidecarUrl(e.target.value)}
             />
-            <p className="text-xs text-muted-foreground">
-              Custom sidecar service URL for this workspace. Leave empty to use
-              the platform default.
+            <p className="text-[11px] text-muted-foreground">
+              Override the sidecar service URL. Leave empty to use the platform default.
             </p>
           </div>
         )}
-
-        {/* Actions */}
-        <div className="flex gap-2">
-          <Button
-            onClick={async () => {
-              const effectiveBackend =
-                selectedBackend === "__default__" ? "" : selectedBackend;
-              if (effectiveBackend) {
-                await onSelectBackend(effectiveBackend);
-              } else {
-                await onReset();
-              }
-              if (sidecarUrl && showSidecarUrl && effectiveBackend) {
-                await onSetSidecarUrl(sidecarUrl);
-              }
-            }}
-            disabled={saving || (!hasChanges && !status.workspaceOverride)}
-            size="sm"
-          >
-            <Save className="mr-2 h-4 w-4" />
-            {saving ? "Saving..." : "Save"}
-          </Button>
-          {status.workspaceOverride && (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={async () => {
-                await onReset();
-                setSelectedBackend("");
-                setSidecarUrl("");
-              }}
-              disabled={saving}
-            >
-              <RotateCcw className="mr-2 h-4 w-4" />
-              Reset to default
-            </Button>
-          )}
-        </div>
-      </CardContent>
-    </Card>
+      </ProviderShell>
+    </section>
   );
 }

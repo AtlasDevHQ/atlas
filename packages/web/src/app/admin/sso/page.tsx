@@ -1,10 +1,15 @@
 "use client";
 
-import { useState } from "react";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { useState, type ComponentType, type ReactNode } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -20,16 +25,286 @@ import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
-import { ShieldCheck, AlertTriangle, Loader2, Shield, Plus } from "lucide-react";
+import { formatDateTime } from "@/lib/format";
+import { cn } from "@/lib/utils";
+import {
+  ShieldCheck,
+  ShieldAlert,
+  Clock,
+  AlertTriangle,
+  Loader2,
+  Shield,
+  Plus,
+  Pencil,
+  Trash2,
+  RefreshCw,
+  Copy,
+  Check,
+  KeyRound,
+} from "lucide-react";
 import {
   ProvidersResponseSchema,
   EnforcementResponseSchema,
   type SSOProviderSummary,
 } from "@/ui/components/admin/sso/sso-types";
-import { ProviderCard } from "@/ui/components/admin/sso/provider-card";
 import { CreateProviderDialog } from "@/ui/components/admin/sso/create-provider-dialog";
 import { EditProviderDialog } from "@/ui/components/admin/sso/edit-provider-dialog";
 import { DeleteProviderDialog } from "@/ui/components/admin/sso/delete-provider-dialog";
+
+// ── Shared Design Primitives (locally duplicated per #1551) ──────────────
+
+type StatusKind = "connected" | "disconnected" | "unavailable";
+
+function StatusDot({ kind, className }: { kind: StatusKind; className?: string }) {
+  return (
+    <span
+      aria-hidden
+      className={cn(
+        "relative inline-flex size-1.5 shrink-0 rounded-full",
+        kind === "connected" &&
+          "bg-primary shadow-[0_0_0_3px_color-mix(in_oklch,_var(--primary)_15%,_transparent)]",
+        kind === "disconnected" && "bg-muted-foreground/40",
+        kind === "unavailable" && "bg-muted-foreground/20 outline-1 outline-dashed outline-muted-foreground/30",
+        className,
+      )}
+    >
+      {kind === "connected" && (
+        <span className="absolute inset-0 rounded-full bg-primary/60 motion-safe:animate-ping" />
+      )}
+    </span>
+  );
+}
+
+const STATUS_LABEL: Record<StatusKind, string> = {
+  connected: "Active",
+  disconnected: "Inactive",
+  unavailable: "Unavailable",
+};
+
+function CompactRow({
+  icon: Icon,
+  title,
+  description,
+  status,
+  action,
+}: {
+  icon: ComponentType<{ className?: string }>;
+  title: string;
+  description: string;
+  status: StatusKind;
+  action?: ReactNode;
+}) {
+  return (
+    <div
+      className={cn(
+        "group flex items-center gap-3 rounded-xl border bg-card/40 px-3.5 py-2.5 transition-colors",
+        "hover:bg-card/70 hover:border-border/80",
+        status === "unavailable" && "opacity-60",
+      )}
+    >
+      <span
+        className={cn(
+          "grid size-8 shrink-0 place-items-center rounded-lg border bg-background/40 text-muted-foreground",
+        )}
+      >
+        <Icon className="size-4" />
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <h3 className="truncate text-sm font-semibold leading-tight tracking-tight">
+            {title}
+          </h3>
+          <StatusDot kind={status} className="shrink-0" />
+          <span className="sr-only">Status: {STATUS_LABEL[status]}</span>
+        </div>
+        <p className="mt-0.5 truncate text-xs text-muted-foreground">
+          {description}
+        </p>
+      </div>
+      {action && <div className="shrink-0">{action}</div>}
+    </div>
+  );
+}
+
+function IntegrationShell({
+  icon: Icon,
+  title,
+  description,
+  status,
+  titleAccessory,
+  children,
+  actions,
+}: {
+  icon: ComponentType<{ className?: string }>;
+  title: string;
+  description: string;
+  status: StatusKind;
+  titleAccessory?: ReactNode;
+  children?: ReactNode;
+  actions?: ReactNode;
+}) {
+  return (
+    <section
+      className={cn(
+        "relative flex flex-col overflow-hidden rounded-xl border bg-card/60 backdrop-blur-[1px] transition-colors",
+        "hover:border-border/80",
+        status === "connected" && "border-primary/20",
+      )}
+    >
+      {status === "connected" && (
+        <span
+          aria-hidden
+          className="pointer-events-none absolute left-0 top-4 bottom-4 w-px bg-gradient-to-b from-transparent via-primary to-transparent opacity-70"
+        />
+      )}
+
+      <header className="flex items-start gap-3 p-4 pb-3">
+        <span
+          className={cn(
+            "grid size-9 shrink-0 place-items-center rounded-lg border bg-background/40",
+            status === "connected" && "border-primary/30 text-primary",
+            status !== "connected" && "text-muted-foreground",
+          )}
+        >
+          <Icon className="size-4" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <h3 className="truncate text-sm font-semibold leading-tight tracking-tight">
+              {title}
+            </h3>
+            {titleAccessory}
+            {status === "connected" && (
+              <span className="ml-auto flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-[0.08em] text-primary">
+                <StatusDot kind="connected" />
+                Live
+              </span>
+            )}
+          </div>
+          <p className="mt-0.5 truncate text-xs leading-snug text-muted-foreground">
+            {description}
+          </p>
+        </div>
+      </header>
+
+      {children != null && (
+        <div className="flex-1 space-y-3 px-4 pb-3 text-sm">{children}</div>
+      )}
+
+      {actions && (
+        <footer className="flex flex-wrap items-center justify-end gap-2 border-t border-border/50 bg-muted/20 px-4 py-2.5">
+          {actions}
+        </footer>
+      )}
+    </section>
+  );
+}
+
+function DetailRow({
+  label,
+  value,
+  mono,
+  truncate,
+}: {
+  label: string;
+  value: ReactNode;
+  mono?: boolean;
+  truncate?: boolean;
+}) {
+  return (
+    <div className="flex items-baseline justify-between gap-3 py-1 text-xs">
+      <span className="shrink-0 text-muted-foreground">{label}</span>
+      <span
+        className={cn(
+          "min-w-0 text-right",
+          mono && "font-mono text-[11px]",
+          truncate && "truncate",
+          !mono && "font-medium",
+        )}
+      >
+        {value}
+      </span>
+    </div>
+  );
+}
+
+function DetailList({ children }: { children: ReactNode }) {
+  return (
+    <div className="rounded-lg border bg-muted/20 px-3 py-1.5 divide-y divide-border/50">
+      {children}
+    </div>
+  );
+}
+
+function SectionHeading({
+  title,
+  description,
+}: {
+  title: string;
+  description: string;
+}) {
+  return (
+    <div className="mb-3">
+      <h2 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+        {title}
+      </h2>
+      <p className="mt-0.5 text-xs text-muted-foreground/80">{description}</p>
+    </div>
+  );
+}
+
+function VerificationBadge({ status }: { status: "pending" | "verified" | "failed" }) {
+  switch (status) {
+    case "verified":
+      return (
+        <Badge variant="outline" className="gap-1 border-primary/40 bg-primary/5 text-[10px] text-primary">
+          <ShieldCheck className="size-3" />
+          Verified
+        </Badge>
+      );
+    case "pending":
+      return (
+        <Badge variant="outline" className="gap-1 border-amber-500/50 text-[10px] text-amber-600 dark:text-amber-400">
+          <Clock className="size-3" />
+          Pending
+        </Badge>
+      );
+    case "failed":
+      return (
+        <Badge variant="outline" className="gap-1 border-red-500/50 text-[10px] text-red-600 dark:text-red-400">
+          <ShieldAlert className="size-3" />
+          Failed
+        </Badge>
+      );
+  }
+}
+
+function CopyButton({ value, label }: { value: string; label: string }) {
+  const [copied, setCopied] = useState(false);
+
+  async function handleCopy() {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (err) {
+      console.debug("Clipboard write failed:", err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  return (
+    <Button
+      variant="ghost"
+      size="xs"
+      onClick={handleCopy}
+      className="h-6 gap-1 text-muted-foreground"
+      aria-label={`Copy ${label}`}
+    >
+      {copied ? <Check className="size-3" /> : <Copy className="size-3" />}
+      {copied ? "Copied" : "Copy"}
+    </Button>
+  );
+}
 
 // ── Main Page ─────────────────────────────────────────────────────
 
@@ -67,7 +342,8 @@ export default function SSOPage() {
   const error = providersError ?? enforcementError;
   const providers = providersData?.providers ?? [];
   const enforced = enforcementData?.enforced ?? false;
-  const hasActiveProvider = providers.some((p) => p.enabled);
+  const enabledProviders = providers.filter((p) => p.enabled);
+  const hasActiveProvider = enabledProviders.length > 0;
 
   async function handleToggleEnforcement(enable: boolean) {
     if (enable) {
@@ -102,131 +378,168 @@ export default function SSOPage() {
   // Check if deleting this provider would be the last enabled one
   function isLastEnabledWithEnforcement(provider: SSOProviderSummary): boolean {
     if (!enforced || !provider.enabled) return false;
-    const enabledCount = providers.filter((p) => p.enabled).length;
-    return enabledCount === 1;
+    return enabledProviders.length === 1;
   }
 
+  const enforcementDescription = enforced
+    ? `Active — ${enabledProviders.length} provider${enabledProviders.length !== 1 ? "s" : ""} in rotation`
+    : hasActiveProvider
+    ? "All members use password login until turned on"
+    : "Add an enabled provider before you can enforce";
+
+  const providerCount = providers.length;
+  const enabledCount = enabledProviders.length;
+
   return (
-    <div className="p-6">
-      <div className="mb-6 flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">SSO</h1>
-          <p className="text-sm text-muted-foreground">
-            Manage single sign-on providers and enforcement
+    <div className="mx-auto max-w-3xl px-6 py-10">
+      {/* Hero */}
+      <header className="mb-10 flex flex-col gap-2">
+        <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+          Atlas · Admin
+        </p>
+        <div className="flex items-baseline justify-between gap-6">
+          <h1 className="text-3xl font-semibold tracking-tight">SSO</h1>
+          <p className="shrink-0 font-mono text-sm tabular-nums text-muted-foreground">
+            <span className={cn(enabledCount > 0 ? "text-primary" : "text-muted-foreground")}>
+              {String(enabledCount).padStart(2, "0")}
+            </span>
+            <span className="opacity-50">{" / "}</span>
+            {String(providerCount).padStart(2, "0")} active
           </p>
         </div>
-        {providers.length > 0 && (
-          <Button size="sm" onClick={() => setCreateOpen(true)}>
-            <Plus className="size-4" />
-            Add Provider
-          </Button>
-        )}
-      </div>
+        <p className="max-w-xl text-sm text-muted-foreground">
+          Single sign-on providers and workspace-wide enforcement.
+        </p>
+      </header>
 
       <ErrorBoundary>
-        <div>
+        <AdminContentWrapper
+          loading={loading}
+          error={error}
+          feature="SSO"
+          onRetry={() => { refetchProviders(); refetchEnforcement(); }}
+          loadingMessage="Loading SSO configuration..."
+          isEmpty={false}
+        >
           {enforcementMutationError && (
-            <ErrorBanner message={enforcementMutationError} onRetry={clearEnforcementError} />
+            <div className="mb-4">
+              <ErrorBanner message={enforcementMutationError} onRetry={clearEnforcementError} />
+            </div>
           )}
           {toggleError && (
-            <ErrorBanner message={toggleError} onRetry={clearToggleError} />
+            <div className="mb-4">
+              <ErrorBanner message={toggleError} onRetry={clearToggleError} />
+            </div>
           )}
           {verifyError && (
-            <ErrorBanner message={verifyError} onRetry={clearVerifyError} />
+            <div className="mb-4">
+              <ErrorBanner message={verifyError} onRetry={clearVerifyError} />
+            </div>
           )}
-          <AdminContentWrapper
-            loading={loading}
-            error={error}
-            feature="SSO"
-            onRetry={() => { refetchProviders(); refetchEnforcement(); }}
-            loadingMessage="Loading SSO configuration..."
-            emptyIcon={ShieldCheck}
-            emptyTitle="No SSO providers configured"
-            emptyDescription="Add your first SAML or OIDC provider to enable single sign-on for your workspace."
-            emptyAction={{ label: "Add SSO Provider", onClick: () => setCreateOpen(true) }}
-            isEmpty={providers.length === 0}
-          >
-            <div className="space-y-6">
-              {/* Enforcement Card */}
-              <Card className="shadow-none">
-                <CardHeader className="pb-2">
-                  <CardTitle className="flex items-center gap-2 text-base">
-                    <ShieldCheck className="size-4" />
-                    SSO Enforcement
-                    {enforced ? (
-                      <Badge variant="default" className="text-[10px]">Active</Badge>
-                    ) : (
-                      <Badge variant="outline" className="text-[10px] text-muted-foreground">Inactive</Badge>
-                    )}
-                  </CardTitle>
-                  <CardDescription>
-                    When enabled, all members must sign in via the configured identity provider.
-                    Password login will be disabled for this workspace.
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <div className="flex items-center gap-3">
-                    <Switch
-                      checked={enforced}
-                      onCheckedChange={handleToggleEnforcement}
-                      disabled={enforcementSaving || (!enforced && !hasActiveProvider)}
-                    />
-                    <span className="text-sm text-muted-foreground">
-                      {enforced
-                        ? `SSO enforcement is active — ${providers.filter((p) => p.enabled).length} provider${providers.filter((p) => p.enabled).length !== 1 ? "s" : ""} active`
-                        : "SSO enforcement is inactive"}
-                    </span>
-                    {enforcementSaving && <Loader2 className="size-3 animate-spin text-muted-foreground" />}
-                  </div>
 
-                  {!hasActiveProvider && !enforced && (
+          <div className="space-y-10">
+            {/* Enforcement */}
+            <section>
+              <SectionHeading
+                title="Enforcement"
+                description="Force every member to sign in through SSO"
+              />
+              {enforced ? (
+                <IntegrationShell
+                  icon={ShieldCheck}
+                  title="SSO enforcement"
+                  description={enforcementDescription}
+                  status="connected"
+                  actions={
+                    <div className="flex items-center gap-2">
+                      {enforcementSaving && (
+                        <Loader2 className="size-3 animate-spin text-muted-foreground" />
+                      )}
+                      <span className="text-xs text-muted-foreground">
+                        Password login disabled
+                      </span>
+                      <Switch
+                        checked={enforced}
+                        onCheckedChange={handleToggleEnforcement}
+                        disabled={enforcementSaving}
+                        aria-label="Disable SSO enforcement"
+                      />
+                    </div>
+                  }
+                />
+              ) : (
+                <div className="space-y-2">
+                  <CompactRow
+                    icon={ShieldCheck}
+                    title="SSO enforcement"
+                    description={enforcementDescription}
+                    status={hasActiveProvider ? "disconnected" : "unavailable"}
+                    action={
+                      <div className="flex items-center gap-2">
+                        {enforcementSaving && (
+                          <Loader2 className="size-3 animate-spin text-muted-foreground" />
+                        )}
+                        <Switch
+                          checked={enforced}
+                          onCheckedChange={handleToggleEnforcement}
+                          disabled={enforcementSaving || !hasActiveProvider}
+                          aria-label="Enable SSO enforcement"
+                        />
+                      </div>
+                    }
+                  />
+                  {!hasActiveProvider && (
                     <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-4 py-3">
                       <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-400" />
                       <p className="text-sm text-amber-700 dark:text-amber-300">
-                        You need at least one active (enabled) SSO provider before you can enforce SSO.
-                        Add and verify a provider below.
+                        You need at least one enabled provider below before you can enforce SSO.
                       </p>
                     </div>
                   )}
-                </CardContent>
-              </Card>
+                </div>
+              )}
+            </section>
 
-              {/* Providers Card */}
-              <Card className="shadow-none">
-                <CardHeader className="pb-2">
-                  <div className="flex items-center justify-between">
-                    <CardTitle className="flex items-center gap-2 text-base">
-                      <Shield className="size-4" />
-                      SSO Providers
-                      <Badge variant="outline" className="text-[10px] text-muted-foreground">
-                        {providers.length}
-                      </Badge>
-                    </CardTitle>
-                  </div>
-                  <CardDescription>
-                    Identity providers configured for this workspace.
-                  </CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <div className="space-y-3">
-                    {providers.map((provider) => (
-                      <ProviderCard
-                        key={provider.id}
-                        provider={provider}
-                        onEdit={setEditProvider}
-                        onDelete={setDeleteProvider}
-                        onToggleEnabled={handleToggleEnabled}
-                        onVerifyDomain={handleVerifyDomain}
-                        isToggling={isMutating(`toggle-${provider.id}`)}
-                        isVerifying={isVerifying(`verify-${provider.id}`)}
-                      />
-                    ))}
-                  </div>
-                </CardContent>
-              </Card>
-            </div>
-          </AdminContentWrapper>
-        </div>
+            {/* Providers */}
+            <section>
+              <SectionHeading
+                title="Providers"
+                description="SAML and OIDC identity providers configured for this workspace"
+              />
+              <div className="space-y-2">
+                {providers.map((provider) => (
+                  <ProviderShell
+                    key={provider.id}
+                    provider={provider}
+                    onEdit={setEditProvider}
+                    onDelete={setDeleteProvider}
+                    onToggleEnabled={handleToggleEnabled}
+                    onVerifyDomain={handleVerifyDomain}
+                    isToggling={isMutating(`toggle-${provider.id}`)}
+                    isVerifying={isVerifying(`verify-${provider.id}`)}
+                  />
+                ))}
+
+                <CompactRow
+                  icon={Plus}
+                  title={providers.length === 0 ? "Add your first provider" : "Add another provider"}
+                  description={
+                    providers.length === 0
+                      ? "Connect Okta, Azure AD, Google Workspace, or any SAML/OIDC IdP"
+                      : "Hook up another SAML or OIDC identity provider"
+                  }
+                  status="disconnected"
+                  action={
+                    <Button size="sm" onClick={() => setCreateOpen(true)}>
+                      <Plus className="mr-1.5 size-3.5" />
+                      Add provider
+                    </Button>
+                  }
+                />
+              </div>
+            </section>
+          </div>
+        </AdminContentWrapper>
       </ErrorBoundary>
 
       {/* Enforcement Confirmation Dialog */}
@@ -279,5 +592,138 @@ export default function SSOPage() {
         />
       )}
     </div>
+  );
+}
+
+// ── Provider row ────────────────────────────────────────────────
+
+function ProviderShell({
+  provider,
+  onEdit,
+  onDelete,
+  onToggleEnabled,
+  onVerifyDomain,
+  isToggling,
+  isVerifying,
+}: {
+  provider: SSOProviderSummary;
+  onEdit: (provider: SSOProviderSummary) => void;
+  onDelete: (provider: SSOProviderSummary) => void;
+  onToggleEnabled: (provider: SSOProviderSummary, enabled: boolean) => void;
+  onVerifyDomain: (provider: SSOProviderSummary) => void;
+  isToggling: boolean;
+  isVerifying: boolean;
+}) {
+  const domainVerified = provider.domainVerificationStatus === "verified";
+  const status: StatusKind = provider.enabled ? "connected" : "disconnected";
+  const Icon = provider.type === "saml" ? Shield : KeyRound;
+
+  // SP Metadata — Entity ID and ACS URL are derived from the app's base URL
+  const spEntityId = `${typeof window !== "undefined" ? window.location.origin : ""}/api/auth/sso/${provider.type}/entity-id/${provider.id}`;
+  const spAcsUrl = `${typeof window !== "undefined" ? window.location.origin : ""}/api/auth/sso/${provider.type}/callback/${provider.id}`;
+
+  return (
+    <IntegrationShell
+      icon={Icon}
+      title={provider.domain}
+      description={provider.issuer}
+      status={status}
+      titleAccessory={
+        <Badge variant="secondary" className="shrink-0 font-mono text-[10px] uppercase">
+          {provider.type}
+        </Badge>
+      }
+      actions={
+        <>
+          {!domainVerified && (
+            <Button
+              variant="outline"
+              size="xs"
+              onClick={() => onVerifyDomain(provider)}
+              disabled={isVerifying}
+            >
+              {isVerifying ? (
+                <Loader2 className="size-3 animate-spin" />
+              ) : (
+                <RefreshCw className="size-3" />
+              )}
+              Verify
+            </Button>
+          )}
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <div>
+                  <Switch
+                    checked={provider.enabled}
+                    onCheckedChange={(checked) => onToggleEnabled(provider, checked)}
+                    disabled={isToggling || (!domainVerified && !provider.enabled)}
+                    aria-label={provider.enabled ? "Disable provider" : "Enable provider"}
+                  />
+                </div>
+              </TooltipTrigger>
+              {!domainVerified && !provider.enabled && (
+                <TooltipContent>
+                  <p>Verify domain ownership before enabling this provider</p>
+                </TooltipContent>
+              )}
+            </Tooltip>
+          </TooltipProvider>
+          <Button
+            variant="ghost"
+            size="xs"
+            onClick={() => onEdit(provider)}
+            aria-label="Edit provider"
+          >
+            <Pencil className="size-3" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="xs"
+            onClick={() => onDelete(provider)}
+            className="text-destructive hover:text-destructive"
+            aria-label="Delete provider"
+          >
+            <Trash2 className="size-3" />
+          </Button>
+        </>
+      }
+    >
+      <DetailList>
+        <DetailRow
+          label="Verification"
+          value={<VerificationBadge status={provider.domainVerificationStatus} />}
+        />
+        <DetailRow label="Domain" value={provider.domain} mono truncate />
+        <DetailRow label="Issuer" value={provider.issuer} mono truncate />
+        {provider.domainVerifiedAt && (
+          <DetailRow
+            label="Verified"
+            value={formatDateTime(provider.domainVerifiedAt)}
+          />
+        )}
+        <DetailRow label="Added" value={formatDateTime(provider.createdAt)} />
+      </DetailList>
+
+      {!domainVerified && provider.verificationToken && (
+        <div className="flex items-center gap-2 rounded-md border border-dashed px-3 py-2">
+          <code className="flex-1 truncate text-[11px] font-mono text-muted-foreground">
+            TXT _atlas-verify.{provider.domain} = {provider.verificationToken}
+          </code>
+          <CopyButton value={provider.verificationToken} label="verification token" />
+        </div>
+      )}
+
+      {provider.type === "saml" && (
+        <DetailList>
+          <DetailRow label="SP Entity ID" value={spEntityId} mono truncate />
+          <DetailRow label="SP ACS URL" value={spAcsUrl} mono truncate />
+          <div className="flex items-center justify-end gap-2 pt-1">
+            <CopyButton value={spEntityId} label="Entity ID" />
+            <CopyButton value={spAcsUrl} label="ACS URL" />
+          </div>
+        </DetailList>
+      )}
+    </IntegrationShell>
   );
 }

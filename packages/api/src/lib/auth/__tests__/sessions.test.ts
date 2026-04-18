@@ -14,7 +14,11 @@ import {
   type Mock,
 } from "bun:test";
 import { createConnectionMock } from "@atlas/api/testing/connection";
-import { makeQueryEffectMock } from "@atlas/api/testing/api-test-mocks";
+import {
+  makeQueryEffectMock,
+  MockInternalDB,
+  makeMockInternalDBShimLayer,
+} from "@atlas/api/testing/api-test-mocks";
 
 // --- Mocks (before any import that touches the modules) ---
 
@@ -96,6 +100,9 @@ const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<unkno
 );
 
 mock.module("@atlas/api/lib/db/internal", () => ({
+  InternalDB: MockInternalDB,
+  makeInternalDBShimLayer: () =>
+    makeMockInternalDBShimLayer(mockInternalQuery, { available: true }),
   hasInternalDB: () => true,
   internalQuery: mockInternalQuery,
   queryEffect: makeQueryEffectMock(mockInternalQuery),

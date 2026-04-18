@@ -31,16 +31,35 @@
  * orgs whose archival race left them out of sync with the industry
  * filter.
  *
- * See: #1438, PRD #1421.
+ * The status-lifecycle clause (`status = 'published'` vs
+ * `status IN ('published', 'draft')`) is delegated to
+ * `ContentModeRegistry.readFilter` (#1515 phase 2b). The registry owns
+ * the single source of truth for mode-participating tables; this
+ * module only assembles the demo-industry and custom-vs-builtin
+ * scoping around it.
+ *
+ * See: #1438, PRD #1421, #1515.
  */
+import { Effect } from "effect";
 import type { AtlasMode } from "@useatlas/types/auth";
 import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
 import { getSettingAuto } from "@atlas/api/lib/settings";
 import { DEMO_INDUSTRY_SETTING } from "@atlas/api/lib/demo-industry";
+import {
+  CONTENT_MODE_TABLES,
+  makeService,
+} from "@atlas/api/lib/content-mode";
 
 // Re-exported so existing importers (`resolvePromptScope` callers, tests)
 // don't need to switch paths.
 export { DEMO_INDUSTRY_SETTING };
+
+/**
+ * Module-level synchronous registry — the tuple is static and the
+ * `readFilter` method is pure, so a single `makeService` instance
+ * shared across callers is safe. No Effect layer provision needed.
+ */
+const contentModeRegistry = makeService(CONTENT_MODE_TABLES);
 
 /**
  * Tagged union of the three prompt-scoping scenarios.
@@ -72,12 +91,18 @@ export interface PromptCollectionQuery {
 }
 
 /** Ordering shared across list queries (get queries don't need it). */
-const LIST_ORDER_BY = "ORDER BY sort_order ASC, created_at ASC";
+const LIST_ORDER_BY = "ORDER BY pc.sort_order ASC, pc.created_at ASC";
 
+/**
+ * Resolve the mode-participating status clause for `prompt_collections`
+ * via the content-mode registry. The registry call is pure (no I/O,
+ * no async), so `Effect.runSync` is safe — the `prompt_collections`
+ * key is a known simple entry that never fails.
+ */
 function statusClauseFor(mode: AtlasMode): string {
-  return mode === "developer"
-    ? "status IN ('published', 'draft')"
-    : "status = 'published'";
+  return Effect.runSync(
+    contentModeRegistry.readFilter("prompt_collections", mode, "pc"),
+  );
 }
 
 /**
@@ -131,25 +156,25 @@ export function buildCollectionsListQuery(
   switch (scope.kind) {
     case "global":
       return {
-        sql: `SELECT * FROM prompt_collections WHERE org_id IS NULL AND ${statusClause} ${LIST_ORDER_BY}`,
+        sql: `SELECT pc.* FROM prompt_collections pc WHERE pc.org_id IS NULL AND ${statusClause} ${LIST_ORDER_BY}`,
         params: [],
       };
     case "org-with-demo":
       return {
-        sql: `SELECT * FROM prompt_collections
+        sql: `SELECT pc.* FROM prompt_collections pc
               WHERE ${statusClause}
                 AND (
-                  (is_builtin = true AND industry = $2 AND (org_id IS NULL OR org_id = $1))
-                  OR (is_builtin = false AND org_id = $1)
+                  (pc.is_builtin = true AND pc.industry = $2 AND (pc.org_id IS NULL OR pc.org_id = $1))
+                  OR (pc.is_builtin = false AND pc.org_id = $1)
                 )
               ${LIST_ORDER_BY}`,
         params: [scope.orgId, scope.demoIndustry],
       };
     case "org-custom-only":
       return {
-        sql: `SELECT * FROM prompt_collections
-              WHERE org_id = $1
-                AND is_builtin = false
+        sql: `SELECT pc.* FROM prompt_collections pc
+              WHERE pc.org_id = $1
+                AND pc.is_builtin = false
                 AND ${statusClause}
               ${LIST_ORDER_BY}`,
         params: [scope.orgId],
@@ -172,27 +197,27 @@ export function buildCollectionGetQuery(
   switch (scope.kind) {
     case "global":
       return {
-        sql: `SELECT * FROM prompt_collections WHERE org_id IS NULL AND ${statusClause} AND id = $1`,
+        sql: `SELECT pc.* FROM prompt_collections pc WHERE pc.org_id IS NULL AND ${statusClause} AND pc.id = $1`,
         params: [id],
       };
     case "org-with-demo":
       return {
-        sql: `SELECT * FROM prompt_collections
+        sql: `SELECT pc.* FROM prompt_collections pc
               WHERE ${statusClause}
                 AND (
-                  (is_builtin = true AND industry = $2 AND (org_id IS NULL OR org_id = $1))
-                  OR (is_builtin = false AND org_id = $1)
+                  (pc.is_builtin = true AND pc.industry = $2 AND (pc.org_id IS NULL OR pc.org_id = $1))
+                  OR (pc.is_builtin = false AND pc.org_id = $1)
                 )
-                AND id = $3`,
+                AND pc.id = $3`,
         params: [scope.orgId, scope.demoIndustry, id],
       };
     case "org-custom-only":
       return {
-        sql: `SELECT * FROM prompt_collections
-              WHERE org_id = $1
-                AND is_builtin = false
+        sql: `SELECT pc.* FROM prompt_collections pc
+              WHERE pc.org_id = $1
+                AND pc.is_builtin = false
                 AND ${statusClause}
-                AND id = $2`,
+                AND pc.id = $2`,
         params: [scope.orgId, id],
       };
   }

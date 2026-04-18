@@ -408,9 +408,11 @@ export default function SettingsPage() {
     workspaceSections.set(s.section, list);
   }
 
-  const orderedSections = SECTION_ORDER.filter((s) => workspaceSections.has(s)).concat(
-    [...workspaceSections.keys()].filter((s) => !SECTION_ORDER.includes(s)),
-  );
+  const knownOrder: readonly string[] = SECTION_ORDER;
+  const orderedSections: string[] = [
+    ...SECTION_ORDER.filter((s) => workspaceSections.has(s)),
+    ...[...workspaceSections.keys()].filter((s) => !knownOrder.includes(s)),
+  ];
 
   const overrideCount = settings.filter(
     (s) =>

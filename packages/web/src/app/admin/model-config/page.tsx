@@ -69,6 +69,9 @@ const PROVIDER_LABEL: Record<ModelConfigProvider, string> = {
 
 const NEEDS_BASE_URL: Set<ModelConfigProvider> = new Set(["azure-openai", "custom"]);
 
+// Partial by design — unknown model IDs fall back to the raw string so that
+// a new platform model ships without a UI change. Keep in sync with billing's
+// `MODEL_OPTIONS` only for the models you want humanized here.
 const PLATFORM_MODEL_LABELS: Record<string, string> = {
   "claude-haiku-4-5": "Haiku 4.5",
   "claude-sonnet-4-6": "Sonnet 4.6",
@@ -265,14 +268,17 @@ export default function ModelConfigPage() {
     { schema: ModelConfigResponseSchema },
   );
 
-  // Billing drives the BYOT gate + the platform-default label. When billing is
-  // unavailable (self-hosted — 404 from the billing routes not being mounted),
-  // fall through to a generic baseline and treat BYOT as permitted. Transient
-  // 500s / network errors must KEEP the gate up; only a 404 is the fallthrough.
-  const { data: billing, loading: billingLoading, error: billingError } = useAdminFetch(
-    "/api/v1/billing",
-    { schema: BillingStatusSchema },
-  );
+  // Billing drives the BYOT gate + the platform-default label. 404 means
+  // self-hosted (billing routes not mounted) — fall through to the generic
+  // baseline and treat BYOT as permitted. Any other error (500, network)
+  // keeps the gate up: we'd rather make the user retry than flash the
+  // credential form open on a transient failure.
+  const {
+    data: billing,
+    loading: billingLoading,
+    error: billingError,
+    refetch: refetchBilling,
+  } = useAdminFetch("/api/v1/billing", { schema: BillingStatusSchema });
 
   const { mutate: saveMutate, saving, error: saveError, clearError: clearSaveError } =
     useAdminMutation({
@@ -297,21 +303,25 @@ export default function ModelConfigPage() {
   const hasOverride = existingConfig !== null;
   const showEditor = hasOverride || expanded;
 
-  // Self-hosted = billing routes not mounted (404). Any other error (500,
-  // network) keeps the gate up — we'd rather make the user retry than flash
-  // the credential form open on a transient failure.
   const billingMissing = billingError?.status === 404;
   const byotRequired = !billingMissing && !!billing && !billing.plan.byot;
-  // Only permit the form once we've actually resolved billing — either the
-  // 200 response with byot=true, or the 404 self-hosted fallthrough. While
-  // billing is loading, or when it failed transiently, keep the section muted.
+  // `byotResolved` prevents the credential form from flashing open before we
+  // actually know BYOT eligibility. Don't simplify to `!billingLoading` — that
+  // would show the form on a transient failure, which is exactly the regress
+  // we're preventing.
   const byotResolved = billingMissing || !!billing;
   const canOverride = byotResolved && !byotRequired;
+  const billingFailed = !!billingError && !billingMissing;
   const platformModel = billing?.currentModel ?? billing?.plan.defaultModel ?? null;
 
   // Sync form state from server only when the override's identity actually
   // changes — not on every background refetch. An unconditional reset would
   // clobber in-flight edits and dismiss mutation errors the user hasn't seen.
+  //
+  // Deps intentionally exclude `form` and the `clear*Error` callbacks: the
+  // `useForm` instance is stable across renders, and `useAdminMutation`
+  // returns `clearError` as a stable `useCallback([])`. Including them would
+  // force the effect to re-run on every render and defeat the identity gate.
   const lastSyncedKey = useRef<string | null>(null);
   useEffect(() => {
     if (loading) return;
@@ -496,6 +506,25 @@ export default function ModelConfigPage() {
                 </div>
               )}
 
+              {/* Transient billing failure — surface the error with a retry
+                  instead of silently rendering nothing. */}
+              {billingFailed && (
+                <CompactRow
+                  icon={XCircle}
+                  title="Can't check BYOT eligibility"
+                  description={
+                    billingError?.message ??
+                    "Billing is temporarily unreachable. Retry, or try again shortly."
+                  }
+                  status="unavailable"
+                  action={
+                    <Button type="button" size="sm" variant="outline" onClick={refetchBilling}>
+                      Retry
+                    </Button>
+                  }
+                />
+              )}
+
               {/* BYOT disabled — gate before any form appears */}
               {byotRequired && (
                 <CompactRow
@@ -567,9 +596,13 @@ export default function ModelConfigPage() {
                           Remove override
                         </Button>
                       )}
+                      {/* Submit via `form` attribute so Enter-in-input and
+                          button-click both route through the same <form>'s
+                          onSubmit. Stops the two paths from silently
+                          diverging on a future refactor. */}
                       <Button
-                        type="button"
-                        onClick={form.handleSubmit(handleSave)}
+                        type="submit"
+                        form="model-config-override-form"
                         disabled={saveDisabled}
                       >
                         {saving && <Loader2 className="mr-1.5 size-3.5 animate-spin" />}
@@ -594,7 +627,11 @@ export default function ModelConfigPage() {
                   )}
 
                   <Form {...form}>
-                    <form onSubmit={form.handleSubmit(handleSave)} className="space-y-4">
+                    <form
+                      id="model-config-override-form"
+                      onSubmit={form.handleSubmit(handleSave)}
+                      className="space-y-4"
+                    >
                       <FormField
                         control={form.control}
                         name="provider"

@@ -196,10 +196,17 @@ export function mapTaggedError(error: AtlasError): HttpErrorMapping {
     // `PublishPhaseError` may wrap raw `pg` DatabaseError values containing
     // parameters or constraint detail; correlate via `requestId` instead.
     case "PublishPhaseError":
+      // `phase: "count"` surfaces from read endpoints (e.g. GET /api/v1/mode
+      // via `ContentModeRegistry.countAllDrafts`) where "publish" in the
+      // user-visible message would be misleading. Promote and tombstone
+      // phases retain the publish-framed message.
       return {
         status: 500,
         code: "upstream_error",
-        message: `Publish phase "${error.phase}" failed for table "${error.table}"`,
+        message:
+          error.phase === "count"
+            ? "Failed to count pending drafts"
+            : `Publish phase "${error.phase}" failed for table "${error.table}"`,
       };
     case "UnknownTableError":
       return {

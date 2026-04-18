@@ -29,7 +29,7 @@ import {
   RequestContext,
   AuthContext,
 } from "@atlas/api/lib/effect/services";
-import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
+import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import { getSettingAuto } from "@atlas/api/lib/settings";
 import { ErrorSchema } from "./shared-schemas";
 import { standardAuth, requestContext, type AuthEnv } from "./middleware";
@@ -124,11 +124,13 @@ mode.use("/", requestContext);
 
 mode.openapi(getModeRoute, async (c) => {
   // Deferred imports — see module header for rationale (#1524).
-  const [{ ContentModeRegistry, ContentModeRegistryLive }, { makeInternalDBShimLayer }] =
-    await Promise.all([
-      import("@atlas/api/lib/content-mode"),
-      import("@atlas/api/lib/db/internal"),
-    ]);
+  const [
+    { ContentModeRegistry, ContentModeRegistryLive },
+    { makeInternalDBShimLayer, queryEffect },
+  ] = await Promise.all([
+    import("@atlas/api/lib/content-mode"),
+    import("@atlas/api/lib/db/internal"),
+  ]);
   const modeRouteLayer = Layer.merge(ContentModeRegistryLive, makeInternalDBShimLayer());
 
   const program = Effect.gen(function* () {
@@ -156,13 +158,7 @@ mode.openapi(getModeRoute, async (c) => {
     const registry = yield* ContentModeRegistry;
 
     const [demoRows, counts] = yield* Effect.all(
-      [
-        Effect.tryPromise({
-          try: () => internalQuery<{ active: boolean }>(DEMO_ACTIVE_SQL, [orgId]),
-          catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-        }),
-        registry.countAllDrafts(orgId),
-      ],
+      [queryEffect<{ active: boolean }>(DEMO_ACTIVE_SQL, [orgId]), registry.countAllDrafts(orgId)],
       { concurrency: "unbounded" },
     );
 

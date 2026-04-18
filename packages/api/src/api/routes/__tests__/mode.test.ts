@@ -175,7 +175,11 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   createInternalDBTestLayer: makeMockInternalDBShimLayer,
   getInternalDB: () => ({ query: mockInternalQuery, connect: () => ({ query: mockInternalQuery, release: () => {} }), end: async () => {}, on: () => {} }),
   closeInternalDB: async () => {},
-  queryEffect: (_sql: string, _params?: unknown[]) => Effect.succeed([]),
+  queryEffect: (sql: string, params?: unknown[]) =>
+    Effect.tryPromise({
+      try: () => mockInternalQuery(sql, params),
+      catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+    }),
   migrateInternalDB: async () => {},
   loadSavedConnections: async () => 0,
   findPatternBySQL: async () => null,

@@ -1,0 +1,154 @@
+---
+title: Starter Prompts
+description: How the adaptive empty-state prompt surface works end-to-end — favorites, popular, library, and cold-start tiers, with pin UX and widget overrides.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+The chat empty state doesn't ship with a hardcoded list of example questions. It composes an **adaptive surface** that learns from actual usage and adapts per user. This page explains how the four-tier composition works, how pinning behaves, and how to override the surface in embedded contexts.
+
+For admin moderation of the popular tier, see [Starter Prompt Moderation](/guides/starter-prompt-moderation). For the programmatic API, see [SDK · Starter Prompts](/sdk/starter-prompts).
+
+---
+
+## What appears in the empty state
+
+Atlas composes four tiers in order until the target count is filled:
+
+| Tier | Source | Provenance badge |
+|------|--------|-----------------|
+| 1. **Favorites** | Prompts the current user has explicitly pinned | `Pin` |
+| 2. **Popular** | Admin-approved queries that crossed the click threshold | `Popular` |
+| 3. **Library** | Built-in prompts for the workspace's demo industry | (no badge) |
+| 4. **Cold-start** | Generic fallback examples when everything above is empty | (no badge) |
+
+Each tier stops at the target count — if you've pinned enough favorites to fill the surface, the other tiers don't render. If favorites are thin, popular fills the remainder, and so on down to cold-start.
+
+<Callout title="Why four tiers">
+Empty states decay fast. A grid of hardcoded example questions goes stale within weeks — the AI improves, the schema changes, the team's questions evolve. The adaptive surface stays relevant because it's driven by what users actually ask and what admins explicitly promote. The cold-start tier guarantees newcomers never see an empty page.
+</Callout>
+
+---
+
+## Pin / unpin favorites
+
+Favorites are per-user, scoped to the current workspace, and persist across devices. Pin a prompt by hovering any example in the empty state and clicking the pin icon, or by hovering any user-authored message in a conversation and clicking the pin affordance on it.
+
+- **Cap**: configurable via `ATLAS_STARTER_PROMPT_MAX_FAVORITES` (default: 20 per user). Attempting to pin past the cap returns `favorite_cap_exceeded` — unpin one first.
+- **Duplicates**: attempting to pin a prompt whose text is already in your favorites returns `duplicate_favorite`. Pin text is normalized with whitespace trimming before comparison.
+- **Unpin**: hover a pinned prompt in the empty state — the pin icon becomes an unpin affordance.
+- **Cross-surface cache**: pinning in chat immediately updates the notebook empty state and the widget (if embedded on the same origin) without a re-fetch. The TanStack Query cache shares across surfaces.
+
+API surface: `POST` / `DELETE` `/api/v1/starter-prompts/favorites` (see [API Reference](/api-reference/starter-prompts)).
+
+---
+
+## How a query becomes "popular"
+
+The popular tier is admin-moderated and click-driven. The flow:
+
+1. A user clicks a prompt in the empty state (or sends a message that matches a learned pattern).
+2. Atlas increments a **distinct-user click counter** for that text. One user clicking the same prompt 10 times counts as one click — only unique `(user, text)` pairs register.
+3. When the distinct-user count crosses `ATLAS_STARTER_PROMPT_AUTO_PROMOTE_CLICKS` (default: 3), the prompt enters the moderation queue as `approval_status='pending'`.
+4. An admin opens `/admin/starter-prompts` and approves, hides, or ignores the pending entry. Approval flips `approval_status='approved'`, which makes the prompt eligible for the popular tier.
+5. Once approved, the prompt appears in the popular tier for all users in the workspace.
+
+`ATLAS_STARTER_PROMPT_COLD_WINDOW_DAYS` (default: 90) controls how far back the click counter looks. Older clicks decay out — a prompt has to stay relevant to stay popular.
+
+---
+
+## Library tier — industry-filtered built-ins
+
+The library tier surfaces **built-in prompts** that match the workspace's `ATLAS_DEMO_INDUSTRY` setting. This is typically set at signup via the onboarding flow (e.g., `cybersecurity`, `ecommerce`).
+
+When you archive the `__demo__` connection via the publish flow, the industry-matched built-ins flip to `archived` — removing them from the library tier. At that point the empty state shows only custom prompts (ones your workspace authored) plus cold-start fallback for new users.
+
+See [Developer Mode](/guides/developer-mode) for the full demo lifecycle.
+
+---
+
+## Cold-start — new workspaces and empty states
+
+When favorites + popular + library all return zero prompts (brand-new workspace, no industry set, demo archived), the empty state falls back to a generic cold-start set. These are hardcoded examples like "What tables are available?" and "Show me the schema of the users table" — phrased to work against any datasource.
+
+Once a user clicks any prompt and a learning pattern triggers the distinct-click counter, the popular tier starts populating and cold-start rows drop out of rotation.
+
+---
+
+## Overriding the surface in embedded contexts
+
+Embedded widgets have a **privacy concern**: the adaptive surface is identified (favorites require a user context), and fetching it from a host page that doesn't need it leaks a request. The widget API lets you bypass the fetch entirely.
+
+### React component prop
+
+```tsx
+import { AtlasChat } from "@useatlas/react";
+
+<AtlasChat
+  apiUrl="https://api.useatlas.dev"
+  starterPrompts={["What are our top customers?", "Show me revenue by month"]}
+/>
+```
+
+Passing `starterPrompts` skips the `/api/v1/starter-prompts` request entirely — no network call is made from the embedded context. Pass `[]` to show no suggestions and still skip the fetch.
+
+### Script-tag attribute
+
+```html
+<script
+  src="https://app.useatlas.dev/widget.js"
+  data-api-url="https://api.useatlas.dev"
+  data-starter-prompts='["What are our top customers?", "Show me revenue by month"]'
+></script>
+```
+
+The `data-starter-prompts` attribute accepts a JSON array and is forwarded to the iframe as a query param. Same privacy guarantee as the React prop.
+
+### Omit to use the adaptive surface
+
+Omitting the prop / attribute is the default — the widget fetches the resolved favorites + popular + library list from `/api/v1/starter-prompts`, same as the web app.
+
+---
+
+## Programmatic access (SDK)
+
+```typescript
+import { Atlas } from "@useatlas/sdk";
+
+const atlas = new Atlas({
+  apiUrl: "https://api.useatlas.dev",
+  apiKey: "sk_live_...",
+});
+
+const { prompts, total } = await atlas.getStarterPrompts({ limit: 10 });
+
+for (const p of prompts) {
+  console.log(`[${p.provenance}] ${p.text}`);
+}
+```
+
+API keys map to a synthetic user context, so favorites tied to the API key's owner appear. See [SDK · Starter Prompts](/sdk/starter-prompts) for the full integration guide.
+
+For framework-agnostic fetch code, `fetchStarterPrompts()` is the headless helper — [SDK reference](/reference/sdk#fetchstarterprompts--headless-helper) has the details.
+
+---
+
+## Configuration reference
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `ATLAS_STARTER_PROMPT_MAX_FAVORITES` | `20` | Cap on favorites per user |
+| `ATLAS_STARTER_PROMPT_AUTO_PROMOTE_CLICKS` | `3` | Distinct-user clicks before a prompt enters the moderation queue |
+| `ATLAS_STARTER_PROMPT_COLD_WINDOW_DAYS` | `90` | How far back the click counter looks — older clicks decay out |
+| `ATLAS_DEMO_INDUSTRY` | — | Industry label for library-tier filtering (seeded at signup) |
+
+See [Environment Variables](/reference/environment-variables) for the full list.
+
+---
+
+## See also
+
+- [Starter Prompt Moderation](/guides/starter-prompt-moderation) — admin side: approve/hide/author
+- [SDK · Starter Prompts](/sdk/starter-prompts) — programmatic access
+- [Embedding the Widget](/guides/embedding-widget) — widget-level prop override
+- [Developer Mode](/guides/developer-mode) — demo-industry + `__demo__` lifecycle that feeds the library tier

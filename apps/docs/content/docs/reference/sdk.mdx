@@ -159,6 +159,33 @@ for (const p of prompts) {
 }
 ```
 
+### `fetchStarterPrompts()` — headless helper
+
+For framework-agnostic data-fetching code (UI hooks, custom integrations) that doesn't need an `AtlasClient`, import the standalone helper directly:
+
+```typescript
+import { fetchStarterPrompts } from "@useatlas/sdk";
+
+const prompts = await fetchStarterPrompts({
+  apiUrl: "https://api.useatlas.dev",
+  credentials: { apiKey: "sk_live_..." },
+  limit: 10,
+  signal: abortController.signal,
+});
+```
+
+The helper differs from `atlas.getStarterPrompts()` on purpose:
+
+| Behavior | `atlas.getStarterPrompts()` | `fetchStarterPrompts()` |
+|----------|----------------------------|------------------------|
+| 5xx response | Throws | Returns `[]` (soft-fail) |
+| 4xx response | Throws | Throws with `requestId` |
+| Malformed JSON | Throws | Returns `[]` + logs warning |
+| `AbortError` | Re-throws | Swallows silently |
+| Return shape | `{ prompts, total }` | `StarterPrompt[]` |
+
+Use `atlas.getStarterPrompts()` when you want typed errors bubbling up to your app. Use `fetchStarterPrompts()` when building an empty-state UI surface that should gracefully render nothing on outage instead of flashing an error.
+
 ---
 
 ## Chat
@@ -908,6 +935,14 @@ import type {
   // Actions
   ActionStatus,
   RollbackActionResponse,
+
+  // Starter prompts
+  StarterPrompt,
+  StarterPromptProvenance,
+  StarterPromptsResponse,
+  GetStarterPromptsOptions,
+  FetchStarterPromptsConfig,
+  FetchStarterPromptsCredentials,
 } from "@useatlas/sdk";
 ```
 

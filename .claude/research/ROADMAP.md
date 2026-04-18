@@ -1242,6 +1242,26 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 
 ---
 
+## ContentModeRegistry (#1515)
+
+**Consolidate the draft/published mode wiring behind a single registry.** The 1.2.0 mode system was shallow — four content tables participated via three different read-filter styles, a hand-written UNION ALL for draft counts, and four parallel UPDATE phases in the atomic publish endpoint. Adding a fifth table required coordinated edits across 6+ files with no compile-time enforcement. Parent issue: #1515. Architecture win #26.
+
+### Phase 1 — Library
+- [x] `ContentModeRegistry` service + static `CONTENT_MODE_TABLES` tuple + `InferDraftCounts<T>` type derivation (#1517 — 6 new files under `packages/api/src/lib/content-mode/`: `port.ts` with `SimpleModeTable` | `ExoticModeAdapter` discriminated union, `tables.ts` with the static tuple, `infer.ts` with compile-time wire-type equality assertion against `ModeDraftCounts`, `registry.ts` with Effect Context.Tag service exposing `readFilter` / `countAllDrafts` / `runPublishPhases`, plus boundary tests; phase 1 review fixes merged into same squash: fail-loud semantic_entities stub, exhaustive `kind` guards via `assertNever`, fold `PublishPhaseError`/`UnknownTableError`/`ExoticReadFilterUnavailableError` into `AtlasError` union + `mapTaggedError`, duplicate-key startup guards, strict NaN/negative/unknown-key handling in `countAllDrafts`)
+
+### Phase 2 — Caller migrations
+- [x] 2a — `mode.ts` → `registry.countAllDrafts` (#1519, PR #1525 — drop hand-written `DRAFT_COUNTS_SQL` + `rowsToCounts`; add `makeInternalDBShimLayer()` for route handlers that need InternalDB without opening a second pool; replace inline `Effect.tryPromise` with `queryEffect` for consistency; `mapTaggedError` for `PublishPhaseError` branches on `phase === "count"` with neutral message for read endpoints)
+- [x] Test-mock hygiene follow-up — add `InternalDB` + `makeInternalDBShimLayer` to shared factory (`MockInternalDB` + `makeMockInternalDBShimLayer`) and 6 standalone partial mocks (#1524, PR #1526 — unblocked module-top imports for 2b/2c/2d/2e)
+- [x] 2b — `prompts/scoping.ts` → `registry.readFilter` (#1520, PR #1527 — module-level `makeService(CONTENT_MODE_TABLES)` + `Effect.runSync`; alias every `prompt_collections` column with `pc.`; demo-industry + custom-vs-builtin scoping stays in `scoping.ts`)
+- [x] 2c — `admin-connections.ts` → `registry.readFilter` (#1521, PR #1528 — same pattern as 2b. `admin-starter-prompts.ts` also in #1521's scope but has no mode-status filters; `getPopularSuggestions` in `lib/db/internal.ts` tracked separately in #1531 because `internal.ts` can't import `content-mode` without a cycle)
+- [x] 2d — Replace `semantic_entities` stub with real `applyTombstones` + `promoteDraftEntities` composition (#1522, PR #1529 — new `content-mode/adapters/semantic-entities.ts` wraps the existing helpers in Effect + `PublishPhaseError` tagged by phase; adapter-boundary tests for ordering / failure / no transaction control)
+- [x] 2e — `admin-publish.ts` → `registry.runPublishPhases` (#1523, PR #1530 — four UPDATE phases + `applyTombstones` + `promoteDraftEntities` collapse to one `runPublishPhases` call inside the existing BEGIN/COMMIT. `PromotionReport[]` projected back to the wire schema via `findReport(table)`. Phase 4 archival stays outside the registry — it's lifecycle, not promotion. `promoted` count falls back to `rows.length` when `rowCount` absent so test mocks stay tolerant)
+
+### Follow-ups
+- [ ] Migrate `getPopularSuggestions` in `lib/db/internal.ts` (#1531 — last caller of `buildUnionStatusClause`; needs either a pure status-clause helper in `content-mode/port.ts` or relocation of the query to a module that can import `content-mode` freely)
+
+---
+
 ## Ideas / Backlog
 
 _Untracked ideas. Create issues when committing to work._

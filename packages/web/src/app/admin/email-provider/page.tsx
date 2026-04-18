@@ -1,20 +1,13 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ComponentType, type ReactNode } from "react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
+import { cn } from "@/lib/utils";
+import { formatDateTime } from "@/lib/format";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import {
   Form,
   FormField,
@@ -28,63 +21,224 @@ import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
-import { usePlatformAdminGuard } from "@/ui/hooks/use-platform-admin-guard";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
-import { LoadingState } from "@/ui/components/admin/loading-state";
-import { Mail, Loader2, CheckCircle2, XCircle, RotateCcw, Eye, EyeOff } from "lucide-react";
+import {
+  Mail,
+  Loader2,
+  CheckCircle2,
+  XCircle,
+  Lock,
+  Eye,
+  EyeOff,
+  X,
+} from "lucide-react";
 
 // ── Schemas ───────────────────────────────────────────────────────
 
-const EMAIL_PROVIDER_OPTIONS = ["resend", "sendgrid", "postmark", "smtp", "ses"] as const;
-type EmailProvider = (typeof EMAIL_PROVIDER_OPTIONS)[number];
+const BaselineSchema = z.object({
+  provider: z.literal("resend"),
+  fromAddress: z.string(),
+});
+
+const OverrideSchema = z.object({
+  fromAddress: z.string(),
+  apiKeyMasked: z.string(),
+  installedAt: z.string(),
+});
+
+const EmailProviderConfigResponseSchema = z.object({
+  config: z.object({
+    baseline: BaselineSchema,
+    override: OverrideSchema.nullable(),
+  }),
+});
 
 interface TestResult {
   success: boolean;
   message: string;
 }
 
-const EmailProviderConfigResponseSchema = z.object({
-  config: z.object({
-    provider: z.enum(EMAIL_PROVIDER_OPTIONS),
-    fromAddress: z.string(),
-    apiKeyMasked: z.string().nullable(),
-    source: z.enum(["override", "env", "default"]),
-  }),
-});
-
-const PROVIDERS: { value: EmailProvider; label: string; description: string }[] = [
-  { value: "resend", label: "Resend", description: "Modern email API for developers" },
-  { value: "sendgrid", label: "SendGrid", description: "Twilio SendGrid email delivery" },
-  { value: "postmark", label: "Postmark", description: "Transactional email service" },
-  { value: "smtp", label: "SMTP", description: "Generic SMTP via webhook bridge (requires ATLAS_SMTP_URL)" },
-  { value: "ses", label: "Amazon SES", description: "AWS Simple Email Service via webhook bridge (requires ATLAS_SMTP_URL)" },
-];
-
-/** Providers that need an API key configured directly. */
-const NEEDS_API_KEY = new Set<EmailProvider>(["resend", "sendgrid", "postmark"]);
-
 const formSchema = z.object({
-  provider: z.enum(EMAIL_PROVIDER_OPTIONS),
   apiKey: z.string(),
   fromAddress: z.string(),
   recipientEmail: z.string(),
 });
 
-// ── Main Page ─────────────────────────────────────────────────────
+// ── Design primitives ──────────────────────────────────────────────
+
+type StatusKind = "connected" | "disconnected" | "locked";
+
+function StatusDot({ kind }: { kind: StatusKind }) {
+  return (
+    <span
+      aria-hidden
+      className={cn(
+        "relative inline-flex size-1.5 shrink-0 rounded-full",
+        kind === "connected" &&
+          "bg-primary shadow-[0_0_0_3px_color-mix(in_oklch,_var(--primary)_15%,_transparent)]",
+        kind === "disconnected" && "bg-muted-foreground/40",
+        kind === "locked" && "bg-muted-foreground/30",
+      )}
+    >
+      {kind === "connected" && (
+        <span className="absolute inset-0 rounded-full bg-primary/60 motion-safe:animate-ping" />
+      )}
+    </span>
+  );
+}
+
+function SectionHeading({ title, description }: { title: string; description: string }) {
+  return (
+    <div className="mb-3">
+      <h2 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+        {title}
+      </h2>
+      <p className="mt-0.5 text-xs text-muted-foreground/80">{description}</p>
+    </div>
+  );
+}
+
+/** Thin single-line row, used for the locked baseline and the collapsed override prompt. */
+function CompactRow({
+  icon: Icon,
+  title,
+  description,
+  status,
+  trailingLabel,
+  action,
+}: {
+  icon: ComponentType<{ className?: string }>;
+  title: string;
+  description: string;
+  status: StatusKind;
+  trailingLabel?: ReactNode;
+  action?: ReactNode;
+}) {
+  return (
+    <div className="group flex items-center gap-3 rounded-xl border bg-card/40 px-3.5 py-2.5 transition-colors hover:bg-card/70 hover:border-border/80">
+      <span className="grid size-8 shrink-0 place-items-center rounded-lg border bg-background/40 text-muted-foreground">
+        <Icon className="size-4" />
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <h3 className="truncate text-sm font-semibold leading-tight tracking-tight">{title}</h3>
+          <StatusDot kind={status} />
+        </div>
+        <p className="mt-0.5 truncate text-xs text-muted-foreground">{description}</p>
+      </div>
+      {trailingLabel && (
+        <span className="shrink-0 text-[10px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
+          {trailingLabel}
+        </span>
+      )}
+      {action && <div className="shrink-0">{action}</div>}
+    </div>
+  );
+}
+
+/** Full card used when the override is configured or the user is mid-setup. */
+function OverrideShell({
+  status,
+  title,
+  description,
+  onCollapse,
+  children,
+  actions,
+}: {
+  status: StatusKind;
+  title: string;
+  description: string;
+  onCollapse?: () => void;
+  children?: ReactNode;
+  actions?: ReactNode;
+}) {
+  return (
+    <section
+      className={cn(
+        "relative flex flex-col overflow-hidden rounded-xl border bg-card/60 transition-colors",
+        status === "connected" && "border-primary/20",
+      )}
+    >
+      {status === "connected" && (
+        <span
+          aria-hidden
+          className="pointer-events-none absolute left-0 top-4 bottom-4 w-px bg-gradient-to-b from-transparent via-primary to-transparent opacity-70"
+        />
+      )}
+      <header className="flex items-start gap-3 p-4 pb-3">
+        <span
+          className={cn(
+            "grid size-9 shrink-0 place-items-center rounded-lg border bg-background/40",
+            status === "connected" ? "border-primary/30 text-primary" : "text-muted-foreground",
+          )}
+        >
+          <Mail className="size-4" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <h3 className="truncate text-sm font-semibold leading-tight tracking-tight">{title}</h3>
+            {status === "connected" ? (
+              <span className="ml-auto flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-[0.08em] text-primary">
+                <StatusDot kind="connected" />
+                Live
+              </span>
+            ) : onCollapse ? (
+              <button
+                type="button"
+                aria-label="Cancel"
+                onClick={onCollapse}
+                className="ml-auto -m-1 grid size-6 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              >
+                <X className="size-3.5" />
+              </button>
+            ) : null}
+          </div>
+          <p className="mt-0.5 text-xs leading-snug text-muted-foreground">{description}</p>
+        </div>
+      </header>
+      {children != null && <div className="flex-1 space-y-3 px-4 pb-3 text-sm">{children}</div>}
+      {actions && (
+        <footer className="flex flex-wrap items-center justify-end gap-2 border-t border-border/50 bg-muted/20 px-4 py-2.5">
+          {actions}
+        </footer>
+      )}
+    </section>
+  );
+}
+
+function DetailRow({ label, value, mono }: { label: string; value: ReactNode; mono?: boolean }) {
+  return (
+    <div className="flex items-baseline justify-between gap-3 py-1 text-xs">
+      <span className="shrink-0 text-muted-foreground">{label}</span>
+      <span className={cn("min-w-0 text-right", mono ? "font-mono text-[11px]" : "font-medium")}>
+        {value}
+      </span>
+    </div>
+  );
+}
+
+function DetailList({ children }: { children: ReactNode }) {
+  return (
+    <div className="rounded-lg border bg-muted/20 px-3 py-1.5 divide-y divide-border/50">
+      {children}
+    </div>
+  );
+}
+
+// ── Page ─────────────────────────────────────────────────────────
 
 export default function EmailProviderPage() {
-  const { blocked } = usePlatformAdminGuard();
   const form = useForm<z.infer<typeof formSchema>>({
     resolver: zodResolver(formSchema),
-    defaultValues: { provider: "resend", apiKey: "", fromAddress: "", recipientEmail: "" },
+    defaultValues: { apiKey: "", fromAddress: "", recipientEmail: "" },
   });
+  const [expanded, setExpanded] = useState(false);
   const [showApiKey, setShowApiKey] = useState(false);
   const [testResult, setTestResult] = useState<TestResult | null>(null);
 
-  const { data, loading, error, refetch } = useAdminFetch(
-    "/api/v1/admin/email-provider",
-    { schema: EmailProviderConfigResponseSchema },
-  );
+  const { data, loading, error, refetch } = useAdminFetch("/api/v1/admin/email-provider", {
+    schema: EmailProviderConfigResponseSchema,
+  });
 
   const { mutate: saveMutate, saving, error: saveError, clearError: clearSaveError } =
     useAdminMutation({
@@ -107,46 +261,41 @@ export default function EmailProviderPage() {
     });
 
   const mutationError = saveError ?? deleteError ?? testError;
+  const baseline = data?.config.baseline;
+  const override = data?.config.override ?? null;
+  const hasOverride = override !== null;
+  const showEditor = hasOverride || expanded;
 
-  const existingConfig = data?.config ?? null;
-  const hasOverride = existingConfig?.source === "override";
-  const provider = form.watch("provider");
-
-  // Sync form when server data loads or changes
+  // Hydrate the form from the saved override when it loads.
   useEffect(() => {
     if (loading) return;
-    if (existingConfig) {
-      form.reset({
-        provider: existingConfig.provider,
-        apiKey: "",
-        fromAddress: existingConfig.fromAddress,
-        recipientEmail: "",
-      });
-    } else {
-      form.reset({ provider: "resend", apiKey: "", fromAddress: "", recipientEmail: "" });
-    }
+    form.reset({
+      apiKey: "",
+      fromAddress: override?.fromAddress ?? "",
+      recipientEmail: "",
+    });
     setTestResult(null);
     clearSaveError();
     clearDeleteError();
     clearTestError();
   }, [data, loading]);
 
-  if (blocked) {
-    return <LoadingState message="Checking access..." />;
+  function clearMutationErrors() {
+    clearSaveError();
+    clearDeleteError();
+    clearTestError();
   }
 
   async function handleSave(values: z.infer<typeof formSchema>) {
-    if (NEEDS_API_KEY.has(values.provider) && !values.apiKey && !existingConfig?.apiKeyMasked) {
-      form.setError("apiKey", { message: "API key is required for new configurations." });
+    if (!hasOverride && !values.apiKey) {
+      form.setError("apiKey", { message: "A Resend API key is required." });
       return;
     }
 
     setTestResult(null);
-    clearSaveError();
-    clearDeleteError();
-    clearTestError();
+    clearMutationErrors();
 
-    const body: Record<string, string> = { provider: values.provider };
+    const body: Record<string, string> = {};
     if (values.apiKey) body.apiKey = values.apiKey;
     if (values.fromAddress.trim()) body.fromAddress = values.fromAddress.trim();
 
@@ -156,15 +305,13 @@ export default function EmailProviderPage() {
     }
   }
 
-  async function handleDelete() {
+  async function handleRemove() {
     setTestResult(null);
-    clearSaveError();
-    clearDeleteError();
-    clearTestError();
-
+    clearMutationErrors();
     const result = await deleteMutate();
     if (result.ok) {
-      form.reset({ provider: "resend", apiKey: "", fromAddress: "", recipientEmail: "" });
+      form.reset({ apiKey: "", fromAddress: "", recipientEmail: "" });
+      setExpanded(false);
     }
   }
 
@@ -174,231 +321,223 @@ export default function EmailProviderPage() {
       form.setError("recipientEmail", { message: "Enter a recipient email to send a test." });
       return;
     }
-
     setTestResult(null);
-    clearSaveError();
-    clearDeleteError();
-    clearTestError();
+    clearMutationErrors();
 
-    const body: Record<string, string> = {
-      provider: values.provider,
-      fromAddress: values.fromAddress.trim() || existingConfig?.fromAddress || "Atlas <noreply@useatlas.dev>",
-      recipientEmail: values.recipientEmail.trim(),
-    };
-    // Only include apiKey when the user entered new credentials — omit to test saved config
+    const body: Record<string, string> = { recipientEmail: values.recipientEmail.trim() };
     if (values.apiKey) body.apiKey = values.apiKey;
+    if (values.fromAddress.trim()) body.fromAddress = values.fromAddress.trim();
 
     const result = await testMutate({ body });
-    if (result.ok && result.data) {
-      setTestResult(result.data);
-    }
+    if (result.ok && result.data) setTestResult(result.data);
   }
 
-  function getKeyLabel(p: EmailProvider): string {
-    if (p === "postmark") return "Server Token";
-    return "API Key";
-  }
-
-  function getKeyPlaceholder(p: EmailProvider): string {
-    switch (p) {
-      case "resend": return "re_...";
-      case "sendgrid": return "SG....";
-      case "postmark": return "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx";
-      default: return "";
-    }
+  function handleCollapse() {
+    setExpanded(false);
+    setTestResult(null);
+    form.reset({ apiKey: "", fromAddress: "", recipientEmail: "" });
+    clearMutationErrors();
   }
 
   return (
     <div className="p-6">
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold tracking-tight">Email Provider</h1>
-        <p className="text-sm text-muted-foreground">
-          Configure the platform&apos;s default email provider for all outbound emails
+      <div className="mx-auto mb-8 max-w-3xl">
+        <h1 className="text-2xl font-semibold tracking-tight">Email Provider</h1>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Atlas sends your workspace emails via Resend. Add your own API key and sender address
+          to deliver from your own domain.
         </p>
       </div>
 
       <ErrorBoundary>
-        <div>
-          {mutationError && (
-            <ErrorBanner message={mutationError} onRetry={() => { clearSaveError(); clearDeleteError(); clearTestError(); }} />
-          )}
+        {mutationError && (
+          <div className="mx-auto mb-4 max-w-3xl">
+            <ErrorBanner message={mutationError} onRetry={clearMutationErrors} />
+          </div>
+        )}
 
-          <AdminContentWrapper
-            loading={loading}
-            error={error}
-            feature="Email Provider"
-            onRetry={refetch}
-            loadingMessage="Loading email configuration..."
-          >
-            <div className="mx-auto max-w-2xl space-y-6">
-              {/* Current status */}
-              <Card className="shadow-none">
-                <CardHeader className="pb-3">
-                  <div className="flex items-center justify-between">
-                    <CardTitle className="flex items-center gap-2 text-base">
-                      <Mail className="size-4" />
-                      Current Configuration
-                    </CardTitle>
-                    {hasOverride ? (
-                      <Badge variant="default">Custom</Badge>
-                    ) : existingConfig?.source === "env" ? (
-                      <Badge variant="secondary">Environment</Badge>
-                    ) : (
-                      <Badge variant="secondary">Platform Default</Badge>
-                    )}
-                  </div>
-                  <CardDescription>
-                    {hasOverride
-                      ? `Using ${PROVIDERS.find((p) => p.value === existingConfig?.provider)?.label ?? existingConfig?.provider} as the platform email provider.`
-                      : existingConfig?.source === "env"
-                        ? `Using ${PROVIDERS.find((p) => p.value === existingConfig?.provider)?.label ?? existingConfig?.provider} from environment variables.`
-                        : "Using the platform default email provider (Resend). Configure a custom provider below."}
-                  </CardDescription>
-                </CardHeader>
-                {existingConfig && (
-                  <CardContent>
-                    <div className="grid grid-cols-2 gap-4 text-sm">
-                      <div>
-                        <span className="text-muted-foreground">Provider</span>
-                        <p className="font-medium">
-                          {PROVIDERS.find((p) => p.value === existingConfig.provider)?.label ?? existingConfig.provider}
-                        </p>
-                      </div>
-                      <div>
-                        <span className="text-muted-foreground">From Address</span>
-                        <p className="font-mono font-medium text-sm">{existingConfig.fromAddress}</p>
-                      </div>
-                      {existingConfig.apiKeyMasked && (
-                        <div>
-                          <span className="text-muted-foreground">{getKeyLabel(existingConfig.provider)}</span>
-                          <p className="font-mono font-medium">{existingConfig.apiKeyMasked}</p>
-                        </div>
+        <AdminContentWrapper
+          loading={loading}
+          error={error}
+          feature="Email Provider"
+          onRetry={refetch}
+          loadingMessage="Loading email configuration..."
+        >
+          <div className="mx-auto max-w-3xl space-y-8">
+            {/* Baseline — read-only */}
+            <section>
+              <SectionHeading
+                title="Platform baseline"
+                description="Shared Atlas default. Used when your workspace has no override."
+              />
+              {baseline && (
+                <CompactRow
+                  icon={Mail}
+                  title="Resend"
+                  description={baseline.fromAddress}
+                  status="locked"
+                  trailingLabel={
+                    <span className="flex items-center gap-1">
+                      <Lock className="size-3" />
+                      Locked
+                    </span>
+                  }
+                />
+              )}
+            </section>
+
+            {/* BYO override */}
+            <section>
+              <SectionHeading
+                title="Workspace override"
+                description="Your Resend API key and sender address. Applies to this workspace only."
+              />
+
+              {!showEditor && (
+                <CompactRow
+                  icon={Mail}
+                  title="Use your own Resend account"
+                  description="Deliver from your own verified domain."
+                  status="disconnected"
+                  action={
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setExpanded(true)}
+                    >
+                      + Add credentials
+                    </Button>
+                  }
+                />
+              )}
+
+              {showEditor && (
+                <OverrideShell
+                  status={hasOverride ? "connected" : "disconnected"}
+                  title={hasOverride ? "Workspace Resend override" : "Add your Resend credentials"}
+                  description={
+                    hasOverride
+                      ? "Emails from this workspace are delivered with your key."
+                      : "Paste a Resend API key and the verified sender address you want to use."
+                  }
+                  onCollapse={!hasOverride ? handleCollapse : undefined}
+                  actions={
+                    <>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={handleTest}
+                        disabled={testing || !form.watch("recipientEmail").trim()}
+                      >
+                        {testing && <Loader2 className="mr-1.5 size-3.5 animate-spin" />}
+                        Send test
+                      </Button>
+                      {hasOverride && (
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          className="text-muted-foreground"
+                          onClick={handleRemove}
+                          disabled={deleting}
+                        >
+                          {deleting && <Loader2 className="mr-1.5 size-3.5 animate-spin" />}
+                          Remove override
+                        </Button>
                       )}
-                    </div>
-                  </CardContent>
-                )}
-              </Card>
+                      <Button
+                        type="button"
+                        onClick={form.handleSubmit(handleSave)}
+                        disabled={saving || (!hasOverride && !form.watch("apiKey"))}
+                      >
+                        {saving && <Loader2 className="mr-1.5 size-3.5 animate-spin" />}
+                        {hasOverride ? "Update" : "Save"}
+                      </Button>
+                    </>
+                  }
+                >
+                  {hasOverride && override && (
+                    <DetailList>
+                      <DetailRow label="Provider" value="Resend" />
+                      <DetailRow label="From address" value={override.fromAddress} mono />
+                      <DetailRow label="API key" value={override.apiKeyMasked} mono />
+                      <DetailRow label="Added" value={formatDateTime(override.installedAt)} />
+                    </DetailList>
+                  )}
 
-              {/* Configuration form */}
-              <Card className="shadow-none">
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-base">
-                    {hasOverride ? "Update Configuration" : "Configure Email Provider"}
-                  </CardTitle>
-                  <CardDescription>
-                    {hasOverride
-                      ? `Update your platform email provider settings. Leave ${getKeyLabel(provider).toLowerCase()} empty to keep the existing key.`
-                      : "Set up a custom email provider for the platform. This is used for all outbound emails (onboarding, scheduled tasks, invitations, agent actions)."}
-                  </CardDescription>
-                </CardHeader>
-                <CardContent>
                   <Form {...form}>
                     <form onSubmit={form.handleSubmit(handleSave)} className="space-y-4">
-                      {/* Provider */}
                       <FormField
                         control={form.control}
-                        name="provider"
+                        name="apiKey"
                         render={({ field }) => (
                           <FormItem>
-                            <FormLabel>Provider</FormLabel>
-                            <Select value={field.value} onValueChange={field.onChange}>
+                            <FormLabel>
+                              API key
+                              {hasOverride && (
+                                <span className="ml-2 text-xs font-normal text-muted-foreground">
+                                  (leave empty to keep existing)
+                                </span>
+                              )}
+                            </FormLabel>
+                            <div className="relative">
                               <FormControl>
-                                <SelectTrigger>
-                                  <SelectValue placeholder="Select provider" />
-                                </SelectTrigger>
+                                <Input
+                                  type={showApiKey ? "text" : "password"}
+                                  placeholder={override?.apiKeyMasked ?? "re_..."}
+                                  className="pr-10 font-mono"
+                                  {...field}
+                                />
                               </FormControl>
-                              <SelectContent>
-                                {PROVIDERS.map((p) => (
-                                  <SelectItem key={p.value} value={p.value}>
-                                    <div>
-                                      <div className="font-medium">{p.label}</div>
-                                      <div className="text-xs text-muted-foreground">{p.description}</div>
-                                    </div>
-                                  </SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                className="absolute right-1 top-1/2 -translate-y-1/2 h-7 w-7 p-0"
+                                onClick={() => setShowApiKey((v) => !v)}
+                              >
+                                {showApiKey ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
+                              </Button>
+                            </div>
                             <FormMessage />
                           </FormItem>
                         )}
                       />
 
-                      {/* API Key (only for direct-API providers) */}
-                      {NEEDS_API_KEY.has(provider) && (
-                        <FormField
-                          control={form.control}
-                          name="apiKey"
-                          render={({ field }) => (
-                            <FormItem>
-                              <FormLabel>
-                                {getKeyLabel(provider)}
-                                {existingConfig?.apiKeyMasked && (
-                                  <span className="ml-2 text-xs font-normal text-muted-foreground">
-                                    (leave empty to keep existing)
-                                  </span>
-                                )}
-                              </FormLabel>
-                              <div className="relative">
-                                <FormControl>
-                                  <Input
-                                    type={showApiKey ? "text" : "password"}
-                                    placeholder={existingConfig?.apiKeyMasked ?? getKeyPlaceholder(provider)}
-                                    className="pr-10 font-mono"
-                                    {...field}
-                                  />
-                                </FormControl>
-                                <Button
-                                  type="button"
-                                  variant="ghost"
-                                  size="sm"
-                                  className="absolute right-1 top-1/2 -translate-y-1/2 h-7 w-7 p-0"
-                                  onClick={() => setShowApiKey(!showApiKey)}
-                                >
-                                  {showApiKey ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
-                                </Button>
-                              </div>
-                              <FormMessage />
-                            </FormItem>
-                          )}
-                        />
-                      )}
-
-                      {/* SMTP/SES note */}
-                      {(provider === "smtp" || provider === "ses") && (
-                        <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-sm text-amber-700 dark:text-amber-300">
-                          {provider === "smtp" ? "SMTP" : "Amazon SES"} requires the <code className="font-mono text-xs">ATLAS_SMTP_URL</code> environment variable to be set as an HTTP bridge for delivery.
-                        </div>
-                      )}
-
-                      {/* From Address */}
                       <FormField
                         control={form.control}
                         name="fromAddress"
                         render={({ field }) => (
                           <FormItem>
-                            <FormLabel>From Address</FormLabel>
+                            <FormLabel>
+                              From address
+                              {hasOverride && (
+                                <span className="ml-2 text-xs font-normal text-muted-foreground">
+                                  (optional — leave empty to keep existing)
+                                </span>
+                              )}
+                            </FormLabel>
                             <FormControl>
                               <Input
-                                placeholder="Atlas <noreply@useatlas.dev>"
+                                placeholder={baseline?.fromAddress ?? "Acme <noreply@acme.com>"}
                                 className="font-mono text-sm"
                                 {...field}
                               />
                             </FormControl>
                             <FormDescription>
-                              The sender address for all platform emails. Must be verified with your email provider.
+                              Must be a sender verified with Resend.
                             </FormDescription>
                             <FormMessage />
                           </FormItem>
                         )}
                       />
 
-                      {/* Test recipient */}
                       <FormField
                         control={form.control}
                         name="recipientEmail"
                         render={({ field }) => (
                           <FormItem>
-                            <FormLabel>Test Recipient</FormLabel>
+                            <FormLabel>Test recipient</FormLabel>
                             <FormControl>
                               <Input
                                 type="email"
@@ -408,21 +547,21 @@ export default function EmailProviderPage() {
                               />
                             </FormControl>
                             <FormDescription>
-                              Enter an email address to send a test email.
+                              Where to send a deliverability check.
                             </FormDescription>
                             <FormMessage />
                           </FormItem>
                         )}
                       />
 
-                      {/* Test result */}
                       {testResult && (
                         <div
-                          className={`flex items-start gap-2 rounded-md border px-4 py-3 text-sm ${
+                          className={cn(
+                            "flex items-start gap-2 rounded-md border px-3 py-2 text-sm",
                             testResult.success
-                              ? "border-emerald-500/30 bg-emerald-500/5 text-emerald-700 dark:text-emerald-300"
-                              : "border-destructive/30 bg-destructive/5 text-destructive"
-                          }`}
+                              ? "border-primary/30 bg-primary/5 text-primary"
+                              : "border-destructive/30 bg-destructive/5 text-destructive",
+                          )}
                         >
                           {testResult.success ? (
                             <CheckCircle2 className="mt-0.5 size-4 shrink-0" />
@@ -432,49 +571,13 @@ export default function EmailProviderPage() {
                           <span>{testResult.message}</span>
                         </div>
                       )}
-
-                      {/* Actions */}
-                      <div className="flex items-center gap-2 pt-2">
-                        <Button
-                          type="submit"
-                          disabled={saving || (NEEDS_API_KEY.has(provider) && !form.watch("apiKey") && !existingConfig?.apiKeyMasked)}
-                        >
-                          {saving && <Loader2 className="mr-1.5 size-3.5 animate-spin" />}
-                          {hasOverride ? "Update" : "Save"}
-                        </Button>
-                        <Button
-                          type="button"
-                          variant="outline"
-                          onClick={handleTest}
-                          disabled={testing || !form.watch("recipientEmail").trim()}
-                        >
-                          {testing && <Loader2 className="mr-1.5 size-3.5 animate-spin" />}
-                          Send Test Email
-                        </Button>
-                        {hasOverride && (
-                          <Button
-                            type="button"
-                            variant="ghost"
-                            className="text-muted-foreground"
-                            onClick={handleDelete}
-                            disabled={deleting}
-                          >
-                            {deleting ? (
-                              <Loader2 className="mr-1.5 size-3.5 animate-spin" />
-                            ) : (
-                              <RotateCcw className="mr-1.5 size-3.5" />
-                            )}
-                            Reset to Default
-                          </Button>
-                        )}
-                      </div>
                     </form>
                   </Form>
-                </CardContent>
-              </Card>
-            </div>
-          </AdminContentWrapper>
-        </div>
+                </OverrideShell>
+              )}
+            </section>
+          </div>
+        </AdminContentWrapper>
       </ErrorBoundary>
     </div>
   );

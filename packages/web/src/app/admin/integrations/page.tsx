@@ -1,6 +1,14 @@
 "use client";
 
-import { useMemo, useState, type ComponentType, type ReactNode } from "react";
+import {
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type ComponentType,
+  type ReactNode,
+  type RefObject,
+} from "react";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { IntegrationStatusSchema } from "@/ui/lib/admin-schemas";
@@ -139,9 +147,10 @@ function StatusDot({ kind, className }: { kind: StatusKind; className?: string }
       aria-hidden
       className={cn(
         "relative inline-flex size-1.5 shrink-0 rounded-full",
-        kind === "connected" && "bg-primary shadow-[0_0_0_3px_var(--primary)]/15",
+        kind === "connected" &&
+          "bg-primary shadow-[0_0_0_3px_color-mix(in_oklch,_var(--primary)_15%,_transparent)]",
         kind === "disconnected" && "bg-muted-foreground/40",
-        kind === "unavailable" && "bg-muted-foreground/20 outline outline-1 outline-dashed outline-muted-foreground/30",
+        kind === "unavailable" && "bg-muted-foreground/20 outline-1 outline-dashed outline-muted-foreground/30",
         className,
       )}
     >
@@ -159,26 +168,30 @@ function StatusDot({ kind, className }: { kind: StatusKind; className?: string }
  * and a "Live" label; the disconnected-expanded state shows a close button.
  */
 function IntegrationShell({
+  id,
   icon: Icon,
   title,
   description,
   status,
-  statusText,
   children,
   actions,
   onCollapse,
+  panelRef,
 }: {
+  id?: string;
   icon: ComponentType<{ className?: string }>;
   title: string;
   description: string;
   status: StatusKind;
-  statusText?: string;
   children?: ReactNode;
   actions?: ReactNode;
   onCollapse?: () => void;
+  panelRef?: RefObject<HTMLElement | null>;
 }) {
   return (
     <section
+      id={id}
+      ref={panelRef}
       className={cn(
         "relative flex flex-col overflow-hidden rounded-xl border bg-card/60 backdrop-blur-[1px] transition-colors",
         "hover:border-border/80",
@@ -212,7 +225,7 @@ function IntegrationShell({
             {status === "connected" && (
               <span className="ml-auto flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-[0.08em] text-primary">
                 <StatusDot kind="connected" />
-                {statusText ?? "Live"}
+                Live
               </span>
             )}
             {status !== "connected" && onCollapse && (
@@ -244,6 +257,13 @@ function IntegrationShell({
     </section>
   );
 }
+
+/** Visually-hidden human-readable label for a connection status. */
+const STATUS_LABEL: Record<StatusKind, string> = {
+  connected: "Connected",
+  disconnected: "Not connected",
+  unavailable: "Unavailable",
+};
 
 /**
  * Compact row for disconnected / unavailable integrations. Thin single-line
@@ -284,6 +304,9 @@ function CompactRow({
             {title}
           </h3>
           <StatusDot kind={status} className="shrink-0" />
+          {/* Status is only visually conveyed by StatusDot (aria-hidden);
+              expose it to assistive tech via a visually-hidden label. */}
+          <span className="sr-only">Status: {STATUS_LABEL[status]}</span>
         </div>
         <p className="mt-0.5 truncate text-xs text-muted-foreground">
           {description}
@@ -341,6 +364,60 @@ function InlineError({ children }: { children: ReactNode }) {
       {children}
     </div>
   );
+}
+
+/**
+ * Disclosure state for a progressive-disclosure integration card.
+ *
+ * Encapsulates four concerns that would otherwise repeat across every card:
+ *  - expand/collapse state and a stable panel id for `aria-controls`
+ *  - moving focus into the revealed panel's first field on expand
+ *  - returning focus to the trigger button on collapse
+ *  - auto-collapsing once the integration becomes `connected` so a future
+ *    disconnect doesn't leave the form expanded under a stale intent
+ *  - clearing the BYOT/connect mutation error on collapse so the X button
+ *    can never silently hide a failure
+ */
+function useDisclosure(connected: boolean, onCollapseCleanup?: () => void) {
+  const [expanded, setExpanded] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const panelRef = useRef<HTMLElement | null>(null);
+  const panelId = useId();
+  const prevExpanded = useRef(false);
+
+  // Auto-reset expanded state when the integration becomes connected. Keeps a
+  // subsequent disconnect from reopening the form under a stale `expanded=true`.
+  useEffect(() => {
+    if (connected) setExpanded(false);
+  }, [connected]);
+
+  // Focus management on transitions:
+  //   expanded ↑ — move focus into the revealed panel's first form field.
+  //     The selector skips the Cancel/X close button and targets inputs,
+  //     textareas, and Radix Select triggers (role="combobox").
+  //   expanded ↓ — restore focus to the trigger button so keyboard users
+  //     return to the row they came from instead of falling back to body.
+  useEffect(() => {
+    if (expanded && !prevExpanded.current) {
+      const panel = panelRef.current;
+      const first = panel?.querySelector<HTMLElement>(
+        'input:not([disabled]), textarea:not([disabled]), button[role="combobox"]:not([disabled])',
+      );
+      first?.focus();
+    } else if (!expanded && prevExpanded.current) {
+      triggerRef.current?.focus();
+    }
+    prevExpanded.current = expanded;
+  }, [expanded]);
+
+  const collapse = () => {
+    setExpanded(false);
+    // Clear the owning mutation's error so dismissing the panel can never
+    // silently hide a failure message the user hasn't seen.
+    onCollapseCleanup?.();
+  };
+
+  return { expanded, setExpanded, collapse, triggerRef, panelRef, panelId };
 }
 
 function SectionHeading({
@@ -604,24 +681,26 @@ export default function IntegrationsPage() {
   const webhooks = data?.webhooks;
   const deliveryChannels = data?.deliveryChannels ?? [];
 
-  const stats = useMemo(() => {
-    if (!data) return { live: 0, total: 0 };
-    const entries: Array<{ connected: boolean; configurable: boolean; byotOk?: boolean }> = [
-      { connected: slack?.connected ?? false, configurable: slack?.configurable ?? false, byotOk: hasDB },
-      { connected: teams?.connected ?? false, configurable: teams?.configurable ?? false, byotOk: hasDB },
-      { connected: discord?.connected ?? false, configurable: discord?.configurable ?? false, byotOk: hasDB },
-      { connected: telegram?.connected ?? false, configurable: telegram?.configurable ?? false },
-      { connected: gchat?.connected ?? false, configurable: gchat?.configurable ?? false },
-      { connected: whatsapp?.connected ?? false, configurable: whatsapp?.configurable ?? false },
-      { connected: github?.connected ?? false, configurable: github?.configurable ?? false },
-      { connected: linear?.connected ?? false, configurable: linear?.configurable ?? false },
-      { connected: emailStatus?.connected ?? false, configurable: emailStatus?.configurable ?? false },
-      { connected: (webhooks?.activeCount ?? 0) > 0, configurable: webhooks?.configurable ?? false },
-    ];
-    const live = entries.filter((e) => e.connected).length;
-    const total = entries.filter((e) => e.configurable || e.byotOk || e.connected).length;
-    return { live, total };
-  }, [data, slack, teams, discord, telegram, gchat, github, linear, whatsapp, emailStatus, webhooks, hasDB]);
+  const stats = !data
+    ? { live: 0, total: 0 }
+    : (() => {
+        const rows: Array<{ connected: boolean; usable: boolean }> = [
+          { connected: slack?.connected ?? false, usable: (slack?.configurable ?? false) || hasDB },
+          { connected: teams?.connected ?? false, usable: (teams?.configurable ?? false) || hasDB },
+          { connected: discord?.connected ?? false, usable: (discord?.configurable ?? false) || hasDB },
+          { connected: telegram?.connected ?? false, usable: telegram?.configurable ?? false },
+          { connected: gchat?.connected ?? false, usable: gchat?.configurable ?? false },
+          { connected: whatsapp?.connected ?? false, usable: whatsapp?.configurable ?? false },
+          { connected: github?.connected ?? false, usable: github?.configurable ?? false },
+          { connected: linear?.connected ?? false, usable: linear?.configurable ?? false },
+          { connected: emailStatus?.connected ?? false, usable: emailStatus?.configurable ?? false },
+          { connected: (webhooks?.activeCount ?? 0) > 0, usable: webhooks?.configurable ?? false },
+        ];
+        return {
+          live: rows.filter((r) => r.connected).length,
+          total: rows.filter((r) => r.connected || r.usable).length,
+        };
+      })();
 
   return (
     <div className="mx-auto max-w-3xl px-6 py-10">
@@ -672,6 +751,7 @@ export default function IntegrationsPage() {
                   onByotConnect={handleSlackByot}
                   byotConnecting={slackByotMutation.saving}
                   byotError={slackByotMutation.error}
+                  onByotClearError={slackByotMutation.clearError}
                 />
                 <TeamsCard
                   teams={teams!}
@@ -683,6 +763,7 @@ export default function IntegrationsPage() {
                   onByotConnect={handleTeamsByot}
                   byotConnecting={teamsByotMutation.saving}
                   byotError={teamsByotMutation.error}
+                  onByotClearError={teamsByotMutation.clearError}
                 />
                 <DiscordCard
                   discord={discord!}
@@ -694,6 +775,7 @@ export default function IntegrationsPage() {
                   onByotConnect={handleDiscordByot}
                   byotConnecting={discordByotMutation.saving}
                   byotError={discordByotMutation.error}
+                  onByotClearError={discordByotMutation.clearError}
                 />
                 <TelegramCard
                   telegram={telegram!}
@@ -701,6 +783,7 @@ export default function IntegrationsPage() {
                   onConnect={handleTelegramConnect}
                   connecting={telegramConnectMutation.saving}
                   connectError={telegramConnectMutation.error}
+                  onConnectClearError={telegramConnectMutation.clearError}
                   onDisconnect={handleTelegramDisconnect}
                   disconnecting={telegramDisconnectMutation.saving}
                   disconnectError={telegramDisconnectMutation.error}
@@ -710,6 +793,7 @@ export default function IntegrationsPage() {
                   onConnect={handleGChatConnect}
                   connecting={gchatConnectMutation.saving}
                   connectError={gchatConnectMutation.error}
+                  onConnectClearError={gchatConnectMutation.clearError}
                   onDisconnect={handleGChatDisconnect}
                   disconnecting={gchatDisconnectMutation.saving}
                   disconnectError={gchatDisconnectMutation.error}
@@ -719,6 +803,7 @@ export default function IntegrationsPage() {
                   onConnect={handleWhatsAppConnect}
                   connecting={whatsappConnectMutation.saving}
                   connectError={whatsappConnectMutation.error}
+                  onConnectClearError={whatsappConnectMutation.clearError}
                   onDisconnect={handleWhatsAppDisconnect}
                   disconnecting={whatsappDisconnectMutation.saving}
                   disconnectError={whatsappDisconnectMutation.error}
@@ -735,6 +820,7 @@ export default function IntegrationsPage() {
                   onConnect={handleGitHubConnect}
                   connecting={githubConnectMutation.saving}
                   connectError={githubConnectMutation.error}
+                  onConnectClearError={githubConnectMutation.clearError}
                   onDisconnect={handleGitHubDisconnect}
                   disconnecting={githubDisconnectMutation.saving}
                   disconnectError={githubDisconnectMutation.error}
@@ -744,6 +830,7 @@ export default function IntegrationsPage() {
                   onConnect={handleLinearConnect}
                   connecting={linearConnectMutation.saving}
                   connectError={linearConnectMutation.error}
+                  onConnectClearError={linearConnectMutation.clearError}
                   onDisconnect={handleLinearDisconnect}
                   disconnecting={linearDisconnectMutation.saving}
                   disconnectError={linearDisconnectMutation.error}
@@ -760,6 +847,7 @@ export default function IntegrationsPage() {
                   onConnect={handleEmailConnect}
                   connecting={emailConnectMutation.saving}
                   connectError={emailConnectMutation.error}
+                  onConnectClearError={emailConnectMutation.clearError}
                   onTest={handleEmailTest}
                   testing={emailTestMutation.saving}
                   testResult={emailTestMutation.error}
@@ -807,6 +895,7 @@ function SlackCard({
   onByotConnect,
   byotConnecting,
   byotError,
+  onByotClearError,
 }: {
   slack: SlackStatus;
   isSaas: boolean;
@@ -817,6 +906,7 @@ function SlackCard({
   onByotConnect: (botToken: string) => void;
   byotConnecting: boolean;
   byotError: string | null;
+  onByotClearError: () => void;
 }) {
   const canConnect = slack.configurable;
   const canByot = !canConnect && hasInternalDB;
@@ -826,7 +916,8 @@ function SlackCard({
     ? "unavailable"
     : "disconnected";
 
-  const [expanded, setExpanded] = useState(false);
+  const { expanded, setExpanded, collapse, triggerRef, panelRef, panelId } =
+    useDisclosure(slack.connected, onByotClearError);
   const showFull = status === "connected" || expanded;
 
   if (!showFull) {
@@ -851,7 +942,14 @@ function SlackCard({
               </a>
             </Button>
           ) : canByot ? (
-            <Button size="sm" variant="outline" onClick={() => setExpanded(true)}>
+            <Button
+              ref={triggerRef}
+              size="sm"
+              variant="outline"
+              aria-expanded={false}
+              aria-controls={panelId}
+              onClick={() => setExpanded(true)}
+            >
               <Plus className="mr-1.5 size-3.5" />
               Add token
             </Button>
@@ -863,11 +961,13 @@ function SlackCard({
 
   return (
     <IntegrationShell
+      id={panelId}
+      panelRef={panelRef}
       icon={MessageSquare}
       title="Slack"
       description="/atlas commands and thread follow-ups"
       status={status}
-      onCollapse={!slack.connected ? () => setExpanded(false) : undefined}
+      onCollapse={!slack.connected ? collapse : undefined}
       actions={
         <>
           {slack.connected && (canConnect || canByot) && (
@@ -934,6 +1034,7 @@ function TeamsCard({
   onByotConnect,
   byotConnecting,
   byotError,
+  onByotClearError,
 }: {
   teams: TeamsStatus;
   isSaas: boolean;
@@ -944,6 +1045,7 @@ function TeamsCard({
   onByotConnect: (appId: string, appPassword: string) => void;
   byotConnecting: boolean;
   byotError: string | null;
+  onByotClearError: () => void;
 }) {
   const canConnect = teams.configurable;
   const canByot = !canConnect && hasInternalDB;
@@ -953,7 +1055,8 @@ function TeamsCard({
     ? "unavailable"
     : "disconnected";
 
-  const [expanded, setExpanded] = useState(false);
+  const { expanded, setExpanded, collapse, triggerRef, panelRef, panelId } =
+    useDisclosure(teams.connected, onByotClearError);
   const showFull = status === "connected" || expanded;
 
   if (!showFull) {
@@ -978,7 +1081,14 @@ function TeamsCard({
               </a>
             </Button>
           ) : canByot ? (
-            <Button size="sm" variant="outline" onClick={() => setExpanded(true)}>
+            <Button
+              ref={triggerRef}
+              size="sm"
+              variant="outline"
+              aria-expanded={false}
+              aria-controls={panelId}
+              onClick={() => setExpanded(true)}
+            >
               <Plus className="mr-1.5 size-3.5" />
               Add app
             </Button>
@@ -990,11 +1100,13 @@ function TeamsCard({
 
   return (
     <IntegrationShell
+      id={panelId}
+      panelRef={panelRef}
       icon={Users}
       title="Microsoft Teams"
       description="@atlas mentions and channel conversations"
       status={status}
-      onCollapse={!teams.connected ? () => setExpanded(false) : undefined}
+      onCollapse={!teams.connected ? collapse : undefined}
       actions={
         <>
           {teams.connected && (canConnect || canByot) && (
@@ -1051,6 +1163,7 @@ function DiscordCard({
   onByotConnect,
   byotConnecting,
   byotError,
+  onByotClearError,
 }: {
   discord: DiscordStatus;
   isSaas: boolean;
@@ -1061,6 +1174,7 @@ function DiscordCard({
   onByotConnect: (botToken: string, applicationId: string, publicKey: string) => void;
   byotConnecting: boolean;
   byotError: string | null;
+  onByotClearError: () => void;
 }) {
   const canConnect = discord.configurable;
   const canByot = !canConnect && hasInternalDB;
@@ -1070,7 +1184,8 @@ function DiscordCard({
     ? "unavailable"
     : "disconnected";
 
-  const [expanded, setExpanded] = useState(false);
+  const { expanded, setExpanded, collapse, triggerRef, panelRef, panelId } =
+    useDisclosure(discord.connected, onByotClearError);
   const showFull = status === "connected" || expanded;
 
   if (!showFull) {
@@ -1095,7 +1210,14 @@ function DiscordCard({
               </a>
             </Button>
           ) : canByot ? (
-            <Button size="sm" variant="outline" onClick={() => setExpanded(true)}>
+            <Button
+              ref={triggerRef}
+              size="sm"
+              variant="outline"
+              aria-expanded={false}
+              aria-controls={panelId}
+              onClick={() => setExpanded(true)}
+            >
               <Plus className="mr-1.5 size-3.5" />
               Add bot
             </Button>
@@ -1107,11 +1229,13 @@ function DiscordCard({
 
   return (
     <IntegrationShell
+      id={panelId}
+      panelRef={panelRef}
       icon={MessageCircle}
       title="Discord"
       description="Bot commands and server conversations"
       status={status}
-      onCollapse={!discord.connected ? () => setExpanded(false) : undefined}
+      onCollapse={!discord.connected ? collapse : undefined}
       actions={
         <>
           {discord.connected && (canConnect || canByot) && (
@@ -1164,6 +1288,7 @@ function TelegramCard({
   onConnect,
   connecting,
   connectError,
+  onConnectClearError,
   onDisconnect,
   disconnecting,
   disconnectError,
@@ -1173,6 +1298,7 @@ function TelegramCard({
   onConnect: (botToken: string) => void;
   connecting: boolean;
   connectError: string | null;
+  onConnectClearError: () => void;
   onDisconnect: () => void;
   disconnecting: boolean;
   disconnectError: string | null;
@@ -1184,7 +1310,8 @@ function TelegramCard({
     ? "unavailable"
     : "disconnected";
 
-  const [expanded, setExpanded] = useState(false);
+  const { expanded, setExpanded, collapse, triggerRef, panelRef, panelId } =
+    useDisclosure(telegram.connected, onConnectClearError);
   const showFull = status === "connected" || expanded;
 
   if (!showFull) {
@@ -1202,7 +1329,14 @@ function TelegramCard({
         status={status}
         action={
           canConnect ? (
-            <Button size="sm" variant="outline" onClick={() => setExpanded(true)}>
+            <Button
+              ref={triggerRef}
+              size="sm"
+              variant="outline"
+              aria-expanded={false}
+              aria-controls={panelId}
+              onClick={() => setExpanded(true)}
+            >
               <Plus className="mr-1.5 size-3.5" />
               Add bot
             </Button>
@@ -1214,11 +1348,13 @@ function TelegramCard({
 
   return (
     <IntegrationShell
+      id={panelId}
+      panelRef={panelRef}
       icon={Send}
       title="Telegram"
       description="Telegram bot for chat conversations"
       status={status}
-      onCollapse={!telegram.connected ? () => setExpanded(false) : undefined}
+      onCollapse={!telegram.connected ? collapse : undefined}
       actions={
         telegram.connected && canConnect ? (
           <DisconnectDialog
@@ -1322,6 +1458,7 @@ function GChatCard({
   onConnect,
   connecting,
   connectError,
+  onConnectClearError,
   onDisconnect,
   disconnecting,
   disconnectError,
@@ -1330,6 +1467,7 @@ function GChatCard({
   onConnect: (credentialsJson: string) => void;
   connecting: boolean;
   connectError: string | null;
+  onConnectClearError: () => void;
   onDisconnect: () => void;
   disconnecting: boolean;
   disconnectError: string | null;
@@ -1341,7 +1479,8 @@ function GChatCard({
     ? "unavailable"
     : "disconnected";
 
-  const [expanded, setExpanded] = useState(false);
+  const { expanded, setExpanded, collapse, triggerRef, panelRef, panelId } =
+    useDisclosure(gchat.connected, onConnectClearError);
   const showFull = status === "connected" || expanded;
 
   if (!showFull) {
@@ -1357,7 +1496,14 @@ function GChatCard({
         status={status}
         action={
           canConnect ? (
-            <Button size="sm" variant="outline" onClick={() => setExpanded(true)}>
+            <Button
+              ref={triggerRef}
+              size="sm"
+              variant="outline"
+              aria-expanded={false}
+              aria-controls={panelId}
+              onClick={() => setExpanded(true)}
+            >
               <Plus className="mr-1.5 size-3.5" />
               Add credentials
             </Button>
@@ -1369,11 +1515,13 @@ function GChatCard({
 
   return (
     <IntegrationShell
+      id={panelId}
+      panelRef={panelRef}
       icon={MessageSquareText}
       title="Google Chat"
       description="Bot conversations in Google Workspace"
       status={status}
-      onCollapse={!gchat.connected ? () => setExpanded(false) : undefined}
+      onCollapse={!gchat.connected ? collapse : undefined}
       actions={
         gchat.connected && canConnect ? (
           <DisconnectDialog
@@ -1485,6 +1633,7 @@ function GitHubCard({
   onConnect,
   connecting,
   connectError,
+  onConnectClearError,
   onDisconnect,
   disconnecting,
   disconnectError,
@@ -1493,6 +1642,7 @@ function GitHubCard({
   onConnect: (accessToken: string) => void;
   connecting: boolean;
   connectError: string | null;
+  onConnectClearError: () => void;
   onDisconnect: () => void;
   disconnecting: boolean;
   disconnectError: string | null;
@@ -1504,7 +1654,8 @@ function GitHubCard({
     ? "unavailable"
     : "disconnected";
 
-  const [expanded, setExpanded] = useState(false);
+  const { expanded, setExpanded, collapse, triggerRef, panelRef, panelId } =
+    useDisclosure(github.connected, onConnectClearError);
   const showFull = status === "connected" || expanded;
 
   if (!showFull) {
@@ -1520,7 +1671,14 @@ function GitHubCard({
         status={status}
         action={
           canConnect ? (
-            <Button size="sm" variant="outline" onClick={() => setExpanded(true)}>
+            <Button
+              ref={triggerRef}
+              size="sm"
+              variant="outline"
+              aria-expanded={false}
+              aria-controls={panelId}
+              onClick={() => setExpanded(true)}
+            >
               <Plus className="mr-1.5 size-3.5" />
               Add token
             </Button>
@@ -1532,11 +1690,13 @@ function GitHubCard({
 
   return (
     <IntegrationShell
+      id={panelId}
+      panelRef={panelRef}
       icon={GitBranch}
       title="GitHub"
       description="Issue tracking and repository integration"
       status={status}
-      onCollapse={!github.connected ? () => setExpanded(false) : undefined}
+      onCollapse={!github.connected ? collapse : undefined}
       actions={
         github.connected && canConnect ? (
           <DisconnectDialog
@@ -1637,6 +1797,7 @@ function LinearCard({
   onConnect,
   connecting,
   connectError,
+  onConnectClearError,
   onDisconnect,
   disconnecting,
   disconnectError,
@@ -1645,6 +1806,7 @@ function LinearCard({
   onConnect: (apiKey: string) => void;
   connecting: boolean;
   connectError: string | null;
+  onConnectClearError: () => void;
   onDisconnect: () => void;
   disconnecting: boolean;
   disconnectError: string | null;
@@ -1656,7 +1818,8 @@ function LinearCard({
     ? "unavailable"
     : "disconnected";
 
-  const [expanded, setExpanded] = useState(false);
+  const { expanded, setExpanded, collapse, triggerRef, panelRef, panelId } =
+    useDisclosure(linear.connected, onConnectClearError);
   const showFull = status === "connected" || expanded;
 
   if (!showFull) {
@@ -1672,7 +1835,14 @@ function LinearCard({
         status={status}
         action={
           canConnect ? (
-            <Button size="sm" variant="outline" onClick={() => setExpanded(true)}>
+            <Button
+              ref={triggerRef}
+              size="sm"
+              variant="outline"
+              aria-expanded={false}
+              aria-controls={panelId}
+              onClick={() => setExpanded(true)}
+            >
               <Plus className="mr-1.5 size-3.5" />
               Add API key
             </Button>
@@ -1684,11 +1854,13 @@ function LinearCard({
 
   return (
     <IntegrationShell
+      id={panelId}
+      panelRef={panelRef}
       icon={BarChart3}
       title="Linear"
       description="Issue tracking and project management"
       status={status}
-      onCollapse={!linear.connected ? () => setExpanded(false) : undefined}
+      onCollapse={!linear.connected ? collapse : undefined}
       actions={
         linear.connected && canConnect ? (
           <DisconnectDialog
@@ -1790,6 +1962,7 @@ function WhatsAppCard({
   onConnect,
   connecting,
   connectError,
+  onConnectClearError,
   onDisconnect,
   disconnecting,
   disconnectError,
@@ -1798,6 +1971,7 @@ function WhatsAppCard({
   onConnect: (phoneNumberId: string, accessToken: string) => void;
   connecting: boolean;
   connectError: string | null;
+  onConnectClearError: () => void;
   onDisconnect: () => void;
   disconnecting: boolean;
   disconnectError: string | null;
@@ -1809,7 +1983,8 @@ function WhatsAppCard({
     ? "unavailable"
     : "disconnected";
 
-  const [expanded, setExpanded] = useState(false);
+  const { expanded, setExpanded, collapse, triggerRef, panelRef, panelId } =
+    useDisclosure(whatsapp.connected, onConnectClearError);
   const showFull = status === "connected" || expanded;
 
   if (!showFull) {
@@ -1825,7 +2000,14 @@ function WhatsAppCard({
         status={status}
         action={
           canConnect ? (
-            <Button size="sm" variant="outline" onClick={() => setExpanded(true)}>
+            <Button
+              ref={triggerRef}
+              size="sm"
+              variant="outline"
+              aria-expanded={false}
+              aria-controls={panelId}
+              onClick={() => setExpanded(true)}
+            >
               <Plus className="mr-1.5 size-3.5" />
               Add phone
             </Button>
@@ -1837,11 +2019,13 @@ function WhatsAppCard({
 
   return (
     <IntegrationShell
+      id={panelId}
+      panelRef={panelRef}
       icon={Phone}
       title="WhatsApp"
       description="Messaging and notification delivery"
       status={status}
-      onCollapse={!whatsapp.connected ? () => setExpanded(false) : undefined}
+      onCollapse={!whatsapp.connected ? collapse : undefined}
       actions={
         whatsapp.connected && canConnect ? (
           <DisconnectDialog
@@ -2198,8 +2382,6 @@ function DiscordByotForm({
   );
 }
 
-// -- Disconnect Dialog (shared) --
-
 // -- Email Card --
 
 function EmailCard({
@@ -2207,6 +2389,7 @@ function EmailCard({
   onConnect,
   connecting,
   connectError,
+  onConnectClearError,
   onTest,
   testing,
   testResult,
@@ -2218,6 +2401,7 @@ function EmailCard({
   onConnect: (provider: string, senderAddress: string, config: Record<string, unknown>) => void;
   connecting: boolean;
   connectError: string | null;
+  onConnectClearError: () => void;
   onTest: (recipientEmail: string) => void;
   testing: boolean;
   testResult: string | null;
@@ -2240,7 +2424,8 @@ function EmailCard({
     resend: "Resend",
   };
 
-  const [expanded, setExpanded] = useState(false);
+  const { expanded, setExpanded, collapse, triggerRef, panelRef, panelId } =
+    useDisclosure(email.connected, onConnectClearError);
   const showFull = status === "connected" || expanded;
 
   if (!showFull) {
@@ -2256,7 +2441,14 @@ function EmailCard({
         status={status}
         action={
           canConnect ? (
-            <Button size="sm" variant="outline" onClick={() => setExpanded(true)}>
+            <Button
+              ref={triggerRef}
+              size="sm"
+              variant="outline"
+              aria-expanded={false}
+              aria-controls={panelId}
+              onClick={() => setExpanded(true)}
+            >
               <Plus className="mr-1.5 size-3.5" />
               Add provider
             </Button>
@@ -2268,11 +2460,13 @@ function EmailCard({
 
   return (
     <IntegrationShell
+      id={panelId}
+      panelRef={panelRef}
       icon={Mail}
       title="Email"
       description="Delivery for digests and notifications"
       status={status}
-      onCollapse={!email.connected ? () => setExpanded(false) : undefined}
+      onCollapse={!email.connected ? collapse : undefined}
       actions={
         email.connected && canConnect ? (
           <DisconnectDialog
@@ -2560,6 +2754,8 @@ function EmailTestForm({
     </form>
   );
 }
+
+// -- Disconnect Dialog (shared) --
 
 function DisconnectDialog({
   name,

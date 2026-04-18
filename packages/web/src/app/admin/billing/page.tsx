@@ -1,7 +1,14 @@
 "use client";
 
-import { useState } from "react";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type ComponentType,
+  type ReactNode,
+  type RefObject,
+} from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
@@ -14,24 +21,24 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
-import { ErrorBanner } from "@/ui/components/admin/error-banner";
+import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { BillingStatusSchema } from "@/ui/lib/admin-schemas";
-import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { formatDate, formatNumber } from "@/lib/format";
+import { cn } from "@/lib/utils";
 import {
-  CreditCard,
-  ExternalLink,
-  Zap,
-  Users,
-  Database,
-  Coins,
-  ServerOff,
   Bot,
+  Coins,
+  CreditCard,
   DollarSign,
+  ExternalLink,
+  Loader2,
+  Plus,
+  ServerOff,
+  X,
+  Zap,
 } from "lucide-react";
-import Link from "next/link";
 
 // ── Types ─────────────────────────────────────────────────────────
 
@@ -77,6 +84,266 @@ interface BillingStatus {
   } | null;
 }
 
+// ── Shared Design Primitives ──────────────────────────────────────
+//
+// Lifted from admin/integrations after the first /revamp pass. If a third
+// admin page adopts the same shape, extract these into
+// packages/web/src/ui/components/admin/.
+
+type StatusKind = "connected" | "disconnected" | "unavailable";
+
+function StatusDot({ kind, className }: { kind: StatusKind; className?: string }) {
+  return (
+    <span
+      aria-hidden
+      className={cn(
+        "relative inline-flex size-1.5 shrink-0 rounded-full",
+        kind === "connected" &&
+          "bg-primary shadow-[0_0_0_3px_color-mix(in_oklch,_var(--primary)_15%,_transparent)]",
+        kind === "disconnected" && "bg-muted-foreground/40",
+        kind === "unavailable" &&
+          "bg-muted-foreground/20 outline-1 outline-dashed outline-muted-foreground/30",
+        className,
+      )}
+    >
+      {kind === "connected" && (
+        <span className="absolute inset-0 rounded-full bg-primary/60 motion-safe:animate-ping" />
+      )}
+    </span>
+  );
+}
+
+const STATUS_LABEL: Record<StatusKind, string> = {
+  connected: "Connected",
+  disconnected: "Not connected",
+  unavailable: "Unavailable",
+};
+
+function BillingShell({
+  id,
+  icon: Icon,
+  title,
+  description,
+  status,
+  children,
+  actions,
+  onCollapse,
+  panelRef,
+}: {
+  id?: string;
+  icon: ComponentType<{ className?: string }>;
+  title: string;
+  description: string;
+  status: StatusKind;
+  children?: ReactNode;
+  actions?: ReactNode;
+  onCollapse?: () => void;
+  panelRef?: RefObject<HTMLElement | null>;
+}) {
+  return (
+    <section
+      id={id}
+      ref={panelRef}
+      className={cn(
+        "relative flex flex-col overflow-hidden rounded-xl border bg-card/60 backdrop-blur-[1px] transition-colors",
+        "hover:border-border/80",
+        status === "connected" && "border-primary/20",
+      )}
+    >
+      {status === "connected" && (
+        <span
+          aria-hidden
+          className="pointer-events-none absolute left-0 top-4 bottom-4 w-px bg-gradient-to-b from-transparent via-primary to-transparent opacity-70"
+        />
+      )}
+
+      <header className="flex items-start gap-3 p-4 pb-3">
+        <span
+          className={cn(
+            "grid size-9 shrink-0 place-items-center rounded-lg border bg-background/40",
+            status === "connected" && "border-primary/30 text-primary",
+            status !== "connected" && "text-muted-foreground",
+          )}
+        >
+          <Icon className="size-4" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <h3 className="truncate text-sm font-semibold leading-tight tracking-tight">
+              {title}
+            </h3>
+            {status === "connected" && (
+              <span className="ml-auto flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-[0.08em] text-primary">
+                <StatusDot kind="connected" />
+                Live
+              </span>
+            )}
+            {status !== "connected" && onCollapse && (
+              <button
+                type="button"
+                aria-label="Cancel"
+                onClick={onCollapse}
+                className="ml-auto -m-1 grid size-6 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              >
+                <X className="size-3.5" />
+              </button>
+            )}
+          </div>
+          <p className="mt-0.5 text-xs leading-snug text-muted-foreground">
+            {description}
+          </p>
+        </div>
+      </header>
+
+      {children != null && (
+        <div className="flex-1 space-y-3 px-4 pb-3 text-sm">{children}</div>
+      )}
+
+      {actions && (
+        <footer className="flex items-center justify-end gap-2 border-t border-border/50 bg-muted/20 px-4 py-2.5">
+          {actions}
+        </footer>
+      )}
+    </section>
+  );
+}
+
+function CompactRow({
+  icon: Icon,
+  title,
+  description,
+  status,
+  action,
+}: {
+  icon: ComponentType<{ className?: string }>;
+  title: string;
+  description: string;
+  status: StatusKind;
+  action?: ReactNode;
+}) {
+  return (
+    <div
+      className={cn(
+        "group flex items-center gap-3 rounded-xl border bg-card/40 px-3.5 py-2.5 transition-colors",
+        "hover:bg-card/70 hover:border-border/80",
+        status === "unavailable" && "opacity-60",
+      )}
+    >
+      <span className="grid size-8 shrink-0 place-items-center rounded-lg border bg-background/40 text-muted-foreground">
+        <Icon className="size-4" />
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <h3 className="truncate text-sm font-semibold leading-tight tracking-tight">
+            {title}
+          </h3>
+          <StatusDot kind={status} className="shrink-0" />
+          <span className="sr-only">Status: {STATUS_LABEL[status]}</span>
+        </div>
+        <p className="mt-0.5 truncate text-xs text-muted-foreground">
+          {description}
+        </p>
+      </div>
+      {action && <div className="shrink-0">{action}</div>}
+    </div>
+  );
+}
+
+function DetailRow({
+  label,
+  value,
+  mono,
+  truncate,
+}: {
+  label: string;
+  value: ReactNode;
+  mono?: boolean;
+  truncate?: boolean;
+}) {
+  return (
+    <div className="flex items-baseline justify-between gap-3 py-1 text-xs">
+      <span className="shrink-0 text-muted-foreground">{label}</span>
+      <span
+        className={cn(
+          "min-w-0 text-right",
+          mono && "font-mono text-[11px]",
+          truncate && "truncate",
+          !mono && "font-medium",
+        )}
+      >
+        {value}
+      </span>
+    </div>
+  );
+}
+
+function DetailList({ children }: { children: ReactNode }) {
+  return (
+    <div className="rounded-lg border bg-muted/20 px-3 py-1.5 divide-y divide-border/50">
+      {children}
+    </div>
+  );
+}
+
+function InlineError({ children }: { children: ReactNode }) {
+  if (!children) return null;
+  return (
+    <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+      {children}
+    </div>
+  );
+}
+
+function SectionHeading({
+  title,
+  description,
+}: {
+  title: string;
+  description: string;
+}) {
+  return (
+    <div className="mb-3">
+      <h2 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+        {title}
+      </h2>
+      <p className="mt-0.5 text-xs text-muted-foreground/80">{description}</p>
+    </div>
+  );
+}
+
+/**
+ * Disclosure helper for progressive-disclosure rows. Moves focus into the
+ * revealed panel on expand, restores it to the trigger on collapse, and
+ * clears any owning mutation error when the user dismisses the panel.
+ */
+function useDisclosure(onCollapseCleanup?: () => void) {
+  const [expanded, setExpanded] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const panelRef = useRef<HTMLElement | null>(null);
+  const panelId = useId();
+  const prevExpanded = useRef(false);
+
+  useEffect(() => {
+    if (expanded && !prevExpanded.current) {
+      const panel = panelRef.current;
+      const first = panel?.querySelector<HTMLElement>(
+        'input:not([disabled]), textarea:not([disabled]), button[role="combobox"]:not([disabled])',
+      );
+      first?.focus();
+    } else if (!expanded && prevExpanded.current) {
+      triggerRef.current?.focus();
+    }
+    prevExpanded.current = expanded;
+  }, [expanded]);
+
+  const collapse = () => {
+    setExpanded(false);
+    onCollapseCleanup?.();
+  };
+
+  return { expanded, setExpanded, collapse, triggerRef, panelRef, panelId };
+}
+
 // ── Helpers ───────────────────────────────────────────────────────
 
 function tierVariant(tier: string): "default" | "secondary" | "outline" {
@@ -105,18 +372,21 @@ function overageColor(status: string): string {
 }
 
 const MODEL_OPTIONS = [
-  { value: "claude-haiku-4-5", label: "Haiku 4.5 \u2014 fastest, lowest cost" },
-  { value: "claude-sonnet-4-6", label: "Sonnet 4.6 \u2014 balanced" },
-  { value: "claude-opus-4-6", label: "Opus 4.6 \u2014 most capable" },
+  { value: "claude-haiku-4-5", label: "Haiku 4.5", hint: "fastest, lowest cost" },
+  { value: "claude-sonnet-4-6", label: "Sonnet 4.6", hint: "balanced" },
+  { value: "claude-opus-4-6", label: "Opus 4.6", hint: "most capable" },
 ] as const;
+
+function modelLabel(value: string): string {
+  return MODEL_OPTIONS.find((o) => o.value === value)?.label ?? value;
+}
 
 // ── Component ─────────────────────────────────────────────────────
 
 export default function BillingPage() {
-  const { data, loading, error, refetch } = useAdminFetch(
-    "/api/v1/billing",
-    { schema: BillingStatusSchema },
-  );
+  const { data, loading, error, refetch } = useAdminFetch("/api/v1/billing", {
+    schema: BillingStatusSchema,
+  });
 
   // Framework-level 404 (billing routes not mounted) means self-hosted / no Stripe.
   // API-level 404s ("Workspace not found", "no internal database") have descriptive
@@ -130,18 +400,20 @@ export default function BillingPage() {
   if (isSelfHosted) {
     return (
       <ErrorBoundary>
-        <div className="p-6">
-          <PageHeader />
-          <SelfHostedCard />
+        <div className="mx-auto max-w-3xl px-6 py-10">
+          <Hero stat={null} />
+          <SelfHostedEmptyState />
         </div>
       </ErrorBoundary>
     );
   }
 
+  const stat = data ? heroStat(data) : null;
+
   return (
     <ErrorBoundary>
-      <div className="p-6">
-        <PageHeader />
+      <div className="mx-auto max-w-3xl px-6 py-10">
+        <Hero stat={stat} />
 
         <AdminContentWrapper
           loading={loading}
@@ -151,25 +423,33 @@ export default function BillingPage() {
           loadingMessage="Loading billing details..."
         >
           {data && (
-            <div className="space-y-6">
-              <div className="grid gap-6 lg:grid-cols-2">
-                <PlanCard data={data} />
-                <TokenUsageCard data={data} />
-              </div>
+            <div className="space-y-10">
+              <section>
+                <SectionHeading
+                  title="Plan"
+                  description="Your current subscription and limits"
+                />
+                <PlanShell data={data} />
+              </section>
 
-              <div className="grid gap-6 lg:grid-cols-2">
-                <ModelCard data={data} onSaved={refetch} />
-                <ResourcesCard data={data} />
-              </div>
+              <section>
+                <SectionHeading
+                  title="Usage"
+                  description={`Current period · ${formatDate(data.usage.periodStart)} – ${formatDate(data.usage.periodEnd)}`}
+                />
+                <UsageShell data={data} />
+              </section>
 
-              {(data.overagePerMillionTokens ?? 0) > 0 && (
-                <OverageCard data={data} />
-              )}
-
-              <div className="grid gap-6 lg:grid-cols-2">
-                <PortalCard data={data} />
-                <ByotCard data={data} onToggled={refetch} />
-              </div>
+              <section>
+                <SectionHeading
+                  title="Configuration"
+                  description="Workspace-level defaults"
+                />
+                <div className="space-y-2">
+                  <ModelRow data={data} onSaved={refetch} />
+                  <ByotRow data={data} onToggled={refetch} />
+                </div>
+              </section>
             </div>
           )}
         </AdminContentWrapper>
@@ -178,390 +458,365 @@ export default function BillingPage() {
   );
 }
 
-// ── Page header ───────────────────────────────────────────────────
+// ── Hero ──────────────────────────────────────────────────────────
 
-function PageHeader() {
+function heroStat(data: BillingStatus): string {
+  const { plan, usage } = data;
+  const seatCount = data.seats?.count ?? usage.seatCount;
+
+  if (plan.tier === "trial" && plan.trialEndsAt) {
+    return `Trial · ends ${formatDate(plan.trialEndsAt)}`;
+  }
+  if (plan.pricePerSeat > 0) {
+    return `$${plan.pricePerSeat * seatCount}/mo`;
+  }
+  return plan.displayName;
+}
+
+function Hero({ stat }: { stat: string | null }) {
   return (
-    <div className="mb-6">
-      <h1 className="text-2xl font-bold tracking-tight">Billing</h1>
-      <p className="text-sm text-muted-foreground">
+    <header className="mb-10 flex flex-col gap-2">
+      <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+        Atlas · Admin
+      </p>
+      <div className="flex items-baseline justify-between gap-6">
+        <h1 className="text-3xl font-semibold tracking-tight">Billing</h1>
+        {stat && (
+          <p className="shrink-0 font-mono text-sm tabular-nums text-foreground">
+            {stat}
+          </p>
+        )}
+      </div>
+      <p className="max-w-xl text-sm text-muted-foreground">
         Manage your plan, view usage, and access billing settings.
       </p>
+    </header>
+  );
+}
+
+// ── Self-hosted empty state ───────────────────────────────────────
+
+function SelfHostedEmptyState() {
+  return (
+    <div className="flex flex-col items-center gap-3 rounded-xl border bg-card/40 py-14 text-center">
+      <span className="grid size-10 place-items-center rounded-lg border bg-background/40 text-muted-foreground">
+        <ServerOff className="size-4" />
+      </span>
+      <div>
+        <h2 className="text-sm font-semibold tracking-tight">Self-hosted · no billing</h2>
+        <p className="mx-auto mt-1 max-w-sm text-xs text-muted-foreground">
+          This instance has no Stripe subscription configured. All features are
+          unlimited.
+        </p>
+      </div>
     </div>
   );
 }
 
-// ── Self-hosted fallback ──────────────────────────────────────────
+// ── Plan shell ────────────────────────────────────────────────────
 
-function SelfHostedCard() {
-  return (
-    <Card className="shadow-none">
-      <CardContent className="flex flex-col items-center gap-3 py-12 text-center">
-        <ServerOff className="size-10 text-muted-foreground" />
-        <div>
-          <h2 className="text-lg font-semibold">Self-Hosted — No Billing</h2>
-          <p className="mt-1 text-sm text-muted-foreground">
-            This instance is self-hosted with no billing configured.
-            All features are unlimited.
-          </p>
-        </div>
-      </CardContent>
-    </Card>
-  );
-}
-
-// ── Plan card ─────────────────────────────────────────────────────
-
-function PlanCard({ data }: { data: BillingStatus }) {
-  const { plan, usage } = data;
+function PlanShell({ data }: { data: BillingStatus }) {
+  const [portalError, setPortalError] = useState<string | null>(null);
+  const { plan, usage, subscription } = data;
   const seatCount = data.seats?.count ?? usage.seatCount;
   const totalMonthly = plan.pricePerSeat * seatCount;
+  const overage = data.overagePerMillionTokens ?? 0;
 
-  return (
-    <Card className="shadow-none">
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2 text-base">
-          <CreditCard className="size-4" />
-          Current Plan
-        </CardTitle>
-        <CardDescription>Your workspace subscription details.</CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        <div className="flex items-center gap-3">
-          <span className="text-2xl font-bold">{plan.displayName}</span>
-          <Badge variant={tierVariant(plan.tier)}>{plan.tier}</Badge>
-          {plan.byot && (
-            <Badge variant="outline" className="border-violet-500/30 text-violet-600 dark:text-violet-400">
-              BYOT
-            </Badge>
-          )}
-        </div>
+  const { mutate, saving, error: portalMutationError } = useAdminMutation<{
+    url?: string;
+  }>({
+    path: "/api/v1/billing/portal",
+    method: "POST",
+  });
 
-        {plan.pricePerSeat > 0 && (
-          <p className="text-sm text-muted-foreground">
-            ${plan.pricePerSeat}/seat/mo &times; {seatCount} {seatCount === 1 ? "seat" : "seats"} = <span className="font-semibold text-foreground">${totalMonthly}/mo</span>
-          </p>
-        )}
-
-        {plan.tier === "trial" && plan.trialEndsAt && (
-          <p className="text-sm text-muted-foreground">
-            Trial ends {formatDate(plan.trialEndsAt)}
-          </p>
-        )}
-
-        {data.subscription && (
-          <p className="text-sm text-muted-foreground">
-            Subscription status:{" "}
-            <Badge variant={data.subscription.status === "active" ? "secondary" : "outline"} className="ml-1 text-xs">
-              {data.subscription.status}
-            </Badge>
-          </p>
-        )}
-      </CardContent>
-    </Card>
-  );
-}
-
-// ── Token usage card ────────────────────────────────────────────
-
-function TokenUsageCard({ data }: { data: BillingStatus }) {
-  const { usage, limits, plan } = data;
-
-  if (plan.byot) {
-    return (
-      <Card className="shadow-none">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-base">
-            <Coins className="size-4" />
-            Token Usage
-          </CardTitle>
-          <CardDescription>
-            Current billing period: {formatDate(usage.periodStart)} – {formatDate(usage.periodEnd)}
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <div className="flex items-center gap-2 rounded-md border border-violet-200 bg-violet-50 px-4 py-3 dark:border-violet-800 dark:bg-violet-950/30">
-            <Zap className="size-4 text-violet-600 dark:text-violet-400" />
-            <span className="text-sm font-medium text-violet-700 dark:text-violet-300">
-              Unlimited — using your own API key
-            </span>
-          </div>
-          <p className="mt-3 text-sm text-muted-foreground">
-            Tokens used this period: {formatNumber(usage.tokenCount)}
-          </p>
-        </CardContent>
-      </Card>
-    );
+  async function openBillingPortal() {
+    setPortalError(null);
+    const result = await mutate({ body: { returnUrl: window.location.href } });
+    if (!result.ok) return;
+    if (result.data?.url) {
+      window.location.href = result.data.url;
+    } else {
+      console.warn("Billing portal: 200 response but no URL returned", result.data);
+      setPortalError("Billing portal URL was not returned. Please contact support.");
+    }
   }
 
+  const combinedError = portalMutationError ?? portalError;
+  const status: StatusKind = subscription?.status === "active" ? "connected" : "disconnected";
+
   return (
-    <Card className="shadow-none">
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2 text-base">
-          <Coins className="size-4" />
-          Token Usage
-        </CardTitle>
-        <CardDescription>
-          Current billing period: {formatDate(usage.periodStart)} – {formatDate(usage.periodEnd)}
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        <div className="flex items-center justify-between text-sm">
-          <span className="font-medium">Token Budget</span>
-          <span className={`font-medium ${overageColor(usage.tokenOverageStatus)}`}>
-            {limits.totalTokenBudget !== null
-              ? `${formatNumber(usage.tokenCount)} / ${formatNumber(limits.totalTokenBudget)}`
-              : formatNumber(usage.tokenCount)}
-          </span>
-        </div>
-        {limits.totalTokenBudget !== null && (
-          <Progress value={Math.min(usage.tokenUsagePercent, 100)} className="h-2" />
+    <BillingShell
+      icon={CreditCard}
+      title={plan.displayName}
+      description={
+        plan.pricePerSeat > 0
+          ? `$${plan.pricePerSeat}/seat/mo \u00B7 ${seatCount} ${seatCount === 1 ? "seat" : "seats"}`
+          : "No charges — all features included"
+      }
+      status={status}
+      actions={
+        subscription ? (
+          <Button onClick={openBillingPortal} disabled={saving} size="sm">
+            <CreditCard className="mr-1.5 size-3.5" />
+            {saving ? "Opening…" : "Open billing portal"}
+            <ExternalLink className="ml-1.5 size-3" />
+          </Button>
+        ) : undefined
+      }
+    >
+      <DetailList>
+        <DetailRow
+          label="Tier"
+          value={
+            <span className="inline-flex items-center gap-2">
+              <Badge variant={tierVariant(plan.tier)} className="text-[10px]">
+                {plan.tier}
+              </Badge>
+              {plan.byot && (
+                <Badge
+                  variant="outline"
+                  className="border-violet-500/30 text-[10px] text-violet-600 dark:text-violet-400"
+                >
+                  BYOT
+                </Badge>
+              )}
+            </span>
+          }
+        />
+        {plan.pricePerSeat > 0 && (
+          <DetailRow
+            label="Monthly"
+            value={
+              <span>
+                <span className="text-muted-foreground">{`$${plan.pricePerSeat} × ${seatCount} = `}</span>
+                <span className="font-semibold">${totalMonthly}</span>
+              </span>
+            }
+          />
         )}
-        {limits.totalTokenBudget === null && (
-          <Badge variant="outline" className="text-xs">Unlimited</Badge>
+        {plan.tier === "trial" && plan.trialEndsAt && (
+          <DetailRow label="Trial ends" value={formatDate(plan.trialEndsAt)} />
         )}
-        {limits.tokenBudgetPerSeat !== null && (
-          <p className="text-xs text-muted-foreground">
-            {formatNumber(limits.tokenBudgetPerSeat)} tokens/seat &times; {data.seats?.count ?? usage.seatCount} seats
-          </p>
+        {subscription && (
+          <DetailRow
+            label="Subscription"
+            value={
+              <Badge
+                variant={subscription.status === "active" ? "secondary" : "outline"}
+                className="text-[10px]"
+              >
+                {subscription.status}
+              </Badge>
+            }
+          />
         )}
-      </CardContent>
-    </Card>
+        {overage > 0 && (
+          <DetailRow
+            label="Overage"
+            value={
+              <span className="inline-flex items-center gap-1">
+                <DollarSign className="size-3 text-muted-foreground" />
+                {overage.toFixed(2)}/M tokens
+              </span>
+            }
+          />
+        )}
+      </DetailList>
+
+      <InlineError>{combinedError}</InlineError>
+      {!subscription && plan.pricePerSeat > 0 && (
+        <p className="text-[11px] leading-relaxed text-muted-foreground">
+          No active subscription — portal access opens after you subscribe.
+        </p>
+      )}
+    </BillingShell>
   );
 }
 
-// ── Model card ──────────────────────────────────────────────────
+// ── Usage shell ───────────────────────────────────────────────────
 
-function ModelCard({ data, onSaved }: { data: BillingStatus; onSaved: () => void }) {
-  const currentModel = data.currentModel ?? data.plan.defaultModel ?? "default";
+function UsageShell({ data }: { data: BillingStatus }) {
+  const { usage, limits, plan } = data;
+  const seats = data.seats ?? {
+    count: usage.seatCount,
+    max: data.limits.maxSeats,
+  };
+  const connections = data.connections ?? {
+    count: 0,
+    max: data.limits.maxConnections,
+  };
 
-  const { mutate, saving, error } = useAdminMutation({
+  return (
+    <BillingShell
+      icon={Coins}
+      title="Token usage"
+      description={
+        plan.byot
+          ? "Unlimited — using your own LLM API key"
+          : limits.totalTokenBudget === null
+          ? "Unlimited"
+          : `${formatNumber(usage.tokenCount)} of ${formatNumber(limits.totalTokenBudget)} tokens used`
+      }
+      status={plan.byot ? "connected" : "disconnected"}
+    >
+      {plan.byot ? (
+        <div className="flex items-center gap-2 rounded-lg border border-violet-500/30 bg-violet-50/60 px-3 py-2 text-xs text-violet-700 dark:bg-violet-950/20 dark:text-violet-300">
+          <Zap className="size-3.5" />
+          <span>{formatNumber(usage.tokenCount)} tokens consumed this period</span>
+        </div>
+      ) : limits.totalTokenBudget === null ? (
+        <div className="rounded-lg border bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+          {formatNumber(usage.tokenCount)} tokens consumed · no cap
+        </div>
+      ) : (
+        <div className="space-y-1.5">
+          <div className="flex items-baseline justify-between text-xs">
+            <span className="text-muted-foreground">Token budget</span>
+            <span
+              className={cn(
+                "font-mono font-medium tabular-nums",
+                overageColor(usage.tokenOverageStatus),
+              )}
+            >
+              {formatNumber(usage.tokenCount)}
+              <span className="opacity-50">{" / "}</span>
+              {formatNumber(limits.totalTokenBudget)}
+            </span>
+          </div>
+          <Progress
+            value={Math.min(usage.tokenUsagePercent, 100)}
+            className="h-1.5"
+          />
+          {limits.tokenBudgetPerSeat !== null && (
+            <p className="text-[11px] text-muted-foreground">
+              {formatNumber(limits.tokenBudgetPerSeat)} tokens/seat ×{" "}
+              {seats.count} {seats.count === 1 ? "seat" : "seats"}
+            </p>
+          )}
+        </div>
+      )}
+
+      <DetailList>
+        <DetailRow label="Seats" value={<ResourceValue count={seats.count} max={seats.max} />} />
+        <DetailRow
+          label="Connections"
+          value={<ResourceValue count={connections.count} max={connections.max} />}
+        />
+      </DetailList>
+    </BillingShell>
+  );
+}
+
+function ResourceValue({ count, max }: { count: number; max: number | null }) {
+  if (max === null) {
+    return <span className="text-muted-foreground">Unlimited</span>;
+  }
+  const percent = max === 0 ? 0 : Math.round((count / max) * 100);
+  const warn = percent >= 90;
+  return (
+    <span
+      className={cn(
+        "font-mono tabular-nums",
+        warn && "text-amber-600 dark:text-amber-400",
+      )}
+    >
+      {count}
+      <span className="opacity-50">{" / "}</span>
+      {max}
+    </span>
+  );
+}
+
+// ── Model row (progressive disclosure) ────────────────────────────
+
+function ModelRow({ data, onSaved }: { data: BillingStatus; onSaved: () => void }) {
+  const currentModel = data.currentModel ?? data.plan.defaultModel ?? "claude-sonnet-4-6";
+  const currentLabel = modelLabel(currentModel);
+
+  const { mutate, saving, error, clearError } = useAdminMutation({
     path: "/api/v1/admin/settings/ATLAS_MODEL",
     method: "PUT",
     invalidates: onSaved,
   });
 
+  const { expanded, setExpanded, collapse, triggerRef, panelRef, panelId } =
+    useDisclosure(clearError);
+
   async function handleModelChange(value: string) {
     await mutate({ body: { value } });
   }
 
-  return (
-    <Card className="shadow-none">
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2 text-base">
-          <Bot className="size-4" />
-          AI Model
-        </CardTitle>
-        <CardDescription>
-          Select the default model for this workspace.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        {error && <ErrorBanner message={error} />}
-        <Select value={currentModel} onValueChange={handleModelChange} disabled={saving}>
-          <SelectTrigger aria-label="AI Model">
-            <SelectValue placeholder="Select a model" />
-          </SelectTrigger>
-          <SelectContent>
-            {MODEL_OPTIONS.map((opt) => (
-              <SelectItem key={opt.value} value={opt.value}>
-                {opt.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        {saving && (
-          <p className="text-xs text-muted-foreground">Saving...</p>
-        )}
-      </CardContent>
-    </Card>
-  );
-}
-
-// ── Resources card ──────────────────────────────────────────────
-
-function ResourcesCard({ data }: { data: BillingStatus }) {
-  const seats = data.seats ?? { count: data.usage.seatCount, max: data.limits.maxSeats };
-  const connections = data.connections ?? { count: 0, max: data.limits.maxConnections };
-
-  return (
-    <Card className="shadow-none">
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2 text-base">
-          <Users className="size-4" />
-          Resources
-        </CardTitle>
-        <CardDescription>Seat and connection usage vs plan limits.</CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-5">
-        <ResourceRow
-          label="Seats"
-          icon={<Users className="size-4" />}
-          count={seats.count}
-          max={seats.max}
-          href="/admin/users"
-        />
-        <ResourceRow
-          label="Connections"
-          icon={<Database className="size-4" />}
-          count={connections.count}
-          max={connections.max}
-        />
-      </CardContent>
-    </Card>
-  );
-}
-
-function ResourceRow({
-  label,
-  icon,
-  count,
-  max,
-  href,
-}: {
-  label: string;
-  icon: React.ReactNode;
-  count: number;
-  max: number | null;
-  href?: string;
-}) {
-  const isUnlimited = max === null;
-  const percent = isUnlimited || max === 0 ? 0 : Math.round((count / max) * 100);
-
-  return (
-    <div className="space-y-2">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-2 text-sm font-medium">
-          <span className="text-muted-foreground">{icon}</span>
-          {href ? (
-            <Link href={href} className="underline-offset-4 hover:underline">
-              {label}
-            </Link>
-          ) : (
-            label
-          )}
-        </div>
-        {isUnlimited ? (
-          <Badge variant="outline" className="text-xs">Unlimited</Badge>
-        ) : (
-          <span className="text-sm font-medium">
-            {count} / {max}
-          </span>
-        )}
-      </div>
-      {!isUnlimited && (
-        <Progress value={Math.min(percent, 100)} className="h-2" />
-      )}
-    </div>
-  );
-}
-
-// ── Overage card ────────────────────────────────────────────────
-
-function OverageCard({ data }: { data: BillingStatus }) {
-  const rate = data.overagePerMillionTokens ?? 0;
-
-  return (
-    <Card className="shadow-none">
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2 text-base">
-          <DollarSign className="size-4" />
-          Overage Pricing
-        </CardTitle>
-      </CardHeader>
-      <CardContent>
-        <p className="text-sm text-muted-foreground">
-          Usage beyond your included token budget is billed at{" "}
-          <span className="font-semibold text-foreground">
-            ${rate.toFixed(2)}/million tokens
-          </span>.
-        </p>
-      </CardContent>
-    </Card>
-  );
-}
-
-// ── Portal card ───────────────────────────────────────────────────
-
-function PortalCard({ data }: { data: BillingStatus }) {
-  const [portalUrlError, setPortalUrlError] = useState<string | null>(null);
-
-  const { mutate: portalMutate, saving: portalLoading, error: portalError } =
-    useAdminMutation<{ url?: string }>({
-      path: "/api/v1/billing/portal",
-      method: "POST",
-    });
-
-  async function openBillingPortal() {
-    setPortalUrlError(null);
-    const result = await portalMutate({
-      body: { returnUrl: window.location.href },
-    });
-    if (!result.ok) {
-      // Error is already surfaced by useAdminMutation → portalError.
-      return;
-    }
-    if (result.data?.url) {
-      window.location.href = result.data.url;
-    } else {
-      console.warn("Billing portal: 200 response but no URL returned", result.data);
-      setPortalUrlError("Billing portal URL was not returned. Please contact support.");
-    }
+  if (!expanded) {
+    return (
+      <CompactRow
+        icon={Bot}
+        title="Default AI model"
+        description={currentLabel}
+        status="disconnected"
+        action={
+          <Button
+            ref={triggerRef}
+            size="sm"
+            variant="outline"
+            aria-expanded={false}
+            aria-controls={panelId}
+            onClick={() => setExpanded(true)}
+          >
+            <Plus className="mr-1.5 size-3.5" />
+            Change
+          </Button>
+        }
+      />
+    );
   }
 
-  const combinedError = portalError ?? portalUrlError;
-
   return (
-    <Card className="shadow-none">
-      <CardHeader>
-        <CardTitle className="flex items-center gap-2 text-base">
-          <Zap className="size-4" />
-          Manage Subscription
-        </CardTitle>
-        <CardDescription>
-          {data.subscription
-            ? "Open the Stripe Customer Portal to update payment methods, change plans, or view invoices."
-            : "Subscribe to a plan to access the billing portal."}
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        {combinedError !== null && (
-          <ErrorBanner
-            message={combinedError}
-            onRetry={() => {
-              setPortalUrlError(null);
-              openBillingPortal();
-            }}
-          />
-        )}
-        <Button
-          onClick={openBillingPortal}
-          disabled={portalLoading || !data.subscription}
-        >
-          <CreditCard className="mr-1.5 size-3.5" />
-          {portalLoading ? "Opening..." : "Open Billing Portal"}
-          <ExternalLink className="ml-1.5 size-3" />
-        </Button>
-        {!data.subscription && (
-          <p className="text-xs text-muted-foreground">
-            No active subscription. Subscribe to a plan to enable portal access.
-          </p>
-        )}
-      </CardContent>
-    </Card>
+    <BillingShell
+      id={panelId}
+      panelRef={panelRef}
+      icon={Bot}
+      title="Default AI model"
+      description="Applied to every chat unless a workspace member overrides it."
+      status="disconnected"
+      onCollapse={collapse}
+    >
+      <Select value={currentModel} onValueChange={handleModelChange} disabled={saving}>
+        <SelectTrigger aria-label="AI model">
+          <SelectValue placeholder="Select a model" />
+        </SelectTrigger>
+        <SelectContent>
+          {MODEL_OPTIONS.map((opt) => (
+            <SelectItem key={opt.value} value={opt.value}>
+              <span className="font-medium">{opt.label}</span>
+              <span className="ml-2 text-xs text-muted-foreground">— {opt.hint}</span>
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+      {saving && (
+        <p className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+          <Loader2 className="size-3 animate-spin" />
+          Saving…
+        </p>
+      )}
+      <InlineError>{error}</InlineError>
+    </BillingShell>
   );
 }
 
-// ── BYOT toggle card ──────────────────────────────────────────────
+// ── BYOT row (inline switch) ──────────────────────────────────────
 
-function ByotCard({
+function ByotRow({
   data,
   onToggled,
 }: {
   data: BillingStatus;
   onToggled: () => void;
 }) {
-  const { mutate, saving, error } = useAdminMutation<{ workspaceId: string; byot: boolean }>({
+  const { mutate, saving, error } = useAdminMutation<{
+    workspaceId: string;
+    byot: boolean;
+  }>({
     path: "/api/v1/billing/byot",
     method: "POST",
     invalidates: onToggled,
@@ -572,30 +827,31 @@ function ByotCard({
   }
 
   return (
-    <Card className="shadow-none">
-      <CardHeader>
-        <CardTitle className="text-base">Bring Your Own Token (BYOT)</CardTitle>
-        <CardDescription>
-          When enabled, workspace members can provide their own LLM API keys
-          instead of using the platform-managed model.
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-3">
-        {error && <ErrorBanner message={error} />}
-        <div className="flex items-center gap-3">
-          <Switch
-            checked={data.plan.byot}
-            onCheckedChange={handleToggle}
-            disabled={saving}
-          />
-          <span className="text-sm">
-            {data.plan.byot ? "Enabled" : "Disabled"}
-          </span>
-          {saving && (
-            <span className="text-xs text-muted-foreground">Saving...</span>
-          )}
-        </div>
-      </CardContent>
-    </Card>
+    <div className="space-y-2">
+      <InlineError>{error}</InlineError>
+      <CompactRow
+        icon={Zap}
+        title="Bring your own token"
+        description={
+          data.plan.byot
+            ? "Workspace members supply their own LLM API keys"
+            : "Use the platform-managed model (default)"
+        }
+        status={data.plan.byot ? "connected" : "disconnected"}
+        action={
+          <div className="flex items-center gap-2">
+            {saving && (
+              <Loader2 className="size-3.5 animate-spin text-muted-foreground" />
+            )}
+            <Switch
+              checked={data.plan.byot}
+              onCheckedChange={handleToggle}
+              disabled={saving}
+              aria-label="Bring your own token"
+            />
+          </div>
+        }
+      />
+    </div>
   );
 }

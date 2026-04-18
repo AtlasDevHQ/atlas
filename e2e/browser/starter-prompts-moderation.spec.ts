@@ -23,9 +23,13 @@ test.describe("Starter prompt admin moderation @llm", () => {
       page.locator("h1", { hasText: "Starter Prompts" }),
     ).toBeVisible({ timeout: 15_000 });
 
-    // 2. Pending tab is the default — the Author form sits at the top.
+    // 2. Pending tab is the default. The Author form lives behind a
+    //    page-level dialog trigger so the empty state stays clean — open
+    //    it before filling.
     const pendingTab = page.getByRole("tab", { name: /^Pending/ });
     await expect(pendingTab).toBeVisible();
+
+    await page.getByTestId("starter-prompt-author-open").click();
 
     const authorTextarea = page.getByTestId("starter-prompt-author-text");
     await expect(authorTextarea).toBeVisible({ timeout: 10_000 });

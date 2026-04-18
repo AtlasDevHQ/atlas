@@ -408,35 +408,53 @@ describe("ContentModeRegistry.countAllDrafts", () => {
 // ============================================================================
 
 describe("ContentModeRegistry.runPublishPhases", () => {
-  it("invokes simple adapters in tuple order; exotic semantic_entities fails loudly", async () => {
-    // The production stub fails by design (phase 2 of #1515). Simple adapters
-    // 1–3 run successfully; the exotic stub surfaces a PublishPhaseError.
+  it("invokes simple adapters in tuple order followed by semantic_entities tombstone+promote", async () => {
+    // Production tuple flow (phase 2d of #1515):
+    // 1. connections       → UPDATE (1 SQL)
+    // 2. prompt_collections → UPDATE (1 SQL)
+    // 3. query_suggestions  → UPDATE (1 SQL)
+    // 4. semantic_entities  → applyTombstones (2 SQL) + promoteDraftEntities (2 SQL)
     const { client, calls } = makeMockPoolClient([
       { rowCount: 3 }, // connections
       { rowCount: 2 }, // prompt_collections
       { rowCount: 1 }, // query_suggestions
+      // semantic_entities.applyTombstones:
+      { rows: [{ id: "e1" }, { id: "e2" }], rowCount: 2 }, //   DELETE published via tombstone join
+      { rowCount: 2 }, //                                        DELETE tombstones
+      // semantic_entities.promoteDraftEntities:
+      { rowCount: 1 }, //                                        DELETE superseded published
+      { rows: [{ id: "e3" }, { id: "e4" }, { id: "e5" }], rowCount: 3 }, // UPDATE promote
     ]);
 
-    const result = await Effect.runPromise(
+    const reports = await Effect.runPromise(
       Effect.gen(function* () {
         const registry = yield* ContentModeRegistry;
         return yield* registry.runPublishPhases(client, "org-1");
-      }).pipe(Effect.provide(ContentModeRegistryLive), Effect.either),
+      }).pipe(Effect.provide(ContentModeRegistryLive)),
     );
 
-    expect(result._tag).toBe("Left");
-    if (result._tag === "Left") {
-      expect(result.left).toBeInstanceOf(PublishPhaseError);
-      expect((result.left as PublishPhaseError).table).toBe("semantic_entities");
-      expect((result.left as PublishPhaseError).phase).toBe("promote");
-      const cause = (result.left as PublishPhaseError).cause;
-      expect(String(cause)).toContain("phase 2 of #1515");
-    }
-    // The three simple UPDATEs ran in tuple order before the stub failed.
-    expect(calls).toHaveLength(3);
+    expect(reports.map((r: PromotionReport) => r.table)).toEqual([
+      "connections",
+      "prompt_collections",
+      "query_suggestions",
+      "semantic_entities",
+    ]);
+    expect(reports[0].promoted).toBe(3);
+    expect(reports[1].promoted).toBe(2);
+    expect(reports[2].promoted).toBe(1);
+    // semantic_entities report composes both phases' counts.
+    expect(reports[3].promoted).toBe(3);
+    expect(reports[3].tombstonesApplied).toBe(2);
+
+    expect(calls).toHaveLength(7);
     expect(calls[0].sql).toContain("UPDATE connections");
     expect(calls[1].sql).toContain("UPDATE prompt_collections");
     expect(calls[2].sql).toContain("UPDATE query_suggestions");
+    // Tombstones before promote.
+    expect(calls[3].sql).toContain("draft_delete");
+    expect(calls[4].sql).toContain("draft_delete");
+    expect(calls[5].sql).toMatch(/DELETE FROM semantic_entities/);
+    expect(calls[6].sql).toContain("UPDATE semantic_entities");
     for (const c of calls) expect(c.params).toEqual(["org-1"]);
   });
 

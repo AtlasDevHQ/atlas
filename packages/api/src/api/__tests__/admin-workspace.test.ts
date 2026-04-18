@@ -6,7 +6,11 @@
  */
 
 import { createConnectionMock } from "@atlas/api/testing/connection";
-import { makeQueryEffectMock } from "@atlas/api/testing/api-test-mocks";
+import {
+  makeQueryEffectMock,
+  MockInternalDB,
+  makeMockInternalDBShimLayer,
+} from "@atlas/api/testing/api-test-mocks";
 import {
   describe,
   it,
@@ -148,6 +152,9 @@ const mockGetWorkspaceHealthSummary: Mock<(orgId: string) => Promise<unknown>> =
 );
 
 mock.module("@atlas/api/lib/db/internal", () => ({
+  InternalDB: MockInternalDB,
+  makeInternalDBShimLayer: () =>
+    makeMockInternalDBShimLayer(mockInternalQuery, { available: mockHasInternalDB }),
   hasInternalDB: () => mockHasInternalDB,
   internalQuery: mockInternalQuery,
   queryEffect: makeQueryEffectMock(mockInternalQuery),

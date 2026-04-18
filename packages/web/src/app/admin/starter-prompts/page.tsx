@@ -6,9 +6,9 @@
  * Renders the `approval_status` axis (pending / approved / hidden) with
  * per-row actions (Approve / Hide / Unhide). The orthogonal `status`
  * axis (draft / published / archived) appears as a per-row badge. A
- * page-level "Author prompt" dialog seeds the queue directly — authored
- * rows skip pending and land in Approved. The canonical state-matrix
- * explainer lives with the decision policy in
+ * page-level "Author prompt" dialog seeds Approved directly — authored
+ * rows bypass the pending queue. The canonical state-matrix explainer
+ * lives with the decision policy in
  * `@atlas/api/lib/suggestions/approval-service`.
  */
 
@@ -258,6 +258,11 @@ function AuthorPromptDialog({ onAuthored }: { onAuthored: () => void }) {
     <Dialog
       open={open}
       onOpenChange={(next) => {
+        // Block dismissal mid-save so an in-flight failure can't
+        // disappear with the dialog. `saving` already disables the
+        // textarea + submit, so this only guards ESC / outside-click /
+        // close-button during the request.
+        if (saving && !next) return;
         setOpen(next);
         if (!next) {
           setText("");
@@ -285,7 +290,7 @@ function AuthorPromptDialog({ onAuthored }: { onAuthored: () => void }) {
             </DialogDescription>
           </DialogHeader>
           <Textarea
-            id="author-text"
+            aria-label="Starter prompt text"
             placeholder="e.g. Which accounts renewed this quarter?"
             value={text}
             onChange={(e) => {

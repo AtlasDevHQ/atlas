@@ -748,6 +748,7 @@ function InlineError({ children }: { children: ReactNode }) {
 function ConnectionShell({
   icon: Icon,
   title,
+  titleText,
   titleBadge,
   description,
   status,
@@ -757,6 +758,8 @@ function ConnectionShell({
 }: {
   icon: ComponentType<{ className?: string }>;
   title: ReactNode;
+  /** Plain-text title for aria-label when `title` is JSX. */
+  titleText?: string;
   titleBadge?: ReactNode;
   description: string;
   status: StatusKind;
@@ -764,9 +767,10 @@ function ConnectionShell({
   children?: ReactNode;
   actions?: ReactNode;
 }) {
+  const ariaTitle = titleText ?? (typeof title === "string" ? title : "Connection");
   return (
     <section
-      aria-label={`${typeof title === "string" ? title : "Connection"}: ${STATUS_LABEL[status]}`}
+      aria-label={`${ariaTitle}: ${STATUS_LABEL[status]}`}
       className={cn(
         "relative flex flex-col overflow-hidden rounded-xl border bg-card/60 backdrop-blur-[1px] transition-colors",
         "hover:border-border/80",
@@ -1531,6 +1535,7 @@ function ConnectionCard({
     <ConnectionShell
       icon={icon}
       title={<span className="font-mono">{conn.id}</span>}
+      titleText={conn.id}
       titleBadge={badges}
       description={conn.description || providerDescription}
       status={status}

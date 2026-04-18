@@ -149,6 +149,13 @@ function describeOverride(
   }
 }
 
+/**
+ * Validate provider-specific config shape at the HTTP boundary. This is THE
+ * save-time enforcement point that `describeOverride`'s cast-safety comment
+ * relies on — every config stored in `email_installations` flows through
+ * here, so reads can cast from `ProviderConfig` to the narrow per-provider
+ * shape without runtime checks.
+ */
 function validateProviderConfig(
   provider: EmailProvider,
   config: unknown,

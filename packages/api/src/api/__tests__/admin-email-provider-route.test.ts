@@ -11,6 +11,7 @@ import {
   it,
   expect,
   beforeEach,
+  afterEach,
   afterAll,
   mock,
   type Mock,
@@ -21,6 +22,7 @@ import {
   MockInternalDB,
   makeMockInternalDBShimLayer,
 } from "@atlas/api/testing/api-test-mocks";
+import { EMAIL_PROVIDERS } from "@useatlas/types/email-provider";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -164,7 +166,9 @@ const mockDeleteEmailInstallationByOrg: Mock<(...args: unknown[]) => Promise<boo
 );
 
 mock.module("@atlas/api/lib/email/store", () => ({
-  EMAIL_PROVIDERS: ["resend", "sendgrid", "postmark", "smtp", "ses"],
+  // Re-export the real tuple so new providers added to @useatlas/types/email-provider
+  // flow through automatically — the mock can't silently diverge from reality.
+  EMAIL_PROVIDERS,
   getEmailInstallationByOrg: mockGetEmailInstallationByOrg,
   saveEmailInstallation: mockSaveEmailInstallation,
   deleteEmailInstallationByOrg: mockDeleteEmailInstallationByOrg,
@@ -349,6 +353,13 @@ afterAll(() => {
   delete process.env.ATLAS_SMTP_URL;
 });
 
+// Belt-and-braces env cleanup — beforeEach also deletes ATLAS_SMTP_URL but
+// tests that set it mid-run (PUT "accepts smtp" etc.) shouldn't leak into
+// any future test added between describes before beforeEach rebinds.
+afterEach(() => {
+  delete process.env.ATLAS_SMTP_URL;
+});
+
 describe("admin email-provider route", () => {
   beforeEach(() => {
     mockHasInternalDB = true;
@@ -413,6 +424,42 @@ describe("admin email-provider route", () => {
       );
       const res = await request("/api/v1/admin/email-provider");
       expect(res.status).toBe(400);
+    });
+
+    it("returns sendgrid override with empty hints and API-key label", async () => {
+      mockGetEmailInstallationByOrg.mockImplementation(async () => ({
+        config_id: "cfg-sg",
+        provider: "sendgrid",
+        sender_address: "Acme <noreply@acme.com>",
+        config: { apiKey: "SG.abcdefghijklmnop" },
+        org_id: "org-1",
+        installed_at: "2026-04-18T00:00:00Z",
+      }));
+      const res = await request("/api/v1/admin/email-provider");
+      const data = (await res.json()) as {
+        config: { override: { provider: string; secretLabel: string; hints: Record<string, string> } };
+      };
+      expect(data.config.override.provider).toBe("sendgrid");
+      expect(data.config.override.secretLabel).toBe("API key");
+      expect(data.config.override.hints).toEqual({});
+    });
+
+    it("returns postmark override with empty hints and Server-token label", async () => {
+      mockGetEmailInstallationByOrg.mockImplementation(async () => ({
+        config_id: "cfg-pm",
+        provider: "postmark",
+        sender_address: "Acme <noreply@acme.com>",
+        config: { serverToken: "abcdefghijklmnopqrstuvwxyz" },
+        org_id: "org-1",
+        installed_at: "2026-04-18T00:00:00Z",
+      }));
+      const res = await request("/api/v1/admin/email-provider");
+      const data = (await res.json()) as {
+        config: { override: { provider: string; secretLabel: string; hints: Record<string, string> } };
+      };
+      expect(data.config.override.provider).toBe("postmark");
+      expect(data.config.override.secretLabel).toBe("Server token");
+      expect(data.config.override.hints).toEqual({});
     });
 
     it("returns resend override with masked apiKey", async () => {
@@ -557,6 +604,30 @@ describe("admin email-provider route", () => {
       expect(mockSaveEmailInstallation).toHaveBeenCalledTimes(1);
     });
 
+    it("returns 400 for ses when ATLAS_SMTP_URL is missing", async () => {
+      const res = await jsonReq("/api/v1/admin/email-provider", "PUT", {
+        provider: "ses",
+        fromAddress: "Acme <noreply@acme.com>",
+        config: { region: "us-east-1", accessKeyId: "AKIA", secretAccessKey: "secret" },
+      });
+      expect(res.status).toBe(400);
+      const data = (await res.json()) as { message: string };
+      expect(data.message).toContain("SES");
+      expect(data.message).toContain("ATLAS_SMTP_URL");
+      expect(mockSaveEmailInstallation).not.toHaveBeenCalled();
+    });
+
+    it("accepts ses when ATLAS_SMTP_URL is set", async () => {
+      process.env.ATLAS_SMTP_URL = "https://bridge.example.com";
+      const res = await jsonReq("/api/v1/admin/email-provider", "PUT", {
+        provider: "ses",
+        fromAddress: "Acme <noreply@acme.com>",
+        config: { region: "us-east-1", accessKeyId: "AKIA", secretAccessKey: "secret" },
+      });
+      expect(res.status).toBe(200);
+      expect(mockSaveEmailInstallation).toHaveBeenCalledTimes(1);
+    });
+
     it("returns 400 when provider and config shape mismatch", async () => {
       const res = await jsonReq("/api/v1/admin/email-provider", "PUT", {
         provider: "smtp",
@@ -654,6 +725,83 @@ describe("admin email-provider route", () => {
       const data = (await res.json()) as { success: boolean; message: string };
       expect(data.success).toBe(false);
       expect(data.message).toBe("auth failed");
+    });
+  });
+
+  // ─── requireOrgContext coverage on write verbs ─────────────────
+  // The middleware is reused across GET/PUT/DELETE/POST test. A regression
+  // that re-ordered middleware so the org check only ran on GET would be
+  // caught here rather than silently allowing cross-org writes.
+
+  describe("requireOrgContext on write verbs", () => {
+    it("PUT returns 400 without active org", async () => {
+      mockAuthenticateRequest.mockImplementation(() =>
+        Promise.resolve({
+          authenticated: true,
+          mode: "simple-key",
+          user: { id: "admin-1", mode: "simple-key", label: "Admin", role: "admin", activeOrganizationId: null },
+        }),
+      );
+      const res = await jsonReq("/api/v1/admin/email-provider", "PUT", {
+        provider: "resend",
+        fromAddress: "x@example.com",
+        config: { apiKey: "re_abc" },
+      });
+      expect(res.status).toBe(400);
+      expect(mockSaveEmailInstallation).not.toHaveBeenCalled();
+    });
+
+    it("PUT returns 404 without internal DB", async () => {
+      mockHasInternalDB = false;
+      const res = await jsonReq("/api/v1/admin/email-provider", "PUT", {
+        provider: "resend",
+        fromAddress: "x@example.com",
+        config: { apiKey: "re_abc" },
+      });
+      expect(res.status).toBe(404);
+    });
+
+    it("DELETE returns 400 without active org", async () => {
+      mockAuthenticateRequest.mockImplementation(() =>
+        Promise.resolve({
+          authenticated: true,
+          mode: "simple-key",
+          user: { id: "admin-1", mode: "simple-key", label: "Admin", role: "admin", activeOrganizationId: null },
+        }),
+      );
+      const res = await request("/api/v1/admin/email-provider", { method: "DELETE" });
+      expect(res.status).toBe(400);
+      expect(mockDeleteEmailInstallationByOrg).not.toHaveBeenCalled();
+    });
+
+    it("DELETE returns 404 without internal DB", async () => {
+      mockHasInternalDB = false;
+      const res = await request("/api/v1/admin/email-provider", { method: "DELETE" });
+      expect(res.status).toBe(404);
+    });
+
+    it("POST /test returns 400 without active org", async () => {
+      mockAuthenticateRequest.mockImplementation(() =>
+        Promise.resolve({
+          authenticated: true,
+          mode: "simple-key",
+          user: { id: "admin-1", mode: "simple-key", label: "Admin", role: "admin", activeOrganizationId: null },
+        }),
+      );
+      const res = await jsonReq("/api/v1/admin/email-provider/test", "POST", {
+        recipientEmail: "you@example.com",
+      });
+      expect(res.status).toBe(400);
+      expect(mockSendEmail).not.toHaveBeenCalled();
+      expect(mockSendEmailWithTransport).not.toHaveBeenCalled();
+    });
+
+    it("POST /test returns 404 without internal DB", async () => {
+      mockHasInternalDB = false;
+      const res = await jsonReq("/api/v1/admin/email-provider/test", "POST", {
+        recipientEmail: "you@example.com",
+      });
+      expect(res.status).toBe(404);
     });
   });
 });

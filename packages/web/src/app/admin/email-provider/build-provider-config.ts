@@ -103,6 +103,12 @@ export function buildProviderConfig(
  * from "test the saved override" — without this check a half-filled form
  * would silently fall through to the saved-config test path and mislead the
  * admin about what was actually verified.
+ *
+ * Fields with pre-populated defaults (smtpPort="587", smtpTls=true,
+ * sesRegion="us-east-1") DO count as "typed" when the user changes them —
+ * a port or TLS edit is a credential edit, just like typing a host, and
+ * should push the flow toward "test these fresh values" instead of silently
+ * testing the saved config. Compare against INITIAL_FIELD_VALUES defaults.
  */
 export function hasAnyProviderFieldFilled(
   provider: EmailProvider,
@@ -116,10 +122,16 @@ export function hasAnyProviderFieldFilled(
       return (
         values.smtpHost.trim().length > 0 ||
         values.smtpUsername.trim().length > 0 ||
-        values.smtpPassword.trim().length > 0
+        values.smtpPassword.trim().length > 0 ||
+        values.smtpPort.trim() !== INITIAL_FIELD_VALUES.smtpPort ||
+        values.smtpTls !== INITIAL_FIELD_VALUES.smtpTls
       );
     case "ses":
-      return values.sesAccessKeyId.trim().length > 0 || values.sesSecretAccessKey.trim().length > 0;
+      return (
+        values.sesAccessKeyId.trim().length > 0 ||
+        values.sesSecretAccessKey.trim().length > 0 ||
+        values.sesRegion.trim() !== INITIAL_FIELD_VALUES.sesRegion
+      );
     default: {
       const _exhaustive: never = provider;
       throw new Error(`Unhandled email provider: ${_exhaustive as string}`);

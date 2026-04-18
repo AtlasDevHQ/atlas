@@ -29,6 +29,7 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import Link from "next/link";
+import type { EmailProvider } from "@useatlas/types/email-provider";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -2330,7 +2331,13 @@ function DiscordByotForm({
 
 // -- Email Card --
 
-const EMAIL_PROVIDER_LABEL: Record<string, string> = {
+/**
+ * Label map keyed on the narrow `EmailProvider` union — adding a new provider
+ * to `@useatlas/types/email-provider` is a compile error here until a label is
+ * supplied. The `?? email.provider` fallback handles legacy string values that
+ * may exist on the backend (`EmailStatus.provider: string | null`).
+ */
+const EMAIL_PROVIDER_LABEL: Record<EmailProvider, string> = {
   resend: "Resend",
   sendgrid: "SendGrid",
   postmark: "Postmark",
@@ -2345,7 +2352,9 @@ const EMAIL_PROVIDER_LABEL: Record<string, string> = {
  */
 function EmailCard({ email }: { email: EmailStatus }) {
   const connected = email.connected;
-  const providerLabel = email.provider ? EMAIL_PROVIDER_LABEL[email.provider] ?? email.provider : null;
+  const providerLabel = email.provider
+    ? (EMAIL_PROVIDER_LABEL as Record<string, string>)[email.provider] ?? email.provider
+    : null;
   return (
     <CompactRow
       icon={Mail}

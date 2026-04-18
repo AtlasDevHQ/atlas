@@ -43,6 +43,13 @@ describe("buildProviderConfig", () => {
         config: { serverToken: "abc-123" },
       });
     });
+
+    it("trims whitespace", () => {
+      expect(buildProviderConfig("postmark", values({ postmarkServerToken: "  abc-123  " }))).toEqual({
+        ok: true,
+        config: { serverToken: "abc-123" },
+      });
+    });
   });
 
   describe("smtp", () => {
@@ -103,6 +110,35 @@ describe("buildProviderConfig", () => {
       expect(buildProviderConfig("smtp", ok({ smtpPort: "65535" })).ok).toBe(true);
     });
 
+    it("rejects empty port (coerces to 0, out of range)", () => {
+      expect(buildProviderConfig("smtp", ok({ smtpPort: "" }))).toEqual({
+        ok: false,
+        error: "Port must be 1–65535.",
+      });
+    });
+
+    it("rejects negative port", () => {
+      expect(buildProviderConfig("smtp", ok({ smtpPort: "-1" }))).toEqual({
+        ok: false,
+        error: "Port must be 1–65535.",
+      });
+    });
+
+    it("rejects floating-point port", () => {
+      expect(buildProviderConfig("smtp", ok({ smtpPort: "587.5" }))).toEqual({
+        ok: false,
+        error: "Port must be 1–65535.",
+      });
+    });
+
+    it("trims username and password", () => {
+      const result = buildProviderConfig("smtp", ok({ smtpUsername: "  user  ", smtpPassword: "  pw  " }));
+      expect(result).toEqual({
+        ok: true,
+        config: { host: "smtp.example.com", port: 587, username: "user", password: "pw", tls: true },
+      });
+    });
+
     it("rejects missing password", () => {
       expect(buildProviderConfig("smtp", ok({ smtpPassword: "" }))).toEqual({
         ok: false,
@@ -153,6 +189,18 @@ describe("buildProviderConfig", () => {
         error: "Secret access key is required.",
       });
     });
+
+    it("trims all string fields", () => {
+      expect(
+        buildProviderConfig(
+          "ses",
+          ok({ sesRegion: "  us-east-1  ", sesAccessKeyId: "  AKIAx  ", sesSecretAccessKey: "  s  " }),
+        ),
+      ).toEqual({
+        ok: true,
+        config: { region: "us-east-1", accessKeyId: "AKIAx", secretAccessKey: "s" },
+      });
+    });
   });
 });
 
@@ -171,10 +219,16 @@ describe("hasAnyProviderFieldFilled", () => {
     expect(hasAnyProviderFieldFilled("smtp", values({ smtpPassword: "x" }))).toBe(true);
   });
 
-  it("smtp — false when only port/tls differ from initial", () => {
-    // smtpPort and smtpTls carry sensible defaults — the user hasn't "typed" anything
-    // until they touch a host/username/password.
-    expect(hasAnyProviderFieldFilled("smtp", values({ smtpPort: "25", smtpTls: false }))).toBe(false);
+  it("smtp — true when port changed from default (port is credential material)", () => {
+    expect(hasAnyProviderFieldFilled("smtp", values({ smtpPort: "2525" }))).toBe(true);
+  });
+
+  it("smtp — true when TLS toggled off", () => {
+    expect(hasAnyProviderFieldFilled("smtp", values({ smtpTls: false }))).toBe(true);
+  });
+
+  it("smtp — false when all fields match defaults", () => {
+    expect(hasAnyProviderFieldFilled("smtp", values())).toBe(false);
   });
 
   it("ses — true when accessKeyId or secret filled", () => {
@@ -182,7 +236,11 @@ describe("hasAnyProviderFieldFilled", () => {
     expect(hasAnyProviderFieldFilled("ses", values({ sesSecretAccessKey: "s" }))).toBe(true);
   });
 
-  it("ses — false when only region is set (region has a default)", () => {
-    expect(hasAnyProviderFieldFilled("ses", values({ sesRegion: "us-west-2" }))).toBe(false);
+  it("ses — true when region changed from default", () => {
+    expect(hasAnyProviderFieldFilled("ses", values({ sesRegion: "us-west-2" }))).toBe(true);
+  });
+
+  it("ses — false when region matches default", () => {
+    expect(hasAnyProviderFieldFilled("ses", values())).toBe(false);
   });
 });

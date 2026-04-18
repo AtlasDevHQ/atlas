@@ -476,6 +476,10 @@ export default function EmailProviderPage() {
   // changes — not on every background refetch (window-focus, 30s stale revalidation,
   // mutation invalidation). An unconditional reset clobbers in-flight edits and
   // silently dismisses mutation errors the user hasn't seen yet.
+  //
+  // The `clear*Error` callbacks are stable references returned by `useAdminMutation`
+  // (see hook docs), so omitting them from the dep array is safe — otherwise the
+  // effect would re-run on every render and defeat the identity gate.
   const lastSyncedKey = useRef<string | null>(null);
   useEffect(() => {
     if (loading) return;

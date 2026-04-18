@@ -1002,8 +1002,25 @@ import type {
 import type {
   UseConversationsOptions,
   UseConversationsReturn,
+  FavoriteStarterPrompt,
 } from "@useatlas/react";
 ```
+
+### Starter-prompt types
+
+```typescript
+import type { FavoriteStarterPrompt } from "@useatlas/react";
+
+// A pinned favorite — text + optional collection grouping
+interface FavoriteStarterPrompt {
+  id: string;
+  text: string;
+  collection: string | null;
+  createdAt: string;
+}
+```
+
+The `AtlasChat` widget also accepts a [`starterPrompts` prop](#atlaschat-props) that overrides the adaptive empty-state list. For script-tag embeds, the same list can be supplied via the `data-starter-prompts` JSON attribute — see [Embedding the Widget](/guides/embedding-widget) for details.
 
 ---
 

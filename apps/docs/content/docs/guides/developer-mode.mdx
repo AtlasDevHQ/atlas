@@ -105,6 +105,31 @@ After a successful response, **no `draft` or `draft_delete` rows remain for the 
 
 Orgs that picked a demo during onboarding have a seeded `__demo__` connection with matching published entities and built-in prompts. On the first publish, the admin UI pre-selects `__demo__` in the `archiveConnections` list — the admin clicks through to move from demo data to their real configuration in one atomic step. The admin can uncheck to keep the demo visible alongside their real data.
 
+### The `__demo__` connection and `demo_industry`
+
+At signup, onboarding seeds two artifacts that drive the demo UX for the first-run workspace:
+
+| Artifact | Where it lives | What it does |
+|----------|----------------|--------------|
+| Connection with `id = "__demo__"` | `connections` table, `status = "published"` | A read-only demo datasource (SQLite file or managed sample DB) the new admin can query immediately without touching their own warehouse |
+| `ATLAS_DEMO_INDUSTRY` setting | `settings` table, keyed `ATLAS_DEMO_INDUSTRY` — value is the industry the admin picked (`cybersecurity`, `ecommerce`, or similar) | Filters the prompt library to industry-matched built-ins; controls which built-in prompts archive alongside `__demo__` |
+
+These are **not** set for self-hosted deployments that don't run the onboarding flow. Self-hosted operators who want demo content can create a `__demo__` connection manually and set `ATLAS_DEMO_INDUSTRY` in their environment — see the [environment variables reference](/reference/environment-variables#demo-mode).
+
+### Why archiving `__demo__` cascades
+
+The publish endpoint's archival path treats `__demo__` as one logical unit. When `archiveConnections` includes `__demo__`:
+
+1. The connection row flips to `archived` — the UI hides the datasource from the switcher.
+2. Every `semantic_entity` row scoped to that connection cascades to `archived`.
+3. Every `prompt_collection` where `is_builtin = true` AND `industry = <demo_industry>` cascades to `archived`.
+
+The third step is what `demo_industry` enables. Built-in prompts ship with an `industry` tag; the cascade filters to the industry the admin picked at signup. An e-commerce admin archiving the demo doesn't hide cybersecurity built-ins (they weren't surfaced in the first place), and vice versa.
+
+### Restoring brings everything back together
+
+`POST /api/v1/admin/restore-connection` is the reverse operation — the connection, its entities, and its matching demo built-ins all flip back to `published` in one transaction. This is the "onboard a new hire on demo data" flow covered in the section below.
+
 ---
 
 ## Archive and Restore After Go-Live

@@ -413,6 +413,7 @@ Explore tool isolation backends. See [Sandbox Architecture](/architecture/sandbo
 | `ATLAS_NSJAIL_TIME_LIMIT` | `10` | nsjail per-command time limit in seconds |
 | `ATLAS_NSJAIL_MEMORY_LIMIT` | `256` | nsjail per-command memory limit in MB |
 | `ATLAS_SANDBOX_PRIORITY` | — | Comma-separated backend priority order (e.g. `sidecar,nsjail,just-bash`). Valid values: `vercel-sandbox`, `nsjail`, `sidecar`, `just-bash`. Plugin backends always take highest priority. See [Configuration](/reference/config#sandbox) |
+| `ATLAS_SANDBOX_BACKEND` | — | SaaS admin-facing selector for the workspace's sandbox backend: `vercel-sandbox`, `sidecar`, `e2b-sandbox`, `daytona-sandbox`, or a plugin ID. Set via the Settings UI in the hosted product; self-hosted operators typically use `ATLAS_SANDBOX_PRIORITY` instead |
 
 <Tabs items={["Docker Compose (dev)", "Production sidecar", "nsjail (self-hosted)"]}>
 <Tab value="Docker Compose (dev)">
@@ -489,8 +490,8 @@ Action framework settings. These can also be configured via [`atlas.config.ts`](
 |----------|---------|-------------|
 | `ATLAS_ACTIONS_ENABLED` | — | Set `true` to enable the action framework (approval-gated write operations) |
 | `ATLAS_ACTION_APPROVAL` | `manual` | Default approval mode for actions: `auto`, `manual`, or `admin-only` |
-| `ATLAS_ACTION_TIMEOUT` | — | Per-action execution timeout in milliseconds |
-| `ATLAS_ACTION_MAX_PER_CONVERSATION` | — | Maximum number of actions allowed per conversation |
+| `ATLAS_ACTION_TIMEOUT` | — | Per-action execution timeout in milliseconds. No default — the action runs until it returns or the request is cancelled. `.env.example` shows `300000` (5 min) as a reasonable starting point |
+| `ATLAS_ACTION_MAX_PER_CONVERSATION` | — | Reserved — not yet enforced. `.env.example` shows `10` as a future default. Currently accepts any value without effect |
 | `ATLAS_EMAIL_ALLOWED_DOMAINS` | — | Comma-separated list of allowed email recipient domains for the email action plugin. When unset, all domains are allowed |
 
 ```bash
@@ -706,6 +707,7 @@ SaaS only. Required for custom domain support via Railway.
 | `ATLAS_DEMO_ENABLED` | `false` | Enable demo mode at `/demo`. Allows unauthenticated users to try Atlas against the sample database with an email gate |
 | `ATLAS_DEMO_RATE_LIMIT_RPM` | `10` | Max requests per minute per demo user |
 | `ATLAS_DEMO_MAX_STEPS` | `10` | Max agent steps per demo request (lower than authenticated default of 25) |
+| `ATLAS_DEMO_INDUSTRY` | — | Industry label for the seeded `__demo__` connection (e.g. `cybersecurity`, `ecommerce`). Set at signup via onboarding; drives prompt-library industry filtering and the publish flow's demo-prompt archival cascade. See [Developer Mode](/guides/developer-mode) for the full demo lifecycle |
 
 Requires `BETTER_AUTH_SECRET` for demo token signing.
 

@@ -1,0 +1,293 @@
+---
+title: Content Mode Registry
+description: The draft/published mode system — how to add a new mode-participating content table in one line, and the type-level drift detection that keeps the wire contract honest.
+---
+
+> Design doc for the `ContentModeRegistry` library (#1515) that drives the 1.2.0 developer/published mode system. Covers the static-tuple architecture, the type derivation, and the end-to-end flow for adding a new mode-participating table.
+
+## Problem
+
+The 1.2.0 mode system worked but was shallow. Four content tables participated — `connections`, `prompt_collections`, `query_suggestions`, and `semantic_entities` — and each surface (read filter, draft counts, publish path) had its own hand-written policy:
+
+| Concern | Pre-registry state |
+|---------|--------------------|
+| Read filter | Three drifting styles: `buildUnionStatusClause()` helper for connections, inline `statusClauseFor()` in prompt scoping, `listEntitiesWithOverlay()` CTE for semantic entities, inline `status='published'` filter for query_suggestions. |
+| Draft counts | Hand-written 6-branch `UNION ALL` in `routes/mode.ts:97–127`. |
+| Publish transaction | Four parallel `UPDATE` statements in `admin-publish.ts` plus inline `applyTombstones()` + `promoteDraftEntities()` calls. |
+| Wire type | `ModeDraftCounts` in `@useatlas/types/mode` had to stay in lockstep with all three surfaces by hand. |
+| Type safety | None. A contributor adding a fifth table (dashboards, reports) had to coordinate edits across 6+ files with **zero compile-time enforcement**. A well-intentioned omission of a publish `UPDATE` would leave orphan drafts forever. |
+
+CLAUDE.md's Content Mode System rules documented the contract as prose. Nothing enforced it.
+
+## Solution
+
+A static `as const satisfies ReadonlyArray<ContentModeEntry>` tuple paired with a compile-time derived wire type and an Effect service wrapper. Three pillars:
+
+1. **The tuple is the source of truth.** Every mode-participating table has one entry. Adding a row updates every consumer.
+2. **The wire type is derived.** `InferDraftCounts<typeof CONTENT_MODE_TABLES>` produces the exact shape of `ModeDraftCounts`. A compile-time equality assertion fails CI on any drift.
+3. **Exhaustiveness is enforced.** Discriminated `SimpleModeTable` | `ExoticModeAdapter` union with `assertNever` guards at every `switch`. Adding a new `kind` fails to compile at every site.
+
+## Architecture
+
+The library lives at `packages/api/src/lib/content-mode/`:
+
+```
+content-mode/
+├── index.ts              # Barrel
+├── port.ts               # SimpleModeTable / ExoticModeAdapter / errors — pure types
+├── tables.ts             # CONTENT_MODE_TABLES static tuple
+├── infer.ts              # InferDraftCounts<T> type machinery
+├── registry.ts           # makeService(tables) + Effect Context.Tag
+├── adapters/
+│   ├── semantic-entities.ts   # Exotic adapter composing applyTombstones + promoteDraftEntities
+│   └── __tests__/
+└── __tests__/registry.test.ts # Boundary tests
+```
+
+### The tuple
+
+```typescript
+// tables.ts
+export const CONTENT_MODE_TABLES = [
+  { kind: "simple", key: "connections" },
+  { kind: "simple", key: "prompts", table: "prompt_collections" },
+  { kind: "simple", key: "starterPrompts", table: "query_suggestions" },
+  {
+    kind: "exotic",
+    key: "semantic_entities",
+    countSegments: [
+      { key: "entities",      sql: (p) => `SELECT 'entities' AS key, COUNT(*)::int AS n FROM semantic_entities WHERE org_id = ${p} AND status = 'draft'` },
+      { key: "entityEdits",   sql: (p) => /* INNER JOIN against published for supersession count */ },
+      { key: "entityDeletes", sql: (p) => `SELECT 'entityDeletes' AS key, COUNT(*)::int AS n FROM semantic_entities WHERE org_id = ${p} AND status = 'draft_delete'` },
+    ],
+    promote: promoteSemanticEntities,
+  },
+] as const satisfies ReadonlyArray<ContentModeEntry>;
+```
+
+Every field is load-bearing:
+
+- `as const` preserves the `key` and `kind` literals for `InferDraftCounts`.
+- `satisfies ReadonlyArray<ContentModeEntry>` enforces the port shape without widening.
+- `kind: "simple"` uses defaults everywhere — physical table name = `key` unless overridden, UPDATE SQL is `UPDATE {table} SET status='published' WHERE org_id=$1 AND status='draft'`, COUNT SQL is parallel.
+- `kind: "exotic"` plugs in table-specific SQL for counts and a caller-supplied `promote` Effect.
+
+Order matters: `runPublishPhases` iterates the tuple in order inside the caller's transaction. Tables with FK dependencies on later entries must be declared earlier.
+
+### The derived wire type
+
+```typescript
+// infer.ts
+export type InferDraftCounts<T extends ReadonlyArray<ContentModeEntry>> =
+  UnionToIntersection<EntryToRecord<T[number]>> extends infer R
+    ? { readonly [K in keyof R]: R[K] }
+    : never;
+```
+
+Walks the tuple. `simple` entries contribute `{ [key]: number }`, `exotic` entries contribute `{ [countSegments[i].key]: number }`. The homomorphic remap at the end flattens the intersection into a plain object so structural equality tests see an identical type (not merely a mutually-assignable one).
+
+Paired with a CI-time assertion in `__tests__/registry.test.ts`:
+
+```typescript
+type _assertInferredEqualsWire = Equal<
+  ModeDraftCounts,
+  InferDraftCounts<typeof CONTENT_MODE_TABLES>
+>;
+const _check: _assertInferredEqualsWire = true;
+```
+
+Adding a key to one side without the other fails to type-check.
+
+### The service
+
+```typescript
+// registry.ts
+export interface ContentModeRegistryService {
+  readonly readFilter: (
+    table: string,
+    mode: AtlasMode,
+    alias: string,
+  ) => Effect.Effect<string, UnknownTableError | ExoticReadFilterUnavailableError, never>;
+
+  readonly countAllDrafts: (
+    orgId: string,
+  ) => Effect.Effect<ModeDraftCounts, PublishPhaseError, InternalDB>;
+
+  readonly runPublishPhases: (
+    tx: PoolClient,
+    orgId: string,
+  ) => Effect.Effect<ReadonlyArray<PromotionReport>, PublishPhaseError, never>;
+}
+```
+
+Three methods, narrow by design:
+
+- `readFilter` returns a WHERE-clause fragment (`"c.status = 'published'"` or `"c.status IN ('published', 'draft')"`). Accepts either the segment key (`"prompts"`) or the physical table name (`"prompt_collections"`) for simple entries; exotic entries lookup by `key` only. Fails with `UnknownTableError` on unregistered tables or `ExoticReadFilterUnavailableError` when an exotic entry didn't ship a `readFilter` adapter (prevents silent fallback to wrong semantics).
+- `countAllDrafts` emits one `UNION ALL` query against `InternalDB`, zero-fills every registered segment, and returns the derived `ModeDraftCounts`. Fails loudly on unknown keys or non-finite counts (guards against tuple/UNION drift).
+- `runPublishPhases` iterates the tuple in order inside the caller's transactional `PoolClient`. Never issues `BEGIN` / `COMMIT` / `ROLLBACK` — caller owns the transaction. Returns a `PromotionReport[]` with per-table counts.
+
+### Usage patterns
+
+Two consumer shapes:
+
+**Sync caller (SQL builders like `lib/prompts/scoping.ts`):**
+
+```typescript
+import { CONTENT_MODE_TABLES, makeService } from "@atlas/api/lib/content-mode";
+
+const registry = makeService(CONTENT_MODE_TABLES);
+
+function statusClauseFor(mode: AtlasMode): string {
+  return Effect.runSync(
+    registry.readFilter("prompt_collections", mode, "pc"),
+  );
+}
+```
+
+Safe because `readFilter` is pure (no I/O) and the key is known-simple — `Effect.runSync` never throws for a registered simple entry.
+
+**Effect caller (route handlers like `routes/mode.ts`):**
+
+```typescript
+import { ContentModeRegistry, ContentModeRegistryLive } from "@atlas/api/lib/content-mode";
+import { makeInternalDBShimLayer } from "@atlas/api/lib/db/internal";
+
+const modeRouteLayer = Layer.merge(ContentModeRegistryLive, makeInternalDBShimLayer());
+
+mode.openapi(getModeRoute, async (c) => {
+  const program = Effect.gen(function* () {
+    const registry = yield* ContentModeRegistry;
+    const counts = yield* registry.countAllDrafts(orgId);
+    return { mode: atlasMode, draftCounts: counts };
+  }).pipe(Effect.provide(modeRouteLayer));
+
+  return c.json(await runEffect(c, program), 200);
+});
+```
+
+`makeInternalDBShimLayer` wraps the module-level `internalQuery` helper into an `InternalDB` Layer, so route handlers don't need to thread the AppLayer's `ManagedRuntime` to use services that require `InternalDB` in context.
+
+## Adding a new mode-participating table
+
+End-to-end walkthrough for adding a hypothetical `dashboards` table.
+
+### 1. Database migration
+
+Add a migration with the `status` column + CHECK constraint matching the existing pattern:
+
+```sql
+-- migrations/0031_dashboards_mode.sql
+
+ALTER TABLE dashboards ADD COLUMN status TEXT NOT NULL DEFAULT 'published'
+  CHECK (status IN ('draft', 'published', 'archived'));
+
+CREATE INDEX idx_dashboards_org_status ON dashboards (org_id, status);
+```
+
+Every mode-participating table uses the same three status values. The CHECK is load-bearing — the registry's default SQL assumes it.
+
+### 2. One-line tuple addition
+
+```typescript
+// packages/api/src/lib/content-mode/tables.ts
+export const CONTENT_MODE_TABLES = [
+  { kind: "simple", key: "connections" },
+  { kind: "simple", key: "prompts", table: "prompt_collections" },
+  { kind: "simple", key: "starterPrompts", table: "query_suggestions" },
+  { kind: "simple", key: "dashboards" },           // ← new
+  { kind: "exotic", key: "semantic_entities", ... },
+] as const satisfies ReadonlyArray<ContentModeEntry>;
+```
+
+If the `key` differs from the physical table name (e.g. wire-facing `"reports"` backed by table `report_cards`), supply `table`:
+
+```typescript
+{ kind: "simple", key: "reports", table: "report_cards" }
+```
+
+### 3. Extend the wire type
+
+Update `@useatlas/types/mode.ts` to add the new segment to `ModeDraftCounts`:
+
+```typescript
+export interface ModeDraftCounts {
+  readonly connections: number;
+  readonly prompts: number;
+  readonly starterPrompts: number;
+  readonly entities: number;
+  readonly entityEdits: number;
+  readonly entityDeletes: number;
+  readonly dashboards: number;    // ← new
+}
+```
+
+The CI-time `Equal<ModeDraftCounts, InferDraftCounts<typeof CONTENT_MODE_TABLES>>` assertion catches mismatches. Omit the new key and the tests fail at compile time.
+
+### 4. Update the admin UI
+
+The `pending-changes-summary.tsx` component iterates a typed `Record` over `ModeDraftCounts`, so it picks up the new segment automatically. Add a display label if the default `<key>` rendering isn't right.
+
+### Nothing else to change
+
+- `GET /api/v1/mode` automatically counts drafts for `dashboards` via `registry.countAllDrafts`.
+- `/api/v1/admin/publish` automatically promotes `dashboards` drafts in the same transaction via `registry.runPublishPhases`.
+- Read handlers on `dashboards` call `registry.readFilter("dashboards", mode, "d")` to get the status clause — the same dispatch logic as every other simple table.
+- Failure in any phase surfaces as `PublishPhaseError` with `{ table: "dashboards", phase: "promote" }`.
+
+## Exotic adapters — when to reach for them
+
+Most tables are "simple": one status column, default UPDATE to promote, default COUNT to count drafts. If that's not enough, register an exotic entry.
+
+Reach for exotic when any of these apply:
+
+- **Multi-segment counts.** `semantic_entities` counts `entities`, `entityEdits`, and `entityDeletes` separately — one table, three wire keys.
+- **Tombstones.** A status like `draft_delete` needs a dedicated DELETE phase before promote.
+- **Overlay CTEs.** The table's read semantics aren't a simple WHERE fragment (supersession joins, for example).
+- **Custom promote logic.** Whatever `UPDATE ... SET status='published'` can't express.
+
+The `ExoticModeAdapter` port requires:
+
+- `key` — the wire-facing identifier (used for the report `table` field and for `readFilter` lookup).
+- `countSegments[]` — one or more `{ key, sql }` entries that each contribute a branch to the `UNION ALL`.
+- `promote(tx, orgId)` — an `Effect.Effect<PromotionReport, PublishPhaseError, never>` that runs in the caller's transaction.
+- `readFilter` (optional) — `{ published, developerOverlay }` functions returning WHERE-clause fragments. **Omit at your peril** — the registry fails with `ExoticReadFilterUnavailableError` if a caller requests a read filter on an exotic entry without this, on the theory that silently serving wrong rows is worse than failing loudly.
+
+Keep adapter logic under `adapters/<table-name>.ts`. See `adapters/semantic-entities.ts` for the canonical example — it composes `applyTombstones` + `promoteDraftEntities` from `lib/semantic/entities.ts` with `Effect.tryPromise` wrapping each helper.
+
+## Errors
+
+Three tagged errors, all folded into the central `AtlasError` union and mapped to HTTP via `mapTaggedError` in `lib/effect/hono.ts`:
+
+| Error | Raised by | HTTP mapping | User-visible message |
+|-------|-----------|--------------|---------------------|
+| `PublishPhaseError` | `countAllDrafts`, `runPublishPhases` | 500 `upstream_error` | For `phase: "count"` — `"Failed to count pending drafts"`; for `"promote"` / `"tombstone"` — `'Publish phase "X" failed for table "Y"'` |
+| `UnknownTableError` | `readFilter` on unregistered table | 500 `upstream_error` | `'Unknown content-mode table "X"'` — indicates caller-side bug |
+| `ExoticReadFilterUnavailableError` | `readFilter` on exotic entry missing `readFilter` adapter | 500 `upstream_error` | `'No read filter registered for exotic table "X"'` — indicates a phase 2 gap |
+
+`PublishPhaseError.cause` carries the original driver error (e.g. `pg.DatabaseError`). The HTTP response never leaks `cause` — callers correlate via `requestId` instead.
+
+## What's not in scope
+
+Deliberately out of scope so the registry stays focused:
+
+- **Demo-industry prompt scoping.** Stays in `lib/prompts/scoping.ts`. The registry returns the status clause; the caller ANDs in industry + `is_builtin` + demo filters. Conflating the two would drag `SettingsService` into the registry and break the purity constraint.
+- **Connection archival cascade.** `archiveSingleConnection` + the demo-prompt cascade stay in `lib/semantic/entities.ts`. Archival is lifecycle, not promotion. The atomic publish endpoint runs archive as phase 4, after `runPublishPhases` returns.
+- **Plugin-registered content tables.** The tuple is static. If plugins ever need to register a mode-participating table, extend — don't pre-build.
+- **Generic content-type registry.** This isn't a CMS. Routing, auth, CRUD schemas, and UI rendering stay where they are.
+
+## Invariants the registry must preserve
+
+These are locked by tests and CLAUDE.md rules:
+
+- **Only `admin-publish.ts` imports `runPublishPhases`.** Grep for the symbol in CI.
+- **`/api/v1/mode` stays a single round-trip.** A boundary test asserts `countAllDrafts` produces exactly one SQL string.
+- **Publish still happens in one `BEGIN ... COMMIT`.** `runPublishPhases` takes the transactional `PoolClient`; it never opens its own transaction.
+- **`packages/api/src/lib/content-mode/*` imports nothing from `packages/api/src/api/routes/*`.** Preserves the purity constraint documented in `lib/mode.ts` — low-level modules can depend on mode semantics without pulling the Hono route layer.
+- **`port.ts` has no `InternalDB` dependency.** Effect callers that only need `readFilter` can import `port.ts` without dragging the full `InternalDB` graph through their module.
+
+## See also
+
+- [Developer Mode](/guides/developer-mode) — end-user view of the mode system
+- [Starter Prompts](/guides/starter-prompts) — one of the four mode-participating content types
+- [Environment Variables](/reference/environment-variables) — `ATLAS_DEMO_INDUSTRY` and friends
+- [Error Codes](/reference/error-codes#content-mode-registry-1515) — `upstream_error` for content-mode failures

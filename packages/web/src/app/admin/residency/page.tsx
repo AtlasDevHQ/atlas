@@ -1,23 +1,8 @@
 "use client";
 
-import { type ReactNode, useState } from "react";
+import { type ComponentType, type ReactNode, useState } from "react";
 import { z } from "zod";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -27,30 +12,39 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
+  AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from "@/components/ui/dialog";
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { useAdminFetch, friendlyError } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { useDeployMode } from "@/ui/hooks/use-deploy-mode";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
-import { RegionCardGrid, ComplianceBadge } from "@/ui/components/region-picker";
 import {
   RegionPickerItemSchema,
   MigrationStatusResponseSchema,
 } from "@/ui/lib/admin-schemas";
 import type { RegionPickerItem, RegionMigration } from "@/ui/lib/types";
+import { cn } from "@/lib/utils";
 import { formatDate } from "@/lib/format";
-import { Globe, MapPin, AlertTriangle, ArrowRight, Clock, Loader2, XCircle, CheckCircle2, RefreshCw, Ban } from "lucide-react";
+import {
+  ArrowRight,
+  Ban,
+  CheckCircle2,
+  Clock,
+  Globe,
+  Loader2,
+  MapPin,
+  RefreshCw,
+  XCircle,
+} from "lucide-react";
 
 // ── Schemas ───────────────────────────────────────────────────────
 
@@ -64,9 +58,302 @@ const ResidencyStatusSchema = z.object({
 });
 type ResidencyStatus = z.infer<typeof ResidencyStatusSchema>;
 
+// ── Shared design primitives ──────────────────────────────────────
+// Mirrors the primitives in admin/sandbox, admin/custom-domain, and
+// admin/branding. Tracked for extraction in #1551.
+
+type StatusKind =
+  | "connected"
+  | "ready"
+  | "pending"
+  | "failed"
+  | "disconnected"
+  | "unavailable";
+
+function StatusDot({ kind }: { kind: StatusKind }) {
+  return (
+    <span
+      aria-hidden
+      className={cn(
+        "relative inline-flex size-1.5 shrink-0 rounded-full",
+        kind === "connected" &&
+          "bg-primary shadow-[0_0_0_3px_color-mix(in_oklch,var(--primary)_15%,transparent)]",
+        kind === "ready" && "bg-primary/70",
+        kind === "pending" && "bg-amber-500/80",
+        kind === "failed" && "bg-destructive",
+        kind === "disconnected" && "bg-muted-foreground/40",
+        kind === "unavailable" &&
+          "bg-muted-foreground/20 outline-1 outline-dashed outline-muted-foreground/30",
+      )}
+    >
+      {kind === "connected" && (
+        <span className="absolute inset-0 rounded-full bg-primary/60 motion-safe:animate-ping" />
+      )}
+    </span>
+  );
+}
+
+function StatusPill({ kind, label }: { kind: StatusKind; label: string }) {
+  return (
+    <span
+      className={cn(
+        "flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-[0.08em]",
+        kind === "connected" && "text-primary",
+        kind === "ready" && "text-primary/80",
+        kind === "pending" && "text-amber-600 dark:text-amber-400",
+        kind === "failed" && "text-destructive",
+        (kind === "disconnected" || kind === "unavailable") && "text-muted-foreground",
+      )}
+    >
+      <StatusDot kind={kind} />
+      {label}
+    </span>
+  );
+}
+
+function SectionHeading({
+  title,
+  description,
+}: {
+  title: string;
+  description: string;
+}) {
+  return (
+    <div className="mb-3">
+      <h2 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+        {title}
+      </h2>
+      <p className="mt-0.5 text-xs text-muted-foreground/80">{description}</p>
+    </div>
+  );
+}
+
+function CompactRow({
+  icon: Icon,
+  title,
+  description,
+  status,
+  action,
+}: {
+  icon: ComponentType<{ className?: string }>;
+  title: string;
+  description: ReactNode;
+  status: StatusKind;
+  action?: ReactNode;
+}) {
+  return (
+    <div
+      className={cn(
+        "group flex items-center gap-3 rounded-xl border bg-card/40 px-3.5 py-2.5 transition-colors",
+        "hover:bg-card/70 hover:border-border/80",
+        status === "unavailable" && "opacity-70",
+      )}
+    >
+      <span className="grid size-8 shrink-0 place-items-center rounded-lg border bg-background/40 text-muted-foreground">
+        <Icon className="size-4" />
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <h3 className="truncate text-sm font-semibold leading-tight tracking-tight">
+            {title}
+          </h3>
+          <StatusDot kind={status} />
+        </div>
+        <p className="mt-0.5 truncate text-xs text-muted-foreground">{description}</p>
+      </div>
+      {action && <div className="shrink-0">{action}</div>}
+    </div>
+  );
+}
+
+function ResidencyShell({
+  icon: Icon,
+  title,
+  description,
+  status,
+  trailing,
+  mono,
+  onCollapse,
+  children,
+  actions,
+}: {
+  icon: ComponentType<{ className?: string }>;
+  title: string;
+  description: ReactNode;
+  status: StatusKind;
+  trailing?: ReactNode;
+  mono?: boolean;
+  onCollapse?: () => void;
+  children?: ReactNode;
+  actions?: ReactNode;
+}) {
+  return (
+    <section
+      className={cn(
+        "relative flex flex-col overflow-hidden rounded-xl border bg-card/60 transition-colors",
+        status === "connected" && "border-primary/20",
+        status === "ready" && "border-primary/10",
+        status === "pending" && "border-amber-500/30",
+        status === "failed" && "border-destructive/30",
+      )}
+    >
+      {status === "connected" && (
+        <span
+          aria-hidden
+          className="pointer-events-none absolute left-0 top-4 bottom-4 w-px bg-linear-to-b from-transparent via-primary to-transparent opacity-70"
+        />
+      )}
+      <header className="flex items-start gap-3 p-4 pb-3">
+        <span
+          className={cn(
+            "grid size-9 shrink-0 place-items-center rounded-lg border bg-background/40",
+            status === "connected" && "border-primary/30 text-primary",
+            status === "ready" && "border-primary/20 text-primary/80",
+            status === "pending" && "border-amber-500/30 text-amber-600 dark:text-amber-400",
+            status === "failed" && "border-destructive/30 text-destructive",
+            (status === "disconnected" || status === "unavailable") && "text-muted-foreground",
+          )}
+        >
+          <Icon className="size-4" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <h3
+              className={cn(
+                "truncate text-sm font-semibold leading-tight tracking-tight",
+                mono && "font-mono",
+              )}
+            >
+              {title}
+            </h3>
+            {trailing ? (
+              <div className="ml-auto flex items-center gap-1.5">{trailing}</div>
+            ) : status === "connected" ? (
+              <span className="ml-auto">
+                <StatusPill kind="connected" label="Live" />
+              </span>
+            ) : onCollapse ? (
+              <button
+                type="button"
+                aria-label="Cancel"
+                onClick={onCollapse}
+                className="ml-auto -m-1 grid size-6 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              >
+                <XCircle className="size-3.5" />
+              </button>
+            ) : null}
+          </div>
+          <p className="mt-0.5 text-xs leading-snug text-muted-foreground">{description}</p>
+        </div>
+      </header>
+      {children != null && (
+        <div className="flex-1 space-y-4 px-4 pb-3 text-sm">{children}</div>
+      )}
+      {actions && (
+        <footer className="flex flex-wrap items-center justify-end gap-2 border-t border-border/50 bg-muted/20 px-4 py-2.5">
+          {actions}
+        </footer>
+      )}
+    </section>
+  );
+}
+
+function DetailRow({
+  label,
+  value,
+  mono,
+}: {
+  label: string;
+  value: ReactNode;
+  mono?: boolean;
+}) {
+  return (
+    <div className="flex items-baseline justify-between gap-3 py-1 text-xs">
+      <span className="shrink-0 text-muted-foreground">{label}</span>
+      <span
+        className={cn(
+          "min-w-0 text-right",
+          mono ? "font-mono text-[11px]" : "font-medium",
+        )}
+      >
+        {value}
+      </span>
+    </div>
+  );
+}
+
+function DetailList({ children }: { children: ReactNode }) {
+  return (
+    <div className="rounded-lg border bg-muted/20 px-3 py-1.5 divide-y divide-border/50">
+      {children}
+    </div>
+  );
+}
+
+function RegionTile({
+  region,
+  selected,
+  disabled,
+  onSelect,
+}: {
+  region: RegionPickerItem;
+  selected: boolean;
+  disabled?: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="radio"
+      aria-checked={selected}
+      disabled={disabled}
+      onClick={onSelect}
+      className={cn(
+        "group flex items-center gap-3 rounded-xl border bg-card/40 px-3.5 py-2.5 text-left transition-colors",
+        "hover:bg-card/70 hover:border-border/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        selected && "border-primary/40 bg-primary/5 ring-1 ring-primary/30",
+        disabled && "pointer-events-none opacity-60",
+      )}
+    >
+      <span
+        className={cn(
+          "grid size-8 shrink-0 place-items-center rounded-lg border bg-background/40",
+          selected ? "border-primary/40 text-primary" : "text-muted-foreground",
+        )}
+      >
+        <MapPin className="size-4" />
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <span className="truncate text-sm font-semibold leading-tight tracking-tight">
+            {region.label}
+          </span>
+          {region.isDefault && (
+            <span className="text-[10px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
+              Default
+            </span>
+          )}
+        </div>
+        <span className="mt-0.5 block truncate font-mono text-[11px] text-muted-foreground">
+          {region.id}
+        </span>
+      </div>
+      {selected && <StatusDot kind="connected" />}
+    </button>
+  );
+}
+
 // ── Page ──────────────────────────────────────────────────────────
 
 export default function ResidencyPage() {
+  return (
+    <ErrorBoundary>
+      <ResidencyPageContent />
+    </ErrorBoundary>
+  );
+}
+
+function ResidencyPageContent() {
   const { deployMode } = useDeployMode();
   const isSaas = deployMode === "saas";
 
@@ -75,10 +362,13 @@ export default function ResidencyPage() {
     { schema: ResidencyStatusSchema },
   );
 
-  const { data: migrationData, error: migrationFetchError, refetch: refetchMigration } = useAdminFetch(
-    "/api/v1/admin/residency/migration",
-    { schema: MigrationStatusResponseSchema },
-  );
+  const {
+    data: migrationData,
+    error: migrationFetchError,
+    refetch: refetchMigration,
+  } = useAdminFetch("/api/v1/admin/residency/migration", {
+    schema: MigrationStatusResponseSchema,
+  });
 
   const assignMutation = useAdminMutation({
     path: "/api/v1/admin/residency",
@@ -89,18 +379,40 @@ export default function ResidencyPage() {
   const migrateMutation = useAdminMutation({
     path: "/api/v1/admin/residency/migrate",
     method: "POST",
-    invalidates: () => { refetch(); refetchMigration(); },
+    invalidates: () => {
+      refetch();
+      refetchMigration();
+    },
   });
 
   const retryMutation = useAdminMutation({
     method: "POST",
-    invalidates: () => { refetch(); refetchMigration(); },
+    invalidates: () => {
+      refetch();
+      refetchMigration();
+    },
   });
 
   const cancelMutation = useAdminMutation({
     method: "POST",
-    invalidates: () => { refetch(); refetchMigration(); },
+    invalidates: () => {
+      refetch();
+      refetchMigration();
+    },
   });
+
+  const mutationError =
+    assignMutation.error ??
+    migrateMutation.error ??
+    retryMutation.error ??
+    cancelMutation.error;
+
+  function clearMutationError() {
+    assignMutation.clearError();
+    migrateMutation.clearError();
+    retryMutation.clearError();
+    cancelMutation.clearError();
+  }
 
   const handleAssign = async (region: string) => {
     const result = await assignMutation.mutate({ body: { region } });
@@ -126,179 +438,332 @@ export default function ResidencyPage() {
     return result.ok;
   };
 
+  const migration = migrationData?.migration ?? null;
+
   return (
     <div className="p-6">
-    <ErrorBoundary>
-      <div className="space-y-6">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">Data Residency</h1>
-          <p className="text-muted-foreground">
-            Control where your workspace data is stored for compliance
-            requirements.
-          </p>
-        </div>
+      <div className="mx-auto mb-8 max-w-3xl">
+        <h1 className="text-2xl font-semibold tracking-tight">Data Residency</h1>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Pin where your workspace data lives so compliance requirements stay predictable.
+        </p>
+      </div>
 
-        {assignMutation.error && (
-          <ErrorBanner
-            message={assignMutation.error}
-            onRetry={() => {
-              assignMutation.clearError();
-              refetch();
-            }}
-          />
-        )}
-
-        {migrationFetchError && (
-          <ErrorBanner
-            message={friendlyError(migrationFetchError)}
-            onRetry={refetchMigration}
-          />
-        )}
-
-        {migrateMutation.error && (
-          <ErrorBanner
-            message={migrateMutation.error}
-            onRetry={() => {
-              migrateMutation.clearError();
-              refetchMigration();
-            }}
-          />
-        )}
-
-        {retryMutation.error && (
-          <ErrorBanner
-            message={retryMutation.error}
-            onRetry={() => {
-              retryMutation.clearError();
-              refetchMigration();
-            }}
-          />
-        )}
-
-        {cancelMutation.error && (
-          <ErrorBanner
-            message={cancelMutation.error}
-            onRetry={() => {
-              cancelMutation.clearError();
-              refetchMigration();
-            }}
-          />
-        )}
-
-        <AdminContentWrapper
-          loading={loading}
-          error={error}
-          isEmpty={!data}
-          emptyIcon={Globe}
-          emptyTitle="Residency unavailable"
-          emptyDescription="Data residency is not available in this deployment."
-        >
-          {data && (
-            <ResidencyContent
-              data={data}
-              isSaas={isSaas}
-              migration={migrationData?.migration ?? null}
-              onAssign={handleAssign}
-              onMigrate={handleMigrate}
-              onRetry={handleRetry}
-              onCancel={handleCancel}
-              saving={assignMutation.saving}
-              migrating={migrateMutation.saving}
-              retrying={retryMutation.saving}
-              cancelling={cancelMutation.saving}
+      <AdminContentWrapper
+        loading={loading}
+        error={error}
+        isEmpty={!data}
+        emptyIcon={Globe}
+        emptyTitle="Residency unavailable"
+        emptyDescription="Data residency is not available in this deployment."
+      >
+        <div className="mx-auto max-w-3xl space-y-8">
+          {mutationError && (
+            <ErrorBanner
+              message={mutationError}
+              onRetry={clearMutationError}
+              actionLabel="Dismiss"
             />
           )}
-        </AdminContentWrapper>
-      </div>
-    </ErrorBoundary>
+
+          {migrationFetchError && (
+            <ErrorBanner
+              message={friendlyError(migrationFetchError)}
+              onRetry={refetchMigration}
+            />
+          )}
+
+          {data && (
+            <section>
+              <SectionHeading
+                title="Workspace region"
+                description="Every byte of workspace data — semantic layer, audit log, settings — lives here."
+              />
+              {!data.configured ? (
+                <NotConfiguredRow isSaas={isSaas} />
+              ) : data.region ? (
+                <AssignedRegionShell
+                  status={data}
+                  isSaas={isSaas}
+                  migration={migration}
+                  onMigrate={handleMigrate}
+                  onRetry={handleRetry}
+                  onCancel={handleCancel}
+                  migrating={migrateMutation.saving}
+                  retrying={retryMutation.saving}
+                  cancelling={cancelMutation.saving}
+                />
+              ) : (
+                <UnassignedRegionShell
+                  status={data}
+                  isSaas={isSaas}
+                  onAssign={handleAssign}
+                  saving={assignMutation.saving}
+                />
+              )}
+            </section>
+          )}
+        </div>
+      </AdminContentWrapper>
     </div>
   );
 }
 
-// ── Content Router ──────────────────────────────────────────────
+// ── Not-configured state ─────────────────────────────────────────
 
-function ResidencyContent({
-  data,
+function NotConfiguredRow({ isSaas }: { isSaas: boolean }) {
+  return (
+    <CompactRow
+      icon={Globe}
+      title={isSaas ? "Data residency is being set up" : "No regions configured"}
+      description={
+        isSaas
+          ? "Your account is being provisioned. Check back shortly."
+          : "Add regions to atlas.config.ts to enable per-workspace residency."
+      }
+      status="unavailable"
+      action={
+        <Button variant="outline" size="sm" asChild>
+          <a
+            href={
+              isSaas
+                ? "mailto:support@useatlas.dev"
+                : "https://docs.useatlas.dev/deployment/data-residency"
+            }
+            target={isSaas ? undefined : "_blank"}
+            rel={isSaas ? undefined : "noreferrer"}
+          >
+            {isSaas ? "Contact support" : "View docs"}
+          </a>
+        </Button>
+      }
+    />
+  );
+}
+
+// ── Unassigned state — pick a region ─────────────────────────────
+
+function UnassignedRegionShell({
+  status,
+  isSaas,
+  onAssign,
+  saving,
+}: {
+  status: ResidencyStatus;
+  isSaas: boolean;
+  onAssign: (region: string) => Promise<boolean>;
+  saving: boolean;
+}) {
+  const [selected, setSelected] = useState("");
+  const [showConfirm, setShowConfirm] = useState(false);
+  const selectedLabel =
+    status.availableRegions.find((r) => r.id === selected)?.label ?? selected;
+
+  const hasRegions = status.availableRegions.length > 0;
+
+  return (
+    <ResidencyShell
+      icon={MapPin}
+      title="Choose a region"
+      description="Permanent once assigned. All workspace data will be stored in the region you pick."
+      status="ready"
+      trailing={<StatusPill kind="ready" label="Unassigned" />}
+      actions={
+        <Button
+          size="sm"
+          onClick={() => setShowConfirm(true)}
+          disabled={!selected || saving || !hasRegions}
+        >
+          {saving && <Loader2 className="mr-1.5 size-3.5 animate-spin" />}
+          {isSaas ? "Confirm region" : "Assign region"}
+        </Button>
+      }
+    >
+      {!hasRegions ? (
+        <p className="text-xs text-muted-foreground">
+          No regions are available in this deployment. Contact support for assistance.
+        </p>
+      ) : isSaas ? (
+        <div
+          role="radiogroup"
+          aria-label="Data region"
+          className="grid gap-2 sm:grid-cols-2"
+        >
+          {status.availableRegions.map((region) => (
+            <RegionTile
+              key={region.id}
+              region={region}
+              selected={selected === region.id}
+              disabled={saving}
+              onSelect={() => setSelected(region.id)}
+            />
+          ))}
+        </div>
+      ) : (
+        <div className="space-y-1.5">
+          <Select value={selected} onValueChange={setSelected} disabled={saving}>
+            <SelectTrigger aria-label="Data region" className="max-w-sm">
+              <SelectValue placeholder="Choose a region…" />
+            </SelectTrigger>
+            <SelectContent>
+              {status.availableRegions.map((r) => (
+                <SelectItem key={r.id} value={r.id}>
+                  {r.label}
+                  {r.isDefault ? " (default)" : ""}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <p className="text-[11px] text-muted-foreground">
+            {status.availableRegions.length} region
+            {status.availableRegions.length === 1 ? "" : "s"} available · default{" "}
+            <span className="font-mono">{status.defaultRegion}</span>
+          </p>
+        </div>
+      )}
+
+      <AlertDialog open={showConfirm} onOpenChange={setShowConfirm}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Confirm region assignment</AlertDialogTitle>
+            <AlertDialogDescription>
+              Pin this workspace to{" "}
+              <span className="font-semibold">{selectedLabel}</span>. This is
+              permanent — all workspace data will be stored in this region.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={async () => {
+                const success = await onAssign(selected);
+                if (success) setShowConfirm(false);
+              }}
+            >
+              Assign to {selectedLabel}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </ResidencyShell>
+  );
+}
+
+// ── Assigned state ───────────────────────────────────────────────
+
+function AssignedRegionShell({
+  status,
   isSaas,
   migration,
-  onAssign,
   onMigrate,
   onRetry,
   onCancel,
-  saving,
   migrating,
   retrying,
   cancelling,
 }: {
-  data: ResidencyStatus;
+  status: ResidencyStatus;
   isSaas: boolean;
   migration: RegionMigration | null;
-  onAssign: (region: string) => Promise<boolean>;
   onMigrate: (targetRegion: string) => Promise<boolean>;
   onRetry: (migrationId: string) => Promise<boolean>;
   onCancel: (migrationId: string) => Promise<boolean>;
-  saving: boolean;
   migrating: boolean;
   retrying: boolean;
   cancelling: boolean;
 }) {
-  if (!data.configured) {
-    return <NotConfiguredCard isSaas={isSaas} />;
-  }
+  const displayLabel = status.regionLabel ?? status.region ?? "Unknown";
+  const otherRegions = status.availableRegions.filter((r) => r.id !== status.region);
+  const hasPending =
+    migration?.status === "pending" || migration?.status === "in_progress";
 
-  if (data.region) {
-    return (
-      <div className="space-y-4">
-        {migration && (
-          <MigrationStatusBanner
-            migration={migration}
-            onRetry={onRetry}
-            onCancel={onCancel}
-            retrying={retrying}
-            cancelling={cancelling}
-          />
-        )}
-        <AssignedRegionCard
-          status={data}
-          isSaas={isSaas}
-          migration={migration}
-          onMigrate={onMigrate}
-          migrating={migrating}
-        />
-      </div>
-    );
-  }
+  const canMigrate = isSaas && otherRegions.length > 0 && !hasPending;
+  const shellStatus: StatusKind =
+    migration?.status === "in_progress" || migration?.status === "pending"
+      ? "pending"
+      : migration?.status === "failed"
+        ? "failed"
+        : "connected";
+  const pillFor = pillForMigration(migration);
 
   return (
-    <RegionPickerBase
-      status={data}
-      onAssign={onAssign}
-      saving={saving}
-      buttonLabel={isSaas ? "Confirm Region" : "Assign Region"}
-    >
-      {(selected, setSelected) =>
-        isSaas ? (
-          <RegionCardGrid
-            regions={data.availableRegions}
-            selected={selected}
-            onSelect={setSelected}
-          />
-        ) : (
-          <SelfHostedRegionSelect
-            regions={data.availableRegions}
-            defaultRegion={data.defaultRegion}
-            selected={selected}
-            onSelect={setSelected}
+    <ResidencyShell
+      icon={MapPin}
+      title={displayLabel}
+      description={
+        isSaas
+          ? `All workspace data is stored and processed in ${displayLabel}.`
+          : "Region assignment is permanent. Contact support for cross-region migration."
+      }
+      status={shellStatus}
+      trailing={pillFor ?? <StatusPill kind="connected" label="Live" />}
+      actions={
+        canMigrate && (
+          <MigrationDialog
+            currentRegion={status.region!}
+            currentLabel={displayLabel}
+            availableRegions={otherRegions}
+            onMigrate={onMigrate}
+            migrating={migrating}
           />
         )
       }
-    </RegionPickerBase>
+    >
+      <DetailList>
+        <DetailRow label="Region" value={displayLabel} />
+        <DetailRow label="Region ID" value={status.region} mono />
+        {status.assignedAt && (
+          <DetailRow label="Assigned" value={formatDate(status.assignedAt)} />
+        )}
+      </DetailList>
+
+      {migration && (
+        <MigrationInline
+          migration={migration}
+          onRetry={onRetry}
+          onCancel={onCancel}
+          retrying={retrying}
+          cancelling={cancelling}
+        />
+      )}
+    </ResidencyShell>
   );
 }
 
-// ── Migration Status Banner ──────────────────────────────────────
+function pillForMigration(migration: RegionMigration | null): ReactNode {
+  if (!migration) return null;
+  switch (migration.status) {
+    case "pending":
+    case "in_progress":
+      return (
+        <StatusPill
+          kind="pending"
+          label={migration.status === "pending" ? "Queued" : "Migrating"}
+        />
+      );
+    case "failed":
+      return <StatusPill kind="failed" label="Failed" />;
+    case "completed":
+      return <StatusPill kind="connected" label="Migrated" />;
+    case "cancelled":
+      return <StatusPill kind="disconnected" label="Cancelled" />;
+  }
+}
 
-function MigrationStatusBanner({
+// ── Migration inline panel ───────────────────────────────────────
+
+const MIGRATION_HEADINGS: Record<
+  RegionMigration["status"],
+  { icon: ComponentType<{ className?: string }>; text: string; spin: boolean }
+> = {
+  pending: { icon: Clock, text: "Migration requested", spin: false },
+  in_progress: { icon: Loader2, text: "Migration in progress", spin: true },
+  completed: { icon: CheckCircle2, text: "Migration complete", spin: false },
+  failed: { icon: XCircle, text: "Migration failed", spin: false },
+  cancelled: { icon: Ban, text: "Migration cancelled", spin: false },
+};
+
+function MigrationInline({
   migration,
   onRetry,
   onCancel,
@@ -306,221 +771,75 @@ function MigrationStatusBanner({
   cancelling,
 }: {
   migration: RegionMigration;
-  onRetry: (migrationId: string) => Promise<boolean>;
-  onCancel: (migrationId: string) => Promise<boolean>;
+  onRetry: (id: string) => Promise<boolean>;
+  onCancel: (id: string) => Promise<boolean>;
   retrying: boolean;
   cancelling: boolean;
 }) {
-  switch (migration.status) {
-    case "pending":
-      return (
-        <div className="flex items-start gap-3 rounded-md border border-primary/30 bg-primary/5 p-4 dark:border-primary/20 dark:bg-primary/5">
-          <Clock className="mt-0.5 h-5 w-5 shrink-0 text-primary" />
-          <div className="flex-1 text-sm">
-            <p className="font-medium text-primary">
-              Migration requested
-            </p>
-            <p className="mt-1 text-primary/80 dark:text-primary/70">
-              Your request to migrate from <strong>{migration.sourceRegion}</strong> to{" "}
-              <strong>{migration.targetRegion}</strong> is queued for processing.
-            </p>
-            <p className="mt-1 text-xs text-primary/70 dark:text-primary/60">
-              Requested {formatDate(migration.requestedAt)}
-            </p>
-            <div className="mt-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => onCancel(migration.id)}
-                disabled={cancelling}
-                className="border-primary/50 text-primary hover:bg-primary/10 dark:border-primary/30 dark:text-primary/80 dark:hover:bg-primary/10"
-              >
-                {cancelling ? (
-                  <>
-                    <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />
-                    Cancelling...
-                  </>
-                ) : (
-                  "Cancel Migration"
-                )}
-              </Button>
-            </div>
-          </div>
-        </div>
-      );
-    case "in_progress":
-      return (
-        <div className="flex items-start gap-3 rounded-md border border-amber-200 bg-amber-50 p-4 dark:border-amber-900 dark:bg-amber-950/50">
-          <Loader2 className="mt-0.5 h-5 w-5 shrink-0 animate-spin text-amber-600 dark:text-amber-400" />
-          <div className="text-sm">
-            <p className="font-medium text-amber-800 dark:text-amber-200">
-              Migration in progress
-            </p>
-            <p className="mt-1 text-amber-700 dark:text-amber-300">
-              Data is being migrated from <strong>{migration.sourceRegion}</strong> to{" "}
-              <strong>{migration.targetRegion}</strong>. Some features may be temporarily
-              unavailable.
-            </p>
-          </div>
-        </div>
-      );
-    case "completed":
-      return (
-        <div className="flex items-start gap-3 rounded-md border border-green-200 bg-green-50 p-4 dark:border-green-900 dark:bg-green-950/50">
-          <CheckCircle2 className="mt-0.5 h-5 w-5 shrink-0 text-green-600 dark:text-green-400" />
-          <div className="text-sm">
-            <p className="font-medium text-green-800 dark:text-green-200">
-              Migration complete
-            </p>
-            <p className="mt-1 text-green-700 dark:text-green-300">
-              Your workspace has been migrated to <strong>{migration.targetRegion}</strong>.
-              {migration.completedAt && ` Completed ${formatDate(migration.completedAt)}.`}
-            </p>
-          </div>
-        </div>
-      );
-    case "failed":
-      return (
-        <div className="flex items-start gap-3 rounded-md border border-red-200 bg-red-50 p-4 dark:border-red-900 dark:bg-red-950/50">
-          <XCircle className="mt-0.5 h-5 w-5 shrink-0 text-red-600 dark:text-red-400" />
-          <div className="flex-1 text-sm">
-            <p className="font-medium text-red-800 dark:text-red-200">
-              Migration failed
-            </p>
-            <p className="mt-1 text-red-700 dark:text-red-300">
-              {migration.errorMessage ?? "The migration could not be completed. Please contact support for assistance."}
-            </p>
-            <div className="mt-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => onRetry(migration.id)}
-                disabled={retrying}
-                className="border-red-300 text-red-700 hover:bg-red-100 dark:border-red-800 dark:text-red-300 dark:hover:bg-red-900"
-              >
-                {retrying ? (
-                  <>
-                    <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />
-                    Retrying...
-                  </>
-                ) : (
-                  <>
-                    <RefreshCw className="mr-1.5 h-3 w-3" />
-                    Retry Migration
-                  </>
-                )}
-              </Button>
-            </div>
-          </div>
-        </div>
-      );
-    case "cancelled":
-      return (
-        <div className="flex items-start gap-3 rounded-md border border-border bg-muted/50 p-4">
-          <Ban className="mt-0.5 h-5 w-5 shrink-0 text-muted-foreground" />
-          <div className="text-sm">
-            <p className="font-medium">
-              Migration cancelled
-            </p>
-            <p className="mt-1 text-muted-foreground">
-              The migration from <strong>{migration.sourceRegion}</strong> to{" "}
-              <strong>{migration.targetRegion}</strong> was cancelled.
-              {migration.completedAt && ` Cancelled ${formatDate(migration.completedAt)}.`}
-            </p>
-          </div>
-        </div>
-      );
-  }
-}
+  const { status, sourceRegion, targetRegion, errorMessage, completedAt, requestedAt } =
+    migration;
 
-// ── Assigned Region Card ─────────────────────────────────────────
-
-function AssignedRegionCard({
-  status,
-  isSaas,
-  migration,
-  onMigrate,
-  migrating,
-}: {
-  status: ResidencyStatus;
-  isSaas: boolean;
-  migration: RegionMigration | null;
-  onMigrate: (targetRegion: string) => Promise<boolean>;
-  migrating: boolean;
-}) {
-  const displayLabel = status.regionLabel ?? status.region ?? "Unknown";
-  const hasPendingMigration = migration?.status === "pending" || migration?.status === "in_progress";
-  const otherRegions = status.availableRegions.filter((r) => r.id !== status.region);
+  const heading = MIGRATION_HEADINGS[status];
 
   return (
-    <Card>
-      <CardHeader>
-        <div className="flex items-center justify-between">
-          <div>
-            <CardTitle>Data Region</CardTitle>
-            <CardDescription>
-              Your workspace data is stored in this region.
-            </CardDescription>
-          </div>
-          <Badge variant="default" className="bg-green-600 text-xs">
-            <MapPin className="mr-1 h-3 w-3" />
-            Active
-          </Badge>
-        </div>
-      </CardHeader>
-      <CardContent>
-        <div className="rounded-md border bg-muted/50 p-4">
-          <div className="grid gap-3 text-sm">
-            <div className="flex justify-between">
-              <span className="text-muted-foreground">Region</span>
-              <span className="font-medium">
-                {displayLabel}
-                {isSaas && status.region && (
-                  <ComplianceBadge regionId={status.region} className="ml-2" />
-                )}
-              </span>
-            </div>
-            {!isSaas && (
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Region ID</span>
-                <code className="text-xs">{status.region}</code>
-              </div>
-            )}
-            {status.assignedAt && (
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Assigned</span>
-                <span className="font-medium">
-                  {formatDate(status.assignedAt)}
-                </span>
-              </div>
-            )}
-          </div>
-        </div>
-
-        {isSaas && otherRegions.length > 0 ? (
-          <div className="mt-4">
-            <MigrationDialog
-              currentRegion={status.region!}
-              currentLabel={displayLabel}
-              availableRegions={otherRegions}
-              onMigrate={onMigrate}
-              migrating={migrating}
-              disabled={hasPendingMigration}
-            />
-          </div>
-        ) : (
-          <p className="mt-3 text-xs text-muted-foreground">
-            {isSaas
-              ? `All workspace data is stored and processed in ${displayLabel}.`
-              : "Region assignment is permanent and cannot be changed. Contact support if you need to migrate to a different region."}
-          </p>
+    <div className="space-y-2">
+      <div className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
+        <heading.icon className={cn("size-3", heading.spin && "animate-spin")} />
+        {heading.text}
+      </div>
+      <DetailList>
+        <DetailRow label="From" value={sourceRegion} mono />
+        <DetailRow label="To" value={targetRegion} mono />
+        <DetailRow label="Requested" value={formatDate(requestedAt)} />
+        {completedAt && (
+          <DetailRow
+            label={status === "cancelled" ? "Cancelled" : "Completed"}
+            value={formatDate(completedAt)}
+          />
         )}
-      </CardContent>
-    </Card>
+      </DetailList>
+
+      {status === "failed" && errorMessage && (
+        <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+          {errorMessage}
+        </div>
+      )}
+
+      {(status === "pending" || status === "failed") && (
+        <div className="flex flex-wrap gap-2">
+          {status === "failed" && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => onRetry(migration.id)}
+              disabled={retrying}
+            >
+              {retrying ? (
+                <Loader2 className="mr-1.5 size-3.5 animate-spin" />
+              ) : (
+                <RefreshCw className="mr-1.5 size-3.5" />
+              )}
+              Retry migration
+            </Button>
+          )}
+          {status === "pending" && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => onCancel(migration.id)}
+              disabled={cancelling}
+            >
+              {cancelling && <Loader2 className="mr-1.5 size-3.5 animate-spin" />}
+              Cancel migration
+            </Button>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
-// ── Migration Dialog ─────────────────────────────────────────────
+// ── Migration dialog ─────────────────────────────────────────────
 
 function MigrationDialog({
   currentRegion,
@@ -528,14 +847,12 @@ function MigrationDialog({
   availableRegions,
   onMigrate,
   migrating,
-  disabled,
 }: {
   currentRegion: string;
   currentLabel: string;
   availableRegions: RegionPickerItem[];
   onMigrate: (targetRegion: string) => Promise<boolean>;
   migrating: boolean;
-  disabled: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [selected, setSelected] = useState("");
@@ -546,253 +863,102 @@ function MigrationDialog({
 
   async function handleConfirm() {
     const success = await onMigrate(selected);
-    if (success) {
-      setSelected("");
-    }
-    // Close both dialogs regardless — on failure the ErrorBanner is visible at page level
+    if (success) setSelected("");
     setShowConfirm(false);
     setOpen(false);
   }
 
   return (
     <>
-      <Dialog open={open} onOpenChange={(v) => { setOpen(v); if (!v) { setSelected(""); setShowConfirm(false); } }}>
-        <DialogTrigger asChild>
-          <Button variant="outline" size="sm" disabled={disabled}>
-            {disabled ? "Migration in progress..." : "Change Region"}
+      <AlertDialog
+        open={open}
+        onOpenChange={(v) => {
+          setOpen(v);
+          if (!v) {
+            setSelected("");
+            setShowConfirm(false);
+          }
+        }}
+      >
+        <AlertDialogTrigger asChild>
+          <Button variant="outline" size="sm">
+            Change region
           </Button>
-        </DialogTrigger>
-        <DialogContent className="max-w-2xl">
-          <DialogHeader>
-            <DialogTitle>Request Region Migration</DialogTitle>
-            <DialogDescription>
-              Select the region you want to migrate to. Your current region is{" "}
-              <strong>{currentLabel}</strong>.
-            </DialogDescription>
-          </DialogHeader>
+        </AlertDialogTrigger>
+        <AlertDialogContent className="max-w-2xl">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Request region migration</AlertDialogTitle>
+            <AlertDialogDescription>
+              Pick where this workspace should move. Your data stays in{" "}
+              <span className="font-semibold">{currentLabel}</span> until the migration runs.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
 
-          <div className="space-y-4 py-2">
-            <div className="flex items-center gap-3 rounded-md border bg-muted/50 p-3 text-sm">
-              <MapPin className="h-4 w-4 shrink-0 text-muted-foreground" />
-              <span className="text-muted-foreground">Current:</span>
-              <span className="font-medium">{currentLabel}</span>
-              <ComplianceBadge regionId={currentRegion} />
-              <ArrowRight className="h-4 w-4 shrink-0 text-muted-foreground" />
-              <span className="text-muted-foreground">New:</span>
+          <div className="space-y-4">
+            <div className="flex flex-wrap items-center gap-2 rounded-lg border bg-muted/40 px-3 py-2 text-xs">
+              <span className="text-muted-foreground">From</span>
+              <span className="font-mono font-medium">{currentRegion}</span>
+              <ArrowRight className="size-3 text-muted-foreground" />
+              <span className="text-muted-foreground">To</span>
               {selected ? (
-                <>
-                  <span className="font-medium">{selectedLabel}</span>
-                  <ComplianceBadge regionId={selected} />
-                </>
+                <span className="font-mono font-medium">{selected}</span>
               ) : (
-                <span className="italic text-muted-foreground">Select below</span>
+                <span className="italic text-muted-foreground">choose below</span>
               )}
             </div>
 
-            <RegionCardGrid
-              regions={availableRegions}
-              selected={selected}
-              onSelect={setSelected}
-              disabled={migrating}
-            />
+            <div
+              role="radiogroup"
+              aria-label="Target region"
+              className="grid gap-2 sm:grid-cols-2"
+            >
+              {availableRegions.map((region) => (
+                <RegionTile
+                  key={region.id}
+                  region={region}
+                  selected={selected === region.id}
+                  disabled={migrating}
+                  onSelect={() => setSelected(region.id)}
+                />
+              ))}
+            </div>
           </div>
 
-          <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setOpen(false)}
-              disabled={migrating}
-            >
-              Cancel
-            </Button>
-            <Button
-              onClick={() => setShowConfirm(true)}
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={migrating}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault();
+                setShowConfirm(true);
+              }}
               disabled={!selected || migrating}
             >
-              {migrating ? (
-                <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Requesting...
-                </>
-              ) : (
-                "Request Migration"
-              )}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+              {migrating && <Loader2 className="mr-1.5 size-3.5 animate-spin" />}
+              Request migration
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <AlertDialog open={showConfirm} onOpenChange={setShowConfirm}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>Confirm migration request</AlertDialogTitle>
             <AlertDialogDescription>
-              You are requesting to migrate your workspace from{" "}
-              <strong>{currentLabel}</strong> to <strong>{selectedLabel}</strong>.
-              Our team will process this request. During migration, some features
-              may be temporarily unavailable.
+              Request to move this workspace from{" "}
+              <span className="font-semibold">{currentLabel}</span> to{" "}
+              <span className="font-semibold">{selectedLabel}</span>. Some features may
+              be temporarily unavailable while we migrate.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel disabled={migrating}>Cancel</AlertDialogCancel>
             <AlertDialogAction onClick={handleConfirm} disabled={migrating}>
-              {migrating ? "Requesting..." : "Confirm Migration"}
+              {migrating ? "Requesting…" : "Confirm migration"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
     </>
-  );
-}
-
-// ── Region Picker Base (shared state, warning, dialog) ──────────
-
-function RegionPickerBase({
-  status,
-  onAssign,
-  saving,
-  buttonLabel,
-  children,
-}: {
-  status: ResidencyStatus;
-  onAssign: (region: string) => Promise<boolean>;
-  saving: boolean;
-  buttonLabel: string;
-  children: (selected: string, setSelected: (id: string) => void) => ReactNode;
-}) {
-  const [selected, setSelected] = useState("");
-  const [showConfirm, setShowConfirm] = useState(false);
-
-  const selectedLabel =
-    (status.availableRegions.find((r) => r.id === selected)?.label ?? selected) || "Unknown region";
-
-  return (
-    <>
-      <Card>
-        <CardHeader>
-          <CardTitle>Select Data Region</CardTitle>
-          <CardDescription>
-            Choose where your workspace data will be stored. This decision is
-            permanent and cannot be changed later.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-6">
-          {/* Warning */}
-          <div className="flex items-start gap-3 rounded-md border border-amber-200 bg-amber-50 p-4 dark:border-amber-900 dark:bg-amber-950/50">
-            <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-600 dark:text-amber-400" />
-            <div className="text-sm">
-              <p className="font-medium text-amber-800 dark:text-amber-200">
-                This action is permanent
-              </p>
-              <p className="mt-1 text-amber-700 dark:text-amber-300">
-                Once a region is assigned, it cannot be changed. All workspace
-                data will be stored in the selected region. Choose carefully
-                based on your compliance requirements.
-              </p>
-            </div>
-          </div>
-
-          {/* Selection UI (render prop) */}
-          {children(selected, setSelected)}
-
-          {/* Assign button */}
-          <Button
-            onClick={() => setShowConfirm(true)}
-            disabled={!selected || saving}
-            size="sm"
-          >
-            {saving ? "Assigning..." : buttonLabel}
-          </Button>
-        </CardContent>
-      </Card>
-
-      {/* Confirmation dialog */}
-      <AlertDialog open={showConfirm} onOpenChange={setShowConfirm}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>
-              Confirm region assignment
-            </AlertDialogTitle>
-            <AlertDialogDescription>
-              You are about to assign your workspace to{" "}
-              <strong>{selectedLabel}</strong>. This action is permanent and
-              cannot be undone. All workspace data will be stored in this region.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={async () => {
-                const success = await onAssign(selected);
-                if (success) {
-                  setShowConfirm(false);
-                }
-              }}
-            >
-              Assign to {selectedLabel}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-    </>
-  );
-}
-
-// ── Self-Hosted Region Select (dropdown) ────────────────────────
-
-function SelfHostedRegionSelect({
-  regions,
-  defaultRegion,
-  selected,
-  onSelect,
-}: {
-  regions: RegionPickerItem[];
-  defaultRegion: string;
-  selected: string;
-  onSelect: (id: string) => void;
-}) {
-  return (
-    <div className="space-y-2">
-      <Select value={selected} onValueChange={onSelect}>
-        <SelectTrigger aria-label="Data region">
-          <SelectValue placeholder="Choose a region..." />
-        </SelectTrigger>
-        <SelectContent>
-          {regions.map((r) => (
-            <SelectItem key={r.id} value={r.id}>
-              {r.label}
-              {r.isDefault ? " (default)" : ""}
-            </SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-      <p className="text-xs text-muted-foreground">
-        {regions.length === 0
-          ? "No regions are configured in this deployment."
-          : `${regions.length} region${regions.length === 1 ? "" : "s"} available. Default: ${defaultRegion}.`}
-      </p>
-    </div>
-  );
-}
-
-// ── Not Configured Card ──────────────────────────────────────────
-
-function NotConfiguredCard({ isSaas }: { isSaas: boolean }) {
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Data Residency</CardTitle>
-        <CardDescription>
-          Data residency is not configured in this deployment.
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
-        <p className="text-sm text-muted-foreground">
-          {isSaas
-            ? "Data residency is being set up for your account. Check back shortly or contact support."
-            : "Contact your platform administrator to configure data residency regions, or refer to the deployment documentation for setup instructions."}
-        </p>
-      </CardContent>
-    </Card>
   );
 }

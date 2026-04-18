@@ -28,8 +28,12 @@ interface MutateOptions<TResponse = unknown> {
   body?: Record<string, unknown>;
   /** Track this mutation under an ID for per-item loading state. */
   itemId?: string;
-  /** Called on success when the server returns a JSON body. Not called for 204 No Content. */
-  onSuccess?: (data: TResponse) => void;
+  /**
+   * Called on any 2xx response. Data is `undefined` for 204 No Content or non-JSON
+   * responses — consumers that need the parsed body should narrow or use the
+   * `MutateResult` returned from `mutate()`.
+   */
+  onSuccess?: (data: TResponse | undefined) => void;
 }
 
 /** Hook-level configuration. */
@@ -194,12 +198,11 @@ export function useAdminMutation<TResponse = unknown>(
         }
       }
 
-      // Call onSuccess outside try/catch so callback bugs don't
-      // get misreported as mutation failures.
-      // Only called when data is present — 204/non-JSON callers use result.ok instead.
-      if (data !== undefined) {
-        callOpts?.onSuccess?.(data);
-      }
+      // Call onSuccess outside try/catch so callback bugs don't get misreported
+      // as mutation failures. Fires on all 2xx responses — passes `undefined`
+      // for 204 / non-JSON so dialog-closing callers aren't stuck when the
+      // server returns No Content.
+      callOpts?.onSuccess?.(data);
 
       return { ok: true, data };
     },

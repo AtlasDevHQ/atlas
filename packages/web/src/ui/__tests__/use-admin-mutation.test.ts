@@ -120,10 +120,13 @@ describe("useAdminMutation", () => {
     expect(refetch).toHaveBeenCalledTimes(1);
   });
 
-  test("204 No Content does NOT fire onSuccess (no data to pass)", async () => {
+  test("204 No Content fires onSuccess with undefined data", async () => {
+    // Regression guard for #1555: dialog-closing callers
+    // (`onSuccess: () => onOpenChange(false)`) must fire on 204 or the
+    // surface stays stuck open with no error feedback.
     mockFetch(new Response(null, { status: 204 }));
 
-    const onSuccess = mock(() => {});
+    const onSuccess = mock((_: unknown) => {});
     const { result } = renderHook(
       () => useAdminMutation({ path: "/api/v1/admin/test", method: "DELETE" }),
       { wrapper },
@@ -133,7 +136,28 @@ describe("useAdminMutation", () => {
       await result.current.mutate({ onSuccess });
     });
 
-    expect(onSuccess).not.toHaveBeenCalled();
+    expect(onSuccess).toHaveBeenCalledTimes(1);
+    expect(onSuccess).toHaveBeenCalledWith(undefined);
+  });
+
+  test("non-JSON 200 fires onSuccess with undefined data", async () => {
+    mockFetch(new Response("OK", {
+      status: 200,
+      headers: { "Content-Type": "text/plain" },
+    }));
+
+    const onSuccess = mock((_: unknown) => {});
+    const { result } = renderHook(
+      () => useAdminMutation({ path: "/api/v1/admin/test" }),
+      { wrapper },
+    );
+
+    await act(async () => {
+      await result.current.mutate({ onSuccess });
+    });
+
+    expect(onSuccess).toHaveBeenCalledTimes(1);
+    expect(onSuccess).toHaveBeenCalledWith(undefined);
   });
 
   /* ---------------------------------------------------------------- */

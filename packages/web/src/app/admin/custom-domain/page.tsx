@@ -20,6 +20,7 @@ import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { combineMutationErrors } from "@/ui/lib/mutation-errors";
 import { DomainResponseSchema } from "@/ui/lib/admin-schemas";
 import { cn } from "@/lib/utils";
 import { formatDateTime } from "@/lib/format";
@@ -361,7 +362,7 @@ function CustomDomainPageContent() {
     );
   }
 
-  const mutationError = verifyError ?? removeError;
+  const mutationError = combineMutationErrors([verifyError, removeError]);
   function clearMutationError() {
     clearVerifyError();
     clearRemoveError();

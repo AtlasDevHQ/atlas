@@ -75,7 +75,7 @@ function StatusDot({ kind }: { kind: StatusKind }) {
       className={cn(
         "relative inline-flex size-1.5 shrink-0 rounded-full",
         kind === "connected" &&
-          "bg-primary shadow-[0_0_0_3px_color-mix(in_oklch,_var(--primary)_15%,_transparent)]",
+          "bg-primary shadow-[0_0_0_3px_color-mix(in_oklch,var(--primary)_15%,transparent)]",
         kind === "disconnected" && "bg-muted-foreground/40",
         kind === "locked" && "bg-muted-foreground/30",
       )}
@@ -162,7 +162,7 @@ function OverrideShell({
       {status === "connected" && (
         <span
           aria-hidden
-          className="pointer-events-none absolute left-0 top-4 bottom-4 w-px bg-gradient-to-b from-transparent via-primary to-transparent opacity-70"
+          className="pointer-events-none absolute left-0 top-4 bottom-4 w-px bg-linear-to-b from-transparent via-primary to-transparent opacity-70"
         />
       )}
       <header className="flex items-start gap-3 p-4 pb-3">

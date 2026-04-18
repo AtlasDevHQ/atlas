@@ -55,6 +55,7 @@ import {
   Snowflake,
   Cloud,
   HardDrive,
+  RefreshCw,
 } from "lucide-react";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
@@ -112,6 +113,15 @@ interface ConnectionFormProps {
   onOpenChange: (open: boolean) => void;
   editId?: string | null;
   editDetail?: ConnectionDetail | null;
+  /**
+   * Preselect the dbType dropdown when opening in create mode. Lets a
+   * "+ Connect" click from a Snowflake CompactRow open the dialog already
+   * pointed at Snowflake so the admin isn't walked into Postgres
+   * URL-syntax validation on Snowflake input. Ignored on edit — the edit
+   * path always derives dbType from the existing ConnectionDetail so the
+   * dropdown stays locked to the real value.
+   */
+  initialDbType?: string;
   onSuccess: () => void;
 }
 
@@ -120,6 +130,7 @@ function ConnectionFormDialog({
   onOpenChange,
   editId,
   editDetail,
+  initialDbType,
   onSuccess,
 }: ConnectionFormProps) {
   const isEdit = !!editId;
@@ -137,9 +148,12 @@ function ConnectionFormDialog({
 
   const schema = isEdit ? connectionEditSchema : connectionCreateSchema;
 
+  // Only the default `dbType` value changes when `initialDbType` is present —
+  // schema validation, submit payload, and every other form field stay
+  // byte-for-byte identical to the pre-revamp form.
   const defaultValues = isEdit && editDetail
     ? { id: editId!, dbType: editDetail.dbType, url: "", schema: editDetail.schema ?? "", description: editDetail.description ?? "" }
-    : { id: "", dbType: "postgres", url: "", schema: "", description: "" };
+    : { id: "", dbType: initialDbType ?? "postgres", url: "", schema: "", description: "" };
 
   function handleOpenChange(nextOpen: boolean) {
     if (nextOpen) {
@@ -447,6 +461,9 @@ function PoolStatsSection({ onError }: { onError: (msg: string) => void }) {
   const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
   const [metrics, setMetrics] = useState<PoolMetrics[] | null>(null);
   const [poolLoading, setPoolLoading] = useState(true);
+  const [poolFetchError, setPoolFetchError] = useState<string | null>(null);
+  const [lastFetchedAt, setLastFetchedAt] = useState<Date | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
   const [expanded, setExpanded] = useState(false);
   const [drainTarget, setDrainTarget] = useState<string | null>(null);
   const cancelledRef = useRef(false);
@@ -458,20 +475,49 @@ function PoolStatsSection({ onError }: { onError: (msg: string) => void }) {
   async function fetchMetrics() {
     try {
       const res = await fetch(`${apiUrl}/api/v1/admin/connections/pool`, { credentials });
-      if (!res.ok) return;
+      if (!res.ok) {
+        // Pool stats are ancillary — don't block the page on a failure,
+        // but never silently drop a non-2xx: log for operators and surface
+        // a bounded InlineError inside the expanded shell so admins know
+        // the numbers they see may be stale.
+        const message = `HTTP ${res.status} ${res.statusText || ""}`.trim();
+        console.warn("pool metrics fetch failed", {
+          status: res.status,
+          statusText: res.statusText,
+        });
+        if (!cancelledRef.current) setPoolFetchError(message);
+        return;
+      }
       const data = await res.json();
-      if (!cancelledRef.current) setMetrics(data.metrics ?? []);
+      if (!cancelledRef.current) {
+        setMetrics(data.metrics ?? []);
+        setPoolFetchError(null);
+        setLastFetchedAt(new Date());
+      }
     } catch (err) {
-      console.warn("Pool stats fetch failed:", err instanceof Error ? err.message : String(err));
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn("pool metrics fetch failed", { error: message });
+      if (!cancelledRef.current) setPoolFetchError(message);
     } finally {
-      if (!cancelledRef.current) setPoolLoading(false);
+      if (!cancelledRef.current) {
+        setPoolLoading(false);
+        setRefreshing(false);
+      }
     }
+  }
+
+  async function handleRefresh() {
+    setRefreshing(true);
+    await fetchMetrics();
   }
 
   useEffect(() => {
     cancelledRef.current = false;
     fetchMetrics();
     return () => { cancelledRef.current = true; };
+    // Pool stats are a point-in-time snapshot by design — no interval here.
+    // Admins refresh manually via the Refresh button (fix #5); avoids
+    // background fetch churn on a page that's usually open for seconds.
   }, [apiUrl, credentials]);
 
   async function handleDrain(id: string) {
@@ -491,25 +537,69 @@ function PoolStatsSection({ onError }: { onError: (msg: string) => void }) {
     setDrainTarget(null);
   }
 
-  if (poolLoading || !metrics || metrics.length === 0) return null;
+  // Pool stats are ancillary — hide the whole section when we've never
+  // successfully fetched them. If a later refresh fails, we keep showing
+  // the cached metrics and surface the error inline instead.
+  if (poolLoading) return null;
+  if ((!metrics || metrics.length === 0) && !poolFetchError) return null;
 
   return (
     <>
       <div className="rounded-xl border bg-card/40 px-3.5 py-2.5">
-        <button
-          type="button"
-          className="flex w-full items-center gap-2 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
-          onClick={() => setExpanded(!expanded)}
-          aria-expanded={expanded}
-        >
-          <Activity className="size-4" />
-          Pool stats
-          <span className="ml-auto flex items-center gap-2 text-xs font-mono tabular-nums">
-            {metrics.length} {metrics.length === 1 ? "pool" : "pools"}
+        <div className="flex w-full items-center gap-2 text-sm font-medium text-muted-foreground">
+          <button
+            type="button"
+            className="flex flex-1 items-center gap-2 text-left hover:text-foreground transition-colors"
+            onClick={() => setExpanded(!expanded)}
+            aria-expanded={expanded}
+          >
+            <Activity className="size-4" />
+            Pool stats
+            {/* Snapshot wording — we deliberately don't pretend this is a
+                live feed (fix #5). The Refresh button below triggers a
+                re-fetch when admins want a fresh sample. */}
+            <span className="ml-auto flex items-center gap-2 text-xs font-mono tabular-nums">
+              {metrics && metrics.length > 0
+                ? `${metrics.length} ${metrics.length === 1 ? "pool" : "pools"} · snapshot`
+                : poolFetchError
+                ? "unavailable"
+                : "—"}
+            </span>
+          </button>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={handleRefresh}
+            disabled={refreshing}
+            aria-label="Refresh pool stats"
+            className="h-7 px-2"
+          >
+            {refreshing ? (
+              <Loader2 className="size-3.5 animate-spin" />
+            ) : (
+              <RefreshCw className="size-3.5" />
+            )}
+          </Button>
+          <button
+            type="button"
+            onClick={() => setExpanded(!expanded)}
+            aria-label={expanded ? "Collapse pool stats" : "Expand pool stats"}
+            className="grid size-7 place-items-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+          >
             {expanded ? <ChevronUp className="size-4" /> : <ChevronDown className="size-4" />}
-          </span>
-        </button>
-        {expanded && (
+          </button>
+        </div>
+        {expanded && poolFetchError && (
+          <div className="mt-3">
+            <InlineError>Pool stats unavailable: {poolFetchError}</InlineError>
+          </div>
+        )}
+        {expanded && lastFetchedAt && (
+          <p className="mt-2 text-[11px] text-muted-foreground tabular-nums">
+            Snapshot taken {formatDateTime(lastFetchedAt)}
+          </p>
+        )}
+        {expanded && metrics && metrics.length > 0 && (
           <div className="mt-3 grid gap-4 sm:grid-cols-2">
             {metrics.map((m) => (
               <Card key={m.connectionId} className="shadow-none">
@@ -609,7 +699,12 @@ function PoolStatsSection({ onError }: { onError: (msg: string) => void }) {
 // Local copies of admin/integrations primitives (PR #1538). Promote to
 // @/ui/components/admin/ once a third page reuses them — tracked as #1551.
 
-type StatusKind = "connected" | "disconnected" | "unavailable";
+// `"unhealthy"` is a connections-page-specific addition on top of the
+// admin/integrations primitive set — a configured connection that's currently
+// down must not visually collapse into "disconnected" (which reads as "never
+// set up"). It gets a destructive-tinted dot (no pulse — pulse is reserved for
+// the positive "live" signal) so admins notice a real outage immediately.
+type StatusKind = "connected" | "disconnected" | "unavailable" | "unhealthy";
 
 function StatusDot({ kind, className }: { kind: StatusKind; className?: string }) {
   return (
@@ -622,6 +717,8 @@ function StatusDot({ kind, className }: { kind: StatusKind; className?: string }
         kind === "disconnected" && "bg-muted-foreground/40",
         kind === "unavailable" &&
           "bg-muted-foreground/20 outline-1 outline-dashed outline-muted-foreground/30",
+        kind === "unhealthy" &&
+          "bg-destructive shadow-[0_0_0_3px_color-mix(in_oklch,var(--destructive)_15%,transparent)]",
         className,
       )}
     >
@@ -636,7 +733,17 @@ const STATUS_LABEL: Record<StatusKind, string> = {
   connected: "Connected",
   disconnected: "Not connected",
   unavailable: "Unavailable",
+  unhealthy: "Unhealthy",
 };
+
+function InlineError({ children }: { children: ReactNode }) {
+  if (!children) return null;
+  return (
+    <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+      {children}
+    </div>
+  );
+}
 
 function ConnectionShell({
   icon: Icon,
@@ -659,10 +766,12 @@ function ConnectionShell({
 }) {
   return (
     <section
+      aria-label={`${typeof title === "string" ? title : "Connection"}: ${STATUS_LABEL[status]}`}
       className={cn(
         "relative flex flex-col overflow-hidden rounded-xl border bg-card/60 backdrop-blur-[1px] transition-colors",
         "hover:border-border/80",
         status === "connected" && "border-primary/20",
+        status === "unhealthy" && "border-destructive/30",
       )}
     >
       {status === "connected" && (
@@ -671,13 +780,22 @@ function ConnectionShell({
           className="pointer-events-none absolute left-0 top-4 bottom-4 w-px bg-linear-to-b from-transparent via-primary to-transparent opacity-70"
         />
       )}
+      {status === "unhealthy" && (
+        <span
+          aria-hidden
+          className="pointer-events-none absolute left-0 top-4 bottom-4 w-px bg-linear-to-b from-transparent via-destructive to-transparent opacity-70"
+        />
+      )}
 
       <header className="flex items-start gap-3 p-4 pb-3">
         <span
           className={cn(
             "grid size-9 shrink-0 place-items-center rounded-lg border bg-background/40",
             status === "connected" && "border-primary/30 text-primary",
-            status !== "connected" && "text-muted-foreground",
+            status === "unhealthy" && "border-destructive/30 text-destructive",
+            status !== "connected" &&
+              status !== "unhealthy" &&
+              "text-muted-foreground",
           )}
         >
           <Icon className="size-4" />
@@ -692,6 +810,12 @@ function ConnectionShell({
               <span className="ml-auto flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-[0.08em] text-primary">
                 <StatusDot kind="connected" />
                 {statusLabel ?? "Live"}
+              </span>
+            )}
+            {status === "unhealthy" && (
+              <span className="ml-auto flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-[0.08em] text-destructive">
+                <StatusDot kind="unhealthy" />
+                {statusLabel ?? "Unhealthy"}
               </span>
             )}
           </div>
@@ -869,6 +993,36 @@ function healthLabel(status: ConnectionHealth["status"]): string {
   }
 }
 
+/**
+ * Map a connection's reported health status to a visual StatusKind.
+ *
+ * Explicit switch (not a ternary) so a new enum value in `HealthStatus`
+ * surfaces as a TypeScript error here instead of silently falling through
+ * to "connected" with a Live badge. Missing / unknown health is treated as
+ * "disconnected" (muted) rather than "connected" — we only claim Live when
+ * the server has actually confirmed the pool is healthy or degraded.
+ */
+function healthToStatus(
+  health: ConnectionHealth["status"] | undefined,
+): StatusKind {
+  switch (health) {
+    case "healthy":
+    case "degraded":
+      return "connected";
+    case "unhealthy":
+      return "unhealthy";
+    case undefined:
+      return "disconnected";
+    default: {
+      // Exhaustiveness guard — if `HealthStatus` grows a new variant this
+      // assignment fails to compile until the switch is updated.
+      const _exhaustive: never = health;
+      void _exhaustive;
+      return "disconnected";
+    }
+  }
+}
+
 // ── Page ──────────────────────────────────────────────────────────
 
 /** Tooltip text when connection mutations are blocked by published-mode demo readonly. */
@@ -889,6 +1043,7 @@ export default function ConnectionsPage() {
   const [formOpen, setFormOpen] = useState(false);
   const [editId, setEditId] = useState<string | null>(null);
   const [editDetail, setEditDetail] = useState<ConnectionDetail | null>(null);
+  const [createDbType, setCreateDbType] = useState<string | undefined>(undefined);
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [loadingDetail, setLoadingDetail] = useState(false);
@@ -934,9 +1089,13 @@ export default function ConnectionsPage() {
     }
   }
 
-  function handleAdd() {
+  function handleAdd(dbType?: string) {
     setEditId(null);
     setEditDetail(null);
+    // Callers that don't pass a dbType (e.g. the hero CTA) get the dialog's
+    // built-in Postgres default; the provider CompactRow passes its own
+    // dbType so the admin isn't re-routed into Postgres URL validation.
+    setCreateDbType(dbType);
     setFormOpen(true);
   }
 
@@ -1018,7 +1177,7 @@ export default function ConnectionsPage() {
               <Tooltip>
                 <TooltipTrigger asChild>
                   <span tabIndex={0}>
-                    <Button onClick={handleAdd} size="sm" disabled>
+                    <Button onClick={() => handleAdd()} size="sm" disabled>
                       <Plus className="mr-2 size-4" />
                       Add connection
                     </Button>
@@ -1028,7 +1187,7 @@ export default function ConnectionsPage() {
               </Tooltip>
             </TooltipProvider>
           ) : (
-            <Button onClick={handleAdd} size="sm">
+            <Button onClick={() => handleAdd()} size="sm">
               <Plus className="mr-2 size-4" />
               Add connection
             </Button>
@@ -1052,23 +1211,27 @@ export default function ConnectionsPage() {
             emptyIcon={Cable}
             emptyTitle="No datasource connections"
             emptyDescription="Add a connection to start querying your data"
-            emptyAction={{ label: "Add connection", onClick: handleAdd }}
-            // In dev-mode-no-drafts we short-circuit to DeveloperEmptyState
-            // instead of the generic empty state so the CTA language matches
-            // "start building" rather than "add a connection".
-            isEmpty={false}
+            emptyAction={{ label: "Add connection", onClick: () => handleAdd() }}
+            // Show the generic "No datasource connections" empty state for a
+            // plain admin who has zero connections — the CompactRow provider
+            // menu is useful, but a new admin deserves the focused onboarding
+            // CTA, not a list of 6 "Connect" buttons. In dev-mode-no-drafts we
+            // short-circuit below to DeveloperEmptyState / PublishedContextWrapper
+            // so the CTA language matches "start building" / "create draft"
+            // rather than "add a connection".
+            isEmpty={!loading && displayConnections.length === 0 && !showDevNoDrafts}
           >
             {showDevNoDrafts && displayConnections.length === 0 ? (
               <DeveloperEmptyState
                 icon={Cable}
                 title="Connect your first database to start building."
                 description="Add a connection in developer mode, then publish it when you're ready."
-                action={{ kind: "button", label: "Add connection", onClick: handleAdd }}
+                action={{ kind: "button", label: "Add connection", onClick: () => handleAdd() }}
               />
             ) : showDevNoDrafts ? (
               <PublishedContextWrapper
                 resourceLabel={{ singular: "connection", plural: "connections" }}
-                action={{ kind: "button", label: "Create draft", onClick: handleAdd }}
+                action={{ kind: "button", label: "Create draft", onClick: () => handleAdd() }}
               >
                 <section>
                   <SectionHeading title="Datasources" description="Providers Atlas can read from" />
@@ -1128,6 +1291,7 @@ export default function ConnectionsPage() {
         onOpenChange={setFormOpen}
         editId={editId}
         editDetail={editDetail}
+        initialDbType={createDbType}
         onSuccess={handleMutationSuccess}
       />
 
@@ -1169,7 +1333,8 @@ function ProviderBlock({
   onTest: (id: string) => void;
   onEdit: (id: string) => void;
   onDelete: (id: string) => void;
-  onAdd: () => void;
+  /** Receives the provider's `dbType` so the create dialog can preselect it. */
+  onAdd: (dbType: string) => void;
 }) {
   const Icon = iconForDbType(dbType);
   const label = labelForDbType(dbType);
@@ -1198,7 +1363,7 @@ function ProviderBlock({
               </Tooltip>
             </TooltipProvider>
           ) : (
-            <Button size="sm" variant="outline" onClick={onAdd}>
+            <Button size="sm" variant="outline" onClick={() => onAdd(dbType)}>
               <Plus className="mr-1.5 size-3.5" />
               Connect
             </Button>
@@ -1258,11 +1423,16 @@ function ConnectionCard({
   onDelete: (id: string) => void;
 }) {
   const health = conn.health?.status;
-  // Treat "degraded" as connected-but-warning rather than a fresh failure so
-  // the shell still renders the teal accent; unhealthy downgrades status to
-  // disconnected so the dot + muted palette communicate the outage.
-  const status: StatusKind =
-    health === "unhealthy" ? "disconnected" : "connected";
+  const status = healthToStatus(health);
+  // The pill label tracks the precise health state rather than the visual
+  // StatusKind: "degraded" still renders the teal/connected shell but the
+  // pill should say "Degraded" so admins don't miss the warning.
+  const pillLabel =
+    health === "degraded"
+      ? "Degraded"
+      : health === "unhealthy"
+      ? "Unhealthy"
+      : "Live";
   const isDemo = conn.id === DEMO_CONNECTION_ID;
   const rowReadOnly = demoReadOnly && isDemo;
   const isDraft = conn.status === "draft";
@@ -1364,7 +1534,7 @@ function ConnectionCard({
       titleBadge={badges}
       description={conn.description || providerDescription}
       status={status}
-      statusLabel={health === "degraded" ? "Degraded" : "Live"}
+      statusLabel={pillLabel}
       actions={
         <>
           {testButton}
@@ -1372,6 +1542,14 @@ function ConnectionCard({
         </>
       }
     >
+      {/* Surface the backend-provided failure reason for unhealthy connections
+          before anything else in the body — otherwise ConnectionHealth.message
+          silently disappears and the admin has to click "Test" to rediscover
+          why the pool is down. */}
+      {status === "unhealthy" && conn.health?.message ? (
+        <InlineError>{conn.health.message}</InlineError>
+      ) : null}
+
       <DetailList>
         <DetailRow label="Provider" value={providerLabel} />
         {conn.description ? (
@@ -1400,7 +1578,15 @@ function ConnectionCard({
               </span>
             }
           />
-        ) : null}
+        ) : (
+          // Don't leave admins guessing when the health probe hasn't reported
+          // yet — explicitly say the status is unknown rather than omitting
+          // the row and letting them assume everything's fine.
+          <DetailRow
+            label="Health"
+            value={<span className="text-muted-foreground">Status unknown</span>}
+          />
+        )}
         {conn.health?.checkedAt ? (
           <DetailRow label="Last tested" value={formatDateTime(conn.health.checkedAt)} />
         ) : null}

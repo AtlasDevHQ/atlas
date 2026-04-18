@@ -57,8 +57,11 @@ COPY . .
 COPY packages/cli/data/seeds/simple/semantic semantic
 COPY packages/cli/data/seeds/cybersec/semantic data/cybersec-semantic
 COPY packages/cli/data/seeds/ecommerce/semantic data/ecommerce-semantic
-# Build @useatlas/types first (exports point to dist/) then the react widget bundle
+# Build workspace deps whose exports point to dist/ in dependency order:
+# types → sdk → react. packages/react imports fetchStarterPrompts from
+# @useatlas/sdk, so sdk must be built before react's bundler resolves it.
 RUN cd packages/types && bun run build
+RUN cd packages/sdk && bun run build
 RUN cd packages/react && bun run build
 
 # --- nsjail build stage (parallel with builder) ---

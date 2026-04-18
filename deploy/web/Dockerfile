@@ -52,8 +52,11 @@ FROM base AS builder
 WORKDIR /app
 COPY --from=deps /app ./
 COPY . .
-# Build workspace deps whose exports point to dist/ before the Next.js app
+# Build workspace deps whose exports point to dist/ in dependency order:
+# types → sdk → react → web. packages/react and packages/web both import
+# fetchStarterPrompts from @useatlas/sdk, so sdk must be built before them.
 RUN cd packages/types && bun run build
+RUN cd packages/sdk && bun run build
 RUN cd packages/react && bun run build
 # Bake build-time env vars into the client JS bundle
 ENV NEXT_PUBLIC_ATLAS_API_URL=https://api.useatlas.dev

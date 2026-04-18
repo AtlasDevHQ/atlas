@@ -12,7 +12,7 @@
  */
 
 import { describe, it, expect, beforeEach, mock, type Mock } from "bun:test";
-import { Effect } from "effect";
+import { Context, Effect, Layer } from "effect";
 
 // ---------------------------------------------------------------------------
 // Mocks — declared before importing the route
@@ -107,6 +107,10 @@ let draftFixture: DraftCountFixture = {
 };
 let demoActiveFixture = false;
 
+// ContentModeRegistry.countAllDrafts emits one UNION ALL query with column
+// aliases `key` / `n` (not `k` / `v` like the legacy hand-written SQL). The
+// mock returns registry-shaped rows when it sees a UNION ALL; legacy-shaped
+// rows are also supported for any remaining callers of internalQuery directly.
 const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<Record<string, unknown>[]>> = mock(
   async (sql: string) => {
     if (sql.includes("FROM connections") && sql.includes("'__demo__'")) {
@@ -114,21 +118,83 @@ const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<Recor
     }
     if (sql.includes("UNION ALL") && sql.includes("draft")) {
       return [
-        { k: "connections", v: draftFixture.connections },
-        { k: "entities", v: draftFixture.entities },
-        { k: "entityEdits", v: draftFixture.entityEdits },
-        { k: "entityDeletes", v: draftFixture.entityDeletes },
-        { k: "prompts", v: draftFixture.prompts },
-        { k: "starterPrompts", v: draftFixture.starterPrompts },
+        { key: "connections", n: draftFixture.connections },
+        { key: "entities", n: draftFixture.entities },
+        { key: "entityEdits", n: draftFixture.entityEdits },
+        { key: "entityDeletes", n: draftFixture.entityDeletes },
+        { key: "prompts", n: draftFixture.prompts },
+        { key: "starterPrompts", n: draftFixture.starterPrompts },
       ];
     }
     return [];
   },
 );
 
+// The content-mode registry yields `InternalDB` from Effect context. To keep
+// this test hermetic we preserve the real `InternalDB` Context.Tag identity
+// and route `query` / `execute` through the mocked module-level helpers.
+// Every other named export of `lib/db/internal` that either the route or
+// the registry might touch must appear here (CLAUDE.md: mock all exports).
+class MockInternalDB extends Context.Tag("InternalDB")<
+  MockInternalDB,
+  {
+    readonly sql: null;
+    query<T extends Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]>;
+    execute(sql: string, params?: unknown[]): void;
+    readonly available: boolean;
+    readonly pool: null;
+  }
+>() {}
+
+const mockInternalExecute = mock((_sql: string, _params?: unknown[]) => {});
+
+function makeMockInternalDBShimLayer() {
+  return Layer.succeed(MockInternalDB, {
+    sql: null,
+    query: mockInternalQuery as <T extends Record<string, unknown>>(
+      sql: string,
+      params?: unknown[],
+    ) => Promise<T[]>,
+    execute: mockInternalExecute,
+    available: mockHasInternalDBValue,
+    pool: null,
+  });
+}
+
 mock.module("@atlas/api/lib/db/internal", () => ({
+  // Context.Tag: the registry imports `InternalDB` and yields it. Preserve
+  // a single class reference so both sides see the same tag identity.
+  InternalDB: MockInternalDB,
   hasInternalDB: mockHasInternalDB,
   internalQuery: mockInternalQuery,
+  internalExecute: mockInternalExecute,
+  makeInternalDBShimLayer: makeMockInternalDBShimLayer,
+  // Unused in these tests but must be present so other modules that import
+  // any of these names still resolve against the mocked module.
+  makeInternalDBLive: () => Layer.succeedContext(Context.empty()),
+  createInternalDBTestLayer: makeMockInternalDBShimLayer,
+  getInternalDB: () => ({ query: mockInternalQuery, connect: () => ({ query: mockInternalQuery, release: () => {} }), end: async () => {}, on: () => {} }),
+  closeInternalDB: async () => {},
+  queryEffect: (sql: string, params?: unknown[]) =>
+    Effect.tryPromise({
+      try: () => mockInternalQuery(sql, params),
+      catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+    }),
+  migrateInternalDB: async () => {},
+  loadSavedConnections: async () => 0,
+  findPatternBySQL: async () => null,
+  insertLearnedPattern: () => {},
+  insertSemanticAmendment: async () => {},
+  getPendingAmendmentCount: async () => 0,
+  getAutoApproveThreshold: () => 0.95,
+  getAutoApproveTypes: () => new Set<string>(),
+  getEncryptionKey: () => null,
+  encryptUrl: (v: string) => v,
+  decryptUrl: (v: string) => v,
+  isPlaintextUrl: () => true,
+  _resetEncryptionKeyCache: () => {},
+  _resetPool: () => {},
+  _resetCircuitBreaker: () => {},
 }));
 
 let demoIndustryFixture: string | undefined;

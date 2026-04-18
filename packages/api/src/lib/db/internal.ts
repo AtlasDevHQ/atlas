@@ -299,6 +299,40 @@ export function makeInternalDBLive(): Layer.Layer<InternalDB> {
   );
 }
 
+/**
+ * Build an `InternalDB` Layer backed by the module-level `internalQuery` /
+ * `internalExecute` helpers rather than by its own pg.Pool.
+ *
+ * The production `makeInternalDBLive()` creates a pool inside an Effect
+ * Scope. Route handlers today don't have access to the AppLayer's
+ * `ManagedRuntime`, so they can't yield Effect services that require
+ * `InternalDB` (e.g. `ContentModeRegistry.countAllDrafts`). This shim
+ * lets a route provide `InternalDB` to its own Effect program via
+ * `Layer.provide` without opening a second pool — the module-level
+ * `_pool` is shared with the AppLayer's live InternalDB (set during
+ * `makeInternalDBLive` construction).
+ *
+ * Use only from route handlers that need to `.pipe(Effect.provide(...))`
+ * a content-mode or similar service inline. Do not use in AppLayer
+ * composition — `makeInternalDBLive` is the source of truth there.
+ */
+export function makeInternalDBShimLayer(): Layer.Layer<InternalDB> {
+  return Layer.succeed(InternalDB, {
+    // `sql` is null in the shim — tagged-template SqlClient callers must
+    // use the real AppLayer InternalDB (via ManagedRuntime). Routes that
+    // need SqlClient access shouldn't be using this shim.
+    sql: null,
+    query: internalQuery,
+    execute: internalExecute,
+    get available() {
+      return hasInternalDB();
+    },
+    get pool() {
+      return _pool;
+    },
+  } satisfies InternalDBShape);
+}
+
 /** Create a test Layer for InternalDB. */
 export function createInternalDBTestLayer(
   partial: Partial<InternalDBShape> = {},

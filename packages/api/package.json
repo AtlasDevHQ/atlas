@@ -7,6 +7,7 @@
     "./app": "./src/api/index.ts",
     "./lib/audit": "./src/lib/audit/index.ts",
     "./lib/audit/*": "./src/lib/audit/*.ts",
+    "./lib/content-mode": "./src/lib/content-mode/index.ts",
     "./lib/semantic": "./src/lib/semantic/index.ts",
     "./lib/semantic/expert": "./src/lib/semantic/expert/index.ts",
     "./lib/semantic/*": "./src/lib/semantic/*.ts",

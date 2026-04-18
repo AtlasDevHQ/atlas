@@ -8,10 +8,20 @@
  * Mode resolution happens upstream in the auth middleware (#1424). This route
  * just reads the resolved mode from RequestContext and adds the role + draft
  * metadata the UI needs to decide what to show.
+ *
+ * Draft counts are delegated to `ContentModeRegistry.countAllDrafts` (#1515).
+ * The UNION ALL query is derived from the static `CONTENT_MODE_TABLES` tuple;
+ * adding a new mode-participating table automatically extends this response.
+ *
+ * The registry + InternalDB-shim imports are deferred to handler time rather
+ * than module top level. Many tests in `packages/api/src/api/__tests__/` mock
+ * `@atlas/api/lib/db/internal` partially and would break on the transitive
+ * `InternalDB` import chain if we eagerly pulled in the registry. See #1524
+ * for the follow-up to tighten those mocks so this indirection can be removed.
  */
 
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
-import { Effect } from "effect";
+import { Effect, Layer } from "effect";
 import type { AtlasMode } from "@useatlas/types/auth";
 import type { ModeStatusResponse, ModeDraftCounts } from "@useatlas/types/mode";
 import { runEffect } from "@atlas/api/lib/effect/hono";
@@ -19,7 +29,7 @@ import {
   RequestContext,
   AuthContext,
 } from "@atlas/api/lib/effect/services";
-import { hasInternalDB, internalQuery } from "@atlas/api/lib/db/internal";
+import { hasInternalDB } from "@atlas/api/lib/db/internal";
 import { getSettingAuto } from "@atlas/api/lib/settings";
 import { ErrorSchema } from "./shared-schemas";
 import { standardAuth, requestContext, type AuthEnv } from "./middleware";
@@ -85,73 +95,12 @@ const getModeRoute = createRoute({
   },
 });
 
-// ---------------------------------------------------------------------------
-// Combined draft counts query
-//
-// One round-trip via UNION ALL keeps the response cheap. Each branch is a
-// single COUNT(*) over an indexed (org_id, status) pair, except entityEdits
-// which joins drafts to their published counterpart on the same key the
-// partial unique indexes use (org_id, name, COALESCE(connection_id, sentinel)).
-// ---------------------------------------------------------------------------
-
-const DRAFT_COUNTS_SQL = `
-  SELECT 'connections'::text   AS k, COUNT(*)::int AS v
-    FROM connections
-    WHERE org_id = $1 AND status = 'draft'
-  UNION ALL
-  SELECT 'entities'::text,            COUNT(*)::int
-    FROM semantic_entities
-    WHERE org_id = $1 AND status = 'draft'
-  UNION ALL
-  SELECT 'entityEdits'::text,         COUNT(*)::int
-    FROM semantic_entities d
-    INNER JOIN semantic_entities p
-      ON d.org_id = p.org_id
-     AND d.name = p.name
-     AND COALESCE(d.connection_id, '__default__') = COALESCE(p.connection_id, '__default__')
-    WHERE d.org_id = $1
-      AND d.status = 'draft'
-      AND p.status = 'published'
-  UNION ALL
-  SELECT 'entityDeletes'::text,       COUNT(*)::int
-    FROM semantic_entities
-    WHERE org_id = $1 AND status = 'draft_delete'
-  UNION ALL
-  SELECT 'prompts'::text,             COUNT(*)::int
-    FROM prompt_collections
-    WHERE org_id = $1 AND status = 'draft'
-  UNION ALL
-  SELECT 'starterPrompts'::text,      COUNT(*)::int
-    FROM query_suggestions
-    WHERE org_id = $1 AND status = 'draft'
-`;
-
 const DEMO_ACTIVE_SQL = `
   SELECT EXISTS (
     SELECT 1 FROM connections
     WHERE id = '__demo__' AND org_id = $1 AND status = 'published'
   ) AS active
 `;
-
-type DraftKey = keyof ModeDraftCounts;
-const ZERO_COUNTS: ModeDraftCounts = {
-  connections: 0,
-  entities: 0,
-  entityEdits: 0,
-  entityDeletes: 0,
-  prompts: 0,
-  starterPrompts: 0,
-};
-
-function rowsToCounts(rows: ReadonlyArray<{ k: string; v: number }>): ModeDraftCounts {
-  const counts: Record<DraftKey, number> = { ...ZERO_COUNTS };
-  for (const { k, v } of rows) {
-    if (k in counts) {
-      counts[k as DraftKey] = Number(v) || 0;
-    }
-  }
-  return counts;
-}
 
 function totalDrafts(counts: ModeDraftCounts): number {
   return (
@@ -174,6 +123,16 @@ mode.use("/", standardAuth);
 mode.use("/", requestContext);
 
 mode.openapi(getModeRoute, async (c) => {
+  // Deferred imports — see module header for rationale (#1524).
+  const [
+    { ContentModeRegistry, ContentModeRegistryLive },
+    { makeInternalDBShimLayer, queryEffect },
+  ] = await Promise.all([
+    import("@atlas/api/lib/content-mode"),
+    import("@atlas/api/lib/db/internal"),
+  ]);
+  const modeRouteLayer = Layer.merge(ContentModeRegistryLive, makeInternalDBShimLayer());
+
   const program = Effect.gen(function* () {
     const { atlasMode } = yield* RequestContext;
     const { mode: authMode, user, orgId } = yield* AuthContext;
@@ -196,18 +155,14 @@ mode.openapi(getModeRoute, async (c) => {
     }
 
     const demoIndustry = getSettingAuto(DEMO_INDUSTRY_SETTING, orgId) ?? null;
+    const registry = yield* ContentModeRegistry;
 
-    const [demoRows, draftRows] = yield* Effect.tryPromise({
-      try: () =>
-        Promise.all([
-          internalQuery<{ active: boolean }>(DEMO_ACTIVE_SQL, [orgId]),
-          internalQuery<{ k: string; v: number }>(DRAFT_COUNTS_SQL, [orgId]),
-        ]),
-      catch: (err) => (err instanceof Error ? err : new Error(String(err))),
-    });
+    const [demoRows, counts] = yield* Effect.all(
+      [queryEffect<{ active: boolean }>(DEMO_ACTIVE_SQL, [orgId]), registry.countAllDrafts(orgId)],
+      { concurrency: "unbounded" },
+    );
 
     const demoConnectionActive = demoRows[0]?.active === true;
-    const counts = rowsToCounts(draftRows);
     const hasDrafts = totalDrafts(counts) > 0;
 
     return {
@@ -218,7 +173,7 @@ mode.openapi(getModeRoute, async (c) => {
       hasDrafts,
       draftCounts: hasDrafts ? counts : null,
     } satisfies ModeStatusResponse;
-  });
+  }).pipe(Effect.provide(modeRouteLayer));
 
   const body = await runEffect(c, program, { label: "fetch mode status" });
   return c.json(body, 200);

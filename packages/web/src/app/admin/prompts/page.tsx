@@ -318,6 +318,7 @@ export default function PromptsPage() {
         description: values.description,
       },
       onSuccess: (updated) => {
+        if (!updated) return;
         if (detailCollection?.id === updated.id) {
           setDetailCollection(updated);
         }
@@ -347,6 +348,7 @@ export default function PromptsPage() {
         description: addItemDescription.trim() || null,
       },
       onSuccess: (newItem) => {
+        if (!newItem) return;
         setDetailItems((prev) => [...prev, newItem]);
         setItemCounts((prev) => {
           const next = new Map(prev);

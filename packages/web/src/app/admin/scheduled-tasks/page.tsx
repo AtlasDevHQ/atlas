@@ -128,7 +128,9 @@ export default function ScheduledTasksPage() {
     await previewMutation.mutate({
       path: `/api/v1/scheduled-tasks/${encodeURIComponent(taskId)}/preview`,
       body: {},
-      onSuccess: (data) => setPreviewData(data),
+      onSuccess: (data) => {
+        if (data) setPreviewData(data);
+      },
     });
   }
 
@@ -212,6 +214,7 @@ export default function ScheduledTasksPage() {
       body: { enabled: !task.enabled },
       itemId: task.id,
       onSuccess: (updated) => {
+        if (!updated) return;
         setTasks((prev) =>
           prev.map((t) => (t.id === updated.id ? updated : t)),
         );

@@ -109,6 +109,7 @@ export default function ApiKeysPage() {
     await createMutation.mutate({
       body: { name: values.name },
       onSuccess: (data) => {
+        if (!data) return;
         setCreatedKey({ key: data.key, name: data.name ?? values.name });
         refetch();
       },

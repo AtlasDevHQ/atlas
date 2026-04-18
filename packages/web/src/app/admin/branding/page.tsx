@@ -12,6 +12,7 @@ import { useForm, useWatch } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import {
+  AlertCircle,
   Eye,
   Globe,
   Image as ImageIcon,
@@ -69,8 +70,9 @@ const EMPTY: BrandingValues = {
 };
 
 // ── Shared design primitives ──────────────────────────────────────
-// Local copies of the admin/integrations + admin/billing primitives.
-// Promote to @/ui/components/admin/ once a fourth page reuses them.
+// Mirrors the copies in admin/billing and admin/integrations. The three
+// duplicates are load-bearing until extraction; do not drift them.
+// TODO: extract to @/ui/components/admin/ in a dedicated refactor PR.
 
 type StatusKind = "connected" | "disconnected" | "unavailable";
 
@@ -148,7 +150,9 @@ function BrandingShell({
       <header className="flex items-start gap-3 p-4 pb-3">
         <span
           className={cn(
-            "grid size-9 shrink-0 place-items-center rounded-lg border bg-background/40",
+            // [&>svg]:size-4 restores billing's sizing invariant since
+            // we widened the icon prop to ReactNode for the swatch case
+            "grid size-9 shrink-0 place-items-center rounded-lg border bg-background/40 [&>svg]:size-4",
             status === "connected" && "border-primary/30 text-primary",
             status !== "connected" && "text-muted-foreground",
           )}
@@ -217,7 +221,7 @@ function CompactRow({
         status === "unavailable" && "opacity-60",
       )}
     >
-      <span className="grid size-8 shrink-0 place-items-center rounded-lg border bg-background/40 text-muted-foreground">
+      <span className="grid size-8 shrink-0 place-items-center rounded-lg border bg-background/40 text-muted-foreground [&>svg]:size-4">
         {icon}
       </span>
       <div className="min-w-0 flex-1">
@@ -266,6 +270,11 @@ function InlineError({ children }: { children: ReactNode }) {
 /**
  * Disclosure helper for progressive-disclosure rows. Moves focus into the
  * revealed panel on expand, restores it to the trigger on collapse.
+ *
+ * Branding rows have no per-row side effects to clean up on collapse,
+ * so this is the trimmed variant of the admin/integrations hook — no
+ * `connected` arg, no `onCollapseCleanup` callback. If a future branding
+ * row needs cleanup, pull in the admin/integrations shape.
  */
 function useDisclosure() {
   const [expanded, setExpanded] = useState(false);
@@ -320,11 +329,11 @@ export default function BrandingPage() {
     "/api/v1/admin/branding",
     { schema: BrandingResponseSchema },
   );
-  const {
-    mutate,
-    saving,
-    error: saveError,
-  } = useAdminMutation({
+  const save = useAdminMutation({
+    path: "/api/v1/admin/branding",
+    invalidates: refetch,
+  });
+  const reset = useAdminMutation({
     path: "/api/v1/admin/branding",
     invalidates: refetch,
   });
@@ -334,6 +343,9 @@ export default function BrandingPage() {
     defaultValues: EMPTY,
   });
 
+  // Reset form to server state whenever the fetched `data` changes — e.g.
+  // after save/reset refetches. `form.reset` has a stable identity per RHF,
+  // so it's omitted from deps deliberately; adding it would loop.
   useEffect(() => {
     if (loading) return;
     if (data) {
@@ -347,15 +359,18 @@ export default function BrandingPage() {
     } else {
       form.reset(EMPTY);
     }
-  }, [data, loading]); // intentionally reset when data changes
+  }, [data, loading]);
 
   const values = form.watch();
   const customized = countCustomized(values);
   const colorValid = !values.primaryColor || HEX_RE.test(values.primaryColor);
   const isDirty = form.formState.isDirty;
+  const busy = save.saving || reset.saving;
 
   async function handleSave(v: BrandingValues) {
-    const result = await mutate({
+    // saveError state is surfaced via <InlineError> below — no throw
+    // needed; react-hook-form's handleSubmit would swallow it anyway.
+    await save.mutate({
       method: "PUT",
       body: {
         logoUrl: v.logoUrl || null,
@@ -365,11 +380,10 @@ export default function BrandingPage() {
         hideAtlasBranding: v.hideAtlasBranding,
       },
     });
-    if (!result.ok) throw new Error("Save failed");
   }
 
   async function handleReset() {
-    const result = await mutate({ method: "DELETE" });
+    const result = await reset.mutate({ method: "DELETE" });
     if (result.ok) form.reset(EMPTY);
   }
 
@@ -419,15 +433,34 @@ export default function BrandingPage() {
                 <PreviewShell values={values} colorValid={colorValid} />
               </section>
 
-              <InlineError>{saveError}</InlineError>
+              {save.error && (
+                <InlineError>
+                  <span className="font-semibold">Save failed.</span>{" "}
+                  {save.error}
+                </InlineError>
+              )}
+              {reset.error && (
+                <InlineError>
+                  <span className="font-semibold">Reset failed.</span>{" "}
+                  {reset.error}
+                </InlineError>
+              )}
+              {!colorValid && (
+                <InlineError>
+                  Primary color must be a 6-digit hex (e.g. #FF5500). Open
+                  the Primary color row to fix.
+                </InlineError>
+              )}
 
               <footer className="flex items-center gap-2 border-t border-border/50 pt-5">
                 <Button
                   type="submit"
-                  disabled={saving || !colorValid || !isDirty}
+                  disabled={busy || !colorValid || !isDirty}
                   size="sm"
                 >
-                  {saving && <Loader2 className="mr-1.5 size-3 animate-spin" />}
+                  {save.saving && (
+                    <Loader2 className="mr-1.5 size-3 animate-spin" />
+                  )}
                   {isDirty ? "Save changes" : "Saved"}
                 </Button>
                 {data && (
@@ -436,9 +469,13 @@ export default function BrandingPage() {
                     variant="outline"
                     size="sm"
                     onClick={handleReset}
-                    disabled={saving}
+                    disabled={busy}
                   >
-                    <RotateCcw className="mr-1.5 size-3" />
+                    {reset.saving ? (
+                      <Loader2 className="mr-1.5 size-3 animate-spin" />
+                    ) : (
+                      <RotateCcw className="mr-1.5 size-3" />
+                    )}
                     Reset to defaults
                   </Button>
                 )}
@@ -614,7 +651,12 @@ function PrimaryColorRow() {
   const value = useWatchField("primaryColor");
   const valid = !value || HEX_RE.test(value);
   const swatchColor = valid && value ? value : null;
-  const status: StatusKind = value ? "connected" : "disconnected";
+  const invalid = Boolean(value) && !valid;
+  const status: StatusKind = invalid
+    ? "unavailable"
+    : value
+      ? "connected"
+      : "disconnected";
 
   const swatchIcon = swatchColor ? (
     <span
@@ -623,7 +665,7 @@ function PrimaryColorRow() {
       style={{ backgroundColor: swatchColor }}
     />
   ) : (
-    <Palette className="size-4" />
+    <Palette />
   );
 
   if (!expanded) {
@@ -632,7 +674,11 @@ function PrimaryColorRow() {
         icon={swatchIcon}
         title="Primary color"
         description={
-          value ? (
+          invalid ? (
+            <span className="text-destructive">
+              Invalid hex — click Edit to fix
+            </span>
+          ) : value ? (
             <span className="font-mono text-[11px]">{value}</span>
           ) : (
             "Teal is the default accent"
@@ -742,7 +788,7 @@ function FaviconRow() {
       panelRef={panelRef}
       icon={<Globe className="size-4" />}
       title="Favicon"
-      description="Accepts .ico, .png, or .svg. Browsers cache aggressively — expect a delay."
+      description="Accepts .ico, .png, or .svg."
       status="disconnected"
       onCollapse={collapse}
     >
@@ -814,6 +860,12 @@ function PreviewShell({
   const bg =
     primaryColor && colorValid ? primaryColor : "var(--sidebar-primary)";
 
+  const [logoBroken, setLogoBroken] = useState(false);
+  // Re-attempt the load whenever the URL changes so a typo fix clears the error
+  useEffect(() => {
+    setLogoBroken(false);
+  }, [logoUrl]);
+
   return (
     <BrandingShell
       icon={<Eye className="size-4" />}
@@ -823,17 +875,29 @@ function PreviewShell({
     >
       <div className="rounded-lg border bg-background/60 p-4">
         <div className="flex items-center gap-3">
-          {logoUrl ? (
+          {logoUrl && !logoBroken ? (
             <div className="flex size-8 items-center justify-center rounded-lg bg-muted">
-              {/* eslint-disable-next-line @next/next/no-img-element */}
+              {/* eslint-disable-next-line @next/next/no-img-element -- user-supplied URL, not in next.config remotePatterns */}
               <img
                 src={logoUrl}
                 alt="Logo preview"
                 className="size-6 object-contain"
-                onError={(e) => {
-                  (e.target as HTMLImageElement).style.display = "none";
+                onError={() => {
+                  // Surface a signal to the user (AlertCircle fallback) +
+                  // a debug trail so the admin can diagnose CORS / 404 / codec.
+                  console.debug("[branding] logo preview failed to load", {
+                    logoUrl,
+                  });
+                  setLogoBroken(true);
                 }}
               />
+            </div>
+          ) : logoUrl && logoBroken ? (
+            <div
+              className="flex size-8 items-center justify-center rounded-lg border border-destructive/30 bg-destructive/10 text-destructive"
+              title="Logo URL failed to load"
+            >
+              <AlertCircle className="size-4" />
             </div>
           ) : (
             <div
@@ -866,6 +930,12 @@ function PreviewShell({
           </div>
         </div>
       </div>
+      {logoUrl && logoBroken && (
+        <p className="text-[11px] leading-relaxed text-destructive">
+          Logo failed to load. Check the URL is reachable and serves a valid
+          image with permissive CORS headers.
+        </p>
+      )}
     </BrandingShell>
   );
 }

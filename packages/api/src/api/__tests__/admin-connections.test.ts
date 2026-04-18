@@ -165,7 +165,7 @@ describe("admin connections — org scoping", () => {
     it("workspace admin only sees connections belonging to their org", async () => {
       // getVisibleConnectionIds queries internal DB for org's connections
       mocks.mockInternalQuery.mockImplementation((sql: string) => {
-        if (sql.includes("SELECT id FROM connections WHERE org_id")) {
+        if (sql.includes("SELECT c.id FROM connections c WHERE c.org_id")) {
           // org-alpha owns "warehouse" only
           return Promise.resolve([{ id: "warehouse" }]);
         }
@@ -327,7 +327,7 @@ describe("admin connections — org scoping", () => {
     it("succeeds when health-checking a connection visible to org", async () => {
       setOrgAdmin("org-alpha");
       mocks.mockInternalQuery.mockImplementation((sql: string) => {
-        if (sql.includes("SELECT id FROM connections WHERE org_id")) {
+        if (sql.includes("SELECT c.id FROM connections c WHERE c.org_id")) {
           return Promise.resolve([{ id: "warehouse" }]);
         }
         return Promise.resolve([]);
@@ -435,7 +435,7 @@ describe("admin connections — org scoping", () => {
 
       // getVisibleConnectionIds returns null for platform admins (no DB query), so no org filter applied
       const orgFilterCall = mocks.mockInternalQuery.mock.calls.find(
-        ([sql]) => typeof sql === "string" && sql.includes("SELECT id FROM connections WHERE org_id"),
+        ([sql]) => typeof sql === "string" && sql.includes("SELECT c.id FROM connections c WHERE c.org_id"),
       );
       expect(orgFilterCall).toBeUndefined();
     });
@@ -523,7 +523,7 @@ describe("admin connections — org scoping", () => {
 
     it("includes org-owned connections from internal DB", async () => {
       mocks.mockInternalQuery.mockImplementation((sql: string) => {
-        if (sql.includes("SELECT id FROM connections WHERE org_id")) {
+        if (sql.includes("SELECT c.id FROM connections c WHERE c.org_id")) {
           return Promise.resolve([{ id: "warehouse" }]);
         }
         return Promise.resolve([]);
@@ -571,7 +571,7 @@ describe("admin connections — org scoping", () => {
     it("get-by-id succeeds for connection visible to org", async () => {
       setOrgAdmin("org-alpha");
       mocks.mockInternalQuery.mockImplementation((sql: string) => {
-        if (sql.includes("SELECT id FROM connections WHERE org_id")) {
+        if (sql.includes("SELECT c.id FROM connections c WHERE c.org_id")) {
           return Promise.resolve([{ id: "warehouse" }]);
         }
         // Detail query for managed connection info
@@ -600,7 +600,7 @@ describe("admin connections — org scoping", () => {
       const call = mocks.mockInternalQuery.mock.calls.find(
         ([sql]) =>
           typeof sql === "string" &&
-          sql.includes("SELECT id FROM connections WHERE org_id"),
+          sql.includes("SELECT c.id FROM connections c WHERE c.org_id"),
       );
       return call as [string, unknown[]] | undefined;
     }

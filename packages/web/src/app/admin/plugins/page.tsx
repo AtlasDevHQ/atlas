@@ -43,6 +43,7 @@ import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import {
   PluginListResponseSchema,
 } from "@/ui/lib/admin-schemas";
+import { extractFetchError, friendlyError } from "@/ui/lib/fetch-error";
 import { useDeployMode } from "@/ui/hooks/use-deploy-mode";
 import type { DeployMode } from "@/ui/lib/types";
 
@@ -103,10 +104,11 @@ function switchTitle(manageable: boolean, enabled: boolean, deployMode: DeployMo
 // Intentionally duplicated in several admin pages until the shape is stable
 // enough to extract. Tracked in #1551.
 
-type StatusKind = "connected" | "disconnected" | "unavailable";
+type StatusKind = "connected" | "transitioning" | "disconnected" | "unavailable";
 
 const STATUS_LABEL: Record<StatusKind, string> = {
   connected: "Enabled",
+  transitioning: "Transitioning",
   disconnected: "Disabled",
   unavailable: "Unavailable",
 };
@@ -119,6 +121,11 @@ function StatusDot({ kind, className }: { kind: StatusKind; className?: string }
         "relative inline-flex size-1.5 shrink-0 rounded-full",
         kind === "connected" &&
           "bg-primary shadow-[0_0_0_3px_color-mix(in_oklch,_var(--primary)_15%,_transparent)]",
+        // `--warning` isn't part of the shadcn neutral base — hardcode amber-500
+        // to keep this primitive self-contained (same convention as the other
+        // inline-duplicated primitives in this page; see #1551).
+        kind === "transitioning" &&
+          "bg-amber-500 shadow-[0_0_0_3px_color-mix(in_oklch,_oklch(0.75_0.17_70)_15%,_transparent)]",
         kind === "disconnected" && "bg-muted-foreground/40",
         kind === "unavailable" &&
           "bg-destructive/70 outline-1 outline-dashed outline-destructive/40",
@@ -167,6 +174,7 @@ function CompactRow({
       className={cn(
         "group flex items-center gap-3 rounded-xl border bg-card/40 px-3.5 py-2.5 transition-colors",
         "hover:bg-card/70 hover:border-border/80",
+        status === "transitioning" && "border-amber-500/20",
         status === "unavailable" && "border-destructive/20",
       )}
     >
@@ -211,6 +219,18 @@ function PluginShell({
   actions?: ReactNode;
   panelRef?: RefObject<HTMLElement | null>;
 }) {
+  // Live pill is the default trailing ornament when the shell is `connected`
+  // and the caller didn't provide its own trailing node. When the caller does
+  // provide `trailing` (e.g. a Switch + status caption), we still render the X
+  // collapse button alongside it so the user is never stuck with no way out.
+  const defaultTrailing =
+    status === "connected" ? (
+      <span className="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-[0.08em] text-primary">
+        <StatusDot kind="connected" />
+        Live
+      </span>
+    ) : null;
+
   return (
     <section
       id={id}
@@ -218,6 +238,7 @@ function PluginShell({
       className={cn(
         "relative flex flex-col overflow-hidden rounded-xl border bg-card/60 transition-colors",
         status === "connected" && "border-primary/20",
+        status === "transitioning" && "border-amber-500/30",
         status === "unavailable" && "border-destructive/20",
       )}
     >
@@ -232,6 +253,7 @@ function PluginShell({
           className={cn(
             "grid size-9 shrink-0 place-items-center rounded-lg border bg-background/40",
             status === "connected" && "border-primary/30 text-primary",
+            status === "transitioning" && "border-amber-500/30 text-amber-600 dark:text-amber-400",
             status === "disconnected" && "text-muted-foreground",
             status === "unavailable" && "border-destructive/30 text-destructive",
           )}
@@ -243,23 +265,19 @@ function PluginShell({
             <h3 className="truncate text-sm font-semibold leading-tight tracking-tight">
               {title}
             </h3>
-            {trailing ? (
-              <div className="ml-auto flex items-center gap-1.5">{trailing}</div>
-            ) : status === "connected" ? (
-              <span className="ml-auto flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-[0.08em] text-primary">
-                <StatusDot kind="connected" />
-                Live
-              </span>
-            ) : onCollapse ? (
-              <button
-                type="button"
-                aria-label="Collapse"
-                onClick={onCollapse}
-                className="ml-auto -m-1 grid size-6 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-              >
-                <X className="size-3.5" />
-              </button>
-            ) : null}
+            <div className="ml-auto flex items-center gap-1.5">
+              {trailing ?? defaultTrailing}
+              {onCollapse && (
+                <button
+                  type="button"
+                  aria-label="Collapse"
+                  onClick={onCollapse}
+                  className="-m-1 grid size-6 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                >
+                  <X className="size-3.5" />
+                </button>
+              )}
+            </div>
           </div>
           <p className="mt-0.5 text-xs leading-snug text-muted-foreground">{description}</p>
         </div>
@@ -313,10 +331,18 @@ function InlineError({ children }: { children: ReactNode }) {
 }
 
 /**
- * Progressive-disclosure helper. Auto-collapses once a plugin's state changes
- * (enable toggled, config saved) so a later re-expand doesn't sit under a
- * stale expanded=true flag. Clears the owning mutation's error on explicit
- * collapse so the X can never silently hide a failure.
+ * Progressive-disclosure helper for plugin rows.
+ *
+ * Encapsulates four concerns that would otherwise repeat per row:
+ *   - expand/collapse state + a stable id to hang `aria-controls` on
+ *   - moving focus into the panel's first input on expand
+ *   - returning focus to the trigger button on collapse
+ *   - running a caller-provided cleanup on explicit collapse so the X button
+ *     can't silently hide a mutation error or leave stale form state
+ *
+ * Note: auto-collapse on external state changes (e.g. successful save) is
+ * handled by the caller via an effect on `setExpanded(false)` — not here —
+ * because the trigger varies per row.
  */
 function useDisclosure(onCollapseCleanup?: () => void) {
   const [expanded, setExpanded] = useState(false);
@@ -350,14 +376,35 @@ function useDisclosure(onCollapseCleanup?: () => void) {
 /**
  * Maps a plugin's (enabled, status) pair to a StatusKind for visual treatment.
  *
- *   enabled=false  → disconnected (muted dot, no emphasis)
- *   enabled=true, status=unhealthy → unavailable (destructive accent + inline-error)
- *   enabled=true, status=healthy|registered|initializing|teardown → connected
+ *   enabled=false                               → disconnected (muted)
+ *   enabled=true, status=unhealthy              → unavailable (destructive)
+ *   enabled=true, status=initializing|teardown  → transitioning (amber)
+ *   enabled=true, status=healthy|registered     → connected (teal + pulse)
+ *
+ * `initializing` and `teardown` are lifted out of `connected` so an operator
+ * scanning a long list can spot a plugin stuck mid-transition at a glance.
+ * `registered` stays on `connected` because it's the steady state for plugins
+ * that don't expose a health probe.
  */
 function toStatusKind(plugin: PluginDescription): StatusKind {
   if (!plugin.enabled) return "disconnected";
-  if (plugin.status === "unhealthy") return "unavailable";
-  return "connected";
+  switch (plugin.status) {
+    case "unhealthy":
+      return "unavailable";
+    case "initializing":
+    case "teardown":
+      return "transitioning";
+    case "healthy":
+    case "registered":
+      return "connected";
+    default: {
+      // Exhaustive guard — adding a new status variant surfaces as a TS error
+      // here instead of rendering blank.
+      const _exhaustive: never = plugin.status;
+      void _exhaustive;
+      return "disconnected";
+    }
+  }
 }
 
 function statusSummary(plugin: PluginDescription): string {
@@ -373,6 +420,13 @@ function statusSummary(plugin: PluginDescription): string {
       return "Registered";
     case "teardown":
       return "Shutting down";
+    default: {
+      // Exhaustive guard — a new status variant surfaces as a TS error here
+      // instead of rendering an empty caption.
+      const _exhaustive: never = plugin.status;
+      void _exhaustive;
+      return "Unknown";
+    }
   }
 }
 
@@ -416,9 +470,16 @@ function PluginRow({
 
   const { expanded, setExpanded, collapse, triggerRef, panelRef, panelId } =
     useDisclosure(() => {
+      // Full reset on collapse — re-expanding should be a clean fetch rather
+      // than reviving a stale edit buffer from a prior session. The old modal
+      // Dialog behaved this way (loadSchema ran on every open); keep parity.
       saveMutation.reset();
       setLoadError(null);
       setSuccess(null);
+      setSchema([]);
+      setValues({});
+      setSchemaLoaded(false);
+      setConfigManageable(false);
     });
 
   async function loadSchema() {
@@ -432,8 +493,11 @@ function PluginRow({
         { credentials },
       );
       if (!res.ok) {
-        const errBody = await res.json().catch(() => null);
-        throw new Error(errBody?.message ?? `HTTP ${res.status}`);
+        // `extractFetchError` captures `{ message, requestId }` from JSON error
+        // bodies; `friendlyError` preserves the requestId in the rendered
+        // string so operators can correlate with server logs.
+        const fetchErr = await extractFetchError(res);
+        throw new Error(friendlyError(fetchErr));
       }
       const data: PluginSchemaResponse = await res.json();
       setSchema(data.schema);
@@ -460,13 +524,19 @@ function PluginRow({
 
   async function handleSave() {
     setSuccess(null);
-    await saveMutation.mutate({
+    const result = await saveMutation.mutate({
       path: `/api/v1/admin/plugins/${encodeURIComponent(plugin.id)}/config`,
       body: values,
       onSuccess: (data) => {
         setSuccess(data?.message ?? "Configuration saved.");
       },
     });
+    // Auto-collapse on success so the user is returned to the CompactRow and
+    // can see the updated status at a glance. This compounds the collapse-X
+    // fix: even if the user ignores the X, a successful save gets them out.
+    // Stale buffers are cleared by `useDisclosure`'s cleanup so re-expanding
+    // fetches fresh values.
+    if (result.ok) collapse();
   }
 
   if (!expanded) {
@@ -475,7 +545,11 @@ function PluginRow({
         icon={Icon}
         title={plugin.name}
         description={
-          status === "unavailable"
+          // Append the status caption when it carries info the StatusDot alone
+          // can't convey — unavailable (why it failed) or transitioning
+          // (initializing vs shutting down). Healthy/disabled are obvious from
+          // the dot and don't need the extra text.
+          status === "unavailable" || status === "transitioning"
             ? `${description} — ${statusSummary(plugin)}`
             : description
         }
@@ -506,8 +580,18 @@ function PluginRow({
       status={status}
       onCollapse={collapse}
       trailing={
-        <div className="ml-auto flex items-center gap-2">
-          <span className="text-[10px] font-medium uppercase tracking-[0.08em] text-muted-foreground">
+        // PluginShell's header already wraps `trailing` in a flex container,
+        // so we stay flat here — just the caption + Switch pair.
+        <>
+          <span
+            className={cn(
+              "text-[10px] font-medium uppercase tracking-[0.08em]",
+              status === "connected" && "text-primary",
+              status === "transitioning" && "text-amber-600 dark:text-amber-400",
+              status === "unavailable" && "text-destructive",
+              status === "disconnected" && "text-muted-foreground",
+            )}
+          >
             {statusSummary(plugin)}
           </span>
           <Switch
@@ -517,7 +601,7 @@ function PluginRow({
             disabled={toggleMutating || !manageable}
             title={switchTitle(manageable, plugin.enabled, deployMode)}
           />
-        </div>
+        </>
       }
       actions={
         <>
@@ -564,7 +648,20 @@ function PluginRow({
           Loading configuration…
         </div>
       ) : loadError ? (
-        <InlineError>{loadError}</InlineError>
+        <div className="space-y-2">
+          <InlineError>{loadError}</InlineError>
+          <div className="flex justify-end">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => void loadSchema()}
+              disabled={schemaLoading}
+            >
+              {schemaLoading && <Loader2 className="mr-1.5 size-3.5 animate-spin" />}
+              Retry
+            </Button>
+          </div>
+        </div>
       ) : schemaLoaded && schema.length === 0 ? (
         <p className="text-xs text-muted-foreground">
           This plugin does not expose a config schema.

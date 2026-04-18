@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type ComponentType, type ReactNode } from "react";
+import { useEffect, useState, type ComponentType, type ReactNode } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
@@ -257,7 +257,7 @@ function VerificationBadge({ status }: { status: "pending" | "verified" | "faile
   switch (status) {
     case "verified":
       return (
-        <Badge variant="outline" className="gap-1 border-primary/40 bg-primary/5 text-[10px] text-primary">
+        <Badge variant="default" className="gap-1 bg-emerald-600 text-[10px] text-emerald-50 hover:bg-emerald-600">
           <ShieldCheck className="size-3" />
           Verified
         </Badge>
@@ -492,7 +492,8 @@ export default function SSOPage() {
                     <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-4 py-3">
                       <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-400" />
                       <p className="text-sm text-amber-700 dark:text-amber-300">
-                        You need at least one enabled provider below before you can enforce SSO.
+                        You need at least one active (enabled) SSO provider before you can enforce SSO.
+                        Add and verify a provider below.
                       </p>
                     </div>
                   )}
@@ -618,9 +619,14 @@ function ProviderShell({
   const status: StatusKind = provider.enabled ? "connected" : "disconnected";
   const Icon = provider.type === "saml" ? Shield : KeyRound;
 
-  // SP Metadata — Entity ID and ACS URL are derived from the app's base URL
-  const spEntityId = `${typeof window !== "undefined" ? window.location.origin : ""}/api/auth/sso/${provider.type}/entity-id/${provider.id}`;
-  const spAcsUrl = `${typeof window !== "undefined" ? window.location.origin : ""}/api/auth/sso/${provider.type}/callback/${provider.id}`;
+  // SP Metadata — Entity ID and ACS URL are derived from the app's base URL.
+  // Resolve origin in an effect so the first paint doesn't flash a
+  // relative-path placeholder and the CopyButtons never copy a broken URL.
+  const [origin, setOrigin] = useState("");
+  useEffect(() => setOrigin(window.location.origin), []);
+  const hasOrigin = origin.length > 0;
+  const spEntityId = `${origin}/api/auth/sso/${provider.type}/entity-id/${provider.id}`;
+  const spAcsUrl = `${origin}/api/auth/sso/${provider.type}/callback/${provider.id}`;
 
   return (
     <IntegrationShell
@@ -714,7 +720,7 @@ function ProviderShell({
         </div>
       )}
 
-      {provider.type === "saml" && (
+      {provider.type === "saml" && hasOrigin && (
         <DetailList>
           <DetailRow label="SP Entity ID" value={spEntityId} mono truncate />
           <DetailRow label="SP ACS URL" value={spAcsUrl} mono truncate />

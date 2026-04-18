@@ -72,7 +72,18 @@ const SettingsResponseSchema = z.object({
 
 // ── Section metadata ──────────────────────────────────────────────
 
-const SECTION_ICONS: Record<string, ComponentType<{ className?: string }>> = {
+const SECTION_ORDER = [
+  "Query Limits",
+  "Rate Limiting",
+  "Sessions",
+  "Sandbox",
+  "Agent",
+  "Intelligence",
+  "Demo",
+] as const;
+type KnownSection = (typeof SECTION_ORDER)[number];
+
+const SECTION_ICONS: Record<KnownSection, ComponentType<{ className?: string }>> = {
   "Query Limits": Database,
   "Rate Limiting": Gauge,
   Sessions: Timer,
@@ -82,23 +93,15 @@ const SECTION_ICONS: Record<string, ComponentType<{ className?: string }>> = {
   Demo: FlaskConical,
 };
 
-const SECTION_ORDER = [
-  "Query Limits",
-  "Rate Limiting",
-  "Sessions",
-  "Sandbox",
-  "Agent",
-  "Intelligence",
-  "Demo",
-];
-
 function sectionIcon(section: string): ComponentType<{ className?: string }> {
-  return SECTION_ICONS[section] ?? Settings;
+  if (section in SECTION_ICONS) return SECTION_ICONS[section as KnownSection];
+  if (process.env.NODE_ENV !== "production") {
+    console.warn(`[admin/settings] unknown section "${section}" — falling back to generic icon`);
+  }
+  return Settings;
 }
 
 // ── Source pill ───────────────────────────────────────────────────
-// Only rendered when source !== "default" — default is the default state,
-// and labeling it on every row was pure noise.
 
 function SourcePill({ source }: { source: Exclude<SettingSource, "default"> }) {
   const tone =
@@ -128,7 +131,7 @@ function SourcePill({ source }: { source: Exclude<SettingSource, "default"> }) {
   );
 }
 
-// ── Setting control (reused for dialog) ───────────────────────────
+// ── Edit dialog ───────────────────────────────────────────────────
 
 const editSettingSchema = z.object({
   value: z.string(),
@@ -288,7 +291,14 @@ function SettingRow({
   const isOverride =
     setting.source === "override" || setting.source === "workspace-override";
   const showRestart = !isSaas && setting.requiresRestart && isOverride;
-  const valueText = setting.currentValue ?? "—";
+  // Render "not set" and "" distinctly so an admin clearing an override to the
+  // empty string can tell it apart from "never configured."
+  const valueDisplay =
+    setting.currentValue === undefined
+      ? { text: "not set", muted: true }
+      : setting.currentValue === ""
+        ? { text: '""', muted: false }
+        : { text: setting.currentValue, muted: false };
 
   return (
     <div
@@ -330,10 +340,10 @@ function SettingRow({
           <span
             className={cn(
               "truncate font-mono text-[11px]",
-              setting.currentValue ? "text-foreground/80" : "text-muted-foreground/70",
+              valueDisplay.muted ? "italic text-muted-foreground/70" : "text-foreground/80",
             )}
           >
-            {valueText}
+            {valueDisplay.text}
           </span>
         </div>
       </div>

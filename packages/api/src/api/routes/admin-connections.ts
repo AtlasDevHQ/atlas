@@ -17,7 +17,18 @@ import { runHandler } from "@atlas/api/lib/effect/hono";
 import { checkResourceLimit } from "@atlas/api/lib/billing/enforcement";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
-import { buildUnionStatusClause } from "@atlas/api/lib/mode";
+import { Effect } from "effect";
+import {
+  CONTENT_MODE_TABLES,
+  makeService,
+} from "@atlas/api/lib/content-mode";
+
+/**
+ * Module-level synchronous content-mode registry (#1515 phase 2c).
+ * `readFilter` is a pure function of the static tuple; `Effect.runSync`
+ * is safe because no I/O and the key is a known-simple entry.
+ */
+const contentModeRegistry = makeService(CONTENT_MODE_TABLES);
 
 const log = createLogger("admin-connections");
 
@@ -61,9 +72,11 @@ async function getVisibleConnectionIds(
   const visible = new Set<string>(["default"]);
 
   if (hasInternalDB()) {
-    const statusClause = buildUnionStatusClause(mode);
+    const statusClause = Effect.runSync(
+      contentModeRegistry.readFilter("connections", mode ?? "published", "c"),
+    );
     const rows = await internalQuery<{ id: string }>(
-      `SELECT id FROM connections WHERE org_id = $1${statusClause}`,
+      `SELECT c.id FROM connections c WHERE c.org_id = $1 AND ${statusClause}`,
       [orgId],
     );
     for (const row of rows) {

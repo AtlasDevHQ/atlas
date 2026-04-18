@@ -59,8 +59,8 @@ const ResidencyStatusSchema = z.object({
 type ResidencyStatus = z.infer<typeof ResidencyStatusSchema>;
 
 // ── Shared design primitives ──────────────────────────────────────
-// Mirrors the primitives in admin/sandbox, admin/custom-domain, and
-// admin/branding. Tracked for extraction in #1551.
+// Intentionally duplicated from admin/sandbox and admin/custom-domain
+// until the shape is stable enough to extract. Tracked in #1551.
 
 type StatusKind =
   | "connected"
@@ -304,8 +304,7 @@ function RegionTile({
   return (
     <button
       type="button"
-      role="radio"
-      aria-checked={selected}
+      aria-pressed={selected}
       disabled={disabled}
       onClick={onSelect}
       className={cn(
@@ -412,6 +411,10 @@ function ResidencyPageContent() {
     migrateMutation.clearError();
     retryMutation.clearError();
     cancelMutation.clearError();
+    // After a failed migrate/retry/cancel the server state may have
+    // advanced to "failed" while our cached migration snapshot is pre-request.
+    // Dismissing the banner should resync so the UI doesn't lie.
+    refetchMigration();
   }
 
   const handleAssign = async (region: string) => {
@@ -584,11 +587,7 @@ function UnassignedRegionShell({
           No regions are available in this deployment. Contact support for assistance.
         </p>
       ) : isSaas ? (
-        <div
-          role="radiogroup"
-          aria-label="Data region"
-          className="grid gap-2 sm:grid-cols-2"
-        >
+        <div role="group" aria-label="Data region" className="grid gap-2 sm:grid-cols-2">
           {status.availableRegions.map((region) => (
             <RegionTile
               key={region.id}
@@ -747,6 +746,14 @@ function pillForMigration(migration: RegionMigration | null): ReactNode {
       return <StatusPill kind="connected" label="Migrated" />;
     case "cancelled":
       return <StatusPill kind="disconnected" label="Cancelled" />;
+    default: {
+      // Guard against an API-side status we don't know yet. Fails loudly in
+      // dev (exhaustiveness check below) while still rendering something
+      // neutral at runtime instead of silently falling through to the
+      // default "Live" pill in the shell header.
+      const _exhaustive: never = migration.status;
+      return <StatusPill kind="unavailable" label={String(_exhaustive)} />;
+    }
   }
 }
 
@@ -779,7 +786,13 @@ function MigrationInline({
   const { status, sourceRegion, targetRegion, errorMessage, completedAt, requestedAt } =
     migration;
 
-  const heading = MIGRATION_HEADINGS[status];
+  // Fall back to a neutral heading if the API ships a status we don't yet
+  // render — an older bundle shouldn't crash the admin page over it.
+  const heading = MIGRATION_HEADINGS[status] ?? {
+    icon: Clock,
+    text: `Migration ${status}`,
+    spin: false,
+  };
 
   return (
     <div className="space-y-2">
@@ -864,6 +877,8 @@ function MigrationDialog({
   async function handleConfirm() {
     const success = await onMigrate(selected);
     if (success) setSelected("");
+    // Close regardless of success — failures surface via the page-level
+    // ErrorBanner so the dialog doesn't trap the user over a stale form.
     setShowConfirm(false);
     setOpen(false);
   }
@@ -907,11 +922,7 @@ function MigrationDialog({
               )}
             </div>
 
-            <div
-              role="radiogroup"
-              aria-label="Target region"
-              className="grid gap-2 sm:grid-cols-2"
-            >
+            <div role="group" aria-label="Target region" className="grid gap-2 sm:grid-cols-2">
               {availableRegions.map((region) => (
                 <RegionTile
                   key={region.id}

@@ -1,7 +1,14 @@
 "use client";
 
-import { useEffect, useState, type ComponentType, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ComponentType, type ReactNode } from "react";
 import { z } from "zod";
+import { EMAIL_PROVIDERS, type EmailProvider } from "@useatlas/types/email-provider";
+import {
+  buildProviderConfig,
+  hasAnyProviderFieldFilled,
+  INITIAL_FIELD_VALUES,
+  type ProviderFieldValues,
+} from "./build-provider-config";
 import { cn } from "@/lib/utils";
 import { formatDateTime } from "@/lib/format";
 import { Button } from "@/components/ui/button";
@@ -32,9 +39,6 @@ import {
 } from "lucide-react";
 
 // ── Schemas ───────────────────────────────────────────────────────
-
-const EMAIL_PROVIDERS = ["resend", "sendgrid", "postmark", "smtp", "ses"] as const;
-type EmailProvider = (typeof EMAIL_PROVIDERS)[number];
 
 const PROVIDER_LABEL: Record<EmailProvider, string> = {
   resend: "Resend",
@@ -247,34 +251,6 @@ interface ProviderFieldsProps {
   onToggleSecrets: () => void;
 }
 
-interface ProviderFieldValues {
-  resendApiKey: string;
-  sendgridApiKey: string;
-  postmarkServerToken: string;
-  smtpHost: string;
-  smtpPort: string;
-  smtpUsername: string;
-  smtpPassword: string;
-  smtpTls: boolean;
-  sesRegion: string;
-  sesAccessKeyId: string;
-  sesSecretAccessKey: string;
-}
-
-const INITIAL_FIELD_VALUES: ProviderFieldValues = {
-  resendApiKey: "",
-  sendgridApiKey: "",
-  postmarkServerToken: "",
-  smtpHost: "",
-  smtpPort: "587",
-  smtpUsername: "",
-  smtpPassword: "",
-  smtpTls: true,
-  sesRegion: "us-east-1",
-  sesAccessKeyId: "",
-  sesSecretAccessKey: "",
-};
-
 function SecretInput({
   id,
   placeholder,
@@ -456,56 +432,6 @@ function ProviderFields({ provider, values, onChange, showSecrets, onToggleSecre
   );
 }
 
-/**
- * Assemble the provider-specific `config` payload from the form values.
- * Returns null when required fields are empty so the caller can flag it.
- */
-function buildProviderConfig(
-  provider: EmailProvider,
-  values: ProviderFieldValues,
-): { ok: true; config: Record<string, unknown> } | { ok: false; error: string } {
-  switch (provider) {
-    case "resend":
-      if (!values.resendApiKey.trim()) return { ok: false, error: "API key is required." };
-      return { ok: true, config: { apiKey: values.resendApiKey.trim() } };
-    case "sendgrid":
-      if (!values.sendgridApiKey.trim()) return { ok: false, error: "API key is required." };
-      return { ok: true, config: { apiKey: values.sendgridApiKey.trim() } };
-    case "postmark":
-      if (!values.postmarkServerToken.trim()) return { ok: false, error: "Server token is required." };
-      return { ok: true, config: { serverToken: values.postmarkServerToken.trim() } };
-    case "smtp": {
-      const port = Number(values.smtpPort);
-      if (!values.smtpHost.trim()) return { ok: false, error: "Host is required." };
-      if (!Number.isInteger(port) || port < 1 || port > 65535) return { ok: false, error: "Port must be 1–65535." };
-      if (!values.smtpUsername.trim()) return { ok: false, error: "Username is required." };
-      if (!values.smtpPassword.trim()) return { ok: false, error: "Password is required." };
-      return {
-        ok: true,
-        config: {
-          host: values.smtpHost.trim(),
-          port,
-          username: values.smtpUsername.trim(),
-          password: values.smtpPassword.trim(),
-          tls: values.smtpTls,
-        },
-      };
-    }
-    case "ses":
-      if (!values.sesRegion.trim()) return { ok: false, error: "Region is required." };
-      if (!values.sesAccessKeyId.trim()) return { ok: false, error: "Access key ID is required." };
-      if (!values.sesSecretAccessKey.trim()) return { ok: false, error: "Secret access key is required." };
-      return {
-        ok: true,
-        config: {
-          region: values.sesRegion.trim(),
-          accessKeyId: values.sesAccessKeyId.trim(),
-          secretAccessKey: values.sesSecretAccessKey.trim(),
-        },
-      };
-  }
-}
-
 // ── Page ─────────────────────────────────────────────────────────
 
 export default function EmailProviderPage() {
@@ -546,8 +472,18 @@ export default function EmailProviderPage() {
   const hasOverride = override !== null;
   const showEditor = hasOverride || expanded;
 
+  // Sync form state from the server only when the override's identity actually
+  // changes — not on every background refetch (window-focus, 30s stale revalidation,
+  // mutation invalidation). An unconditional reset clobbers in-flight edits and
+  // silently dismisses mutation errors the user hasn't seen yet.
+  const lastSyncedKey = useRef<string | null>(null);
   useEffect(() => {
     if (loading) return;
+    const key = override
+      ? `${override.provider}|${override.fromAddress}|${override.installedAt}`
+      : "none";
+    if (lastSyncedKey.current === key) return;
+    lastSyncedKey.current = key;
     setProvider(override?.provider ?? "resend");
     setFromAddress(override?.fromAddress ?? "");
     setFields(INITIAL_FIELD_VALUES);
@@ -613,14 +549,28 @@ export default function EmailProviderPage() {
       return;
     }
 
+    // Distinguish "user is testing fresh creds" from "user is testing the saved
+    // override" by checking whether any provider-specific field was touched.
+    // If anything is typed we MUST test exactly that — otherwise we'd silently
+    // fall through to the saved/platform config and mislead the admin.
+    const hasTypedCreds = hasAnyProviderFieldFilled(provider, fields);
     const configResult = buildProviderConfig(provider, fields);
+
     const body: Record<string, unknown> = { recipientEmail: recipientEmail.trim() };
-    if (configResult.ok) {
+
+    if (hasTypedCreds) {
+      if (!configResult.ok) {
+        setFormError(configResult.error);
+        return;
+      }
       body.provider = provider;
       body.fromAddress = fromAddress.trim() || override?.fromAddress || baseline?.fromAddress;
       body.config = configResult.config;
+    } else if (!hasOverride) {
+      setFormError("Enter credentials to test, or save an override first.");
+      return;
     }
-    // else: no fresh creds → fall through to the saved override/baseline test path
+    // Else: no fresh creds and an override exists — fall through to test the saved override.
 
     const result = await testMutate({ body });
     if (result.ok && result.data) setTestResult(result.data);
@@ -649,7 +599,7 @@ export default function EmailProviderPage() {
       <ErrorBoundary>
         {mutationError && (
           <div className="mx-auto mb-4 max-w-3xl">
-            <ErrorBanner message={mutationError} onRetry={clearAllErrors} />
+            <ErrorBanner message={mutationError} onRetry={clearAllErrors} actionLabel="Dismiss" />
           </div>
         )}
 

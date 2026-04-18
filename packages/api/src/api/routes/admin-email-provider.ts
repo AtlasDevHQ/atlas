@@ -14,6 +14,7 @@
 import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
 import { runEffect } from "@atlas/api/lib/effect/hono";
+import { createLogger } from "@atlas/api/lib/logger";
 import {
   getEmailInstallationByOrg,
   saveEmailInstallation,
@@ -28,10 +29,22 @@ import {
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 
+const log = createLogger("admin-email-provider");
+
 // ---------------------------------------------------------------------------
 // Baseline — the SaaS default shown as read-only on the page.
 // ---------------------------------------------------------------------------
 
+/**
+ * Baseline is deliberately hardcoded to Resend + the atlas.dev sender — it is
+ * NOT derived from `ATLAS_EMAIL_PROVIDER` / `ATLAS_EMAIL_FROM` platform
+ * settings. The baseline represents "Atlas owns delivery" — the shared SaaS
+ * identity rendered as a locked row in the UI so orgs know what falls back
+ * when they have no override. The actual runtime fallback resolved by
+ * `lib/email/delivery.ts` may differ on self-hosted deployments (platform
+ * settings / env vars can change the transport) — this baseline is a brand
+ * statement, not a live status readout.
+ */
 const BASELINE_PROVIDER: EmailProvider = "resend";
 const BASELINE_FROM_ADDRESS = "Atlas <noreply@useatlas.dev>";
 
@@ -62,8 +75,11 @@ const ResendConfigSchema = z.object({
   apiKey: z.string().min(1),
 });
 
-/** Mask a secret value for display. */
-function maskSecret(value: string): string {
+/**
+ * Mask a secret value for display. Exported so tests exercise the real
+ * implementation (see __tests__/admin-email-provider.test.ts).
+ */
+export function maskSecret(value: string): string {
   if (value.length <= 8) return "••••••••";
   return `${value.slice(0, 4)}••••${value.slice(-4)}`;
 }
@@ -72,6 +88,14 @@ function maskSecret(value: string): string {
  * Build the non-secret detail list for a stored installation. Secrets are
  * masked; non-secret hints (SMTP host, SES region, etc.) pass through so
  * the UI can show the admin what they configured.
+ *
+ * The per-case `as` casts are safe: `ProviderConfig` is a structural union
+ * that TypeScript cannot narrow from the sibling `provider` discriminator.
+ * Callers only pass rows read from `email_installations`, where the config
+ * shape was validated at save time via `validateProviderConfig` → zod. A
+ * cleaner shape would be a tagged union (embed `provider` in the config);
+ * tracked as a follow-up since that refactor crosses the wire contract in
+ * `admin-integrations.ts` and the `email_installations` JSONB column.
  */
 function describeOverride(
   provider: EmailProvider,
@@ -89,27 +113,38 @@ function describeOverride(
     }
     case "smtp": {
       const c = config as { host: string; port: number; username: string; password: string; tls: boolean };
+      // Username and password are both credential material — usernames are
+      // often full email addresses or account logins and shouldn't leave
+      // the server in the clear (CLAUDE.md "No secrets in responses").
       return {
         secretLabel: "Password",
         secretMasked: c.password ? maskSecret(c.password) : null,
         hints: {
           Host: c.host,
           Port: String(c.port),
-          Username: c.username,
+          Username: c.username ? maskSecret(c.username) : "",
           TLS: c.tls ? "enabled" : "disabled",
         },
       };
     }
     case "ses": {
       const c = config as { region: string; accessKeyId: string; secretAccessKey: string };
+      // AWS treats access-key-IDs as semi-sensitive — they pair with the
+      // secret and leak identity/tenancy. Region is non-sensitive.
       return {
         secretLabel: "Secret access key",
         secretMasked: c.secretAccessKey ? maskSecret(c.secretAccessKey) : null,
         hints: {
           Region: c.region,
-          "Access key ID": c.accessKeyId,
+          "Access key ID": c.accessKeyId ? maskSecret(c.accessKeyId) : "",
         },
       };
+    }
+    default: {
+      // Exhaustiveness check — adding a new EmailProvider without handling it here
+      // is a compile-time error. The throw is a belt-and-braces runtime guard.
+      const _exhaustive: never = provider;
+      throw new Error(`Unhandled email provider: ${_exhaustive as string}`);
     }
   }
 }
@@ -118,13 +153,20 @@ function validateProviderConfig(
   provider: EmailProvider,
   config: unknown,
 ): { ok: true; config: ProviderConfig } | { ok: false; error: string } {
-  const schema = {
-    resend: ResendConfigSchema,
-    sendgrid: SendGridConfigSchema,
-    postmark: PostmarkConfigSchema,
-    smtp: SmtpConfigSchema,
-    ses: SesConfigSchema,
-  }[provider];
+  // Use a switch rather than a lookup object so TypeScript enforces
+  // exhaustiveness on EmailProvider additions.
+  let schema;
+  switch (provider) {
+    case "resend": schema = ResendConfigSchema; break;
+    case "sendgrid": schema = SendGridConfigSchema; break;
+    case "postmark": schema = PostmarkConfigSchema; break;
+    case "smtp": schema = SmtpConfigSchema; break;
+    case "ses": schema = SesConfigSchema; break;
+    default: {
+      const _exhaustive: never = provider;
+      throw new Error(`Unhandled email provider: ${_exhaustive as string}`);
+    }
+  }
   const result = schema.safeParse(config);
   if (!result.success) {
     return { ok: false, error: `Invalid ${provider} config: ${result.error.issues.map((i) => i.message).join(", ")}` };
@@ -383,10 +425,23 @@ adminEmailProvider.openapi(testConfigRoute, async (c) => {
       html: "<p>This is a test email from Atlas to verify your email provider configuration.</p><p>If you received this email, your configuration is working correctly.</p>",
     };
 
-    // 1. Supplied provider + config: test as-is without persisting.
-    // 2. No supplied config: test the saved override (or fall through to platform default).
-    if (body.provider && body.config) {
-      const validated = validateProviderConfig(body.provider, body.config);
+    // Two valid shapes:
+    //   1. provider + config supplied: test those creds without persisting.
+    //   2. neither supplied: test the saved override (or fall through to platform default via sendEmail).
+    // Any mixed state (provider without config, or config without provider) is
+    // ambiguous — reject with 400 so the client can't silently hit the wrong branch.
+    const hasProvider = body.provider !== undefined;
+    const hasConfig = body.config !== undefined;
+    if (hasProvider !== hasConfig) {
+      return c.json({
+        error: "validation",
+        message: "Supply both `provider` and `config` to test fresh credentials, or neither to test the saved override.",
+        requestId,
+      }, 400);
+    }
+
+    if (hasProvider && hasConfig) {
+      const validated = validateProviderConfig(body.provider!, body.config!);
       if (!validated.ok) {
         return c.json({ error: "validation", message: validated.error, requestId }, 400);
       }
@@ -399,6 +454,9 @@ adminEmailProvider.openapi(testConfigRoute, async (c) => {
         }),
         catch: (err) => err instanceof Error ? err : new Error(String(err)),
       });
+      if (!result.success) {
+        log.warn({ requestId, orgId, provider: result.provider, err: result.error }, "Test email delivery failed (fresh creds)");
+      }
       return c.json(
         result.success
           ? { success: true, message: `Test email sent successfully via ${result.provider}.` }
@@ -411,6 +469,9 @@ adminEmailProvider.openapi(testConfigRoute, async (c) => {
       try: () => sendEmail(testMessage, orgId),
       catch: (err) => err instanceof Error ? err : new Error(String(err)),
     });
+    if (!result.success) {
+      log.warn({ requestId, orgId, provider: result.provider, err: result.error }, "Test email delivery failed (saved config)");
+    }
     return c.json(
       result.success
         ? { success: true, message: `Test email sent successfully via ${result.provider}.` }

@@ -2330,6 +2330,14 @@ function DiscordByotForm({
 
 // -- Email Card --
 
+const EMAIL_PROVIDER_LABEL: Record<string, string> = {
+  resend: "Resend",
+  sendgrid: "SendGrid",
+  postmark: "Postmark",
+  smtp: "SMTP",
+  ses: "Amazon SES",
+};
+
 /**
  * Thin email summary card. Email delivery is configured on the dedicated
  * /admin/email-provider page — this tile just exposes connection status and
@@ -2337,13 +2345,14 @@ function DiscordByotForm({
  */
 function EmailCard({ email }: { email: EmailStatus }) {
   const connected = email.connected;
+  const providerLabel = email.provider ? EMAIL_PROVIDER_LABEL[email.provider] ?? email.provider : null;
   return (
     <CompactRow
       icon={Mail}
       title="Email"
       description={
         connected
-          ? `Resend · ${email.senderAddress ?? "workspace sender"}`
+          ? `${providerLabel ?? "Custom"} · ${email.senderAddress ?? "workspace sender"}`
           : "Using the Atlas shared Resend default"
       }
       status={connected ? "connected" : "disconnected"}

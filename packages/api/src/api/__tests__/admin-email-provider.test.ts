@@ -1,16 +1,13 @@
 /**
  * Tests for the admin email provider route's secret-masking helper.
  *
- * Mirrors the implementation in admin-email-provider.ts so we catch
- * accidental regressions (short-key fallthrough, leaking full secrets).
+ * Imports the real implementation from the route so a regression in the
+ * function (short-key fallthrough, leaked secrets) fails this test instead
+ * of silently passing against a stale duplicate.
  */
 
 import { describe, it, expect } from "bun:test";
-
-function maskSecret(value: string): string {
-  if (value.length <= 8) return "••••••••";
-  return `${value.slice(0, 4)}••••${value.slice(-4)}`;
-}
+import { maskSecret } from "@atlas/api/api/routes/admin-email-provider";
 
 describe("maskSecret", () => {
   it("fully masks short secrets (≤8 chars)", () => {

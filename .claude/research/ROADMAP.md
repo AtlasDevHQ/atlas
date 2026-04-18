@@ -1134,6 +1134,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] Chat UI: replace hardcoded blue with brand primary (PR #1413)
 - [x] Report cells: `toolInvocationId` → `toolCallId` for AI SDK compat
 - [x] SQL result card: narrow `executionMs` type before arithmetic
+- [x] Railway deployments failing on main — `@useatlas/sdk` built after `packages/react` in api/api-eu/api-apac/web Dockerfiles (#1516, PR #1518)
 
 ---
 
@@ -1208,6 +1209,7 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 - [x] Obsidian plugin doc — stale `/api/chat` → `/api/v1/chat` (#1491, surfaced by docs audit)
 - [x] Migrate `internalQuery` call sites from `Effect.promise` to `Effect.tryPromise` (#1468, PR #1493 — 37 sites across 15 routes; extracted `queryEffect<T>()` helper in `@atlas/api/lib/effect` with normalized catch; `makeQueryEffectMock` test helper; found during #1465 silent-failure review)
 - [x] Pre-existing flaky middleware test `mode 'managed' with valid session returns authenticated` (#1483 — fixed by isolating from internal DB so SSO enforcement check short-circuits)
+- [x] `@atlas/mcp` test suite — 4 tests failing with `Export named getConfig not found` SyntaxError (#1487 — root cause was a static import of `detectAuthMode` added in PR #1484; reverted to dynamic import)
 
 ---
 
@@ -1259,6 +1261,39 @@ Parent: #757. Replace per-platform interaction plugins with a single `@useatlas/
 
 ### Follow-ups
 - [ ] Migrate `getPopularSuggestions` in `lib/db/internal.ts` (#1531 — last caller of `buildUnionStatusClause`; needs either a pure status-clause helper in `content-mode/port.ts` or relocation of the query to a module that can import `content-mode` freely)
+
+---
+
+## Admin Console Revamp
+
+**Progressive-disclosure redesign across `/admin/*` pages.** `/critique` baseline flagged empty-state walls of forms and duplicated per-card state. Pattern: `CompactRow` (thin row with status dot + right-aligned action button) expands in place into `IntegrationShell` / `ProviderShell` / etc. via `useDisclosure`; connected rows stay expanded to surface detail rows via `DetailList`. `--primary` teal retuned in `globals.css` for stronger action surfaces (brand mint preserved in `brand.css` for www / docs / sidebar). Skill flow: `/critique` → `/distill` → `/colorize` → `/revamp`.
+
+### Tooling
+- [x] `/revamp` slash command (PR #1539) — encodes the page-revamp workflow + `CompactRow` / `IntegrationShell` / `DetailList` / `InlineError` / `SectionHeading` primitives cheat sheet
+- [x] Deeper `--primary` teal for UI action surfaces (PR #1538) — light `oklch(0.759 0.148 167.71)` → `oklch(0.58 0.185 167.71)`; dark chroma `0.148` → `0.175`
+
+### Pages
+- [x] `/admin/integrations` — CompactRow with inline expansion across 8 platforms + brand teal retune (PR #1538)
+- [x] `/admin/email-provider` — scope to org, lock provider to Resend (#1540)
+- [x] `/admin/billing` — CompactRow + detail list (PR #1544)
+- [x] `/admin/branding` — CompactRow + live preview shell (PR #1548)
+- [x] `/admin/custom-domain` — CompactRow + full shell (PR #1549)
+- [x] `/admin/sandbox` — CompactRow + live shell (PR #1550)
+- [x] `/admin/residency` — CompactRow + progressive disclosure (PR #1553)
+- [x] `/admin/starter-prompts` — dialog + trim empty state (PR #1554)
+- [x] `/admin/settings` — CompactRow + per-section icons (PR #1552)
+- [x] `/admin/model-config` — BYOT gate + CompactRow (PR #1556)
+
+### Bug Fixes (surfaced during revamp)
+- [x] `parseCIDR` crashes on non-string DB rows — auth middleware 500d, broke admin-integrations tests (#1541, PR #1546)
+- [x] Drop `aria-controls` from CompactRow triggers whose panel isn't mounted — disclosure pattern correctness (#1545, PR #1547)
+
+### Follow-ups
+- [ ] Extract `CompactRow` / `ProviderShell` primitives to `@/ui/components/admin/` after third adopter (#1551)
+- [ ] `useAdminMutation` dialog stays open when server returns 204 No Content (#1555)
+- [ ] Admin mutation banners: surface concurrent failures instead of narrowing to first (#1557)
+- [ ] Share `EMAIL_PROVIDERS` via `@useatlas/types` after next publish (#1543)
+- [ ] Make `ProviderConfig` a tagged union keyed on provider (#1542)
 
 ---
 

@@ -21,19 +21,41 @@
  */
 
 import { createRoute, z } from "@hono/zod-openapi";
+import { Effect } from "effect";
 import { createLogger } from "@atlas/api/lib/logger";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { getInternalDB } from "@atlas/api/lib/db/internal";
 import { readDemoIndustry } from "@atlas/api/lib/demo-industry";
 import {
-  applyTombstones,
-  promoteDraftEntities,
   archiveSingleConnection,
   DEMO_CONNECTION_ID,
 } from "@atlas/api/lib/semantic/entities";
 import { runHandler } from "@atlas/api/lib/effect/hono";
+import {
+  CONTENT_MODE_TABLES,
+  makeService,
+  type PromotionReport,
+} from "@atlas/api/lib/content-mode";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
+
+/**
+ * Module-level content-mode registry (#1515 phase 2e).
+ *
+ * `runPublishPhases` iterates `CONTENT_MODE_TABLES` in tuple order inside
+ * the caller's transaction — this route still owns BEGIN/COMMIT/ROLLBACK.
+ * The registry's `PromotionReport[]` return gives per-table counts that
+ * are projected back into the wire schema below.
+ */
+const contentModeRegistry = makeService(CONTENT_MODE_TABLES);
+
+/** Look up the promotion report for a specific physical table name. */
+function findReport(
+  reports: ReadonlyArray<PromotionReport>,
+  table: string,
+): PromotionReport | undefined {
+  return reports.find((r) => r.table === table);
+}
 
 const log = createLogger("admin-publish");
 
@@ -189,41 +211,33 @@ adminPublish.openapi(publishRoute, async (c) =>
     try {
       await client.query("BEGIN");
 
-      // Phase 1: apply tombstones (delete targeted published rows + tombstones)
-      deletedEntityCount = await applyTombstones(client, orgId);
-
-      // Phase 2 + 3a: remove superseded published entities, promote drafts
-      promotedEntityCount = await promoteDraftEntities(client, orgId);
-
-      // Phase 3b: promote draft connections
-      const promotedConns = await client.query(
-        `UPDATE connections SET status = 'published', updated_at = now()
-         WHERE org_id = $1 AND status = 'draft'
-         RETURNING id`,
-        [orgId],
+      // Phases 1–3 — delegate to the content-mode registry. It runs every
+      // registered adapter in tuple order inside this transaction: the
+      // simple connections / prompt_collections / query_suggestions
+      // UPDATEs, then the exotic semantic_entities adapter composes
+      // applyTombstones + promoteDraftEntities. A failure surfaces as
+      // `PublishPhaseError` tagged with `{ table, phase }`; `Effect.runPromise`
+      // throws on failure and the outer catch rolls back.
+      // InternalPoolClient is the minimal `{ query, release }` shape the
+      // registry's adapters consume; the full `pg.PoolClient` extends it
+      // with EventEmitter methods the registry never touches. Cast is
+      // safe — both `applyTombstones`/`promoteDraftEntities` and the
+      // simple UPDATE adapters only call `.query()`.
+      const reports = await Effect.runPromise(
+        contentModeRegistry.runPublishPhases(
+          client as unknown as import("pg").PoolClient,
+          orgId,
+        ),
       );
-      promotedConnectionCount = promotedConns.rows.length;
 
-      // Phase 3c: promote draft prompt collections
-      const promotedPrompts = await client.query(
-        `UPDATE prompt_collections SET status = 'published', updated_at = now()
-         WHERE org_id = $1 AND status = 'draft'
-         RETURNING id`,
-        [orgId],
-      );
-      promotedPromptCount = promotedPrompts.rows.length;
+      promotedConnectionCount = findReport(reports, "connections")?.promoted ?? 0;
+      promotedPromptCount = findReport(reports, "prompt_collections")?.promoted ?? 0;
+      promotedStarterPromptCount =
+        findReport(reports, "query_suggestions")?.promoted ?? 0;
 
-      // Phase 3d: promote draft starter-prompt suggestions. Runs in the
-      // same transaction as entities/connections/prompt collections so a
-      // partial failure rolls all four promotions back — the admin never
-      // sees some draft edits go live while others remain unpublished.
-      const promotedStarterPrompts = await client.query(
-        `UPDATE query_suggestions SET status = 'published', updated_at = now()
-         WHERE org_id = $1 AND status = 'draft'
-         RETURNING id`,
-        [orgId],
-      );
-      promotedStarterPromptCount = promotedStarterPrompts.rows.length;
+      const entitiesReport = findReport(reports, "semantic_entities");
+      promotedEntityCount = entitiesReport?.promoted ?? 0;
+      deletedEntityCount = entitiesReport?.tombstonesApplied ?? 0;
 
       // Phase 4: archive requested connections (+ cascade to their entities +
       // demo prompt collections when the id is `__demo__`). Loops the shared

@@ -136,7 +136,13 @@ function promoteSimpleTable(
   return Effect.tryPromise({
     try: async () => {
       const result = await tx.query(simplePromoteSql(entry), [orgId]);
-      return { table, promoted: result.rowCount ?? 0 } satisfies PromotionReport;
+      // `pg` sets both `rowCount` and `rows`. `rowCount` is authoritative
+      // for non-RETURNING UPDATEs (`rows` is empty); callers that add
+      // RETURNING still work because `rowCount === rows.length` in that
+      // case. Falling back to `rows.length` keeps test mocks that only
+      // populate one of the two fields from silently returning zero.
+      const promoted = result.rowCount ?? result.rows?.length ?? 0;
+      return { table, promoted } satisfies PromotionReport;
     },
     catch: (cause) => new PublishPhaseError({ table, phase: "promote", cause }),
   });

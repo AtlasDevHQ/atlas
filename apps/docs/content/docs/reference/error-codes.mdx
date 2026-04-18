@@ -85,6 +85,16 @@ The `ChatErrorCode` catalog above is scoped to the chat-stream endpoint — the 
 | `favorite_cap_exceeded` | 400 | User has pinned the maximum number of favorites | Unpin a prompt first, or raise `ATLAS_STARTER_PROMPT_MAX_FAVORITES` (self-hosted) | No |
 | `invalid_favorite_text` | 400 | Favorite text is empty, too long, or otherwise malformed | Fix the client-side validation; trim whitespace and enforce length limits before POSTing | No |
 
+### Content-mode registry (#1515)
+
+These codes surface from the `ContentModeRegistry` service that drives the draft/published mode system (connections, prompt collections, starter prompts, semantic entities). They typically indicate an infrastructure or configuration problem rather than a user error.
+
+| Code | HTTP Status | Trigger | Fix | Retryable |
+|------|-------------|---------|-----|-----------|
+| `upstream_error` | 500 | Publish phase failed (`PublishPhaseError`), unknown content-mode table (`UnknownTableError`), or an exotic table missing its `readFilter` adapter (`ExoticReadFilterUnavailableError`) | Check server logs with the `requestId`. For publish failures, the whole transaction rolled back — no partial state. For unknown-table errors, the caller passed a table name not registered in `CONTENT_MODE_TABLES` (server-side bug). | Yes (transient) / No (config bug) |
+
+`upstream_error` is also used for generic DB execution failures (`QueryExecutionError`) and chat/delivery failures from the scheduler — it covers any 500-class issue that originated at an upstream layer (DB, LLM, adapter) rather than in Atlas's own request handling.
+
 <Callout>
 These codes aren't part of the exhaustively-typed `ChatErrorCode` catalog, so the SDK's `isChatErrorCode()` / `isRetryableError()` guards return `false` / `undefined` for them. Parse the raw `error` field yourself when calling endpoints that may return them: `POST /api/v1/starter-prompts/favorites`, `/api/v1/admin/connections/*`, `/api/v1/admin/semantic/*`, and any write request that hits the regional-routing or migration middleware (including the chat stream itself for `workspace_migrating` / `misdirected_request`).
 </Callout>

@@ -1,22 +1,20 @@
 "use client";
 
 import { useEffect, useState, type ComponentType, type ReactNode } from "react";
-import { useForm } from "react-hook-form";
-import { zodResolver } from "@hookform/resolvers/zod";
 import { z } from "zod";
 import { cn } from "@/lib/utils";
 import { formatDateTime } from "@/lib/format";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import {
-  Form,
-  FormField,
-  FormItem,
-  FormLabel,
-  FormControl,
-  FormDescription,
-  FormMessage,
-} from "@/components/ui/form";
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
@@ -35,14 +33,36 @@ import {
 
 // ── Schemas ───────────────────────────────────────────────────────
 
+const EMAIL_PROVIDERS = ["resend", "sendgrid", "postmark", "smtp", "ses"] as const;
+type EmailProvider = (typeof EMAIL_PROVIDERS)[number];
+
+const PROVIDER_LABEL: Record<EmailProvider, string> = {
+  resend: "Resend",
+  sendgrid: "SendGrid",
+  postmark: "Postmark",
+  smtp: "SMTP",
+  ses: "Amazon SES",
+};
+
+const PROVIDER_DESCRIPTION: Record<EmailProvider, string> = {
+  resend: "Modern email API for developers",
+  sendgrid: "Twilio SendGrid email delivery",
+  postmark: "Transactional email service",
+  smtp: "Generic SMTP (via ATLAS_SMTP_URL bridge)",
+  ses: "AWS Simple Email Service (via ATLAS_SMTP_URL bridge)",
+};
+
 const BaselineSchema = z.object({
   provider: z.literal("resend"),
   fromAddress: z.string(),
 });
 
 const OverrideSchema = z.object({
+  provider: z.enum(EMAIL_PROVIDERS),
   fromAddress: z.string(),
-  apiKeyMasked: z.string(),
+  secretLabel: z.string(),
+  secretMasked: z.string().nullable(),
+  hints: z.record(z.string(), z.string()),
   installedAt: z.string(),
 });
 
@@ -57,12 +77,6 @@ interface TestResult {
   success: boolean;
   message: string;
 }
-
-const formSchema = z.object({
-  apiKey: z.string(),
-  fromAddress: z.string(),
-  recipientEmail: z.string(),
-});
 
 // ── Design primitives ──────────────────────────────────────────────
 
@@ -98,7 +112,6 @@ function SectionHeading({ title, description }: { title: string; description: st
   );
 }
 
-/** Thin single-line row, used for the locked baseline and the collapsed override prompt. */
 function CompactRow({
   icon: Icon,
   title,
@@ -136,7 +149,6 @@ function CompactRow({
   );
 }
 
-/** Full card used when the override is configured or the user is mid-setup. */
 function OverrideShell({
   status,
   title,
@@ -196,7 +208,7 @@ function OverrideShell({
           <p className="mt-0.5 text-xs leading-snug text-muted-foreground">{description}</p>
         </div>
       </header>
-      {children != null && <div className="flex-1 space-y-3 px-4 pb-3 text-sm">{children}</div>}
+      {children != null && <div className="flex-1 space-y-4 px-4 pb-3 text-sm">{children}</div>}
       {actions && (
         <footer className="flex flex-wrap items-center justify-end gap-2 border-t border-border/50 bg-muted/20 px-4 py-2.5">
           {actions}
@@ -225,15 +237,285 @@ function DetailList({ children }: { children: ReactNode }) {
   );
 }
 
+// ── Provider field groups ─────────────────────────────────────────
+
+interface ProviderFieldsProps {
+  provider: EmailProvider;
+  values: ProviderFieldValues;
+  onChange: (next: ProviderFieldValues) => void;
+  showSecrets: boolean;
+  onToggleSecrets: () => void;
+}
+
+interface ProviderFieldValues {
+  resendApiKey: string;
+  sendgridApiKey: string;
+  postmarkServerToken: string;
+  smtpHost: string;
+  smtpPort: string;
+  smtpUsername: string;
+  smtpPassword: string;
+  smtpTls: boolean;
+  sesRegion: string;
+  sesAccessKeyId: string;
+  sesSecretAccessKey: string;
+}
+
+const INITIAL_FIELD_VALUES: ProviderFieldValues = {
+  resendApiKey: "",
+  sendgridApiKey: "",
+  postmarkServerToken: "",
+  smtpHost: "",
+  smtpPort: "587",
+  smtpUsername: "",
+  smtpPassword: "",
+  smtpTls: true,
+  sesRegion: "us-east-1",
+  sesAccessKeyId: "",
+  sesSecretAccessKey: "",
+};
+
+function SecretInput({
+  id,
+  placeholder,
+  value,
+  onChange,
+  show,
+  onToggleShow,
+}: {
+  id: string;
+  placeholder: string;
+  value: string;
+  onChange: (v: string) => void;
+  show: boolean;
+  onToggleShow: () => void;
+}) {
+  return (
+    <div className="relative">
+      <Input
+        id={id}
+        type={show ? "text" : "password"}
+        placeholder={placeholder}
+        className="pr-10 font-mono text-sm"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+      />
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        className="absolute right-1 top-1/2 -translate-y-1/2 h-7 w-7 p-0"
+        onClick={onToggleShow}
+      >
+        {show ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
+      </Button>
+    </div>
+  );
+}
+
+function ProviderFields({ provider, values, onChange, showSecrets, onToggleSecrets }: ProviderFieldsProps) {
+  const set = <K extends keyof ProviderFieldValues>(k: K, v: ProviderFieldValues[K]) =>
+    onChange({ ...values, [k]: v });
+
+  if (provider === "resend") {
+    return (
+      <div className="space-y-1">
+        <Label htmlFor="resendApiKey">API key</Label>
+        <SecretInput
+          id="resendApiKey"
+          placeholder="re_..."
+          value={values.resendApiKey}
+          onChange={(v) => set("resendApiKey", v)}
+          show={showSecrets}
+          onToggleShow={onToggleSecrets}
+        />
+      </div>
+    );
+  }
+
+  if (provider === "sendgrid") {
+    return (
+      <div className="space-y-1">
+        <Label htmlFor="sendgridApiKey">API key</Label>
+        <SecretInput
+          id="sendgridApiKey"
+          placeholder="SG...."
+          value={values.sendgridApiKey}
+          onChange={(v) => set("sendgridApiKey", v)}
+          show={showSecrets}
+          onToggleShow={onToggleSecrets}
+        />
+      </div>
+    );
+  }
+
+  if (provider === "postmark") {
+    return (
+      <div className="space-y-1">
+        <Label htmlFor="postmarkServerToken">Server token</Label>
+        <SecretInput
+          id="postmarkServerToken"
+          placeholder="xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+          value={values.postmarkServerToken}
+          onChange={(v) => set("postmarkServerToken", v)}
+          show={showSecrets}
+          onToggleShow={onToggleSecrets}
+        />
+      </div>
+    );
+  }
+
+  if (provider === "smtp") {
+    return (
+      <div className="space-y-3">
+        <div className="grid grid-cols-[1fr_auto] gap-3">
+          <div className="space-y-1">
+            <Label htmlFor="smtpHost">Host</Label>
+            <Input
+              id="smtpHost"
+              placeholder="smtp.example.com"
+              className="font-mono text-sm"
+              value={values.smtpHost}
+              onChange={(e) => set("smtpHost", e.target.value)}
+            />
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="smtpPort">Port</Label>
+            <Input
+              id="smtpPort"
+              type="number"
+              className="w-24 font-mono text-sm"
+              value={values.smtpPort}
+              onChange={(e) => set("smtpPort", e.target.value)}
+            />
+          </div>
+        </div>
+        <div className="space-y-1">
+          <Label htmlFor="smtpUsername">Username</Label>
+          <Input
+            id="smtpUsername"
+            className="font-mono text-sm"
+            value={values.smtpUsername}
+            onChange={(e) => set("smtpUsername", e.target.value)}
+          />
+        </div>
+        <div className="space-y-1">
+          <Label htmlFor="smtpPassword">Password</Label>
+          <SecretInput
+            id="smtpPassword"
+            placeholder="••••••••"
+            value={values.smtpPassword}
+            onChange={(v) => set("smtpPassword", v)}
+            show={showSecrets}
+            onToggleShow={onToggleSecrets}
+          />
+        </div>
+        <div className="flex items-center gap-2">
+          <Switch id="smtpTls" checked={values.smtpTls} onCheckedChange={(v) => set("smtpTls", v)} />
+          <Label htmlFor="smtpTls" className="text-xs">Use TLS</Label>
+        </div>
+      </div>
+    );
+  }
+
+  // SES
+  return (
+    <div className="space-y-3">
+      <div className="space-y-1">
+        <Label htmlFor="sesRegion">Region</Label>
+        <Input
+          id="sesRegion"
+          placeholder="us-east-1"
+          className="font-mono text-sm"
+          value={values.sesRegion}
+          onChange={(e) => set("sesRegion", e.target.value)}
+        />
+      </div>
+      <div className="space-y-1">
+        <Label htmlFor="sesAccessKeyId">Access key ID</Label>
+        <Input
+          id="sesAccessKeyId"
+          placeholder="AKIA..."
+          className="font-mono text-sm"
+          value={values.sesAccessKeyId}
+          onChange={(e) => set("sesAccessKeyId", e.target.value)}
+        />
+      </div>
+      <div className="space-y-1">
+        <Label htmlFor="sesSecretAccessKey">Secret access key</Label>
+        <SecretInput
+          id="sesSecretAccessKey"
+          placeholder="••••••••"
+          value={values.sesSecretAccessKey}
+          onChange={(v) => set("sesSecretAccessKey", v)}
+          show={showSecrets}
+          onToggleShow={onToggleSecrets}
+        />
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Assemble the provider-specific `config` payload from the form values.
+ * Returns null when required fields are empty so the caller can flag it.
+ */
+function buildProviderConfig(
+  provider: EmailProvider,
+  values: ProviderFieldValues,
+): { ok: true; config: Record<string, unknown> } | { ok: false; error: string } {
+  switch (provider) {
+    case "resend":
+      if (!values.resendApiKey.trim()) return { ok: false, error: "API key is required." };
+      return { ok: true, config: { apiKey: values.resendApiKey.trim() } };
+    case "sendgrid":
+      if (!values.sendgridApiKey.trim()) return { ok: false, error: "API key is required." };
+      return { ok: true, config: { apiKey: values.sendgridApiKey.trim() } };
+    case "postmark":
+      if (!values.postmarkServerToken.trim()) return { ok: false, error: "Server token is required." };
+      return { ok: true, config: { serverToken: values.postmarkServerToken.trim() } };
+    case "smtp": {
+      const port = Number(values.smtpPort);
+      if (!values.smtpHost.trim()) return { ok: false, error: "Host is required." };
+      if (!Number.isInteger(port) || port < 1 || port > 65535) return { ok: false, error: "Port must be 1–65535." };
+      if (!values.smtpUsername.trim()) return { ok: false, error: "Username is required." };
+      if (!values.smtpPassword.trim()) return { ok: false, error: "Password is required." };
+      return {
+        ok: true,
+        config: {
+          host: values.smtpHost.trim(),
+          port,
+          username: values.smtpUsername.trim(),
+          password: values.smtpPassword.trim(),
+          tls: values.smtpTls,
+        },
+      };
+    }
+    case "ses":
+      if (!values.sesRegion.trim()) return { ok: false, error: "Region is required." };
+      if (!values.sesAccessKeyId.trim()) return { ok: false, error: "Access key ID is required." };
+      if (!values.sesSecretAccessKey.trim()) return { ok: false, error: "Secret access key is required." };
+      return {
+        ok: true,
+        config: {
+          region: values.sesRegion.trim(),
+          accessKeyId: values.sesAccessKeyId.trim(),
+          secretAccessKey: values.sesSecretAccessKey.trim(),
+        },
+      };
+  }
+}
+
 // ── Page ─────────────────────────────────────────────────────────
 
 export default function EmailProviderPage() {
-  const form = useForm<z.infer<typeof formSchema>>({
-    resolver: zodResolver(formSchema),
-    defaultValues: { apiKey: "", fromAddress: "", recipientEmail: "" },
-  });
   const [expanded, setExpanded] = useState(false);
-  const [showApiKey, setShowApiKey] = useState(false);
+  const [showSecrets, setShowSecrets] = useState(false);
+  const [provider, setProvider] = useState<EmailProvider>("resend");
+  const [fromAddress, setFromAddress] = useState("");
+  const [recipientEmail, setRecipientEmail] = useState("");
+  const [fields, setFields] = useState<ProviderFieldValues>(INITIAL_FIELD_VALUES);
+  const [formError, setFormError] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<TestResult | null>(null);
 
   const { data, loading, error, refetch } = useAdminFetch("/api/v1/admin/email-provider", {
@@ -246,87 +528,99 @@ export default function EmailProviderPage() {
       method: "PUT",
       invalidates: refetch,
     });
-
   const { mutate: deleteMutate, saving: deleting, error: deleteError, clearError: clearDeleteError } =
     useAdminMutation({
       path: "/api/v1/admin/email-provider",
       method: "DELETE",
       invalidates: refetch,
     });
-
   const { mutate: testMutate, saving: testing, error: testError, clearError: clearTestError } =
     useAdminMutation<TestResult>({
       path: "/api/v1/admin/email-provider/test",
       method: "POST",
     });
 
-  const mutationError = saveError ?? deleteError ?? testError;
+  const mutationError = saveError ?? deleteError ?? testError ?? formError;
   const baseline = data?.config.baseline;
   const override = data?.config.override ?? null;
   const hasOverride = override !== null;
   const showEditor = hasOverride || expanded;
 
-  // Hydrate the form from the saved override when it loads.
   useEffect(() => {
     if (loading) return;
-    form.reset({
-      apiKey: "",
-      fromAddress: override?.fromAddress ?? "",
-      recipientEmail: "",
-    });
+    setProvider(override?.provider ?? "resend");
+    setFromAddress(override?.fromAddress ?? "");
+    setFields(INITIAL_FIELD_VALUES);
+    setRecipientEmail("");
     setTestResult(null);
+    setFormError(null);
     clearSaveError();
     clearDeleteError();
     clearTestError();
   }, [data, loading]);
 
-  function clearMutationErrors() {
+  function clearAllErrors() {
+    setFormError(null);
     clearSaveError();
     clearDeleteError();
     clearTestError();
   }
 
-  async function handleSave(values: z.infer<typeof formSchema>) {
-    if (!hasOverride && !values.apiKey) {
-      form.setError("apiKey", { message: "A Resend API key is required." });
+  async function handleSave() {
+    setTestResult(null);
+    clearAllErrors();
+
+    const configResult = buildProviderConfig(provider, fields);
+    if (!configResult.ok) {
+      setFormError(configResult.error);
+      return;
+    }
+    if (!fromAddress.trim()) {
+      setFormError("From address is required.");
       return;
     }
 
-    setTestResult(null);
-    clearMutationErrors();
-
-    const body: Record<string, string> = {};
-    if (values.apiKey) body.apiKey = values.apiKey;
-    if (values.fromAddress.trim()) body.fromAddress = values.fromAddress.trim();
-
-    const result = await saveMutate({ body });
+    const result = await saveMutate({
+      body: {
+        provider,
+        fromAddress: fromAddress.trim(),
+        config: configResult.config,
+      },
+    });
     if (result.ok) {
-      form.setValue("apiKey", "");
+      setFields(INITIAL_FIELD_VALUES);
     }
   }
 
   async function handleRemove() {
     setTestResult(null);
-    clearMutationErrors();
+    clearAllErrors();
     const result = await deleteMutate();
     if (result.ok) {
-      form.reset({ apiKey: "", fromAddress: "", recipientEmail: "" });
       setExpanded(false);
+      setProvider("resend");
+      setFromAddress("");
+      setFields(INITIAL_FIELD_VALUES);
     }
   }
 
   async function handleTest() {
-    const values = form.getValues();
-    if (!values.recipientEmail.trim()) {
-      form.setError("recipientEmail", { message: "Enter a recipient email to send a test." });
+    setTestResult(null);
+    clearAllErrors();
+
+    if (!recipientEmail.trim()) {
+      setFormError("Enter a recipient email to send a test.");
       return;
     }
-    setTestResult(null);
-    clearMutationErrors();
 
-    const body: Record<string, string> = { recipientEmail: values.recipientEmail.trim() };
-    if (values.apiKey) body.apiKey = values.apiKey;
-    if (values.fromAddress.trim()) body.fromAddress = values.fromAddress.trim();
+    const configResult = buildProviderConfig(provider, fields);
+    const body: Record<string, unknown> = { recipientEmail: recipientEmail.trim() };
+    if (configResult.ok) {
+      body.provider = provider;
+      body.fromAddress = fromAddress.trim() || override?.fromAddress || baseline?.fromAddress;
+      body.config = configResult.config;
+    }
+    // else: no fresh creds → fall through to the saved override/baseline test path
 
     const result = await testMutate({ body });
     if (result.ok && result.data) setTestResult(result.data);
@@ -335,8 +629,11 @@ export default function EmailProviderPage() {
   function handleCollapse() {
     setExpanded(false);
     setTestResult(null);
-    form.reset({ apiKey: "", fromAddress: "", recipientEmail: "" });
-    clearMutationErrors();
+    setProvider("resend");
+    setFromAddress("");
+    setRecipientEmail("");
+    setFields(INITIAL_FIELD_VALUES);
+    clearAllErrors();
   }
 
   return (
@@ -344,15 +641,15 @@ export default function EmailProviderPage() {
       <div className="mx-auto mb-8 max-w-3xl">
         <h1 className="text-2xl font-semibold tracking-tight">Email Provider</h1>
         <p className="mt-1 text-sm text-muted-foreground">
-          Atlas sends your workspace emails via Resend. Add your own API key and sender address
-          to deliver from your own domain.
+          Atlas sends your workspace emails via Resend by default. Bring your own provider —
+          Resend, SendGrid, Postmark, SMTP, or Amazon SES — to deliver from your own domain.
         </p>
       </div>
 
       <ErrorBoundary>
         {mutationError && (
           <div className="mx-auto mb-4 max-w-3xl">
-            <ErrorBanner message={mutationError} onRetry={clearMutationErrors} />
+            <ErrorBanner message={mutationError} onRetry={clearAllErrors} />
           </div>
         )}
 
@@ -390,22 +687,17 @@ export default function EmailProviderPage() {
             <section>
               <SectionHeading
                 title="Workspace override"
-                description="Your Resend API key and sender address. Applies to this workspace only."
+                description="Your provider credentials and sender address. Applies to this workspace only."
               />
 
               {!showEditor && (
                 <CompactRow
                   icon={Mail}
-                  title="Use your own Resend account"
-                  description="Deliver from your own verified domain."
+                  title="Use your own email provider"
+                  description="Deliver from your own verified sender on Resend, SendGrid, Postmark, SMTP, or SES."
                   status="disconnected"
                   action={
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setExpanded(true)}
-                    >
+                    <Button type="button" variant="outline" size="sm" onClick={() => setExpanded(true)}>
                       + Add credentials
                     </Button>
                   }
@@ -415,11 +707,15 @@ export default function EmailProviderPage() {
               {showEditor && (
                 <OverrideShell
                   status={hasOverride ? "connected" : "disconnected"}
-                  title={hasOverride ? "Workspace Resend override" : "Add your Resend credentials"}
+                  title={
+                    hasOverride
+                      ? `Workspace ${PROVIDER_LABEL[override!.provider]} override`
+                      : "Add your provider credentials"
+                  }
                   description={
                     hasOverride
-                      ? "Emails from this workspace are delivered with your key."
-                      : "Paste a Resend API key and the verified sender address you want to use."
+                      ? "Emails from this workspace are delivered with your credentials."
+                      : "Pick a provider, paste the credentials, and set a verified sender."
                   }
                   onCollapse={!hasOverride ? handleCollapse : undefined}
                   actions={
@@ -428,7 +724,7 @@ export default function EmailProviderPage() {
                         type="button"
                         variant="outline"
                         onClick={handleTest}
-                        disabled={testing || !form.watch("recipientEmail").trim()}
+                        disabled={testing || !recipientEmail.trim()}
                       >
                         {testing && <Loader2 className="mr-1.5 size-3.5 animate-spin" />}
                         Send test
@@ -445,134 +741,107 @@ export default function EmailProviderPage() {
                           Remove override
                         </Button>
                       )}
-                      <Button
-                        type="button"
-                        onClick={form.handleSubmit(handleSave)}
-                        disabled={saving || (!hasOverride && !form.watch("apiKey"))}
-                      >
+                      <Button type="button" onClick={handleSave} disabled={saving}>
                         {saving && <Loader2 className="mr-1.5 size-3.5 animate-spin" />}
-                        {hasOverride ? "Update" : "Save"}
+                        {hasOverride ? "Replace" : "Save"}
                       </Button>
                     </>
                   }
                 >
                   {hasOverride && override && (
                     <DetailList>
-                      <DetailRow label="Provider" value="Resend" />
+                      <DetailRow label="Provider" value={PROVIDER_LABEL[override.provider]} />
                       <DetailRow label="From address" value={override.fromAddress} mono />
-                      <DetailRow label="API key" value={override.apiKeyMasked} mono />
+                      {override.secretMasked && (
+                        <DetailRow label={override.secretLabel} value={override.secretMasked} mono />
+                      )}
+                      {Object.entries(override.hints).map(([k, v]) => (
+                        <DetailRow key={k} label={k} value={v} mono={k !== "TLS"} />
+                      ))}
                       <DetailRow label="Added" value={formatDateTime(override.installedAt)} />
                     </DetailList>
                   )}
 
-                  <Form {...form}>
-                    <form onSubmit={form.handleSubmit(handleSave)} className="space-y-4">
-                      <FormField
-                        control={form.control}
-                        name="apiKey"
-                        render={({ field }) => (
-                          <FormItem>
-                            <FormLabel>
-                              API key
-                              {hasOverride && (
-                                <span className="ml-2 text-xs font-normal text-muted-foreground">
-                                  (leave empty to keep existing)
-                                </span>
-                              )}
-                            </FormLabel>
-                            <div className="relative">
-                              <FormControl>
-                                <Input
-                                  type={showApiKey ? "text" : "password"}
-                                  placeholder={override?.apiKeyMasked ?? "re_..."}
-                                  className="pr-10 font-mono"
-                                  {...field}
-                                />
-                              </FormControl>
-                              <Button
-                                type="button"
-                                variant="ghost"
-                                size="sm"
-                                className="absolute right-1 top-1/2 -translate-y-1/2 h-7 w-7 p-0"
-                                onClick={() => setShowApiKey((v) => !v)}
-                              >
-                                {showApiKey ? <EyeOff className="size-3.5" /> : <Eye className="size-3.5" />}
-                              </Button>
-                            </div>
-                            <FormMessage />
-                          </FormItem>
-                        )}
-                      />
-
-                      <FormField
-                        control={form.control}
-                        name="fromAddress"
-                        render={({ field }) => (
-                          <FormItem>
-                            <FormLabel>
-                              From address
-                              {hasOverride && (
-                                <span className="ml-2 text-xs font-normal text-muted-foreground">
-                                  (optional — leave empty to keep existing)
-                                </span>
-                              )}
-                            </FormLabel>
-                            <FormControl>
-                              <Input
-                                placeholder={baseline?.fromAddress ?? "Acme <noreply@acme.com>"}
-                                className="font-mono text-sm"
-                                {...field}
-                              />
-                            </FormControl>
-                            <FormDescription>
-                              Must be a sender verified with Resend.
-                            </FormDescription>
-                            <FormMessage />
-                          </FormItem>
-                        )}
-                      />
-
-                      <FormField
-                        control={form.control}
-                        name="recipientEmail"
-                        render={({ field }) => (
-                          <FormItem>
-                            <FormLabel>Test recipient</FormLabel>
-                            <FormControl>
-                              <Input
-                                type="email"
-                                placeholder="you@example.com"
-                                className="text-sm"
-                                {...field}
-                              />
-                            </FormControl>
-                            <FormDescription>
-                              Where to send a deliverability check.
-                            </FormDescription>
-                            <FormMessage />
-                          </FormItem>
-                        )}
-                      />
-
-                      {testResult && (
-                        <div
-                          className={cn(
-                            "flex items-start gap-2 rounded-md border px-3 py-2 text-sm",
-                            testResult.success
-                              ? "border-primary/30 bg-primary/5 text-primary"
-                              : "border-destructive/30 bg-destructive/5 text-destructive",
-                          )}
-                        >
-                          {testResult.success ? (
-                            <CheckCircle2 className="mt-0.5 size-4 shrink-0" />
-                          ) : (
-                            <XCircle className="mt-0.5 size-4 shrink-0" />
-                          )}
-                          <span>{testResult.message}</span>
-                        </div>
+                  <div className="space-y-4">
+                    <div className="space-y-1">
+                      <Label htmlFor="providerSelect">Provider</Label>
+                      <Select value={provider} onValueChange={(v) => setProvider(v as EmailProvider)}>
+                        <SelectTrigger id="providerSelect">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {EMAIL_PROVIDERS.map((p) => (
+                            <SelectItem key={p} value={p}>
+                              <div>
+                                <div className="font-medium">{PROVIDER_LABEL[p]}</div>
+                                <div className="text-xs text-muted-foreground">{PROVIDER_DESCRIPTION[p]}</div>
+                              </div>
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      {hasOverride && (
+                        <p className="text-xs text-muted-foreground">
+                          Saving replaces your existing override. Credentials aren&apos;t reused across providers.
+                        </p>
                       )}
-                    </form>
-                  </Form>
+                    </div>
+
+                    <ProviderFields
+                      provider={provider}
+                      values={fields}
+                      onChange={setFields}
+                      showSecrets={showSecrets}
+                      onToggleSecrets={() => setShowSecrets((v) => !v)}
+                    />
+
+                    <div className="space-y-1">
+                      <Label htmlFor="fromAddress">From address</Label>
+                      <Input
+                        id="fromAddress"
+                        placeholder={override?.fromAddress ?? "Acme <noreply@acme.com>"}
+                        className="font-mono text-sm"
+                        value={fromAddress}
+                        onChange={(e) => setFromAddress(e.target.value)}
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        Must be a sender verified with the chosen provider.
+                      </p>
+                    </div>
+
+                    <div className="space-y-1">
+                      <Label htmlFor="recipientEmail">Test recipient</Label>
+                      <Input
+                        id="recipientEmail"
+                        type="email"
+                        placeholder="you@example.com"
+                        className="text-sm"
+                        value={recipientEmail}
+                        onChange={(e) => setRecipientEmail(e.target.value)}
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        Where to send a deliverability check.
+                      </p>
+                    </div>
+
+                    {testResult && (
+                      <div
+                        className={cn(
+                          "flex items-start gap-2 rounded-md border px-3 py-2 text-sm",
+                          testResult.success
+                            ? "border-primary/30 bg-primary/5 text-primary"
+                            : "border-destructive/30 bg-destructive/5 text-destructive",
+                        )}
+                      >
+                        {testResult.success ? (
+                          <CheckCircle2 className="mt-0.5 size-4 shrink-0" />
+                        ) : (
+                          <XCircle className="mt-0.5 size-4 shrink-0" />
+                        )}
+                        <span>{testResult.message}</span>
+                      </div>
+                    )}
+                  </div>
                 </OverrideShell>
               )}
             </section>

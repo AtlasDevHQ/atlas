@@ -2,12 +2,13 @@
  * Admin email provider configuration routes.
  *
  * Mounted under /api/v1/admin/email-provider. Org-scoped — each workspace
- * admin configures their own Resend API key + From address. Orgs cannot
- * choose a different provider; Resend is the SaaS baseline and the only
- * editable layer is BYO credentials.
+ * admin configures their own email delivery (BYOT). The Resend baseline is
+ * read-only and represents the SaaS default used when no override is set;
+ * orgs may bring any of the supported providers for their override.
  *
- * Storage: per-org row in `email_installations` (provider is always "resend").
- * Delivery falls back to platform/env-var config when no override exists.
+ * Storage: per-org row in `email_installations` (see lib/email/store).
+ * Delivery precedence (lib/email/delivery) is: per-org override →
+ * platform settings → ATLAS_SMTP_URL → RESEND_API_KEY → log.
  */
 
 import { Effect } from "effect";
@@ -19,6 +20,11 @@ import {
   deleteEmailInstallationByOrg,
 } from "@atlas/api/lib/email/store";
 import { sendEmail, sendEmailWithTransport } from "@atlas/api/lib/email/delivery";
+import {
+  EMAIL_PROVIDERS,
+  type EmailProvider,
+  type ProviderConfig,
+} from "@atlas/api/lib/integrations/types";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 
@@ -26,8 +32,35 @@ import { createAdminRouter, requireOrgContext } from "./admin-router";
 // Baseline — the SaaS default shown as read-only on the page.
 // ---------------------------------------------------------------------------
 
-const BASELINE_PROVIDER = "resend" as const;
+const BASELINE_PROVIDER: EmailProvider = "resend";
 const BASELINE_FROM_ADDRESS = "Atlas <noreply@useatlas.dev>";
+
+/** Provider-specific secret config shapes. */
+const SmtpConfigSchema = z.object({
+  host: z.string().min(1),
+  port: z.number().int().min(1).max(65535),
+  username: z.string().min(1),
+  password: z.string().min(1),
+  tls: z.boolean(),
+});
+
+const SendGridConfigSchema = z.object({
+  apiKey: z.string().min(1),
+});
+
+const PostmarkConfigSchema = z.object({
+  serverToken: z.string().min(1),
+});
+
+const SesConfigSchema = z.object({
+  region: z.string().min(1),
+  accessKeyId: z.string().min(1),
+  secretAccessKey: z.string().min(1),
+});
+
+const ResendConfigSchema = z.object({
+  apiKey: z.string().min(1),
+});
 
 /** Mask a secret value for display. */
 function maskSecret(value: string): string {
@@ -35,18 +68,75 @@ function maskSecret(value: string): string {
   return `${value.slice(0, 4)}••••${value.slice(-4)}`;
 }
 
-/** Pull the Resend API key out of a stored installation's config blob. */
-function extractApiKey(config: unknown): string | null {
-  if (config && typeof config === "object" && "apiKey" in config) {
-    const apiKey = (config as { apiKey: unknown }).apiKey;
-    if (typeof apiKey === "string" && apiKey) return apiKey;
+/**
+ * Build the non-secret detail list for a stored installation. Secrets are
+ * masked; non-secret hints (SMTP host, SES region, etc.) pass through so
+ * the UI can show the admin what they configured.
+ */
+function describeOverride(
+  provider: EmailProvider,
+  config: ProviderConfig,
+): { secretLabel: string; secretMasked: string | null; hints: Record<string, string> } {
+  switch (provider) {
+    case "resend":
+    case "sendgrid": {
+      const apiKey = (config as { apiKey: string }).apiKey;
+      return { secretLabel: "API key", secretMasked: apiKey ? maskSecret(apiKey) : null, hints: {} };
+    }
+    case "postmark": {
+      const token = (config as { serverToken: string }).serverToken;
+      return { secretLabel: "Server token", secretMasked: token ? maskSecret(token) : null, hints: {} };
+    }
+    case "smtp": {
+      const c = config as { host: string; port: number; username: string; password: string; tls: boolean };
+      return {
+        secretLabel: "Password",
+        secretMasked: c.password ? maskSecret(c.password) : null,
+        hints: {
+          Host: c.host,
+          Port: String(c.port),
+          Username: c.username,
+          TLS: c.tls ? "enabled" : "disabled",
+        },
+      };
+    }
+    case "ses": {
+      const c = config as { region: string; accessKeyId: string; secretAccessKey: string };
+      return {
+        secretLabel: "Secret access key",
+        secretMasked: c.secretAccessKey ? maskSecret(c.secretAccessKey) : null,
+        hints: {
+          Region: c.region,
+          "Access key ID": c.accessKeyId,
+        },
+      };
+    }
   }
-  return null;
+}
+
+function validateProviderConfig(
+  provider: EmailProvider,
+  config: unknown,
+): { ok: true; config: ProviderConfig } | { ok: false; error: string } {
+  const schema = {
+    resend: ResendConfigSchema,
+    sendgrid: SendGridConfigSchema,
+    postmark: PostmarkConfigSchema,
+    smtp: SmtpConfigSchema,
+    ses: SesConfigSchema,
+  }[provider];
+  const result = schema.safeParse(config);
+  if (!result.success) {
+    return { ok: false, error: `Invalid ${provider} config: ${result.error.issues.map((i) => i.message).join(", ")}` };
+  }
+  return { ok: true, config: result.data as ProviderConfig };
 }
 
 // ---------------------------------------------------------------------------
 // Schemas
 // ---------------------------------------------------------------------------
+
+const ProviderEnum = z.enum(EMAIL_PROVIDERS);
 
 const BaselineSchema = z.object({
   provider: z.literal(BASELINE_PROVIDER),
@@ -54,8 +144,11 @@ const BaselineSchema = z.object({
 });
 
 const OverrideSchema = z.object({
+  provider: ProviderEnum,
   fromAddress: z.string(),
-  apiKeyMasked: z.string(),
+  secretLabel: z.string(),
+  secretMasked: z.string().nullable(),
+  hints: z.record(z.string(), z.string()),
   installedAt: z.string(),
 });
 
@@ -65,23 +158,24 @@ const EmailProviderConfigSchema = z.object({
 });
 
 const SetEmailProviderBodySchema = z.object({
-  apiKey: z.string().min(1).optional().openapi({
-    description: "Resend API key. Omit to keep the existing key when updating the From address only.",
-  }),
-  fromAddress: z.string().min(1).optional().openapi({
-    description: "Sender address for this workspace's emails. Must be verified with Resend.",
+  provider: ProviderEnum.openapi({ description: "Email provider to use for this workspace." }),
+  fromAddress: z.string().min(1).openapi({
+    description: "Sender address (From header). Must be verified with the chosen provider.",
     example: "Acme <noreply@acme.com>",
   }),
+  config: z
+    .union([SmtpConfigSchema, SendGridConfigSchema, PostmarkConfigSchema, SesConfigSchema, ResendConfigSchema])
+    .openapi({ description: "Provider-specific configuration (credentials + any non-secret fields)." }),
 });
 
 const TestEmailProviderBodySchema = z.object({
-  apiKey: z.string().min(1).optional().openapi({
-    description: "Resend API key to test. Omit to test the saved override (or the platform default).",
-  }),
-  fromAddress: z.string().min(1).optional().openapi({
-    description: "Sender address to test with. Defaults to the saved override or baseline.",
-  }),
   recipientEmail: z.string().email(),
+  provider: ProviderEnum.optional(),
+  fromAddress: z.string().min(1).optional(),
+  config: z
+    .union([SmtpConfigSchema, SendGridConfigSchema, PostmarkConfigSchema, SesConfigSchema, ResendConfigSchema])
+    .optional()
+    .openapi({ description: "Provider-specific config to test. Omit to test the saved override." }),
 });
 
 const TestResultSchema = z.object({
@@ -99,7 +193,7 @@ const getConfigRoute = createRoute({
   tags: ["Admin — Email Provider"],
   summary: "Get workspace email provider configuration",
   description:
-    "Returns the Resend baseline plus the workspace's BYO override (if any). Provider is locked to Resend.",
+    "Returns the Resend baseline plus the workspace's BYOT override (if any). Baseline is locked; override supports Resend, SendGrid, Postmark, SMTP, and SES.",
   responses: {
     200: { description: "Email provider configuration", content: { "application/json": { schema: z.object({ config: EmailProviderConfigSchema }) } } },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
@@ -116,7 +210,7 @@ const setConfigRoute = createRoute({
   tags: ["Admin — Email Provider"],
   summary: "Save workspace email provider override",
   description:
-    "Stores the Resend API key and optional From address for this workspace. Provider is always Resend.",
+    "Stores the workspace's email provider override. Provider-specific config is validated server-side.",
   request: { body: { required: true, content: { "application/json": { schema: SetEmailProviderBodySchema } } } },
   responses: {
     200: { description: "Override saved", content: { "application/json": { schema: z.object({ config: EmailProviderConfigSchema }) } } },
@@ -135,7 +229,7 @@ const deleteConfigRoute = createRoute({
   tags: ["Admin — Email Provider"],
   summary: "Remove workspace email provider override",
   description:
-    "Deletes the workspace's Resend override. Delivery falls back to the platform default.",
+    "Deletes the workspace's email override. Delivery falls back to the platform default.",
   responses: {
     200: { description: "Override removed", content: { "application/json": { schema: z.object({ message: z.string() }) } } },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
@@ -152,7 +246,7 @@ const testConfigRoute = createRoute({
   tags: ["Admin — Email Provider"],
   summary: "Send a test email",
   description:
-    "Sends a test email using supplied credentials (when given) or the saved override, falling back to the platform default.",
+    "Sends a test email using the supplied credentials (when given) or the saved override, falling back to the platform default.",
   request: { body: { required: true, content: { "application/json": { schema: TestEmailProviderBodySchema } } } },
   responses: {
     200: { description: "Test result", content: { "application/json": { schema: TestResultSchema } } },
@@ -182,12 +276,18 @@ adminEmailProvider.openapi(getConfigRoute, async (c) => {
       catch: (err) => err instanceof Error ? err : new Error(String(err)),
     });
 
-    const override = install && install.provider === BASELINE_PROVIDER && extractApiKey(install.config)
-      ? {
-          fromAddress: install.sender_address,
-          apiKeyMasked: maskSecret(extractApiKey(install.config)!),
-          installedAt: install.installed_at,
-        }
+    const override = install
+      ? (() => {
+          const { secretLabel, secretMasked, hints } = describeOverride(install.provider, install.config);
+          return {
+            provider: install.provider,
+            fromAddress: install.sender_address,
+            secretLabel,
+            secretMasked,
+            hints,
+            installedAt: install.installed_at,
+          };
+        })()
       : null;
 
     return c.json({
@@ -199,36 +299,32 @@ adminEmailProvider.openapi(getConfigRoute, async (c) => {
   }), { label: "get email provider config" });
 });
 
-// PUT / — save Resend override
+// PUT / — save BYOT override
 adminEmailProvider.openapi(setConfigRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { requestId, orgId } = c.get("orgContext");
     const body = c.req.valid("json");
 
-    // Look up existing installation to allow partial updates (e.g. update
-    // fromAddress without re-entering the apiKey).
-    const existing = yield* Effect.tryPromise({
-      try: () => getEmailInstallationByOrg(orgId),
-      catch: (err) => err instanceof Error ? err : new Error(String(err)),
-    });
+    const validated = validateProviderConfig(body.provider, body.config);
+    if (!validated.ok) {
+      return c.json({ error: "validation", message: validated.error, requestId }, 400);
+    }
 
-    const existingKey = existing?.provider === BASELINE_PROVIDER ? extractApiKey(existing.config) : null;
-    const apiKey = body.apiKey ?? existingKey;
-    if (!apiKey) {
+    // SMTP/SES require the webhook bridge at delivery time; warn early so admins
+    // don't save credentials that can't be used on this deployment.
+    if ((body.provider === "smtp" || body.provider === "ses") && !process.env.ATLAS_SMTP_URL) {
       return c.json({
         error: "validation",
-        message: "A Resend API key is required to save your override.",
+        message: `${body.provider.toUpperCase()} delivery requires ATLAS_SMTP_URL to be configured as an HTTP bridge on the server.`,
         requestId,
       }, 400);
     }
 
-    const fromAddress = body.fromAddress?.trim() || existing?.sender_address || BASELINE_FROM_ADDRESS;
-
     yield* Effect.tryPromise({
       try: () => saveEmailInstallation(orgId, {
-        provider: BASELINE_PROVIDER,
-        senderAddress: fromAddress,
-        config: { apiKey },
+        provider: body.provider,
+        senderAddress: body.fromAddress.trim(),
+        config: validated.config,
       }),
       catch: (err) => err instanceof Error ? err : new Error(String(err)),
     });
@@ -238,13 +334,18 @@ adminEmailProvider.openapi(setConfigRoute, async (c) => {
       catch: (err) => err instanceof Error ? err : new Error(String(err)),
     });
 
-    const savedKey = saved ? extractApiKey(saved.config) : null;
-    const override = saved && savedKey
-      ? {
-          fromAddress: saved.sender_address,
-          apiKeyMasked: maskSecret(savedKey),
-          installedAt: saved.installed_at,
-        }
+    const override = saved
+      ? (() => {
+          const { secretLabel, secretMasked, hints } = describeOverride(saved.provider, saved.config);
+          return {
+            provider: saved.provider,
+            fromAddress: saved.sender_address,
+            secretLabel,
+            secretMasked,
+            hints,
+            installedAt: saved.installed_at,
+          };
+        })()
       : null;
 
     return c.json({
@@ -273,16 +374,8 @@ adminEmailProvider.openapi(deleteConfigRoute, async (c) => {
 // POST /test — send a test email
 adminEmailProvider.openapi(testConfigRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
-    const { orgId } = c.get("orgContext");
+    const { requestId, orgId } = c.get("orgContext");
     const body = c.req.valid("json");
-
-    const existing = yield* Effect.tryPromise({
-      try: () => getEmailInstallationByOrg(orgId),
-      catch: (err) => err instanceof Error ? err : new Error(String(err)),
-    });
-
-    const existingKey = existing?.provider === BASELINE_PROVIDER ? extractApiKey(existing.config) : null;
-    const fromAddress = body.fromAddress?.trim() || existing?.sender_address || BASELINE_FROM_ADDRESS;
 
     const testMessage = {
       to: body.recipientEmail,
@@ -290,32 +383,40 @@ adminEmailProvider.openapi(testConfigRoute, async (c) => {
       html: "<p>This is a test email from Atlas to verify your email provider configuration.</p><p>If you received this email, your configuration is working correctly.</p>",
     };
 
-    // 1. Supplied API key — test it directly before the caller commits.
-    // 2. Existing saved override — test that.
-    // 3. Fall through to the platform default via sendEmail(orgId).
-    const apiKey = body.apiKey ?? existingKey;
-    const result = apiKey
-      ? yield* Effect.tryPromise({
-          try: () => sendEmailWithTransport(testMessage, {
-            provider: BASELINE_PROVIDER,
-            senderAddress: fromAddress,
-            config: { apiKey },
-          }),
-          catch: (err) => err instanceof Error ? err : new Error(String(err)),
-        })
-      : yield* Effect.tryPromise({
-          try: () => sendEmail(testMessage, orgId),
-          catch: (err) => err instanceof Error ? err : new Error(String(err)),
-        });
-
-    if (result.success) {
-      return c.json({ success: true, message: `Test email sent successfully via ${result.provider}.` }, 200);
+    // 1. Supplied provider + config: test as-is without persisting.
+    // 2. No supplied config: test the saved override (or fall through to platform default).
+    if (body.provider && body.config) {
+      const validated = validateProviderConfig(body.provider, body.config);
+      if (!validated.ok) {
+        return c.json({ error: "validation", message: validated.error, requestId }, 400);
+      }
+      const fromAddress = body.fromAddress?.trim() || BASELINE_FROM_ADDRESS;
+      const result = yield* Effect.tryPromise({
+        try: () => sendEmailWithTransport(testMessage, {
+          provider: body.provider!,
+          senderAddress: fromAddress,
+          config: validated.config as unknown as Record<string, unknown>,
+        }),
+        catch: (err) => err instanceof Error ? err : new Error(String(err)),
+      });
+      return c.json(
+        result.success
+          ? { success: true, message: `Test email sent successfully via ${result.provider}.` }
+          : { success: false, message: result.error ?? `Email delivery failed via ${result.provider}.` },
+        200,
+      );
     }
 
-    return c.json({
-      success: false,
-      message: result.error ?? `Email delivery failed via ${result.provider}.`,
-    }, 200);
+    const result = yield* Effect.tryPromise({
+      try: () => sendEmail(testMessage, orgId),
+      catch: (err) => err instanceof Error ? err : new Error(String(err)),
+    });
+    return c.json(
+      result.success
+        ? { success: true, message: `Test email sent successfully via ${result.provider}.` }
+        : { success: false, message: result.error ?? `Email delivery failed via ${result.provider}.` },
+      200,
+    );
   }), { label: "test email config" });
 });
 

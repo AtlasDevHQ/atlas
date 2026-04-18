@@ -188,6 +188,31 @@ export function mapTaggedError(error: AtlasError): HttpErrorMapping {
       return { status: 500, code: "upstream_error", message: error.message };
     case "DeliveryError":
       return { status: 502, code: "upstream_error", message: error.message };
+
+    // ── Content Mode (#1515) ───────────────────────────────────
+    // Surfaced from `ContentModeRegistry`. Phase 1 has no route callers;
+    // these cases are wired in advance so phase 2 migrations don't leak
+    // as generic 500s. Keep messages generic — the `cause` on
+    // `PublishPhaseError` may wrap raw `pg` DatabaseError values containing
+    // parameters or constraint detail; correlate via `requestId` instead.
+    case "PublishPhaseError":
+      return {
+        status: 500,
+        code: "upstream_error",
+        message: `Publish phase "${error.phase}" failed for table "${error.table}"`,
+      };
+    case "UnknownTableError":
+      return {
+        status: 500,
+        code: "upstream_error",
+        message: `Unknown content-mode table "${error.table}"`,
+      };
+    case "ExoticReadFilterUnavailableError":
+      return {
+        status: 500,
+        code: "upstream_error",
+        message: `No read filter registered for exotic table "${error.table}"`,
+      };
   }
 }
 

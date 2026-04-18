@@ -21,8 +21,8 @@ import { Data, type Effect } from "effect";
  *
  * `key` is the `ModeDraftCounts` segment key. `table` defaults to `key` for
  * the common case where the physical table name matches; override only when
- * the draft-counts segment name diverges from the DB table (e.g. the
- * `query_suggestions` table surfaces as the `starterPrompts` segment).
+ * the segment key diverges from the physical table name — e.g.
+ * `prompts` → `prompt_collections`, or `starterPrompts` → `query_suggestions`.
  */
 export type SimpleModeTable = {
   readonly kind: "simple";
@@ -37,6 +37,12 @@ export type SimpleModeTable = {
  * table-specific SQL. Exotic adapters wrap existing helpers rather than
  * rewriting them (e.g. `semantic_entities` wraps `promoteDraftEntities`
  * and the CTE overlay).
+ *
+ * If `readFilter` is omitted, `ContentModeRegistry.readFilter` fails
+ * with `ExoticReadFilterUnavailableError` rather than silently falling
+ * back to the simple-table default — exotic tables with tombstones or
+ * overlays need dedicated read semantics, and a silent default would
+ * serve wrong rows.
  */
 export type ExoticModeAdapter = {
   readonly kind: "exotic";
@@ -65,7 +71,14 @@ export interface PromotionReport {
   readonly tombstonesApplied?: number;
 }
 
-/** Publish phase failed — caller owns rollback. */
+/**
+ * Publish or count phase failed.
+ *
+ * For `promote` / `tombstone` phases the caller owns rollback — the
+ * registry never opens its own transaction, so the caller must issue
+ * `ROLLBACK` on the shared `PoolClient`. For `count` this is simply
+ * a wrapped executor failure with no transactional implication.
+ */
 export class PublishPhaseError extends Data.TaggedError("PublishPhaseError")<{
   readonly table: string;
   readonly phase: "promote" | "tombstone" | "count";
@@ -74,5 +87,17 @@ export class PublishPhaseError extends Data.TaggedError("PublishPhaseError")<{
 
 /** Caller asked for a read filter on a table the registry doesn't know about. */
 export class UnknownTableError extends Data.TaggedError("UnknownTableError")<{
+  readonly table: string;
+}> {}
+
+/**
+ * Caller asked for a read filter on a registered exotic table whose
+ * adapter did not provide one. Exotic tables with tombstones or
+ * overlays need dedicated read semantics; silently falling back to the
+ * simple-table default would serve wrong rows.
+ */
+export class ExoticReadFilterUnavailableError extends Data.TaggedError(
+  "ExoticReadFilterUnavailableError",
+)<{
   readonly table: string;
 }> {}

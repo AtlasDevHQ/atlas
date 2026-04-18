@@ -11,28 +11,42 @@
  * inside the caller's transaction. Tables with foreign-key dependencies
  * on later entries must be declared earlier.
  *
- * Exotic adapters wrap existing domain helpers; see `adapters/` for the
- * semantic-entities adapter that composes `promoteDraftEntities` and
- * the overlay CTE.
+ * The `semantic_entities` entry is exotic — its promote path needs
+ * phase 2 of #1515 to compose `promoteDraftEntities` + `applyTombstones`
+ * from `lib/semantic/entities.ts`. Until then, `promoteSemanticEntitiesUnimplemented`
+ * fails loudly rather than succeeding silently so a premature wiring of
+ * `runPublishPhases` into `admin-publish.ts` goes red in tests.
  */
 
 import { Effect } from "effect";
 import type { PoolClient } from "pg";
-import type { ContentModeEntry, PromotionReport, PublishPhaseError } from "./port";
+import { PublishPhaseError, type ContentModeEntry, type PromotionReport } from "./port";
 
 /**
- * Temporary stub for the semantic-entities exotic adapter. Phase 2 of
- * #1515 replaces this with a composition of the existing
- * `promoteDraftEntities` + `applyTombstones` helpers from
- * `lib/semantic/entities.ts`. The stub succeeds with zero promoted so
- * the publish path stays green until the migration lands.
+ * Phase-2 placeholder for the exotic `semantic_entities` promote adapter.
+ *
+ * Fails with `PublishPhaseError` so any caller that wires `runPublishPhases`
+ * into `admin-publish.ts` before phase 2 lands sees a loud failure rather
+ * than a silent `{ promoted: 0 }` success.
  */
-const promoteSemanticEntitiesStub = (
+const promoteSemanticEntitiesUnimplemented = (
   _tx: PoolClient,
   _orgId: string,
 ): Effect.Effect<PromotionReport, PublishPhaseError, never> =>
-  Effect.succeed({ table: "semantic_entities", promoted: 0 });
+  Effect.fail(
+    new PublishPhaseError({
+      table: "semantic_entities",
+      phase: "promote",
+      cause: new Error(
+        "promoteSemanticEntitiesUnimplemented: phase 2 of #1515 has not shipped — " +
+          "do not wire ContentModeRegistry.runPublishPhases into admin-publish.ts yet",
+      ),
+    }),
+  );
 
+// `as const` is load-bearing: preserves key + kind literals for
+// InferDraftCounts; `satisfies` enforces the port shape without widening.
+// Do not collapse to one or the other.
 export const CONTENT_MODE_TABLES = [
   { kind: "simple", key: "connections" },
   { kind: "simple", key: "prompts", table: "prompt_collections" },
@@ -62,6 +76,6 @@ export const CONTENT_MODE_TABLES = [
           `SELECT 'entityDeletes' AS key, COUNT(*)::int AS n FROM semantic_entities WHERE org_id = ${p} AND status = 'draft_delete'`,
       },
     ],
-    promote: promoteSemanticEntitiesStub,
+    promote: promoteSemanticEntitiesUnimplemented,
   },
 ] as const satisfies ReadonlyArray<ContentModeEntry>;

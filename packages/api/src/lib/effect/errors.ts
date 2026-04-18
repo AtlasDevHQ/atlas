@@ -18,6 +18,22 @@
 
 import { Data } from "effect";
 
+// Content-mode errors live in `lib/content-mode/port.ts` so that module
+// stays self-contained and pure. They are folded into the `AtlasError`
+// union below so `classifyError` / `mapTaggedError` pick them up when
+// phase 2 of #1515 wires the registry into route handlers.
+import {
+  ExoticReadFilterUnavailableError,
+  PublishPhaseError,
+  UnknownTableError,
+} from "@atlas/api/lib/content-mode/port";
+
+export {
+  ExoticReadFilterUnavailableError,
+  PublishPhaseError,
+  UnknownTableError,
+} from "@atlas/api/lib/content-mode/port";
+
 // ── Utilities ──────────────────────────────────────────────────────
 
 /** Normalize unknown caught values to Error. Used in Effect.tryPromise catch clauses. */
@@ -199,7 +215,10 @@ export type AtlasError =
   | ActionTimeoutError
   | SchedulerTaskTimeoutError
   | SchedulerExecutionError
-  | DeliveryError;
+  | DeliveryError
+  | PublishPhaseError
+  | UnknownTableError
+  | ExoticReadFilterUnavailableError;
 
 /** Discriminant union of all known `_tag` values — derived from `AtlasError`. */
 export type AtlasErrorTag = AtlasError["_tag"];
@@ -233,6 +252,9 @@ export const ATLAS_ERROR_TAG_LIST = [
   "SchedulerTaskTimeoutError",
   "SchedulerExecutionError",
   "DeliveryError",
+  "PublishPhaseError",
+  "UnknownTableError",
+  "ExoticReadFilterUnavailableError",
 ] as const satisfies readonly AtlasErrorTag[];
 
 /** Compile-time check: every `AtlasErrorTag` must appear in the list. */

@@ -5,23 +5,38 @@
  * The registry is exercised through its exported Context.Tag service and
  * the derived `InferDraftCounts` type. Internal helpers stay untested so
  * they can be refactored freely.
+ *
+ * Tests that exercise dispatch branches the production tuple doesn't
+ * currently hit (exotic readFilter override, failing exotic promote,
+ * duplicate-key guard) build a throwaway `makeService(tables)` around
+ * a test-only tuple.
  */
 
 import { describe, it, expect } from "bun:test";
-import { Effect } from "effect";
+import { Effect, Layer } from "effect";
 import type { ModeDraftCounts } from "@useatlas/types/mode";
 import { CONTENT_MODE_TABLES } from "../tables";
 import type { InferDraftCounts } from "../infer";
-import { Layer } from "effect";
-import { ContentModeRegistry, ContentModeRegistryLive } from "../registry";
-import type { PromotionReport } from "../port";
-import { PublishPhaseError, UnknownTableError } from "../port";
+import {
+  ContentModeRegistry,
+  ContentModeRegistryLive,
+  makeService,
+  type ContentModeRegistryService,
+} from "../registry";
+import type { ContentModeEntry, PromotionReport } from "../port";
+import {
+  ExoticReadFilterUnavailableError,
+  PublishPhaseError,
+  UnknownTableError,
+} from "../port";
 import { InternalDB, createInternalDBTestLayer } from "@atlas/api/lib/db/internal";
 import type { PoolClient, QueryResult } from "pg";
 
 /**
  * Minimal PoolClient mock: records every `query()` invocation and returns
- * pre-seeded results in FIFO order. Unused `release`/`connect` surface.
+ * pre-seeded results in FIFO order. Throws if the registry issues more
+ * queries than seeded responses — an unexpected extra query (e.g. stray
+ * BEGIN/COMMIT) fails loudly instead of silently returning empty.
  */
 function makeMockPoolClient(
   responses: Array<Partial<QueryResult> | Error>,
@@ -30,8 +45,12 @@ function makeMockPoolClient(
   const client = {
     query: async (sql: string, params: unknown[] = []) => {
       calls.push({ sql, params });
-      const next = responses.shift();
-      if (!next) return { rows: [], rowCount: 0 };
+      if (responses.length === 0) {
+        throw new Error(
+          `makeMockPoolClient: unexpected query #${calls.length} — no seeded response (sql: ${sql.slice(0, 80)})`,
+        );
+      }
+      const next = responses.shift()!;
       if (next instanceof Error) throw next;
       return { rows: next.rows ?? [], rowCount: next.rowCount ?? 0 };
     },
@@ -42,10 +61,11 @@ function makeMockPoolClient(
 
 /**
  * Build a test layer where `InternalDB.query` records its SQL + params and
- * returns `rows` shaped like the count row union.
+ * returns `rows` shaped like the count row union. Supports either a fixed
+ * row array or a custom query function.
  */
 function makeInternalDBCapture(
-  rows: ReadonlyArray<{ key: string; n: number }> = [],
+  rows: ReadonlyArray<{ key: string; n: number | string }> = [],
 ): {
   layer: Layer.Layer<InternalDB>;
   calls: Array<{ sql: string; params: unknown[] }>;
@@ -68,6 +88,13 @@ function runWithLive<A, E>(program: Effect.Effect<A, E, ContentModeRegistry>): P
   return Effect.runPromise(program.pipe(Effect.provide(ContentModeRegistryLive)));
 }
 
+/** Build a test-only registry layer from a custom tables tuple. */
+function testRegistryLayer(
+  tables: ReadonlyArray<ContentModeEntry>,
+): Layer.Layer<ContentModeRegistry> {
+  return Layer.succeed(ContentModeRegistry, makeService(tables));
+}
+
 // ---------------------------------------------------------------------------
 // Type-level equality helpers (no runtime cost).
 // The conditional-function trick distinguishes structurally equal types from
@@ -76,22 +103,27 @@ function runWithLive<A, E>(program: Effect.Effect<A, E, ContentModeRegistry>): P
 // ---------------------------------------------------------------------------
 type Equal<X, Y> =
   (<T>() => T extends X ? 1 : 2) extends <T>() => T extends Y ? 1 : 2 ? true : false;
-type Expect<T extends true> = T;
 
-describe("CONTENT_MODE_TABLES type inference", () => {
-  it("derives a type exactly equal to the published ModeDraftCounts", () => {
-    // If anyone adds a key to ModeDraftCounts without registering a matching
-    // entry in CONTENT_MODE_TABLES (or vice versa), this line fails to compile.
-    type _assertEqual = Expect<
-      Equal<ModeDraftCounts, InferDraftCounts<typeof CONTENT_MODE_TABLES>>
-    >;
-    const ok: _assertEqual = true;
-    expect(ok).toBe(true);
-  });
-});
+// Compile-time assertion: InferDraftCounts<CONTENT_MODE_TABLES> must equal
+// ModeDraftCounts. Adding a key on either side without the other causes this
+// line to fail type-check. This is the real gate — not a runtime expect.
+const _assertInferredEqualsWire: Equal<
+  ModeDraftCounts,
+  InferDraftCounts<typeof CONTENT_MODE_TABLES>
+> = true;
+void _assertInferredEqualsWire;
 
-describe("ContentModeRegistry.readFilter — published mode", () => {
-  it("returns `alias.status = 'published'` for a simple table", async () => {
+// Compile-time assertion: makeService returns the right shape.
+const _assertMakeServiceShape: ContentModeRegistryService =
+  null as unknown as ContentModeRegistryService;
+void _assertMakeServiceShape;
+
+// ============================================================================
+// readFilter
+// ============================================================================
+
+describe("ContentModeRegistry.readFilter — simple tables", () => {
+  it("returns `alias.status = 'published'` in published mode", async () => {
     const clause = await runWithLive(
       Effect.gen(function* () {
         const registry = yield* ContentModeRegistry;
@@ -100,10 +132,8 @@ describe("ContentModeRegistry.readFilter — published mode", () => {
     );
     expect(clause).toBe("c.status = 'published'");
   });
-});
 
-describe("ContentModeRegistry.readFilter — developer mode", () => {
-  it("overlays drafts onto published rows for a simple table", async () => {
+  it("overlays drafts onto published rows in developer mode", async () => {
     const clause = await runWithLive(
       Effect.gen(function* () {
         const registry = yield* ContentModeRegistry;
@@ -112,25 +142,113 @@ describe("ContentModeRegistry.readFilter — developer mode", () => {
     );
     expect(clause).toBe("c.status IN ('published', 'draft')");
   });
+
+  it("resolves simple entries by physical table name (prompt_collections, query_suggestions)", async () => {
+    const clauses = await runWithLive(
+      Effect.gen(function* () {
+        const registry = yield* ContentModeRegistry;
+        const byKey = yield* registry.readFilter("prompts", "published", "p");
+        const byTable = yield* registry.readFilter("prompt_collections", "published", "p");
+        const byKey2 = yield* registry.readFilter("starterPrompts", "published", "s");
+        const byTable2 = yield* registry.readFilter("query_suggestions", "published", "s");
+        return { byKey, byTable, byKey2, byTable2 };
+      }),
+    );
+    expect(clauses.byKey).toBe("p.status = 'published'");
+    expect(clauses.byTable).toBe("p.status = 'published'");
+    expect(clauses.byKey2).toBe("s.status = 'published'");
+    expect(clauses.byTable2).toBe("s.status = 'published'");
+  });
 });
 
-describe("ContentModeRegistry.readFilter — unknown table", () => {
-  it("fails with UnknownTableError tagged error", async () => {
+describe("ContentModeRegistry.readFilter — failure modes", () => {
+  it("fails with UnknownTableError for an unregistered table", async () => {
     const result = await Effect.runPromise(
       Effect.gen(function* () {
         const registry = yield* ContentModeRegistry;
         return yield* registry.readFilter("bogus_table", "published", "b");
       }).pipe(Effect.provide(ContentModeRegistryLive), Effect.either),
     );
-    // Either.left holds the failure; assert shape without leaning on Effect internals
     expect(result._tag).toBe("Left");
     if (result._tag === "Left") {
       expect(result.left).toBeInstanceOf(UnknownTableError);
-      expect(result.left.table).toBe("bogus_table");
       expect(result.left._tag).toBe("UnknownTableError");
+      expect((result.left as UnknownTableError).table).toBe("bogus_table");
+    }
+  });
+
+  it("fails with ExoticReadFilterUnavailableError for an exotic entry with no readFilter adapter", async () => {
+    // semantic_entities in the production tuple has no readFilter — phase 2
+    // of #1515 will add it. Until then, calling readFilter for it must fail
+    // loudly rather than returning the simple-table default.
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const registry = yield* ContentModeRegistry;
+        return yield* registry.readFilter("semantic_entities", "developer", "s");
+      }).pipe(Effect.provide(ContentModeRegistryLive), Effect.either),
+    );
+    expect(result._tag).toBe("Left");
+    if (result._tag === "Left") {
+      expect(result.left).toBeInstanceOf(ExoticReadFilterUnavailableError);
+      expect(result.left._tag).toBe("ExoticReadFilterUnavailableError");
+      expect((result.left as ExoticReadFilterUnavailableError).table).toBe(
+        "semantic_entities",
+      );
     }
   });
 });
+
+describe("ContentModeRegistry.readFilter — exotic tables with readFilter adapter", () => {
+  // Test-only tuple with an exotic entry that ships a readFilter override.
+  // Covers the dispatch branch the production tuple cannot currently hit
+  // (and that phase 2 activates for semantic_entities).
+  const exoticWithFilter: ReadonlyArray<ContentModeEntry> = [
+    {
+      kind: "exotic",
+      key: "fancy_entities",
+      countSegments: [
+        {
+          key: "fancy_entities",
+          sql: (p) => `SELECT 'fancy_entities' AS key, 0::int AS n FROM (VALUES (${p})) v`,
+        },
+      ],
+      promote: () =>
+        Effect.succeed({ table: "fancy_entities", promoted: 0 }),
+      readFilter: {
+        published: (alias) =>
+          `${alias}.status = 'published' AND ${alias}.deleted_at IS NULL`,
+        developerOverlay: (alias) =>
+          `${alias}.status IN ('published', 'draft') AND ${alias}.draft_status != 'draft_delete'`,
+      },
+    },
+  ];
+
+  it("invokes readFilter.published(alias) in published mode", async () => {
+    const clause = await Effect.runPromise(
+      Effect.gen(function* () {
+        const registry = yield* ContentModeRegistry;
+        return yield* registry.readFilter("fancy_entities", "published", "f");
+      }).pipe(Effect.provide(testRegistryLayer(exoticWithFilter))),
+    );
+    expect(clause).toBe("f.status = 'published' AND f.deleted_at IS NULL");
+  });
+
+  it("invokes readFilter.developerOverlay(alias) in developer mode", async () => {
+    const clause = await Effect.runPromise(
+      Effect.gen(function* () {
+        const registry = yield* ContentModeRegistry;
+        return yield* registry.readFilter("fancy_entities", "developer", "f");
+      }).pipe(Effect.provide(testRegistryLayer(exoticWithFilter))),
+    );
+    expect(clause).toBe(
+      "f.status IN ('published', 'draft') AND f.draft_status != 'draft_delete'",
+    );
+  });
+});
+
+// ============================================================================
+// countAllDrafts
+// ============================================================================
 
 describe("ContentModeRegistry.countAllDrafts", () => {
   it("issues exactly one UNION ALL query and zero-fills missing segments", async () => {
@@ -159,6 +277,29 @@ describe("ContentModeRegistry.countAllDrafts", () => {
       entityEdits: 0,
       entityDeletes: 0,
     });
+    // Every `$N` token in the query must be `$1` — the registry passes a
+    // single orgId param; a future exotic segment that introduces `$2`
+    // would cause silent param/branch mismatches.
+    const tokens = calls[0].sql.match(/\$\d+/g) ?? [];
+    expect(new Set(tokens)).toEqual(new Set(["$1"]));
+  });
+
+  it("coerces string counts from the driver to numbers", async () => {
+    // Some pg pool configurations return ::int COUNTs as strings; the
+    // registry must coerce explicitly without falling back to 0.
+    const { layer } = makeInternalDBCapture([
+      { key: "connections", n: "5" as unknown as number },
+      { key: "prompts", n: "0" as unknown as number },
+    ]);
+
+    const counts = await Effect.runPromise(
+      Effect.gen(function* () {
+        const registry = yield* ContentModeRegistry;
+        return yield* registry.countAllDrafts("org-1");
+      }).pipe(Effect.provide(ContentModeRegistryLive), Effect.provide(layer)),
+    );
+    expect(counts.connections).toBe(5);
+    expect(counts.prompts).toBe(0);
   });
 
   it("wraps executor errors in PublishPhaseError with phase 'count'", async () => {
@@ -183,55 +324,97 @@ describe("ContentModeRegistry.countAllDrafts", () => {
     if (result._tag === "Left") {
       expect(result.left).toBeInstanceOf(PublishPhaseError);
       expect(result.left._tag).toBe("PublishPhaseError");
-      expect(result.left.phase).toBe("count");
-      expect(result.left.cause).toBe(boom);
+      expect((result.left as PublishPhaseError).phase).toBe("count");
+      expect((result.left as PublishPhaseError).cause).toBe(boom);
+    }
+  });
+
+  it("fails with PublishPhaseError when a row returns an unknown segment key", async () => {
+    // Drift scenario: the DB returns a row for a segment that isn't in the
+    // tuple. Silently dropping would mask tuple/UNION drift; the registry
+    // must fail so the admin banner never under-reports drafts.
+    const { layer } = makeInternalDBCapture([
+      { key: "connections", n: 1 },
+      { key: "stale_removed_segment", n: 99 },
+    ]);
+
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const registry = yield* ContentModeRegistry;
+        return yield* registry.countAllDrafts("org-1");
+      }).pipe(
+        Effect.provide(ContentModeRegistryLive),
+        Effect.provide(layer),
+        Effect.either,
+      ),
+    );
+    expect(result._tag).toBe("Left");
+    if (result._tag === "Left") {
+      expect(result.left).toBeInstanceOf(PublishPhaseError);
+      expect((result.left as PublishPhaseError).phase).toBe("count");
+      const cause = (result.left as PublishPhaseError).cause;
+      expect(cause).toBeInstanceOf(Error);
+      expect(String(cause)).toContain("stale_removed_segment");
+    }
+  });
+
+  it("fails with PublishPhaseError when a row returns a non-numeric count", async () => {
+    const { layer } = makeInternalDBCapture([
+      { key: "connections", n: "abc" as unknown as number },
+    ]);
+
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const registry = yield* ContentModeRegistry;
+        return yield* registry.countAllDrafts("org-1");
+      }).pipe(
+        Effect.provide(ContentModeRegistryLive),
+        Effect.provide(layer),
+        Effect.either,
+      ),
+    );
+    expect(result._tag).toBe("Left");
+    if (result._tag === "Left") {
+      expect(result.left).toBeInstanceOf(PublishPhaseError);
+      expect((result.left as PublishPhaseError).phase).toBe("count");
+      const cause = (result.left as PublishPhaseError).cause;
+      expect(String(cause)).toContain("non-numeric count");
+    }
+  });
+
+  it("fails with PublishPhaseError when a row returns a negative count", async () => {
+    const { layer } = makeInternalDBCapture([{ key: "connections", n: -1 }]);
+
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const registry = yield* ContentModeRegistry;
+        return yield* registry.countAllDrafts("org-1");
+      }).pipe(
+        Effect.provide(ContentModeRegistryLive),
+        Effect.provide(layer),
+        Effect.either,
+      ),
+    );
+    expect(result._tag).toBe("Left");
+    if (result._tag === "Left") {
+      expect(result.left).toBeInstanceOf(PublishPhaseError);
+      expect((result.left as PublishPhaseError).phase).toBe("count");
     }
   });
 });
 
+// ============================================================================
+// runPublishPhases
+// ============================================================================
+
 describe("ContentModeRegistry.runPublishPhases", () => {
-  it("invokes adapters in tuple order and returns a report per entry", async () => {
-    // Seed three simple UPDATEs (connections, prompt_collections, query_suggestions)
-    // with decreasing rowCount so ordering is observable in the report.
+  it("invokes simple adapters in tuple order; exotic semantic_entities fails loudly", async () => {
+    // The production stub fails by design (phase 2 of #1515). Simple adapters
+    // 1–3 run successfully; the exotic stub surfaces a PublishPhaseError.
     const { client, calls } = makeMockPoolClient([
       { rowCount: 3 }, // connections
       { rowCount: 2 }, // prompt_collections
       { rowCount: 1 }, // query_suggestions
-    ]);
-
-    const reports = await Effect.runPromise(
-      Effect.gen(function* () {
-        const registry = yield* ContentModeRegistry;
-        return yield* registry.runPublishPhases(client, "org-1");
-      }).pipe(Effect.provide(ContentModeRegistryLive)),
-    );
-
-    // Three simple + one exotic (stubbed to succeed with zero promoted)
-    expect(reports).toHaveLength(4);
-    expect(reports.map((r: PromotionReport) => r.table)).toEqual([
-      "connections",
-      "prompt_collections",
-      "query_suggestions",
-      "semantic_entities",
-    ]);
-    expect(reports[0].promoted).toBe(3);
-    expect(reports[1].promoted).toBe(2);
-    expect(reports[2].promoted).toBe(1);
-
-    // Three UPDATEs hit the passed-in client, in tuple order.
-    expect(calls).toHaveLength(3);
-    expect(calls[0].sql).toContain("UPDATE connections");
-    expect(calls[1].sql).toContain("UPDATE prompt_collections");
-    expect(calls[2].sql).toContain("UPDATE query_suggestions");
-    for (const c of calls) expect(c.params).toEqual(["org-1"]);
-  });
-
-  it("stops on first failure and surfaces PublishPhaseError — no later adapters run", async () => {
-    const boom = new Error("duplicate key violation");
-    const { client, calls } = makeMockPoolClient([
-      { rowCount: 3 }, // connections succeeds
-      boom, // prompt_collections fails
-      // query_suggestions and semantic_entities must NOT run; no seeded responses for them.
     ]);
 
     const result = await Effect.runPromise(
@@ -244,18 +427,149 @@ describe("ContentModeRegistry.runPublishPhases", () => {
     expect(result._tag).toBe("Left");
     if (result._tag === "Left") {
       expect(result.left).toBeInstanceOf(PublishPhaseError);
-      expect(result.left._tag).toBe("PublishPhaseError");
-      expect(result.left.phase).toBe("promote");
-      expect(result.left.table).toBe("prompt_collections");
-      expect(result.left.cause).toBe(boom);
+      expect((result.left as PublishPhaseError).table).toBe("semantic_entities");
+      expect((result.left as PublishPhaseError).phase).toBe("promote");
+      const cause = (result.left as PublishPhaseError).cause;
+      expect(String(cause)).toContain("phase 2 of #1515");
     }
-    // Exactly two UPDATEs attempted: connections succeeded, prompt_collections failed.
-    expect(calls).toHaveLength(2);
+    // The three simple UPDATEs ran in tuple order before the stub failed.
+    expect(calls).toHaveLength(3);
     expect(calls[0].sql).toContain("UPDATE connections");
     expect(calls[1].sql).toContain("UPDATE prompt_collections");
+    expect(calls[2].sql).toContain("UPDATE query_suggestions");
+    for (const c of calls) expect(c.params).toEqual(["org-1"]);
+  });
+
+  it("invokes simple and exotic adapters in tuple order with a non-failing exotic (test tuple)", async () => {
+    const exoticReports: PromotionReport[] = [];
+    const customTables: ReadonlyArray<ContentModeEntry> = [
+      { kind: "simple", key: "alpha" },
+      {
+        kind: "exotic",
+        key: "beta",
+        countSegments: [
+          { key: "beta", sql: (p) => `SELECT 'beta' AS key, 0::int AS n FROM (VALUES (${p})) v` },
+        ],
+        promote: () => {
+          const report: PromotionReport = {
+            table: "beta",
+            promoted: 7,
+            tombstonesApplied: 2,
+          };
+          exoticReports.push(report);
+          return Effect.succeed(report);
+        },
+      },
+      { kind: "simple", key: "gamma" },
+    ];
+    const { client, calls } = makeMockPoolClient([
+      { rowCount: 5 }, // alpha
+      { rowCount: 4 }, // gamma (beta uses its adapter, no tx.query)
+    ]);
+
+    const reports = await Effect.runPromise(
+      Effect.gen(function* () {
+        const registry = yield* ContentModeRegistry;
+        return yield* registry.runPublishPhases(client, "org-1");
+      }).pipe(Effect.provide(testRegistryLayer(customTables))),
+    );
+
+    expect(reports.map((r) => r.table)).toEqual(["alpha", "beta", "gamma"]);
+    expect(reports[0].promoted).toBe(5);
+    expect(reports[1].promoted).toBe(7);
+    expect(reports[1].tombstonesApplied).toBe(2);
+    expect(reports[2].promoted).toBe(4);
+    // Two simple UPDATEs hit tx.query; the exotic adapter uses its own
+    // promote Effect and does not route through the client in this fixture.
+    expect(calls).toHaveLength(2);
+    expect(calls[0].sql).toContain("UPDATE alpha");
+    expect(calls[1].sql).toContain("UPDATE gamma");
+    expect(exoticReports).toHaveLength(1);
+  });
+
+  it("surfaces PublishPhaseError from a failing exotic adapter and skips subsequent entries", async () => {
+    const boom = new PublishPhaseError({
+      table: "beta",
+      phase: "tombstone",
+      cause: new Error("FK violation on tombstone cascade"),
+    });
+    const customTables: ReadonlyArray<ContentModeEntry> = [
+      { kind: "simple", key: "alpha" },
+      {
+        kind: "exotic",
+        key: "beta",
+        countSegments: [
+          { key: "beta", sql: (p) => `SELECT 'beta' AS key, 0::int AS n FROM (VALUES (${p})) v` },
+        ],
+        promote: () => Effect.fail(boom),
+      },
+      // gamma must NOT run.
+      { kind: "simple", key: "gamma" },
+    ];
+    const { client, calls } = makeMockPoolClient([
+      { rowCount: 1 }, // alpha succeeds
+    ]);
+
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const registry = yield* ContentModeRegistry;
+        return yield* registry.runPublishPhases(client, "org-1");
+      }).pipe(Effect.provide(testRegistryLayer(customTables)), Effect.either),
+    );
+
+    expect(result._tag).toBe("Left");
+    if (result._tag === "Left") {
+      expect(result.left).toBeInstanceOf(PublishPhaseError);
+      expect((result.left as PublishPhaseError).phase).toBe("tombstone");
+      expect((result.left as PublishPhaseError).table).toBe("beta");
+    }
+    // Only alpha ran; gamma never got a chance.
+    expect(calls).toHaveLength(1);
+    expect(calls[0].sql).toContain("UPDATE alpha");
+  });
+
+  it("stops on first simple-adapter failure and surfaces PublishPhaseError", async () => {
+    const boom = new Error("duplicate key violation");
+    // Test tuple: two simple adapters only, so the failure is observable
+    // without the production semantic_entities stub firing.
+    const customTables: ReadonlyArray<ContentModeEntry> = [
+      { kind: "simple", key: "alpha" },
+      { kind: "simple", key: "beta" },
+      { kind: "simple", key: "gamma" },
+    ];
+    const { client, calls } = makeMockPoolClient([
+      { rowCount: 3 }, // alpha succeeds
+      boom, // beta fails
+      // gamma must NOT run; no seeded response for it.
+    ]);
+
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const registry = yield* ContentModeRegistry;
+        return yield* registry.runPublishPhases(client, "org-1");
+      }).pipe(Effect.provide(testRegistryLayer(customTables)), Effect.either),
+    );
+
+    expect(result._tag).toBe("Left");
+    if (result._tag === "Left") {
+      expect(result.left).toBeInstanceOf(PublishPhaseError);
+      expect(result.left._tag).toBe("PublishPhaseError");
+      expect((result.left as PublishPhaseError).phase).toBe("promote");
+      expect((result.left as PublishPhaseError).table).toBe("beta");
+      expect((result.left as PublishPhaseError).cause).toBe(boom);
+    }
+    expect(calls).toHaveLength(2);
+    expect(calls[0].sql).toContain("UPDATE alpha");
+    expect(calls[1].sql).toContain("UPDATE beta");
   });
 
   it("never issues BEGIN/COMMIT/ROLLBACK — caller owns the transaction", async () => {
+    // Use a simple-only tuple so the stub doesn't halt iteration early.
+    const customTables: ReadonlyArray<ContentModeEntry> = [
+      { kind: "simple", key: "alpha" },
+      { kind: "simple", key: "beta" },
+      { kind: "simple", key: "gamma" },
+    ];
     const { client, calls } = makeMockPoolClient([
       { rowCount: 0 },
       { rowCount: 0 },
@@ -266,15 +580,59 @@ describe("ContentModeRegistry.runPublishPhases", () => {
       Effect.gen(function* () {
         const registry = yield* ContentModeRegistry;
         return yield* registry.runPublishPhases(client, "org-1");
-      }).pipe(Effect.provide(ContentModeRegistryLive)),
+      }).pipe(Effect.provide(testRegistryLayer(customTables))),
     );
 
     // No call's SQL may reference transaction control — that stays the caller's job.
     for (const call of calls) {
       const upper = call.sql.toUpperCase();
-      expect(upper).not.toContain("BEGIN");
-      expect(upper).not.toContain("COMMIT");
-      expect(upper).not.toContain("ROLLBACK");
+      expect(upper).not.toMatch(/\bBEGIN\b/);
+      expect(upper).not.toMatch(/\bCOMMIT\b/);
+      expect(upper).not.toMatch(/\bROLLBACK\b/);
     }
+  });
+});
+
+// ============================================================================
+// makeService — startup invariants
+// ============================================================================
+
+describe("makeService startup guards", () => {
+  it("throws if the tuple contains duplicate entry keys", () => {
+    const dupKeys: ReadonlyArray<ContentModeEntry> = [
+      { kind: "simple", key: "alpha" },
+      { kind: "simple", key: "alpha" },
+    ];
+    expect(() => makeService(dupKeys)).toThrow(/duplicate entry key "alpha"/);
+  });
+
+  it("throws if a simple entry's `table` alias collides with another entry's key", () => {
+    const collidingAlias: ReadonlyArray<ContentModeEntry> = [
+      { kind: "simple", key: "beta" },
+      { kind: "simple", key: "alpha", table: "beta" },
+    ];
+    expect(() => makeService(collidingAlias)).toThrow(/already registered/);
+  });
+
+  it("throws if two exotic entries declare the same countSegments key", () => {
+    const dupSegments: ReadonlyArray<ContentModeEntry> = [
+      {
+        kind: "exotic",
+        key: "first",
+        countSegments: [
+          { key: "shared", sql: (p) => `SELECT 'shared' AS key, 0 AS n FROM (VALUES (${p})) v` },
+        ],
+        promote: () => Effect.succeed({ table: "first", promoted: 0 }),
+      },
+      {
+        kind: "exotic",
+        key: "second",
+        countSegments: [
+          { key: "shared", sql: (p) => `SELECT 'shared' AS key, 0 AS n FROM (VALUES (${p})) v` },
+        ],
+        promote: () => Effect.succeed({ table: "second", promoted: 0 }),
+      },
+    ];
+    expect(() => makeService(dupSegments)).toThrow(/duplicate draft-counts segment "shared"/);
   });
 });

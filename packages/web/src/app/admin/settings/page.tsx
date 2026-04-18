@@ -214,10 +214,8 @@ function EditDialog({
   }
 
   async function handleSubmit(values: z.infer<typeof editSettingSchema>) {
-    await saveMutation.mutate({
-      body: { value: values.value },
-      onSuccess: () => onOpenChange(false),
-    });
+    const result = await saveMutation.mutate({ body: { value: values.value } });
+    if (result.ok) onOpenChange(false);
   }
 
   return (

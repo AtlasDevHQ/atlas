@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import { Star } from "lucide-react";
 import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { Badge } from "@/components/ui/badge";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { Conversation } from "../../lib/types";
 import { ConversationList } from "./conversation-list";
@@ -87,31 +88,33 @@ export function ConversationSidebar({
         </ToggleGroup>
       </div>
 
-      <div className="flex-1 overflow-y-auto p-2">
-        {loading && conversations.length === 0 ? (
-          <div className="space-y-2 p-1">
-            {Array.from({ length: 5 }).map((_, i) => (
-              <div key={i} className="flex items-center gap-2 rounded-lg px-3 py-2.5">
-                <div className="min-w-0 flex-1 space-y-2">
-                  <Skeleton className="h-3.5 w-3/4" />
-                  <Skeleton className="h-2.5 w-1/3" />
+      <ScrollArea className="flex-1">
+        <div className="p-2">
+          {loading && conversations.length === 0 ? (
+            <div className="space-y-2 p-1">
+              {Array.from({ length: 5 }).map((_, i) => (
+                <div key={i} className="flex items-center gap-2 rounded-lg px-3 py-2.5">
+                  <div className="min-w-0 flex-1 space-y-2">
+                    <Skeleton className="h-3.5 w-3/4" />
+                    <Skeleton className="h-2.5 w-1/3" />
+                  </div>
                 </div>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <ConversationList
-            conversations={filteredConversations}
-            selectedId={selectedId}
-            onSelect={onSelect}
-            onDelete={onDelete}
-            onStar={onStar}
-            onConvertToNotebook={onConvertToNotebook}
-            showSections={filter === "all"}
-            emptyMessage={filter === "saved" ? "Star conversations to save them here" : undefined}
-          />
-        )}
-      </div>
+              ))}
+            </div>
+          ) : (
+            <ConversationList
+              conversations={filteredConversations}
+              selectedId={selectedId}
+              onSelect={onSelect}
+              onDelete={onDelete}
+              onStar={onStar}
+              onConvertToNotebook={onConvertToNotebook}
+              showSections={filter === "all"}
+              emptyMessage={filter === "saved" ? "Star conversations to save them here" : undefined}
+            />
+          )}
+        </div>
+      </ScrollArea>
     </div>
   );
 

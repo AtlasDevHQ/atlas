@@ -1,6 +1,7 @@
 "use client";
 
 import type { ReactNode } from "react";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import { SidebarProvider, SidebarInset, SidebarTrigger } from "@/components/ui/sidebar";
 import { Separator } from "@/components/ui/separator";
 import { Button } from "@/components/ui/button";
@@ -88,7 +89,7 @@ export function AdminLayout({ children }: { children: ReactNode }) {
             <span className="text-sm font-medium text-muted-foreground">Admin Console</span>
           </div>
         </header>
-        <div className="flex-1 overflow-auto">{children}</div>
+        <ScrollArea className="flex-1">{children}</ScrollArea>
       </SidebarInset>
 
       <ChangePasswordDialog

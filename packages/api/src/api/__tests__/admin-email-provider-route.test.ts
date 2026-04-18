@@ -22,7 +22,11 @@ import {
   MockInternalDB,
   makeMockInternalDBShimLayer,
 } from "@atlas/api/testing/api-test-mocks";
-import { EMAIL_PROVIDERS } from "@useatlas/types/email-provider";
+// Re-export source lives in @atlas/api/lib/integrations/types; importing from
+// there inside the mock factory creates a circular load. Hardcode to mirror
+// the current tuple — tracked by #1543 (share via @useatlas/types after
+// publish).
+const EMAIL_PROVIDERS_MOCK = ["resend", "sendgrid", "postmark", "smtp", "ses"] as const;
 import * as fs from "fs";
 import * as path from "path";
 
@@ -166,9 +170,7 @@ const mockDeleteEmailInstallationByOrg: Mock<(...args: unknown[]) => Promise<boo
 );
 
 mock.module("@atlas/api/lib/email/store", () => ({
-  // Re-export the real tuple so new providers added to @useatlas/types/email-provider
-  // flow through automatically — the mock can't silently diverge from reality.
-  EMAIL_PROVIDERS,
+  EMAIL_PROVIDERS: EMAIL_PROVIDERS_MOCK,
   getEmailInstallationByOrg: mockGetEmailInstallationByOrg,
   saveEmailInstallation: mockSaveEmailInstallation,
   deleteEmailInstallationByOrg: mockDeleteEmailInstallationByOrg,

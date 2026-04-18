@@ -129,12 +129,8 @@ export interface WhatsAppInstallationWithSecret extends WhatsAppInstallation {
 // Email
 // ---------------------------------------------------------------------------
 
-// Provider enum is the shared wire type — published via @useatlas/types so the
-// web package and SDK can consume it without leaking @atlas/api internals.
-// Import locally (for use in the interfaces below) and re-export for consumers.
-import { EMAIL_PROVIDERS, type EmailProvider } from "@useatlas/types/email-provider";
-export { EMAIL_PROVIDERS };
-export type { EmailProvider };
+export const EMAIL_PROVIDERS = ["resend", "sendgrid", "postmark", "smtp", "ses"] as const;
+export type EmailProvider = (typeof EMAIL_PROVIDERS)[number];
 
 export interface SmtpConfig {
   host: string;

@@ -2,11 +2,12 @@
 
 import { useEffect, useRef, useState, type ComponentType, type ReactNode } from "react";
 import { z } from "zod";
-import { EMAIL_PROVIDERS, type EmailProvider } from "@useatlas/types/email-provider";
 import {
   buildProviderConfig,
   hasAnyProviderFieldFilled,
   INITIAL_FIELD_VALUES,
+  EMAIL_PROVIDERS,
+  type EmailProvider,
   type ProviderFieldValues,
 } from "./build-provider-config";
 import { cn } from "@/lib/utils";

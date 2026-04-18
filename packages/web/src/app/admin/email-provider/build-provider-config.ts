@@ -1,4 +1,12 @@
-import type { EmailProvider } from "@useatlas/types/email-provider";
+/**
+ * Email provider enum — kept colocated with the form helper. Mirrors the
+ * tuple in `packages/api/src/lib/integrations/types.ts`; when the types
+ * package next publishes with an `email-provider` subpath (see #1543), both
+ * copies should move to `@useatlas/types/email-provider` and this local
+ * declaration can be deleted.
+ */
+export const EMAIL_PROVIDERS = ["resend", "sendgrid", "postmark", "smtp", "ses"] as const;
+export type EmailProvider = (typeof EMAIL_PROVIDERS)[number];
 
 /**
  * Form state for the email-provider editor. A flat bag is intentional — it

@@ -149,6 +149,12 @@ describe("parseCIDR", () => {
   it("returns null for garbage input", () => {
     expect(parseCIDR("not-a-cidr")).toBeNull();
   });
+
+  it("returns null for non-string input (e.g. undefined row from a mocked DB)", () => {
+    expect(parseCIDR(undefined)).toBeNull();
+    expect(parseCIDR(null)).toBeNull();
+    expect(parseCIDR(123)).toBeNull();
+  });
 });
 
 // ── Tests: IP Range Matching ────────────────────────────────────────

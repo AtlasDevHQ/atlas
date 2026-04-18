@@ -11,38 +11,13 @@
  * inside the caller's transaction. Tables with foreign-key dependencies
  * on later entries must be declared earlier.
  *
- * The `semantic_entities` entry is exotic — its promote path needs
- * phase 2 of #1515 to compose `promoteDraftEntities` + `applyTombstones`
- * from `lib/semantic/entities.ts`. Until then, `promoteSemanticEntitiesUnimplemented`
- * fails loudly rather than succeeding silently so a premature wiring of
- * `runPublishPhases` into `admin-publish.ts` goes red in tests.
+ * The `semantic_entities` entry is exotic — its promote path composes
+ * `applyTombstones` + `promoteDraftEntities` from
+ * `lib/semantic/entities.ts`. See `./adapters/semantic-entities.ts`.
  */
 
-import { Effect } from "effect";
-import type { PoolClient } from "pg";
-import { PublishPhaseError, type ContentModeEntry, type PromotionReport } from "./port";
-
-/**
- * Phase-2 placeholder for the exotic `semantic_entities` promote adapter.
- *
- * Fails with `PublishPhaseError` so any caller that wires `runPublishPhases`
- * into `admin-publish.ts` before phase 2 lands sees a loud failure rather
- * than a silent `{ promoted: 0 }` success.
- */
-const promoteSemanticEntitiesUnimplemented = (
-  _tx: PoolClient,
-  _orgId: string,
-): Effect.Effect<PromotionReport, PublishPhaseError, never> =>
-  Effect.fail(
-    new PublishPhaseError({
-      table: "semantic_entities",
-      phase: "promote",
-      cause: new Error(
-        "promoteSemanticEntitiesUnimplemented: phase 2 of #1515 has not shipped — " +
-          "do not wire ContentModeRegistry.runPublishPhases into admin-publish.ts yet",
-      ),
-    }),
-  );
+import type { ContentModeEntry } from "./port";
+import { promoteSemanticEntities } from "./adapters/semantic-entities";
 
 // `as const` is load-bearing: preserves key + kind literals for
 // InferDraftCounts; `satisfies` enforces the port shape without widening.
@@ -76,6 +51,6 @@ export const CONTENT_MODE_TABLES = [
           `SELECT 'entityDeletes' AS key, COUNT(*)::int AS n FROM semantic_entities WHERE org_id = ${p} AND status = 'draft_delete'`,
       },
     ],
-    promote: promoteSemanticEntitiesUnimplemented,
+    promote: promoteSemanticEntities,
   },
 ] as const satisfies ReadonlyArray<ContentModeEntry>;

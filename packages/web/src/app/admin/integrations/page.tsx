@@ -1,20 +1,21 @@
 "use client";
 
-import { useState } from "react";
+import {
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type ComponentType,
+  type ReactNode,
+  type RefObject,
+} from "react";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { IntegrationStatusSchema } from "@/ui/lib/admin-schemas";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { formatDateTime } from "@/lib/format";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
+import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import {
   AlertDialog,
@@ -50,6 +51,8 @@ import {
   GitBranch,
   BarChart3,
   Phone,
+  Plus,
+  X,
 } from "lucide-react";
 
 // -- Types (used by child components for props) --
@@ -132,6 +135,306 @@ interface WebhookStatus {
   activeCount: number;
   /** Whether the workspace admin can create/manage webhooks */
   configurable: boolean;
+}
+
+// -- Shared Design Primitives --
+
+type StatusKind = "connected" | "disconnected" | "unavailable";
+
+function StatusDot({ kind, className }: { kind: StatusKind; className?: string }) {
+  return (
+    <span
+      aria-hidden
+      className={cn(
+        "relative inline-flex size-1.5 shrink-0 rounded-full",
+        kind === "connected" &&
+          "bg-primary shadow-[0_0_0_3px_color-mix(in_oklch,_var(--primary)_15%,_transparent)]",
+        kind === "disconnected" && "bg-muted-foreground/40",
+        kind === "unavailable" && "bg-muted-foreground/20 outline-1 outline-dashed outline-muted-foreground/30",
+        className,
+      )}
+    >
+      {kind === "connected" && (
+        <span className="absolute inset-0 rounded-full bg-primary/60 motion-safe:animate-ping" />
+      )}
+    </span>
+  );
+}
+
+/**
+ * Unified integration card — used when connected or when the user has
+ * chosen to expand a disconnected integration to configure it. The visual
+ * treatment comes from status: connected rows get a subtle teal left-edge
+ * and a "Live" label; the disconnected-expanded state shows a close button.
+ */
+function IntegrationShell({
+  id,
+  icon: Icon,
+  title,
+  description,
+  status,
+  children,
+  actions,
+  onCollapse,
+  panelRef,
+}: {
+  id?: string;
+  icon: ComponentType<{ className?: string }>;
+  title: string;
+  description: string;
+  status: StatusKind;
+  children?: ReactNode;
+  actions?: ReactNode;
+  onCollapse?: () => void;
+  panelRef?: RefObject<HTMLElement | null>;
+}) {
+  return (
+    <section
+      id={id}
+      ref={panelRef}
+      className={cn(
+        "relative flex flex-col overflow-hidden rounded-xl border bg-card/60 backdrop-blur-[1px] transition-colors",
+        "hover:border-border/80",
+        status === "connected" && "border-primary/20",
+      )}
+    >
+      {status === "connected" && (
+        <span
+          aria-hidden
+          className="pointer-events-none absolute left-0 top-4 bottom-4 w-px bg-gradient-to-b from-transparent via-primary to-transparent opacity-70"
+        />
+      )}
+
+      <header className="flex items-start gap-3 p-4 pb-3">
+        <span
+          className={cn(
+            "grid size-9 shrink-0 place-items-center rounded-lg border bg-background/40",
+            status === "connected" && "border-primary/30 text-primary",
+            status !== "connected" && "text-muted-foreground",
+          )}
+        >
+          <Icon className="size-4" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <h3 className="truncate text-sm font-semibold leading-tight tracking-tight">
+              {title}
+            </h3>
+            {/* Only show status text when connected — reduces noise in the
+                disconnected-expanded state while user is mid-setup. */}
+            {status === "connected" && (
+              <span className="ml-auto flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-[0.08em] text-primary">
+                <StatusDot kind="connected" />
+                Live
+              </span>
+            )}
+            {status !== "connected" && onCollapse && (
+              <button
+                type="button"
+                aria-label="Cancel"
+                onClick={onCollapse}
+                className="ml-auto -m-1 grid size-6 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              >
+                <X className="size-3.5" />
+              </button>
+            )}
+          </div>
+          <p className="mt-0.5 text-xs leading-snug text-muted-foreground">
+            {description}
+          </p>
+        </div>
+      </header>
+
+      {children != null && (
+        <div className="flex-1 space-y-3 px-4 pb-3 text-sm">{children}</div>
+      )}
+
+      {actions && (
+        <footer className="flex items-center justify-end gap-2 border-t border-border/50 bg-muted/20 px-4 py-2.5">
+          {actions}
+        </footer>
+      )}
+    </section>
+  );
+}
+
+/** Visually-hidden human-readable label for a connection status. */
+const STATUS_LABEL: Record<StatusKind, string> = {
+  connected: "Connected",
+  disconnected: "Not connected",
+  unavailable: "Unavailable",
+};
+
+/**
+ * Compact row for disconnected / unavailable integrations. Thin single-line
+ * presentation with a trailing action slot. Dramatically reduces visual
+ * weight when many integrations are not yet configured.
+ */
+function CompactRow({
+  icon: Icon,
+  title,
+  description,
+  status,
+  action,
+}: {
+  icon: ComponentType<{ className?: string }>;
+  title: string;
+  description: string;
+  status: StatusKind;
+  action?: ReactNode;
+}) {
+  return (
+    <div
+      className={cn(
+        "group flex items-center gap-3 rounded-xl border bg-card/40 px-3.5 py-2.5 transition-colors",
+        "hover:bg-card/70 hover:border-border/80",
+        status === "unavailable" && "opacity-60",
+      )}
+    >
+      <span
+        className={cn(
+          "grid size-8 shrink-0 place-items-center rounded-lg border bg-background/40 text-muted-foreground",
+        )}
+      >
+        <Icon className="size-4" />
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <h3 className="truncate text-sm font-semibold leading-tight tracking-tight">
+            {title}
+          </h3>
+          <StatusDot kind={status} className="shrink-0" />
+          {/* Status is only visually conveyed by StatusDot (aria-hidden);
+              expose it to assistive tech via a visually-hidden label. */}
+          <span className="sr-only">Status: {STATUS_LABEL[status]}</span>
+        </div>
+        <p className="mt-0.5 truncate text-xs text-muted-foreground">
+          {description}
+        </p>
+      </div>
+      {action && <div className="shrink-0">{action}</div>}
+    </div>
+  );
+}
+
+/**
+ * Key-value row used inside IntegrationShell for "spec sheet" details.
+ * Value is monospaced when `mono` is true (for IDs, hashes, etc).
+ */
+function DetailRow({
+  label,
+  value,
+  mono,
+  truncate,
+}: {
+  label: string;
+  value: ReactNode;
+  mono?: boolean;
+  truncate?: boolean;
+}) {
+  return (
+    <div className="flex items-baseline justify-between gap-3 py-1 text-xs">
+      <span className="shrink-0 text-muted-foreground">{label}</span>
+      <span
+        className={cn(
+          "min-w-0 text-right",
+          mono && "font-mono text-[11px]",
+          truncate && "truncate",
+          !mono && "font-medium",
+        )}
+      >
+        {value}
+      </span>
+    </div>
+  );
+}
+
+function DetailList({ children }: { children: ReactNode }) {
+  return (
+    <div className="rounded-lg border bg-muted/20 px-3 py-1.5 divide-y divide-border/50">
+      {children}
+    </div>
+  );
+}
+
+function InlineError({ children }: { children: ReactNode }) {
+  if (!children) return null;
+  return (
+    <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+      {children}
+    </div>
+  );
+}
+
+/**
+ * Disclosure state for a progressive-disclosure integration card.
+ *
+ * Encapsulates four concerns that would otherwise repeat across every card:
+ *  - expand/collapse state and a stable panel id for `aria-controls`
+ *  - moving focus into the revealed panel's first field on expand
+ *  - returning focus to the trigger button on collapse
+ *  - auto-collapsing once the integration becomes `connected` so a future
+ *    disconnect doesn't leave the form expanded under a stale intent
+ *  - clearing the BYOT/connect mutation error on collapse so the X button
+ *    can never silently hide a failure
+ */
+function useDisclosure(connected: boolean, onCollapseCleanup?: () => void) {
+  const [expanded, setExpanded] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const panelRef = useRef<HTMLElement | null>(null);
+  const panelId = useId();
+  const prevExpanded = useRef(false);
+
+  // Auto-reset expanded state when the integration becomes connected. Keeps a
+  // subsequent disconnect from reopening the form under a stale `expanded=true`.
+  useEffect(() => {
+    if (connected) setExpanded(false);
+  }, [connected]);
+
+  // Focus management on transitions:
+  //   expanded ↑ — move focus into the revealed panel's first form field.
+  //     The selector skips the Cancel/X close button and targets inputs,
+  //     textareas, and Radix Select triggers (role="combobox").
+  //   expanded ↓ — restore focus to the trigger button so keyboard users
+  //     return to the row they came from instead of falling back to body.
+  useEffect(() => {
+    if (expanded && !prevExpanded.current) {
+      const panel = panelRef.current;
+      const first = panel?.querySelector<HTMLElement>(
+        'input:not([disabled]), textarea:not([disabled]), button[role="combobox"]:not([disabled])',
+      );
+      first?.focus();
+    } else if (!expanded && prevExpanded.current) {
+      triggerRef.current?.focus();
+    }
+    prevExpanded.current = expanded;
+  }, [expanded]);
+
+  const collapse = () => {
+    setExpanded(false);
+    // Clear the owning mutation's error so dismissing the panel can never
+    // silently hide a failure message the user hasn't seen.
+    onCollapseCleanup?.();
+  };
+
+  return { expanded, setExpanded, collapse, triggerRef, panelRef, panelId };
+}
+
+function SectionHeading({
+  title,
+  description,
+}: {
+  title: string;
+  description: string;
+}) {
+  return (
+    <div className="mb-3">
+      <h2 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+        {title}
+      </h2>
+      <p className="mt-0.5 text-xs text-muted-foreground/80">{description}</p>
+    </div>
+  );
 }
 
 // -- Component --
@@ -378,15 +681,48 @@ export default function IntegrationsPage() {
   const webhooks = data?.webhooks;
   const deliveryChannels = data?.deliveryChannels ?? [];
 
+  const stats = !data
+    ? { live: 0, total: 0 }
+    : (() => {
+        const rows: Array<{ connected: boolean; usable: boolean }> = [
+          { connected: slack?.connected ?? false, usable: (slack?.configurable ?? false) || hasDB },
+          { connected: teams?.connected ?? false, usable: (teams?.configurable ?? false) || hasDB },
+          { connected: discord?.connected ?? false, usable: (discord?.configurable ?? false) || hasDB },
+          { connected: telegram?.connected ?? false, usable: telegram?.configurable ?? false },
+          { connected: gchat?.connected ?? false, usable: gchat?.configurable ?? false },
+          { connected: whatsapp?.connected ?? false, usable: whatsapp?.configurable ?? false },
+          { connected: github?.connected ?? false, usable: github?.configurable ?? false },
+          { connected: linear?.connected ?? false, usable: linear?.configurable ?? false },
+          { connected: emailStatus?.connected ?? false, usable: emailStatus?.configurable ?? false },
+          { connected: (webhooks?.activeCount ?? 0) > 0, usable: webhooks?.configurable ?? false },
+        ];
+        return {
+          live: rows.filter((r) => r.connected).length,
+          total: rows.filter((r) => r.connected || r.usable).length,
+        };
+      })();
+
   return (
-    <div className="p-6">
-      {/* Header */}
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold tracking-tight">Integrations</h1>
-        <p className="text-sm text-muted-foreground">
-          Manage connections to external platforms and services
+    <div className="mx-auto max-w-3xl px-6 py-10">
+      {/* Hero */}
+      <header className="mb-10 flex flex-col gap-2">
+        <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+          Atlas · Admin
         </p>
-      </div>
+        <div className="flex items-baseline justify-between gap-6">
+          <h1 className="text-3xl font-semibold tracking-tight">Integrations</h1>
+          <p className="shrink-0 font-mono text-sm tabular-nums text-muted-foreground">
+            <span className={cn(stats.live > 0 ? "text-primary" : "text-muted-foreground")}>
+              {String(stats.live).padStart(2, "0")}
+            </span>
+            <span className="opacity-50">{" / "}</span>
+            {String(stats.total).padStart(2, "0")} live
+          </p>
+        </div>
+        <p className="max-w-xl text-sm text-muted-foreground">
+          External platforms Atlas can read from, write to, or deliver through.
+        </p>
+      </header>
 
       <ErrorBoundary>
         <AdminContentWrapper
@@ -400,150 +736,146 @@ export default function IntegrationsPage() {
           emptyDescription="Integration status could not be loaded."
           isEmpty={!data}
         >
-          <div className="grid gap-6 md:grid-cols-2">
-            {/* Slack card */}
-            <SlackCard
-              slack={slack!}
-              isSaas={isSaas}
-              hasInternalDB={hasDB}
-              onDisconnect={handleDisconnect}
-              disconnecting={disconnectMutation.saving}
-              disconnectError={disconnectMutation.error}
-              onByotConnect={handleSlackByot}
-              byotConnecting={slackByotMutation.saving}
-              byotError={slackByotMutation.error}
-            />
+          <div className="space-y-10">
+            {/* Messaging */}
+            <section>
+              <SectionHeading title="Messaging" description="Where Atlas listens and replies" />
+              <div className="space-y-2">
+                <SlackCard
+                  slack={slack!}
+                  isSaas={isSaas}
+                  hasInternalDB={hasDB}
+                  onDisconnect={handleDisconnect}
+                  disconnecting={disconnectMutation.saving}
+                  disconnectError={disconnectMutation.error}
+                  onByotConnect={handleSlackByot}
+                  byotConnecting={slackByotMutation.saving}
+                  byotError={slackByotMutation.error}
+                  onByotClearError={slackByotMutation.clearError}
+                />
+                <TeamsCard
+                  teams={teams!}
+                  isSaas={isSaas}
+                  hasInternalDB={hasDB}
+                  onDisconnect={handleTeamsDisconnect}
+                  disconnecting={teamsDisconnectMutation.saving}
+                  disconnectError={teamsDisconnectMutation.error}
+                  onByotConnect={handleTeamsByot}
+                  byotConnecting={teamsByotMutation.saving}
+                  byotError={teamsByotMutation.error}
+                  onByotClearError={teamsByotMutation.clearError}
+                />
+                <DiscordCard
+                  discord={discord!}
+                  isSaas={isSaas}
+                  hasInternalDB={hasDB}
+                  onDisconnect={handleDiscordDisconnect}
+                  disconnecting={discordDisconnectMutation.saving}
+                  disconnectError={discordDisconnectMutation.error}
+                  onByotConnect={handleDiscordByot}
+                  byotConnecting={discordByotMutation.saving}
+                  byotError={discordByotMutation.error}
+                  onByotClearError={discordByotMutation.clearError}
+                />
+                <TelegramCard
+                  telegram={telegram!}
+                  isSaas={isSaas}
+                  onConnect={handleTelegramConnect}
+                  connecting={telegramConnectMutation.saving}
+                  connectError={telegramConnectMutation.error}
+                  onConnectClearError={telegramConnectMutation.clearError}
+                  onDisconnect={handleTelegramDisconnect}
+                  disconnecting={telegramDisconnectMutation.saving}
+                  disconnectError={telegramDisconnectMutation.error}
+                />
+                <GChatCard
+                  gchat={gchat!}
+                  onConnect={handleGChatConnect}
+                  connecting={gchatConnectMutation.saving}
+                  connectError={gchatConnectMutation.error}
+                  onConnectClearError={gchatConnectMutation.clearError}
+                  onDisconnect={handleGChatDisconnect}
+                  disconnecting={gchatDisconnectMutation.saving}
+                  disconnectError={gchatDisconnectMutation.error}
+                />
+                <WhatsAppCard
+                  whatsapp={whatsapp!}
+                  onConnect={handleWhatsAppConnect}
+                  connecting={whatsappConnectMutation.saving}
+                  connectError={whatsappConnectMutation.error}
+                  onConnectClearError={whatsappConnectMutation.clearError}
+                  onDisconnect={handleWhatsAppDisconnect}
+                  disconnecting={whatsappDisconnectMutation.saving}
+                  disconnectError={whatsappDisconnectMutation.error}
+                />
+              </div>
+            </section>
 
-            {/* Teams card */}
-            <TeamsCard
-              teams={teams!}
-              isSaas={isSaas}
-              hasInternalDB={hasDB}
-              onDisconnect={handleTeamsDisconnect}
-              disconnecting={teamsDisconnectMutation.saving}
-              disconnectError={teamsDisconnectMutation.error}
-              onByotConnect={handleTeamsByot}
-              byotConnecting={teamsByotMutation.saving}
-              byotError={teamsByotMutation.error}
-            />
+            {/* Developer Tools */}
+            <section>
+              <SectionHeading title="Developer Tools" description="Source control and trackers Atlas can act on" />
+              <div className="space-y-2">
+                <GitHubCard
+                  github={github!}
+                  onConnect={handleGitHubConnect}
+                  connecting={githubConnectMutation.saving}
+                  connectError={githubConnectMutation.error}
+                  onConnectClearError={githubConnectMutation.clearError}
+                  onDisconnect={handleGitHubDisconnect}
+                  disconnecting={githubDisconnectMutation.saving}
+                  disconnectError={githubDisconnectMutation.error}
+                />
+                <LinearCard
+                  linear={linear!}
+                  onConnect={handleLinearConnect}
+                  connecting={linearConnectMutation.saving}
+                  connectError={linearConnectMutation.error}
+                  onConnectClearError={linearConnectMutation.clearError}
+                  onDisconnect={handleLinearDisconnect}
+                  disconnecting={linearDisconnectMutation.saving}
+                  disconnectError={linearDisconnectMutation.error}
+                />
+              </div>
+            </section>
 
-            {/* Discord card */}
-            <DiscordCard
-              discord={discord!}
-              isSaas={isSaas}
-              hasInternalDB={hasDB}
-              onDisconnect={handleDiscordDisconnect}
-              disconnecting={discordDisconnectMutation.saving}
-              disconnectError={discordDisconnectMutation.error}
-              onByotConnect={handleDiscordByot}
-              byotConnecting={discordByotMutation.saving}
-              byotError={discordByotMutation.error}
-            />
+            {/* Notifications */}
+            <section>
+              <SectionHeading title="Notifications" description="Outbound channels for tasks and digests" />
+              <div className="space-y-2">
+                <EmailCard
+                  email={emailStatus!}
+                  onConnect={handleEmailConnect}
+                  connecting={emailConnectMutation.saving}
+                  connectError={emailConnectMutation.error}
+                  onConnectClearError={emailConnectMutation.clearError}
+                  onTest={handleEmailTest}
+                  testing={emailTestMutation.saving}
+                  testResult={emailTestMutation.error}
+                  onDisconnect={handleEmailDisconnect}
+                  disconnecting={emailDisconnectMutation.saving}
+                  disconnectError={emailDisconnectMutation.error}
+                />
+                <WebhookCard webhooks={webhooks} isSaas={isSaas} />
+              </div>
+            </section>
 
-            {/* Telegram card */}
-            <TelegramCard
-              telegram={telegram!}
-              isSaas={isSaas}
-              onConnect={handleTelegramConnect}
-              connecting={telegramConnectMutation.saving}
-              connectError={telegramConnectMutation.error}
-              onDisconnect={handleTelegramDisconnect}
-              disconnecting={telegramDisconnectMutation.saving}
-              disconnectError={telegramDisconnectMutation.error}
-            />
-
-            {/* Google Chat card */}
-            <GChatCard
-              gchat={gchat!}
-              onConnect={handleGChatConnect}
-              connecting={gchatConnectMutation.saving}
-              connectError={gchatConnectMutation.error}
-              onDisconnect={handleGChatDisconnect}
-              disconnecting={gchatDisconnectMutation.saving}
-              disconnectError={gchatDisconnectMutation.error}
-            />
-
-            {/* GitHub card */}
-            <GitHubCard
-              github={github!}
-              onConnect={handleGitHubConnect}
-              connecting={githubConnectMutation.saving}
-              connectError={githubConnectMutation.error}
-              onDisconnect={handleGitHubDisconnect}
-              disconnecting={githubDisconnectMutation.saving}
-              disconnectError={githubDisconnectMutation.error}
-            />
-
-            {/* Linear card */}
-            <LinearCard
-              linear={linear!}
-              onConnect={handleLinearConnect}
-              connecting={linearConnectMutation.saving}
-              connectError={linearConnectMutation.error}
-              onDisconnect={handleLinearDisconnect}
-              disconnecting={linearDisconnectMutation.saving}
-              disconnectError={linearDisconnectMutation.error}
-            />
-
-            {/* WhatsApp card */}
-            <WhatsAppCard
-              whatsapp={whatsapp!}
-              onConnect={handleWhatsAppConnect}
-              connecting={whatsappConnectMutation.saving}
-              connectError={whatsappConnectMutation.error}
-              onDisconnect={handleWhatsAppDisconnect}
-              disconnecting={whatsappDisconnectMutation.saving}
-              disconnectError={whatsappDisconnectMutation.error}
-            />
-
-            {/* Email card */}
-            <EmailCard
-              email={emailStatus!}
-              onConnect={handleEmailConnect}
-              connecting={emailConnectMutation.saving}
-              connectError={emailConnectMutation.error}
-              onTest={handleEmailTest}
-              testing={emailTestMutation.saving}
-              testResult={emailTestMutation.error}
-              onDisconnect={handleEmailDisconnect}
-              disconnecting={emailDisconnectMutation.saving}
-              disconnectError={emailDisconnectMutation.error}
-            />
-
-            {/* Webhooks card */}
-            <WebhookCard webhooks={webhooks} isSaas={isSaas} />
-
-            {/* Delivery Channels card */}
-            <Card className="md:col-span-2">
-              <CardHeader className="pb-3">
-                <div className="flex items-center gap-2">
-                  <Mail className="size-5 text-muted-foreground" />
-                  <CardTitle className="text-base">Delivery Channels</CardTitle>
-                </div>
-                <CardDescription>
-                  Available channels for scheduled task delivery and notifications
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <div className="flex flex-wrap gap-2">
+            {/* Delivery Channels footer — only show if there are channels */}
+            {deliveryChannels.length > 0 && (
+              <section>
+                <SectionHeading title="Delivery Channels" description="Currently available for task delivery" />
+                <div className="flex flex-wrap items-center gap-2">
                   {deliveryChannels.map((channel) => (
-                    <Badge
+                    <span
                       key={channel}
-                      variant="outline"
-                      className="gap-1.5 capitalize"
+                      className="inline-flex items-center gap-1.5 rounded-md border border-primary/20 bg-primary/5 px-2 py-1 text-[11px] capitalize text-foreground"
                     >
                       <ChannelIcon channel={channel} />
                       {channel}
-                    </Badge>
+                    </span>
                   ))}
-                  {deliveryChannels.length === 0 && (
-                    <p className="text-sm text-muted-foreground">
-                      No delivery channels configured
-                    </p>
-                  )}
                 </div>
-              </CardContent>
-            </Card>
+              </section>
+            )}
           </div>
         </AdminContentWrapper>
       </ErrorBoundary>
@@ -563,6 +895,7 @@ function SlackCard({
   onByotConnect,
   byotConnecting,
   byotError,
+  onByotClearError,
 }: {
   slack: SlackStatus;
   isSaas: boolean;
@@ -573,97 +906,70 @@ function SlackCard({
   onByotConnect: (botToken: string) => void;
   byotConnecting: boolean;
   byotError: string | null;
+  onByotClearError: () => void;
 }) {
   const canConnect = slack.configurable;
   const canByot = !canConnect && hasInternalDB;
+  const status: StatusKind = slack.connected
+    ? "connected"
+    : !canConnect && !canByot
+    ? "unavailable"
+    : "disconnected";
 
-  const statusBadge = slack.connected ? (
-    <Badge variant="default">Connected</Badge>
-  ) : !canConnect && !canByot ? (
-    <Badge variant="outline">Not Available</Badge>
-  ) : (
-    <Badge variant="secondary">Disconnected</Badge>
-  );
+  const { expanded, setExpanded, collapse, triggerRef, panelRef, panelId } =
+    useDisclosure(slack.connected, onByotClearError);
+  const showFull = status === "connected" || expanded;
+
+  if (!showFull) {
+    return (
+      <CompactRow
+        icon={MessageSquare}
+        title="Slack"
+        description={
+          status === "unavailable"
+            ? isSaas
+              ? "Unavailable — ask your administrator"
+              : "Requires SLACK_CLIENT_ID or DATABASE_URL"
+            : "/atlas commands and thread follow-ups"
+        }
+        status={status}
+        action={
+          canConnect ? (
+            <Button size="sm" asChild>
+              <a href="/api/v1/slack/install">
+                <ExternalLink className="mr-1.5 size-3.5" />
+                Connect
+              </a>
+            </Button>
+          ) : canByot ? (
+            <Button
+              ref={triggerRef}
+              size="sm"
+              variant="outline"
+              aria-expanded={false}
+              aria-controls={panelId}
+              onClick={() => setExpanded(true)}
+            >
+              <Plus className="mr-1.5 size-3.5" />
+              Add token
+            </Button>
+          ) : null
+        }
+      />
+    );
+  }
 
   return (
-    <Card>
-      <CardHeader className="pb-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <MessageSquare className="size-5 text-muted-foreground" />
-            <CardTitle className="text-base">Slack</CardTitle>
-          </div>
-          {statusBadge}
-        </div>
-        <CardDescription>
-          Connect Slack for /atlas commands and thread follow-ups
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        {slack.connected && (
-          <div className="space-y-2 text-sm">
-            {slack.workspaceName && (
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Workspace</span>
-                <span className="font-medium">{slack.workspaceName}</span>
-              </div>
-            )}
-            {slack.teamId && slack.teamId !== "env" && (
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Team ID</span>
-                <code className="rounded bg-muted px-1.5 py-0.5 text-xs">
-                  {slack.teamId}
-                </code>
-              </div>
-            )}
-            {slack.installedAt && (
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Connected</span>
-                <span>{formatDateTime(slack.installedAt)}</span>
-              </div>
-            )}
-            {!isSaas && slack.envConfigured && !slack.oauthConfigured && (
-              <p className="text-xs text-muted-foreground">
-                Using environment variable (SLACK_BOT_TOKEN). Configure OAuth
-                credentials for self-serve management.
-              </p>
-            )}
-          </div>
-        )}
-
-        {/* Not connected + no OAuth + BYOT available: show token form */}
-        {!slack.connected && canByot && (
-          <SlackByotForm
-            onConnect={onByotConnect}
-            connecting={byotConnecting}
-            error={byotError}
-          />
-        )}
-
-        {/* Not connected + no OAuth + no BYOT: truly unavailable */}
-        {!slack.connected && !canConnect && !canByot && (
-          isSaas ? (
-            <p className="text-sm text-muted-foreground">
-              Slack integration is not available. Contact your administrator.
-            </p>
-          ) : (
-            <p className="text-sm text-muted-foreground">
-              Set <code className="rounded bg-muted px-1 text-xs">SLACK_CLIENT_ID</code>{" "}
-              and <code className="rounded bg-muted px-1 text-xs">SLACK_CLIENT_SECRET</code>{" "}
-              to enable Slack OAuth, or configure{" "}
-              <code className="rounded bg-muted px-1 text-xs">DATABASE_URL</code>{" "}
-              to use a bot token.
-            </p>
-          )
-        )}
-
-        {disconnectError && (
-          <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-            {disconnectError}
-          </div>
-        )}
-
-        <div className="flex gap-2">
+    <IntegrationShell
+      id={panelId}
+      panelRef={panelRef}
+      icon={MessageSquare}
+      title="Slack"
+      description="/atlas commands and thread follow-ups"
+      status={status}
+      onCollapse={!slack.connected ? collapse : undefined}
+      actions={
+        <>
           {slack.connected && (canConnect || canByot) && (
             <DisconnectDialog
               name="Slack"
@@ -672,16 +978,6 @@ function SlackCard({
               disconnecting={disconnecting}
             />
           )}
-
-          {!slack.connected && canConnect && (
-            <Button size="sm" asChild>
-              <a href="/api/v1/slack/install">
-                <ExternalLink className="mr-1.5 size-3.5" />
-                Connect to Slack
-              </a>
-            </Button>
-          )}
-
           {slack.connected && canConnect && (
             <Button variant="ghost" size="sm" asChild>
               <a href="/api/v1/slack/install">
@@ -690,9 +986,39 @@ function SlackCard({
               </a>
             </Button>
           )}
-        </div>
-      </CardContent>
-    </Card>
+        </>
+      }
+    >
+      {slack.connected && (
+        <DetailList>
+          {slack.workspaceName && (
+            <DetailRow label="Workspace" value={slack.workspaceName} truncate />
+          )}
+          {slack.teamId && slack.teamId !== "env" && (
+            <DetailRow label="Team ID" value={slack.teamId} mono truncate />
+          )}
+          {slack.installedAt && (
+            <DetailRow label="Connected" value={formatDateTime(slack.installedAt)} />
+          )}
+          {!isSaas && slack.envConfigured && !slack.oauthConfigured && (
+            <div className="pt-1.5 text-[11px] leading-relaxed text-muted-foreground">
+              Using <code className="rounded bg-muted px-1 font-mono">SLACK_BOT_TOKEN</code>.
+              Add OAuth credentials for self-serve management.
+            </div>
+          )}
+        </DetailList>
+      )}
+
+      {!slack.connected && canByot && (
+        <SlackByotForm
+          onConnect={onByotConnect}
+          connecting={byotConnecting}
+          error={byotError}
+        />
+      )}
+
+      <InlineError>{disconnectError}</InlineError>
+    </IntegrationShell>
   );
 }
 
@@ -708,6 +1034,7 @@ function TeamsCard({
   onByotConnect,
   byotConnecting,
   byotError,
+  onByotClearError,
 }: {
   teams: TeamsStatus;
   isSaas: boolean;
@@ -718,93 +1045,70 @@ function TeamsCard({
   onByotConnect: (appId: string, appPassword: string) => void;
   byotConnecting: boolean;
   byotError: string | null;
+  onByotClearError: () => void;
 }) {
   const canConnect = teams.configurable;
   const canByot = !canConnect && hasInternalDB;
+  const status: StatusKind = teams.connected
+    ? "connected"
+    : !canConnect && !canByot
+    ? "unavailable"
+    : "disconnected";
 
-  const statusBadge = teams.connected ? (
-    <Badge variant="default">Connected</Badge>
-  ) : !canConnect && !canByot ? (
-    <Badge variant="outline">Not Available</Badge>
-  ) : (
-    <Badge variant="secondary">Disconnected</Badge>
-  );
+  const { expanded, setExpanded, collapse, triggerRef, panelRef, panelId } =
+    useDisclosure(teams.connected, onByotClearError);
+  const showFull = status === "connected" || expanded;
+
+  if (!showFull) {
+    return (
+      <CompactRow
+        icon={Users}
+        title="Microsoft Teams"
+        description={
+          status === "unavailable"
+            ? isSaas
+              ? "Unavailable — ask your administrator"
+              : "Requires TEAMS_APP_ID or DATABASE_URL"
+            : "@atlas mentions and channel conversations"
+        }
+        status={status}
+        action={
+          canConnect ? (
+            <Button size="sm" asChild>
+              <a href="/api/v1/teams/install">
+                <ExternalLink className="mr-1.5 size-3.5" />
+                Connect
+              </a>
+            </Button>
+          ) : canByot ? (
+            <Button
+              ref={triggerRef}
+              size="sm"
+              variant="outline"
+              aria-expanded={false}
+              aria-controls={panelId}
+              onClick={() => setExpanded(true)}
+            >
+              <Plus className="mr-1.5 size-3.5" />
+              Add app
+            </Button>
+          ) : null
+        }
+      />
+    );
+  }
 
   return (
-    <Card>
-      <CardHeader className="pb-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Users className="size-5 text-muted-foreground" />
-            <CardTitle className="text-base">Microsoft Teams</CardTitle>
-          </div>
-          {statusBadge}
-        </div>
-        <CardDescription>
-          Connect Teams for @atlas mentions and channel conversations
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        {teams.connected && (
-          <div className="space-y-2 text-sm">
-            {teams.tenantName && (
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Tenant</span>
-                <span className="font-medium">{teams.tenantName}</span>
-              </div>
-            )}
-            {teams.tenantId && (
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Tenant ID</span>
-                <code className="rounded bg-muted px-1.5 py-0.5 text-xs">
-                  {teams.tenantId}
-                </code>
-              </div>
-            )}
-            {teams.installedAt && (
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Connected</span>
-                <span>{formatDateTime(teams.installedAt)}</span>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Not connected + no OAuth + BYOT available: show credentials form */}
-        {!teams.connected && canByot && (
-          <TeamsByotForm
-            onConnect={onByotConnect}
-            connecting={byotConnecting}
-            error={byotError}
-          />
-        )}
-
-        {/* Not connected + no OAuth + no BYOT: truly unavailable */}
-        {!teams.connected && !canConnect && !canByot && (
-          isSaas ? (
-            <p className="text-sm text-muted-foreground">
-              Teams integration is not available. Contact your administrator.
-            </p>
-          ) : (
-            <p className="text-sm text-muted-foreground">
-              Set{" "}
-              <code className="rounded bg-muted px-1 text-xs">TEAMS_APP_ID</code>{" "}
-              and{" "}
-              <code className="rounded bg-muted px-1 text-xs">TEAMS_APP_PASSWORD</code>{" "}
-              to enable Teams, or configure{" "}
-              <code className="rounded bg-muted px-1 text-xs">DATABASE_URL</code>{" "}
-              to use your own app credentials.
-            </p>
-          )
-        )}
-
-        {disconnectError && (
-          <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-            {disconnectError}
-          </div>
-        )}
-
-        <div className="flex gap-2">
+    <IntegrationShell
+      id={panelId}
+      panelRef={panelRef}
+      icon={Users}
+      title="Microsoft Teams"
+      description="@atlas mentions and channel conversations"
+      status={status}
+      onCollapse={!teams.connected ? collapse : undefined}
+      actions={
+        <>
           {teams.connected && (canConnect || canByot) && (
             <DisconnectDialog
               name="Microsoft Teams"
@@ -813,16 +1117,6 @@ function TeamsCard({
               disconnecting={disconnecting}
             />
           )}
-
-          {!teams.connected && canConnect && (
-            <Button size="sm" asChild>
-              <a href="/api/v1/teams/install">
-                <ExternalLink className="mr-1.5 size-3.5" />
-                Connect to Teams
-              </a>
-            </Button>
-          )}
-
           {teams.connected && canConnect && (
             <Button variant="ghost" size="sm" asChild>
               <a href="/api/v1/teams/install">
@@ -831,9 +1125,29 @@ function TeamsCard({
               </a>
             </Button>
           )}
-        </div>
-      </CardContent>
-    </Card>
+        </>
+      }
+    >
+      {teams.connected && (
+        <DetailList>
+          {teams.tenantName && <DetailRow label="Tenant" value={teams.tenantName} truncate />}
+          {teams.tenantId && <DetailRow label="Tenant ID" value={teams.tenantId} mono truncate />}
+          {teams.installedAt && (
+            <DetailRow label="Connected" value={formatDateTime(teams.installedAt)} />
+          )}
+        </DetailList>
+      )}
+
+      {!teams.connected && canByot && (
+        <TeamsByotForm
+          onConnect={onByotConnect}
+          connecting={byotConnecting}
+          error={byotError}
+        />
+      )}
+
+      <InlineError>{disconnectError}</InlineError>
+    </IntegrationShell>
   );
 }
 
@@ -849,6 +1163,7 @@ function DiscordCard({
   onByotConnect,
   byotConnecting,
   byotError,
+  onByotClearError,
 }: {
   discord: DiscordStatus;
   isSaas: boolean;
@@ -859,93 +1174,70 @@ function DiscordCard({
   onByotConnect: (botToken: string, applicationId: string, publicKey: string) => void;
   byotConnecting: boolean;
   byotError: string | null;
+  onByotClearError: () => void;
 }) {
   const canConnect = discord.configurable;
   const canByot = !canConnect && hasInternalDB;
+  const status: StatusKind = discord.connected
+    ? "connected"
+    : !canConnect && !canByot
+    ? "unavailable"
+    : "disconnected";
 
-  const statusBadge = discord.connected ? (
-    <Badge variant="default">Connected</Badge>
-  ) : !canConnect && !canByot ? (
-    <Badge variant="outline">Not Available</Badge>
-  ) : (
-    <Badge variant="secondary">Disconnected</Badge>
-  );
+  const { expanded, setExpanded, collapse, triggerRef, panelRef, panelId } =
+    useDisclosure(discord.connected, onByotClearError);
+  const showFull = status === "connected" || expanded;
+
+  if (!showFull) {
+    return (
+      <CompactRow
+        icon={MessageCircle}
+        title="Discord"
+        description={
+          status === "unavailable"
+            ? isSaas
+              ? "Unavailable — ask your administrator"
+              : "Requires DISCORD_CLIENT_ID or DATABASE_URL"
+            : "Bot commands and server conversations"
+        }
+        status={status}
+        action={
+          canConnect ? (
+            <Button size="sm" asChild>
+              <a href="/api/v1/discord/install">
+                <ExternalLink className="mr-1.5 size-3.5" />
+                Connect
+              </a>
+            </Button>
+          ) : canByot ? (
+            <Button
+              ref={triggerRef}
+              size="sm"
+              variant="outline"
+              aria-expanded={false}
+              aria-controls={panelId}
+              onClick={() => setExpanded(true)}
+            >
+              <Plus className="mr-1.5 size-3.5" />
+              Add bot
+            </Button>
+          ) : null
+        }
+      />
+    );
+  }
 
   return (
-    <Card>
-      <CardHeader className="pb-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <MessageCircle className="size-5 text-muted-foreground" />
-            <CardTitle className="text-base">Discord</CardTitle>
-          </div>
-          {statusBadge}
-        </div>
-        <CardDescription>
-          Connect Discord for bot commands and server conversations
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        {discord.connected && (
-          <div className="space-y-2 text-sm">
-            {discord.guildName && (
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Server</span>
-                <span className="font-medium">{discord.guildName}</span>
-              </div>
-            )}
-            {discord.guildId && (
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Guild ID</span>
-                <code className="rounded bg-muted px-1.5 py-0.5 text-xs">
-                  {discord.guildId}
-                </code>
-              </div>
-            )}
-            {discord.installedAt && (
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Connected</span>
-                <span>{formatDateTime(discord.installedAt)}</span>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Not connected + no OAuth + BYOT available: show credentials form */}
-        {!discord.connected && canByot && (
-          <DiscordByotForm
-            onConnect={onByotConnect}
-            connecting={byotConnecting}
-            error={byotError}
-          />
-        )}
-
-        {/* Not connected + no OAuth + no BYOT: truly unavailable */}
-        {!discord.connected && !canConnect && !canByot && (
-          isSaas ? (
-            <p className="text-sm text-muted-foreground">
-              Discord integration is not available. Contact your administrator.
-            </p>
-          ) : (
-            <p className="text-sm text-muted-foreground">
-              Set{" "}
-              <code className="rounded bg-muted px-1 text-xs">DISCORD_CLIENT_ID</code>{" "}
-              and{" "}
-              <code className="rounded bg-muted px-1 text-xs">DISCORD_CLIENT_SECRET</code>{" "}
-              to enable Discord OAuth, or configure{" "}
-              <code className="rounded bg-muted px-1 text-xs">DATABASE_URL</code>{" "}
-              to use your own bot credentials.
-            </p>
-          )
-        )}
-
-        {disconnectError && (
-          <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-            {disconnectError}
-          </div>
-        )}
-
-        <div className="flex gap-2">
+    <IntegrationShell
+      id={panelId}
+      panelRef={panelRef}
+      icon={MessageCircle}
+      title="Discord"
+      description="Bot commands and server conversations"
+      status={status}
+      onCollapse={!discord.connected ? collapse : undefined}
+      actions={
+        <>
           {discord.connected && (canConnect || canByot) && (
             <DisconnectDialog
               name="Discord"
@@ -954,16 +1246,6 @@ function DiscordCard({
               disconnecting={disconnecting}
             />
           )}
-
-          {!discord.connected && canConnect && (
-            <Button size="sm" asChild>
-              <a href="/api/v1/discord/install">
-                <ExternalLink className="mr-1.5 size-3.5" />
-                Connect to Discord
-              </a>
-            </Button>
-          )}
-
           {discord.connected && canConnect && (
             <Button variant="ghost" size="sm" asChild>
               <a href="/api/v1/discord/install">
@@ -972,9 +1254,29 @@ function DiscordCard({
               </a>
             </Button>
           )}
-        </div>
-      </CardContent>
-    </Card>
+        </>
+      }
+    >
+      {discord.connected && (
+        <DetailList>
+          {discord.guildName && <DetailRow label="Server" value={discord.guildName} truncate />}
+          {discord.guildId && <DetailRow label="Guild ID" value={discord.guildId} mono truncate />}
+          {discord.installedAt && (
+            <DetailRow label="Connected" value={formatDateTime(discord.installedAt)} />
+          )}
+        </DetailList>
+      )}
+
+      {!discord.connected && canByot && (
+        <DiscordByotForm
+          onConnect={onByotConnect}
+          connecting={byotConnecting}
+          error={byotError}
+        />
+      )}
+
+      <InlineError>{disconnectError}</InlineError>
+    </IntegrationShell>
   );
 }
 
@@ -986,6 +1288,7 @@ function TelegramCard({
   onConnect,
   connecting,
   connectError,
+  onConnectClearError,
   onDisconnect,
   disconnecting,
   disconnectError,
@@ -995,95 +1298,96 @@ function TelegramCard({
   onConnect: (botToken: string) => void;
   connecting: boolean;
   connectError: string | null;
+  onConnectClearError: () => void;
   onDisconnect: () => void;
   disconnecting: boolean;
   disconnectError: string | null;
 }) {
   const canConnect = telegram.configurable;
+  const status: StatusKind = telegram.connected
+    ? "connected"
+    : !canConnect
+    ? "unavailable"
+    : "disconnected";
 
-  const statusBadge = telegram.connected ? (
-    <Badge variant="default">Connected</Badge>
-  ) : isSaas && !canConnect ? (
-    <Badge variant="outline">Not Available</Badge>
-  ) : (
-    <Badge variant="secondary">Disconnected</Badge>
-  );
+  const { expanded, setExpanded, collapse, triggerRef, panelRef, panelId } =
+    useDisclosure(telegram.connected, onConnectClearError);
+  const showFull = status === "connected" || expanded;
+
+  if (!showFull) {
+    return (
+      <CompactRow
+        icon={Send}
+        title="Telegram"
+        description={
+          status === "unavailable"
+            ? isSaas
+              ? "Unavailable — ask your administrator"
+              : "Requires DATABASE_URL"
+            : "Telegram bot for chat conversations"
+        }
+        status={status}
+        action={
+          canConnect ? (
+            <Button
+              ref={triggerRef}
+              size="sm"
+              variant="outline"
+              aria-expanded={false}
+              aria-controls={panelId}
+              onClick={() => setExpanded(true)}
+            >
+              <Plus className="mr-1.5 size-3.5" />
+              Add bot
+            </Button>
+          ) : null
+        }
+      />
+    );
+  }
 
   return (
-    <Card>
-      <CardHeader className="pb-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Send className="size-5 text-muted-foreground" />
-            <CardTitle className="text-base">Telegram</CardTitle>
-          </div>
-          {statusBadge}
-        </div>
-        <CardDescription>
-          Connect a Telegram bot for chat conversations
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        {telegram.connected && (
-          <div className="space-y-2 text-sm">
-            {telegram.botUsername && (
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Bot</span>
-                <span className="font-medium">@{telegram.botUsername}</span>
-              </div>
-            )}
-            {telegram.botId && (
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Bot ID</span>
-                <code className="rounded bg-muted px-1.5 py-0.5 text-xs">
-                  {telegram.botId}
-                </code>
-              </div>
-            )}
-            {telegram.installedAt && (
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Connected</span>
-                <span>{formatDateTime(telegram.installedAt)}</span>
-              </div>
-            )}
-          </div>
-        )}
-
-        {/* Not connected: show form or unavailable message */}
-        {!telegram.connected && !canConnect && (
-          <p className="text-sm text-muted-foreground">
-            Telegram integration requires an internal database. Configure{" "}
-            <code className="rounded bg-muted px-1 text-xs">DATABASE_URL</code>{" "}
-            to enable it.
-          </p>
-        )}
-
-        {!telegram.connected && canConnect && (
-          <TelegramConnectForm
-            onConnect={onConnect}
-            connecting={connecting}
-            error={connectError}
+    <IntegrationShell
+      id={panelId}
+      panelRef={panelRef}
+      icon={Send}
+      title="Telegram"
+      description="Telegram bot for chat conversations"
+      status={status}
+      onCollapse={!telegram.connected ? collapse : undefined}
+      actions={
+        telegram.connected && canConnect ? (
+          <DisconnectDialog
+            name="Telegram"
+            description="This will remove the Telegram bot connection for this workspace. Bot conversations will stop working until you reconnect."
+            onConfirm={onDisconnect}
+            disconnecting={disconnecting}
           />
-        )}
-
-        {(disconnectError || (telegram.connected && connectError)) && (
-          <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-            {disconnectError ?? connectError}
-          </div>
-        )}
-
-        <div className="flex gap-2">
-          {telegram.connected && canConnect && (
-            <DisconnectDialog
-              name="Telegram"
-              description="This will remove the Telegram bot connection for this workspace. Bot conversations will stop working until you reconnect."
-              onConfirm={onDisconnect}
-              disconnecting={disconnecting}
-            />
+        ) : null
+      }
+    >
+      {telegram.connected && (
+        <DetailList>
+          {telegram.botUsername && (
+            <DetailRow label="Bot" value={`@${telegram.botUsername}`} truncate />
           )}
-        </div>
-      </CardContent>
-    </Card>
+          {telegram.botId && <DetailRow label="Bot ID" value={telegram.botId} mono truncate />}
+          {telegram.installedAt && (
+            <DetailRow label="Connected" value={formatDateTime(telegram.installedAt)} />
+          )}
+        </DetailList>
+      )}
+
+      {!telegram.connected && canConnect && (
+        <TelegramConnectForm
+          onConnect={onConnect}
+          connecting={connecting}
+          error={connectError}
+        />
+      )}
+
+      <InlineError>{disconnectError ?? (telegram.connected ? connectError : null)}</InlineError>
+    </IntegrationShell>
   );
 }
 
@@ -1154,6 +1458,7 @@ function GChatCard({
   onConnect,
   connecting,
   connectError,
+  onConnectClearError,
   onDisconnect,
   disconnecting,
   disconnectError,
@@ -1162,96 +1467,101 @@ function GChatCard({
   onConnect: (credentialsJson: string) => void;
   connecting: boolean;
   connectError: string | null;
+  onConnectClearError: () => void;
   onDisconnect: () => void;
   disconnecting: boolean;
   disconnectError: string | null;
 }) {
   const canConnect = gchat.configurable;
+  const status: StatusKind = gchat.connected
+    ? "connected"
+    : !canConnect
+    ? "unavailable"
+    : "disconnected";
 
-  const statusBadge = gchat.connected ? (
-    <Badge variant="default">Connected</Badge>
-  ) : !canConnect ? (
-    <Badge variant="outline">Not Available</Badge>
-  ) : (
-    <Badge variant="secondary">Disconnected</Badge>
-  );
+  const { expanded, setExpanded, collapse, triggerRef, panelRef, panelId } =
+    useDisclosure(gchat.connected, onConnectClearError);
+  const showFull = status === "connected" || expanded;
+
+  if (!showFull) {
+    return (
+      <CompactRow
+        icon={MessageSquareText}
+        title="Google Chat"
+        description={
+          status === "unavailable"
+            ? "Requires DATABASE_URL"
+            : "Bot conversations in Google Workspace"
+        }
+        status={status}
+        action={
+          canConnect ? (
+            <Button
+              ref={triggerRef}
+              size="sm"
+              variant="outline"
+              aria-expanded={false}
+              aria-controls={panelId}
+              onClick={() => setExpanded(true)}
+            >
+              <Plus className="mr-1.5 size-3.5" />
+              Add credentials
+            </Button>
+          ) : null
+        }
+      />
+    );
+  }
 
   return (
-    <Card>
-      <CardHeader className="pb-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <MessageSquareText className="size-5 text-muted-foreground" />
-            <CardTitle className="text-base">Google Chat</CardTitle>
-          </div>
-          {statusBadge}
-        </div>
-        <CardDescription>
-          Connect Google Chat for bot conversations in Google Workspace
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        {gchat.connected && (
-          <div className="space-y-2 text-sm">
-            {gchat.serviceAccountEmail && (
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Service Account</span>
-                <span className="max-w-48 truncate font-medium" title={gchat.serviceAccountEmail}>
-                  {gchat.serviceAccountEmail}
-                </span>
-              </div>
-            )}
-            {gchat.projectId && (
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Project ID</span>
-                <code className="rounded bg-muted px-1.5 py-0.5 text-xs">
-                  {gchat.projectId}
-                </code>
-              </div>
-            )}
-            {gchat.installedAt && (
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Connected</span>
-                <span>{formatDateTime(gchat.installedAt)}</span>
-              </div>
-            )}
-          </div>
-        )}
-
-        {!gchat.connected && !canConnect && (
-          <p className="text-sm text-muted-foreground">
-            Google Chat integration requires an internal database. Configure{" "}
-            <code className="rounded bg-muted px-1 text-xs">DATABASE_URL</code>{" "}
-            to enable it.
-          </p>
-        )}
-
-        {!gchat.connected && canConnect && (
-          <GChatConnectForm
-            onConnect={onConnect}
-            connecting={connecting}
-            error={connectError}
+    <IntegrationShell
+      id={panelId}
+      panelRef={panelRef}
+      icon={MessageSquareText}
+      title="Google Chat"
+      description="Bot conversations in Google Workspace"
+      status={status}
+      onCollapse={!gchat.connected ? collapse : undefined}
+      actions={
+        gchat.connected && canConnect ? (
+          <DisconnectDialog
+            name="Google Chat"
+            description="This will remove the Google Chat connection for this workspace. Bot conversations will stop working until you reconnect."
+            onConfirm={onDisconnect}
+            disconnecting={disconnecting}
           />
-        )}
-
-        {(disconnectError || (gchat.connected && connectError)) && (
-          <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-            {disconnectError ?? connectError}
-          </div>
-        )}
-
-        <div className="flex gap-2">
-          {gchat.connected && canConnect && (
-            <DisconnectDialog
-              name="Google Chat"
-              description="This will remove the Google Chat connection for this workspace. Bot conversations will stop working until you reconnect."
-              onConfirm={onDisconnect}
-              disconnecting={disconnecting}
+        ) : null
+      }
+    >
+      {gchat.connected && (
+        <DetailList>
+          {gchat.serviceAccountEmail && (
+            <DetailRow
+              label="Service Account"
+              value={gchat.serviceAccountEmail}
+              mono
+              truncate
             />
           )}
-        </div>
-      </CardContent>
-    </Card>
+          {gchat.projectId && (
+            <DetailRow label="Project ID" value={gchat.projectId} mono truncate />
+          )}
+          {gchat.installedAt && (
+            <DetailRow label="Connected" value={formatDateTime(gchat.installedAt)} />
+          )}
+        </DetailList>
+      )}
+
+      {!gchat.connected && canConnect && (
+        <GChatConnectForm
+          onConnect={onConnect}
+          connecting={connecting}
+          error={connectError}
+        />
+      )}
+
+      <InlineError>{disconnectError ?? (gchat.connected ? connectError : null)}</InlineError>
+    </IntegrationShell>
   );
 }
 
@@ -1323,6 +1633,7 @@ function GitHubCard({
   onConnect,
   connecting,
   connectError,
+  onConnectClearError,
   onDisconnect,
   disconnecting,
   disconnectError,
@@ -1331,86 +1642,91 @@ function GitHubCard({
   onConnect: (accessToken: string) => void;
   connecting: boolean;
   connectError: string | null;
+  onConnectClearError: () => void;
   onDisconnect: () => void;
   disconnecting: boolean;
   disconnectError: string | null;
 }) {
   const canConnect = github.configurable;
+  const status: StatusKind = github.connected
+    ? "connected"
+    : !canConnect
+    ? "unavailable"
+    : "disconnected";
 
-  const statusBadge = github.connected ? (
-    <Badge variant="default">Connected</Badge>
-  ) : !canConnect ? (
-    <Badge variant="outline">Not Available</Badge>
-  ) : (
-    <Badge variant="secondary">Disconnected</Badge>
-  );
+  const { expanded, setExpanded, collapse, triggerRef, panelRef, panelId } =
+    useDisclosure(github.connected, onConnectClearError);
+  const showFull = status === "connected" || expanded;
+
+  if (!showFull) {
+    return (
+      <CompactRow
+        icon={GitBranch}
+        title="GitHub"
+        description={
+          status === "unavailable"
+            ? "Requires DATABASE_URL"
+            : "Issue tracking and repository integration"
+        }
+        status={status}
+        action={
+          canConnect ? (
+            <Button
+              ref={triggerRef}
+              size="sm"
+              variant="outline"
+              aria-expanded={false}
+              aria-controls={panelId}
+              onClick={() => setExpanded(true)}
+            >
+              <Plus className="mr-1.5 size-3.5" />
+              Add token
+            </Button>
+          ) : null
+        }
+      />
+    );
+  }
 
   return (
-    <Card>
-      <CardHeader className="pb-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <GitBranch className="size-5 text-muted-foreground" />
-            <CardTitle className="text-base">GitHub</CardTitle>
-          </div>
-          {statusBadge}
-        </div>
-        <CardDescription>
-          Connect GitHub for issue tracking and repository integration
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        {github.connected && (
-          <div className="space-y-2 text-sm">
-            {github.username && (
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">User</span>
-                <span className="font-medium">@{github.username}</span>
-              </div>
-            )}
-            {github.installedAt && (
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Connected</span>
-                <span>{formatDateTime(github.installedAt)}</span>
-              </div>
-            )}
-          </div>
-        )}
-
-        {!github.connected && !canConnect && (
-          <p className="text-sm text-muted-foreground">
-            GitHub integration requires an internal database. Configure{" "}
-            <code className="rounded bg-muted px-1 text-xs">DATABASE_URL</code>{" "}
-            to enable it.
-          </p>
-        )}
-
-        {!github.connected && canConnect && (
-          <GitHubConnectForm
-            onConnect={onConnect}
-            connecting={connecting}
-            error={connectError}
+    <IntegrationShell
+      id={panelId}
+      panelRef={panelRef}
+      icon={GitBranch}
+      title="GitHub"
+      description="Issue tracking and repository integration"
+      status={status}
+      onCollapse={!github.connected ? collapse : undefined}
+      actions={
+        github.connected && canConnect ? (
+          <DisconnectDialog
+            name="GitHub"
+            description="This will remove the GitHub connection for this workspace. GitHub integration functionality will stop working until you reconnect."
+            onConfirm={onDisconnect}
+            disconnecting={disconnecting}
           />
-        )}
-
-        {(disconnectError || (github.connected && connectError)) && (
-          <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-            {disconnectError ?? connectError}
-          </div>
-        )}
-
-        <div className="flex gap-2">
-          {github.connected && canConnect && (
-            <DisconnectDialog
-              name="GitHub"
-              description="This will remove the GitHub connection for this workspace. GitHub integration functionality will stop working until you reconnect."
-              onConfirm={onDisconnect}
-              disconnecting={disconnecting}
-            />
+        ) : null
+      }
+    >
+      {github.connected && (
+        <DetailList>
+          {github.username && <DetailRow label="User" value={`@${github.username}`} truncate />}
+          {github.installedAt && (
+            <DetailRow label="Connected" value={formatDateTime(github.installedAt)} />
           )}
-        </div>
-      </CardContent>
-    </Card>
+        </DetailList>
+      )}
+
+      {!github.connected && canConnect && (
+        <GitHubConnectForm
+          onConnect={onConnect}
+          connecting={connecting}
+          error={connectError}
+        />
+      )}
+
+      <InlineError>{disconnectError ?? (github.connected ? connectError : null)}</InlineError>
+    </IntegrationShell>
   );
 }
 
@@ -1481,6 +1797,7 @@ function LinearCard({
   onConnect,
   connecting,
   connectError,
+  onConnectClearError,
   onDisconnect,
   disconnecting,
   disconnectError,
@@ -1489,92 +1806,92 @@ function LinearCard({
   onConnect: (apiKey: string) => void;
   connecting: boolean;
   connectError: string | null;
+  onConnectClearError: () => void;
   onDisconnect: () => void;
   disconnecting: boolean;
   disconnectError: string | null;
 }) {
   const canConnect = linear.configurable;
+  const status: StatusKind = linear.connected
+    ? "connected"
+    : !canConnect
+    ? "unavailable"
+    : "disconnected";
 
-  const statusBadge = linear.connected ? (
-    <Badge variant="default">Connected</Badge>
-  ) : !canConnect ? (
-    <Badge variant="outline">Not Available</Badge>
-  ) : (
-    <Badge variant="secondary">Disconnected</Badge>
-  );
+  const { expanded, setExpanded, collapse, triggerRef, panelRef, panelId } =
+    useDisclosure(linear.connected, onConnectClearError);
+  const showFull = status === "connected" || expanded;
+
+  if (!showFull) {
+    return (
+      <CompactRow
+        icon={BarChart3}
+        title="Linear"
+        description={
+          status === "unavailable"
+            ? "Requires DATABASE_URL"
+            : "Issue tracking and project management"
+        }
+        status={status}
+        action={
+          canConnect ? (
+            <Button
+              ref={triggerRef}
+              size="sm"
+              variant="outline"
+              aria-expanded={false}
+              aria-controls={panelId}
+              onClick={() => setExpanded(true)}
+            >
+              <Plus className="mr-1.5 size-3.5" />
+              Add API key
+            </Button>
+          ) : null
+        }
+      />
+    );
+  }
 
   return (
-    <Card>
-      <CardHeader className="pb-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <BarChart3 className="size-5 text-muted-foreground" />
-            <CardTitle className="text-base">Linear</CardTitle>
-          </div>
-          {statusBadge}
-        </div>
-        <CardDescription>
-          Connect Linear for issue tracking and project management
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        {linear.connected && (
-          <div className="space-y-2 text-sm">
-            {linear.userName && (
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">User</span>
-                <span className="font-medium">{linear.userName}</span>
-              </div>
-            )}
-            {linear.userEmail && (
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Email</span>
-                <span>{linear.userEmail}</span>
-              </div>
-            )}
-            {linear.installedAt && (
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Connected</span>
-                <span>{formatDateTime(linear.installedAt)}</span>
-              </div>
-            )}
-          </div>
-        )}
-
-        {!linear.connected && !canConnect && (
-          <p className="text-sm text-muted-foreground">
-            Linear integration requires an internal database. Configure{" "}
-            <code className="rounded bg-muted px-1 text-xs">DATABASE_URL</code>{" "}
-            to enable it.
-          </p>
-        )}
-
-        {!linear.connected && canConnect && (
-          <LinearConnectForm
-            onConnect={onConnect}
-            connecting={connecting}
-            error={connectError}
+    <IntegrationShell
+      id={panelId}
+      panelRef={panelRef}
+      icon={BarChart3}
+      title="Linear"
+      description="Issue tracking and project management"
+      status={status}
+      onCollapse={!linear.connected ? collapse : undefined}
+      actions={
+        linear.connected && canConnect ? (
+          <DisconnectDialog
+            name="Linear"
+            description="This will remove the Linear connection for this workspace. Issue tracking integration will stop working until you reconnect."
+            onConfirm={onDisconnect}
+            disconnecting={disconnecting}
           />
-        )}
-
-        {(disconnectError || (linear.connected && connectError)) && (
-          <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-            {disconnectError ?? connectError}
-          </div>
-        )}
-
-        <div className="flex gap-2">
-          {linear.connected && canConnect && (
-            <DisconnectDialog
-              name="Linear"
-              description="This will remove the Linear connection for this workspace. Issue tracking integration will stop working until you reconnect."
-              onConfirm={onDisconnect}
-              disconnecting={disconnecting}
-            />
+        ) : null
+      }
+    >
+      {linear.connected && (
+        <DetailList>
+          {linear.userName && <DetailRow label="User" value={linear.userName} truncate />}
+          {linear.userEmail && <DetailRow label="Email" value={linear.userEmail} mono truncate />}
+          {linear.installedAt && (
+            <DetailRow label="Connected" value={formatDateTime(linear.installedAt)} />
           )}
-        </div>
-      </CardContent>
-    </Card>
+        </DetailList>
+      )}
+
+      {!linear.connected && canConnect && (
+        <LinearConnectForm
+          onConnect={onConnect}
+          connecting={connecting}
+          error={connectError}
+        />
+      )}
+
+      <InlineError>{disconnectError ?? (linear.connected ? connectError : null)}</InlineError>
+    </IntegrationShell>
   );
 }
 
@@ -1645,6 +1962,7 @@ function WhatsAppCard({
   onConnect,
   connecting,
   connectError,
+  onConnectClearError,
   onDisconnect,
   disconnecting,
   disconnectError,
@@ -1653,94 +1971,101 @@ function WhatsAppCard({
   onConnect: (phoneNumberId: string, accessToken: string) => void;
   connecting: boolean;
   connectError: string | null;
+  onConnectClearError: () => void;
   onDisconnect: () => void;
   disconnecting: boolean;
   disconnectError: string | null;
 }) {
   const canConnect = whatsapp.configurable;
+  const status: StatusKind = whatsapp.connected
+    ? "connected"
+    : !canConnect
+    ? "unavailable"
+    : "disconnected";
 
-  const statusBadge = whatsapp.connected ? (
-    <Badge variant="default">Connected</Badge>
-  ) : !canConnect ? (
-    <Badge variant="outline">Not Available</Badge>
-  ) : (
-    <Badge variant="secondary">Disconnected</Badge>
-  );
+  const { expanded, setExpanded, collapse, triggerRef, panelRef, panelId } =
+    useDisclosure(whatsapp.connected, onConnectClearError);
+  const showFull = status === "connected" || expanded;
+
+  if (!showFull) {
+    return (
+      <CompactRow
+        icon={Phone}
+        title="WhatsApp"
+        description={
+          status === "unavailable"
+            ? "Requires DATABASE_URL"
+            : "Messaging and notification delivery"
+        }
+        status={status}
+        action={
+          canConnect ? (
+            <Button
+              ref={triggerRef}
+              size="sm"
+              variant="outline"
+              aria-expanded={false}
+              aria-controls={panelId}
+              onClick={() => setExpanded(true)}
+            >
+              <Plus className="mr-1.5 size-3.5" />
+              Add phone
+            </Button>
+          ) : null
+        }
+      />
+    );
+  }
 
   return (
-    <Card>
-      <CardHeader className="pb-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Phone className="size-5 text-muted-foreground" />
-            <CardTitle className="text-base">WhatsApp</CardTitle>
-          </div>
-          {statusBadge}
-        </div>
-        <CardDescription>
-          Connect WhatsApp for messaging and notification delivery
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        {whatsapp.connected && (
-          <div className="space-y-2 text-sm">
-            {whatsapp.displayPhone && (
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Phone</span>
-                <span className="font-medium">{whatsapp.displayPhone}</span>
-              </div>
-            )}
-            {whatsapp.phoneNumberId && (
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Phone Number ID</span>
-                <code className="rounded bg-muted px-1.5 py-0.5 text-xs">
-                  {whatsapp.phoneNumberId}
-                </code>
-              </div>
-            )}
-            {whatsapp.installedAt && (
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Connected</span>
-                <span>{formatDateTime(whatsapp.installedAt)}</span>
-              </div>
-            )}
-          </div>
-        )}
-
-        {!whatsapp.connected && !canConnect && (
-          <p className="text-sm text-muted-foreground">
-            WhatsApp integration requires an internal database. Configure{" "}
-            <code className="rounded bg-muted px-1 text-xs">DATABASE_URL</code>{" "}
-            to enable it.
-          </p>
-        )}
-
-        {!whatsapp.connected && canConnect && (
-          <WhatsAppConnectForm
-            onConnect={onConnect}
-            connecting={connecting}
-            error={connectError}
+    <IntegrationShell
+      id={panelId}
+      panelRef={panelRef}
+      icon={Phone}
+      title="WhatsApp"
+      description="Messaging and notification delivery"
+      status={status}
+      onCollapse={!whatsapp.connected ? collapse : undefined}
+      actions={
+        whatsapp.connected && canConnect ? (
+          <DisconnectDialog
+            name="WhatsApp"
+            description="This will remove the WhatsApp connection for this workspace. WhatsApp messaging will stop working until you reconnect."
+            onConfirm={onDisconnect}
+            disconnecting={disconnecting}
           />
-        )}
-
-        {(disconnectError || (whatsapp.connected && connectError)) && (
-          <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-            {disconnectError ?? connectError}
-          </div>
-        )}
-
-        <div className="flex gap-2">
-          {whatsapp.connected && canConnect && (
-            <DisconnectDialog
-              name="WhatsApp"
-              description="This will remove the WhatsApp connection for this workspace. WhatsApp messaging will stop working until you reconnect."
-              onConfirm={onDisconnect}
-              disconnecting={disconnecting}
+        ) : null
+      }
+    >
+      {whatsapp.connected && (
+        <DetailList>
+          {whatsapp.displayPhone && (
+            <DetailRow label="Phone" value={whatsapp.displayPhone} mono truncate />
+          )}
+          {whatsapp.phoneNumberId && (
+            <DetailRow
+              label="Phone Number ID"
+              value={whatsapp.phoneNumberId}
+              mono
+              truncate
             />
           )}
-        </div>
-      </CardContent>
-    </Card>
+          {whatsapp.installedAt && (
+            <DetailRow label="Connected" value={formatDateTime(whatsapp.installedAt)} />
+          )}
+        </DetailList>
+      )}
+
+      {!whatsapp.connected && canConnect && (
+        <WhatsAppConnectForm
+          onConnect={onConnect}
+          connecting={connecting}
+          error={connectError}
+        />
+      )}
+
+      <InlineError>{disconnectError ?? (whatsapp.connected ? connectError : null)}</InlineError>
+    </IntegrationShell>
   );
 }
 
@@ -2057,8 +2382,6 @@ function DiscordByotForm({
   );
 }
 
-// -- Disconnect Dialog (shared) --
-
 // -- Email Card --
 
 function EmailCard({
@@ -2066,6 +2389,7 @@ function EmailCard({
   onConnect,
   connecting,
   connectError,
+  onConnectClearError,
   onTest,
   testing,
   testResult,
@@ -2077,6 +2401,7 @@ function EmailCard({
   onConnect: (provider: string, senderAddress: string, config: Record<string, unknown>) => void;
   connecting: boolean;
   connectError: string | null;
+  onConnectClearError: () => void;
   onTest: (recipientEmail: string) => void;
   testing: boolean;
   testResult: string | null;
@@ -2085,14 +2410,11 @@ function EmailCard({
   disconnectError: string | null;
 }) {
   const canConnect = email.configurable;
-
-  const statusBadge = email.connected ? (
-    <Badge variant="default">Connected</Badge>
-  ) : !canConnect ? (
-    <Badge variant="outline">Not Available</Badge>
-  ) : (
-    <Badge variant="secondary">Disconnected</Badge>
-  );
+  const status: StatusKind = email.connected
+    ? "connected"
+    : !canConnect
+    ? "unavailable"
+    : "disconnected";
 
   const providerLabel: Record<string, string> = {
     smtp: "SMTP",
@@ -2102,84 +2424,91 @@ function EmailCard({
     resend: "Resend",
   };
 
+  const { expanded, setExpanded, collapse, triggerRef, panelRef, panelId } =
+    useDisclosure(email.connected, onConnectClearError);
+  const showFull = status === "connected" || expanded;
+
+  if (!showFull) {
+    return (
+      <CompactRow
+        icon={Mail}
+        title="Email"
+        description={
+          status === "unavailable"
+            ? "Requires DATABASE_URL"
+            : "Delivery for digests and notifications"
+        }
+        status={status}
+        action={
+          canConnect ? (
+            <Button
+              ref={triggerRef}
+              size="sm"
+              variant="outline"
+              aria-expanded={false}
+              aria-controls={panelId}
+              onClick={() => setExpanded(true)}
+            >
+              <Plus className="mr-1.5 size-3.5" />
+              Add provider
+            </Button>
+          ) : null
+        }
+      />
+    );
+  }
+
   return (
-    <Card>
-      <CardHeader className="pb-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Mail className="size-5 text-muted-foreground" />
-            <CardTitle className="text-base">Email</CardTitle>
-          </div>
-          {statusBadge}
-        </div>
-        <CardDescription>
-          Configure email delivery for digests and notifications
-        </CardDescription>
-      </CardHeader>
-      <CardContent className="space-y-4">
-        {email.connected && (
-          <div className="space-y-2 text-sm">
-            {email.provider && (
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Provider</span>
-                <span className="font-medium">{providerLabel[email.provider] ?? email.provider}</span>
-              </div>
-            )}
-            {email.senderAddress && (
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Sender</span>
-                <code className="rounded bg-muted px-1.5 py-0.5 text-xs">
-                  {email.senderAddress}
-                </code>
-              </div>
-            )}
-            {email.installedAt && (
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Connected</span>
-                <span>{formatDateTime(email.installedAt)}</span>
-              </div>
-            )}
-          </div>
-        )}
-
-        {email.connected && canConnect && (
-          <EmailTestForm onTest={onTest} testing={testing} testResult={testResult} />
-        )}
-
-        {!email.connected && !canConnect && (
-          <p className="text-sm text-muted-foreground">
-            Email integration requires an internal database. Configure{" "}
-            <code className="rounded bg-muted px-1 text-xs">DATABASE_URL</code>{" "}
-            to enable it.
-          </p>
-        )}
-
-        {!email.connected && canConnect && (
-          <EmailConnectForm
-            onConnect={onConnect}
-            connecting={connecting}
-            error={connectError}
+    <IntegrationShell
+      id={panelId}
+      panelRef={panelRef}
+      icon={Mail}
+      title="Email"
+      description="Delivery for digests and notifications"
+      status={status}
+      onCollapse={!email.connected ? collapse : undefined}
+      actions={
+        email.connected && canConnect ? (
+          <DisconnectDialog
+            name="Email"
+            description="This will remove the email configuration for this workspace. Email delivery will fall back to environment variables or be disabled until you reconnect."
+            onConfirm={onDisconnect}
+            disconnecting={disconnecting}
           />
-        )}
-
-        {(disconnectError || (email.connected && connectError)) && (
-          <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-            {disconnectError ?? connectError}
-          </div>
-        )}
-
-        <div className="flex gap-2">
-          {email.connected && canConnect && (
-            <DisconnectDialog
-              name="Email"
-              description="This will remove the email configuration for this workspace. Email delivery will fall back to environment variables or be disabled until you reconnect."
-              onConfirm={onDisconnect}
-              disconnecting={disconnecting}
+        ) : null
+      }
+    >
+      {email.connected && (
+        <DetailList>
+          {email.provider && (
+            <DetailRow
+              label="Provider"
+              value={providerLabel[email.provider] ?? email.provider}
             />
           )}
-        </div>
-      </CardContent>
-    </Card>
+          {email.senderAddress && (
+            <DetailRow label="Sender" value={email.senderAddress} mono truncate />
+          )}
+          {email.installedAt && (
+            <DetailRow label="Connected" value={formatDateTime(email.installedAt)} />
+          )}
+        </DetailList>
+      )}
+
+      {email.connected && canConnect && (
+        <EmailTestForm onTest={onTest} testing={testing} testResult={testResult} />
+      )}
+
+      {!email.connected && canConnect && (
+        <EmailConnectForm
+          onConnect={onConnect}
+          connecting={connecting}
+          error={connectError}
+        />
+      )}
+
+      <InlineError>{disconnectError ?? (email.connected ? connectError : null)}</InlineError>
+    </IntegrationShell>
   );
 }
 
@@ -2426,6 +2755,8 @@ function EmailTestForm({
   );
 }
 
+// -- Disconnect Dialog (shared) --
+
 function DisconnectDialog({
   name,
   description,
@@ -2476,37 +2807,36 @@ function WebhookCard({
   isSaas: boolean;
 }) {
   const count = webhooks?.activeCount ?? 0;
+  const status: StatusKind = count > 0
+    ? "connected"
+    : webhooks?.configurable
+    ? "disconnected"
+    : "unavailable";
 
+  // Webhooks are always compact — management lives on the scheduled-tasks page.
   return (
-    <Card>
-      <CardHeader className="pb-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Webhook className="size-5 text-muted-foreground" />
-            <CardTitle className="text-base">Webhooks</CardTitle>
-          </div>
-          <Badge variant={count ? "default" : "secondary"}>
-            {count ? "Active" : "None"}
-          </Badge>
-        </div>
-        <CardDescription>
-          Outbound webhook delivery via scheduled tasks
-        </CardDescription>
-      </CardHeader>
-      <CardContent>
-        <div className="flex items-center justify-between">
-          <div className="space-y-1">
-            <p className="text-sm font-medium">Active webhook tasks</p>
-            <p className="text-2xl font-bold tabular-nums">{count}</p>
-          </div>
-          {isSaas && webhooks?.configurable && (
-            <Button size="sm" variant="outline" asChild>
-              <a href="/admin/scheduled-tasks">Create Webhook</a>
-            </Button>
-          )}
-        </div>
-      </CardContent>
-    </Card>
+    <CompactRow
+      icon={Webhook}
+      title="Webhooks"
+      description={
+        count > 0
+          ? `${count} active task${count === 1 ? "" : "s"} delivering to HTTPS endpoints`
+          : status === "unavailable"
+          ? "Unavailable on this workspace"
+          : "Scheduled tasks deliver query results to HTTPS endpoints"
+      }
+      status={status}
+      action={
+        isSaas && webhooks?.configurable ? (
+          <Button size="sm" variant="outline" asChild>
+            <a href="/admin/scheduled-tasks">
+              <ExternalLink className="mr-1.5 size-3.5" />
+              Manage
+            </a>
+          </Button>
+        ) : null
+      }
+    />
   );
 }
 

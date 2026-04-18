@@ -1,28 +1,15 @@
 /**
- * Tests for admin email provider route helpers.
+ * Tests for the admin email provider route's secret-masking helper.
  *
- * These test the maskSecret helper logic that protects API keys in responses.
- * The function is tested via the pattern it implements (same as settings.ts maskSecret).
+ * Imports the real implementation from the route so a regression in the
+ * function (short-key fallthrough, leaked secrets) fails this test instead
+ * of silently passing against a stale duplicate.
  */
 
 import { describe, it, expect } from "bun:test";
-
-// Test the maskSecret logic directly (same implementation as in admin-email-provider.ts)
-function maskSecret(value: string | undefined): string | undefined {
-  if (!value) return undefined;
-  if (value.length <= 8) return "••••••••";
-  return `${value.slice(0, 4)}••••${value.slice(-4)}`;
-}
+import { maskSecret } from "@atlas/api/api/routes/admin-email-provider";
 
 describe("maskSecret", () => {
-  it("returns undefined for undefined input", () => {
-    expect(maskSecret(undefined)).toBeUndefined();
-  });
-
-  it("returns undefined for empty string", () => {
-    expect(maskSecret("")).toBeUndefined();
-  });
-
   it("fully masks short secrets (≤8 chars)", () => {
     expect(maskSecret("abc")).toBe("••••••••");
     expect(maskSecret("12345678")).toBe("••••••••");
@@ -30,12 +17,12 @@ describe("maskSecret", () => {
 
   it("shows first 4 and last 4 chars for longer secrets", () => {
     expect(maskSecret("re_abc123xyz")).toBe("re_a••••3xyz");
-    expect(maskSecret("SG.very_long_api_key_here")).toBe("SG.v••••here");
+    expect(maskSecret("re_very_long_api_key_here")).toBe("re_v••••here");
   });
 
   it("never exposes the full secret", () => {
     const secret = "re_super_secret_api_key_12345";
-    const masked = maskSecret(secret)!;
+    const masked = maskSecret(secret);
     expect(masked).not.toBe(secret);
     expect(masked).toContain("••••");
     // Only first 4 + last 4 = 8 chars of the original are visible

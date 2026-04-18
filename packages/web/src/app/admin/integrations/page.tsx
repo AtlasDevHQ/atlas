@@ -28,15 +28,9 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
+import Link from "next/link";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import {
   Cable,
   MessageSquare,
@@ -566,31 +560,6 @@ export default function IntegrationsPage() {
     invalidates: refetch,
   });
 
-  const emailConnectMutation = useAdminMutation<{
-    message: string;
-    provider: string;
-    senderAddress: string;
-  }>({
-    path: "/api/v1/admin/integrations/email",
-    method: "POST",
-    invalidates: refetch,
-  });
-
-  const emailTestMutation = useAdminMutation<{
-    message: string;
-    success: boolean;
-  }>({
-    path: "/api/v1/admin/integrations/email/test",
-    method: "POST",
-    invalidates: refetch,
-  });
-
-  const emailDisconnectMutation = useAdminMutation<{ message: string }>({
-    path: "/api/v1/admin/integrations/email",
-    method: "DELETE",
-    invalidates: refetch,
-  });
-
   async function handleDisconnect() {
     await disconnectMutation.mutate({});
   }
@@ -653,18 +622,6 @@ export default function IntegrationsPage() {
 
   async function handleWhatsAppDisconnect() {
     await whatsappDisconnectMutation.mutate({});
-  }
-
-  async function handleEmailConnect(provider: string, senderAddress: string, config: Record<string, unknown>) {
-    await emailConnectMutation.mutate({ body: { provider, senderAddress, config } });
-  }
-
-  async function handleEmailTest(recipientEmail: string) {
-    await emailTestMutation.mutate({ body: { recipientEmail } });
-  }
-
-  async function handleEmailDisconnect() {
-    await emailDisconnectMutation.mutate({});
   }
 
   const isSaas = data?.deployMode === "saas";
@@ -842,19 +799,7 @@ export default function IntegrationsPage() {
             <section>
               <SectionHeading title="Notifications" description="Outbound channels for tasks and digests" />
               <div className="space-y-2">
-                <EmailCard
-                  email={emailStatus!}
-                  onConnect={handleEmailConnect}
-                  connecting={emailConnectMutation.saving}
-                  connectError={emailConnectMutation.error}
-                  onConnectClearError={emailConnectMutation.clearError}
-                  onTest={handleEmailTest}
-                  testing={emailTestMutation.saving}
-                  testResult={emailTestMutation.error}
-                  onDisconnect={handleEmailDisconnect}
-                  disconnecting={emailDisconnectMutation.saving}
-                  disconnectError={emailDisconnectMutation.error}
-                />
+                <EmailCard email={emailStatus!} />
                 <WebhookCard webhooks={webhooks} isSaas={isSaas} />
               </div>
             </section>
@@ -2382,376 +2327,43 @@ function DiscordByotForm({
   );
 }
 
+
 // -- Email Card --
 
-function EmailCard({
-  email,
-  onConnect,
-  connecting,
-  connectError,
-  onConnectClearError,
-  onTest,
-  testing,
-  testResult,
-  onDisconnect,
-  disconnecting,
-  disconnectError,
-}: {
-  email: EmailStatus;
-  onConnect: (provider: string, senderAddress: string, config: Record<string, unknown>) => void;
-  connecting: boolean;
-  connectError: string | null;
-  onConnectClearError: () => void;
-  onTest: (recipientEmail: string) => void;
-  testing: boolean;
-  testResult: string | null;
-  onDisconnect: () => void;
-  disconnecting: boolean;
-  disconnectError: string | null;
-}) {
-  const canConnect = email.configurable;
-  const status: StatusKind = email.connected
-    ? "connected"
-    : !canConnect
-    ? "unavailable"
-    : "disconnected";
+const EMAIL_PROVIDER_LABEL: Record<string, string> = {
+  resend: "Resend",
+  sendgrid: "SendGrid",
+  postmark: "Postmark",
+  smtp: "SMTP",
+  ses: "Amazon SES",
+};
 
-  const providerLabel: Record<string, string> = {
-    smtp: "SMTP",
-    sendgrid: "SendGrid",
-    postmark: "Postmark",
-    ses: "Amazon SES",
-    resend: "Resend",
-  };
-
-  const { expanded, setExpanded, collapse, triggerRef, panelRef, panelId } =
-    useDisclosure(email.connected, onConnectClearError);
-  const showFull = status === "connected" || expanded;
-
-  if (!showFull) {
-    return (
-      <CompactRow
-        icon={Mail}
-        title="Email"
-        description={
-          status === "unavailable"
-            ? "Requires DATABASE_URL"
-            : "Delivery for digests and notifications"
-        }
-        status={status}
-        action={
-          canConnect ? (
-            <Button
-              ref={triggerRef}
-              size="sm"
-              variant="outline"
-              aria-expanded={false}
-              aria-controls={panelId}
-              onClick={() => setExpanded(true)}
-            >
-              <Plus className="mr-1.5 size-3.5" />
-              Add provider
-            </Button>
-          ) : null
-        }
-      />
-    );
-  }
-
+/**
+ * Thin email summary card. Email delivery is configured on the dedicated
+ * /admin/email-provider page — this tile just exposes connection status and
+ * deep-links to the manager so admins don't have to hunt for it.
+ */
+function EmailCard({ email }: { email: EmailStatus }) {
+  const connected = email.connected;
+  const providerLabel = email.provider
+    ? EMAIL_PROVIDER_LABEL[email.provider] ?? email.provider
+    : null;
   return (
-    <IntegrationShell
-      id={panelId}
-      panelRef={panelRef}
+    <CompactRow
       icon={Mail}
       title="Email"
-      description="Delivery for digests and notifications"
-      status={status}
-      onCollapse={!email.connected ? collapse : undefined}
-      actions={
-        email.connected && canConnect ? (
-          <DisconnectDialog
-            name="Email"
-            description="This will remove the email configuration for this workspace. Email delivery will fall back to environment variables or be disabled until you reconnect."
-            onConfirm={onDisconnect}
-            disconnecting={disconnecting}
-          />
-        ) : null
+      description={
+        connected
+          ? `${providerLabel ?? "Custom"} · ${email.senderAddress ?? "workspace sender"}`
+          : "Using the Atlas shared Resend default"
       }
-    >
-      {email.connected && (
-        <DetailList>
-          {email.provider && (
-            <DetailRow
-              label="Provider"
-              value={providerLabel[email.provider] ?? email.provider}
-            />
-          )}
-          {email.senderAddress && (
-            <DetailRow label="Sender" value={email.senderAddress} mono truncate />
-          )}
-          {email.installedAt && (
-            <DetailRow label="Connected" value={formatDateTime(email.installedAt)} />
-          )}
-        </DetailList>
-      )}
-
-      {email.connected && canConnect && (
-        <EmailTestForm onTest={onTest} testing={testing} testResult={testResult} />
-      )}
-
-      {!email.connected && canConnect && (
-        <EmailConnectForm
-          onConnect={onConnect}
-          connecting={connecting}
-          error={connectError}
-        />
-      )}
-
-      <InlineError>{disconnectError ?? (email.connected ? connectError : null)}</InlineError>
-    </IntegrationShell>
-  );
-}
-
-// -- Email Connect Form --
-
-type EmailProviderKey = "smtp" | "sendgrid" | "postmark" | "ses" | "resend";
-
-function EmailConnectForm({
-  onConnect,
-  connecting,
-  error,
-}: {
-  onConnect: (provider: string, senderAddress: string, config: Record<string, unknown>) => void;
-  connecting: boolean;
-  error: string | null;
-}) {
-  const [provider, setProvider] = useState<EmailProviderKey | "">("");
-  const [senderAddress, setSenderAddress] = useState("");
-
-  // SMTP fields
-  const [smtpHost, setSmtpHost] = useState("");
-  const [smtpPort, setSmtpPort] = useState("587");
-  const [smtpUsername, setSmtpUsername] = useState("");
-  const [smtpPassword, setSmtpPassword] = useState("");
-  const [smtpTls, setSmtpTls] = useState(true);
-
-  // SendGrid fields
-  const [sgApiKey, setSgApiKey] = useState("");
-
-  // Postmark fields
-  const [pmServerToken, setPmServerToken] = useState("");
-
-  // SES fields
-  const [sesRegion, setSesRegion] = useState("");
-  const [sesAccessKeyId, setSesAccessKeyId] = useState("");
-  const [sesSecretAccessKey, setSesSecretAccessKey] = useState("");
-
-  // Resend fields
-  const [resendApiKey, setResendApiKey] = useState("");
-
-  function buildConfig(): Record<string, unknown> | null {
-    switch (provider) {
-      case "smtp":
-        if (!smtpHost || !smtpUsername || !smtpPassword) return null;
-        return { host: smtpHost, port: parseInt(smtpPort, 10) || 587, username: smtpUsername, password: smtpPassword, tls: smtpTls };
-      case "sendgrid":
-        if (!sgApiKey) return null;
-        return { apiKey: sgApiKey };
-      case "postmark":
-        if (!pmServerToken) return null;
-        return { serverToken: pmServerToken };
-      case "ses":
-        if (!sesRegion || !sesAccessKeyId || !sesSecretAccessKey) return null;
-        return { region: sesRegion, accessKeyId: sesAccessKeyId, secretAccessKey: sesSecretAccessKey };
-      case "resend":
-        if (!resendApiKey) return null;
-        return { apiKey: resendApiKey };
-      default:
-        return null;
-    }
-  }
-
-  function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    const config = buildConfig();
-    if (provider && senderAddress.trim() && config) {
-      onConnect(provider, senderAddress.trim(), config);
-    }
-  }
-
-  const config = buildConfig();
-  const canSubmit = !!provider && !!senderAddress.trim() && !!config && !connecting;
-
-  return (
-    <form onSubmit={handleSubmit} className="space-y-3">
-      <div className="space-y-1.5">
-        <label htmlFor="email-provider" className="text-sm font-medium">
-          Provider
-        </label>
-        <Select value={provider} onValueChange={(v) => setProvider(v as EmailProviderKey)}>
-          <SelectTrigger id="email-provider">
-            <SelectValue placeholder="Select email provider" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="smtp">SMTP</SelectItem>
-            <SelectItem value="sendgrid">SendGrid</SelectItem>
-            <SelectItem value="postmark">Postmark</SelectItem>
-            <SelectItem value="ses">Amazon SES</SelectItem>
-            <SelectItem value="resend">Resend</SelectItem>
-          </SelectContent>
-        </Select>
-      </div>
-
-      <div className="space-y-1.5">
-        <label htmlFor="email-sender" className="text-sm font-medium">
-          Sender Address
-        </label>
-        <Input
-          id="email-sender"
-          type="email"
-          placeholder="noreply@example.com"
-          value={senderAddress}
-          onChange={(e) => setSenderAddress(e.target.value)}
-          disabled={connecting}
-        />
-      </div>
-
-      {provider === "smtp" && (
-        <>
-          <div className="space-y-1.5">
-            <label htmlFor="smtp-host" className="text-sm font-medium">Host</label>
-            <Input id="smtp-host" placeholder="smtp.example.com" value={smtpHost} onChange={(e) => setSmtpHost(e.target.value)} disabled={connecting} />
-          </div>
-          <div className="space-y-1.5">
-            <label htmlFor="smtp-port" className="text-sm font-medium">Port</label>
-            <Input id="smtp-port" type="number" placeholder="587" value={smtpPort} onChange={(e) => setSmtpPort(e.target.value)} disabled={connecting} />
-          </div>
-          <div className="space-y-1.5">
-            <label htmlFor="smtp-username" className="text-sm font-medium">Username</label>
-            <Input id="smtp-username" placeholder="username" value={smtpUsername} onChange={(e) => setSmtpUsername(e.target.value)} disabled={connecting} />
-          </div>
-          <div className="space-y-1.5">
-            <label htmlFor="smtp-password" className="text-sm font-medium">Password</label>
-            <Input id="smtp-password" type="password" placeholder="Password" value={smtpPassword} onChange={(e) => setSmtpPassword(e.target.value)} disabled={connecting} />
-          </div>
-          <div className="flex items-center gap-2">
-            <input id="smtp-tls" type="checkbox" checked={smtpTls} onChange={(e) => setSmtpTls(e.target.checked)} disabled={connecting} className="size-4 rounded border-input" />
-            <label htmlFor="smtp-tls" className="text-sm">Use TLS</label>
-          </div>
-        </>
-      )}
-
-      {provider === "sendgrid" && (
-        <div className="space-y-1.5">
-          <label htmlFor="sg-api-key" className="text-sm font-medium">API Key</label>
-          <p className="text-xs text-muted-foreground">
-            From your{" "}
-            <a href="https://app.sendgrid.com/settings/api_keys" target="_blank" rel="noopener noreferrer" className="underline underline-offset-2">
-              SendGrid dashboard
-            </a>
-          </p>
-          <Input id="sg-api-key" type="password" placeholder="SG...." value={sgApiKey} onChange={(e) => setSgApiKey(e.target.value)} disabled={connecting} />
-        </div>
-      )}
-
-      {provider === "postmark" && (
-        <div className="space-y-1.5">
-          <label htmlFor="pm-server-token" className="text-sm font-medium">Server Token</label>
-          <p className="text-xs text-muted-foreground">
-            From your{" "}
-            <a href="https://account.postmarkapp.com/servers" target="_blank" rel="noopener noreferrer" className="underline underline-offset-2">
-              Postmark server settings
-            </a>
-          </p>
-          <Input id="pm-server-token" type="password" placeholder="Server token" value={pmServerToken} onChange={(e) => setPmServerToken(e.target.value)} disabled={connecting} />
-        </div>
-      )}
-
-      {provider === "ses" && (
-        <>
-          <div className="space-y-1.5">
-            <label htmlFor="ses-region" className="text-sm font-medium">AWS Region</label>
-            <Input id="ses-region" placeholder="us-east-1" value={sesRegion} onChange={(e) => setSesRegion(e.target.value)} disabled={connecting} />
-          </div>
-          <div className="space-y-1.5">
-            <label htmlFor="ses-access-key" className="text-sm font-medium">Access Key ID</label>
-            <Input id="ses-access-key" placeholder="AKIA..." value={sesAccessKeyId} onChange={(e) => setSesAccessKeyId(e.target.value)} disabled={connecting} />
-          </div>
-          <div className="space-y-1.5">
-            <label htmlFor="ses-secret-key" className="text-sm font-medium">Secret Access Key</label>
-            <Input id="ses-secret-key" type="password" placeholder="Secret key" value={sesSecretAccessKey} onChange={(e) => setSesSecretAccessKey(e.target.value)} disabled={connecting} />
-          </div>
-        </>
-      )}
-
-      {provider === "resend" && (
-        <div className="space-y-1.5">
-          <label htmlFor="resend-api-key" className="text-sm font-medium">API Key</label>
-          <p className="text-xs text-muted-foreground">
-            From your{" "}
-            <a href="https://resend.com/api-keys" target="_blank" rel="noopener noreferrer" className="underline underline-offset-2">
-              Resend dashboard
-            </a>
-          </p>
-          <Input id="resend-api-key" type="password" placeholder="re_..." value={resendApiKey} onChange={(e) => setResendApiKey(e.target.value)} disabled={connecting} />
-        </div>
-      )}
-
-      {error && (
-        <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          {error}
-        </div>
-      )}
-      <Button type="submit" size="sm" disabled={!canSubmit}>
-        {connecting && <Loader2 className="mr-1.5 size-3.5 animate-spin" />}
-        Connect
-      </Button>
-    </form>
-  );
-}
-
-// -- Email Test Form --
-
-function EmailTestForm({
-  onTest,
-  testing,
-  testResult,
-}: {
-  onTest: (recipientEmail: string) => void;
-  testing: boolean;
-  testResult: string | null;
-}) {
-  const [recipientEmail, setRecipientEmail] = useState("");
-
-  function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    if (recipientEmail.trim()) {
-      onTest(recipientEmail.trim());
-    }
-  }
-
-  return (
-    <form onSubmit={handleSubmit} className="space-y-2">
-      <div className="flex gap-2">
-        <Input
-          type="email"
-          placeholder="test@example.com"
-          value={recipientEmail}
-          onChange={(e) => setRecipientEmail(e.target.value)}
-          disabled={testing}
-          className="h-8 text-sm"
-        />
-        <Button type="submit" size="sm" variant="outline" disabled={testing || !recipientEmail.trim()}>
-          {testing && <Loader2 className="mr-1.5 size-3.5 animate-spin" />}
-          Send Test
+      status={connected ? "connected" : "disconnected"}
+      action={
+        <Button asChild size="sm" variant="outline">
+          <Link href="/admin/email-provider">Manage</Link>
         </Button>
-      </div>
-      {testResult && (
-        <div className="rounded-md bg-muted px-3 py-2 text-xs text-muted-foreground">
-          {testResult}
-        </div>
-      )}
-    </form>
+      }
+    />
   );
 }
 

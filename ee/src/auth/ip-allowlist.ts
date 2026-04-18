@@ -119,7 +119,8 @@ function networkAddress(addr: ipaddr.IPv4 | ipaddr.IPv6, prefixLen: number): ipa
  *
  * Returns null for invalid input.
  */
-export function parseCIDR(cidr: string): ParsedCIDR | null {
+export function parseCIDR(cidr: unknown): ParsedCIDR | null {
+  if (typeof cidr !== "string") return null;
   const trimmed = cidr.trim();
   if (!trimmed) return null;
 

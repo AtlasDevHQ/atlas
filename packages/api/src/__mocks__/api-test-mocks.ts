@@ -23,13 +23,56 @@
  */
 
 import { mock, type Mock } from "bun:test";
-import { Effect } from "effect";
+import { Context, Effect, Layer } from "effect";
 import {
   createConnectionMock,
   type ConnectionMockOverrides,
 } from "./connection";
 import * as fs from "fs";
 import * as path from "path";
+
+/**
+ * Mock `InternalDB` Context.Tag — identity preserved for tests that load
+ * modules (e.g. `ContentModeRegistry`) which `yield* InternalDB` from
+ * Effect context. The tag is declared here so the factory can hand the
+ * same class reference to both the mock and any test-local layer
+ * provision; the real tag from `lib/db/internal.ts` is replaced wholesale
+ * when `mock.module` runs.
+ */
+export class MockInternalDB extends Context.Tag("InternalDB")<
+  MockInternalDB,
+  {
+    readonly sql: null;
+    query<T extends Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]>;
+    execute(sql: string, params?: unknown[]): void;
+    readonly available: boolean;
+    readonly pool: null;
+  }
+>() {}
+
+/**
+ * Build a test InternalDB shim layer that routes Effect-context `query`
+ * calls through the caller's `internalQuery` mock. Exported for
+ * standalone test mocks that don't use `createApiTestMocks` but still
+ * need to satisfy the `InternalDB` tag (e.g. for routes that yield
+ * `ContentModeRegistry`).
+ */
+export function makeMockInternalDBShimLayer(
+  internalQueryMock: (sql: string, params?: unknown[]) => Promise<unknown[]>,
+  options?: { available?: boolean },
+) {
+  return Layer.succeed(MockInternalDB, {
+    sql: null,
+    query: ((sql: string, params?: unknown[]) =>
+      internalQueryMock(sql, params)) as <T extends Record<string, unknown>>(
+      sql: string,
+      params?: unknown[],
+    ) => Promise<T[]>,
+    execute: () => {},
+    available: options?.available ?? true,
+    pool: null,
+  });
+}
 
 /**
  * Wraps a Promise-returning `internalQuery` mock as an `Effect` so tests
@@ -231,6 +274,22 @@ export function createApiTestMocks(
   const mockInternalExecute: Mock<AnyFn> = mock(() => {});
 
   const internalDefaults: Record<string, unknown> = {
+    // Context.Tag and shim-layer factory — see MockInternalDB above.
+    // Tests that exercise routes using `ContentModeRegistry` (e.g.
+    // `GET /api/v1/mode`) need both so `yield* InternalDB` inside
+    // `countAllDrafts` resolves against the mocked module.
+    InternalDB: MockInternalDB,
+    makeInternalDBShimLayer: () =>
+      Layer.succeed(MockInternalDB, {
+        sql: null,
+        query: mockInternalQuery as <T extends Record<string, unknown>>(
+          sql: string,
+          params?: unknown[],
+        ) => Promise<T[]>,
+        execute: mockInternalExecute,
+        available: _hasInternalDB,
+        pool: null,
+      }),
     hasInternalDB: () => _hasInternalDB,
     internalQuery: mockInternalQuery,
     queryEffect: (sql: string, params?: unknown[]) =>

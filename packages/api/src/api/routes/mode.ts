@@ -12,12 +12,6 @@
  * Draft counts are delegated to `ContentModeRegistry.countAllDrafts` (#1515).
  * The UNION ALL query is derived from the static `CONTENT_MODE_TABLES` tuple;
  * adding a new mode-participating table automatically extends this response.
- *
- * The registry + InternalDB-shim imports are deferred to handler time rather
- * than module top level. Many tests in `packages/api/src/api/__tests__/` mock
- * `@atlas/api/lib/db/internal` partially and would break on the transitive
- * `InternalDB` import chain if we eagerly pulled in the registry. See #1524
- * for the follow-up to tighten those mocks so this indirection can be removed.
  */
 
 import { OpenAPIHono, createRoute, z } from "@hono/zod-openapi";
@@ -29,7 +23,15 @@ import {
   RequestContext,
   AuthContext,
 } from "@atlas/api/lib/effect/services";
-import { hasInternalDB } from "@atlas/api/lib/db/internal";
+import {
+  hasInternalDB,
+  makeInternalDBShimLayer,
+  queryEffect,
+} from "@atlas/api/lib/db/internal";
+import {
+  ContentModeRegistry,
+  ContentModeRegistryLive,
+} from "@atlas/api/lib/content-mode";
 import { getSettingAuto } from "@atlas/api/lib/settings";
 import { ErrorSchema } from "./shared-schemas";
 import { standardAuth, requestContext, type AuthEnv } from "./middleware";
@@ -122,17 +124,9 @@ const mode = new OpenAPIHono<AuthEnv>();
 mode.use("/", standardAuth);
 mode.use("/", requestContext);
 
-mode.openapi(getModeRoute, async (c) => {
-  // Deferred imports — see module header for rationale (#1524).
-  const [
-    { ContentModeRegistry, ContentModeRegistryLive },
-    { makeInternalDBShimLayer, queryEffect },
-  ] = await Promise.all([
-    import("@atlas/api/lib/content-mode"),
-    import("@atlas/api/lib/db/internal"),
-  ]);
-  const modeRouteLayer = Layer.merge(ContentModeRegistryLive, makeInternalDBShimLayer());
+const modeRouteLayer = Layer.merge(ContentModeRegistryLive, makeInternalDBShimLayer());
 
+mode.openapi(getModeRoute, async (c) => {
   const program = Effect.gen(function* () {
     const { atlasMode } = yield* RequestContext;
     const { mode: authMode, user, orgId } = yield* AuthContext;

@@ -13,6 +13,10 @@
 
 import { describe, it, expect, beforeEach, mock, type Mock } from "bun:test";
 import { Context, Effect, Layer } from "effect";
+import {
+  MockInternalDB,
+  makeMockInternalDBShimLayer,
+} from "@atlas/api/testing/api-test-mocks";
 
 // ---------------------------------------------------------------------------
 // Mocks — declared before importing the route
@@ -130,49 +134,24 @@ const mockInternalQuery: Mock<(sql: string, params?: unknown[]) => Promise<Recor
   },
 );
 
-// The content-mode registry yields `InternalDB` from Effect context. To keep
-// this test hermetic we preserve the real `InternalDB` Context.Tag identity
-// and route `query` / `execute` through the mocked module-level helpers.
-// Every other named export of `lib/db/internal` that either the route or
-// the registry might touch must appear here (CLAUDE.md: mock all exports).
-class MockInternalDB extends Context.Tag("InternalDB")<
-  MockInternalDB,
-  {
-    readonly sql: null;
-    query<T extends Record<string, unknown>>(sql: string, params?: unknown[]): Promise<T[]>;
-    execute(sql: string, params?: unknown[]): void;
-    readonly available: boolean;
-    readonly pool: null;
-  }
->() {}
-
 const mockInternalExecute = mock((_sql: string, _params?: unknown[]) => {});
 
-function makeMockInternalDBShimLayer() {
-  return Layer.succeed(MockInternalDB, {
-    sql: null,
-    query: mockInternalQuery as <T extends Record<string, unknown>>(
-      sql: string,
-      params?: unknown[],
-    ) => Promise<T[]>,
-    execute: mockInternalExecute,
-    available: mockHasInternalDBValue,
-    pool: null,
-  });
-}
-
+// Use the shared `MockInternalDB` tag + shim-layer factory so the tag
+// identity matches whatever `ContentModeRegistry` imports transitively.
+// `makeMockInternalDBShimLayer` routes query calls through mockInternalQuery
+// so the test fixtures (demo state + draft counts) still drive behavior.
 mock.module("@atlas/api/lib/db/internal", () => ({
-  // Context.Tag: the registry imports `InternalDB` and yields it. Preserve
-  // a single class reference so both sides see the same tag identity.
   InternalDB: MockInternalDB,
   hasInternalDB: mockHasInternalDB,
   internalQuery: mockInternalQuery,
   internalExecute: mockInternalExecute,
-  makeInternalDBShimLayer: makeMockInternalDBShimLayer,
-  // Unused in these tests but must be present so other modules that import
-  // any of these names still resolve against the mocked module.
+  makeInternalDBShimLayer: () =>
+    makeMockInternalDBShimLayer(mockInternalQuery, { available: mockHasInternalDBValue }),
+  // Other named exports — present so any module that imports them against
+  // this mock still resolves (CLAUDE.md: mock all exports).
   makeInternalDBLive: () => Layer.succeedContext(Context.empty()),
-  createInternalDBTestLayer: makeMockInternalDBShimLayer,
+  createInternalDBTestLayer: () =>
+    makeMockInternalDBShimLayer(mockInternalQuery, { available: mockHasInternalDBValue }),
   getInternalDB: () => ({ query: mockInternalQuery, connect: () => ({ query: mockInternalQuery, release: () => {} }), end: async () => {}, on: () => {} }),
   closeInternalDB: async () => {},
   queryEffect: (sql: string, params?: unknown[]) =>

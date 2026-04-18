@@ -15,7 +15,12 @@ import {
   mock,
   type Mock,
 } from "bun:test";
+import { Effect } from "effect";
 import { createConnectionMock } from "@atlas/api/testing/connection";
+import {
+  MockInternalDB,
+  makeMockInternalDBShimLayer,
+} from "@atlas/api/testing/api-test-mocks";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -145,8 +150,12 @@ mock.module("@atlas/api/lib/semantic", () => ({
 }));
 
 mock.module("@atlas/api/lib/db/internal", () => ({
+  InternalDB: MockInternalDB,
+  makeInternalDBShimLayer: () =>
+    makeMockInternalDBShimLayer(() => Promise.resolve([]), { available: false }),
   hasInternalDB: () => false,
   internalQuery: mock(() => Promise.resolve([])),
+  queryEffect: mock(() => Effect.succeed([])),
   internalExecute: mock(() => {}),
   getInternalDB: mock(() => ({})),
   closeInternalDB: mock(async () => {}),

@@ -4,22 +4,16 @@
  * Admin surface for starter-prompt moderation.
  *
  * Renders the `approval_status` axis (pending / approved / hidden) with
- * per-row actions (Approve / Hide / Unhide) and an author form on the
- * Pending tab for direct seeding. The orthogonal `status` axis (draft /
- * published / archived) appears as a per-row badge. The canonical
- * state-matrix explainer lives with the decision policy in
+ * per-row actions (Approve / Hide / Unhide). The orthogonal `status`
+ * axis (draft / published / archived) appears as a per-row badge. A
+ * page-level "Author prompt" dialog seeds Approved directly — authored
+ * rows bypass the pending queue. The canonical state-matrix explainer
+ * lives with the decision policy in
  * `@atlas/api/lib/suggestions/approval-service`.
  */
 
 import { Suspense, useState } from "react";
 import { z } from "zod";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -32,11 +26,19 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
-import { StatCard } from "@/ui/components/admin/stat-card";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
-import { Sparkles, CheckCircle2, EyeOff, Clock, Loader2 } from "lucide-react";
+import { Loader2, Plus } from "lucide-react";
 import type {
   SuggestionApprovalStatus,
   SuggestionStatus,
@@ -129,8 +131,9 @@ function RowActions({
   return (
     <div className="flex gap-2 justify-end">
       {actions.map((action) => {
-        const label = action === "approve" ? "Approve" : action === "hide" ? "Hide" : "Unhide";
-        const variant = action === "hide" ? "outline" : "default";
+        const label =
+          action === "approve" ? "Approve" : action === "hide" ? "Hide" : "Unhide";
+        const variant = action === "approve" ? "default" : "outline";
         return (
           <Button
             key={action}
@@ -167,66 +170,70 @@ function QueueTable({
 }) {
   if (rows.length === 0) {
     return (
-      <div className="text-sm text-muted-foreground py-8 text-center">
+      <div className="rounded-md border bg-muted/10 px-4 py-10 text-center text-sm text-muted-foreground">
         {emptyMessage}
       </div>
     );
   }
 
   return (
-    <Table>
-      <TableHeader>
-        <TableRow>
-          <TableHead>Description</TableHead>
-          <TableHead className="text-right">Clicks (distinct)</TableHead>
-          <TableHead className="text-right">Frequency</TableHead>
-          <TableHead>Mode</TableHead>
-          <TableHead>Last seen</TableHead>
-          <TableHead className="text-right">Actions</TableHead>
-        </TableRow>
-      </TableHeader>
-      <TableBody>
-        {rows.map((row) => (
-          <TableRow key={row.id}>
-            <TableCell className="font-medium max-w-md truncate" title={row.description}>
-              {row.description}
-            </TableCell>
-            <TableCell className="text-right tabular-nums">
-              {row.clickedCount} ({row.distinctUserClicks})
-            </TableCell>
-            <TableCell className="text-right tabular-nums">{row.frequency}</TableCell>
-            <TableCell>
-              <Badge variant="outline" className="text-xs capitalize">
-                {row.status}
-              </Badge>
-            </TableCell>
-            <TableCell className="text-muted-foreground">
-              {formatDate(row.lastSeenAt)}
-            </TableCell>
-            <TableCell className="text-right">
-              <RowActions
-                row={row}
-                actions={actions}
-                onMutate={onMutate}
-                pending={pendingRowId}
-              />
-            </TableCell>
+    <div className="rounded-md border">
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>Description</TableHead>
+            <TableHead className="text-right">Clicks (distinct)</TableHead>
+            <TableHead className="text-right">Frequency</TableHead>
+            <TableHead>Mode</TableHead>
+            <TableHead>Last seen</TableHead>
+            <TableHead className="text-right">Actions</TableHead>
           </TableRow>
-        ))}
-      </TableBody>
-    </Table>
+        </TableHeader>
+        <TableBody>
+          {rows.map((row) => (
+            <TableRow key={row.id}>
+              <TableCell
+                className="font-medium max-w-md truncate"
+                title={row.description}
+              >
+                {row.description}
+              </TableCell>
+              <TableCell className="text-right tabular-nums">
+                {row.clickedCount} ({row.distinctUserClicks})
+              </TableCell>
+              <TableCell className="text-right tabular-nums">
+                {row.frequency}
+              </TableCell>
+              <TableCell>
+                <Badge variant="outline" className="text-xs capitalize">
+                  {row.status}
+                </Badge>
+              </TableCell>
+              <TableCell className="text-muted-foreground">
+                {formatDate(row.lastSeenAt)}
+              </TableCell>
+              <TableCell className="text-right">
+                <RowActions
+                  row={row}
+                  actions={actions}
+                  onMutate={onMutate}
+                  pending={pendingRowId}
+                />
+              </TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    </div>
   );
 }
 
 // ---------------------------------------------------------------------------
-// Author form — seeds the empty state without waiting for organic clicks
+// Author dialog — seeds Approved directly (skips the pending queue)
 // ---------------------------------------------------------------------------
 
-function AuthorForm({
-  onAuthored,
-}: {
-  onAuthored: () => void;
-}) {
+function AuthorPromptDialog({ onAuthored }: { onAuthored: () => void }) {
+  const [open, setOpen] = useState(false);
   const [text, setText] = useState("");
   const { mutate, saving, error, clearError } = useAdminMutation<{
     suggestion: QueueItem;
@@ -243,49 +250,77 @@ function AuthorForm({
     const result = await mutate({ body: { text: trimmed } });
     if (result.ok) {
       setText("");
+      setOpen(false);
     }
   }
 
   return (
-    <form onSubmit={handleSubmit} className="space-y-2">
-      <div>
-        <label htmlFor="author-text" className="text-sm font-medium">
-          Author a new starter prompt
-        </label>
-        <p className="text-xs text-muted-foreground mt-0.5">
-          Skips the pending queue — the prompt lands in Approved immediately
-          and surfaces to users in the empty state.
-        </p>
-      </div>
-      <Textarea
-        id="author-text"
-        placeholder="e.g. Which accounts renewed this quarter?"
-        value={text}
-        onChange={(e) => {
-          setText(e.target.value);
-          if (error) clearError();
-        }}
-        rows={2}
-        disabled={saving}
-        data-testid="starter-prompt-author-text"
-      />
-      {error && (
-        <p className="text-xs text-destructive" role="alert">
-          {error}
-        </p>
-      )}
-      <div className="flex items-center justify-end gap-2">
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        // Block dismissal mid-save so an in-flight failure can't
+        // disappear with the dialog. `saving` already disables the
+        // textarea + submit, so this only guards ESC / outside-click /
+        // close-button during the request.
+        if (saving && !next) return;
+        setOpen(next);
+        if (!next) {
+          setText("");
+          clearError();
+        }
+      }}
+    >
+      <DialogTrigger asChild>
         <Button
-          type="submit"
           size="sm"
-          disabled={saving || text.trim().length === 0}
-          data-testid="starter-prompt-author-submit"
+          variant="outline"
+          data-testid="starter-prompt-author-open"
         >
-          {saving ? <Loader2 className="w-3 h-3 animate-spin mr-1.5" /> : null}
+          <Plus className="size-3.5 mr-1" />
           Author prompt
         </Button>
-      </div>
-    </form>
+      </DialogTrigger>
+      <DialogContent>
+        <form onSubmit={handleSubmit} className="space-y-3">
+          <DialogHeader>
+            <DialogTitle>Author a starter prompt</DialogTitle>
+            <DialogDescription>
+              Skips the pending queue — lands in Approved immediately and
+              surfaces to users in the empty state.
+            </DialogDescription>
+          </DialogHeader>
+          <Textarea
+            aria-label="Starter prompt text"
+            placeholder="e.g. Which accounts renewed this quarter?"
+            value={text}
+            onChange={(e) => {
+              setText(e.target.value);
+              if (error) clearError();
+            }}
+            rows={3}
+            disabled={saving}
+            autoFocus
+            data-testid="starter-prompt-author-text"
+          />
+          {error && (
+            <p className="text-xs text-destructive" role="alert">
+              {error}
+            </p>
+          )}
+          <DialogFooter>
+            <Button
+              type="submit"
+              size="sm"
+              disabled={saving || text.trim().length === 0}
+              data-testid="starter-prompt-author-submit"
+            >
+              {saving ? <Loader2 className="w-3 h-3 animate-spin mr-1.5" /> : null}
+              Author prompt
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -335,110 +370,86 @@ function StarterPromptsContent() {
 
   return (
     <AdminContentWrapper loading={loading} error={error} onRetry={refetch}>
-      <div className="space-y-6">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Starter Prompts</h1>
-          <p className="text-sm text-muted-foreground mt-1">
-            Review auto-promoted query suggestions before they become starter
-            prompts. A suggestion enters the pending queue once {threshold} distinct
-            users click it within the last {coldWindowDays} days.
-          </p>
+      <div className="max-w-3xl mx-auto space-y-6">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h1 className="text-2xl font-semibold tracking-tight">
+              Starter Prompts
+            </h1>
+            <p className="text-sm text-muted-foreground mt-1">
+              Review auto-promoted suggestions before they surface to users.
+            </p>
+          </div>
+          <AuthorPromptDialog onAuthored={refetch} />
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-          <StatCard
-            title="Pending review"
-            value={pending.length}
-            icon={<Clock className="w-4 h-4" />}
-          />
-          <StatCard
-            title="Approved"
-            value={approved.length}
-            icon={<CheckCircle2 className="w-4 h-4" />}
-          />
-          <StatCard
-            title="Hidden"
-            value={hidden.length}
-            icon={<EyeOff className="w-4 h-4" />}
-          />
-        </div>
+        {rowActionError && (
+          <div
+            role="alert"
+            data-testid="starter-prompt-row-action-error"
+            className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive flex items-start justify-between gap-3"
+          >
+            <span>{rowActionError}</span>
+            <button
+              type="button"
+              onClick={() => setRowActionError(null)}
+              className="text-xs underline opacity-70 hover:opacity-100"
+              aria-label="Dismiss error"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
 
-        <Card>
-          <CardHeader>
-            <div className="flex items-center gap-2">
-              <Sparkles className="w-4 h-4 text-muted-foreground" />
-              <CardTitle>Moderation queue</CardTitle>
-            </div>
-            <CardDescription>
-              The row status badge shows the publish mode
-              (draft / published / archived); the tab grouping shows the
-              moderation state (pending / approved / hidden). The two axes
-              are independent.
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            {rowActionError && (
-              <div
-                role="alert"
-                data-testid="starter-prompt-row-action-error"
-                className="mb-4 rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2 text-sm text-destructive flex items-start justify-between gap-3"
-              >
-                <span>{rowActionError}</span>
-                <button
-                  type="button"
-                  onClick={() => setRowActionError(null)}
-                  className="text-xs underline opacity-70 hover:opacity-100"
-                  aria-label="Dismiss error"
-                >
-                  Dismiss
-                </button>
-              </div>
-            )}
-            <Tabs defaultValue="pending">
-              <TabsList>
-                <TabsTrigger value="pending">
-                  Pending <span className="ml-1.5 text-xs opacity-70">({pending.length})</span>
-                </TabsTrigger>
-                <TabsTrigger value="approved">
-                  Approved <span className="ml-1.5 text-xs opacity-70">({approved.length})</span>
-                </TabsTrigger>
-                <TabsTrigger value="hidden">
-                  Hidden <span className="ml-1.5 text-xs opacity-70">({hidden.length})</span>
-                </TabsTrigger>
-              </TabsList>
-              <TabsContent value="pending" className="mt-4 space-y-4">
-                <div className="rounded-md border bg-muted/20 p-4">
-                  <AuthorForm onAuthored={refetch} />
-                </div>
-                <QueueTable
-                  rows={pending}
-                  emptyMessage={`No suggestions have crossed the ${threshold}-click threshold within the last ${coldWindowDays} days.`}
-                  actions={["approve", "hide"]}
-                  onMutate={handleRowAction}
-                  pendingRowId={pendingRowId}
-                />
-              </TabsContent>
-              <TabsContent value="approved" className="mt-4">
-                <QueueTable
-                  rows={approved}
-                  emptyMessage="No approved starter prompts yet."
-                  actions={["hide"]}
-                  onMutate={handleRowAction}
-                  pendingRowId={pendingRowId}
-                />
-              </TabsContent>
-              <TabsContent value="hidden" className="mt-4">
-                <QueueTable
-                  rows={hidden}
-                  emptyMessage="No hidden starter prompts."
-                  actions={["unhide"]}
-                  onMutate={handleRowAction}
-                  pendingRowId={pendingRowId}
-                />
-              </TabsContent>
-            </Tabs>
-          </CardContent>
-        </Card>
+        <Tabs defaultValue="pending">
+          <TabsList>
+            <TabsTrigger value="pending">
+              Pending
+              <span className="ml-1.5 text-xs tabular-nums opacity-70">
+                ({pending.length})
+              </span>
+            </TabsTrigger>
+            <TabsTrigger value="approved">
+              Approved
+              <span className="ml-1.5 text-xs tabular-nums opacity-70">
+                ({approved.length})
+              </span>
+            </TabsTrigger>
+            <TabsTrigger value="hidden">
+              Hidden
+              <span className="ml-1.5 text-xs tabular-nums opacity-70">
+                ({hidden.length})
+              </span>
+            </TabsTrigger>
+          </TabsList>
+          <TabsContent value="pending" className="mt-4">
+            <QueueTable
+              rows={pending}
+              emptyMessage={`No suggestions have crossed the ${threshold}-click / ${coldWindowDays}-day threshold yet. Author one directly to seed the list.`}
+              actions={["approve", "hide"]}
+              onMutate={handleRowAction}
+              pendingRowId={pendingRowId}
+            />
+          </TabsContent>
+          <TabsContent value="approved" className="mt-4">
+            <QueueTable
+              rows={approved}
+              emptyMessage="No approved starter prompts yet."
+              actions={["hide"]}
+              onMutate={handleRowAction}
+              pendingRowId={pendingRowId}
+            />
+          </TabsContent>
+          <TabsContent value="hidden" className="mt-4">
+            <QueueTable
+              rows={hidden}
+              emptyMessage="No hidden starter prompts."
+              actions={["unhide"]}
+              onMutate={handleRowAction}
+              pendingRowId={pendingRowId}
+            />
+          </TabsContent>
+        </Tabs>
       </div>
     </AdminContentWrapper>
   );

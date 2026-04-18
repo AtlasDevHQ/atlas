@@ -518,7 +518,7 @@ export default function ModelConfigPage() {
                   }
                   status="unavailable"
                   action={
-                    <Button type="button" size="sm" variant="outline" onClick={refetchBilling}>
+                    <Button type="button" size="sm" variant="outline" onClick={() => refetchBilling()}>
                       Retry
                     </Button>
                   }

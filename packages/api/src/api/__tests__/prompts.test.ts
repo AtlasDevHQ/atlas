@@ -264,8 +264,8 @@ describe("user-facing prompt routes", () => {
         expect(listCall).toBeDefined();
         const sql = listCall![0] as string;
         expect(sql).toContain("status = 'published'");
-        expect(sql).toContain("is_builtin = true AND industry = $2");
-        expect(sql).toContain("is_builtin = false AND org_id = $1");
+        expect(sql).toContain("pc.is_builtin = true AND pc.industry = $2");
+        expect(sql).toContain("pc.is_builtin = false AND pc.org_id = $1");
         expect(listCall![1]).toEqual(["org-1", "cybersecurity"]);
       });
 
@@ -303,7 +303,7 @@ describe("user-facing prompt routes", () => {
         const sql = findListCall()![0] as string;
         expect(sql).toContain("status IN ('published', 'draft')");
         expect(sql).not.toContain("archived");
-        expect(sql).toContain("is_builtin = true AND industry = $2");
+        expect(sql).toContain("pc.is_builtin = true AND pc.industry = $2");
       });
 
       it("developer + no demo: draft custom collections only (built-ins hidden)", async () => {
@@ -466,8 +466,8 @@ describe("admin prompt routes", () => {
         const listCall = findListCall();
         expect(listCall).toBeDefined();
         const sql = listCall![0] as string;
-        expect(sql).toContain("is_builtin = true AND industry = $2");
-        expect(sql).toContain("is_builtin = false AND org_id = $1");
+        expect(sql).toContain("pc.is_builtin = true AND pc.industry = $2");
+        expect(sql).toContain("pc.is_builtin = false AND pc.org_id = $1");
         expect(listCall![1]).toEqual(["org-1", "cybersecurity"]);
       });
 
@@ -490,7 +490,7 @@ describe("admin prompt routes", () => {
 
         const sql = findListCall()![0] as string;
         expect(sql).toContain("status IN ('published', 'draft')");
-        expect(sql).toContain("is_builtin = true AND industry = $2");
+        expect(sql).toContain("pc.is_builtin = true AND pc.industry = $2");
       });
     });
   });

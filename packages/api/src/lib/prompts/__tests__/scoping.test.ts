@@ -18,7 +18,19 @@ const mockInternalQuery = mock(
   async (_sql: string, _params?: unknown[]) => [] as unknown[],
 );
 
+// Scoping.ts imports @atlas/api/lib/content-mode, which transitively
+// imports `InternalDB` from this module (#1524). The mock must preserve
+// the tag identity so the registry's `yield* InternalDB` resolves.
+const { MockInternalDB, makeMockInternalDBShimLayer } = await import(
+  "@atlas/api/testing/api-test-mocks"
+);
+
 mock.module("@atlas/api/lib/db/internal", () => ({
+  InternalDB: MockInternalDB,
+  makeInternalDBShimLayer: () =>
+    makeMockInternalDBShimLayer(mockInternalQuery, {
+      available: hasInternalDBFixture,
+    }),
   hasInternalDB: () => hasInternalDBFixture,
   internalQuery: mockInternalQuery,
 }));
@@ -61,19 +73,19 @@ function withDemoScope(
 describe("buildCollectionsListQuery", () => {
   it("org-with-demo (published): industry-filtered built-ins + custom published", () => {
     const q = buildCollectionsListQuery(withDemoScope());
-    expect(q.sql).toContain("status = 'published'");
+    expect(q.sql).toContain("pc.status = 'published'");
     expect(q.sql).not.toContain("status IN");
-    expect(q.sql).toContain("is_builtin = true AND industry = $2");
-    expect(q.sql).toContain("(org_id IS NULL OR org_id = $1)");
-    expect(q.sql).toContain("is_builtin = false AND org_id = $1");
+    expect(q.sql).toContain("pc.is_builtin = true AND pc.industry = $2");
+    expect(q.sql).toContain("(pc.org_id IS NULL OR pc.org_id = $1)");
+    expect(q.sql).toContain("pc.is_builtin = false AND pc.org_id = $1");
     expect(q.params).toEqual(["org-1", "cybersecurity"]);
   });
 
   it("org-custom-only (published): hides all built-ins, only custom published", () => {
     const q = buildCollectionsListQuery(customOnlyScope());
-    expect(q.sql).toContain("status = 'published'");
-    expect(q.sql).toContain("org_id = $1");
-    expect(q.sql).toContain("is_builtin = false");
+    expect(q.sql).toContain("pc.status = 'published'");
+    expect(q.sql).toContain("pc.org_id = $1");
+    expect(q.sql).toContain("pc.is_builtin = false");
     expect(q.sql).not.toContain("industry =");
     expect(q.sql).not.toContain("org_id IS NULL OR");
     expect(q.params).toEqual(["org-1"]);
@@ -83,26 +95,26 @@ describe("buildCollectionsListQuery", () => {
     const q = buildCollectionsListQuery(
       withDemoScope("org-1", "cybersecurity", "developer"),
     );
-    expect(q.sql).toContain("status IN ('published', 'draft')");
+    expect(q.sql).toContain("pc.status IN ('published', 'draft')");
     expect(q.sql).not.toContain("archived");
-    expect(q.sql).toContain("is_builtin = true AND industry = $2");
-    expect(q.sql).toContain("is_builtin = false AND org_id = $1");
+    expect(q.sql).toContain("pc.is_builtin = true AND pc.industry = $2");
+    expect(q.sql).toContain("pc.is_builtin = false AND pc.org_id = $1");
     expect(q.params).toEqual(["org-1", "cybersecurity"]);
   });
 
   it("org-custom-only (developer): only custom (published + draft)", () => {
     const q = buildCollectionsListQuery(customOnlyScope("org-1", "developer"));
-    expect(q.sql).toContain("status IN ('published', 'draft')");
-    expect(q.sql).toContain("org_id = $1");
-    expect(q.sql).toContain("is_builtin = false");
+    expect(q.sql).toContain("pc.status IN ('published', 'draft')");
+    expect(q.sql).toContain("pc.org_id = $1");
+    expect(q.sql).toContain("pc.is_builtin = false");
     expect(q.sql).not.toContain("industry =");
     expect(q.params).toEqual(["org-1"]);
   });
 
   it("global (published): global built-ins only, no industry/custom filter", () => {
     const q = buildCollectionsListQuery(globalScope());
-    expect(q.sql).toContain("org_id IS NULL");
-    expect(q.sql).toContain("status = 'published'");
+    expect(q.sql).toContain("pc.org_id IS NULL");
+    expect(q.sql).toContain("pc.status = 'published'");
     expect(q.sql).not.toContain("industry =");
     expect(q.sql).not.toContain("is_builtin = false");
     expect(q.params).toEqual([]);
@@ -110,14 +122,14 @@ describe("buildCollectionsListQuery", () => {
 
   it("global (developer): global built-ins, status IN", () => {
     const q = buildCollectionsListQuery(globalScope("developer"));
-    expect(q.sql).toContain("org_id IS NULL");
-    expect(q.sql).toContain("status IN ('published', 'draft')");
+    expect(q.sql).toContain("pc.org_id IS NULL");
+    expect(q.sql).toContain("pc.status IN ('published', 'draft')");
     expect(q.params).toEqual([]);
   });
 
   it("includes ORDER BY on list queries", () => {
     const q = buildCollectionsListQuery(customOnlyScope());
-    expect(q.sql).toContain("ORDER BY sort_order ASC, created_at ASC");
+    expect(q.sql).toContain("ORDER BY pc.sort_order ASC, pc.created_at ASC");
   });
 });
 
@@ -125,31 +137,31 @@ describe("buildCollectionGetQuery", () => {
   it("org-with-demo: appends id as $3 after orgId + industry", () => {
     const q = buildCollectionGetQuery(withDemoScope(), "col-1");
     expect(q.sql).not.toContain("ORDER BY");
-    expect(q.sql).toContain("AND id = $3");
-    expect(q.sql).toContain("is_builtin = true AND industry = $2");
+    expect(q.sql).toContain("AND pc.id = $3");
+    expect(q.sql).toContain("pc.is_builtin = true AND pc.industry = $2");
     expect(q.params).toEqual(["org-1", "cybersecurity", "col-1"]);
   });
 
   it("org-custom-only: appends id as $2 after orgId", () => {
     const q = buildCollectionGetQuery(customOnlyScope(), "col-2");
     expect(q.sql).not.toContain("ORDER BY");
-    expect(q.sql).toContain("AND id = $2");
-    expect(q.sql).toContain("org_id = $1");
-    expect(q.sql).toContain("is_builtin = false");
+    expect(q.sql).toContain("AND pc.id = $2");
+    expect(q.sql).toContain("pc.org_id = $1");
+    expect(q.sql).toContain("pc.is_builtin = false");
     expect(q.params).toEqual(["org-1", "col-2"]);
   });
 
   it("global: id as $1, no org filter", () => {
     const q = buildCollectionGetQuery(globalScope(), "col-3");
     expect(q.sql).not.toContain("ORDER BY");
-    expect(q.sql).toContain("AND id = $1");
-    expect(q.sql).toContain("org_id IS NULL");
+    expect(q.sql).toContain("AND pc.id = $1");
+    expect(q.sql).toContain("pc.org_id IS NULL");
     expect(q.params).toEqual(["col-3"]);
   });
 
   it("inherits developer status clause", () => {
     const q = buildCollectionGetQuery(customOnlyScope("org-1", "developer"), "col-x");
-    expect(q.sql).toContain("status IN ('published', 'draft')");
+    expect(q.sql).toContain("pc.status IN ('published', 'draft')");
   });
 });
 

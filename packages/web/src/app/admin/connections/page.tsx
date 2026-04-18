@@ -1,6 +1,5 @@
 "use client";
 
-import type { ColumnDef } from "@tanstack/react-table";
 import { z } from "zod";
 import { useAtlasConfig } from "@/ui/context";
 import { Button } from "@/components/ui/button";
@@ -25,8 +24,6 @@ import {
 } from "@/components/ui/alert-dialog";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
-import { DataTable } from "@/components/data-table/data-table";
-import { DataTableToolbar } from "@/components/data-table/data-table-toolbar";
 import {
   Tooltip,
   TooltipContent,
@@ -37,10 +34,28 @@ import { useDemoReadonly } from "@/ui/hooks/use-demo-readonly";
 import { useDevModeNoDrafts } from "@/ui/hooks/use-dev-mode-no-drafts";
 import { DeveloperEmptyState } from "@/ui/components/admin/developer-empty-state";
 import { PublishedContextWrapper } from "@/ui/components/admin/published-context-wrapper";
-import { DEMO_CONNECTION_ID, getConnectionColumns } from "./columns";
-import { useDataTable } from "@/hooks/use-data-table";
+import { DemoBadge, DraftBadge } from "@/ui/components/admin/mode-badges";
+import { DEMO_CONNECTION_ID } from "./columns";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Cable, Loader2, Plus, Pencil, Trash2, Eye, EyeOff, Activity, ChevronDown, ChevronUp, Droplets, Check, X } from "lucide-react";
+import {
+  Cable,
+  Loader2,
+  Plus,
+  Pencil,
+  Trash2,
+  Eye,
+  EyeOff,
+  Activity,
+  ChevronDown,
+  ChevronUp,
+  Droplets,
+  Check,
+  X,
+  Database,
+  Snowflake,
+  Cloud,
+  HardDrive,
+} from "lucide-react";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
@@ -53,8 +68,15 @@ import {
   FormMessage,
   FormDescription as FormDesc,
 } from "@/components/form-dialog";
-import { useState, useEffect, useRef } from "react";
+import {
+  useState,
+  useEffect,
+  useRef,
+  type ComponentType,
+  type ReactNode,
+} from "react";
 import { cn } from "@/lib/utils";
+import { formatDateTime } from "@/lib/format";
 import {
   DB_TYPES,
   type ConnectionHealth,
@@ -425,7 +447,7 @@ function PoolStatsSection({ onError }: { onError: (msg: string) => void }) {
   const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
   const [metrics, setMetrics] = useState<PoolMetrics[] | null>(null);
   const [poolLoading, setPoolLoading] = useState(true);
-  const [expanded, setExpanded] = useState(true);
+  const [expanded, setExpanded] = useState(false);
   const [drainTarget, setDrainTarget] = useState<string | null>(null);
   const cancelledRef = useRef(false);
 
@@ -473,18 +495,22 @@ function PoolStatsSection({ onError }: { onError: (msg: string) => void }) {
 
   return (
     <>
-      <div>
+      <div className="rounded-xl border bg-card/40 px-3.5 py-2.5">
         <button
           type="button"
           className="flex w-full items-center gap-2 text-sm font-medium text-muted-foreground hover:text-foreground transition-colors"
           onClick={() => setExpanded(!expanded)}
+          aria-expanded={expanded}
         >
           <Activity className="size-4" />
-          Pool Stats
-          {expanded ? <ChevronUp className="ml-auto size-4" /> : <ChevronDown className="ml-auto size-4" />}
+          Pool stats
+          <span className="ml-auto flex items-center gap-2 text-xs font-mono tabular-nums">
+            {metrics.length} {metrics.length === 1 ? "pool" : "pools"}
+            {expanded ? <ChevronUp className="size-4" /> : <ChevronDown className="size-4" />}
+          </span>
         </button>
         {expanded && (
-          <div className="mt-3 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="mt-3 grid gap-4 sm:grid-cols-2">
             {metrics.map((m) => (
               <Card key={m.connectionId} className="shadow-none">
                 <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
@@ -579,6 +605,270 @@ function PoolStatsSection({ onError }: { onError: (msg: string) => void }) {
   );
 }
 
+// ── Shared Design Primitives ─────────────────────────────────────
+// Local copies of admin/integrations primitives (PR #1538). Promote to
+// @/ui/components/admin/ once a third page reuses them — tracked as #1551.
+
+type StatusKind = "connected" | "disconnected" | "unavailable";
+
+function StatusDot({ kind, className }: { kind: StatusKind; className?: string }) {
+  return (
+    <span
+      aria-hidden
+      className={cn(
+        "relative inline-flex size-1.5 shrink-0 rounded-full",
+        kind === "connected" &&
+          "bg-primary shadow-[0_0_0_3px_color-mix(in_oklch,var(--primary)_15%,transparent)]",
+        kind === "disconnected" && "bg-muted-foreground/40",
+        kind === "unavailable" &&
+          "bg-muted-foreground/20 outline-1 outline-dashed outline-muted-foreground/30",
+        className,
+      )}
+    >
+      {kind === "connected" && (
+        <span className="absolute inset-0 rounded-full bg-primary/60 motion-safe:animate-ping" />
+      )}
+    </span>
+  );
+}
+
+const STATUS_LABEL: Record<StatusKind, string> = {
+  connected: "Connected",
+  disconnected: "Not connected",
+  unavailable: "Unavailable",
+};
+
+function ConnectionShell({
+  icon: Icon,
+  title,
+  titleBadge,
+  description,
+  status,
+  statusLabel,
+  children,
+  actions,
+}: {
+  icon: ComponentType<{ className?: string }>;
+  title: ReactNode;
+  titleBadge?: ReactNode;
+  description: string;
+  status: StatusKind;
+  statusLabel?: string;
+  children?: ReactNode;
+  actions?: ReactNode;
+}) {
+  return (
+    <section
+      className={cn(
+        "relative flex flex-col overflow-hidden rounded-xl border bg-card/60 backdrop-blur-[1px] transition-colors",
+        "hover:border-border/80",
+        status === "connected" && "border-primary/20",
+      )}
+    >
+      {status === "connected" && (
+        <span
+          aria-hidden
+          className="pointer-events-none absolute left-0 top-4 bottom-4 w-px bg-linear-to-b from-transparent via-primary to-transparent opacity-70"
+        />
+      )}
+
+      <header className="flex items-start gap-3 p-4 pb-3">
+        <span
+          className={cn(
+            "grid size-9 shrink-0 place-items-center rounded-lg border bg-background/40",
+            status === "connected" && "border-primary/30 text-primary",
+            status !== "connected" && "text-muted-foreground",
+          )}
+        >
+          <Icon className="size-4" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2">
+            <h3 className="truncate text-sm font-semibold leading-tight tracking-tight">
+              {title}
+            </h3>
+            {titleBadge}
+            {status === "connected" && (
+              <span className="ml-auto flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-[0.08em] text-primary">
+                <StatusDot kind="connected" />
+                {statusLabel ?? "Live"}
+              </span>
+            )}
+          </div>
+          <p className="mt-0.5 text-xs leading-snug text-muted-foreground">
+            {description}
+          </p>
+        </div>
+      </header>
+
+      {children != null && (
+        <div className="flex-1 space-y-3 px-4 pb-3 text-sm">{children}</div>
+      )}
+
+      {actions && (
+        <footer className="flex items-center justify-end gap-2 border-t border-border/50 bg-muted/20 px-4 py-2.5">
+          {actions}
+        </footer>
+      )}
+    </section>
+  );
+}
+
+function CompactRow({
+  icon: Icon,
+  title,
+  description,
+  status,
+  action,
+}: {
+  icon: ComponentType<{ className?: string }>;
+  title: string;
+  description: string;
+  status: StatusKind;
+  action?: ReactNode;
+}) {
+  return (
+    <div
+      className={cn(
+        "group flex items-center gap-3 rounded-xl border bg-card/40 px-3.5 py-2.5 transition-colors",
+        "hover:bg-card/70 hover:border-border/80",
+        status === "unavailable" && "opacity-60",
+      )}
+    >
+      <span className="grid size-8 shrink-0 place-items-center rounded-lg border bg-background/40 text-muted-foreground">
+        <Icon className="size-4" />
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <h3 className="truncate text-sm font-semibold leading-tight tracking-tight">
+            {title}
+          </h3>
+          <StatusDot kind={status} className="shrink-0" />
+          <span className="sr-only">Status: {STATUS_LABEL[status]}</span>
+        </div>
+        <p className="mt-0.5 truncate text-xs text-muted-foreground">
+          {description}
+        </p>
+      </div>
+      {action && <div className="shrink-0">{action}</div>}
+    </div>
+  );
+}
+
+function DetailRow({
+  label,
+  value,
+  mono,
+  truncate,
+}: {
+  label: string;
+  value: ReactNode;
+  mono?: boolean;
+  truncate?: boolean;
+}) {
+  return (
+    <div className="flex items-baseline justify-between gap-3 py-1 text-xs">
+      <span className="shrink-0 text-muted-foreground">{label}</span>
+      <span
+        className={cn(
+          "min-w-0 text-right",
+          mono && "font-mono text-[11px]",
+          truncate && "truncate",
+          !mono && "font-medium",
+        )}
+      >
+        {value}
+      </span>
+    </div>
+  );
+}
+
+function DetailList({ children }: { children: ReactNode }) {
+  return (
+    <div className="rounded-lg border bg-muted/20 px-3 py-1.5 divide-y divide-border/50">
+      {children}
+    </div>
+  );
+}
+
+function SectionHeading({
+  title,
+  description,
+}: {
+  title: string;
+  description: string;
+}) {
+  return (
+    <div className="mb-3">
+      <h2 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+        {title}
+      </h2>
+      <p className="mt-0.5 text-xs text-muted-foreground/80">{description}</p>
+    </div>
+  );
+}
+
+// ── Provider mapping ─────────────────────────────────────────────
+
+/** Map a dbType value to the icon used in the compact row and shell header. */
+function iconForDbType(dbType: string): ComponentType<{ className?: string }> {
+  switch (dbType) {
+    case "postgres":
+    case "mysql":
+    case "duckdb":
+      return Database;
+    case "snowflake":
+      return Snowflake;
+    case "clickhouse":
+    case "bigquery":
+      return Cloud;
+    case "salesforce":
+      return HardDrive;
+    default:
+      return Database;
+  }
+}
+
+/** Human-friendly one-line description shown under the provider name. */
+function descriptionForDbType(dbType: string): string {
+  switch (dbType) {
+    case "postgres":
+      return "Open-source OLTP — the default Atlas connection";
+    case "mysql":
+      return "MySQL / MariaDB OLTP instance";
+    case "clickhouse":
+      return "Column-store analytics warehouse";
+    case "snowflake":
+      return "Cloud data warehouse";
+    case "duckdb":
+      return "Embedded analytical SQL engine";
+    case "salesforce":
+      return "CRM objects via SOQL";
+    case "bigquery":
+      return "Google Cloud warehouse";
+    default:
+      return "Datasource connection";
+  }
+}
+
+function labelForDbType(dbType: string): string {
+  return DB_TYPES.find((t) => t.value === dbType)?.label ?? dbType;
+}
+
+/** Short human label for a connection's health.status. */
+function healthLabel(status: ConnectionHealth["status"]): string {
+  switch (status) {
+    case "healthy":
+      return "Healthy";
+    case "degraded":
+      return "Degraded";
+    case "unhealthy":
+      return "Unhealthy";
+    default:
+      return status;
+  }
+}
+
 // ── Page ──────────────────────────────────────────────────────────
 
 /** Tooltip text when connection mutations are blocked by published-mode demo readonly. */
@@ -610,104 +900,6 @@ export default function ConnectionsPage() {
 
   const [localConnections, setLocalConnections] = useState<ConnectionInfo[] | null>(null);
   const displayConnections = localConnections ?? connections ?? [];
-
-  // Data table columns (actions column uses component callbacks)
-  const columns: ColumnDef<ConnectionInfo>[] = (() => {
-    const base = getConnectionColumns();
-    const actionsCol: ColumnDef<ConnectionInfo> = {
-      id: "actions",
-      header: () => <span className="sr-only">Actions</span>,
-      cell: ({ row }) => {
-        const conn = row.original;
-        return (
-          <div className="flex items-center justify-end gap-1">
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={testMutation.isMutating(conn.id)}
-              onClick={() => testConnection(conn.id)}
-              aria-label={testMutation.isMutating(conn.id) ? `Testing connection ${conn.id}…` : undefined}
-              className={cn(
-                testStatus[conn.id] === "success" && "border-green-500 text-green-600 dark:text-green-400",
-                testStatus[conn.id] === "error" && "border-destructive text-destructive",
-              )}
-            >
-              {testMutation.isMutating(conn.id) ? (
-                <Loader2 className="size-3.5 animate-spin" />
-              ) : testStatus[conn.id] === "success" ? (
-                <><Check className="mr-1 size-3.5" /> OK</>
-              ) : testStatus[conn.id] === "error" ? (
-                <><X className="mr-1 size-3.5" /> Fail</>
-              ) : (
-                "Test"
-              )}
-            </Button>
-            {conn.id !== "default" && (() => {
-              // Demo connections are read-only in published mode — the only
-              // way to edit/delete them is to drop into developer mode. Show
-              // a tooltip explaining why the action is disabled.
-              const rowReadOnly = demoReadOnly && conn.id === DEMO_CONNECTION_ID;
-              const editBtn = (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => handleEdit(conn.id)}
-                  disabled={loadingDetail || rowReadOnly}
-                  aria-label={`Edit connection ${conn.id}`}
-                >
-                  <Pencil className="size-3.5" />
-                </Button>
-              );
-              const deleteBtn = (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => handleDelete(conn.id)}
-                  disabled={rowReadOnly}
-                  aria-label={`Delete connection ${conn.id}`}
-                >
-                  <Trash2 className="size-3.5 text-destructive" />
-                </Button>
-              );
-              return rowReadOnly ? (
-                <TooltipProvider>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <span tabIndex={0}>{editBtn}</span>
-                    </TooltipTrigger>
-                    <TooltipContent>{DEMO_READONLY_TOOLTIP}</TooltipContent>
-                  </Tooltip>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <span tabIndex={0}>{deleteBtn}</span>
-                    </TooltipTrigger>
-                    <TooltipContent>{DEMO_READONLY_TOOLTIP}</TooltipContent>
-                  </Tooltip>
-                </TooltipProvider>
-              ) : (
-                <>
-                  {editBtn}
-                  {deleteBtn}
-                </>
-              );
-            })()}
-          </div>
-        );
-      },
-      enableSorting: false,
-      enableHiding: false,
-      size: 180,
-    };
-    return [...base, actionsCol];
-  })();
-
-  const { table: connTable } = useDataTable({
-    data: displayConnections,
-    columns,
-    pageCount: 1,
-    initialState: { pagination: { pageIndex: 0, pageSize: 100 } },
-    getRowId: (row) => row.id,
-  });
 
   if (connections && localConnections !== null && connections !== localConnections) {
     setLocalConnections(null);
@@ -779,80 +971,156 @@ export default function ConnectionsPage() {
     refetch();
   }
 
+  // Group connections by dbType so each provider gets a row and each existing
+  // connection gets its own IntegrationShell under that provider. Then append
+  // any plugin-registered dbTypes that don't appear in DB_TYPES so they still
+  // surface in the UI.
+  const byType = new Map<string, ConnectionInfo[]>();
+  for (const c of displayConnections) {
+    const list = byType.get(c.dbType) ?? [];
+    list.push(c);
+    byType.set(c.dbType, list);
+  }
+  const providerOrder: string[] = [
+    ...DB_TYPES.map((t) => t.value),
+    ...Array.from(byType.keys()).filter((k) => !DB_TYPES.some((t) => t.value === k)),
+  ];
+
+  const stats = {
+    live: displayConnections.filter((c) => c.health?.status === "healthy").length,
+    total: displayConnections.length,
+  };
+
   return (
-    <div className="p-6">
-      <div className="mb-6 flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">Connections</h1>
-          <p className="text-sm text-muted-foreground">Manage datasource connections</p>
+    <div className="mx-auto max-w-3xl px-6 py-10">
+      {/* Hero */}
+      <header className="mb-10 flex flex-col gap-2">
+        <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+          Atlas · Admin
+        </p>
+        <div className="flex items-baseline justify-between gap-6">
+          <h1 className="text-3xl font-semibold tracking-tight">Connections</h1>
+          <p className="shrink-0 font-mono text-sm tabular-nums text-muted-foreground">
+            <span className={cn(stats.live > 0 ? "text-primary" : "text-muted-foreground")}>
+              {String(stats.live).padStart(2, "0")}
+            </span>
+            <span className="opacity-50">{" / "}</span>
+            {String(stats.total).padStart(2, "0")} live
+          </p>
         </div>
-        {demoReadOnly ? (
-          <TooltipProvider>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <span tabIndex={0}>
-                  <Button onClick={handleAdd} size="sm" disabled>
-                    <Plus className="mr-2 size-4" />
-                    Add Connection
-                  </Button>
-                </span>
-              </TooltipTrigger>
-              <TooltipContent>{DEMO_READONLY_TOOLTIP}</TooltipContent>
-            </Tooltip>
-          </TooltipProvider>
-        ) : (
-          <Button onClick={handleAdd} size="sm">
-            <Plus className="mr-2 size-4" />
-            Add Connection
-          </Button>
-        )}
-      </div>
+        <div className="flex items-end justify-between gap-6">
+          <p className="max-w-xl text-sm text-muted-foreground">
+            Datasources Atlas can query. Each provider below is either connected or
+            ready to connect.
+          </p>
+          {demoReadOnly ? (
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span tabIndex={0}>
+                    <Button onClick={handleAdd} size="sm" disabled>
+                      <Plus className="mr-2 size-4" />
+                      Add connection
+                    </Button>
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent>{DEMO_READONLY_TOOLTIP}</TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          ) : (
+            <Button onClick={handleAdd} size="sm">
+              <Plus className="mr-2 size-4" />
+              Add connection
+            </Button>
+          )}
+        </div>
+      </header>
 
       <ErrorBoundary>
-      <div className="space-y-6">
-        {mutationError && <ErrorBanner message={mutationError} onRetry={() => setMutationError(null)} />}
-        {testMutation.error && !mutationError && <ErrorBanner message={testMutation.error} onRetry={testMutation.clearError} />}
+        <div className="space-y-6">
+          {mutationError && <ErrorBanner message={mutationError} onRetry={() => setMutationError(null)} />}
+          {testMutation.error && !mutationError && <ErrorBanner message={testMutation.error} onRetry={testMutation.clearError} />}
 
-        <PoolStatsSection onError={setMutationError} />
+          <PoolStatsSection onError={setMutationError} />
 
-        <AdminContentWrapper
-          loading={loading}
-          error={error}
-          feature="Connections"
-          onRetry={refetch}
-          loadingMessage="Loading connections..."
-          emptyIcon={Cable}
-          emptyTitle="No datasource connections"
-          emptyDescription="Add a connection to start querying your data"
-          emptyAction={{ label: "Add connection", onClick: handleAdd }}
-          // In dev-mode-no-drafts we short-circuit to DeveloperEmptyState
-          // instead of the generic empty state so the CTA language matches
-          // "start building" rather than "add a connection".
-          isEmpty={displayConnections.length === 0 && !showDevNoDrafts}
-        >
-          {showDevNoDrafts && displayConnections.length === 0 ? (
-            <DeveloperEmptyState
-              icon={Cable}
-              title="Connect your first database to start building."
-              description="Add a connection in developer mode, then publish it when you're ready."
-              action={{ kind: "button", label: "Add connection", onClick: handleAdd }}
-            />
-          ) : showDevNoDrafts ? (
-            <PublishedContextWrapper
-              resourceLabel={{ singular: "connection", plural: "connections" }}
-              action={{ kind: "button", label: "Create draft", onClick: handleAdd }}
-            >
-              <DataTable table={connTable}>
-                <DataTableToolbar table={connTable} />
-              </DataTable>
-            </PublishedContextWrapper>
-          ) : (
-            <DataTable table={connTable}>
-              <DataTableToolbar table={connTable} />
-            </DataTable>
-          )}
-        </AdminContentWrapper>
-      </div>
+          <AdminContentWrapper
+            loading={loading}
+            error={error}
+            feature="Connections"
+            onRetry={refetch}
+            loadingMessage="Loading connections..."
+            emptyIcon={Cable}
+            emptyTitle="No datasource connections"
+            emptyDescription="Add a connection to start querying your data"
+            emptyAction={{ label: "Add connection", onClick: handleAdd }}
+            // In dev-mode-no-drafts we short-circuit to DeveloperEmptyState
+            // instead of the generic empty state so the CTA language matches
+            // "start building" rather than "add a connection".
+            isEmpty={false}
+          >
+            {showDevNoDrafts && displayConnections.length === 0 ? (
+              <DeveloperEmptyState
+                icon={Cable}
+                title="Connect your first database to start building."
+                description="Add a connection in developer mode, then publish it when you're ready."
+                action={{ kind: "button", label: "Add connection", onClick: handleAdd }}
+              />
+            ) : showDevNoDrafts ? (
+              <PublishedContextWrapper
+                resourceLabel={{ singular: "connection", plural: "connections" }}
+                action={{ kind: "button", label: "Create draft", onClick: handleAdd }}
+              >
+                <section>
+                  <SectionHeading title="Datasources" description="Providers Atlas can read from" />
+                  <div className="space-y-2">
+                    {providerOrder.map((dbType) => {
+                      const conns = byType.get(dbType) ?? [];
+                      return (
+                        <ProviderBlock
+                          key={dbType}
+                          dbType={dbType}
+                          connections={conns}
+                          demoReadOnly={demoReadOnly}
+                          loadingDetail={loadingDetail}
+                          testMutation={testMutation}
+                          testStatus={testStatus}
+                          onTest={testConnection}
+                          onEdit={handleEdit}
+                          onDelete={handleDelete}
+                          onAdd={handleAdd}
+                        />
+                      );
+                    })}
+                  </div>
+                </section>
+              </PublishedContextWrapper>
+            ) : (
+              <section>
+                <SectionHeading title="Datasources" description="Providers Atlas can read from" />
+                <div className="space-y-2">
+                  {providerOrder.map((dbType) => {
+                    const conns = byType.get(dbType) ?? [];
+                    return (
+                      <ProviderBlock
+                        key={dbType}
+                        dbType={dbType}
+                        connections={conns}
+                        demoReadOnly={demoReadOnly}
+                        loadingDetail={loadingDetail}
+                        testMutation={testMutation}
+                        testStatus={testStatus}
+                        onTest={testConnection}
+                        onEdit={handleEdit}
+                        onDelete={handleDelete}
+                        onAdd={handleAdd}
+                      />
+                    );
+                  })}
+                </div>
+              </section>
+            )}
+          </AdminContentWrapper>
+        </div>
       </ErrorBoundary>
 
       <ConnectionFormDialog
@@ -870,5 +1138,273 @@ export default function ConnectionsPage() {
         onSuccess={handleMutationSuccess}
       />
     </div>
+  );
+}
+
+// ── Provider Block ───────────────────────────────────────────────
+
+/**
+ * Renders one provider (dbType). When connections of this type exist, each
+ * becomes a full IntegrationShell with a DetailList and action footer. When
+ * there are none, a CompactRow prompts the admin to connect one.
+ */
+function ProviderBlock({
+  dbType,
+  connections,
+  demoReadOnly,
+  loadingDetail,
+  testMutation,
+  testStatus,
+  onTest,
+  onEdit,
+  onDelete,
+  onAdd,
+}: {
+  dbType: string;
+  connections: ConnectionInfo[];
+  demoReadOnly: boolean;
+  loadingDetail: boolean;
+  testMutation: ReturnType<typeof useAdminMutation<ConnectionHealth>>;
+  testStatus: Record<string, "success" | "error">;
+  onTest: (id: string) => void;
+  onEdit: (id: string) => void;
+  onDelete: (id: string) => void;
+  onAdd: () => void;
+}) {
+  const Icon = iconForDbType(dbType);
+  const label = labelForDbType(dbType);
+  const description = descriptionForDbType(dbType);
+
+  if (connections.length === 0) {
+    return (
+      <CompactRow
+        icon={Icon}
+        title={label}
+        description={description}
+        status="disconnected"
+        action={
+          demoReadOnly ? (
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span tabIndex={0}>
+                    <Button size="sm" variant="outline" disabled>
+                      <Plus className="mr-1.5 size-3.5" />
+                      Connect
+                    </Button>
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent>{DEMO_READONLY_TOOLTIP}</TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          ) : (
+            <Button size="sm" variant="outline" onClick={onAdd}>
+              <Plus className="mr-1.5 size-3.5" />
+              Connect
+            </Button>
+          )
+        }
+      />
+    );
+  }
+
+  return (
+    <>
+      {connections.map((conn) => (
+        <ConnectionCard
+          key={conn.id}
+          conn={conn}
+          icon={Icon}
+          providerLabel={label}
+          providerDescription={description}
+          demoReadOnly={demoReadOnly}
+          loadingDetail={loadingDetail}
+          testMutation={testMutation}
+          testStatus={testStatus}
+          onTest={onTest}
+          onEdit={onEdit}
+          onDelete={onDelete}
+        />
+      ))}
+    </>
+  );
+}
+
+// ── Connection Card (one existing connection) ───────────────────
+
+function ConnectionCard({
+  conn,
+  icon,
+  providerLabel,
+  providerDescription,
+  demoReadOnly,
+  loadingDetail,
+  testMutation,
+  testStatus,
+  onTest,
+  onEdit,
+  onDelete,
+}: {
+  conn: ConnectionInfo;
+  icon: ComponentType<{ className?: string }>;
+  providerLabel: string;
+  providerDescription: string;
+  demoReadOnly: boolean;
+  loadingDetail: boolean;
+  testMutation: ReturnType<typeof useAdminMutation<ConnectionHealth>>;
+  testStatus: Record<string, "success" | "error">;
+  onTest: (id: string) => void;
+  onEdit: (id: string) => void;
+  onDelete: (id: string) => void;
+}) {
+  const health = conn.health?.status;
+  // Treat "degraded" as connected-but-warning rather than a fresh failure so
+  // the shell still renders the teal accent; unhealthy downgrades status to
+  // disconnected so the dot + muted palette communicate the outage.
+  const status: StatusKind =
+    health === "unhealthy" ? "disconnected" : "connected";
+  const isDemo = conn.id === DEMO_CONNECTION_ID;
+  const rowReadOnly = demoReadOnly && isDemo;
+  const isDraft = conn.status === "draft";
+  const isDefault = conn.id === "default";
+  const testing = testMutation.isMutating(conn.id);
+  const testBadge = testStatus[conn.id];
+
+  // Build a titleBadge strip that keeps the demo / draft affordances intact.
+  const badges =
+    isDemo || isDraft ? (
+      <span className="flex shrink-0 items-center gap-1">
+        {isDemo && <DemoBadge />}
+        {isDraft && <DraftBadge />}
+      </span>
+    ) : null;
+
+  const testButton = (
+    <Button
+      variant="outline"
+      size="sm"
+      disabled={testing}
+      onClick={() => onTest(conn.id)}
+      aria-label={testing ? `Testing connection ${conn.id}…` : undefined}
+      className={cn(
+        testBadge === "success" && "border-green-500 text-green-600 dark:text-green-400",
+        testBadge === "error" && "border-destructive text-destructive",
+      )}
+    >
+      {testing ? (
+        <Loader2 className="mr-1.5 size-3.5 animate-spin" />
+      ) : testBadge === "success" ? (
+        <Check className="mr-1.5 size-3.5" />
+      ) : testBadge === "error" ? (
+        <X className="mr-1.5 size-3.5" />
+      ) : null}
+      {testing
+        ? "Testing…"
+        : testBadge === "success"
+        ? "OK"
+        : testBadge === "error"
+        ? "Failed"
+        : "Test"}
+    </Button>
+  );
+
+  const editButton = (
+    <Button
+      variant="ghost"
+      size="sm"
+      onClick={() => onEdit(conn.id)}
+      disabled={loadingDetail || rowReadOnly}
+      aria-label={`Edit connection ${conn.id}`}
+    >
+      <Pencil className="mr-1.5 size-3.5" />
+      Edit
+    </Button>
+  );
+
+  const deleteButton = (
+    <Button
+      variant="ghost"
+      size="sm"
+      onClick={() => onDelete(conn.id)}
+      disabled={rowReadOnly}
+      aria-label={`Delete connection ${conn.id}`}
+      className="text-destructive hover:text-destructive"
+    >
+      <Trash2 className="mr-1.5 size-3.5" />
+      Delete
+    </Button>
+  );
+
+  const manageButtons = isDefault ? null : rowReadOnly ? (
+    <TooltipProvider>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span tabIndex={0}>{editButton}</span>
+        </TooltipTrigger>
+        <TooltipContent>{DEMO_READONLY_TOOLTIP}</TooltipContent>
+      </Tooltip>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <span tabIndex={0}>{deleteButton}</span>
+        </TooltipTrigger>
+        <TooltipContent>{DEMO_READONLY_TOOLTIP}</TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  ) : (
+    <>
+      {editButton}
+      {deleteButton}
+    </>
+  );
+
+  return (
+    <ConnectionShell
+      icon={icon}
+      title={<span className="font-mono">{conn.id}</span>}
+      titleBadge={badges}
+      description={conn.description || providerDescription}
+      status={status}
+      statusLabel={health === "degraded" ? "Degraded" : "Live"}
+      actions={
+        <>
+          {testButton}
+          {manageButtons}
+        </>
+      }
+    >
+      <DetailList>
+        <DetailRow label="Provider" value={providerLabel} />
+        {conn.description ? (
+          <DetailRow label="Description" value={conn.description} truncate />
+        ) : null}
+        {conn.health?.latencyMs != null ? (
+          <DetailRow
+            label="Latency"
+            value={<span className="tabular-nums">{conn.health.latencyMs}ms</span>}
+            mono
+          />
+        ) : null}
+        {conn.health?.status ? (
+          <DetailRow
+            label="Health"
+            value={
+              <span
+                className={cn(
+                  conn.health.status === "healthy" && "text-primary",
+                  conn.health.status === "degraded" &&
+                    "text-amber-600 dark:text-amber-400",
+                  conn.health.status === "unhealthy" && "text-destructive",
+                )}
+              >
+                {healthLabel(conn.health.status)}
+              </span>
+            }
+          />
+        ) : null}
+        {conn.health?.checkedAt ? (
+          <DetailRow label="Last tested" value={formatDateTime(conn.health.checkedAt)} />
+        ) : null}
+      </DetailList>
+    </ConnectionShell>
   );
 }

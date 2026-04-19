@@ -283,11 +283,13 @@ function PlanShell({ data }: { data: BillingStatus }) {
     }
   }
 
-  // portalMutationError is the structured mutation failure; portalError is a
-  // local string we set when the 200 response is missing the expected URL.
-  // Normalize both to a single string for the banner.
-  const combinedError =
-    (portalMutationError && friendlyError(portalMutationError)) ?? portalError;
+  // portalError covers the 200-but-missing-URL edge case (set locally when
+  // the server returns success but no portal link); portalMutationError
+  // covers all non-2xx responses. Use `||` so an empty-string
+  // friendlyError() result falls through to portalError rather than
+  // suppressing it.
+  const mutationCopy = portalMutationError ? friendlyError(portalMutationError) : "";
+  const combinedError = mutationCopy || portalError;
   const status: StatusKind = subscription?.status === "active" ? "connected" : "disconnected";
 
   return (

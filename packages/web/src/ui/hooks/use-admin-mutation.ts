@@ -57,9 +57,13 @@ interface UseAdminMutationReturn<TResponse> {
   /**
    * Last mutation error as a structured {@link FetchError}, or null.
    * Cleared on next `mutate()` call. Feed into `friendlyError()` for banner
-   * copy or branch on `code === "enterprise_required"` / `status` — the
-   * structured fields stay intact so `AdminContentWrapper` can route 403s
-   * into `EnterpriseUpsell` instead of a generic banner.
+   * copy, or branch on `code === "enterprise_required"` / `status` directly —
+   * the structured fields stay intact so `AdminContentWrapper` can route EE
+   * 403s into `EnterpriseUpsell` instead of a generic banner. Stays
+   * `FetchError` (not flattened to `string`) specifically so the `code`,
+   * `status`, and `requestId` fields survive the hook boundary — wrapping it
+   * as `{ message: error.message }` re-flattens and is guarded by an ESLint
+   * rule in `eslint.config.mjs`.
    */
   error: FetchError | null;
   /** Clear the error manually. */
@@ -203,14 +207,16 @@ export function useAdminMutation<TResponse = unknown>(
         }
       }
 
-      // Call legacy invalidates (refetch callbacks from callers) and onSuccess
-      // outside the try-catch so a throwing callback does NOT masquerade as a
-      // mutation failure (#1617). Reaching here means the fetch succeeded —
-      // the catch returns early, so control only falls through on success.
-      // Each callback is isolated so one throwing invalidate doesn't prevent
-      // the rest from running. Debug-log for diagnosability — these throws
-      // are unexpected and usually point at a stale closure or a refetch
-      // hitting an unmounted component.
+      // Invalidates and onSuccess run outside the try/catch above so a
+      // throwing user callback does NOT masquerade as a mutation failure —
+      // the catch returns early with `ok: false`, so control only falls
+      // through on successful fetch. Each callback is isolated in its own
+      // try/catch so one throwing refetch doesn't starve the rest; warn-log
+      // the throw because these are unexpected (usually a stale closure or a
+      // refetch hitting an unmounted component) and the caller needs to see
+      // them in production devtools — `console.debug` is filtered out in
+      // default log levels and would hide exactly the bug class these logs
+      // exist to surface.
       const invalidates = opts?.invalidates;
       if (invalidates) {
         const fns = Array.isArray(invalidates) ? invalidates : [invalidates];
@@ -218,7 +224,7 @@ export function useAdminMutation<TResponse = unknown>(
           try {
             fn();
           } catch (err) {
-            console.debug("useAdminMutation: invalidates() callback threw", err);
+            console.warn("useAdminMutation: invalidates() callback threw", err);
           }
         }
       }
@@ -228,7 +234,7 @@ export function useAdminMutation<TResponse = unknown>(
       try {
         callOpts?.onSuccess?.(data);
       } catch (err) {
-        console.debug("useAdminMutation: onSuccess callback threw", err);
+        console.warn("useAdminMutation: onSuccess callback threw", err);
       }
 
       return { ok: true, data };

@@ -27,7 +27,14 @@ export async function extractFetchError(res: Response): Promise<FetchError> {
     const body: unknown = await res.json();
     if (typeof body === "object" && body !== null) {
       const obj = body as Record<string, unknown>;
-      if (typeof obj.message === "string") message = obj.message;
+      // Require a non-empty message so a server returning `{ message: "" }`
+      // (intentional, misconfigured, or truncated) doesn't clobber the
+      // `HTTP ${status}` fallback — downstream helpers silently drop empty
+      // messages (`combineMutationErrors` filters them, `friendlyError`
+      // renders blank banners for non-gated status codes).
+      if (typeof obj.message === "string" && obj.message.length > 0) {
+        message = obj.message;
+      }
       if (typeof obj.requestId === "string") requestId = obj.requestId;
       if (typeof obj.error === "string") code = obj.error;
     }
@@ -47,13 +54,15 @@ export async function extractFetchError(res: Response): Promise<FetchError> {
 
 /**
  * Nullable variant of {@link friendlyError} for call sites that thread a
- * `FetchError | null` through to a `string | null` prop (e.g. `ErrorBanner`,
- * `FormDialog.serverError`). Saves a ternary at every site:
+ * `FetchError | null` through to a `string | null` prop (e.g.
+ * `FormDialog.serverError`, `InlineError`). Collapses the
+ * `err ? friendlyError(err) : null` ternary to a single call:
  *
- *   // before: `error: { message, status, requestId, code }` — renders raw object in JSX
- *   serverError={mutation.error ? friendlyError(mutation.error) : null}
- *   // after:
  *   serverError={friendlyErrorOrNull(mutation.error)}
+ *
+ * Exists because `friendlyError` is strictly `FetchError → string` — widening
+ * it to accept null would force ~30 non-null call sites to narrow a return
+ * that's always a string today.
  */
 export function friendlyErrorOrNull(err: FetchError | null | undefined): string | null {
   return err ? friendlyError(err) : null;

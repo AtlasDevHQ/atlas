@@ -21,13 +21,11 @@ export default tseslint.config(
       ],
     },
   },
-  // Guard the structured-FetchError invariant established by #1614 and
-  // completed by the hook-level migration in #1615. `useAdminMutation`
-  // returns `FetchError` (status/code/requestId) both on `MutateResult.error`
-  // and hook-level `error` — wrapping it as `{ message: ... }` re-flattens to
-  // a bare string and breaks `friendlyError()` + `EnterpriseUpsell` routing.
-  // Rule applies only to the web package; other packages have different
-  // error-passing conventions.
+  // `useAdminMutation` returns a structured `FetchError` (status/code/
+  // requestId) on both `MutateResult.error` and hook-level `error`.
+  // Re-wrapping as `{ message: X.error }` flattens it back to a bare string
+  // and breaks `friendlyError()` HTTP-status translation + `EnterpriseUpsell`
+  // routing on EE 403s. This selector catches the exact shape.
   {
     files: ["packages/web/**/*.{ts,tsx}"],
     rules: {
@@ -37,7 +35,7 @@ export default tseslint.config(
           selector:
             "ObjectExpression[properties.length=1] > Property[key.name='message'][value.type='MemberExpression'][value.property.name='error']",
           message:
-            "Do not wrap a mutation `.error` as `{ message: x.error }` — useAdminMutation now surfaces a structured FetchError (status/code/requestId). Pass it straight to setError()/AdminContentWrapper, or convert to a string via friendlyError() / friendlyErrorOrNull().",
+            "Do not wrap a mutation `.error` as `{ message: x.error }` — useAdminMutation surfaces a structured FetchError (status/code/requestId). Pass it straight to setError() / AdminContentWrapper, or convert to a string via friendlyError() / friendlyErrorOrNull().",
         },
       ],
     },

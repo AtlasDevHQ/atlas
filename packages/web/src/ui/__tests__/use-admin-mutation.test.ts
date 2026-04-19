@@ -531,17 +531,18 @@ describe("useAdminMutation", () => {
   /* ---------------------------------------------------------------- */
 
   test("a throwing invalidates() callback does not flip result.ok or populate hook error", async () => {
-    // Regression guard for #1617. Before the fix, invalidates() ran inside
-    // the same try/catch as mutateAsync, so a throwing refetch (stale
+    // Regression guard for the pre-refactor bug where invalidates() ran
+    // inside the same try/catch as mutateAsync, so a throwing refetch (stale
     // closure, setState on unmounted component) looked like a mutation
     // failure — banner rendered, result.ok flipped to false — even though
-    // the network call succeeded.
+    // the network call succeeded. Warn-log the throw (not debug) so the
+    // throw surfaces in production devtools instead of being filtered out.
     mockFetch(jsonResponse({ ok: true }));
 
-    const originalDebug = console.debug;
-    const debugCalls: unknown[][] = [];
-    console.debug = (...args: unknown[]) => {
-      debugCalls.push(args);
+    const originalWarn = console.warn;
+    const warnCalls: unknown[][] = [];
+    console.warn = (...args: unknown[]) => {
+      warnCalls.push(args);
     };
 
     try {
@@ -566,16 +567,17 @@ describe("useAdminMutation", () => {
       // a fetch failure.
       expect(mutateResult!.ok).toBe(true);
       expect(result.current.error).toBeNull();
-      // Debug log emitted for diagnosability so the throw doesn't disappear.
+      // Warn-log emitted for diagnosability so the throw doesn't disappear —
+      // debug-level logs are filtered out of the default devtools view.
       expect(
-        debugCalls.some(
+        warnCalls.some(
           (args) =>
             typeof args[0] === "string" &&
             args[0].includes("invalidates() callback threw"),
         ),
       ).toBe(true);
     } finally {
-      console.debug = originalDebug;
+      console.warn = originalWarn;
     }
   });
 
@@ -584,8 +586,8 @@ describe("useAdminMutation", () => {
     // the others of their cache invalidation.
     mockFetch(jsonResponse({ ok: true }));
 
-    const originalDebug = console.debug;
-    console.debug = () => {};
+    const originalWarn = console.warn;
+    console.warn = () => {};
     try {
       const throwing = mock(() => {
         throw new Error("boom");
@@ -607,7 +609,7 @@ describe("useAdminMutation", () => {
       expect(throwing).toHaveBeenCalledTimes(1);
       expect(succeeding).toHaveBeenCalledTimes(1);
     } finally {
-      console.debug = originalDebug;
+      console.warn = originalWarn;
     }
   });
 
@@ -618,8 +620,8 @@ describe("useAdminMutation", () => {
     // mark it failed.
     mockFetch(jsonResponse({ ok: true }));
 
-    const originalDebug = console.debug;
-    console.debug = () => {};
+    const originalWarn = console.warn;
+    console.warn = () => {};
     try {
       const { result } = renderHook(
         () => useAdminMutation({ path: "/api/v1/admin/test" }),
@@ -638,7 +640,7 @@ describe("useAdminMutation", () => {
       expect(mutateResult!.ok).toBe(true);
       expect(result.current.error).toBeNull();
     } finally {
-      console.debug = originalDebug;
+      console.warn = originalWarn;
     }
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { extractFetchError, friendlyError } from "../lib/fetch-error";
+import { extractFetchError, friendlyError, friendlyErrorOrNull } from "../lib/fetch-error";
 
 function mockResponse(status: number, body?: unknown, headers?: Record<string, string>): Response {
   const init: ResponseInit = { status, headers };
@@ -123,6 +123,52 @@ describe("friendlyError", () => {
   test("appends requestId to friendly-mapped messages", () => {
     expect(friendlyError({ message: "x", status: 401, requestId: "req-abc" })).toBe(
       "Not authenticated. Please sign in. (Request ID: req-abc)",
+    );
+  });
+});
+
+describe("extractFetchError empty-message clobber guard", () => {
+  test("preserves HTTP status fallback when server returns empty message", async () => {
+    // A misconfigured server or truncated JSON can emit `{ message: "" }`.
+    // The old extractor accepted empty strings and clobbered the fallback,
+    // which then propagated blank banners through friendlyError and
+    // combineMutationErrors. Guard: require non-empty.
+    const res = new Response(JSON.stringify({ message: "", requestId: "req-empty" }), {
+      status: 500,
+      headers: { "content-type": "application/json" },
+    });
+    const err = await extractFetchError(res);
+    expect(err).toEqual({ message: "HTTP 500", status: 500, requestId: "req-empty" });
+  });
+
+  test("preserves structured code even when message is empty", async () => {
+    const res = new Response(
+      JSON.stringify({ message: "", error: "enterprise_required" }),
+      { status: 403, headers: { "content-type": "application/json" } },
+    );
+    const err = await extractFetchError(res);
+    expect(err).toEqual({ message: "HTTP 403", status: 403, code: "enterprise_required" });
+  });
+});
+
+describe("friendlyErrorOrNull", () => {
+  test("returns null for null input", () => {
+    expect(friendlyErrorOrNull(null)).toBeNull();
+  });
+
+  test("returns null for undefined input", () => {
+    expect(friendlyErrorOrNull(undefined)).toBeNull();
+  });
+
+  test("returns friendlyError output for a FetchError", () => {
+    const err = { message: "Unauthorized", status: 401, requestId: "req-x" } as const;
+    expect(friendlyErrorOrNull(err)).toBe(friendlyError(err));
+  });
+
+  test("preserves EE 403 translation on non-null path", () => {
+    // Routes through friendlyError, so the 403 admin-role copy still fires.
+    expect(friendlyErrorOrNull({ message: "Forbidden", status: 403 })).toBe(
+      "Access denied. Admin role required to view this page.",
     );
   });
 });

@@ -63,6 +63,7 @@ import {
 } from "@/components/form-dialog";
 import type { FetchError } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { friendlyError, friendlyErrorOrNull } from "@/ui/lib/fetch-error";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { useDevModeNoDrafts } from "@/ui/hooks/use-dev-mode-no-drafts";
 import { DeveloperEmptyState } from "@/ui/components/admin/developer-empty-state";
@@ -542,10 +543,10 @@ export default function PromptsPage() {
           </div>
 
           {/* Content */}
-          {collectionMutation.error && <ErrorBanner message={collectionMutation.error} onRetry={collectionMutation.clearError} />}
-          {deleteCollectionMutation.error && <ErrorBanner message={deleteCollectionMutation.error} onRetry={deleteCollectionMutation.clearError} />}
-          {addItemMutation.error && <ErrorBanner message={addItemMutation.error} onRetry={addItemMutation.clearError} />}
-          {deleteItemMutation.error && <ErrorBanner message={deleteItemMutation.error} onRetry={deleteItemMutation.clearError} />}
+          {collectionMutation.error && <ErrorBanner message={friendlyError(collectionMutation.error)} onRetry={collectionMutation.clearError} />}
+          {deleteCollectionMutation.error && <ErrorBanner message={friendlyError(deleteCollectionMutation.error)} onRetry={deleteCollectionMutation.clearError} />}
+          {addItemMutation.error && <ErrorBanner message={friendlyError(addItemMutation.error)} onRetry={addItemMutation.clearError} />}
+          {deleteItemMutation.error && <ErrorBanner message={friendlyError(deleteItemMutation.error)} onRetry={deleteItemMutation.clearError} />}
 
           <AdminContentWrapper
             loading={loading}
@@ -807,7 +808,7 @@ export default function PromptsPage() {
         onSubmit={submitCollectionForm}
         submitLabel={collectionDialog.mode === "edit" ? "Save Changes" : "Create"}
         saving={collectionMutation.saving}
-        serverError={collectionMutation.error}
+        serverError={friendlyErrorOrNull(collectionMutation.error)}
       >
         {(form) => (
           <>

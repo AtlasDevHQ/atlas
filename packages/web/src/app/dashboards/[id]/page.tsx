@@ -42,6 +42,7 @@ import {
 } from "@/components/ui/sortable";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { friendlyError } from "@/ui/lib/fetch-error";
 import { NavBar } from "@/ui/components/tour/nav-bar";
 import { DataTable } from "@/ui/components/chat/data-table";
 import { useDarkMode } from "@/ui/hooks/use-dark-mode";
@@ -421,7 +422,7 @@ export default function DashboardViewPage() {
                     </h1>
                   )}
                   {mutationError && (
-                    <p className="mt-1 text-xs text-red-500 dark:text-red-400">{mutationError}</p>
+                    <p className="mt-1 text-xs text-red-500 dark:text-red-400">{friendlyError(mutationError)}</p>
                   )}
                   {dashboard.description && (
                     <p className="mt-1 text-sm text-zinc-500 dark:text-zinc-400">

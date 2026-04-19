@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { friendlyErrorOrNull } from "@/ui/lib/fetch-error";
 import { IntegrationStatusSchema } from "@/ui/lib/admin-schemas";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
@@ -405,10 +406,10 @@ export default function IntegrationsPage() {
                   hasInternalDB={hasDB}
                   onDisconnect={handleDisconnect}
                   disconnecting={disconnectMutation.saving}
-                  disconnectError={disconnectMutation.error}
+                  disconnectError={friendlyErrorOrNull(disconnectMutation.error)}
                   onByotConnect={handleSlackByot}
                   byotConnecting={slackByotMutation.saving}
-                  byotError={slackByotMutation.error}
+                  byotError={friendlyErrorOrNull(slackByotMutation.error)}
                   onByotClearError={slackByotMutation.clearError}
                 />
                 <TeamsCard
@@ -417,10 +418,10 @@ export default function IntegrationsPage() {
                   hasInternalDB={hasDB}
                   onDisconnect={handleTeamsDisconnect}
                   disconnecting={teamsDisconnectMutation.saving}
-                  disconnectError={teamsDisconnectMutation.error}
+                  disconnectError={friendlyErrorOrNull(teamsDisconnectMutation.error)}
                   onByotConnect={handleTeamsByot}
                   byotConnecting={teamsByotMutation.saving}
-                  byotError={teamsByotMutation.error}
+                  byotError={friendlyErrorOrNull(teamsByotMutation.error)}
                   onByotClearError={teamsByotMutation.clearError}
                 />
                 <DiscordCard
@@ -429,10 +430,10 @@ export default function IntegrationsPage() {
                   hasInternalDB={hasDB}
                   onDisconnect={handleDiscordDisconnect}
                   disconnecting={discordDisconnectMutation.saving}
-                  disconnectError={discordDisconnectMutation.error}
+                  disconnectError={friendlyErrorOrNull(discordDisconnectMutation.error)}
                   onByotConnect={handleDiscordByot}
                   byotConnecting={discordByotMutation.saving}
-                  byotError={discordByotMutation.error}
+                  byotError={friendlyErrorOrNull(discordByotMutation.error)}
                   onByotClearError={discordByotMutation.clearError}
                 />
                 <TelegramCard
@@ -440,31 +441,31 @@ export default function IntegrationsPage() {
                   isSaas={isSaas}
                   onConnect={handleTelegramConnect}
                   connecting={telegramConnectMutation.saving}
-                  connectError={telegramConnectMutation.error}
+                  connectError={friendlyErrorOrNull(telegramConnectMutation.error)}
                   onConnectClearError={telegramConnectMutation.clearError}
                   onDisconnect={handleTelegramDisconnect}
                   disconnecting={telegramDisconnectMutation.saving}
-                  disconnectError={telegramDisconnectMutation.error}
+                  disconnectError={friendlyErrorOrNull(telegramDisconnectMutation.error)}
                 />
                 <GChatCard
                   gchat={gchat!}
                   onConnect={handleGChatConnect}
                   connecting={gchatConnectMutation.saving}
-                  connectError={gchatConnectMutation.error}
+                  connectError={friendlyErrorOrNull(gchatConnectMutation.error)}
                   onConnectClearError={gchatConnectMutation.clearError}
                   onDisconnect={handleGChatDisconnect}
                   disconnecting={gchatDisconnectMutation.saving}
-                  disconnectError={gchatDisconnectMutation.error}
+                  disconnectError={friendlyErrorOrNull(gchatDisconnectMutation.error)}
                 />
                 <WhatsAppCard
                   whatsapp={whatsapp!}
                   onConnect={handleWhatsAppConnect}
                   connecting={whatsappConnectMutation.saving}
-                  connectError={whatsappConnectMutation.error}
+                  connectError={friendlyErrorOrNull(whatsappConnectMutation.error)}
                   onConnectClearError={whatsappConnectMutation.clearError}
                   onDisconnect={handleWhatsAppDisconnect}
                   disconnecting={whatsappDisconnectMutation.saving}
-                  disconnectError={whatsappDisconnectMutation.error}
+                  disconnectError={friendlyErrorOrNull(whatsappDisconnectMutation.error)}
                 />
               </div>
             </section>
@@ -477,21 +478,21 @@ export default function IntegrationsPage() {
                   github={github!}
                   onConnect={handleGitHubConnect}
                   connecting={githubConnectMutation.saving}
-                  connectError={githubConnectMutation.error}
+                  connectError={friendlyErrorOrNull(githubConnectMutation.error)}
                   onConnectClearError={githubConnectMutation.clearError}
                   onDisconnect={handleGitHubDisconnect}
                   disconnecting={githubDisconnectMutation.saving}
-                  disconnectError={githubDisconnectMutation.error}
+                  disconnectError={friendlyErrorOrNull(githubDisconnectMutation.error)}
                 />
                 <LinearCard
                   linear={linear!}
                   onConnect={handleLinearConnect}
                   connecting={linearConnectMutation.saving}
-                  connectError={linearConnectMutation.error}
+                  connectError={friendlyErrorOrNull(linearConnectMutation.error)}
                   onConnectClearError={linearConnectMutation.clearError}
                   onDisconnect={handleLinearDisconnect}
                   disconnecting={linearDisconnectMutation.saving}
-                  disconnectError={linearDisconnectMutation.error}
+                  disconnectError={friendlyErrorOrNull(linearDisconnectMutation.error)}
                 />
               </div>
             </section>

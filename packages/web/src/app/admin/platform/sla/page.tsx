@@ -30,8 +30,9 @@ import { LoadingState } from "@/ui/components/admin/loading-state";
 import { usePlatformAdminGuard } from "@/ui/hooks/use-platform-admin-guard";
 import { StatCard } from "@/ui/components/admin/stat-card";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
-import { useAdminFetch, friendlyError } from "@/ui/hooks/use-admin-fetch";
+import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { friendlyError } from "@/ui/lib/fetch-error";
 import {
   SLAWorkspacesResponseSchema,
   SLAAlertsResponseSchema,
@@ -515,7 +516,7 @@ function SLAPageContent() {
               Configure the default SLA alert thresholds. Alerts fire when metrics exceed these values.
             </DialogDescription>
           </DialogHeader>
-          {thresholdError && <ErrorBanner message={thresholdError} />}
+          {thresholdError && <ErrorBanner message={friendlyError(thresholdError)} />}
           {editThresholds && (
             <div className="space-y-4">
               <div className="space-y-2">

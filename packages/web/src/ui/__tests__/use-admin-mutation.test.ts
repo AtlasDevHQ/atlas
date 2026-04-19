@@ -182,8 +182,45 @@ describe("useAdminMutation", () => {
       expect(mutateResult!.error.message).toBe("Not found");
       expect(mutateResult!.error.status).toBe(404);
     }
+    // Hook-level error is structured (not a flattened string) — callers can
+    // read `.status`/`.code`/`.requestId` to route into AdminContentWrapper
+    // branches without re-parsing the message.
     await waitFor(() => {
-      expect(result.current.error).toBe("Not found");
+      expect(result.current.error).toEqual({ message: "Not found", status: 404 });
+    });
+  });
+
+  test("hook-level error preserves structured FetchError fields (code, requestId)", async () => {
+    // Regression guard for #1615 — the ~15 admin pages that read
+    // `mutation.error` directly (not via `result.error`) still need to branch
+    // on `code === \"enterprise_required\"` and surface requestId.
+    mockFetch(
+      jsonResponse(
+        {
+          message: "Enterprise features required",
+          error: "enterprise_required",
+          requestId: "req-hook-xyz",
+        },
+        403,
+      ),
+    );
+
+    const { result } = renderHook(
+      () => useAdminMutation({ path: "/api/v1/admin/test" }),
+      { wrapper },
+    );
+
+    await act(async () => {
+      await result.current.mutate();
+    });
+
+    await waitFor(() => {
+      expect(result.current.error).toEqual({
+        message: "Enterprise features required",
+        status: 403,
+        code: "enterprise_required",
+        requestId: "req-hook-xyz",
+      });
     });
   });
 
@@ -417,7 +454,7 @@ describe("useAdminMutation", () => {
     await act(async () => {
       await result.current.mutate();
     });
-    expect(result.current.error).toBe("Fail");
+    expect(result.current.error?.message).toBe("Fail");
 
     // Second call succeeds — error should be cleared
     mockFetch(jsonResponse({ ok: true }));
@@ -480,12 +517,128 @@ describe("useAdminMutation", () => {
     await act(async () => {
       await result.current.mutate();
     });
-    expect(result.current.error).toBe("Fail");
+    expect(result.current.error?.message).toBe("Fail");
 
     act(() => {
       result.current.reset();
     });
     expect(result.current.error).toBeNull();
     expect(result.current.saving).toBe(false);
+  });
+
+  /* ---------------------------------------------------------------- */
+  /*  invalidates() / onSuccess callback isolation (#1617)             */
+  /* ---------------------------------------------------------------- */
+
+  test("a throwing invalidates() callback does not flip result.ok or populate hook error", async () => {
+    // Regression guard for #1617. Before the fix, invalidates() ran inside
+    // the same try/catch as mutateAsync, so a throwing refetch (stale
+    // closure, setState on unmounted component) looked like a mutation
+    // failure — banner rendered, result.ok flipped to false — even though
+    // the network call succeeded.
+    mockFetch(jsonResponse({ ok: true }));
+
+    const originalDebug = console.debug;
+    const debugCalls: unknown[][] = [];
+    console.debug = (...args: unknown[]) => {
+      debugCalls.push(args);
+    };
+
+    try {
+      const throwingRefetch = () => {
+        throw new Error("stale closure");
+      };
+      const { result } = renderHook(
+        () =>
+          useAdminMutation({
+            path: "/api/v1/admin/test",
+            invalidates: throwingRefetch,
+          }),
+        { wrapper },
+      );
+
+      let mutateResult: MutateResult<unknown>;
+      await act(async () => {
+        mutateResult = await result.current.mutate();
+      });
+
+      // Mutation itself succeeded — the callback throw must NOT masquerade as
+      // a fetch failure.
+      expect(mutateResult!.ok).toBe(true);
+      expect(result.current.error).toBeNull();
+      // Debug log emitted for diagnosability so the throw doesn't disappear.
+      expect(
+        debugCalls.some(
+          (args) =>
+            typeof args[0] === "string" &&
+            args[0].includes("invalidates() callback threw"),
+        ),
+      ).toBe(true);
+    } finally {
+      console.debug = originalDebug;
+    }
+  });
+
+  test("one throwing invalidate does not prevent subsequent invalidates from running", async () => {
+    // Each callback is isolated so a stale refetch on one list doesn't starve
+    // the others of their cache invalidation.
+    mockFetch(jsonResponse({ ok: true }));
+
+    const originalDebug = console.debug;
+    console.debug = () => {};
+    try {
+      const throwing = mock(() => {
+        throw new Error("boom");
+      });
+      const succeeding = mock(() => {});
+      const { result } = renderHook(
+        () =>
+          useAdminMutation({
+            path: "/api/v1/admin/test",
+            invalidates: [throwing, succeeding],
+          }),
+        { wrapper },
+      );
+
+      await act(async () => {
+        await result.current.mutate();
+      });
+
+      expect(throwing).toHaveBeenCalledTimes(1);
+      expect(succeeding).toHaveBeenCalledTimes(1);
+    } finally {
+      console.debug = originalDebug;
+    }
+  });
+
+  test("a throwing onSuccess callback does not flip result.ok or populate hook error", async () => {
+    // Same invariant as invalidates — onSuccess is user code that may throw
+    // (e.g. a dialog close handler that races with unmount). The mutation
+    // result already reflects the successful 2xx; we should not retroactively
+    // mark it failed.
+    mockFetch(jsonResponse({ ok: true }));
+
+    const originalDebug = console.debug;
+    console.debug = () => {};
+    try {
+      const { result } = renderHook(
+        () => useAdminMutation({ path: "/api/v1/admin/test" }),
+        { wrapper },
+      );
+
+      let mutateResult: MutateResult<unknown>;
+      await act(async () => {
+        mutateResult = await result.current.mutate({
+          onSuccess: () => {
+            throw new Error("onSuccess bug");
+          },
+        });
+      });
+
+      expect(mutateResult!.ok).toBe(true);
+      expect(result.current.error).toBeNull();
+    } finally {
+      console.debug = originalDebug;
+    }
   });
 });

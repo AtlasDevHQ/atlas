@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { friendlyError } from "@/ui/lib/fetch-error";
 import { useAtlasConfig } from "@/ui/context";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Button } from "@/components/ui/button";
@@ -514,7 +515,7 @@ export function EntityVersionHistory({ entityName, onRollback }: EntityVersionHi
           </AlertDialogHeader>
           {rollbackError && (
             <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-              {rollbackError}
+              {friendlyError(rollbackError)}
             </div>
           )}
           <AlertDialogFooter>

@@ -37,6 +37,7 @@ import { LoadingState } from "@/ui/components/admin/loading-state";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { friendlyError } from "@/ui/lib/fetch-error";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import {
   ShieldCheck,
@@ -251,7 +252,7 @@ function ClassificationsTab() {
         </div>
       )}
 
-      {actionError && <ErrorBanner message={actionError} />}
+      {actionError && <ErrorBanner message={friendlyError(actionError)} />}
 
       {/* Stats */}
       <div className="grid gap-4 md:grid-cols-4">
@@ -383,7 +384,7 @@ function ClassificationsTab() {
         }}
         submitLabel="Save Changes"
         saving={saving}
-        serverError={actionError}
+        serverError={actionError ? friendlyError(actionError) : null}
       >
         {(form) => (
           <>

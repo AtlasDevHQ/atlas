@@ -7,6 +7,7 @@ import { getToolArgs, getToolResult } from "@/ui/lib/helpers";
 import { useAtlasConfig } from "@/ui/context";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { friendlyError } from "@/ui/lib/fetch-error";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -560,7 +561,7 @@ export default function SemanticImprovePage() {
                     <ErrorBanner message={pendingError.message} />
                   )}
                   {mutationError && (
-                    <ErrorBanner message={mutationError} />
+                    <ErrorBanner message={friendlyError(mutationError)} />
                   )}
                   {proposals.length === 0 && !pendingLoading && (
                     <div className="py-12 text-center text-xs text-muted-foreground">

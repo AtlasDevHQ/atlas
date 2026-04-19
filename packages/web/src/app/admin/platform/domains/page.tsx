@@ -27,6 +27,7 @@ import { StatCard } from "@/ui/components/admin/stat-card";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { friendlyError } from "@/ui/lib/fetch-error";
 import { DomainsResponseSchema } from "@/ui/lib/admin-schemas";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { LoadingState } from "@/ui/components/admin/loading-state";
@@ -288,8 +289,8 @@ function DomainsPageContent() {
         </Card>
 
         {/* Verify/delete error banners */}
-        {verifyError && <ErrorBanner message={verifyError} />}
-        {deleteError && <ErrorBanner message={deleteError} />}
+        {verifyError && <ErrorBanner message={friendlyError(verifyError)} />}
+        {deleteError && <ErrorBanner message={friendlyError(deleteError)} />}
 
         {/* Add domain dialog */}
       <Dialog open={addDialog} onOpenChange={(open) => { if (!open) { setAddDialog(false); setNewDomain(""); setNewWorkspaceId(""); clearRegisterError(); } }}>
@@ -319,7 +320,7 @@ function DomainsPageContent() {
                 onChange={(e) => setNewDomain(e.target.value)}
               />
             </div>
-            {registerError && <ErrorBanner message={registerError} />}
+            {registerError && <ErrorBanner message={friendlyError(registerError)} />}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => { setAddDialog(false); setNewDomain(""); setNewWorkspaceId(""); clearRegisterError(); }}>

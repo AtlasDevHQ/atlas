@@ -23,6 +23,7 @@ import {
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { friendlyError } from "@/ui/lib/fetch-error";
 import { usePlatformAdminGuard } from "@/ui/hooks/use-platform-admin-guard";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { LoadingState } from "@/ui/components/admin/loading-state";
@@ -135,7 +136,7 @@ function ReinstateDialog({
 
             {error && (
               <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-                {error}
+                {friendlyError(error)}
               </div>
             )}
           </div>

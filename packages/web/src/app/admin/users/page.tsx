@@ -69,6 +69,7 @@ import {
   type FetchError,
 } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { friendlyError, friendlyErrorOrNull } from "@/ui/lib/fetch-error";
 import { UserStatsSchema } from "@/ui/lib/admin-schemas";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import {
@@ -511,8 +512,8 @@ export default function UsersPage() {
         </div>
 
         {/* Content */}
-        {adminAction.error && <ErrorBanner message={adminAction.error} onRetry={adminAction.clearError} />}
-        {revokeInvitation.error && <ErrorBanner message={revokeInvitation.error} onRetry={revokeInvitation.clearError} />}
+        {adminAction.error && <ErrorBanner message={friendlyError(adminAction.error)} onRetry={adminAction.clearError} />}
+        {revokeInvitation.error && <ErrorBanner message={friendlyError(revokeInvitation.error)} onRetry={revokeInvitation.clearError} />}
 
         <AdminContentWrapper
           loading={loading}
@@ -627,7 +628,7 @@ export default function UsersPage() {
           onSubmit={handleInvite}
           submitLabel="Send invitation"
           saving={invite.saving}
-          serverError={invite.error}
+          serverError={friendlyErrorOrNull(invite.error)}
           className="sm:max-w-md"
         >
           {(form) => (

@@ -388,7 +388,7 @@ function CatalogFormDialog({
 
             {mutation.error && (
               <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-                {mutation.error}
+                {friendlyError(mutation.error)}
               </div>
             )}
 

@@ -235,7 +235,7 @@ function EditProviderDialogInner({
           </DialogDescription>
         </DialogHeader>
 
-        {updateError && <ErrorBanner message={updateError} onRetry={clearError} />}
+        {updateError && <ErrorBanner message={friendlyError(updateError)} onRetry={clearError} />}
 
         {detailLoading && (
           <div className="flex justify-center py-8">

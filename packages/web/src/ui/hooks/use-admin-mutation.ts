@@ -54,8 +54,14 @@ interface UseAdminMutationReturn<TResponse> {
   mutate: (options?: MutateOptions<TResponse>) => Promise<MutateResult<TResponse>>;
   /** True while any non-item-scoped mutation is in flight. */
   saving: boolean;
-  /** Last mutation error message, or null. Cleared on next mutate() call. */
-  error: string | null;
+  /**
+   * Last mutation error as a structured {@link FetchError}, or null.
+   * Cleared on next `mutate()` call. Feed into `friendlyError()` for banner
+   * copy or branch on `code === "enterprise_required"` / `status` — the
+   * structured fields stay intact so `AdminContentWrapper` can route 403s
+   * into `EnterpriseUpsell` instead of a generic banner.
+   */
+  error: FetchError | null;
   /** Clear the error manually. */
   clearError: () => void;
   /** Reset both error and saving state (e.g. when a dialog reopens). */
@@ -79,7 +85,7 @@ export function useAdminMutation<TResponse = unknown>(
   const queryClient = useQueryClient();
 
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<FetchError | null>(null);
   const [inFlight, setInFlight] = useState<Set<string>>(new Set());
 
   // Ref to read latest hook-level options inside mutationFn without recreating the mutation.
@@ -159,9 +165,9 @@ export function useAdminMutation<TResponse = unknown>(
       const itemId = callOpts?.itemId;
 
       if (!callOpts?.path && !opts?.path) {
-        const msg = "useAdminMutation: no path provided";
-        setError(msg);
-        return { ok: false, error: { message: msg } };
+        const fetchError: FetchError = { message: "useAdminMutation: no path provided" };
+        setError(fetchError);
+        return { ok: false, error: fetchError };
       }
 
       // Track loading state
@@ -175,27 +181,16 @@ export function useAdminMutation<TResponse = unknown>(
       let data: TResponse | undefined;
       try {
         data = await mutationRef.current.mutateAsync(callOpts);
-
-        // Call legacy invalidates (refetch callbacks from callers).
-        // These are redundant with queryClient.invalidateQueries in onSuccess
-        // but kept for backward compatibility during migration.
-        const invalidates = opts?.invalidates;
-        if (invalidates) {
-          if (Array.isArray(invalidates)) {
-            for (const fn of invalidates) fn();
-          } else {
-            invalidates();
-          }
-        }
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        const errorMessage = msg || "Request failed";
         // Recover the structured FetchError the mutationFn attached before
         // throwing (non-HTTP failures like network errors reach this path with
         // no attachment — fall back to a minimal FetchError preserving message).
-        const fetchError = (err as { fetchError?: FetchError }).fetchError;
-        setError(errorMessage);
-        return { ok: false, error: fetchError ?? { message: errorMessage } };
+        const fetchError =
+          (err as { fetchError?: FetchError }).fetchError ??
+          ({ message: msg || "Request failed" } satisfies FetchError);
+        setError(fetchError);
+        return { ok: false, error: fetchError };
       } finally {
         if (itemId) {
           setInFlight((prev) => {
@@ -208,11 +203,33 @@ export function useAdminMutation<TResponse = unknown>(
         }
       }
 
-      // Call onSuccess outside try/catch so callback bugs don't get misreported
-      // as mutation failures. Fires on all 2xx responses — passes `undefined`
-      // for 204 / non-JSON so dialog-closing callers aren't stuck when the
-      // server returns No Content.
-      callOpts?.onSuccess?.(data);
+      // Call legacy invalidates (refetch callbacks from callers) and onSuccess
+      // outside the try-catch so a throwing callback does NOT masquerade as a
+      // mutation failure (#1617). Reaching here means the fetch succeeded —
+      // the catch returns early, so control only falls through on success.
+      // Each callback is isolated so one throwing invalidate doesn't prevent
+      // the rest from running. Debug-log for diagnosability — these throws
+      // are unexpected and usually point at a stale closure or a refetch
+      // hitting an unmounted component.
+      const invalidates = opts?.invalidates;
+      if (invalidates) {
+        const fns = Array.isArray(invalidates) ? invalidates : [invalidates];
+        for (const fn of fns) {
+          try {
+            fn();
+          } catch (err) {
+            console.debug("useAdminMutation: invalidates() callback threw", err);
+          }
+        }
+      }
+      // onSuccess fires on all 2xx responses — passes `undefined` for 204 /
+      // non-JSON so dialog-closing callers aren't stuck when the server
+      // returns No Content.
+      try {
+        callOpts?.onSuccess?.(data);
+      } catch (err) {
+        console.debug("useAdminMutation: onSuccess callback threw", err);
+      }
 
       return { ok: true, data };
     },

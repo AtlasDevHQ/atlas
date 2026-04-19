@@ -20,6 +20,7 @@ import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { friendlyError } from "@/ui/lib/fetch-error";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { HardDrive, Trash2, Activity, Database, Clock, Target } from "lucide-react";
 
@@ -121,7 +122,7 @@ export default function CachePage() {
       <ErrorBoundary>
         <div>
           {flushError && (
-            <ErrorBanner message={flushError} onRetry={clearFlushError} />
+            <ErrorBanner message={friendlyError(flushError)} onRetry={clearFlushError} />
           )}
           {flushMessage && (
             <div className="mb-6 rounded-md border border-emerald-500/30 bg-emerald-500/5 px-4 py-3 text-sm text-emerald-700 dark:text-emerald-300">

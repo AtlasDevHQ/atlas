@@ -305,7 +305,7 @@ function AuthorPromptDialog({ onAuthored }: { onAuthored: () => void }) {
           />
           {error && (
             <p className="text-xs text-destructive" role="alert">
-              {error}
+              {friendlyError(error)}
             </p>
           )}
           <DialogFooter>

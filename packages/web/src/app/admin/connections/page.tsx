@@ -59,6 +59,7 @@ import {
 } from "lucide-react";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { friendlyError } from "@/ui/lib/fetch-error";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import {
   FormDialog,
@@ -237,7 +238,7 @@ function ConnectionFormDialog({
       onSubmit={handleSubmit}
       submitLabel={isEdit ? "Save Changes" : "Add Connection"}
       saving={saveMutation.saving}
-      serverError={saveMutation.error}
+      serverError={saveMutation.error ? friendlyError(saveMutation.error) : null}
       className="sm:max-w-md"
       extraFooter={(form) => (
         <Button
@@ -431,7 +432,7 @@ function DeleteConnectionDialog({
         </AlertDialogHeader>
         {deleteMutation.error && (
           <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-            {deleteMutation.error}
+            {friendlyError(deleteMutation.error)}
           </div>
         )}
         <AlertDialogFooter>
@@ -969,7 +970,7 @@ export default function ConnectionsPage() {
       <ErrorBoundary>
         <div className="space-y-6">
           {mutationError && <ErrorBanner message={mutationError} onRetry={() => setMutationError(null)} />}
-          {testMutation.error && !mutationError && <ErrorBanner message={testMutation.error} onRetry={testMutation.clearError} />}
+          {testMutation.error && !mutationError && <ErrorBanner message={friendlyError(testMutation.error)} onRetry={testMutation.clearError} />}
 
           <PoolStatsSection onError={setMutationError} />
 

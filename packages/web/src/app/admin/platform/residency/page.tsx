@@ -35,6 +35,7 @@ import { StatCard } from "@/ui/components/admin/stat-card";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { friendlyError } from "@/ui/lib/fetch-error";
 import { RegionsResponseSchema, AssignmentsResponseSchema } from "@/ui/lib/admin-schemas";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import type { WorkspaceRegion } from "@/ui/lib/types";
@@ -275,7 +276,7 @@ function ResidencyPageContent() {
                 </SelectContent>
               </Select>
             </div>
-            {assignError && <ErrorBanner message={assignError} />}
+            {assignError && <ErrorBanner message={friendlyError(assignError)} />}
           </div>
           <DialogFooter>
             <Button variant="outline" onClick={() => { setAssignDialog(null); setSelectedRegion(""); clearAssignError(); }}>

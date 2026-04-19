@@ -46,6 +46,20 @@ export async function extractFetchError(res: Response): Promise<FetchError> {
 }
 
 /**
+ * Nullable variant of {@link friendlyError} for call sites that thread a
+ * `FetchError | null` through to a `string | null` prop (e.g. `ErrorBanner`,
+ * `FormDialog.serverError`). Saves a ternary at every site:
+ *
+ *   // before: `error: { message, status, requestId, code }` — renders raw object in JSX
+ *   serverError={mutation.error ? friendlyError(mutation.error) : null}
+ *   // after:
+ *   serverError={friendlyErrorOrNull(mutation.error)}
+ */
+export function friendlyErrorOrNull(err: FetchError | null | undefined): string | null {
+  return err ? friendlyError(err) : null;
+}
+
+/**
  * Convert a FetchError into a user-friendly message.
  * Replaces known HTTP status codes (401, 403, 404, 503) with admin-specific
  * guidance; falls back to the raw error message for other codes or non-HTTP

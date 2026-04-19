@@ -26,6 +26,7 @@ import {
 } from "@/ui/components/admin/compact";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { friendlyError } from "@/ui/lib/fetch-error";
 import { BillingStatusSchema } from "@/ui/lib/admin-schemas";
 import { formatDate, formatNumber } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -282,7 +283,11 @@ function PlanShell({ data }: { data: BillingStatus }) {
     }
   }
 
-  const combinedError = portalMutationError ?? portalError;
+  // portalMutationError is the structured mutation failure; portalError is a
+  // local string we set when the 200 response is missing the expected URL.
+  // Normalize both to a single string for the banner.
+  const combinedError =
+    (portalMutationError && friendlyError(portalMutationError)) ?? portalError;
   const status: StatusKind = subscription?.status === "active" ? "connected" : "disconnected";
 
   return (
@@ -539,7 +544,7 @@ function ModelRow({ data, onSaved }: { data: BillingStatus; onSaved: () => void 
           Saving…
         </p>
       )}
-      <InlineError>{error}</InlineError>
+      <InlineError>{error ? friendlyError(error) : null}</InlineError>
     </Shell>
   );
 }
@@ -591,7 +596,7 @@ function ByotRow({
           </div>
         }
       />
-      <InlineError>{error}</InlineError>
+      <InlineError>{error ? friendlyError(error) : null}</InlineError>
     </div>
   );
 }

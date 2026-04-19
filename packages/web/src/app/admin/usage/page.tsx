@@ -4,6 +4,7 @@ import { useState } from "react";
 import dynamic from "next/dynamic";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { friendlyError } from "@/ui/lib/fetch-error";
 import { UsageSummarySchema } from "@/ui/lib/admin-schemas";
 import { useDarkMode } from "@/ui/hooks/use-dark-mode";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -125,7 +126,7 @@ export default function UsageDashboardPage() {
 
       <div className="space-y-6">
         {/* Portal error */}
-        {(portalError ?? portalUrlError) && <ErrorBanner message={(portalError ?? portalUrlError)!} onRetry={() => { setPortalUrlError(null); openBillingPortal(); }} />}
+        {(portalError ?? portalUrlError) && <ErrorBanner message={(portalError ? friendlyError(portalError) : portalUrlError)!} onRetry={() => { setPortalUrlError(null); openBillingPortal(); }} />}
 
         <AdminContentWrapper
           loading={loading}

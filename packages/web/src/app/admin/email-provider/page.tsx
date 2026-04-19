@@ -27,6 +27,8 @@ import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { friendlyError } from "@/ui/lib/fetch-error";
+import { combineMutationErrors } from "@/ui/lib/mutation-errors";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import {
   Mail,
@@ -467,7 +469,8 @@ export default function EmailProviderPage() {
       method: "POST",
     });
 
-  const mutationError = saveError ?? deleteError ?? testError ?? formError;
+  const structuredError = combineMutationErrors([saveError, deleteError, testError]);
+  const mutationError = structuredError ? friendlyError(structuredError) : formError;
   const baseline = data?.config.baseline;
   const override = data?.config.override ?? null;
   const hasOverride = override !== null;

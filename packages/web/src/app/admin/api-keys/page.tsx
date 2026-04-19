@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { z } from "zod";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { friendlyError } from "@/ui/lib/fetch-error";
 import { ListApiKeysResponseSchema } from "@/ui/lib/admin-schemas";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
@@ -188,7 +189,7 @@ export default function ApiKeysPage() {
         >
           {deleteMutation.error && (
             <div className="mb-4">
-              <ErrorBanner message={deleteMutation.error} onRetry={deleteMutation.clearError} />
+              <ErrorBanner message={friendlyError(deleteMutation.error)} onRetry={deleteMutation.clearError} />
             </div>
           )}
 
@@ -248,7 +249,7 @@ export default function ApiKeysPage() {
           onSubmit={handleCreate}
           submitLabel="Create"
           saving={createMutation.saving}
-          serverError={createMutation.error}
+          serverError={createMutation.error ? friendlyError(createMutation.error) : null}
           className="sm:max-w-md"
         >
           {(form) => (
@@ -289,7 +290,7 @@ export default function ApiKeysPage() {
           </DialogHeader>
           {deleteMutation.error && (
             <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-              {deleteMutation.error}
+              {friendlyError(deleteMutation.error)}
             </div>
           )}
           <DialogFooter>

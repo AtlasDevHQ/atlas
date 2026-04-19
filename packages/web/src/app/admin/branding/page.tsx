@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { friendlyError } from "@/ui/lib/fetch-error";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import {
@@ -213,13 +214,13 @@ export default function BrandingPage() {
               {save.error && (
                 <InlineError>
                   <span className="font-semibold">Save failed.</span>{" "}
-                  {save.error}
+                  {friendlyError(save.error)}
                 </InlineError>
               )}
               {reset.error && (
                 <InlineError>
                   <span className="font-semibold">Reset failed.</span>{" "}
-                  {reset.error}
+                  {friendlyError(reset.error)}
                 </InlineError>
               )}
               {!colorValid && (

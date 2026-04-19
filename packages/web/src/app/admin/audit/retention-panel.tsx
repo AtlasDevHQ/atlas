@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useAtlasConfig } from "@/ui/context";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
-import { extractFetchError } from "@/ui/lib/fetch-error";
+import { extractFetchError, friendlyError } from "@/ui/lib/fetch-error";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -290,7 +290,7 @@ export function RetentionPanel() {
             </div>
           </div>
 
-          {saveError && <ErrorBanner message={saveError} />}
+          {saveError && <ErrorBanner message={friendlyError(saveError)} />}
           {saveSuccess && (
             <p className="text-sm text-green-600">Retention policy saved successfully.</p>
           )}
@@ -305,7 +305,7 @@ export function RetentionPanel() {
             </Button>
           </div>
 
-          {purgeError && <ErrorBanner message={purgeError} />}
+          {purgeError && <ErrorBanner message={friendlyError(purgeError)} />}
           {purgeResult && (
             <p className="text-sm text-muted-foreground">{purgeResult}</p>
           )}

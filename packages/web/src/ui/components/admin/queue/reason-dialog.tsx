@@ -57,24 +57,33 @@ export function ReasonDialog({
   error,
 }: ReasonDialogProps) {
   const [reason, setReason] = useState("");
+  const [localError, setLocalError] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
   useEffect(() => {
-    if (!open) setReason("");
+    if (!open) {
+      setReason("");
+      setLocalError(null);
+    }
   }, [open]);
 
   const trimmed = reason.trim();
   const canConfirm = required ? trimmed.length > 0 : true;
+  const displayError = localError ?? error;
 
   async function handleConfirm() {
     if (!canConfirm) return;
+    setLocalError(null);
     try {
       await onConfirm(trimmed);
     } catch (err) {
-      // Never silently swallow — parent's loading/error state owns the
-      // surface, but a throwing onConfirm is a bug in the caller, not the
-      // dialog. Log so dev tools pick it up.
-      console.error("ReasonDialog: onConfirm threw", err);
+      // Caller bug — onConfirm rejected instead of resolving and
+      // surfacing the failure through the parent's `error` prop. Show
+      // it here so the dialog doesn't appear to stall, and log so
+      // observability still sees it.
+      const msg = err instanceof Error ? err.message : String(err);
+      setLocalError(`Unexpected error: ${msg}`);
+      console.warn("ReasonDialog: onConfirm threw", err);
     }
   }
 
@@ -142,12 +151,12 @@ export function ReasonDialog({
           )}
         </div>
 
-        {error && (
+        {displayError && (
           <div
             role="alert"
             className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive"
           >
-            {error}
+            {displayError}
           </div>
         )}
 

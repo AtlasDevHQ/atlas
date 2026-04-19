@@ -55,12 +55,20 @@ const SCIMConnectionSchema = z.object({
 // unknown keys by default. Declaring them optional here means the day the
 // backend starts returning them, the UI code below already handles them —
 // no schema diff needed. Tracked in #1568.
+//
+// `lastSyncStatus` is typed as a permissive string (not `z.enum([...])`) on
+// purpose. The known values today are "ok" | "error" | "running", but an
+// enum would *reject* an unknown value like "queued" or "throttled" at
+// parse time — which would make `useAdminFetch` fail and crash the whole
+// SCIM page, exactly the silent-strip failure mode this schema extension
+// was meant to avoid. The render layer narrows to the known values and
+// lets unknowns fall through to the default "synced" treatment.
 const SCIMSyncStatusSchema = z.object({
   connections: z.number(),
   provisionedUsers: z.number(),
   lastSyncAt: z.string().nullable(),
   lastSyncError: z.string().optional(),
-  lastSyncStatus: z.enum(["ok", "error", "running"]).optional(),
+  lastSyncStatus: z.string().optional(),
 });
 
 const SCIMStatusResponseSchema = z.object({
@@ -513,9 +521,17 @@ export default function SCIMPage() {
                     }
                   />
                 </DetailList>
-                {syncStatus.lastSyncStatus === "error" && syncStatus.lastSyncError && (
+                {syncStatus.lastSyncStatus === "error" && (
                   <InlineError>
-                    Last sync failed — {syncStatus.lastSyncError}
+                    {/* Empty string fails the truthy check, but the status
+                        itself is authoritative — if the backend says error,
+                        we must render the InlineError even without a
+                        message, otherwise the amber "Error" pill points at
+                        nothing. */}
+                    Last sync failed —{" "}
+                    {syncStatus.lastSyncError && syncStatus.lastSyncError.length > 0
+                      ? syncStatus.lastSyncError
+                      : "no details provided."}
                   </InlineError>
                 )}
                 {syncDivergence !== 0 && (

@@ -5,6 +5,18 @@ import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { friendlyErrorOrNull } from "@/ui/lib/fetch-error";
 import { IntegrationStatusSchema } from "@/ui/lib/admin-schemas";
+import type {
+  SlackStatus,
+  TeamsStatus,
+  DiscordStatus,
+  TelegramStatus,
+  GChatStatus,
+  GitHubStatus,
+  LinearStatus,
+  WhatsAppStatus,
+  EmailStatus,
+  WebhookStatus,
+} from "@useatlas/types";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import {
@@ -50,88 +62,6 @@ import {
   Phone,
   Plus,
 } from "lucide-react";
-
-// -- Types (used by child components for props) --
-
-interface SlackStatus {
-  connected: boolean;
-  teamId: string | null;
-  workspaceName: string | null;
-  installedAt: string | null;
-  oauthConfigured: boolean;
-  envConfigured: boolean;
-  /** Whether the workspace admin can connect/disconnect Slack */
-  configurable: boolean;
-}
-
-interface TeamsStatus {
-  connected: boolean;
-  tenantId: string | null;
-  tenantName: string | null;
-  installedAt: string | null;
-  configurable: boolean;
-}
-
-interface DiscordStatus {
-  connected: boolean;
-  guildId: string | null;
-  guildName: string | null;
-  installedAt: string | null;
-  configurable: boolean;
-}
-
-interface TelegramStatus {
-  connected: boolean;
-  botId: string | null;
-  botUsername: string | null;
-  installedAt: string | null;
-  configurable: boolean;
-}
-
-interface GChatStatus {
-  connected: boolean;
-  projectId: string | null;
-  serviceAccountEmail: string | null;
-  installedAt: string | null;
-  configurable: boolean;
-}
-
-interface GitHubStatus {
-  connected: boolean;
-  username: string | null;
-  installedAt: string | null;
-  configurable: boolean;
-}
-
-interface LinearStatus {
-  connected: boolean;
-  userName: string | null;
-  userEmail: string | null;
-  installedAt: string | null;
-  configurable: boolean;
-}
-
-interface WhatsAppStatus {
-  connected: boolean;
-  phoneNumberId: string | null;
-  displayPhone: string | null;
-  installedAt: string | null;
-  configurable: boolean;
-}
-
-interface EmailStatus {
-  connected: boolean;
-  provider: string | null;
-  senderAddress: string | null;
-  installedAt: string | null;
-  configurable: boolean;
-}
-
-interface WebhookStatus {
-  activeCount: number;
-  /** Whether the workspace admin can create/manage webhooks */
-  configurable: boolean;
-}
 
 // -- Component --
 

@@ -28,3 +28,4 @@ export * from "./migration";
 export * from "./dashboard";
 export * from "./mode";
 export * from "./starter-prompt";
+export * from "./integrations";

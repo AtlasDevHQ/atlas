@@ -70,6 +70,43 @@ describe("ReasonDialog error precedence (#1612)", () => {
     });
   });
 
+  test("error prop transitioning between distinct non-null values still clears localError on each retry", async () => {
+    // A future refactor that guards `if (prevError == null && error != null)`
+    // would pass the null→non-null test but break the sequential retry flow:
+    //   - retry 1: onConfirm throws → localError set, caller surfaces serverA
+    //   - retry 2: onConfirm throws again → localError re-set, caller surfaces serverB
+    //   - the fresh serverB must win, not the stale localError from retry 2.
+    function Harness({ error }: { error: string | null }) {
+      return (
+        <ReasonDialog
+          open
+          onOpenChange={() => {}}
+          title="Deny"
+          onConfirm={async () => {
+            throw new Error("boom");
+          }}
+          error={error}
+        />
+      );
+    }
+
+    const { rerender } = render(<Harness error={null} />);
+    // Retry 1 — throw → localError; caller pushes first error prop → cleared
+    await act(async () => {
+      fireEvent.click(denyButton());
+    });
+    await waitFor(() => expect(errorText() ?? "").toContain("Unexpected error"));
+    rerender(<Harness error="first server error" />);
+    await waitFor(() => expect(errorText()).toBe("first server error"));
+    // Retry 2 — throw → localError; caller pushes second (distinct) error prop
+    await act(async () => {
+      fireEvent.click(denyButton());
+    });
+    await waitFor(() => expect(errorText() ?? "").toContain("Unexpected error"));
+    rerender(<Harness error="second server error" />);
+    await waitFor(() => expect(errorText()).toBe("second server error"));
+  });
+
   test("error prop going null → null does not clobber localError", async () => {
     // Guard against an over-eager effect clearing localError on every prop
     // change — we only clear when a non-null error arrives.

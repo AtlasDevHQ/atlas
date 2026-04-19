@@ -1394,12 +1394,11 @@ export async function getWorkspaceStatus(orgId: string): Promise<WorkspaceStatus
 }
 
 /**
- * Batch-resolve display names for a list of organization ids. Missing rows
- * map to `null` (org deleted / lookup skipped / internal DB unavailable).
- *
- * Callers that need multiple names (e.g. admin list views) should prefer
- * this over N×`getWorkspaceDetails` to avoid N+1 round-trips. Safe to call
- * with an empty list — returns an empty map without touching the DB.
+ * Batch-resolve display names for a list of organization ids. Every
+ * requested id is present in the returned map; the value is `null` when the
+ * row is missing (deleted / unknown), when the internal DB is unavailable,
+ * or when the row exists but its `name` column is itself `null`. Safe to
+ * call with an empty list — returns an empty map without touching the DB.
  */
 export async function getWorkspaceNamesByIds(
   orgIds: string[],

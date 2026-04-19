@@ -278,6 +278,32 @@ describe("Admin Abuse API", () => {
       expect((body.counters as Record<string, unknown>).queryCount).toBe(250);
     });
 
+    it("detail route falls back to null workspaceName when resolution rejects (#1640)", async () => {
+      mockGetAbuseDetail.mockImplementation(async () => ({
+        workspaceId: "org-1",
+        workspaceName: null,
+        level: "warning",
+        trigger: "query_rate",
+        message: "boom",
+        updatedAt: "2026-03-23T00:00:00.000Z",
+        counters: { queryCount: 1, errorCount: 0, errorRatePct: null, uniqueTablesAccessed: 0, escalations: 0 },
+        thresholds: { queryRateLimit: 200, queryRateWindowSeconds: 300, errorRateThreshold: 0.5, uniqueTablesLimit: 50, throttleDelayMs: 2000 },
+        currentInstance: { startedAt: "2026-03-23T00:00:00.000Z", endedAt: null, peakLevel: "warning", events: [] },
+        priorInstances: [],
+      }));
+      mockGetWorkspaceNamesByIds.mockImplementation(async () => {
+        throw new Error("internal DB unreachable");
+      });
+      const res = await app.fetch(
+        adminRequest("GET", "/api/v1/admin/abuse/org-1/detail"),
+      );
+      // Must still 200 — name resolution is advisory for the detail panel
+      // just as it is for the list (regression guard for #1640 follow-up).
+      expect(res.status).toBe(200);
+      const body = await res.json() as { workspaceName: string | null };
+      expect(body.workspaceName).toBeNull();
+    });
+
     it("resolves workspaceName on the detail route (#1640)", async () => {
       mockGetAbuseDetail.mockImplementation(async () => ({
         workspaceId: "org-1",

@@ -263,8 +263,17 @@ adminAbuse.openapi(listFlaggedRoute, async (c) => {
         getWorkspaceNamesByIds(orgIds).catch((err) => {
           // Name resolution is advisory — if the DB hiccups, fall back to
           // null so the page still renders with opaque ids rather than 500.
-          log.warn({ err: err instanceof Error ? err.message : String(err) },
-            "abuse list: workspace name resolution failed");
+          log.warn(
+            {
+              err: err instanceof Error
+                ? { message: err.message, stack: err.stack }
+                : String(err),
+              orgIdCount: orgIds.length,
+              // First 5 ids for on-call correlation without flooding logs.
+              sampleOrgIds: orgIds.slice(0, 5),
+            },
+            "abuse list: workspace name resolution failed",
+          );
           return new Map<string, string | null>();
         }),
       ]);
@@ -321,12 +330,18 @@ adminAbuse.openapi(getDetailRoute, async (c) => {
       );
     }
 
-    // Resolve the workspace display name. Advisory — if the lookup fails
-    // we log and return the id-only shape rather than 500'ing the panel.
+    // Resolve the workspace display name. Advisory — see list route above.
     const nameMap = yield* Effect.promise(() =>
       getWorkspaceNamesByIds([workspaceId]).catch((err) => {
-        log.warn({ err: err instanceof Error ? err.message : String(err) },
-          "abuse detail: workspace name resolution failed");
+        log.warn(
+          {
+            err: err instanceof Error
+              ? { message: err.message, stack: err.stack }
+              : String(err),
+            workspaceId,
+          },
+          "abuse detail: workspace name resolution failed",
+        );
         return new Map<string, string | null>();
       }),
     );

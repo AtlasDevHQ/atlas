@@ -67,14 +67,12 @@ export function ReasonDialog({
     }
   }, [open]);
 
-  // When the caller pushes a fresh `error` prop (typically after fixing the
-  // onConfirm bug and surfacing a real server error on retry), clear any
-  // stale localError so the caller's message wins. Without this the local
-  // "Unexpected error: ..." from a prior throw keeps displaying via
-  // `localError ?? error` and hides the server's diagnosis until the
-  // operator reopens the dialog. Safe in the rare same-frame collision:
-  // if both errors appear together, the caller-provided one is at least
-  // equally informative.
+  // A fresh non-null `error` prop clears any stale localError so the
+  // caller's message wins. Without this, `displayError = localError ?? error`
+  // keeps showing a prior-throw "Unexpected error: ..." and hides a real
+  // server error that arrives later. Fires on every non-null error, not
+  // just the null→non-null transition, so sequential retries each surface
+  // the latest caller-provided diagnosis.
   useEffect(() => {
     if (error != null) setLocalError(null);
   }, [error]);

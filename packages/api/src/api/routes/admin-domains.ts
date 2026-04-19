@@ -2,7 +2,7 @@
  * Admin workspace custom domain routes.
  *
  * Mounted under /api/v1/admin/domain. All routes require admin role + active org.
- * Enterprise plan (or self-hosted "free" tier) required to create a domain.
+ * Business plan (or self-hosted "free" tier) required to create a domain.
  * One custom domain per workspace (MVP).
  *
  * Wraps the existing EE domain module used by platform-domains.ts, scoping
@@ -72,7 +72,7 @@ const addDomainRoute = createRoute({
   path: "/",
   tags: ["Admin — Custom Domain"],
   summary: "Add a custom domain",
-  description: "Register a custom domain for the current workspace. Enterprise plan required (self-hosted is always allowed). One domain per workspace.",
+  description: "Register a custom domain for the current workspace. Business plan required (self-hosted is always allowed). One domain per workspace.",
   request: {
     body: {
       required: true,
@@ -86,7 +86,7 @@ const addDomainRoute = createRoute({
     },
     400: { description: "Invalid domain or no active organization", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
-    403: { description: "Enterprise plan required", content: { "application/json": { schema: ErrorSchema } } },
+    403: { description: "Business plan required", content: { "application/json": { schema: ErrorSchema } } },
     404: { description: "Enterprise features not available", content: { "application/json": { schema: ErrorSchema } } },
     409: { description: "Domain already registered", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
@@ -280,7 +280,7 @@ adminDomains.openapi(addDomainRoute, async (c) => {
       return c.json({ error: "not_available", message: "Custom domains require enterprise features to be enabled.", requestId }, 404);
     }
 
-    // Enterprise plan gate
+    // Business plan gate
     const planError = yield* Effect.promise(() => checkPlanGate(orgId, requestId));
     if (planError) {
       return c.json({ error: planError.error, message: planError.message, requestId }, planError.status);

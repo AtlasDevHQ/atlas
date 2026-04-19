@@ -8,13 +8,13 @@ import { Callout } from "fumadocs-ui/components/callout";
 Atlas supports workspace-level model routing. Each workspace can configure its own LLM provider and API key, overriding the platform default. This enables enterprise customers to use their own Anthropic, OpenAI, Azure OpenAI, or custom OpenAI-compatible endpoints.
 
 <Callout type="info" title="SaaS Feature">
-  Model routing is available on [app.useatlas.dev](https://app.useatlas.dev) Enterprise plans. Self-hosted deployments configure the model provider globally via environment variables.
+  Model routing is available on [app.useatlas.dev](https://app.useatlas.dev) Business plans. Self-hosted deployments configure the model provider globally via environment variables.
 </Callout>
 
 <Callout title="Prerequisites">
 - [Managed auth](/deployment/authentication#managed-auth) enabled
 - Internal database configured (`DATABASE_URL`)
-- Active Enterprise plan on [app.useatlas.dev](https://app.useatlas.dev)
+- Active Business plan on [app.useatlas.dev](https://app.useatlas.dev)
 - Admin role required for all model config endpoints
 - Encryption key configured (`ATLAS_ENCRYPTION_KEY` or `BETTER_AUTH_SECRET`) for API key storage
 </Callout>
@@ -174,7 +174,7 @@ The `org_id` column has a unique constraint — each workspace can have at most 
 
 ### "Enterprise features are not enabled"
 
-Model routing requires an active Enterprise plan on [app.useatlas.dev](https://app.useatlas.dev). Contact support if you see this error on an Enterprise workspace.
+Model routing requires an active Business plan on [app.useatlas.dev](https://app.useatlas.dev). Contact support if you see this error on an Enterprise workspace.
 
 ### API key decryption fails
 

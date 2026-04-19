@@ -33029,7 +33029,7 @@
           "Admin — Custom Domain"
         ],
         "summary": "Add a custom domain",
-        "description": "Register a custom domain for the current workspace. Enterprise plan required (self-hosted is always allowed). One domain per workspace.",
+        "description": "Register a custom domain for the current workspace. Business plan required (self-hosted is always allowed). One domain per workspace.",
         "requestBody": {
           "required": true,
           "content": {
@@ -33189,7 +33189,7 @@
             }
           },
           "403": {
-            "description": "Enterprise plan required",
+            "description": "Business plan required",
             "content": {
               "application/json": {
                 "schema": {
@@ -38361,7 +38361,7 @@
           "Admin — Data Residency"
         ],
         "summary": "Assign data residency region to workspace",
-        "description": "Assigns a region to the current workspace. This action is permanent — the region cannot be changed after assignment. Enterprise plan required.",
+        "description": "Assigns a region to the current workspace. This action is permanent — the region cannot be changed after assignment. Business plan required.",
         "requestBody": {
           "content": {
             "application/json": {

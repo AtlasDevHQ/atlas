@@ -133,6 +133,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
   getAuditLogQueries: mock(() => Promise.resolve([])),
   getWorkspaceStatus: mock(async () => "active"),
   getWorkspaceDetails: mock(async () => null),
+  getWorkspaceNamesByIds: mock(async () => new Map<string, string | null>()),
   updateWorkspaceStatus: mock(async () => true),
   updateWorkspacePlanTier: mock(async () => true),
   cascadeWorkspaceDelete: mock(async () => ({ conversations: 0, semanticEntities: 0, learnedPatterns: 0, suggestions: 0, scheduledTasks: 0, settings: 0 })),

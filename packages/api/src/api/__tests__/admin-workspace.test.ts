@@ -185,6 +185,7 @@ mock.module("@atlas/api/lib/db/internal", () => ({
     return Promise.resolve(workspaceState.workspace_status);
   }),
   getWorkspaceDetails: mockGetWorkspaceDetails,
+  getWorkspaceNamesByIds: mock(async () => new Map<string, string | null>()),
   updateWorkspaceStatus: mockUpdateWorkspaceStatus,
   updateWorkspacePlanTier: mockUpdateWorkspacePlanTier,
   cascadeWorkspaceDelete: mockCascadeWorkspaceDelete,

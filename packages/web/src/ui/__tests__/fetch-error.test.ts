@@ -25,10 +25,29 @@ describe("extractFetchError", () => {
     expect(err).toEqual({ message: "Bad input", status: 400 });
   });
 
-  test("falls back to HTTP status when body has no message field", async () => {
+  test("falls back to HTTP status when body has no message field but captures error code", async () => {
     const res = mockResponse(403, { error: "forbidden" });
     const err = await extractFetchError(res);
-    expect(err).toEqual({ message: "HTTP 403", status: 403 });
+    expect(err).toEqual({ message: "HTTP 403", status: 403, code: "forbidden" });
+  });
+
+  test("captures enterprise_required code alongside message", async () => {
+    const res = mockResponse(403, {
+      error: "enterprise_required",
+      message: "SCIM requires an enterprise license.",
+    });
+    const err = await extractFetchError(res);
+    expect(err).toEqual({
+      message: "SCIM requires an enterprise license.",
+      status: 403,
+      code: "enterprise_required",
+    });
+  });
+
+  test("ignores non-string error field", async () => {
+    const res = mockResponse(500, { message: "x", error: 42 });
+    const err = await extractFetchError(res);
+    expect(err).toEqual({ message: "x", status: 500 });
   });
 
   test("falls back to HTTP status for non-JSON body", async () => {

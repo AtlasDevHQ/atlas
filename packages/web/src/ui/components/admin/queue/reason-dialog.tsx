@@ -67,6 +67,18 @@ export function ReasonDialog({
     }
   }, [open]);
 
+  // When the caller pushes a fresh `error` prop (typically after fixing the
+  // onConfirm bug and surfacing a real server error on retry), clear any
+  // stale localError so the caller's message wins. Without this the local
+  // "Unexpected error: ..." from a prior throw keeps displaying via
+  // `localError ?? error` and hides the server's diagnosis until the
+  // operator reopens the dialog. Safe in the rare same-frame collision:
+  // if both errors appear together, the caller-provided one is at least
+  // equally informative.
+  useEffect(() => {
+    if (error != null) setLocalError(null);
+  }, [error]);
+
   const trimmed = reason.trim();
   const canConfirm = required ? trimmed.length > 0 : true;
   const displayError = localError ?? error;

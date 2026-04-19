@@ -1,15 +1,10 @@
--- 0031 — Abuse-event enum CHECK constraints (#1653)
+-- Enforce abuse_events.level / trigger_type enums at the DB layer. The
+-- canonical tuples live in `packages/types/src/abuse.ts` — keep the values
+-- here in sync.
 --
--- `abuse_events.level` and `trigger_type` are plain TEXT columns. PR #1647
--- made the admin wire schema strict-parse via `z.enum(ABUSE_LEVELS)` /
--- `z.enum(ABUSE_TRIGGERS)`, so a single drifted row would crash the whole
--- admin investigation page with a `schema_mismatch` banner. The server-side
--- coercion in `lib/security/abuse.ts::coerceAbuseEnums` is the soft
--- backstop; this migration is the hard one — future drift attempts are
--- rejected at INSERT time.
---
--- Ordering matters: the cleanup UPDATEs must run before the ADD CONSTRAINT,
--- otherwise a pre-drifted row would make the migration fail to apply.
+-- Ordering is load-bearing: the cleanup UPDATEs must run before the ADD
+-- CONSTRAINT, otherwise a pre-drifted row would block the migration from
+-- applying.
 
 -- ── 1. Coerce any pre-drifted rows to safe defaults ───────────────────
 UPDATE abuse_events

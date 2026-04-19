@@ -69,6 +69,7 @@ const {
   reinstateWorkspace,
   getAbuseConfig,
   getAbuseEvents,
+  restoreAbuseState,
   _resetAbuseState,
 } = await import("../abuse");
 
@@ -311,6 +312,59 @@ describe("Abuse Prevention Engine", () => {
       expect(drift?.ctx.rawTrigger).toBe("bogus_trigger");
     });
 
+    it("emits a single drift warning per row when both enums are bad", async () => {
+      setInternalDB(true);
+      setInternalQuery(async () => [
+        {
+          id: "both-bad-1",
+          workspace_id: "ws-drift",
+          level: "Mystery",
+          trigger_type: "bogus",
+          message: "bad row",
+          metadata: "{}",
+          actor: "system",
+          created_at: "2026-04-19T00:00:00Z",
+        },
+      ]);
+
+      const events = await getAbuseEvents("ws-drift", 10);
+
+      expect(events[0].level).toBe("none");
+      expect(events[0].trigger).toBe("manual");
+
+      const drifts = warnCalls.filter((c) =>
+        c.msg.includes("abuse event with drifted enum"),
+      );
+      expect(drifts.length).toBe(1);
+      expect(drifts[0].ctx.rowId).toBe("both-bad-1");
+      expect(drifts[0].ctx.rawLevel).toBe("Mystery");
+      expect(drifts[0].ctx.rawTrigger).toBe("bogus");
+    });
+
+    it("coerces null / non-string enum values without throwing", async () => {
+      setInternalDB(true);
+      setInternalQuery(async () => [
+        {
+          id: "non-string-1",
+          workspace_id: "ws-drift",
+          level: null as unknown as string,
+          trigger_type: 42 as unknown as string,
+          message: "bad row",
+          metadata: "{}",
+          actor: "system",
+          created_at: "2026-04-19T00:00:00Z",
+        },
+      ]);
+
+      const events = await getAbuseEvents("ws-drift", 10);
+
+      expect(events[0].level).toBe("none");
+      expect(events[0].trigger).toBe("manual");
+      expect(
+        warnCalls.find((c) => c.msg.includes("abuse event with drifted enum")),
+      ).toBeDefined();
+    });
+
     it("does not warn for rows whose enums are already valid", async () => {
       setInternalDB(true);
       setInternalQuery(async () => [
@@ -333,6 +387,81 @@ describe("Abuse Prevention Engine", () => {
       expect(
         warnCalls.find((c) => c.msg.includes("abuse event with drifted enum")),
       ).toBeUndefined();
+    });
+  });
+
+  describe("restoreAbuseState() fail-safe drift handling", () => {
+    it("restores clean rows and skips drifted rows without leaking their level", async () => {
+      setInternalDB(true);
+      setInternalQuery(async () => [
+        {
+          workspace_id: "ws-clean",
+          level: "throttled",
+          trigger_type: "query_rate",
+          message: "clean workspace",
+          created_at: "2026-04-19T00:00:00Z",
+        },
+        {
+          // Drifted level — legacy "Suspended" casing that is NOT in the tuple.
+          // coerceAbuseEnums will collapse to "none"; restoreAbuseState must
+          // count this as a drift-skip rather than silently treating as reinstated.
+          workspace_id: "ws-drifted",
+          level: "Suspended",
+          trigger_type: "manual",
+          message: "drifted workspace",
+          created_at: "2026-04-19T00:00:00Z",
+        },
+      ]);
+
+      await restoreAbuseState();
+
+      const flagged = listFlaggedWorkspaces();
+      const workspaceIds = flagged.map((f) => f.workspaceId);
+      expect(workspaceIds).toContain("ws-clean");
+      expect(workspaceIds).not.toContain("ws-drifted");
+
+      // Drift warn fired for the bad row
+      expect(
+        warnCalls.find(
+          (c) =>
+            c.msg.includes("abuse event with drifted enum") &&
+            c.ctx.rawLevel === "Suspended",
+        ),
+      ).toBeDefined();
+
+      // Summary log surfaces the drift count — not hidden behind "restored N"
+      const summary = infoCalls.find((c) =>
+        c.msg.includes("Restored abuse state"),
+      );
+      expect(summary).toBeDefined();
+      expect(summary?.ctx.count).toBe(1);
+      expect(summary?.ctx.driftSkipped).toBe(1);
+    });
+
+    it("skips a genuinely reinstated 'none' row without counting it as drift", async () => {
+      setInternalDB(true);
+      setInternalQuery(async () => [
+        {
+          workspace_id: "ws-reinstated",
+          level: "none",
+          trigger_type: "manual",
+          message: "reinstated",
+          created_at: "2026-04-19T00:00:00Z",
+        },
+      ]);
+
+      await restoreAbuseState();
+
+      expect(listFlaggedWorkspaces()).toEqual([]);
+      // Genuine "none" must NOT trigger a drift warn
+      expect(
+        warnCalls.find((c) => c.msg.includes("abuse event with drifted enum")),
+      ).toBeUndefined();
+      // And should not show up in the summary as a drift-skip
+      const summary = infoCalls.find((c) =>
+        c.msg.includes("Restored abuse state"),
+      );
+      expect(summary).toBeUndefined();
     });
   });
 

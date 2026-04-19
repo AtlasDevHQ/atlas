@@ -31,15 +31,11 @@ const log = createLogger("abuse");
 // ---------------------------------------------------------------------------
 // Enum drift coercion
 // ---------------------------------------------------------------------------
-//
-// `abuse_events.level` and `abuse_events.trigger_type` are plain TEXT columns
-// historically — PR #1653 adds a CHECK constraint, but rows predating it (or
-// written by a future code path that forgot to update the tuple) may hold
-// values that fail strict `z.enum` parsing in the admin wire schema.
-//
-// A single drifted row must not crash the admin abuse page. These helpers
-// validate a raw string against the canonical tuple, coerce unknowns to a
-// safe default, and emit a `log.warn` so operators see drift in observability.
+// A drifted abuse_events row must never crash the admin page, so we validate
+// level / trigger_type against the canonical tuples, coerce unknowns to safe
+// defaults, and warn on drift. Callers that care about the *distinction*
+// between a genuine `none` and a drift-coerced `none` (e.g. restoreAbuseState
+// — where the difference is fail-open vs fail-safe) read `levelDrifted`.
 
 const LEVEL_SET: ReadonlySet<string> = new Set(ABUSE_LEVELS);
 const TRIGGER_SET: ReadonlySet<string> = new Set(ABUSE_TRIGGERS);
@@ -52,18 +48,20 @@ function isAbuseTrigger(v: unknown): v is AbuseTrigger {
   return typeof v === "string" && TRIGGER_SET.has(v);
 }
 
-/**
- * Validate and coerce a hydrated abuse_events row's enum columns.
- *
- * Returns the coerced `{ level, trigger }` pair. Any unknown/non-string input
- * is replaced with a safe default (`none` / `manual`) and a single drift
- * warning is emitted per row so we can diagnose the source of the bad write.
- */
+interface CoercedAbuseEnums {
+  level: AbuseLevel;
+  trigger: AbuseTrigger;
+  /** True when `rawLevel` was not a member of `ABUSE_LEVELS` — caller may skip or escalate. */
+  levelDrifted: boolean;
+  /** True when `rawTrigger` was not a member of `ABUSE_TRIGGERS`. */
+  triggerDrifted: boolean;
+}
+
 function coerceAbuseEnums(
   rowId: string,
   rawLevel: unknown,
   rawTrigger: unknown,
-): { level: AbuseLevel; trigger: AbuseTrigger } {
+): CoercedAbuseEnums {
   const levelOk = isAbuseLevel(rawLevel);
   const triggerOk = isAbuseTrigger(rawTrigger);
   if (!levelOk || !triggerOk) {
@@ -75,6 +73,8 @@ function coerceAbuseEnums(
   return {
     level: levelOk ? rawLevel : "none",
     trigger: triggerOk ? rawTrigger : "manual",
+    levelDrifted: !levelOk,
+    triggerDrifted: !triggerOk,
   };
 }
 
@@ -517,12 +517,21 @@ export async function restoreAbuseState(): Promise<void> {
        ORDER BY workspace_id, created_at DESC`,
     );
 
+    let driftSkipped = 0;
     for (const row of rows) {
-      const { level, trigger } = coerceAbuseEnums(
+      const { level, trigger, levelDrifted } = coerceAbuseEnums(
         row.workspace_id,
         row.level,
         row.trigger_type,
       );
+      // A drifted level collapses to "none" — we can't trust that as "already
+      // reinstated" because the stored enforcement state is ambiguous. Skip,
+      // but count separately so the restore summary surfaces potential lost
+      // enforcement rather than silently dropping it.
+      if (levelDrifted) {
+        driftSkipped++;
+        continue;
+      }
       if (level === "none") continue; // Already reinstated
 
       const state = getState(row.workspace_id);
@@ -535,8 +544,13 @@ export async function restoreAbuseState(): Promise<void> {
     }
 
     const restored = [...workspaceState.values()].filter((s) => s.level !== "none").length;
-    if (restored > 0) {
-      log.info({ count: restored }, "Restored abuse state for %d workspaces", restored);
+    if (restored > 0 || driftSkipped > 0) {
+      log.info(
+        { count: restored, driftSkipped },
+        "Restored abuse state for %d workspaces (%d skipped due to enum drift)",
+        restored,
+        driftSkipped,
+      );
     }
   } catch (err) {
     log.warn(

@@ -1,19 +1,8 @@
 /**
  * Bulk approve / deny for the action approval queue.
  *
- * Pre-classifies each requested id into one of four buckets — updated,
- * notFound, forbidden, or errors — before delegating the actual state
- * transition to the existing single-action approveAction / denyAction
- * helpers. Each inner call already performs CAS (WHERE status = 'pending'
- * RETURNING *) for row-level atomicity; aggregated response shape is what
- * replaces the web client's Promise.allSettled pattern.
- *
- * Per-action permission is enforced via canApprove() with the same role
- * rules as the single-action routes, plus admin-only separation-of-duties
- * (requester cannot resolve their own admin-only action).
- *
- * Org-scoped: ids belonging to a different org are returned as notFound so
- * cross-org identifiers never surface as forbidden or leak action metadata.
+ * Org scope: rows belonging to a different org surface as `notFound`, never
+ * `forbidden` — cross-org identifiers must not leak existence or type.
  */
 
 import type { AtlasUser } from "@atlas/api/lib/auth/types";
@@ -29,12 +18,15 @@ import {
 
 const log = createLogger("action-bulk");
 
-// ── Limits ──────────────────────────────────────────────────────────
-
-/** Hard cap matches learned-patterns bulk ceiling (#1590). */
 export const BULK_ACTIONS_MAX = 100;
 
-// ── Result shape ────────────────────────────────────────────────────
+/**
+ * Client-facing message returned when an unexpected error is caught. Raw
+ * `err.message` values from `pg` / downstream services can contain schema
+ * names or parameter values, so callers get this generic string and the
+ * real message goes only to the log.
+ */
+const GENERIC_RESOLVE_ERROR = "Failed to resolve action.";
 
 export interface BulkActionError {
   readonly id: string;
@@ -42,62 +34,90 @@ export interface BulkActionError {
 }
 
 /**
- * Aligned with the web client's `bulkPartialSummary` contract (learned-patterns
- * reuse) plus a `forbidden` bucket specific to the action queue's per-row
- * permission model. `updated` + `notFound` + `forbidden` + `errors` covers every
- * requested id exactly once.
+ * `updated` + `notFound` + `forbidden` + `errors.map(e => e.id)` partition every
+ * requested id exactly once. Invariant holds by construction because
+ * `preClassify` dedups inputs and each id takes exactly one branch.
  */
 export interface BulkActionsResult {
-  readonly updated: string[];
-  readonly notFound: string[];
-  readonly forbidden: string[];
-  readonly errors: BulkActionError[];
+  updated: string[];
+  notFound: string[];
+  forbidden: string[];
+  errors: BulkActionError[];
 }
-
-// ── Input shape ─────────────────────────────────────────────────────
 
 export interface BulkApproveInput {
   readonly ids: readonly string[];
   readonly user: AtlasUser | undefined;
-  readonly orgId?: string | null;
+  readonly orgId: string | null;
+  /** Forwarded to logs so per-row failures correlate with the originating HTTP request. */
+  readonly requestId?: string;
 }
 
-export interface BulkDenyInput extends BulkApproveInput {
+export interface BulkDenyInput {
+  readonly ids: readonly string[];
+  readonly user: AtlasUser | undefined;
+  readonly orgId: string | null;
   readonly reason?: string;
+  readonly requestId?: string;
 }
-
-// ── Classification ──────────────────────────────────────────────────
 
 type PreClassification = {
   eligible: string[];
   notFound: string[];
   forbidden: string[];
+  /** Errors captured during pre-classification (getAction throws). */
+  errors: BulkActionError[];
 };
 
 /**
- * Resolve each id to { eligible, notFound, forbidden } before the write loop.
- * Eligible = exists, caller has the right role, and (for admin-only actions)
- * caller is not the requester.
+ * Resolve each id into one of eligible / notFound / forbidden / errors.
+ * Eligible = exists in the caller's org, caller has the right role, and
+ * (for admin-only actions) caller is not the requester.
+ *
+ * Dedup is applied up front so the partition invariant holds by construction
+ * even when callers pass duplicate ids.
  */
 async function preClassify(
   ids: readonly string[],
   user: AtlasUser | undefined,
-  orgId: string | null | undefined,
+  orgId: string | null,
+  requestId: string | undefined,
 ): Promise<PreClassification> {
+  const uniqueIds: string[] = [];
+  const seen = new Set<string>();
+  for (const id of ids) {
+    if (!seen.has(id)) {
+      seen.add(id);
+      uniqueIds.push(id);
+    }
+  }
+
   const eligible: string[] = [];
   const notFound: string[] = [];
   const forbidden: string[] = [];
+  const errors: BulkActionError[] = [];
 
-  for (const id of ids) {
-    const action = await getAction(id);
+  for (const id of uniqueIds) {
+    let action;
+    try {
+      action = await getAction(id);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      log.error(
+        { err: message, actionId: id, orgId, userId: user?.id, requestId },
+        "Bulk preClassify failed to read action",
+      );
+      errors.push({ id, error: GENERIC_RESOLVE_ERROR });
+      continue;
+    }
     if (!action) {
       notFound.push(id);
       continue;
     }
-    // Org scope: a row belonging to a different org must look like "not found"
-    // rather than "forbidden" so cross-org ids never leak existence or type.
     // `org_id` is present on the action_log row (schema.ts) but not yet
-    // surfaced in ActionLogEntry; read defensively via record access.
+    // surfaced on `ActionLogEntry`; read defensively via record access.
+    // Missing / null org_id disables the filter — matches the single-action
+    // endpoints' behavior for rows written before org-scoping existed.
     const rowOrgId = (action as unknown as Record<string, unknown>).org_id;
     if (orgId && typeof rowOrgId === "string" && rowOrgId !== orgId) {
       notFound.push(id);
@@ -116,75 +136,86 @@ async function preClassify(
     eligible.push(id);
   }
 
-  return { eligible, notFound, forbidden };
+  return { eligible, notFound, forbidden, errors };
 }
 
-// ── Public API ──────────────────────────────────────────────────────
-
-/**
- * Approve many pending actions. For each eligible id, delegates to
- * approveAction() which performs the CAS write and runs the registered
- * executor. Ids that race a conflicting resolve land in `errors` with
- * "Action has already been resolved."
- */
 export async function bulkApproveActions(
   input: BulkApproveInput,
 ): Promise<BulkActionsResult> {
-  const { ids, user, orgId } = input;
+  const { ids, user, orgId, requestId } = input;
   const approverId = user?.id ?? "anonymous";
 
-  const { eligible, notFound, forbidden } = await preClassify(ids, user, orgId);
+  const { eligible, notFound, forbidden, errors: preErrors } = await preClassify(
+    ids,
+    user,
+    orgId,
+    requestId,
+  );
 
   const updated: string[] = [];
-  const errors: BulkActionError[] = [];
+  const errors: BulkActionError[] = [...preErrors];
 
   for (const id of eligible) {
     try {
       const executor = getActionExecutor(id);
       const result = await approveAction(id, approverId, executor);
       if (result === null) {
+        log.warn(
+          { actionId: id, orgId, userId: user?.id, requestId },
+          "Bulk approve lost CAS race — action already resolved",
+        );
         errors.push({ id, error: "Action has already been resolved." });
       } else {
         updated.push(id);
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      log.warn({ err: message, actionId: id }, "Bulk approve failed for action");
-      errors.push({ id, error: message });
+      log.error(
+        { err: message, actionId: id, orgId, userId: user?.id, requestId },
+        "Bulk approve threw for action",
+      );
+      errors.push({ id, error: GENERIC_RESOLVE_ERROR });
     }
   }
 
   return { updated, notFound, forbidden, errors };
 }
 
-/**
- * Deny many pending actions. Reason (if supplied) is recorded on every
- * denied row — callers must enforce reason-presence policy at the route
- * layer if required.
- */
 export async function bulkDenyActions(
   input: BulkDenyInput,
 ): Promise<BulkActionsResult> {
-  const { ids, user, orgId, reason } = input;
+  const { ids, user, orgId, reason, requestId } = input;
   const denierId = user?.id ?? "anonymous";
 
-  const { eligible, notFound, forbidden } = await preClassify(ids, user, orgId);
+  const { eligible, notFound, forbidden, errors: preErrors } = await preClassify(
+    ids,
+    user,
+    orgId,
+    requestId,
+  );
 
   const updated: string[] = [];
-  const errors: BulkActionError[] = [];
+  const errors: BulkActionError[] = [...preErrors];
 
   for (const id of eligible) {
     try {
       const result = await denyAction(id, denierId, reason);
       if (result === null) {
+        log.warn(
+          { actionId: id, orgId, userId: user?.id, requestId },
+          "Bulk deny lost CAS race — action already resolved",
+        );
         errors.push({ id, error: "Action has already been resolved." });
       } else {
         updated.push(id);
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      log.warn({ err: message, actionId: id }, "Bulk deny failed for action");
-      errors.push({ id, error: message });
+      log.error(
+        { err: message, actionId: id, orgId, userId: user?.id, requestId },
+        "Bulk deny threw for action",
+      );
+      errors.push({ id, error: GENERIC_RESOLVE_ERROR });
     }
   }
 

@@ -255,13 +255,15 @@ const BulkActionsResponseSchema = z.object({
   errors: z.array(z.object({ id: z.string(), error: z.string() })),
 });
 
+const BULK_REASON_MAX = 1000;
+
 const BulkActionsRequestSchema = z.object({
   ids: z
     .array(z.string().uuid("Each id must be a UUID"))
     .min(1, "ids must be a non-empty array")
     .max(BULK_ACTIONS_MAX, `Maximum ${BULK_ACTIONS_MAX} ids per bulk operation`),
   action: z.enum(["approve", "deny"]),
-  reason: z.string().optional(),
+  reason: z.string().max(BULK_REASON_MAX).optional(),
 });
 
 const bulkActionsRoute = createRoute({
@@ -562,11 +564,7 @@ actions.openapi(
 );
 
 // ---------------------------------------------------------------------------
-// POST /bulk — atomic bulk approve / deny
-//
-// Mounted before the /:id/* routes so Hono's router matches the literal
-// "bulk" segment. Returns aggregated result buckets so the web client can
-// drop its N-parallel-fetch + Promise.allSettled pattern (#1590).
+// POST /bulk — mounted before /:id/* so Hono matches the literal segment.
 // ---------------------------------------------------------------------------
 
 actions.openapi(
@@ -592,11 +590,11 @@ actions.openapi(
 
       const result = action === "approve"
         ? yield* Effect.tryPromise({
-            try: () => bulkApproveActions({ ids, user, orgId }),
+            try: () => bulkApproveActions({ ids, user, orgId, requestId }),
             catch: (err) => (err instanceof Error ? err : new Error(String(err))),
           })
         : yield* Effect.tryPromise({
-            try: () => bulkDenyActions({ ids, user, orgId, reason }),
+            try: () => bulkDenyActions({ ids, user, orgId, reason, requestId }),
             catch: (err) => (err instanceof Error ? err : new Error(String(err))),
           });
 

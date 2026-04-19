@@ -960,10 +960,11 @@ describe("actions routes", () => {
       expect(body.notFound).toEqual([VALID_ID_2]);
       expect(mockBulkDenyActions).toHaveBeenCalledTimes(1);
 
-      const call = mockBulkDenyActions.mock.calls[0] as unknown as [{ ids: string[]; reason?: string; user?: { id: string } }];
+      const call = mockBulkDenyActions.mock.calls[0] as unknown as [{ ids: string[]; reason?: string; user?: { id: string }; requestId?: string }];
       expect(call[0].ids).toEqual([VALID_ID, VALID_ID_2]);
       expect(call[0].reason).toBe("Not approved");
       expect(call[0].user?.id).toBe("u1");
+      expect(call[0].requestId).toEqual(expect.any(String));
     });
 
     it("dispatches to bulkApproveActions when action is 'approve'", async () => {
@@ -1011,6 +1012,21 @@ describe("actions routes", () => {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ ids: ["not-a-uuid"], action: "approve" }),
+        }),
+      );
+      expect(response.status).toBe(400);
+    });
+
+    it("returns 400 when reason exceeds the length cap", async () => {
+      const response = await app.fetch(
+        new Request("http://localhost/api/v1/actions/bulk", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ids: [VALID_ID],
+            action: "deny",
+            reason: "x".repeat(1001),
+          }),
         }),
       );
       expect(response.status).toBe(400);

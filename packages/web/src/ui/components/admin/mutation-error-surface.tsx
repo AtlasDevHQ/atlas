@@ -57,6 +57,25 @@ export function MutationErrorSurface({
   onRetry,
   inlinePrefix,
 }: MutationErrorSurfaceProps) {
+  // Dev-only check for cross-variant prop misuse. The interface allows any
+  // combination (avoids the ergonomics cost of a discriminated union — see
+  // win #31), so `variant="inline"` silently drops `onRetry` and `variant="banner"`
+  // silently drops `inlinePrefix`. Tree-shaken in production builds via the
+  // NODE_ENV check; noisy in dev so the misuse surfaces during editing, not
+  // after a user-facing regression.
+  if (process.env.NODE_ENV !== "production") {
+    if (variant === "inline" && onRetry) {
+      console.warn(
+        "MutationErrorSurface: `onRetry` is banner-only; ignored on inline variant.",
+      );
+    }
+    if (variant === "banner" && inlinePrefix) {
+      console.warn(
+        "MutationErrorSurface: `inlinePrefix` is inline-only; ignored on banner variant.",
+      );
+    }
+  }
+
   if (!error) return null;
 
   const isEnterpriseRequired = error.code === "enterprise_required";

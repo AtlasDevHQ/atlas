@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test, mock, spyOn } from "bun:test";
 import { render, fireEvent } from "@testing-library/react";
 import type { FetchError } from "@/ui/lib/fetch-error";
 import { MutationErrorSurface } from "../mutation-error-surface";
@@ -169,6 +169,39 @@ describe("MutationErrorSurface", () => {
     const bold = container.querySelector(".font-semibold");
     expect(bold?.textContent).toBe("Save failed.");
     expect(container.textContent).toContain("Upstream failed");
+  });
+
+  test("warns in dev when inline variant receives onRetry (cross-variant misuse)", () => {
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    const error: FetchError = { message: "Upstream failed", status: 500 };
+    render(
+      <MutationErrorSurface
+        error={error}
+        feature="SSO"
+        variant="inline"
+        onRetry={mock(() => {})}
+      />,
+    );
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("onRetry` is banner-only"),
+    );
+    warn.mockRestore();
+  });
+
+  test("warns in dev when banner variant receives inlinePrefix (cross-variant misuse)", () => {
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    const error: FetchError = { message: "Upstream failed", status: 500 };
+    render(
+      <MutationErrorSurface
+        error={error}
+        feature="SSO"
+        inlinePrefix="Save failed."
+      />,
+    );
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("inlinePrefix` is inline-only"),
+    );
+    warn.mockRestore();
   });
 
   test("inline variant + enterprise_required renders compact inline upsell (not full EnterpriseUpsell)", () => {

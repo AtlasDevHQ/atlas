@@ -17,14 +17,9 @@ interface QueueFilterRowProps<T extends string> {
 }
 
 /**
- * Button-row filter chips used as the top-of-queue filter on admin
- * queue/moderation pages. Replaces the "4 StatCards in a grid" pattern —
- * same information, denser, keyboard-navigable, and leaves horizontal
- * room for a bulk-action bar on the right.
- *
- * The `trailing` slot is deliberately generic so callers can render their
- * own bulk-action UI inline (the `/admin/actions` and `/admin/approval`
- * flavour) without every caller needing identical bulk controls.
+ * Button-row filter chips for admin queue/moderation pages. The `trailing`
+ * slot is deliberately generic so callers own their bulk-action UI — this
+ * primitive does not prescribe bulk controls.
  */
 export function QueueFilterRow<T extends string>({
   options,

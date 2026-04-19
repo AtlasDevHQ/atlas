@@ -292,7 +292,6 @@ export default function ActionsPage() {
       itemId: id,
     });
     if (result.ok) setDenyTarget(null);
-    // On failure, denyMutation.error is set automatically — dialog renders it.
   }
 
   async function handleRollback(id: string) {

@@ -51,7 +51,7 @@ import {
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
-import { extractFetchError } from "@/ui/lib/fetch-error";
+import { extractFetchError, friendlyError, type FetchError } from "@/ui/lib/fetch-error";
 import { ApprovalRuleSchema } from "@/ui/lib/admin-schemas";
 import type { ApprovalRequest, ApprovalRule, ApprovalRuleType, ApprovalStatus } from "@/ui/lib/types";
 import {
@@ -420,7 +420,8 @@ function QueueSection() {
 
   const [requests, setRequests] = useState<ApprovalRequest[]>([]);
   const [loading, setLoading] = useState(true);
-  const [bannerError, setBannerError] = useState<string | null>(null);
+  const [fetchError, setFetchError] = useState<FetchError | null>(null);
+  const [mutationError, setMutationError] = useState<string | null>(null);
   const [refetchKey, setRefetchKey] = useState(0);
 
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -430,7 +431,16 @@ function QueueSection() {
 
   const [denyTarget, setDenyTarget] = useState<ApprovalRequest | null>(null);
 
-  const reviewMutation = useAdminMutation<{ request: ApprovalRequest }>({ method: "POST" });
+  // Separate approve/deny mutations so a failed approve on row A doesn't
+  // surface its error inside the deny dialog opened later on row B.
+  const approveMutation = useAdminMutation<{ request: ApprovalRequest }>({
+    method: "POST",
+    invalidates: () => setRefetchKey((k) => k + 1),
+  });
+  const denyMutation = useAdminMutation<{ request: ApprovalRequest }>({
+    method: "POST",
+    invalidates: () => setRefetchKey((k) => k + 1),
+  });
   const { runOptimistic, inProgress } = useQueueRow<ApprovalRequest>({
     rows: requests,
     setRows: setRequests,
@@ -445,7 +455,7 @@ function QueueSection() {
     let cancelled = false;
     (async () => {
       setLoading(true);
-      setBannerError(null);
+      setFetchError(null);
       try {
         const qs = new URLSearchParams();
         if (statusFilter !== "all") qs.set("status", statusFilter);
@@ -455,15 +465,15 @@ function QueueSection() {
         );
         if (cancelled) return;
         if (!res.ok) {
-          const fe = await extractFetchError(res);
-          setBannerError(fe.requestId ? `${fe.message} (Request ID: ${fe.requestId})` : fe.message);
+          setFetchError(await extractFetchError(res));
           return;
         }
         const data = await res.json();
         if (!cancelled) setRequests(data.requests ?? []);
       } catch (err) {
         if (!cancelled) {
-          setBannerError(err instanceof Error ? err.message : "Failed to load approval queue");
+          const message = err instanceof Error ? err.message : String(err);
+          setFetchError({ message: message || "Failed to load approval queue" });
         }
       } finally {
         if (!cancelled) setLoading(false);
@@ -498,7 +508,10 @@ function QueueSection() {
   }
 
   async function handleApprove(id: string, comment?: string) {
-    setBannerError(null);
+    setMutationError(null);
+    // Optimistic patch first; server-authoritative row replaces it in
+    // onSuccess (the server may add fields like reviewerId/reviewerEmail
+    // the client can't predict).
     const result = await runOptimistic(
       id,
       (r) => ({
@@ -507,7 +520,7 @@ function QueueSection() {
         reviewedAt: new Date().toISOString(),
       }),
       () =>
-        reviewMutation.mutate({
+        approveMutation.mutate({
           path: `/api/v1/admin/approval/queue/${id}`,
           body: { action: "approve", comment },
           itemId: id,
@@ -519,14 +532,18 @@ function QueueSection() {
         }),
     );
     if (!result.ok) {
-      setBannerError(result.error);
+      setMutationError(result.error);
     }
   }
 
   async function confirmSingleDeny(reason: string) {
-    if (!denyTarget) return;
+    if (!denyTarget) {
+      console.warn("confirmSingleDeny: denyTarget cleared before confirm");
+      setMutationError("Unable to deny — the target was cleared. Please retry.");
+      return;
+    }
     const id = denyTarget.id;
-    setBannerError(null);
+    setMutationError(null);
     const result = await runOptimistic(
       id,
       (r) => ({
@@ -536,7 +553,7 @@ function QueueSection() {
         reviewComment: reason || null,
       }),
       () =>
-        reviewMutation.mutate({
+        denyMutation.mutate({
           path: `/api/v1/admin/approval/queue/${id}`,
           body: { action: "deny", ...(reason ? { comment: reason } : {}) },
           itemId: id,
@@ -550,16 +567,9 @@ function QueueSection() {
     if (result.ok) {
       setDenyTarget(null);
     }
-    // On failure, reviewMutation.error is surfaced in-dialog via `error` prop.
   }
 
-  /**
-   * Bulk approve uses client-side Promise.allSettled because there's no
-   * atomic bulk approval endpoint on the server. Tracked under #1590 as a
-   * follow-up: convergent POST /api/v1/admin/approval/queue/bulk would let
-   * us collapse this into a single useAdminMutation + bulkPartialSummary
-   * path like /admin/learned-patterns.
-   */
+  // No atomic bulk endpoint exists server-side, so fan out per-row.
   async function bulkRequest(id: string, action: "approve" | "deny", body: Record<string, unknown>) {
     const res = await fetch(`${apiUrl}/api/v1/admin/approval/queue/${id}`, {
       credentials,
@@ -577,13 +587,13 @@ function QueueSection() {
   async function handleBulkApprove() {
     if (selectedIds.size === 0) return;
     setBulkAction("approve");
-    setBannerError(null);
+    setMutationError(null);
     const ids = [...selectedIds];
     try {
       const results = await Promise.allSettled(ids.map((id) => bulkRequest(id, "approve", {})));
       const failedIds = failedIdsFrom(results, ids);
       if (failedIds.length > 0) {
-        setBannerError(bulkFailureSummary(results, ids, "approvals"));
+        setMutationError(bulkFailureSummary(results, ids, "approvals"));
         setSelectedIds(new Set(failedIds));
       } else {
         setSelectedIds(new Set());
@@ -664,8 +674,14 @@ function QueueSection() {
           }
         />
 
-        {bannerError && (
-          <ErrorBanner message={bannerError} onRetry={() => setBannerError(null)} />
+        {fetchError && (
+          <ErrorBanner
+            message={friendlyError(fetchError)}
+            onRetry={() => setRefetchKey((k) => k + 1)}
+          />
+        )}
+        {mutationError && (
+          <ErrorBanner message={mutationError} onRetry={() => setMutationError(null)} />
         )}
 
         {loading ? (
@@ -799,7 +815,7 @@ function QueueSection() {
         onOpenChange={(open) => {
           if (!open) {
             setDenyTarget(null);
-            reviewMutation.clearError();
+            denyMutation.clearError();
           }
         }}
         title="Deny approval request"
@@ -824,8 +840,8 @@ function QueueSection() {
           )
         }
         onConfirm={confirmSingleDeny}
-        loading={!!denyTarget && reviewMutation.isMutating(denyTarget.id)}
-        error={reviewMutation.error}
+        loading={!!denyTarget && denyMutation.isMutating(denyTarget.id)}
+        error={denyMutation.error}
       />
 
       <ReasonDialog

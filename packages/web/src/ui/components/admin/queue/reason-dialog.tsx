@@ -36,14 +36,12 @@ interface ReasonDialogProps {
 /**
  * Compliance-grade reason capture dialog shared across queue/moderation
  * surfaces. Records the reason in the audit log alongside the reviewer.
+ *
  * **Never substitutes a hardcoded placeholder** — if the reason is empty
  * and `required: false`, the audit log must reflect "no reason given"
- * rather than fabricating "Denied by admin". That hardcode was the
- * compliance bug closed by PR #1592.
- *
- * Generalized from `/admin/actions/deny-dialog.tsx` so `/admin/approval`
- * can deny pending requests and `/admin/learned-patterns` can reject
- * patterns with a single primitive.
+ * rather than fabricating one. Passing `onConfirm(reason || "Denied")`
+ * silently corrupts the audit trail; callers must receive exactly what
+ * the user typed (whitespace-trimmed), including the empty string.
  */
 export function ReasonDialog({
   open,
@@ -107,7 +105,12 @@ export function ReasonDialog({
       >
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
-          {description && <DialogDescription>{description}</DialogDescription>}
+          {/* Always render a description so `aria-describedby` is populated.
+              Radix emits a dev warning when DialogContent has no description
+              reachable, and screen-reader users expect one. */}
+          <DialogDescription>
+            {description ?? "Reason is optional but recommended for audit traceability."}
+          </DialogDescription>
         </DialogHeader>
 
         {context && (

@@ -13,20 +13,19 @@ interface QueueStateAdapter<Row> {
 
 /**
  * Optimistic single-row update with revert-on-failure and per-row
- * in-flight tracking. Extracted from the pattern that shipped in
- * `/admin/learned-patterns` (PR #1594) and now also used by
- * `/admin/actions` and `/admin/approval`.
+ * in-flight tracking.
  *
  * **Why the snapshot is captured synchronously (via ref), not inside the
  * setState updater:** React may defer the setState updater past the next
  * `await` boundary (notably under test `act()` batching), which means
  * reading `original = prev.find(...)` inside the updater can still be
- * `undefined` when the revert branch runs. Snapshotting the row from a
- * rows-ref synchronously is safe for single-row updates because callers
- * disable concurrent actions on the same row via `inProgress.has(id)`
- * — two calls targeting different rows each capture their own snapshot.
- * Bulk snapshot-inside-setState is still the right pattern at call sites
- * that need atomic multi-row captures.
+ * `undefined` when the revert branch runs. Snapshotting from a rows-ref
+ * synchronously is safe for single-row updates because callers disable
+ * concurrent actions on the same row via `inProgress.has(id)` — two calls
+ * targeting different rows each capture their own snapshot. For bulk
+ * operations that need an atomic multi-row capture, snapshot-inside-setState
+ * is the right pattern at the call site; this hook only handles the
+ * single-row case.
  */
 export function useQueueRow<Row>({ rows, setRows, getId }: QueueStateAdapter<Row>) {
   const inProgress = useInProgressSet();
@@ -52,8 +51,20 @@ export function useQueueRow<Row>({ rows, setRows, getId }: QueueStateAdapter<Row
 
         const result = await mutation();
 
-        if (!result.ok && original !== undefined) {
-          setRows((curr) => curr.map((r) => (getId(r) === id ? original : r)));
+        if (!result.ok) {
+          if (original !== undefined) {
+            setRows((curr) => curr.map((r) => (getId(r) === id ? original : r)));
+          } else {
+            // Row was refetched away (or never existed) between call and
+            // failure — revert is impossible, so the optimistic patch is
+            // inert but the caller must refetch to reconcile with server
+            // truth. Surfaced as a debug log rather than a thrown error
+            // because the mutation error itself is already returned to
+            // the caller in `result.error`.
+            console.debug(
+              `useQueueRow: revert skipped for id=${id} — row absent at mutation time; caller should refetch`,
+            );
+          }
         }
 
         return result;

@@ -1,19 +1,14 @@
 /**
- * Bulk-action result summarizers shared across the admin queue pages
- * (actions, learned-patterns, approval).
+ * Bulk-action result summarizers. Two shapes of bulk response exist:
  *
- * Two shapes of bulk response exist in the wild:
- *
- *  1. **Client-side fan-out** — the caller `Promise.allSettled`s N requests
- *     and feeds rejected reasons into `bulkFailureSummary`. Used where no
- *     atomic bulk endpoint exists server-side (actions, approval).
- *
+ *  1. **Client-side fan-out** — caller `Promise.allSettled`s N requests
+ *     and feeds rejections into `bulkFailureSummary`. Used where no
+ *     atomic bulk endpoint exists server-side.
  *  2. **Server-side partial success** — `POST /bulk` returns 200 even when
- *     individual rows fail, with `{ updated, notFound, errors? }`. Feed the
- *     parsed body to `bulkPartialSummary`. Used by `/admin/learned-patterns`.
+ *     individual rows fail, with `{ updated, notFound, errors? }`. Feed
+ *     the parsed body to `bulkPartialSummary`.
  *
- * Both return a single banner-friendly string. Tracked under #1590 as a
- * follow-up to converge these two shapes on a single server contract.
+ * Both return a single banner-friendly string.
  */
 
 export interface BulkPartialResult {

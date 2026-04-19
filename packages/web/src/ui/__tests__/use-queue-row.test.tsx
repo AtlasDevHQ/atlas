@@ -1,4 +1,4 @@
-import { describe, expect, test, beforeEach, afterEach } from "bun:test";
+import { describe, expect, test, beforeEach, afterEach, spyOn } from "bun:test";
 import { renderHook, act, cleanup } from "@testing-library/react";
 import { useState } from "react";
 import { useQueueRow } from "../components/admin/queue";
@@ -81,7 +81,7 @@ describe("useQueueRow", () => {
     expect(rowB?.label).toBe("B!"); // concurrent edit preserved
   });
 
-  test("captures the snapshot inside the setRows updater so concurrent runs don't share originals", async () => {
+  test("captures the snapshot synchronously from the rows-ref so concurrent runs don't share originals", async () => {
     const { result } = renderHook(() => useHarness());
 
     // Fire two mutations before either resolves. Both patch status→approved
@@ -119,6 +119,34 @@ describe("useQueueRow", () => {
 
     expect(result.current.rows.find((r) => r.id === "a")?.status).toBe("pending");
     expect(result.current.rows.find((r) => r.id === "b")?.status).toBe("approved");
+  });
+
+  test("no-ops the revert when the id is absent from rows (refetched-away)", async () => {
+    const debugSpy = spyOn(console, "debug").mockImplementation(() => {});
+    try {
+      const { result } = renderHook(() => useHarness());
+
+      await act(async () => {
+        const res = await result.current.runOptimistic(
+          "zzz", // not in rows
+          (r) => ({ ...r, status: "approved" }),
+          async () => fail("HTTP 500"),
+        );
+        expect(res.ok).toBe(false);
+      });
+
+      // Rows were not touched (nothing matched "zzz"). No undefined writes.
+      expect(result.current.rows.map((r) => r.id)).toEqual(["a", "b", "c"]);
+      expect(result.current.rows.every((r) => r.status === "pending")).toBe(true);
+      // inProgress must still toggle cleanly.
+      expect(result.current.inProgress.has("zzz")).toBe(false);
+      // And the caller gets a debug log pointing at the need to refetch.
+      expect(debugSpy).toHaveBeenCalledWith(
+        expect.stringContaining("revert skipped for id=zzz"),
+      );
+    } finally {
+      debugSpy.mockRestore();
+    }
   });
 
   test("inProgress.has tracks the row while the mutation is in flight", async () => {

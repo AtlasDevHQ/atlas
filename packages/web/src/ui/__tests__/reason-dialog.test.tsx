@@ -116,10 +116,40 @@ describe("ReasonDialog compliance contract", () => {
     expect(screen.getByLabelText(/reason/i)).not.toBeNull();
   });
 
-  test("onConfirm throwing does not bubble — dialog catches and logs", async () => {
-    const thrown = new Error("kaboom");
+  test("onConfirm throwing surfaces in alert AND logs — dialog stays open", async () => {
+    const thrown = new Error("boom");
     const onConfirm = mock(() => Promise.reject(thrown));
-    const errSpy = (await import("bun:test")).spyOn(console, "error").mockImplementation(() => {});
+    const onOpenChange = mock((_open: boolean) => {});
+    const warnSpy = (await import("bun:test")).spyOn(console, "warn").mockImplementation(() => {});
+
+    render(
+      <ReasonDialog
+        open
+        onOpenChange={onOpenChange}
+        title="Deny action"
+        onConfirm={onConfirm}
+      />,
+    );
+
+    const confirm = screen.getByRole("button", { name: /deny/i });
+    await act(async () => {
+      fireEvent.click(confirm);
+    });
+
+    expect(onConfirm).toHaveBeenCalled();
+    // UI surface — operator sees the failure
+    const alert = screen.getByRole("alert");
+    expect(alert.textContent).toBe("Unexpected error: boom");
+    // Dialog must NOT close on its own — caller owns close via onOpenChange
+    expect(onOpenChange).not.toHaveBeenCalled();
+    // Observability — still reaches dev tools
+    expect(warnSpy).toHaveBeenCalledWith("ReasonDialog: onConfirm threw", thrown);
+    warnSpy.mockRestore();
+  });
+
+  test("onConfirm rejecting non-Error → stringified in alert", async () => {
+    const onConfirm = mock(() => Promise.reject("raw string"));
+    const warnSpy = (await import("bun:test")).spyOn(console, "warn").mockImplementation(() => {});
 
     render(
       <ReasonDialog
@@ -135,11 +165,80 @@ describe("ReasonDialog compliance contract", () => {
       fireEvent.click(confirm);
     });
 
-    expect(onConfirm).toHaveBeenCalled();
-    expect(errSpy).toHaveBeenCalledWith(
-      "ReasonDialog: onConfirm threw",
-      thrown,
+    const alert = screen.getByRole("alert");
+    expect(alert.textContent).toBe("Unexpected error: raw string");
+    warnSpy.mockRestore();
+  });
+
+  test("localError takes precedence over caller-provided error prop", async () => {
+    const thrown = new Error("local failure");
+    const onConfirm = mock(() => Promise.reject(thrown));
+    const warnSpy = (await import("bun:test")).spyOn(console, "warn").mockImplementation(() => {});
+
+    render(
+      <ReasonDialog
+        open
+        onOpenChange={() => {}}
+        title="Deny action"
+        onConfirm={onConfirm}
+        error="caller-provided error"
+      />,
     );
-    errSpy.mockRestore();
+
+    // Before confirm — caller error shows
+    expect(screen.getByRole("alert").textContent).toBe("caller-provided error");
+
+    const confirm = screen.getByRole("button", { name: /deny/i });
+    await act(async () => {
+      fireEvent.click(confirm);
+    });
+
+    // After throw — local error takes over
+    expect(screen.getByRole("alert").textContent).toBe("Unexpected error: local failure");
+    warnSpy.mockRestore();
+  });
+
+  test("localError cleared when dialog reopens", async () => {
+    const thrown = new Error("first attempt");
+    const onConfirm = mock(() => Promise.reject(thrown));
+    const warnSpy = (await import("bun:test")).spyOn(console, "warn").mockImplementation(() => {});
+
+    const { rerender } = render(
+      <ReasonDialog
+        open
+        onOpenChange={() => {}}
+        title="Deny action"
+        onConfirm={onConfirm}
+      />,
+    );
+
+    const confirm = screen.getByRole("button", { name: /deny/i });
+    await act(async () => {
+      fireEvent.click(confirm);
+    });
+    expect(screen.getByRole("alert").textContent).toBe("Unexpected error: first attempt");
+
+    // Close
+    rerender(
+      <ReasonDialog
+        open={false}
+        onOpenChange={() => {}}
+        title="Deny action"
+        onConfirm={onConfirm}
+      />,
+    );
+
+    // Reopen — alert should be gone
+    rerender(
+      <ReasonDialog
+        open
+        onOpenChange={() => {}}
+        title="Deny action"
+        onConfirm={onConfirm}
+      />,
+    );
+
+    expect(screen.queryByRole("alert")).toBeNull();
+    warnSpy.mockRestore();
   });
 });

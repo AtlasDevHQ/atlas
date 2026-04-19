@@ -20,6 +20,7 @@ import {
   FormMessage,
 } from "@/components/form-dialog";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
+import { SectionHeading } from "@/ui/components/admin/compact";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
@@ -91,6 +92,16 @@ const SECTION_ICONS: Record<KnownSection, ComponentType<{ className?: string }>>
   Agent: Bot,
   Intelligence: Brain,
   Demo: FlaskConical,
+};
+
+const SECTION_DESCRIPTIONS: Record<KnownSection, string> = {
+  "Query Limits": "Row caps and execution timeouts for user queries",
+  "Rate Limiting": "Request throttles per user and per workspace",
+  Sessions: "Auth session lifetimes and refresh behavior",
+  Sandbox: "Where explore and Python tools run",
+  Agent: "LLM behavior, model selection, and step caps",
+  Intelligence: "Learning and memory features",
+  Demo: "Demo mode fixtures and sample data",
 };
 
 function sectionIcon(section: string): ComponentType<{ className?: string }> {
@@ -255,19 +266,6 @@ function EditDialog({
 }
 
 // ── Section + row primitives ──────────────────────────────────────
-
-function SectionHeading({ title, description }: { title: string; description?: string }) {
-  return (
-    <div className="mb-3">
-      <h2 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-        {title}
-      </h2>
-      {description && (
-        <p className="mt-0.5 text-xs text-muted-foreground/80">{description}</p>
-      )}
-    </div>
-  );
-}
 
 function SettingRow({
   setting,
@@ -480,9 +478,13 @@ export default function SettingsPage() {
 
             {orderedSections.map((section) => {
               const items = workspaceSections.get(section) ?? [];
+              const description =
+                section in SECTION_DESCRIPTIONS
+                  ? SECTION_DESCRIPTIONS[section as KnownSection]
+                  : "Workspace overrides";
               return (
                 <section key={section}>
-                  <SectionHeading title={section} />
+                  <SectionHeading title={section} description={description} />
                   <div className="space-y-2">
                     {items.map((setting) => (
                       <SettingRow

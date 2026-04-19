@@ -3,8 +3,7 @@
 import { Fragment, useEffect, useState } from "react";
 import { useQueryStates } from "nuqs";
 import { actionsSearchParams } from "./search-params";
-import { actionTypeIcon, actionTypeLabel } from "./labels";
-import { DenyActionDialog } from "./deny-dialog";
+import { ACTION_TYPE_LABELS, actionTypeIcon, actionTypeLabel } from "./labels";
 import { useAtlasConfig } from "@/ui/context";
 import {
   Table,
@@ -29,6 +28,13 @@ import type { ActionLogEntry } from "@/ui/lib/types";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { EmptyState } from "@/ui/components/admin/empty-state";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
+import {
+  QueueFilterRow,
+  ReasonDialog,
+  RelativeTimestamp,
+  bulkFailureSummary,
+  failedIdsFrom,
+} from "@/ui/components/admin/queue";
 import { extractFetchError, type FetchError } from "@/ui/lib/fetch-error";
 import {
   Zap,
@@ -58,41 +64,6 @@ const FILTER_OPTIONS: { value: StatusFilter; label: string }[] = [
 
 function mapStatus(status: ActionLogEntry["status"]): ActionDisplayStatus {
   return status === "pending" ? "pending_approval" : status;
-}
-
-function absoluteTimestamp(iso: string): string {
-  return new Date(iso).toLocaleString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  });
-}
-
-const RTF = new Intl.RelativeTimeFormat("en", { numeric: "auto" });
-
-function relativeTime(iso: string): string {
-  const diffMs = new Date(iso).getTime() - Date.now();
-  const absSec = Math.abs(Math.round(diffMs / 1000));
-  if (absSec < 60) return RTF.format(Math.round(diffMs / 1000), "second");
-  const absMin = Math.abs(Math.round(diffMs / 60000));
-  if (absMin < 60) return RTF.format(Math.round(diffMs / 60000), "minute");
-  const absHr = Math.abs(Math.round(diffMs / 3600000));
-  if (absHr < 24) return RTF.format(Math.round(diffMs / 3600000), "hour");
-  return RTF.format(Math.round(diffMs / 86400000), "day");
-}
-
-function RelativeTimestamp({ iso, label }: { iso: string; label?: string }) {
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <span>{label ? `${label}: ` : ""}{relativeTime(iso)}</span>
-      </TooltipTrigger>
-      <TooltipContent>{absoluteTimestamp(iso)}</TooltipContent>
-    </Tooltip>
-  );
 }
 
 function ActionTypeIcon({ type }: { type: string }) {
@@ -414,48 +385,43 @@ export default function ActionsPage() {
           </p>
         </div>
 
-        <div className="mb-4 flex flex-wrap items-center gap-2">
-          {FILTER_OPTIONS.map((opt) => (
-            <Button
-              key={opt.value}
-              size="sm"
-              variant={statusFilter === opt.value ? "secondary" : "ghost"}
-              onClick={() => setParams({ status: opt.value, expanded: null })}
-            >
-              {opt.label}
-            </Button>
-          ))}
-
-          {someSelected && (
-            <>
-              <div className="mx-2 h-4 w-px bg-border" />
-              <span className="text-sm text-muted-foreground">
-                {selectedIds.size} selected
-              </span>
-              <Button
-                size="sm"
-                variant="default"
-                disabled={bulkInProgress}
-                onClick={handleBulkApprove}
-              >
-                {bulkAction === "approve" ? (
-                  <Loader2 className="mr-1 size-4 animate-spin" />
-                ) : (
-                  <CheckCheck className="mr-1 size-4" />
-                )}
-                Approve selected
-              </Button>
-              <Button
-                size="sm"
-                variant="destructive"
-                disabled={bulkInProgress}
-                onClick={() => setBulkDenyOpen(true)}
-              >
-                <XCircle className="mr-1 size-4" />
-                Deny selected
-              </Button>
-            </>
-          )}
+        <div className="mb-4">
+          <QueueFilterRow
+            options={FILTER_OPTIONS}
+            value={statusFilter}
+            onChange={(next) => setParams({ status: next, expanded: null })}
+            trailing={
+              someSelected && (
+                <>
+                  <span className="text-sm text-muted-foreground">
+                    {selectedIds.size} selected
+                  </span>
+                  <Button
+                    size="sm"
+                    variant="default"
+                    disabled={bulkInProgress}
+                    onClick={handleBulkApprove}
+                  >
+                    {bulkAction === "approve" ? (
+                      <Loader2 className="mr-1 size-4 animate-spin" />
+                    ) : (
+                      <CheckCheck className="mr-1 size-4" />
+                    )}
+                    Approve selected
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="destructive"
+                    disabled={bulkInProgress}
+                    onClick={() => setBulkDenyOpen(true)}
+                  >
+                    <XCircle className="mr-1 size-4" />
+                    Deny selected
+                  </Button>
+                </>
+              )
+            }
+          />
         </div>
 
         <ErrorBoundary>
@@ -724,7 +690,7 @@ export default function ActionsPage() {
         </div>
         </ErrorBoundary>
 
-        <DenyActionDialog
+        <ReasonDialog
           open={!!denyTarget}
           onOpenChange={(open) => {
             if (!open) {
@@ -732,13 +698,31 @@ export default function ActionsPage() {
               denyMutation.clearError();
             }
           }}
-          action={denyTarget}
+          title="Deny action"
+          description="Recorded in the audit log alongside your account. Reason is optional but recommended for traceability."
+          context={
+            denyTarget && (
+              <>
+                <div className="flex items-center gap-1.5">
+                  <span className="rounded border bg-background px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+                    {ACTION_TYPE_LABELS[denyTarget.action_type] ?? denyTarget.action_type}
+                  </span>
+                  <span className="truncate font-mono text-muted-foreground">
+                    {denyTarget.target}
+                  </span>
+                </div>
+                <p className="mt-1.5 line-clamp-2 text-muted-foreground/80">
+                  {denyTarget.summary}
+                </p>
+              </>
+            )
+          }
           onConfirm={confirmSingleDeny}
           loading={!!denyTarget && denyMutation.isMutating(denyTarget.id)}
           error={denyMutation.error}
         />
 
-        <DenyActionDialog
+        <ReasonDialog
           open={bulkDenyOpen}
           onOpenChange={(open) => {
             if (!open) {
@@ -746,7 +730,9 @@ export default function ActionsPage() {
               setBulkError(null);
             }
           }}
-          bulkCount={selectedIds.size}
+          title={`Deny ${selectedIds.size} action${selectedIds.size === 1 ? "" : "s"}`}
+          description="Recorded in the audit log alongside your account. Reason is optional but recommended for traceability."
+          confirmLabel={`Deny ${selectedIds.size}`}
           onConfirm={confirmBulkDeny}
           loading={bulkAction === "deny"}
           error={bulkError}
@@ -754,29 +740,4 @@ export default function ActionsPage() {
       </div>
     </TooltipProvider>
   );
-}
-
-/** Indices of `results` that rejected, mapped back to their input ids. */
-function failedIdsFrom(results: PromiseSettledResult<unknown>[], ids: string[]): string[] {
-  return results.flatMap((r, i) => (r.status === "rejected" ? [ids[i]] : []));
-}
-
-/** "3 of 5 denials failed: 2× Forbidden; 1× Internal error" — counts per reason. */
-function bulkFailureSummary(
-  results: PromiseSettledResult<unknown>[],
-  ids: string[],
-  noun: string,
-): string {
-  const reasonCounts = new Map<string, number>();
-  for (const r of results) {
-    if (r.status === "rejected") {
-      const msg = r.reason instanceof Error ? r.reason.message : "Unknown error";
-      reasonCounts.set(msg, (reasonCounts.get(msg) ?? 0) + 1);
-    }
-  }
-  const failedCount = [...reasonCounts.values()].reduce((a, b) => a + b, 0);
-  const summary = [...reasonCounts.entries()]
-    .map(([msg, n]) => `${n}× ${msg}`)
-    .join("; ");
-  return `${failedCount} of ${ids.length} ${noun} failed: ${summary}`;
 }

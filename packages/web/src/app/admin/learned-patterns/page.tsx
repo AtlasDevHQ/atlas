@@ -44,13 +44,9 @@ import {
   SheetTitle,
   SheetDescription,
 } from "@/components/ui/sheet";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
+import { bulkPartialSummary, RelativeTimestamp } from "@/ui/components/admin/queue";
 import { extractFetchError, type FetchError } from "@/ui/lib/fetch-error";
 import { useInProgressSet } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
@@ -88,40 +84,6 @@ const TYPE_FILTERS: { value: string; label: string }[] = [
   { value: "query_pattern", label: "Query Patterns" },
   { value: "semantic_amendment", label: "Amendments" },
 ];
-
-function absoluteTimestamp(iso: string): string {
-  return new Date(iso).toLocaleString(undefined, {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
-
-const RTF = new Intl.RelativeTimeFormat("en", { numeric: "auto" });
-
-function relativeTime(iso: string): string {
-  const diffMs = new Date(iso).getTime() - Date.now();
-  const absSec = Math.abs(Math.round(diffMs / 1000));
-  if (absSec < 60) return RTF.format(Math.round(diffMs / 1000), "second");
-  const absMin = Math.abs(Math.round(diffMs / 60000));
-  if (absMin < 60) return RTF.format(Math.round(diffMs / 60000), "minute");
-  const absHr = Math.abs(Math.round(diffMs / 3600000));
-  if (absHr < 24) return RTF.format(Math.round(diffMs / 3600000), "hour");
-  return RTF.format(Math.round(diffMs / 86400000), "day");
-}
-
-function RelativeTimestamp({ iso, label }: { iso: string; label?: string }) {
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <span>{label ? `${label}: ` : ""}{relativeTime(iso)}</span>
-      </TooltipTrigger>
-      <TooltipContent>{absoluteTimestamp(iso)}</TooltipContent>
-    </Tooltip>
-  );
-}
 
 export default function LearnedPatternsPage() {
   const { apiUrl, isCrossOrigin } = useAtlasConfig();
@@ -356,7 +318,8 @@ export default function LearnedPatternsPage() {
       // Revert only the rows the server didn't actually update.
       setPatterns((curr) => curr.map((p) => (failedIds.has(p.id) && originalRows.has(p.id) ? originalRows.get(p.id)! : p)));
       setDetailPattern((curr) => (curr && failedIds.has(curr.id) ? originalDetail : curr));
-      setError({ message: bulkPartialSummary(data, ids.size, status) });
+      const noun = status === "approved" ? "approvals" : status === "rejected" ? "rejections" : "updates";
+      setError({ message: bulkPartialSummary(data, ids.size, noun) });
       // Narrow selection to failed IDs so retry hits exactly the unfinished work.
       table.setRowSelection(Object.fromEntries([...failedIds].map((id) => [id, true])));
     } else {
@@ -759,30 +722,3 @@ export default function LearnedPatternsPage() {
   );
 }
 
-/** "3 of 10 approvals failed: 2 not found; 1 server error: foo" */
-function bulkPartialSummary(
-  data: {
-    updated?: string[];
-    notFound?: string[];
-    errors?: Array<{ id: string; error: string }>;
-  },
-  total: number,
-  status: LearnedPatternStatus,
-): string {
-  const noun = status === "approved" ? "approvals" : status === "rejected" ? "rejections" : "updates";
-  const notFoundCount = data.notFound?.length ?? 0;
-  const errorCount = data.errors?.length ?? 0;
-  const failed = notFoundCount + errorCount;
-  const parts: string[] = [];
-  if (notFoundCount > 0) parts.push(`${notFoundCount} not found`);
-  if (errorCount > 0) {
-    const errReasons = new Map<string, number>();
-    for (const e of data.errors ?? []) {
-      errReasons.set(e.error, (errReasons.get(e.error) ?? 0) + 1);
-    }
-    parts.push(
-      [...errReasons.entries()].map(([msg, n]) => `${n}× ${msg}`).join("; "),
-    );
-  }
-  return `${failed} of ${total} ${noun} failed: ${parts.join("; ")}`;
-}

@@ -125,9 +125,29 @@ function CompactRow({
           <StatusDot kind={status} className="shrink-0" />
           <span className="sr-only">Status: {STATUS_LABEL[status]}</span>
         </div>
-        <p className="mt-0.5 truncate text-xs text-muted-foreground">
-          {description}
-        </p>
+        {/* Newline-delimited descriptions render as a two-line subtitle (e.g. a
+            rule's human description on top and its added-at/by metadata below).
+            Single-line descriptions truncate as before. */}
+        {(() => {
+          const lines = description.split("\n");
+          if (lines.length > 1) {
+            return (
+              <div className="mt-0.5 space-y-0.5">
+                <p className="truncate text-xs text-muted-foreground">
+                  {lines[0]}
+                </p>
+                <p className="truncate text-[11px] text-muted-foreground/70">
+                  {lines.slice(1).join(" · ")}
+                </p>
+              </div>
+            );
+          }
+          return (
+            <p className="mt-0.5 truncate text-xs text-muted-foreground">
+              {description}
+            </p>
+          );
+        })()}
       </div>
       {action && <div className="shrink-0">{action}</div>}
     </div>
@@ -506,15 +526,20 @@ export default function IPAllowlistPage() {
                 description="IPv4 and IPv6 CIDR blocks permitted to reach the workspace"
               />
               <div className="space-y-2">
-                {entries.map((entry) => (
+                {entries.map((entry) => {
+                  const addedLine = `Added ${formatDateTime(entry.createdAt)}${entry.createdBy ? ` · ${entry.createdBy}` : ""}`;
+                  // Render description (when present) AND the added-at/by metadata.
+                  // Newline triggers the two-line subtitle fork inside CompactRow so
+                  // rules with a description don't drop their created metadata.
+                  const description = entry.description
+                    ? `${entry.description}\n${addedLine}`
+                    : addedLine;
+                  return (
                   <CompactRow
                     key={entry.id}
                     icon={Network}
                     title={entry.cidr}
-                    description={
-                      entry.description ||
-                      `Added ${formatDateTime(entry.createdAt)}${entry.createdBy ? ` · ${entry.createdBy}` : ""}`
-                    }
+                    description={description}
                     status="connected"
                     titleAccessory={
                       <Badge
@@ -536,7 +561,8 @@ export default function IPAllowlistPage() {
                       </Button>
                     }
                   />
-                ))}
+                  );
+                })}
 
                 <CompactRow
                   icon={Plus}

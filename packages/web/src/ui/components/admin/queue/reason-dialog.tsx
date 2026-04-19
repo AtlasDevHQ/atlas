@@ -77,9 +77,10 @@ export function ReasonDialog({
     try {
       await onConfirm(trimmed);
     } catch (err) {
-      // Caller bug — their onConfirm leaked an exception instead of
-      // setting the error prop. Surface to the operator so the dialog
-      // doesn't appear to stall, and log so observability still sees it.
+      // Caller bug — onConfirm rejected instead of resolving and
+      // surfacing the failure through the parent's `error` prop. Show
+      // it here so the dialog doesn't appear to stall, and log so
+      // observability still sees it.
       const msg = err instanceof Error ? err.message : String(err);
       setLocalError(`Unexpected error: ${msg}`);
       console.warn("ReasonDialog: onConfirm threw", err);

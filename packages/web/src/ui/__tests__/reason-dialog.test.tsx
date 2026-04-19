@@ -3,10 +3,16 @@ import { render, screen, cleanup, fireEvent, act } from "@testing-library/react"
 import { ReasonDialog } from "../components/admin/queue";
 
 /**
- * Regression guard for the compliance contract: the reason captured in
- * the audit log must be exactly what the user typed (whitespace-trimmed),
- * including the empty string. The dialog must NOT substitute a
- * hardcoded placeholder like "Denied by admin".
+ * Regression guards for two invariants this dialog owns:
+ *
+ * 1. Compliance contract — the reason captured in the audit log must be
+ *    exactly what the user typed (whitespace-trimmed), including the
+ *    empty string. The dialog must NOT substitute a hardcoded
+ *    placeholder like "Denied by admin".
+ *
+ * 2. Error surfacing — a throwing `onConfirm` must be visible to the
+ *    operator (alert + dialog stays mounted) and still reach
+ *    observability, rather than failing silently.
  */
 
 afterEach(() => cleanup());
@@ -26,7 +32,7 @@ function renderDialog(props: Partial<React.ComponentProps<typeof ReasonDialog>> 
   return { onConfirm, onOpenChange, ...utils };
 }
 
-describe("ReasonDialog compliance contract", () => {
+describe("ReasonDialog", () => {
   test("empty textarea → onConfirm receives empty string, not a placeholder", async () => {
     const { onConfirm } = renderDialog();
 
@@ -239,6 +245,41 @@ describe("ReasonDialog compliance contract", () => {
     );
 
     expect(screen.queryByRole("alert")).toBeNull();
+    warnSpy.mockRestore();
+  });
+
+  test("retry after failure clears localError within the same open session", async () => {
+    // First call rejects, second resolves — simulates the operator fixing
+    // the reason and retrying without closing the dialog.
+    let attempt = 0;
+    const onConfirm = mock(() => {
+      attempt++;
+      return attempt === 1 ? Promise.reject(new Error("boom")) : Promise.resolve();
+    });
+    const warnSpy = (await import("bun:test")).spyOn(console, "warn").mockImplementation(() => {});
+
+    render(
+      <ReasonDialog
+        open
+        onOpenChange={() => {}}
+        title="Deny action"
+        onConfirm={onConfirm}
+      />,
+    );
+
+    const confirm = screen.getByRole("button", { name: /deny/i });
+    await act(async () => {
+      fireEvent.click(confirm);
+    });
+    expect(screen.getByRole("alert").textContent).toBe("Unexpected error: boom");
+
+    // Retry — alert must clear at the start of the new attempt, not linger
+    // behind a now-succeeding call.
+    await act(async () => {
+      fireEvent.click(confirm);
+    });
+    expect(screen.queryByRole("alert")).toBeNull();
+    expect(onConfirm).toHaveBeenCalledTimes(2);
     warnSpy.mockRestore();
   });
 });

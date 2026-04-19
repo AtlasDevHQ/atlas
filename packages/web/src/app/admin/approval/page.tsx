@@ -40,6 +40,7 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { EmptyState } from "@/ui/components/admin/empty-state";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
+import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
 import {
   bulkFailureSummary,
   BulkRequestError,
@@ -241,7 +242,11 @@ function RulesSection() {
       feature="Approval Workflows"
       onRetry={refetch}
     >
-      {mutationError && <ErrorBanner message={friendlyError(mutationError)} onRetry={clearMutationError} />}
+      <MutationErrorSurface
+        error={mutationError}
+        feature="Approval Workflows"
+        onRetry={clearMutationError}
+      />
       <Card>
         <CardHeader className="flex flex-row items-center justify-between">
           <div>
@@ -422,7 +427,12 @@ function QueueSection() {
   const [requests, setRequests] = useState<ApprovalRequest[]>([]);
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState<FetchError | null>(null);
-  const [mutationError, setMutationError] = useState<string | null>(null);
+  // Structured error from single-row approve — routed through
+  // MutationErrorSurface so gated responses render upsell. Bulk-approve
+  // failures are an aggregate string (can't fit a single FetchError) and
+  // live in `bulkApproveSummary`.
+  const [mutationError, setMutationError] = useState<FetchError | null>(null);
+  const [bulkApproveSummary, setBulkApproveSummary] = useState<string | null>(null);
   const [refetchKey, setRefetchKey] = useState(0);
 
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -510,6 +520,7 @@ function QueueSection() {
 
   async function handleApprove(id: string, comment?: string) {
     setMutationError(null);
+    setBulkApproveSummary(null);
     // Optimistic patch first; server-authoritative row replaces it in
     // onSuccess (the server may add fields like reviewerId/reviewerEmail
     // the client can't predict).
@@ -533,18 +544,24 @@ function QueueSection() {
         }),
     );
     if (!result.ok) {
-      setMutationError(friendlyError(result.error));
+      setMutationError(result.error);
     }
   }
 
   async function confirmSingleDeny(reason: string) {
     if (!denyTarget) {
       console.warn("confirmSingleDeny: denyTarget cleared before confirm");
-      setMutationError("Unable to deny — the target was cleared. Please retry.");
+      // Synthesize a minimal FetchError so the banner still routes through
+      // MutationErrorSurface — no structured code since the failure is
+      // client-side.
+      setMutationError({
+        message: "Unable to deny — the target was cleared. Please retry.",
+      });
       return;
     }
     const id = denyTarget.id;
     setMutationError(null);
+    setBulkApproveSummary(null);
     const result = await runOptimistic(
       id,
       (r) => ({
@@ -588,12 +605,13 @@ function QueueSection() {
     if (selectedIds.size === 0) return;
     setBulkAction("approve");
     setMutationError(null);
+    setBulkApproveSummary(null);
     const ids = [...selectedIds];
     try {
       const results = await Promise.allSettled(ids.map((id) => bulkRequest(id, "approve", {})));
       const failedIds = failedIdsFrom(results, ids);
       if (failedIds.length > 0) {
-        setMutationError(bulkFailureSummary(results, ids, "approvals"));
+        setBulkApproveSummary(bulkFailureSummary(results, ids, "approvals"));
         setSelectedIds(new Set(failedIds));
       } else {
         setSelectedIds(new Set());
@@ -674,14 +692,26 @@ function QueueSection() {
           }
         />
 
+        {/* QueueSection has no AdminContentWrapper, so the read-path
+            fetchError is a mid-Card slot — keep ErrorBanner here instead
+            of MutationErrorSurface, whose FeatureGate branch renders
+            full-page chrome that would break the Card layout. */}
         {fetchError && (
           <ErrorBanner
             message={friendlyError(fetchError)}
             onRetry={() => setRefetchKey((k) => k + 1)}
           />
         )}
-        {mutationError && (
-          <ErrorBanner message={mutationError} onRetry={() => setMutationError(null)} />
+        <MutationErrorSurface
+          error={mutationError}
+          feature="Approval Workflows"
+          onRetry={() => setMutationError(null)}
+        />
+        {bulkApproveSummary && (
+          <ErrorBanner
+            message={bulkApproveSummary}
+            onRetry={() => setBulkApproveSummary(null)}
+          />
         )}
 
         {loading ? (
@@ -841,7 +871,8 @@ function QueueSection() {
         }
         onConfirm={confirmSingleDeny}
         loading={!!denyTarget && denyMutation.isMutating(denyTarget.id)}
-        error={denyMutation.error ? friendlyError(denyMutation.error) : null}
+        mutationError={denyMutation.error}
+        feature="Approval Workflows"
       />
 
       <ReasonDialog

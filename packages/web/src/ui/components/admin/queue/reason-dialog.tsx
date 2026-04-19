@@ -12,6 +12,8 @@ import {
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
+import type { FetchError } from "@/ui/lib/fetch-error";
 import { Loader2, X } from "lucide-react";
 
 interface ReasonDialogProps {
@@ -30,7 +32,24 @@ interface ReasonDialogProps {
   required?: boolean;
   onConfirm: (reason: string) => Promise<void> | void;
   loading?: boolean;
+  /**
+   * Local-synthesized string error (e.g. bulk-failure summary). Takes effect
+   * when `mutationError` is null. Rendered as a flat alert block — no
+   * structured routing.
+   */
   error?: string | null;
+  /**
+   * Structured mutation error from `useAdminMutation().error`. Takes
+   * precedence over `error`. Routed through `MutationErrorSurface` so gated
+   * failures render `EnterpriseUpsell` inline instead of the flat string
+   * `friendlyError()` would produce.
+   */
+  mutationError?: FetchError | null;
+  /**
+   * Feature name for `MutationErrorSurface` routing when `mutationError` is
+   * present. Should match the page's `AdminContentWrapper` feature.
+   */
+  feature?: string;
 }
 
 /**
@@ -55,6 +74,8 @@ export function ReasonDialog({
   onConfirm,
   loading = false,
   error,
+  mutationError,
+  feature,
 }: ReasonDialogProps) {
   const [reason, setReason] = useState("");
   const [localError, setLocalError] = useState<string | null>(null);
@@ -67,19 +88,18 @@ export function ReasonDialog({
     }
   }, [open]);
 
-  // A fresh non-null `error` prop clears any stale localError so the
-  // caller's message wins. Without this, `displayError = localError ?? error`
-  // keeps showing a prior-throw "Unexpected error: ..." and hides a real
-  // server error that arrives later. Fires on every non-null error, not
-  // just the null→non-null transition, so sequential retries each surface
-  // the latest caller-provided diagnosis.
+  // A fresh non-null caller-provided error clears any stale localError so
+  // the caller's message wins. Without this, `localError ?? error` keeps
+  // showing a prior-throw "Unexpected error: ..." and hides a real server
+  // error that arrives later. Fires on every non-null caller error (string
+  // or structured), not just the null→non-null transition, so sequential
+  // retries each surface the latest caller-provided diagnosis.
   useEffect(() => {
-    if (error != null) setLocalError(null);
-  }, [error]);
+    if (error != null || mutationError != null) setLocalError(null);
+  }, [error, mutationError]);
 
   const trimmed = reason.trim();
   const canConfirm = required ? trimmed.length > 0 : true;
-  const displayError = localError ?? error;
 
   async function handleConfirm() {
     if (!canConfirm) return;
@@ -161,14 +181,35 @@ export function ReasonDialog({
           )}
         </div>
 
-        {displayError && (
+        {/* Precedence: localError (dialog-internal onConfirm throw) >
+            mutationError (structured, routed through MutationErrorSurface) >
+            error (string, e.g. bulk-failure summary). All three branches
+            expose role="alert" so screen readers announce changes — the
+            mutationError branch wraps MutationErrorSurface because
+            InlineError itself has no live-region semantics. */}
+        {localError ? (
           <div
             role="alert"
             className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive"
           >
-            {displayError}
+            {localError}
           </div>
-        )}
+        ) : mutationError ? (
+          <div role="alert">
+            <MutationErrorSurface
+              error={mutationError}
+              feature={feature ?? ""}
+              variant="inline"
+            />
+          </div>
+        ) : error ? (
+          <div
+            role="alert"
+            className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive"
+          >
+            {error}
+          </div>
+        ) : null}
 
         <DialogFooter>
           <Button

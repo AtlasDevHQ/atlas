@@ -1,6 +1,7 @@
 import { describe, expect, test, beforeEach, afterEach, mock, type Mock } from "bun:test";
 import { render, screen, fireEvent, waitFor, cleanup, act } from "@testing-library/react";
 import { ReasonDialog } from "../reason-dialog";
+import type { FetchError } from "@/ui/lib/fetch-error";
 
 // Silence + assert the observability log the component fires when
 // onConfirm throws. Without a spy, each test that triggers the throw
@@ -155,6 +156,70 @@ describe("ReasonDialog error precedence (#1612)", () => {
     rerender(<Harness error={null} />);
     // localError must still dominate — no fresh caller error to honor.
     expect(errorText() ?? "").toContain("Unexpected error");
+  });
+
+  test("three-slot precedence: localError > mutationError > error, and mutationError change clears stale localError", async () => {
+    // Locks: (1) the three-way precedence ordering in the render body,
+    // (2) the widened `useEffect(…, [error, mutationError])` deps — a
+    // later cleanup that drops `mutationError` from the deps would
+    // silently regress step 2 without any existing test catching it.
+    function Harness({
+      error,
+      mutationError,
+    }: {
+      error: string | null;
+      mutationError: FetchError | null;
+    }) {
+      return (
+        <ReasonDialog
+          open
+          onOpenChange={() => {}}
+          title="Deny"
+          onConfirm={async () => {
+            throw new Error("boom");
+          }}
+          feature="Approval Workflows"
+          error={error}
+          mutationError={mutationError}
+        />
+      );
+    }
+
+    const { rerender } = render(
+      <Harness error="bulk summary" mutationError={{ message: "server X", status: 500 }} />,
+    );
+
+    // Trigger the throw so localError is set. Starting caller errors are
+    // already non-null so the effect has already fired once — subsequent
+    // setLocalError wins.
+    await act(async () => {
+      fireEvent.click(denyButton());
+    });
+    await waitFor(() => expect(errorText() ?? "").toContain("Unexpected error"));
+
+    // Step 1: with localError set, neither mutationError nor error shows.
+    expect(errorText()).not.toContain("server X");
+    expect(errorText()).not.toContain("bulk summary");
+
+    // Step 2: caller pushes a fresh mutationError instance. useEffect fires
+    // (mutationError identity changed), clears localError, and the
+    // MutationErrorSurface inline chrome renders the new server message.
+    rerender(
+      <Harness
+        error="bulk summary"
+        mutationError={{ message: "server Y", status: 500 }}
+      />,
+    );
+    await waitFor(() => {
+      const text = errorText() ?? "";
+      expect(text).toContain("server Y");
+      expect(text).not.toContain("Unexpected error");
+      expect(text).not.toContain("bulk summary");
+    });
+
+    // Step 3: caller drops mutationError — error string fallthrough wins.
+    rerender(<Harness error="bulk summary" mutationError={null} />);
+    await waitFor(() => expect(errorText()).toBe("bulk summary"));
   });
 });
 

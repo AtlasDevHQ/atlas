@@ -7,7 +7,7 @@ import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { friendlyError } from "@/ui/lib/fetch-error";
 import { ListApiKeysResponseSchema } from "@/ui/lib/admin-schemas";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
-import { ErrorBanner } from "@/ui/components/admin/error-banner";
+import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import {
   CompactRow,
@@ -187,11 +187,13 @@ export default function ApiKeysPage() {
           loadingMessage="Loading API keys..."
           isEmpty={false}
         >
-          {deleteMutation.error && (
-            <div className="mb-4">
-              <ErrorBanner message={friendlyError(deleteMutation.error)} onRetry={deleteMutation.clearError} />
-            </div>
-          )}
+          <div className="mb-4">
+            <MutationErrorSurface
+              error={deleteMutation.error}
+              feature="API Keys"
+              onRetry={deleteMutation.clearError}
+            />
+          </div>
 
           <section>
             <SectionHeading
@@ -288,11 +290,11 @@ export default function ApiKeysPage() {
               Any applications using this key will immediately lose access. This cannot be undone.
             </DialogDescription>
           </DialogHeader>
-          {deleteMutation.error && (
-            <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-              {friendlyError(deleteMutation.error)}
-            </div>
-          )}
+          <MutationErrorSurface
+            error={deleteMutation.error}
+            feature="API Keys"
+            variant="inline"
+          />
           <DialogFooter>
             <Button
               variant="outline"

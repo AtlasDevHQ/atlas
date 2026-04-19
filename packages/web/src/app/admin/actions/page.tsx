@@ -4,6 +4,7 @@ import { Fragment, useEffect, useState } from "react";
 import { useQueryStates } from "nuqs";
 import { actionsSearchParams } from "./search-params";
 import { ACTION_TYPE_LABELS, actionTypeIcon, actionTypeLabel } from "./labels";
+import { coerceRollbackWarning } from "./rollback-warning";
 import { useAtlasConfig } from "@/ui/context";
 import {
   Table,
@@ -305,8 +306,14 @@ export default function ActionsPage() {
         // side-effect may not have actually reversed (e.g. external API has no
         // true undo). Surface to a dismissible warning, not an error.
         const body = data as Record<string, unknown> | undefined;
-        if (body?.warning && typeof body.warning === "string") {
-          setMutationWarning(body.warning);
+        const warning = coerceRollbackWarning(body?.warning);
+        if (warning) {
+          setMutationWarning(warning);
+          // Log the raw shape so observability catches server-side schema drift
+          // without silently dropping the compliance signal in the UI.
+          if (typeof body?.warning !== "string") {
+            console.warn("handleRollback: non-string warning shape", body?.warning);
+          }
         }
       },
     });

@@ -1,14 +1,6 @@
 "use client";
 
-import {
-  useEffect,
-  useId,
-  useRef,
-  useState,
-  type ComponentType,
-  type ReactNode,
-  type RefObject,
-} from "react";
+import { useEffect, useState, type ComponentType } from "react";
 import { z } from "zod";
 import {
   AlertDialog,
@@ -33,6 +25,17 @@ import {
 } from "@/components/ui/select";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
+import {
+  CompactRow,
+  DetailList,
+  DetailRow,
+  InlineError,
+  SectionHeading,
+  Shell,
+  StatusDot,
+  type StatusKind,
+  useDisclosure,
+} from "@/ui/components/admin/compact";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { combineMutationErrors } from "@/ui/lib/mutation-errors";
@@ -50,7 +53,6 @@ import {
   Save,
   Server,
   Trash2,
-  X,
 } from "lucide-react";
 
 // ── Types ─────────────────────────────────────────────────────────
@@ -131,33 +133,10 @@ const PROVIDERS: Record<SandboxProviderKey, ProviderInfo> = {
 
 const PROVIDER_KEYS = Object.keys(PROVIDERS) as SandboxProviderKey[];
 
-// ── Shared design primitives ──────────────────────────────────────
-// Intentionally duplicated in several admin pages until the shape is stable
-// enough to extract. Tracked in #1551.
-
-type StatusKind = "connected" | "ready" | "disconnected" | "unavailable";
-
-function StatusDot({ kind, className }: { kind: StatusKind; className?: string }) {
-  return (
-    <span
-      aria-hidden
-      className={cn(
-        "relative inline-flex size-1.5 shrink-0 rounded-full",
-        kind === "connected" &&
-          "bg-primary shadow-[0_0_0_3px_color-mix(in_oklch,var(--primary)_15%,transparent)]",
-        kind === "ready" && "bg-primary/70",
-        kind === "disconnected" && "bg-muted-foreground/40",
-        kind === "unavailable" &&
-          "bg-muted-foreground/20 outline-1 outline-dashed outline-muted-foreground/30",
-        className,
-      )}
-    >
-      {kind === "connected" && (
-        <span className="absolute inset-0 rounded-full bg-primary/60 motion-safe:animate-ping" />
-      )}
-    </span>
-  );
-}
+// ── StatusPill (page-specific labels) ─────────────────────────────
+// Kept inline because this page uses several custom labels ("Available",
+// "Connected", "Override", "Default") that the shared Shell's default
+// trailing pill doesn't cover. Consumed via Shell's `trailing` prop.
 
 function StatusPill({ kind, label }: { kind: StatusKind; label: string }) {
   return (
@@ -173,216 +152,6 @@ function StatusPill({ kind, label }: { kind: StatusKind; label: string }) {
       {label}
     </span>
   );
-}
-
-function SectionHeading({ title, description }: { title: string; description: string }) {
-  return (
-    <div className="mb-3">
-      <h2 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-        {title}
-      </h2>
-      <p className="mt-0.5 text-xs text-muted-foreground/80">{description}</p>
-    </div>
-  );
-}
-
-function CompactRow({
-  icon: Icon,
-  title,
-  description,
-  status,
-  action,
-}: {
-  icon: ComponentType<{ className?: string }>;
-  title: string;
-  description: ReactNode;
-  status: StatusKind;
-  action?: ReactNode;
-}) {
-  return (
-    <div
-      className={cn(
-        "group flex items-center gap-3 rounded-xl border bg-card/40 px-3.5 py-2.5 transition-colors",
-        "hover:bg-card/70 hover:border-border/80",
-        status === "unavailable" && "opacity-60",
-      )}
-    >
-      <span className="grid size-8 shrink-0 place-items-center rounded-lg border bg-background/40 text-muted-foreground">
-        <Icon className="size-4" />
-      </span>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          <h3 className="truncate text-sm font-semibold leading-tight tracking-tight">
-            {title}
-          </h3>
-          <StatusDot kind={status} />
-        </div>
-        <p className="mt-0.5 truncate text-xs text-muted-foreground">{description}</p>
-      </div>
-      {action && <div className="shrink-0">{action}</div>}
-    </div>
-  );
-}
-
-function ProviderShell({
-  id,
-  icon: Icon,
-  title,
-  description,
-  status,
-  trailing,
-  onCollapse,
-  children,
-  actions,
-  panelRef,
-}: {
-  id?: string;
-  icon: ComponentType<{ className?: string }>;
-  title: string;
-  description: ReactNode;
-  status: StatusKind;
-  trailing?: ReactNode;
-  onCollapse?: () => void;
-  children?: ReactNode;
-  actions?: ReactNode;
-  panelRef?: RefObject<HTMLElement | null>;
-}) {
-  return (
-    <section
-      id={id}
-      ref={panelRef}
-      className={cn(
-        "relative flex flex-col overflow-hidden rounded-xl border bg-card/60 transition-colors",
-        status === "connected" && "border-primary/20",
-        status === "ready" && "border-primary/10",
-      )}
-    >
-      {status === "connected" && (
-        <span
-          aria-hidden
-          className="pointer-events-none absolute left-0 top-4 bottom-4 w-px bg-linear-to-b from-transparent via-primary to-transparent opacity-70"
-        />
-      )}
-      <header className="flex items-start gap-3 p-4 pb-3">
-        <span
-          className={cn(
-            "grid size-9 shrink-0 place-items-center rounded-lg border bg-background/40",
-            status === "connected" && "border-primary/30 text-primary",
-            status === "ready" && "border-primary/20 text-primary/80",
-            (status === "disconnected" || status === "unavailable") && "text-muted-foreground",
-          )}
-        >
-          <Icon className="size-4" />
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <h3 className="truncate text-sm font-semibold leading-tight tracking-tight">
-              {title}
-            </h3>
-            {trailing ? (
-              <div className="ml-auto flex items-center gap-1.5">{trailing}</div>
-            ) : status === "connected" ? (
-              <span className="ml-auto">
-                <StatusPill kind="connected" label="Live" />
-              </span>
-            ) : onCollapse ? (
-              <button
-                type="button"
-                aria-label="Cancel"
-                onClick={onCollapse}
-                className="ml-auto -m-1 grid size-6 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-              >
-                <X className="size-3.5" />
-              </button>
-            ) : null}
-          </div>
-          <p className="mt-0.5 text-xs leading-snug text-muted-foreground">{description}</p>
-        </div>
-      </header>
-      {children != null && (
-        <div className="flex-1 space-y-4 px-4 pb-3 text-sm">{children}</div>
-      )}
-      {actions && (
-        <footer className="flex flex-wrap items-center justify-end gap-2 border-t border-border/50 bg-muted/20 px-4 py-2.5">
-          {actions}
-        </footer>
-      )}
-    </section>
-  );
-}
-
-function DetailRow({
-  label,
-  value,
-  mono,
-}: {
-  label: string;
-  value: ReactNode;
-  mono?: boolean;
-}) {
-  return (
-    <div className="flex items-baseline justify-between gap-3 py-1 text-xs">
-      <span className="shrink-0 text-muted-foreground">{label}</span>
-      <span className={cn("min-w-0 text-right", mono ? "font-mono text-[11px]" : "font-medium")}>
-        {value}
-      </span>
-    </div>
-  );
-}
-
-function DetailList({ children }: { children: ReactNode }) {
-  return (
-    <div className="rounded-lg border bg-muted/20 px-3 py-1.5 divide-y divide-border/50">
-      {children}
-    </div>
-  );
-}
-
-function InlineError({ children }: { children: ReactNode }) {
-  if (!children) return null;
-  return (
-    <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-      {children}
-    </div>
-  );
-}
-
-/**
- * Progressive-disclosure helper for provider rows. Clears the owning
- * mutation error on explicit collapse so the X can never silently hide
- * a failure the user hasn't seen.
- */
-function useDisclosure(connected: boolean, onCollapseCleanup?: () => void) {
-  const [expanded, setExpanded] = useState(false);
-  const triggerRef = useRef<HTMLButtonElement | null>(null);
-  const panelRef = useRef<HTMLElement | null>(null);
-  const panelId = useId();
-  const prev = useRef(false);
-
-  // Auto-collapse once the provider becomes connected so a later disconnect
-  // doesn't reopen under stale `expanded=true`.
-  useEffect(() => {
-    if (connected) setExpanded(false);
-  }, [connected]);
-
-  useEffect(() => {
-    if (expanded && !prev.current) {
-      const first = panelRef.current?.querySelector<HTMLElement>(
-        "input:not([disabled]), textarea:not([disabled])",
-      );
-      first?.focus();
-    } else if (!expanded && prev.current) {
-      triggerRef.current?.focus();
-    }
-    prev.current = expanded;
-  }, [expanded]);
-
-  const collapse = () => {
-    setExpanded(false);
-    onCollapseCleanup?.();
-  };
-
-  return { expanded, setExpanded, collapse, triggerRef, panelRef, panelId };
 }
 
 // ── Page ──────────────────────────────────────────────────────────
@@ -570,7 +339,7 @@ function ManagedSandboxShell({
 }) {
   const status: StatusKind = isActive ? "connected" : "ready";
   return (
-    <ProviderShell
+    <Shell
       icon={Cloud}
       title="Atlas Cloud Sandbox"
       description="Managed container service with HTTP isolation. Recommended for most workspaces."
@@ -596,7 +365,7 @@ function ManagedSandboxShell({
           Switch back here anytime — no credentials required.
         </p>
       )}
-    </ProviderShell>
+    </Shell>
   );
 }
 
@@ -641,10 +410,13 @@ function ProviderRow({
   const [validationError, setValidationError] = useState<string | null>(null);
 
   const { expanded, setExpanded, collapse, triggerRef, panelRef, panelId } =
-    useDisclosure(isConnected, () => {
-      connectMutation.clearError();
-      setValidationError(null);
-      setFieldValues({});
+    useDisclosure({
+      collapseOn: isConnected,
+      onCollapseCleanup: () => {
+        connectMutation.clearError();
+        setValidationError(null);
+        setFieldValues({});
+      },
     });
 
   // `useDisclosure`'s auto-collapse fires `setExpanded(false)` directly, without
@@ -703,7 +475,7 @@ function ProviderRow({
   }
 
   return (
-    <ProviderShell
+    <Shell
       id={panelId}
       panelRef={panelRef}
       icon={info.icon}
@@ -819,7 +591,7 @@ function ProviderRow({
 
       <InlineError>{validationError ?? connectMutation.error}</InlineError>
       <InlineError>{disconnectMutation.error}</InlineError>
-    </ProviderShell>
+    </Shell>
   );
 }
 
@@ -859,7 +631,7 @@ function SelfHostedSandboxView({
         title="Backend"
         description="Select which backend executes explore and Python tool calls."
       />
-      <ProviderShell
+      <Shell
         icon={Server}
         title="Sandbox backend"
         description={
@@ -973,7 +745,7 @@ function SelfHostedSandboxView({
             </p>
           </div>
         )}
-      </ProviderShell>
+      </Shell>
     </section>
   );
 }

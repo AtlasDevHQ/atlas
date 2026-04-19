@@ -427,8 +427,9 @@ describe("useAdminFetch", () => {
 
     expect(result.current.data).toBeNull();
     expect(result.current.error).not.toBeNull();
-    expect(result.current.error!.message).toContain("Unexpected response format");
+    expect(result.current.error!.message).toContain("unexpected response");
     expect(result.current.error!.message).toContain("/api/test");
+    expect(result.current.error!.code).toBe("schema_mismatch");
     expect(warnMock).toHaveBeenCalled();
 
     console.warn = originalWarn;
@@ -456,7 +457,8 @@ describe("useAdminFetch", () => {
     expect(result.current.data).toBeNull();
     expect(result.current.loading).toBe(false);
     expect(result.current.error).not.toBeNull();
-    expect(result.current.error!.message).toContain("Unexpected response format");
+    expect(result.current.error!.message).toContain("unexpected response");
+    expect(result.current.error!.code).toBe("schema_mismatch");
 
     console.warn = originalWarn;
   });
@@ -520,7 +522,8 @@ describe("useAdminFetch", () => {
     });
 
     expect(result.current.data).toBeNull();
-    expect(result.current.error!.message).toContain("Unexpected response format");
+    expect(result.current.error!.message).toContain("unexpected response");
+    expect(result.current.error!.code).toBe("schema_mismatch");
 
     console.warn = originalWarn;
   });

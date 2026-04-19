@@ -139,7 +139,14 @@ export function ActionApprovalCard({ part }: { part: unknown }) {
     }
 
     if (!res.ok) {
-      const text = await res.text().catch(() => "Unknown error");
+      // Surface the actual rejection reason so an aborted/malformed response
+      // body produces a diagnosable message (e.g. "AbortError: signal aborted")
+      // instead of a literal "Unknown error" that's indistinguishable from a
+      // server that genuinely returned the body "Unknown error". Mirrors the
+      // pattern used by `bulkFailureSummary` and `useAdminMutation`.
+      const text = await res
+        .text()
+        .catch((err) => (err instanceof Error ? err.message : String(err)));
       throw new Error(`Server responded ${res.status}: ${text}`);
     }
 

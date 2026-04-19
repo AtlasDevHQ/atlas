@@ -125,6 +125,26 @@ describe("friendlyError", () => {
       "Not authenticated. Please sign in. (Request ID: req-abc)",
     );
   });
+
+  test("routes schema_mismatch to a version-drift specific message", () => {
+    expect(friendlyError({ message: "raw", code: "schema_mismatch" })).toContain(
+      "out of sync",
+    );
+  });
+
+  test("schema_mismatch wins over status (e.g. 200 OK with bad body)", () => {
+    // No status field — emulates the useAdminFetch schema-failure throw.
+    expect(friendlyError({ message: "raw", code: "schema_mismatch" })).not.toBe("raw");
+  });
+
+  test("schema_mismatch wins over a 401 status", () => {
+    // Defensive: if a future endpoint somehow returned 401 with a schema
+    // mismatch payload, the version-drift copy is more actionable than
+    // "Not authenticated".
+    expect(
+      friendlyError({ message: "x", status: 401, code: "schema_mismatch" }),
+    ).toContain("out of sync");
+  });
 });
 
 describe("extractFetchError empty-message clobber guard", () => {

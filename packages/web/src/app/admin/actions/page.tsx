@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { useQueryStates } from "nuqs";
 import { actionsSearchParams } from "./search-params";
 import { actionTypeIcon, actionTypeLabel } from "./labels";
@@ -29,6 +29,7 @@ import type { ActionLogEntry } from "@/ui/lib/types";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { EmptyState } from "@/ui/components/admin/empty-state";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
+import { extractFetchError, type FetchError } from "@/ui/lib/fetch-error";
 import {
   Zap,
   Check,
@@ -39,8 +40,8 @@ import {
   XCircle,
   Inbox,
   Undo2,
+  AlertTriangle,
 } from "lucide-react";
-import type { FetchError } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 
@@ -108,21 +109,18 @@ const EMPTY_MESSAGES: Record<StatusFilter, string> = {
   all: "No actions recorded yet.",
 };
 
-/* ────────────────────────────────────────────────────────────────────────
- *  PayloadView — branches on action_type to render structured payload
- *  fields when the shape is known. Falls back to JSON for unknown
- *  shapes so a new tool's payload is never silently hidden.
- * ──────────────────────────────────────────────────────────────────────── */
-
 function PayloadView({ type, payload }: { type: string; payload: Record<string, unknown> }) {
   const t = type.toLowerCase();
 
-  if ((t === "sql_write" || t === "sql") && typeof payload.sql === "string") {
-    return (
-      <pre className="overflow-auto rounded border bg-muted/60 p-2 font-mono text-xs leading-relaxed">
-        {payload.sql}
-      </pre>
-    );
+  if (t === "sql_write" || t === "sql") {
+    if (typeof payload.sql === "string") {
+      return (
+        <pre className="overflow-auto rounded border bg-muted/60 p-2 font-mono text-xs leading-relaxed">
+          {payload.sql}
+        </pre>
+      );
+    }
+    console.warn(`PayloadView: ${type} payload missing string .sql`, payload);
   }
 
   if (t === "api_call" || t === "api") {
@@ -148,27 +146,46 @@ function PayloadView({ type, payload }: { type: string; payload: Record<string, 
         </div>
       );
     }
+    console.warn(`PayloadView: ${type} payload missing method/url`, payload);
   }
 
-  if ((t === "file_write" || t === "file") && typeof payload.path === "string") {
-    return (
-      <div className="space-y-1.5">
-        <div className="rounded border bg-muted/60 px-2 py-1.5 font-mono text-xs">
-          {payload.path}
+  if (t === "file_write" || t === "file") {
+    if (typeof payload.path === "string") {
+      return (
+        <div className="space-y-1.5">
+          <div className="rounded border bg-muted/60 px-2 py-1.5 font-mono text-xs">
+            {payload.path}
+          </div>
+          {typeof payload.content === "string" && (
+            <pre className="overflow-auto rounded border bg-muted/40 p-2 font-mono text-xs">
+              {payload.content}
+            </pre>
+          )}
         </div>
-        {typeof payload.content === "string" && (
-          <pre className="overflow-auto rounded border bg-muted/40 p-2 font-mono text-xs">
-            {payload.content}
-          </pre>
-        )}
-      </div>
-    );
+      );
+    }
+    console.warn(`PayloadView: ${type} payload missing string .path`, payload);
   }
 
+  // Fallback so payloads from new tools surface unformatted instead of disappearing.
   return (
     <pre className="overflow-auto rounded border bg-muted/40 p-2 text-xs">
       {JSON.stringify(payload, null, 2)}
     </pre>
+  );
+}
+
+function WarningBanner({ message, onDismiss }: { message: string; onDismiss: () => void }) {
+  return (
+    <div role="status" className="flex items-start justify-between gap-4 rounded-md border border-amber-500/30 bg-amber-500/10 px-4 py-3">
+      <div className="flex items-start gap-2">
+        <AlertTriangle className="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-400" />
+        <p className="text-sm text-amber-800 dark:text-amber-300">{message}</p>
+      </div>
+      <Button variant="outline" size="sm" onClick={onDismiss} className="shrink-0">
+        Dismiss
+      </Button>
+    </div>
   );
 }
 
@@ -179,21 +196,26 @@ export default function ActionsPage() {
   const [actions, setActions] = useState<ActionLogEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<FetchError | null>(null);
-  // Page-level mutation error — funnels approve/deny/rollback failures into
-  // a single banner instead of stacking up to four. Resets on next mutation.
+
+  // Page-level error covers approve/rollback failures + bulk failure summaries.
+  // Single-row deny errors live on denyMutation.error (rendered in the dialog).
+  // Bulk-deny errors live in bulkError (rendered in the dialog).
   const [mutationError, setMutationError] = useState<string | null>(null);
+  // Warnings are explicit-dismiss only — never auto-cleared by the next click.
+  // Used for the rollback `{warning}` server contract: 200 OK but the side-
+  // effect may not have actually been undone (see api/routes/actions.ts).
+  const [mutationWarning, setMutationWarning] = useState<string | null>(null);
+  const [bulkError, setBulkError] = useState<string | null>(null);
+
   const [{ status: statusFilter, expanded: expandedId }, setParams] = useQueryStates(actionsSearchParams);
 
   const [refetchKey, setRefetchKey] = useState(0);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkAction, setBulkAction] = useState<"approve" | "deny" | null>(null);
 
-  // Deny dialog state — single-row deny opens with `denyTarget` set;
-  // bulk deny opens with `bulkDenyOpen` true.
   const [denyTarget, setDenyTarget] = useState<ActionLogEntry | null>(null);
   const [bulkDenyOpen, setBulkDenyOpen] = useState(false);
 
-  // Mutation hooks for per-item actions
   const approveMutation = useAdminMutation({
     method: "POST",
     invalidates: () => setRefetchKey((k) => k + 1),
@@ -209,7 +231,6 @@ export default function ActionsPage() {
 
   const bulkInProgress = bulkAction !== null;
 
-  // Clear selection when filter changes
   useEffect(() => {
     setSelectedIds(new Set());
   }, [statusFilter]);
@@ -225,12 +246,7 @@ export default function ActionsPage() {
         const res = await fetch(`${apiUrl}/api/v1/actions?${params}`, { credentials });
         if (cancelled) return;
         if (!res.ok) {
-          let serverMessage = `HTTP ${res.status}`;
-          try {
-            const body = await res.json();
-            if (body?.message) serverMessage = body.message;
-          } catch { /* intentionally ignored: response may not be JSON */ }
-          setError({ message: serverMessage, status: res.status });
+          setError(await extractFetchError(res));
           return;
         }
         const data = await res.json();
@@ -248,7 +264,7 @@ export default function ActionsPage() {
     return () => { cancelled = true; };
   }, [apiUrl, statusFilter, refetchKey, credentials]);
 
-  const pendingActions = useMemo(() => actions.filter((a) => a.status === "pending"), [actions]);
+  const pendingActions = actions.filter((a) => a.status === "pending");
   const allSelectableSelected = pendingActions.length > 0 && pendingActions.every((a) => selectedIds.has(a.id));
   const someSelected = selectedIds.size > 0;
 
@@ -269,6 +285,21 @@ export default function ActionsPage() {
     }
   }
 
+  /** Single bulk fetch; throws on non-2xx with the same shape useAdminMutation surfaces. */
+  async function bulkRequest(id: string, endpoint: "approve" | "deny", body: Record<string, unknown>) {
+    const res = await fetch(`${apiUrl}/api/v1/actions/${id}/${endpoint}`, {
+      credentials,
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const fe = await extractFetchError(res);
+      const msg = fe.requestId ? `${fe.message} (Request ID: ${fe.requestId})` : fe.message;
+      throw new Error(msg);
+    }
+  }
+
   async function handleApprove(id: string) {
     setMutationError(null);
     const result = await approveMutation.mutate({
@@ -281,7 +312,6 @@ export default function ActionsPage() {
 
   async function confirmSingleDeny(reason: string) {
     if (!denyTarget) return;
-    setMutationError(null);
     const id = denyTarget.id;
     const body: Record<string, unknown> = {};
     if (reason) body.reason = reason;
@@ -290,11 +320,8 @@ export default function ActionsPage() {
       body,
       itemId: id,
     });
-    if (!result.ok) {
-      setMutationError(result.error);
-      return;
-    }
-    setDenyTarget(null);
+    if (result.ok) setDenyTarget(null);
+    // On failure, denyMutation.error is set automatically — dialog renders it.
   }
 
   async function handleRollback(id: string) {
@@ -304,12 +331,12 @@ export default function ActionsPage() {
       body: {},
       itemId: id,
       onSuccess: (data) => {
-        // Server returns { warning } when rollback succeeded but with caveats
-        // (e.g. external API didn't expose a true undo). Surface as a warning
-        // banner so the operator can investigate.
+        // Server returns { warning } on 200 when the rollback persisted but the
+        // side-effect may not have actually reversed (e.g. external API has no
+        // true undo). Surface to a dismissible warning, not an error.
         const body = data as Record<string, unknown> | undefined;
         if (body?.warning && typeof body.warning === "string") {
-          setMutationError(body.warning);
+          setMutationWarning(body.warning);
         }
       },
     });
@@ -323,27 +350,9 @@ export default function ActionsPage() {
     const ids = [...selectedIds];
     try {
       const results = await Promise.allSettled(
-        ids.map((id) =>
-          fetch(`${apiUrl}/api/v1/actions/${id}/approve`, {
-            credentials,
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: "{}",
-          }).then(async (res) => {
-            if (!res.ok) {
-              let serverMessage = `HTTP ${res.status}`;
-              try {
-                const errBody = await res.json();
-                if (errBody?.message) serverMessage = errBody.message;
-              } catch { /* intentionally ignored: response may not be JSON */ }
-              throw new Error(serverMessage);
-            }
-          }),
-        ),
+        ids.map((id) => bulkRequest(id, "approve", {})),
       );
       handleBulkResult(results, ids, "approvals");
-    } catch (err) {
-      setMutationError(err instanceof Error ? err.message : `Bulk approve failed`);
     } finally {
       setBulkAction(null);
     }
@@ -352,72 +361,47 @@ export default function ActionsPage() {
   async function confirmBulkDeny(reason: string) {
     if (selectedIds.size === 0) return;
     setBulkAction("deny");
-    setMutationError(null);
+    setBulkError(null);
     const ids = [...selectedIds];
     const body: Record<string, unknown> = {};
     if (reason) body.reason = reason;
-    const bodyJson = JSON.stringify(body);
     try {
       const results = await Promise.allSettled(
-        ids.map((id) =>
-          fetch(`${apiUrl}/api/v1/actions/${id}/deny`, {
-            credentials,
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: bodyJson,
-          }).then(async (res) => {
-            if (!res.ok) {
-              let serverMessage = `HTTP ${res.status}`;
-              try {
-                const errBody = await res.json();
-                if (errBody?.message) serverMessage = errBody.message;
-              } catch { /* intentionally ignored: response may not be JSON */ }
-              throw new Error(serverMessage);
-            }
-          }),
-        ),
+        ids.map((id) => bulkRequest(id, "deny", body)),
       );
-      handleBulkResult(results, ids, "denials");
-      // Close the dialog only on full success; partial failure leaves the
-      // selection narrowed to failed IDs so operator can see what's left.
       const failedCount = results.filter((r) => r.status === "rejected").length;
-      if (failedCount === 0) setBulkDenyOpen(false);
-    } catch (err) {
-      setMutationError(err instanceof Error ? err.message : `Bulk deny failed`);
+      if (failedCount === 0) {
+        setSelectedIds(new Set());
+        setBulkDenyOpen(false);
+        setRefetchKey((k) => k + 1);
+        return;
+      }
+      // Partial / total failure: narrow selection to failed IDs and surface
+      // the summary inside the dialog so a retry click sees the *current*
+      // attempt's stats, not the prior one (bulkError clears at fn entry).
+      const summary = bulkFailureSummary(results, ids, "denials");
+      setBulkError(summary);
+      setSelectedIds(new Set(failedIdsFrom(results, ids)));
+      setRefetchKey((k) => k + 1);
     } finally {
       setBulkAction(null);
     }
   }
 
-  /** Shared partial-failure handling for bulk approve / deny. */
+  /** Page-level summary for bulk approve (no dialog to show it in). */
   function handleBulkResult(
     results: PromiseSettledResult<unknown>[],
     ids: string[],
     noun: string,
   ) {
-    const failedIds = new Set(
-      results
-        .map((r, i) => (r.status === "rejected" ? ids[i] : null))
-        .filter((id): id is string => id !== null),
-    );
-    if (failedIds.size > 0) {
-      const reasons = [...new Set(
-        results
-          .filter((r): r is PromiseRejectedResult => r.status === "rejected")
-          .map((r) => (r.reason instanceof Error ? r.reason.message : "Unknown error")),
-      )];
-      setMutationError(`${failedIds.size} of ${ids.length} ${noun} failed: ${reasons.join(", ")}`);
-      setSelectedIds(failedIds);
+    const failedIds = failedIdsFrom(results, ids);
+    if (failedIds.length > 0) {
+      setMutationError(bulkFailureSummary(results, ids, noun));
+      setSelectedIds(new Set(failedIds));
     } else {
       setSelectedIds(new Set());
     }
     setRefetchKey((k) => k + 1);
-  }
-
-  // Single banner — fetch error is rendered by AdminContentWrapper, this
-  // covers all mutation paths (approve/deny/rollback + bulk + warnings).
-  function clearMutationError() {
-    setMutationError(null);
   }
 
   return (
@@ -476,7 +460,8 @@ export default function ActionsPage() {
 
         <ErrorBoundary>
         <div className="space-y-6">
-          {mutationError && <ErrorBanner message={mutationError} onRetry={clearMutationError} />}
+          {mutationError && <ErrorBanner message={mutationError} onRetry={() => setMutationError(null)} />}
+          {mutationWarning && <WarningBanner message={mutationWarning} onDismiss={() => setMutationWarning(null)} />}
 
           <AdminContentWrapper
             loading={loading}
@@ -741,22 +726,57 @@ export default function ActionsPage() {
 
         <DenyActionDialog
           open={!!denyTarget}
-          onOpenChange={(open) => { if (!open) setDenyTarget(null); }}
+          onOpenChange={(open) => {
+            if (!open) {
+              setDenyTarget(null);
+              denyMutation.clearError();
+            }
+          }}
           action={denyTarget}
           onConfirm={confirmSingleDeny}
           loading={!!denyTarget && denyMutation.isMutating(denyTarget.id)}
-          error={mutationError}
+          error={denyMutation.error}
         />
 
         <DenyActionDialog
           open={bulkDenyOpen}
-          onOpenChange={(open) => { if (!open) setBulkDenyOpen(false); }}
+          onOpenChange={(open) => {
+            if (!open) {
+              setBulkDenyOpen(false);
+              setBulkError(null);
+            }
+          }}
           bulkCount={selectedIds.size}
           onConfirm={confirmBulkDeny}
           loading={bulkAction === "deny"}
-          error={mutationError}
+          error={bulkError}
         />
       </div>
     </TooltipProvider>
   );
+}
+
+/** Indices of `results` that rejected, mapped back to their input ids. */
+function failedIdsFrom(results: PromiseSettledResult<unknown>[], ids: string[]): string[] {
+  return results.flatMap((r, i) => (r.status === "rejected" ? [ids[i]] : []));
+}
+
+/** "3 of 5 denials failed: 2× Forbidden; 1× Internal error" — counts per reason. */
+function bulkFailureSummary(
+  results: PromiseSettledResult<unknown>[],
+  ids: string[],
+  noun: string,
+): string {
+  const reasonCounts = new Map<string, number>();
+  for (const r of results) {
+    if (r.status === "rejected") {
+      const msg = r.reason instanceof Error ? r.reason.message : "Unknown error";
+      reasonCounts.set(msg, (reasonCounts.get(msg) ?? 0) + 1);
+    }
+  }
+  const failedCount = [...reasonCounts.values()].reduce((a, b) => a + b, 0);
+  const summary = [...reasonCounts.entries()]
+    .map(([msg, n]) => `${n}× ${msg}`)
+    .join("; ");
+  return `${failedCount} of ${ids.length} ${noun} failed: ${summary}`;
 }

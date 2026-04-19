@@ -16,30 +16,15 @@ import { Loader2, X } from "lucide-react";
 import type { ActionLogEntry } from "@/ui/lib/types";
 import { ACTION_TYPE_LABELS } from "./labels";
 
-/* ────────────────────────────────────────────────────────────────────────
- *  DenyActionDialog
- *
- *  Captures an optional reason at deny time. Used for both single-row
- *  deny and bulk deny so audit history records *why* an action was
- *  rejected — replacing the legacy hardcoded "Denied by admin" string.
- *
- *  Reason is optional (low-friction triage), but the dialog shape forces
- *  a deliberate moment for a consequential action and the empty-state
- *  hint warns operators that audit history will reflect the absence.
- * ──────────────────────────────────────────────────────────────────────── */
-
 interface DenyActionDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  /** Single-row deny target. Mutually exclusive with `bulkCount`. */
+  /** Mutually exclusive with `bulkCount`. */
   action?: ActionLogEntry | null;
-  /** Bulk deny count. Mutually exclusive with `action`. */
+  /** Mutually exclusive with `action`. */
   bulkCount?: number;
-  /** Fired with the reason (or empty string) when the user confirms. */
   onConfirm: (reason: string) => Promise<void> | void;
-  /** Disables the confirm button while the parent fires the mutation. */
   loading?: boolean;
-  /** Inline error to surface (server message, etc). */
   error?: string | null;
 }
 
@@ -55,43 +40,46 @@ export function DenyActionDialog({
   const [reason, setReason] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
 
-  // Reset reason when the dialog closes so the next open starts clean.
-  // Reset *after* close, not on open, so a re-fired Confirm during a
-  // network hiccup keeps the operator's text.
   useEffect(() => {
     if (!open) setReason("");
-  }, [open]);
-
-  // Focus the textarea on open so the keyboard-driven flow is one step:
-  // type reason (or skip) → Enter / Cmd+Enter to confirm.
-  useEffect(() => {
-    if (open) {
-      // Defer to next tick — Dialog's open animation can intercept focus.
-      const t = setTimeout(() => textareaRef.current?.focus(), 50);
-      return () => clearTimeout(t);
-    }
   }, [open]);
 
   const isBulk = bulkCount !== undefined && bulkCount > 0;
   const title = isBulk ? `Deny ${bulkCount} action${bulkCount === 1 ? "" : "s"}` : "Deny action";
 
   async function handleConfirm() {
-    await onConfirm(reason.trim());
+    try {
+      await onConfirm(reason.trim());
+    } catch (err) {
+      console.error("DenyActionDialog: onConfirm threw", err);
+    }
   }
 
   function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
-    // Cmd+Enter / Ctrl+Enter submits — matches the comment-textarea
-    // convention used elsewhere in the admin console (chat composer,
-    // approval comment box, etc.).
     if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
       e.preventDefault();
-      if (!loading) handleConfirm();
+      if (!loading) void handleConfirm();
     }
   }
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-md">
+    <Dialog
+      open={open}
+      onOpenChange={(next) => {
+        // Block close while in flight — prevents the cancel-doesn't-cancel
+        // race where the operator believes they aborted but the request still
+        // resolves server-side.
+        if (!next && loading) return;
+        onOpenChange(next);
+      }}
+    >
+      <DialogContent
+        className="max-w-md"
+        onOpenAutoFocus={(e) => {
+          e.preventDefault();
+          textareaRef.current?.focus();
+        }}
+      >
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>

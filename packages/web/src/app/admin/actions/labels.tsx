@@ -7,17 +7,6 @@ import {
   type LucideIcon,
 } from "lucide-react";
 
-/* ────────────────────────────────────────────────────────────────────────
- *  Action type metadata
- *
- *  `action_type` is a free-form string on the wire — the agent emits the
- *  values defined in its tool registry. The UI side keeps a mapping for
- *  the well-known kinds so the badges read as English ("SQL Write")
- *  rather than enum (`sql_write`). Unknown types fall back to the raw
- *  string + a generic Zap icon so a new tool added in `packages/api`
- *  remains visible without a UI roundtrip.
- * ──────────────────────────────────────────────────────────────────────── */
-
 export const ACTION_TYPE_ICONS: Record<string, LucideIcon> = {
   sql_write: Database,
   sql: Database,

@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import { useAtlasConfig } from "@/ui/context";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
-import { friendlyError } from "@/ui/lib/fetch-error";
+import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
 import {
   Dialog,
   DialogContent,
@@ -597,10 +597,19 @@ export function TaskFormDialog({
           )}
         </div>
 
-        {(validationError || submitMutation.error) && (
-          <p className="text-sm text-destructive">
-            {validationError || (submitMutation.error ? friendlyError(submitMutation.error) : null)}
+        {/* Client-side validation wins over server mutation error —
+            validation blocks submit, so submitMutation.error is always
+            stale if both are present. */}
+        {validationError ? (
+          <p role="alert" className="text-sm text-destructive">
+            {validationError}
           </p>
+        ) : (
+          <MutationErrorSurface
+            error={submitMutation.error}
+            feature="Scheduled Tasks"
+            variant="inline"
+          />
         )}
 
         <DialogFooter>

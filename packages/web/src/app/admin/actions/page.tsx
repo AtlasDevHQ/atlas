@@ -29,6 +29,7 @@ import type { ActionLogEntry } from "@/ui/lib/types";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { EmptyState } from "@/ui/components/admin/empty-state";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
+import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
 import {
   bulkFailureSummary,
   BulkRequestError,
@@ -37,7 +38,7 @@ import {
   ReasonDialog,
   RelativeTimestamp,
 } from "@/ui/components/admin/queue";
-import { extractFetchError, friendlyError, type FetchError } from "@/ui/lib/fetch-error";
+import { extractFetchError, type FetchError } from "@/ui/lib/fetch-error";
 import {
   Zap,
   Check,
@@ -170,10 +171,15 @@ export default function ActionsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<FetchError | null>(null);
 
-  // Page-level error covers approve/rollback failures + bulk failure summaries.
+  // Page-level structured error covers single-row approve/rollback failures
+  // (routed through MutationErrorSurface so gated responses render upsell
+  // instead of a flattened string). Bulk-approve failures are a local
+  // synthesis that can't fit a single FetchError, so they live in
+  // `bulkApproveSummary` as a string and render through ErrorBanner.
   // Single-row deny errors live on denyMutation.error (rendered in the dialog).
   // Bulk-deny errors live in bulkError (rendered in the dialog).
-  const [mutationError, setMutationError] = useState<string | null>(null);
+  const [mutationError, setMutationError] = useState<FetchError | null>(null);
+  const [bulkApproveSummary, setBulkApproveSummary] = useState<string | null>(null);
   // Warnings are explicit-dismiss only — never auto-cleared by the next click.
   // Used for the rollback `{warning}` server contract: 200 OK but the side-
   // effect may not have actually been undone (see api/routes/actions.ts).
@@ -274,12 +280,13 @@ export default function ActionsPage() {
 
   async function handleApprove(id: string) {
     setMutationError(null);
+    setBulkApproveSummary(null);
     const result = await approveMutation.mutate({
       path: `/api/v1/actions/${id}/approve`,
       body: {},
       itemId: id,
     });
-    if (!result.ok) setMutationError(friendlyError(result.error));
+    if (!result.ok) setMutationError(result.error);
   }
 
   async function confirmSingleDeny(reason: string) {
@@ -297,6 +304,7 @@ export default function ActionsPage() {
 
   async function handleRollback(id: string) {
     setMutationError(null);
+    setBulkApproveSummary(null);
     const result = await rollbackMutation.mutate({
       path: `/api/v1/actions/${id}/rollback`,
       body: {},
@@ -313,13 +321,14 @@ export default function ActionsPage() {
         logUnsurfacedRollbackWarning(raw);
       },
     });
-    if (!result.ok) setMutationError(friendlyError(result.error));
+    if (!result.ok) setMutationError(result.error);
   }
 
   async function handleBulkApprove() {
     if (selectedIds.size === 0) return;
     setBulkAction("approve");
     setMutationError(null);
+    setBulkApproveSummary(null);
     const ids = [...selectedIds];
     try {
       const results = await Promise.allSettled(
@@ -369,7 +378,7 @@ export default function ActionsPage() {
   ) {
     const failedIds = failedIdsFrom(results, ids);
     if (failedIds.length > 0) {
-      setMutationError(bulkFailureSummary(results, ids, noun));
+      setBulkApproveSummary(bulkFailureSummary(results, ids, noun));
       setSelectedIds(new Set(failedIds));
     } else {
       setSelectedIds(new Set());
@@ -428,7 +437,17 @@ export default function ActionsPage() {
 
         <ErrorBoundary>
         <div className="space-y-6">
-          {mutationError && <ErrorBanner message={mutationError} onRetry={() => setMutationError(null)} />}
+          <MutationErrorSurface
+            error={mutationError}
+            feature="Actions"
+            onRetry={() => setMutationError(null)}
+          />
+          {bulkApproveSummary && (
+            <ErrorBanner
+              message={bulkApproveSummary}
+              onRetry={() => setBulkApproveSummary(null)}
+            />
+          )}
           {mutationWarning && <WarningBanner message={mutationWarning} onDismiss={() => setMutationWarning(null)} />}
 
           <AdminContentWrapper
@@ -721,7 +740,8 @@ export default function ActionsPage() {
           }
           onConfirm={confirmSingleDeny}
           loading={!!denyTarget && denyMutation.isMutating(denyTarget.id)}
-          error={denyMutation.error ? friendlyError(denyMutation.error) : null}
+          mutationError={denyMutation.error}
+          feature="Actions"
         />
 
         <ReasonDialog

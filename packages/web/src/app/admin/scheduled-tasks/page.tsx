@@ -33,7 +33,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { ErrorBanner } from "@/ui/components/admin/error-banner";
+import { MutationErrorSurface } from "@/ui/components/admin/mutation-error-surface";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import {
   CalendarClock,
@@ -47,7 +47,6 @@ import {
 } from "lucide-react";
 import type { FetchError } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
-import { friendlyError } from "@/ui/lib/fetch-error";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { DeliveryStatusBadge } from "@/ui/components/admin/delivery-status-badge";
 import { ExpandableDataTable } from "@/components/data-table/data-table-expandable";
@@ -441,9 +440,21 @@ export default function ScheduledTasksPage() {
 
       <ErrorBoundary>
       <div className="space-y-6">
-        {toggleMutation.error && <ErrorBanner message={friendlyError(toggleMutation.error)} onRetry={toggleMutation.clearError} />}
-        {triggerMutation.error && <ErrorBanner message={friendlyError(triggerMutation.error)} onRetry={triggerMutation.clearError} />}
-        {deleteMutation.error && <ErrorBanner message={friendlyError(deleteMutation.error)} onRetry={deleteMutation.clearError} />}
+        <MutationErrorSurface
+          error={toggleMutation.error}
+          feature="Scheduled Tasks"
+          onRetry={toggleMutation.clearError}
+        />
+        <MutationErrorSurface
+          error={triggerMutation.error}
+          feature="Scheduled Tasks"
+          onRetry={triggerMutation.clearError}
+        />
+        <MutationErrorSurface
+          error={deleteMutation.error}
+          feature="Scheduled Tasks"
+          onRetry={deleteMutation.clearError}
+        />
 
         <AdminContentWrapper
           loading={loading}
@@ -489,7 +500,13 @@ export default function ScheduledTasksPage() {
               Generating preview...
             </div>
           ) : previewMutation.error ? (
-            <p className="text-sm text-destructive py-4">{friendlyError(previewMutation.error)}</p>
+            <div className="py-4">
+              <MutationErrorSurface
+                error={previewMutation.error}
+                feature="Scheduled Tasks"
+                variant="inline"
+              />
+            </div>
           ) : previewData ? (
             <div className="space-y-4">
               <Badge variant="outline" className="capitalize">{previewData.channel}</Badge>

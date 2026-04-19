@@ -19,6 +19,7 @@ COPY packages/plugin-sdk/package.json packages/plugin-sdk/package.json
 COPY packages/sdk/package.json packages/sdk/package.json
 COPY packages/react/package.json packages/react/package.json
 COPY packages/types/package.json packages/types/package.json
+COPY packages/schemas/package.json packages/schemas/package.json
 COPY apps/docs/package.json apps/docs/package.json
 COPY apps/www/package.json apps/www/package.json
 COPY examples/nextjs-standalone/package.json examples/nextjs-standalone/package.json
@@ -95,6 +96,8 @@ RUN if [ "$INSTALL_NSJAIL" = "true" ]; then \
 COPY --from=nsjail-builder /nsjail-out/ /usr/local/bin/
 # Shared types (workspace symlink target — needed at runtime by API + plugins)
 COPY --from=builder --chown=atlas:atlas /app/packages/types ./packages/types
+# Shared wire-format Zod schemas (imported by API route handlers)
+COPY --from=builder --chown=atlas:atlas /app/packages/schemas ./packages/schemas
 # Widget bundle — built from @useatlas/react (referenced by widget route)
 COPY --from=builder --chown=atlas:atlas /app/packages/react/dist ./packages/react/dist
 # Hono API server source + dependencies

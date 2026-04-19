@@ -198,6 +198,21 @@ for tpl in docker nextjs-standalone; do
   cp "$CLI_SRC/progress.ts"  "$TEMPLATES/$tpl/src/"
 done
 
+# ── Step 5e: Copy @useatlas/schemas source into ALL templates ────────
+# Templates reach @useatlas/schemas via tsconfig path alias → src/schemas/,
+# not via npm (the package is private and not published). API route files
+# synced from packages/api/src/ import from "@useatlas/schemas"; the alias
+# plus this copy keeps the scaffolded project building. Must happen AFTER
+# Steps 2-4 wipe and rebuild src/.
+SCHEMAS_SRC="$MONOREPO/packages/schemas/src"
+for tpl in docker nextjs-standalone; do
+  rm -rf "$TEMPLATES/$tpl/src/schemas"
+  cp -r "$SCHEMAS_SRC" "$TEMPLATES/$tpl/src/schemas"
+  # Remove test files — not needed in scaffolded projects
+  find "$TEMPLATES/$tpl/src/schemas" -name '__tests__' -type d -exec rm -rf {} + 2>/dev/null || true
+  find "$TEMPLATES/$tpl/src/schemas" -name '*.test.ts' -delete 2>/dev/null || true
+done
+
 # ── Step 6: Sync dependency versions into templates ───────────────
 # Skip syncpack when SKIP_SYNCPACK=1 (used by CI drift check and sync-starter)
 if [[ "${SKIP_SYNCPACK:-}" != "1" ]]; then

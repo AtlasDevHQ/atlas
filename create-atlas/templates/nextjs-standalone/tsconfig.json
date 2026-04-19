@@ -18,7 +18,9 @@
       "@/*": ["./src/*"],
       "@atlas/api/app": ["./src/api/index.ts"],
       "@atlas/api/*": ["./src/*"],
-      "@atlas/ee/*": ["./ee/src/*"]
+      "@atlas/ee/*": ["./ee/src/*"],
+      "@useatlas/schemas": ["./src/schemas/index.ts"],
+      "@useatlas/schemas/*": ["./src/schemas/*"]
     }
   },
   "include": [

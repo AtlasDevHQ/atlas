@@ -1345,7 +1345,7 @@ Per-page polish, not restructure. Targeted `/critique` + `/arrange`/`/polish`/`/
 - [x] ESLint guard to prevent re-introducing `{ message: result.error }` wrap (#1616, PR #1622) — `no-restricted-syntax` rule in root `eslint.config.mjs`; broader `.error?.y` optional-chain variant carved out as follow-up #1625
 - [x] `useAdminMutation` catch conflates `invalidates()` callback errors with fetch errors (#1617, PR #1622) — `invalidates()` callbacks moved outside the `mutateAsync` try-catch; throwing invalidates no longer flips `result.ok` or populates `error`; debug log preserved
 - [x] Sibling to #1611: `action-approval-card` surfaces 'Unknown error' when `res.text()` rejects (#1620, PR #1633)
-- [ ] Follow-up to #1613: demo page still references `chatEndpoint` / `conversationsEndpoint` that don't exist on `AtlasChatProps` — decide wire-up vs drop (#1621)
+- [x] Follow-up to #1613: demo page still references `chatEndpoint` / `conversationsEndpoint` that don't exist on `AtlasChatProps` — decide wire-up vs drop (#1621, closed stale) — props actually exist on `AtlasChatProps` (`packages/react/src/components/atlas-chat.tsx:56-58`, added in `91213d18` / #677) and are threaded through to `DefaultChatTransport` + `useConversations`; both `bun run type` and `tsgo --noEmit -p packages/web/tsconfig.json` pass clean on `main`. No code change needed
 - [ ] Dead `enterprise_required` gate branch in `/admin/custom-domain` — drop or wire up (#1623, surfaced during #1615 migration)
 - [ ] `MutationErrorSurface` — route mutation `FetchError`s through `EnterpriseUpsell` / `FeatureGate` primitive (#1624, architecture, follow-up to win #30)
 - [x] Broaden `no-restricted-syntax` guard to catch `{ message: X.error?.y }` optional-chain variants (#1625, PR #1633)

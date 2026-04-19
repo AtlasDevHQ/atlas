@@ -1,8 +1,10 @@
 "use client";
 
-import { Fragment, useEffect, useState, useTransition } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { useQueryStates } from "nuqs";
 import { actionsSearchParams } from "./search-params";
+import { actionTypeIcon, actionTypeLabel } from "./labels";
+import { DenyActionDialog } from "./deny-dialog";
 import { useAtlasConfig } from "@/ui/context";
 import {
   Table,
@@ -32,12 +34,6 @@ import {
   Check,
   X,
   Loader2,
-  ChevronDown,
-  ChevronRight,
-  Database,
-  Globe,
-  FilePenLine,
-  Terminal,
   MessageSquare,
   CheckCheck,
   XCircle,
@@ -58,17 +54,6 @@ const FILTER_OPTIONS: { value: StatusFilter; label: string }[] = [
   { value: "rolled_back", label: "Rolled Back" },
   { value: "all", label: "All" },
 ];
-
-const ACTION_TYPE_ICONS: Record<string, typeof Database> = {
-  sql_write: Database,
-  sql: Database,
-  api_call: Globe,
-  api: Globe,
-  file_write: FilePenLine,
-  file: FilePenLine,
-  shell: Terminal,
-  command: Terminal,
-};
 
 function mapStatus(status: ActionLogEntry["status"]): ActionDisplayStatus {
   return status === "pending" ? "pending_approval" : status;
@@ -110,7 +95,7 @@ function RelativeTimestamp({ iso, label }: { iso: string; label?: string }) {
 }
 
 function ActionTypeIcon({ type }: { type: string }) {
-  const Icon = ACTION_TYPE_ICONS[type.toLowerCase()] ?? Zap;
+  const Icon = actionTypeIcon(type);
   return <Icon className="size-3.5" />;
 }
 
@@ -123,6 +108,70 @@ const EMPTY_MESSAGES: Record<StatusFilter, string> = {
   all: "No actions recorded yet.",
 };
 
+/* ────────────────────────────────────────────────────────────────────────
+ *  PayloadView — branches on action_type to render structured payload
+ *  fields when the shape is known. Falls back to JSON for unknown
+ *  shapes so a new tool's payload is never silently hidden.
+ * ──────────────────────────────────────────────────────────────────────── */
+
+function PayloadView({ type, payload }: { type: string; payload: Record<string, unknown> }) {
+  const t = type.toLowerCase();
+
+  if ((t === "sql_write" || t === "sql") && typeof payload.sql === "string") {
+    return (
+      <pre className="overflow-auto rounded border bg-muted/60 p-2 font-mono text-xs leading-relaxed">
+        {payload.sql}
+      </pre>
+    );
+  }
+
+  if (t === "api_call" || t === "api") {
+    const method = typeof payload.method === "string" ? payload.method : null;
+    const url = typeof payload.url === "string" ? payload.url : null;
+    if (method || url) {
+      const body = payload.body;
+      return (
+        <div className="space-y-1.5">
+          <div className="flex items-center gap-2 rounded border bg-muted/60 px-2 py-1.5 font-mono text-xs">
+            {method && (
+              <span className="rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary">
+                {method}
+              </span>
+            )}
+            {url && <span className="truncate text-foreground">{url}</span>}
+          </div>
+          {body != null && (
+            <pre className="overflow-auto rounded border bg-muted/40 p-2 text-xs">
+              {typeof body === "string" ? body : JSON.stringify(body, null, 2)}
+            </pre>
+          )}
+        </div>
+      );
+    }
+  }
+
+  if ((t === "file_write" || t === "file") && typeof payload.path === "string") {
+    return (
+      <div className="space-y-1.5">
+        <div className="rounded border bg-muted/60 px-2 py-1.5 font-mono text-xs">
+          {payload.path}
+        </div>
+        {typeof payload.content === "string" && (
+          <pre className="overflow-auto rounded border bg-muted/40 p-2 font-mono text-xs">
+            {payload.content}
+          </pre>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <pre className="overflow-auto rounded border bg-muted/40 p-2 text-xs">
+      {JSON.stringify(payload, null, 2)}
+    </pre>
+  );
+}
+
 export default function ActionsPage() {
   const { apiUrl, isCrossOrigin } = useAtlasConfig();
   const credentials: RequestCredentials = isCrossOrigin ? "include" : "same-origin";
@@ -130,13 +179,19 @@ export default function ActionsPage() {
   const [actions, setActions] = useState<ActionLogEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<FetchError | null>(null);
+  // Page-level mutation error — funnels approve/deny/rollback failures into
+  // a single banner instead of stacking up to four. Resets on next mutation.
   const [mutationError, setMutationError] = useState<string | null>(null);
   const [{ status: statusFilter, expanded: expandedId }, setParams] = useQueryStates(actionsSearchParams);
-  const [, startTransition] = useTransition();
 
   const [refetchKey, setRefetchKey] = useState(0);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkAction, setBulkAction] = useState<"approve" | "deny" | null>(null);
+
+  // Deny dialog state — single-row deny opens with `denyTarget` set;
+  // bulk deny opens with `bulkDenyOpen` true.
+  const [denyTarget, setDenyTarget] = useState<ActionLogEntry | null>(null);
+  const [bulkDenyOpen, setBulkDenyOpen] = useState(false);
 
   // Mutation hooks for per-item actions
   const approveMutation = useAdminMutation({
@@ -193,7 +248,7 @@ export default function ActionsPage() {
     return () => { cancelled = true; };
   }, [apiUrl, statusFilter, refetchKey, credentials]);
 
-  const pendingActions = actions.filter((a) => a.status === "pending");
+  const pendingActions = useMemo(() => actions.filter((a) => a.status === "pending"), [actions]);
   const allSelectableSelected = pendingActions.length > 0 && pendingActions.every((a) => selectedIds.has(a.id));
   const someSelected = selectedIds.size > 0;
 
@@ -216,53 +271,64 @@ export default function ActionsPage() {
 
   async function handleApprove(id: string) {
     setMutationError(null);
-    await approveMutation.mutate({
+    const result = await approveMutation.mutate({
       path: `/api/v1/actions/${id}/approve`,
       body: {},
       itemId: id,
     });
+    if (!result.ok) setMutationError(result.error);
   }
 
-  async function handleDeny(id: string) {
+  async function confirmSingleDeny(reason: string) {
+    if (!denyTarget) return;
     setMutationError(null);
-    await denyMutation.mutate({
+    const id = denyTarget.id;
+    const body: Record<string, unknown> = {};
+    if (reason) body.reason = reason;
+    const result = await denyMutation.mutate({
       path: `/api/v1/actions/${id}/deny`,
-      body: { reason: "Denied by admin" },
+      body,
       itemId: id,
     });
+    if (!result.ok) {
+      setMutationError(result.error);
+      return;
+    }
+    setDenyTarget(null);
   }
 
   async function handleRollback(id: string) {
     setMutationError(null);
-    await rollbackMutation.mutate({
+    const result = await rollbackMutation.mutate({
       path: `/api/v1/actions/${id}/rollback`,
       body: {},
       itemId: id,
       onSuccess: (data) => {
+        // Server returns { warning } when rollback succeeded but with caveats
+        // (e.g. external API didn't expose a true undo). Surface as a warning
+        // banner so the operator can investigate.
         const body = data as Record<string, unknown> | undefined;
         if (body?.warning && typeof body.warning === "string") {
           setMutationError(body.warning);
         }
       },
     });
+    if (!result.ok) setMutationError(result.error);
   }
 
-  async function handleBulkAction(action: "approve" | "deny") {
+  async function handleBulkApprove() {
     if (selectedIds.size === 0) return;
-    setBulkAction(action);
+    setBulkAction("approve");
     setMutationError(null);
     const ids = [...selectedIds];
-    const endpoint = action === "approve" ? "approve" : "deny";
-    const body = action === "approve" ? {} : { reason: "Bulk denied by admin" };
-    const noun = action === "approve" ? "approvals" : "denials";
     try {
       const results = await Promise.allSettled(
         ids.map((id) =>
-          fetch(`${apiUrl}/api/v1/actions/${id}/${endpoint}`, {
+          fetch(`${apiUrl}/api/v1/actions/${id}/approve`, {
             credentials,
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(body),
+            body: "{}",
           }).then(async (res) => {
             if (!res.ok) {
               let serverMessage = `HTTP ${res.status}`;
@@ -275,28 +341,83 @@ export default function ActionsPage() {
           }),
         ),
       );
-      const failedIds = new Set(
-        results
-          .map((r, i) => (r.status === "rejected" ? ids[i] : null))
-          .filter((id): id is string => id !== null),
-      );
-      if (failedIds.size > 0) {
-        const reasons = [...new Set(
-          results
-            .filter((r): r is PromiseRejectedResult => r.status === "rejected")
-            .map((r) => (r.reason instanceof Error ? r.reason.message : "Unknown error")),
-        )];
-        setMutationError(`${failedIds.size} of ${ids.length} ${noun} failed: ${reasons.join(", ")}`);
-        setSelectedIds(failedIds);
-      } else {
-        setSelectedIds(new Set());
-      }
-      setRefetchKey((k) => k + 1);
+      handleBulkResult(results, ids, "approvals");
     } catch (err) {
-      setMutationError(err instanceof Error ? err.message : `Bulk ${action} failed`);
+      setMutationError(err instanceof Error ? err.message : `Bulk approve failed`);
     } finally {
       setBulkAction(null);
     }
+  }
+
+  async function confirmBulkDeny(reason: string) {
+    if (selectedIds.size === 0) return;
+    setBulkAction("deny");
+    setMutationError(null);
+    const ids = [...selectedIds];
+    const body: Record<string, unknown> = {};
+    if (reason) body.reason = reason;
+    const bodyJson = JSON.stringify(body);
+    try {
+      const results = await Promise.allSettled(
+        ids.map((id) =>
+          fetch(`${apiUrl}/api/v1/actions/${id}/deny`, {
+            credentials,
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: bodyJson,
+          }).then(async (res) => {
+            if (!res.ok) {
+              let serverMessage = `HTTP ${res.status}`;
+              try {
+                const errBody = await res.json();
+                if (errBody?.message) serverMessage = errBody.message;
+              } catch { /* intentionally ignored: response may not be JSON */ }
+              throw new Error(serverMessage);
+            }
+          }),
+        ),
+      );
+      handleBulkResult(results, ids, "denials");
+      // Close the dialog only on full success; partial failure leaves the
+      // selection narrowed to failed IDs so operator can see what's left.
+      const failedCount = results.filter((r) => r.status === "rejected").length;
+      if (failedCount === 0) setBulkDenyOpen(false);
+    } catch (err) {
+      setMutationError(err instanceof Error ? err.message : `Bulk deny failed`);
+    } finally {
+      setBulkAction(null);
+    }
+  }
+
+  /** Shared partial-failure handling for bulk approve / deny. */
+  function handleBulkResult(
+    results: PromiseSettledResult<unknown>[],
+    ids: string[],
+    noun: string,
+  ) {
+    const failedIds = new Set(
+      results
+        .map((r, i) => (r.status === "rejected" ? ids[i] : null))
+        .filter((id): id is string => id !== null),
+    );
+    if (failedIds.size > 0) {
+      const reasons = [...new Set(
+        results
+          .filter((r): r is PromiseRejectedResult => r.status === "rejected")
+          .map((r) => (r.reason instanceof Error ? r.reason.message : "Unknown error")),
+      )];
+      setMutationError(`${failedIds.size} of ${ids.length} ${noun} failed: ${reasons.join(", ")}`);
+      setSelectedIds(failedIds);
+    } else {
+      setSelectedIds(new Set());
+    }
+    setRefetchKey((k) => k + 1);
+  }
+
+  // Single banner — fetch error is rendered by AdminContentWrapper, this
+  // covers all mutation paths (approve/deny/rollback + bulk + warnings).
+  function clearMutationError() {
+    setMutationError(null);
   }
 
   return (
@@ -309,17 +430,13 @@ export default function ActionsPage() {
           </p>
         </div>
 
-        <div className="mb-4 flex items-center gap-2">
+        <div className="mb-4 flex flex-wrap items-center gap-2">
           {FILTER_OPTIONS.map((opt) => (
             <Button
               key={opt.value}
               size="sm"
               variant={statusFilter === opt.value ? "secondary" : "ghost"}
-              onClick={() => {
-                startTransition(() => {
-                  setParams({ status: opt.value, expanded: null });
-                });
-              }}
+              onClick={() => setParams({ status: opt.value, expanded: null })}
             >
               {opt.label}
             </Button>
@@ -335,7 +452,7 @@ export default function ActionsPage() {
                 size="sm"
                 variant="default"
                 disabled={bulkInProgress}
-                onClick={() => handleBulkAction("approve")}
+                onClick={handleBulkApprove}
               >
                 {bulkAction === "approve" ? (
                   <Loader2 className="mr-1 size-4 animate-spin" />
@@ -348,13 +465,9 @@ export default function ActionsPage() {
                 size="sm"
                 variant="destructive"
                 disabled={bulkInProgress}
-                onClick={() => handleBulkAction("deny")}
+                onClick={() => setBulkDenyOpen(true)}
               >
-                {bulkAction === "deny" ? (
-                  <Loader2 className="mr-1 size-4 animate-spin" />
-                ) : (
-                  <XCircle className="mr-1 size-4" />
-                )}
+                <XCircle className="mr-1 size-4" />
                 Deny selected
               </Button>
             </>
@@ -363,10 +476,7 @@ export default function ActionsPage() {
 
         <ErrorBoundary>
         <div className="space-y-6">
-          {mutationError && <ErrorBanner message={mutationError} onRetry={() => setMutationError(null)} />}
-          {approveMutation.error && <ErrorBanner message={approveMutation.error} onRetry={approveMutation.clearError} />}
-          {denyMutation.error && <ErrorBanner message={denyMutation.error} onRetry={denyMutation.clearError} />}
-          {rollbackMutation.error && <ErrorBanner message={rollbackMutation.error} onRetry={rollbackMutation.clearError} />}
+          {mutationError && <ErrorBanner message={mutationError} onRetry={clearMutationError} />}
 
           <AdminContentWrapper
             loading={loading}
@@ -401,7 +511,6 @@ export default function ActionsPage() {
                       />
                     )}
                   </TableHead>
-                  <TableHead className="w-8" />
                   <TableHead>Timestamp</TableHead>
                   <TableHead>Type</TableHead>
                   <TableHead>Target</TableHead>
@@ -433,25 +542,30 @@ export default function ActionsPage() {
                             />
                           )}
                         </TableCell>
-                        <TableCell>
-                          {isExpanded ? (
-                            <ChevronDown className="size-4 text-muted-foreground" />
-                          ) : (
-                            <ChevronRight className="size-4 text-muted-foreground" />
-                          )}
-                        </TableCell>
                         <TableCell className="whitespace-nowrap text-sm">
                           <RelativeTimestamp iso={action.requested_at} />
                         </TableCell>
                         <TableCell>
                           <Badge variant="outline" className="gap-1">
                             <ActionTypeIcon type={action.action_type} />
-                            {action.action_type}
+                            {actionTypeLabel(action.action_type)}
                           </Badge>
                         </TableCell>
-                        <TableCell className="text-sm">{action.target}</TableCell>
+                        <TableCell className="max-w-[220px] truncate font-mono text-xs">
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <span className="block truncate">{action.target}</span>
+                            </TooltipTrigger>
+                            <TooltipContent>{action.target}</TooltipContent>
+                          </Tooltip>
+                        </TableCell>
                         <TableCell className="max-w-xs truncate text-sm">
-                          {action.summary}
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <span className="block truncate">{action.summary}</span>
+                            </TooltipTrigger>
+                            <TooltipContent className="max-w-md">{action.summary}</TooltipContent>
+                          </Tooltip>
                         </TableCell>
                         <TableCell>
                           <ActionStatusBadge status={mapStatus(action.status)} />
@@ -462,30 +576,42 @@ export default function ActionsPage() {
                               className="flex justify-end gap-1"
                               onClick={(e) => e.stopPropagation()}
                             >
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                disabled={approveMutation.isMutating(action.id) || bulkInProgress}
-                                onClick={() => handleApprove(action.id)}
-                              >
-                                {approveMutation.isMutating(action.id) ? (
-                                  <Loader2 className="size-4 animate-spin" />
-                                ) : (
-                                  <Check className="size-4" />
-                                )}
-                              </Button>
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                disabled={denyMutation.isMutating(action.id) || bulkInProgress}
-                                onClick={() => handleDeny(action.id)}
-                              >
-                                {denyMutation.isMutating(action.id) ? (
-                                  <Loader2 className="size-4 animate-spin" />
-                                ) : (
-                                  <X className="size-4" />
-                                )}
-                              </Button>
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    disabled={approveMutation.isMutating(action.id) || bulkInProgress}
+                                    onClick={() => handleApprove(action.id)}
+                                    aria-label="Approve action"
+                                  >
+                                    {approveMutation.isMutating(action.id) ? (
+                                      <Loader2 className="size-4 animate-spin" />
+                                    ) : (
+                                      <Check className="size-4" />
+                                    )}
+                                  </Button>
+                                </TooltipTrigger>
+                                <TooltipContent>Approve</TooltipContent>
+                              </Tooltip>
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    disabled={denyMutation.isMutating(action.id) || bulkInProgress}
+                                    onClick={() => setDenyTarget(action)}
+                                    aria-label="Deny action"
+                                  >
+                                    {denyMutation.isMutating(action.id) ? (
+                                      <Loader2 className="size-4 animate-spin" />
+                                    ) : (
+                                      <X className="size-4" />
+                                    )}
+                                  </Button>
+                                </TooltipTrigger>
+                                <TooltipContent>Deny with reason</TooltipContent>
+                              </Tooltip>
                             </div>
                           )}
                           {(action.status === "executed" || action.status === "auto_approved") && action.rollback_info && (
@@ -500,6 +626,7 @@ export default function ActionsPage() {
                                     variant="ghost"
                                     disabled={rollbackMutation.isMutating(action.id)}
                                     onClick={() => handleRollback(action.id)}
+                                    aria-label="Rollback action"
                                   >
                                     {rollbackMutation.isMutating(action.id) ? (
                                       <Loader2 className="size-4 animate-spin" />
@@ -516,7 +643,7 @@ export default function ActionsPage() {
                       </TableRow>
                       {isExpanded && (
                         <TableRow>
-                          <TableCell colSpan={8} className="bg-muted/30 p-4">
+                          <TableCell colSpan={7} className="bg-muted/30 p-4">
                             <div className="space-y-3 text-sm">
                               <div>
                                 <span className="font-medium">Summary:</span>{" "}
@@ -524,9 +651,9 @@ export default function ActionsPage() {
                               </div>
                               <div>
                                 <span className="font-medium">Payload:</span>
-                                <pre className="mt-1 overflow-auto rounded bg-muted p-2 text-xs">
-                                  {JSON.stringify(action.payload, null, 2)}
-                                </pre>
+                                <div className="mt-1">
+                                  <PayloadView type={action.action_type} payload={action.payload} />
+                                </div>
                               </div>
                               <div className="flex flex-wrap gap-x-6 gap-y-1 text-muted-foreground">
                                 <RelativeTimestamp iso={action.requested_at} label="Requested" />
@@ -573,13 +700,9 @@ export default function ActionsPage() {
                                     size="sm"
                                     variant="destructive"
                                     disabled={denyMutation.isMutating(action.id) || bulkInProgress}
-                                    onClick={() => handleDeny(action.id)}
+                                    onClick={() => setDenyTarget(action)}
                                   >
-                                    {denyMutation.isMutating(action.id) ? (
-                                      <Loader2 className="mr-1 size-4 animate-spin" />
-                                    ) : (
-                                      <X className="mr-1 size-4" />
-                                    )}
+                                    <X className="mr-1 size-4" />
                                     Deny
                                   </Button>
                                 </div>
@@ -615,6 +738,24 @@ export default function ActionsPage() {
           </AdminContentWrapper>
         </div>
         </ErrorBoundary>
+
+        <DenyActionDialog
+          open={!!denyTarget}
+          onOpenChange={(open) => { if (!open) setDenyTarget(null); }}
+          action={denyTarget}
+          onConfirm={confirmSingleDeny}
+          loading={!!denyTarget && denyMutation.isMutating(denyTarget.id)}
+          error={mutationError}
+        />
+
+        <DenyActionDialog
+          open={bulkDenyOpen}
+          onOpenChange={(open) => { if (!open) setBulkDenyOpen(false); }}
+          bulkCount={selectedIds.size}
+          onConfirm={confirmBulkDeny}
+          loading={bulkAction === "deny"}
+          error={mutationError}
+        />
       </div>
     </TooltipProvider>
   );

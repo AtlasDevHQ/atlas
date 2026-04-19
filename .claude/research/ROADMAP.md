@@ -1302,7 +1302,7 @@ Critique pass across `/admin/actions`, `/admin/learned-patterns`, `/admin/approv
 - [x] `/admin/actions` — reason-on-deny dialog (closed legacy "Denied by admin" hardcode) + `PayloadView` SQL/API/file/JSON branch rendering + single ErrorBanner + `extractFetchError` (PR #1592)
 - [x] `/admin/learned-patterns` — real optimistic revert + server error surfacing + button-row filter consolidation + StatCards → inline strip + `bulkPartialSummary` for 200-with-errors response (PR #1594)
 - [x] `/admin/approval` — structural revamp (Tabs-as-pages → CompactRow, always-visible review form → inline expand, bulk actions, deny confirmation) + extracted `QueueFilterRow` / `RelativeTimestamp` / `ReasonDialog` / `useQueueRow` / `bulkFailureSummary` / `bulkPartialSummary` to `@/ui/components/admin/queue/` (PR #1600)
-- [ ] `/admin/abuse` — different shape from the other 3; filed separately as #1589 (needs investigation depth, not just reinstate)
+- [x] `/admin/abuse` — investigation panel with live counters + threshold annotations + escalation timeline + prior-instance history + Reinstate-on-evidence footer; new `GET /api/v1/admin/abuse/:workspaceId/detail` with `splitIntoInstances()` pure helper (7 unit tests); 3 silent-failure-hunter findings fixed pre-merge (404 `not_flagged` routing, empty-timeline copy, invalidates scope) (#1589, PR #1641) — **Bucket 1 now 4/4 complete**
 
 ### Bucket 2 — data tables (tracker #1588)
 Per-page polish, not restructure. Targeted `/critique` + `/arrange`/`/polish`/`/clarify` per the tracker's intent. Primitives only extract if a pattern emerges across 3+ pages.
@@ -1332,7 +1332,7 @@ Per-page polish, not restructure. Targeted `/critique` + `/arrange`/`/polish`/`/
 - [x] Out-of-scope stale "enterprise plan" mentions unified to Business plan (#1607, PR #1608) — 4 MDX + 1 route source + regenerated api-reference
 - [ ] Share `EMAIL_PROVIDERS` via `@useatlas/types` after next publish (#1543)
 - [ ] Make `ProviderConfig` a tagged union keyed on provider (#1542)
-- [ ] `/admin/abuse` row needs investigation depth, not just reinstate (#1589)
+- [x] `/admin/abuse` row needs investigation depth, not just reinstate (#1589, PR #1641) — shipped as Bucket 1 PR 4 (see Bucket 1 section above)
 - [ ] Unify `ActionStatus` / `ActionDisplayStatus`, drop `mapStatus` (#1591)
 - [ ] Pure-function tests + e2e spec for `/admin/actions` approval flow (#1593)
 - [ ] `bulk-summary`: group by failure class, carry requestIds in trailing slot (#1602)
@@ -1346,7 +1346,7 @@ Per-page polish, not restructure. Targeted `/critique` + `/arrange`/`/polish`/`/
 - [x] `useAdminMutation` catch conflates `invalidates()` callback errors with fetch errors (#1617, PR #1622) — `invalidates()` callbacks moved outside the `mutateAsync` try-catch; throwing invalidates no longer flips `result.ok` or populates `error`; debug log preserved
 - [x] Sibling to #1611: `action-approval-card` surfaces 'Unknown error' when `res.text()` rejects (#1620, PR #1633)
 - [x] Follow-up to #1613: demo page still references `chatEndpoint` / `conversationsEndpoint` that don't exist on `AtlasChatProps` — decide wire-up vs drop (#1621, closed stale) — props actually exist on `AtlasChatProps` (`packages/react/src/components/atlas-chat.tsx:56-58`, added in `91213d18` / #677) and are threaded through to `DefaultChatTransport` + `useConversations`; both `bun run type` and `tsgo --noEmit -p packages/web/tsconfig.json` pass clean on `main`. No code change needed
-- [ ] Dead `enterprise_required` gate branch in `/admin/custom-domain` — drop or wire up (#1623, surfaced during #1615 migration)
+- [x] Dead `enterprise_required` gate branch in `/admin/custom-domain` — server now emits `403 enterprise_required` on EE-off writes via existing `EnterpriseError → classifyError` plumbing (no new mapping). Read endpoints stay `404 not_available` (scope guard test). Matches `/admin/branding`/`/admin/sso` precedent; non-EE admins now see polished plan-gate CompactRow / EnterpriseUpsell instead of generic 404 (#1623, PR #1637)
 - [ ] `MutationErrorSurface` — route mutation `FetchError`s through `EnterpriseUpsell` / `FeatureGate` primitive (#1624, architecture, follow-up to win #30)
 - [x] Broaden `no-restricted-syntax` guard to catch `{ message: X.error?.y }` optional-chain variants (#1625, PR #1633)
 - [x] Regression test for structured plan-gate in `/admin/custom-domain` (code-based, not message-substring) (#1626, PR #1634)
@@ -1354,6 +1354,13 @@ Per-page polish, not restructure. Targeted `/critique` + `/arrange`/`/polish`/`/
 - [x] Shared `ADMIN_FETCH_QUERY_KEY` constant between `useAdminFetch` + `useAdminMutation` (#1630, PR #1633) — `packages/web/src/ui/hooks/admin-query-keys.ts`; prevents silent cache-stale on rename
 - [x] `useAdminMutation` concurrent error state stomping (#1629, PR #1635, architecture) — per-item error slots in `errorsByItemId`, unblocks every bulk-mutation admin page. Architecture win candidate #31 (pending entry in architecture-wins.md)
 - [ ] Sessions e2e smoke spec + pure-function tests for `shortUA` + `SessionsListSchema` round-trip (#1631, follow-up to PR #1628)
+- [ ] Extract + unit-test `errorRatePct` branch in abuse detail (#1638, follow-up to PR #1641)
+- [ ] Integration test for `getAbuseDetail` against real in-memory state (#1639, follow-up to PR #1641)
+- [ ] Resolve `workspaceName` in abuse list + detail routes (#1640, pre-existing list-path bug mirrored into detail, surfaced during PR #1641 review)
+- [ ] Single-source Zod schemas for `AbuseDetail` (drop duplicate `AbuseDetailSchema` between api + web) (#1642, architecture, follow-up to PR #1641)
+- [ ] `z.enum()` vs `z.string()` — tighten client validation in `admin-schemas.ts` (#1643, architecture, follow-up to PR #1641)
+- [ ] Factory + computed helpers for `AbuseInstance` invariants (#1644, follow-up to PR #1641)
+- [x] Regenerate `apps/docs/openapi.json` + api-reference MDX after #1641 merge (CI drift gate #1606 caught it post-merge, commit c807b91f)
 
 ---
 

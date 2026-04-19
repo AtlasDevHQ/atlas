@@ -784,11 +784,12 @@ describe("useAdminMutation", () => {
     expect(result.current.error).toBeNull();
   });
 
-  test("non-itemized successful call after an itemized failure does NOT clear the hook-level error", async () => {
-    // Subtle case: once an itemized failure owns the hook slot, only that
-    // itemId's success (or explicit clearError / clearErrorFor / reset)
-    // should dismiss it. A non-itemized success running afterward must not
-    // silently wipe it — the caller pointed at a different surface.
+  test("non-itemized successful call clears the hook-level slot but preserves per-item records", async () => {
+    // Non-itemized `mutate()` IS documented to clear hook-level `error` at
+    // start (implicit-retry-dismiss for single-slot surfaces). The subtle
+    // point this test pins is that the per-item record for a failed itemized
+    // call is NOT touched by that clear — bulk surfaces reading
+    // `errorsByItemId` stay accurate across unrelated non-itemized actions.
     let phase: "fail" | "succeed" = "fail";
     globalThis.fetch = mock(() => {
       if (phase === "fail") {
@@ -889,6 +890,172 @@ describe("useAdminMutation", () => {
     expect(result.current.errorsByItemId).toEqual({});
     expect(result.current.errorFor("r1")).toBeUndefined();
     expect(result.current.error).toBeNull();
+  });
+
+  test("three-party handoff: owner-success promotes a surviving error into the hook slot", async () => {
+    // A fails → B fails → B retries successfully. Without the promote-on-
+    // clear logic, B's success would clear the hook-level slot (because B
+    // owned it) and the banner would go empty WHILE row A is still
+    // broken in errorsByItemId. Promote keeps the banner in sync with the
+    // map — the user sees "A is still failing" instead of false all-clear.
+    let phase: "fail" | "succeed" = "fail";
+    globalThis.fetch = mock((_url: string, init?: RequestInit) => {
+      if (phase === "succeed") return Promise.resolve(jsonResponse({ ok: true }));
+      const body = init?.body ? (JSON.parse(init.body as string) as { id: string }) : { id: "?" };
+      return Promise.resolve(jsonResponse({ message: `Failed ${body.id}` }, 500));
+    }) as unknown as typeof fetch;
+
+    const { result } = renderHook(
+      () => useAdminMutation({ path: "/api/v1/admin/items" }),
+      { wrapper },
+    );
+
+    await act(async () => {
+      await result.current.mutate({ body: { id: "A" }, itemId: "A" });
+    });
+    await act(async () => {
+      await result.current.mutate({ body: { id: "B" }, itemId: "B" });
+    });
+    expect(result.current.error?.message).toBe("Failed B");
+
+    // B retries successfully.
+    phase = "succeed";
+    await act(async () => {
+      await result.current.mutate({ body: { id: "B" }, itemId: "B" });
+    });
+
+    // Banner tracks the surviving failure, not the cleared one.
+    expect(result.current.errorFor("B")).toBeUndefined();
+    expect(result.current.errorFor("A")?.message).toBe("Failed A");
+    expect(result.current.error?.message).toBe("Failed A");
+  });
+
+  test("clearErrorFor with surviving failures promotes another item into the hook slot", async () => {
+    // Same promote invariant, triggered by explicit dismissal instead of
+    // success. Dismissing a row-level error while another row is still
+    // broken must not silently empty the banner.
+    //
+    // Fresh Response per call — Response bodies are single-read, so reusing
+    // one instance across back-to-back fetches trips happy-dom's
+    // already-consumed guard and makes `extractFetchError` fall back to
+    // "HTTP 500".
+    globalThis.fetch = mock(() =>
+      Promise.resolve(jsonResponse({ message: "nope" }, 500)),
+    ) as unknown as typeof fetch;
+
+    const { result } = renderHook(
+      () => useAdminMutation({ path: "/api/v1/admin/items" }),
+      { wrapper },
+    );
+
+    await act(async () => {
+      await result.current.mutate({ itemId: "A" });
+    });
+    await act(async () => {
+      await result.current.mutate({ itemId: "B" });
+    });
+    expect(result.current.error?.message).toBe("nope");
+
+    act(() => {
+      result.current.clearErrorFor("B");
+    });
+    // B's slot gone; A still holds an error; banner tracks A.
+    expect(result.current.errorFor("B")).toBeUndefined();
+    expect(result.current.errorFor("A")?.message).toBe("nope");
+    expect(result.current.error?.message).toBe("nope");
+  });
+
+  test("clearError() dismisses only the hook-level slot and leaves errorsByItemId intact", async () => {
+    // Contract: `clearError` is a narrow banner-dismiss. Per-item state is
+    // managed separately — callers that want to wipe everything reach for
+    // `reset()`. Without this contract, a banner-dismiss would silently
+    // mark rows as "recovered" in the per-item map.
+    mockFetch(jsonResponse({ message: "row bad" }, 500));
+
+    const { result } = renderHook(
+      () => useAdminMutation({ path: "/api/v1/admin/items" }),
+      { wrapper },
+    );
+
+    await act(async () => {
+      await result.current.mutate({ itemId: "r-1" });
+    });
+    expect(result.current.error?.message).toBe("row bad");
+    expect(result.current.errorFor("r-1")?.message).toBe("row bad");
+
+    act(() => {
+      result.current.clearError();
+    });
+    expect(result.current.error).toBeNull();
+    // Per-item record persists — bulk surfaces still see r-1 as broken.
+    expect(result.current.errorFor("r-1")?.message).toBe("row bad");
+  });
+
+  test("mutate({ itemId }) with no path populates errorsByItemId, not just hook-level", async () => {
+    // Regression guard: bulk callers reading exclusively via `errorFor(id)`
+    // for a given row must see a no-path config error on that row. Earlier
+    // the missing-path early-return only set hook-level `error`, so a bulk
+    // surface would silently treat the row as healthy.
+    const { result } = renderHook(
+      () => useAdminMutation(), // no path configured
+      { wrapper },
+    );
+
+    let mutateResult: MutateResult<unknown>;
+    await act(async () => {
+      mutateResult = await result.current.mutate({ itemId: "row-z" });
+    });
+
+    expect(mutateResult!.ok).toBe(false);
+    if (!mutateResult!.ok) {
+      expect(mutateResult!.error.message).toContain("no path");
+    }
+    expect(result.current.errorFor("row-z")?.message).toContain("no path");
+    expect(result.current.error?.message).toContain("no path");
+  });
+
+  test("reset() during flight: a late-settling mutation does not repopulate cleared slots", async () => {
+    // Dialog contract: callers invoke `reset()` on close to wipe state.
+    // Any in-flight request that settles afterward (network slow, tab
+    // backgrounded) must honor that intent — otherwise a phantom banner
+    // re-appears on the next open with an error from the prior session.
+    let respondFail!: (res: Response) => void;
+    globalThis.fetch = mock(() =>
+      new Promise<Response>((resolve) => {
+        respondFail = resolve;
+      }),
+    ) as unknown as typeof fetch;
+
+    const { result } = renderHook(
+      () => useAdminMutation({ path: "/api/v1/admin/items" }),
+      { wrapper },
+    );
+
+    let pending!: Promise<MutateResult<unknown>>;
+    await act(async () => {
+      pending = result.current.mutate({ itemId: "late" });
+      // Let TanStack dispatch the fetch so `respondFail` is populated.
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(result.current.isMutating("late")).toBe(true);
+
+    act(() => {
+      result.current.reset();
+    });
+    expect(result.current.error).toBeNull();
+    expect(result.current.errorsByItemId).toEqual({});
+
+    // Now let the in-flight mutation reject.
+    await act(async () => {
+      respondFail(jsonResponse({ message: "Too late" }, 500));
+      await pending;
+    });
+    // Slots stay clean — the generation guard short-circuited the catch-
+    // path state writes. The resolved result still reports the failure to
+    // whoever was awaiting it, which is fine: that caller is accountable
+    // for its own local state, not the hook's.
+    expect(result.current.error).toBeNull();
+    expect(result.current.errorsByItemId).toEqual({});
   });
 
   test("a throwing onSuccess callback does not flip result.ok or populate hook error", async () => {

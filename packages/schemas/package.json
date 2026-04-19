@@ -1,0 +1,27 @@
+{
+  "name": "@useatlas/schemas",
+  "version": "0.0.1",
+  "description": "Shared Zod schemas for Atlas wire format — single source of truth for API route validation and web response parsing",
+  "type": "module",
+  "private": true,
+  "license": "AGPL-3.0-or-later",
+  "exports": {
+    ".": "./src/index.ts",
+    "./abuse": "./src/abuse.ts"
+  },
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "dependencies": {
+    "@useatlas/types": "workspace:*",
+    "zod": "^4.3.6"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AtlasDevHQ/atlas",
+    "directory": "packages/schemas"
+  },
+  "homepage": "https://www.useatlas.dev",
+  "bugs": {
+    "url": "https://github.com/AtlasDevHQ/atlas/issues"
+  }
+}

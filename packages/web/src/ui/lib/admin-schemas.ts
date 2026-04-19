@@ -14,9 +14,6 @@ import type {
   WorkspaceModelConfig,
   ApprovalRule,
   ApprovalRequest,
-  AbuseStatus,
-  AbuseThresholdConfig,
-  AbuseDetail,
   PIIColumnClassification,
   SemanticDiffResponse,
   PlatformStats,
@@ -36,6 +33,11 @@ import type {
   SLAThresholds,
   SLAMetricPoint,
 } from "@/ui/lib/types";
+export {
+  AbuseStatusSchema,
+  AbuseThresholdConfigSchema,
+  AbuseDetailSchema,
+} from "@useatlas/schemas";
 
 // ── Connection ────────────────────────────────────────────────────
 
@@ -117,63 +119,10 @@ export const ApprovalRequestSchema = z.object({
 }) as z.ZodType<ApprovalRequest>;
 
 // ── Abuse ─────────────────────────────────────────────────────────
-
-const AbuseEventSchema = z.object({
-  id: z.string(),
-  workspaceId: z.string(),
-  level: z.string(),
-  trigger: z.string(),
-  message: z.string(),
-  metadata: z.record(z.string(), z.unknown()),
-  createdAt: z.string(),
-  actor: z.string(),
-});
-
-export const AbuseStatusSchema = z.object({
-  workspaceId: z.string(),
-  workspaceName: z.string().nullable(),
-  level: z.string(),
-  trigger: z.string().nullable(),
-  message: z.string().nullable(),
-  updatedAt: z.string(),
-  events: z.array(AbuseEventSchema),
-}) as z.ZodType<AbuseStatus>;
-
-export const AbuseThresholdConfigSchema = z.object({
-  queryRateLimit: z.number(),
-  queryRateWindowSeconds: z.number(),
-  errorRateThreshold: z.number(),
-  uniqueTablesLimit: z.number(),
-  throttleDelayMs: z.number(),
-}) as z.ZodType<AbuseThresholdConfig>;
-
-const AbuseCountersSchema = z.object({
-  queryCount: z.number(),
-  errorCount: z.number(),
-  errorRatePct: z.number().nullable(),
-  uniqueTablesAccessed: z.number(),
-  escalations: z.number(),
-});
-
-const AbuseInstanceSchema = z.object({
-  startedAt: z.string(),
-  endedAt: z.string().nullable(),
-  peakLevel: z.string(),
-  events: z.array(AbuseEventSchema),
-});
-
-export const AbuseDetailSchema = z.object({
-  workspaceId: z.string(),
-  workspaceName: z.string().nullable(),
-  level: z.string(),
-  trigger: z.string().nullable(),
-  message: z.string().nullable(),
-  updatedAt: z.string(),
-  counters: AbuseCountersSchema,
-  thresholds: AbuseThresholdConfigSchema,
-  currentInstance: AbuseInstanceSchema,
-  priorInstances: z.array(AbuseInstanceSchema),
-}) as z.ZodType<AbuseDetail>;
+//
+// AbuseStatusSchema / AbuseThresholdConfigSchema / AbuseDetailSchema are
+// re-exported from `@useatlas/schemas` at the top of this file. Shared
+// with the API route layer so a field rename can't silently drift.
 
 // ── Compliance ────────────────────────────────────────────────────
 

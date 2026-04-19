@@ -14,10 +14,6 @@ import { DataTableSortList } from "@/components/data-table/data-table-sort-list"
 import { useDataTable } from "@/hooks/use-data-table";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-
-
-
-
 import {
   Sheet,
   SheetContent,
@@ -29,18 +25,16 @@ import { StatCard } from "@/ui/components/admin/stat-card";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import type { FetchError } from "@/ui/hooks/use-admin-fetch";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
+import { RelativeTimestamp } from "@/ui/components/admin/queue";
+import { TooltipProvider } from "@/components/ui/tooltip";
+import { roleBadge } from "./roles";
 import {
   Building2,
   Search,
   Users,
   Eye,
-  Shield,
-  ShieldCheck,
-  Crown,
   Mail,
 } from "lucide-react";
-
-
 
 // -- Types --
 
@@ -78,12 +72,6 @@ interface OrgDetail {
   }>;
 }
 
-const ROLE_ICONS: Record<string, typeof Crown> = {
-  owner: Crown,
-  admin: ShieldCheck,
-  member: Shield,
-};
-
 export default function OrganizationsPage() {
   const { blocked } = usePlatformAdminGuard();
   const { apiUrl, isCrossOrigin } = useAtlasConfig();
@@ -110,7 +98,11 @@ export default function OrganizationsPage() {
       try {
         const res = await fetch(`${apiUrl}/api/v1/admin/organizations`, { credentials });
         if (!res.ok) {
-          if (!cancelled) setError({ message: `HTTP ${res.status}`, status: res.status });
+          // intentionally ignored: body may be empty or non-JSON on error —
+          // status-code message is the fallback.
+          const body = (await res.json().catch(() => ({}))) as { message?: string };
+          const message = body.message ?? `Failed to load organizations (HTTP ${res.status})`;
+          if (!cancelled) setError({ message, status: res.status });
           return;
         }
         const data = await res.json();
@@ -144,7 +136,9 @@ export default function OrganizationsPage() {
     try {
       const res = await fetch(`${apiUrl}/api/v1/admin/organizations/${orgId}`, { credentials });
       if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
+        // intentionally ignored: body may be empty or non-JSON on error — we
+        // fall back to the status-code message below.
+        const body = (await res.json().catch(() => ({}))) as { message?: string };
         setDetailError(body.message ?? `Failed to load organization (HTTP ${res.status})`);
         setSelectedOrg(null);
         return;
@@ -192,7 +186,11 @@ export default function OrganizationsPage() {
     {
       accessorKey: "createdAt",
       header: "Created",
-      cell: ({ row }) => new Date(row.original.createdAt).toLocaleDateString(),
+      cell: ({ row }) => (
+        <span className="text-xs text-muted-foreground whitespace-nowrap">
+          <RelativeTimestamp iso={row.original.createdAt} />
+        </span>
+      ),
     },
     {
       id: "actions",
@@ -226,6 +224,7 @@ export default function OrganizationsPage() {
   if (blocked) return <LoadingState message="Checking access..." />;
 
   return (
+    <TooltipProvider>
     <div className="p-6">
       {/* Header */}
       <div className="mb-6">
@@ -236,7 +235,7 @@ export default function OrganizationsPage() {
       <ErrorBoundary>
         <div className="space-y-6">
           {/* Stats row */}
-          <div className="grid gap-4 sm:grid-cols-3">
+          <div className="grid gap-4 sm:grid-cols-2">
             <StatCard
               title="Total Organizations"
               value={loading ? "..." : orgs.length.toLocaleString()}
@@ -279,7 +278,7 @@ export default function OrganizationsPage() {
             loadingMessage="Loading organizations..."
             emptyIcon={Building2}
             emptyTitle="No organizations yet"
-            emptyDescription="Organizations are created when users sign up and go through the first-run flow"
+            emptyDescription="Organizations are created when a new user completes signup."
             isEmpty={orgs.length === 0}
             hasFilters={!!params.search}
             onClearFilters={() => setParams({ search: "", page: 1 })}
@@ -298,16 +297,28 @@ export default function OrganizationsPage() {
         <SheetContent className="w-full sm:max-w-lg overflow-auto">
           <SheetHeader>
             <SheetTitle>
-              {selectedOrg?.organization.name ?? "Organization Details"}
+              {detailLoading
+                ? "Loading organization…"
+                : detailError
+                  ? "Could not load organization"
+                  : selectedOrg?.organization.name ?? "Organization details"}
             </SheetTitle>
             <SheetDescription>
-              {selectedOrg?.organization.slug ?? "Loading..."}
+              {detailLoading
+                ? "Fetching members and invitations…"
+                : detailError
+                  ? "The organization could not be loaded. Try again in a moment."
+                  : selectedOrg?.organization.slug ?? ""}
             </SheetDescription>
           </SheetHeader>
 
           {detailLoading ? (
             <div className="flex h-32 items-center justify-center">
-              <LoadingState message="Loading..." />
+              <LoadingState message="Loading organization..." />
+            </div>
+          ) : detailError ? (
+            <div className="flex h-32 items-center justify-center px-4 text-center text-sm text-destructive">
+              {detailError}
             </div>
           ) : selectedOrg ? (
             <div className="space-y-6 px-4">
@@ -319,19 +330,24 @@ export default function OrganizationsPage() {
                 </h3>
                 <div className="space-y-2">
                   {selectedOrg.members.map((m) => {
-                    const RoleIcon = ROLE_ICONS[m.role] ?? Shield;
+                    const { Icon: RoleIcon, className: badgeClass } = roleBadge(m.role);
                     return (
                       <div key={m.id} className="flex items-center justify-between rounded-md border p-3">
-                        <div className="flex items-center gap-3">
-                          <div className="bg-muted flex size-8 items-center justify-center rounded-full text-xs font-medium">
+                        <div className="flex min-w-0 items-center gap-3">
+                          <div className="bg-muted flex size-8 shrink-0 items-center justify-center rounded-full text-xs font-medium">
                             {m.user.name?.charAt(0)?.toUpperCase() ?? m.user.email.charAt(0).toUpperCase()}
                           </div>
-                          <div>
-                            <div className="text-sm font-medium">{m.user.name || m.user.email}</div>
-                            <div className="text-xs text-muted-foreground">{m.user.email}</div>
+                          <div className="min-w-0">
+                            <div className="truncate text-sm font-medium">{m.user.name || m.user.email}</div>
+                            <div className="truncate text-xs text-muted-foreground">
+                              <span>{m.user.email}</span>
+                              <span aria-hidden="true"> · </span>
+                              <span>Joined </span>
+                              <RelativeTimestamp iso={m.createdAt} />
+                            </div>
                           </div>
                         </div>
-                        <Badge variant="outline" className="capitalize">
+                        <Badge variant="outline" className={`capitalize shrink-0 ${badgeClass}`}>
                           <RoleIcon className="mr-1 size-3" />
                           {m.role}
                         </Badge>
@@ -342,41 +358,52 @@ export default function OrganizationsPage() {
               </div>
 
               {/* Pending invitations */}
-              {selectedOrg.invitations.filter((i) => i.status === "pending").length > 0 && (
-                <div className="space-y-3">
-                  <h3 className="flex items-center gap-2 text-sm font-semibold">
-                    <Mail className="size-4" />
-                    Pending Invitations
-                  </h3>
-                  <div className="space-y-2">
-                    {selectedOrg.invitations
-                      .filter((i) => i.status === "pending")
-                      .map((inv) => (
-                        <div key={inv.id} className="flex items-center justify-between rounded-md border p-3">
-                          <div>
-                            <div className="text-sm font-medium">{inv.email}</div>
-                            <div className="text-xs text-muted-foreground">
-                              Expires {new Date(inv.expiresAt).toLocaleDateString()}
+              {(() => {
+                const pending = selectedOrg.invitations.filter((i) => i.status === "pending");
+                if (pending.length === 0) return null;
+                return (
+                  <div className="space-y-3">
+                    <h3 className="flex items-center gap-2 text-sm font-semibold">
+                      <Mail className="size-4" />
+                      Pending Invitations
+                      <Badge variant="outline" className="ml-1 font-normal">
+                        {pending.length}
+                      </Badge>
+                    </h3>
+                    <div className="space-y-2">
+                      {pending.map((inv) => {
+                        const { className: badgeClass } = roleBadge(inv.role);
+                        return (
+                          <div key={inv.id} className="flex items-center justify-between rounded-md border p-3">
+                            <div className="min-w-0">
+                              <div className="truncate text-sm font-medium">{inv.email}</div>
+                              <div className="truncate text-xs text-muted-foreground">
+                                <span>Expires </span>
+                                <RelativeTimestamp iso={inv.expiresAt} />
+                                <span aria-hidden="true"> · </span>
+                                <span>Sent </span>
+                                <RelativeTimestamp iso={inv.createdAt} />
+                              </div>
                             </div>
+                            <Badge variant="outline" className={`capitalize shrink-0 ${badgeClass}`}>
+                              {inv.role}
+                            </Badge>
                           </div>
-                          <Badge variant="outline" className="capitalize">{inv.role}</Badge>
-                        </div>
-                      ))}
+                        );
+                      })}
+                    </div>
                   </div>
-                </div>
-              )}
-            </div>
-          ) : detailError ? (
-            <div className="flex h-32 items-center justify-center text-sm text-destructive">
-              {detailError}
+                );
+              })()}
             </div>
           ) : (
-            <div className="flex h-32 items-center justify-center text-muted-foreground">
-              No data available
+            <div className="flex h-32 items-center justify-center text-sm text-muted-foreground">
+              No organization data to display.
             </div>
           )}
         </SheetContent>
       </Sheet>
     </div>
+    </TooltipProvider>
   );
 }

@@ -30,7 +30,9 @@ echo ":: Regenerating api-reference MDX from apps/docs/openapi.json..."
 bun run --filter '@atlas/docs' generate:api >/dev/null
 
 echo ":: Checking for drift..."
-DRIFT=$(git status --porcelain -- apps/docs/openapi.json apps/docs/content/docs/api-reference || true)
+# No `|| true` — if git fails (missing binary, corrupt repo, bad pathspec), fail the gate
+# rather than silently report "no drift". `set -e` at the top propagates the non-zero exit.
+DRIFT=$(git status --porcelain -- apps/docs/openapi.json apps/docs/content/docs/api-reference)
 
 if [[ -n "$DRIFT" ]]; then
   echo ""

@@ -119,7 +119,7 @@ const verifyDomainRoute = createRoute({
   path: "/verify",
   tags: ["Admin — Custom Domain"],
   summary: "Check domain verification status",
-  description: "Checks DNS propagation and TLS certificate status for the workspace's custom domain. Does not require enterprise plan — only adding a domain is plan-gated.",
+  description: "Checks DNS propagation and TLS certificate status for the workspace's custom domain. Does not require Business plan — only adding a domain is plan-gated.",
   responses: {
     200: {
       description: "Verification result",
@@ -265,7 +265,7 @@ adminDomains.openapi(getDomainRoute, async (c) => {
   }), { label: "get workspace domain", domainErrors: [customDomainError] });
 });
 
-// POST / — add custom domain (enterprise plan required)
+// POST / — add custom domain (Business plan required)
 adminDomains.openapi(addDomainRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;

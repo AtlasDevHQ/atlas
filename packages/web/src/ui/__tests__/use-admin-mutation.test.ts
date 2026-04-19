@@ -188,8 +188,9 @@ describe("useAdminMutation", () => {
   });
 
   test("MutateResult.error preserves FetchError fields (code, status, requestId)", async () => {
-    // Regression guard for #1595 — structured fields must reach the caller
-    // so friendlyError() and EnterpriseUpsell branching can fire.
+    // Structured fields must reach the caller so friendlyError() and
+    // EnterpriseUpsell branching can fire — without them, mutation failures
+    // render as raw "HTTP 403" and generic banners on EE-gated endpoints.
     mockFetch(
       jsonResponse(
         {

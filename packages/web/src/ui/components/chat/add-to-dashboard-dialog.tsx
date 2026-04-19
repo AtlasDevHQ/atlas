@@ -167,7 +167,7 @@ export function AddToDashboardDialog({
           body: { title: newDashboardTitle.trim() },
         });
         if (!result.ok) {
-          setError(friendlyError(result.error) || "Failed to create dashboard.");
+          setError(friendlyError(result.error));
           return;
         }
         dashboardId = (result.data as Dashboard).id;
@@ -196,13 +196,13 @@ export function AddToDashboardDialog({
         if (createdNewDashboard) {
           // Dashboard was created but card failed — guide user to retry
           setError(
-            `Dashboard "${newDashboardTitle.trim()}" was created, but adding the card failed: ${friendlyError(cardResult.error) || "Unknown error"}. ` +
+            `Dashboard "${newDashboardTitle.trim()}" was created, but adding the card failed: ${friendlyError(cardResult.error)}. ` +
             `Select it from "Existing" to retry.`
           );
           setMode("existing");
           setSelectedDashboardId(dashboardId);
         } else {
-          setError(friendlyError(cardResult.error) || "Failed to add card.");
+          setError(friendlyError(cardResult.error));
         }
         return;
       }

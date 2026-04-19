@@ -91,7 +91,7 @@ export default function DashboardsPage() {
       body: { title: newTitle.trim() },
     });
     if (!result.ok) {
-      setCreateError(friendlyError(result.error) || "Failed to create dashboard.");
+      setCreateError(friendlyError(result.error));
       return;
     }
     setNewTitle("");

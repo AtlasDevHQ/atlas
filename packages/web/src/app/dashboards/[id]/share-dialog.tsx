@@ -112,7 +112,7 @@ export function DashboardShareDialog({ dashboardId }: DashboardShareDialogProps)
         body: { expiresIn, shareMode },
       });
       if (!result.ok) {
-        setError(friendlyError(result.error) || "Failed to create share link.");
+        setError(friendlyError(result.error));
         return;
       }
       setShared(true);
@@ -135,7 +135,7 @@ export function DashboardShareDialog({ dashboardId }: DashboardShareDialogProps)
         method: "DELETE",
       });
       if (!result.ok) {
-        setError(friendlyError(result.error) || "Failed to revoke share link.");
+        setError(friendlyError(result.error));
         return;
       }
       setShared(false);

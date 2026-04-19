@@ -8,14 +8,13 @@ import { AdminContentWrapper } from "../components/admin-content-wrapper";
 import type { FetchError } from "../lib/fetch-error";
 
 /**
- * Regression guard for #1595 — asserts the full passthrough from a mutation
- * failure through `MutateResult.error` into `AdminContentWrapper`:
+ * Asserts `MutateResult.error` preserves the structured `FetchError` shape
+ * end-to-end so `AdminContentWrapper` can:
  *
- * - 403 + `{ error: "enterprise_required" }` → renders `EnterpriseUpsell`,
- *   not the generic error banner (requires `error.code` to survive the
- *   hook's catch, which the pre-#1595 string-flattened shape destroyed).
- * - 401/403/404/503 → renders the `friendlyError`-translated copy, not the
- *   raw `HTTP 4xx` status the hook used to emit.
+ * - Render `EnterpriseUpsell` on 403 + `{ error: "enterprise_required" }`
+ *   (requires `error.code` to survive the hook's catch).
+ * - Render the `friendlyError`-translated copy on 401/403/404/503 (requires
+ *   `error.status` to survive), not the raw `HTTP 4xx` string.
  */
 
 const stubAuthClient: AtlasAuthClient = {
@@ -55,7 +54,8 @@ function MutationHarness({ feature }: { feature: string }) {
   const [settled, setSettled] = useState(false);
   const { mutate } = useAdminMutation({ path: "/api/v1/admin/test", method: "POST" });
 
-  // Fire once on mount — test drives the fetch mock before rendering.
+  // Test arms the fetch mock before rendering; first render kicks off the
+  // mutation so each case observes a single deterministic outcome.
   if (!settled) {
     setSettled(true);
     mutate().then((result) => {
@@ -83,7 +83,7 @@ function mockFailure(status: number, body: Record<string, unknown>) {
   ) as unknown as typeof fetch;
 }
 
-describe("admin mutation error passthrough (#1595)", () => {
+describe("admin mutation error passthrough", () => {
   beforeEach(() => {
     testQueryClient = new QueryClient({
       defaultOptions: {
@@ -127,11 +127,9 @@ describe("admin mutation error passthrough (#1595)", () => {
       utils = render(<MutationHarness feature="Users" />, { wrapper: Wrapper });
     });
 
-    // AdminContentWrapper routes 403 to <FeatureGate> when a `feature` prop is
-    // set — that path also relies on `error.status` surviving, which is the
-    // same data the pre-#1595 string flatten erased. Either the FeatureGate
-    // access-denied copy or the friendlyError fallback is acceptable; both
-    // prove the structured status reached the component.
+    // Either the FeatureGate access-denied copy or the friendlyError fallback
+    // is acceptable — both prove `error.status` reached the component, which
+    // is the property that would have been lost under a flattened error.
     await waitFor(() => {
       const text = utils.container.textContent ?? "";
       expect(

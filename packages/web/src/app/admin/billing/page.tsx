@@ -1,14 +1,6 @@
 "use client";
 
-import {
-  useEffect,
-  useId,
-  useRef,
-  useState,
-  type ComponentType,
-  type ReactNode,
-  type RefObject,
-} from "react";
+import { useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Progress } from "@/components/ui/progress";
@@ -22,6 +14,16 @@ import {
 } from "@/components/ui/select";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
+import {
+  CompactRow,
+  DetailList,
+  DetailRow,
+  InlineError,
+  SectionHeading,
+  Shell,
+  type StatusKind,
+  useDisclosure,
+} from "@/ui/components/admin/compact";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { BillingStatusSchema } from "@/ui/lib/admin-schemas";
@@ -36,7 +38,6 @@ import {
   Loader2,
   Plus,
   ServerOff,
-  X,
   Zap,
 } from "lucide-react";
 
@@ -82,264 +83,6 @@ interface BillingStatus {
     plan: string;
     status: string;
   } | null;
-}
-
-// ── Shared Design Primitives ──────────────────────────────────────
-// Local copies of admin/integrations primitives. Promote to
-// @/ui/components/admin/ once a third page reuses them.
-
-type StatusKind = "connected" | "disconnected" | "unavailable";
-
-function StatusDot({ kind, className }: { kind: StatusKind; className?: string }) {
-  return (
-    <span
-      aria-hidden
-      className={cn(
-        "relative inline-flex size-1.5 shrink-0 rounded-full",
-        kind === "connected" &&
-          "bg-primary shadow-[0_0_0_3px_color-mix(in_oklch,var(--primary)_15%,transparent)]",
-        kind === "disconnected" && "bg-muted-foreground/40",
-        kind === "unavailable" &&
-          "bg-muted-foreground/20 outline-1 outline-dashed outline-muted-foreground/30",
-        className,
-      )}
-    >
-      {kind === "connected" && (
-        <span className="absolute inset-0 rounded-full bg-primary/60 motion-safe:animate-ping" />
-      )}
-    </span>
-  );
-}
-
-const STATUS_LABEL: Record<StatusKind, string> = {
-  connected: "Connected",
-  disconnected: "Not connected",
-  unavailable: "Unavailable",
-};
-
-function BillingShell({
-  id,
-  icon: Icon,
-  title,
-  description,
-  status,
-  children,
-  actions,
-  onCollapse,
-  panelRef,
-}: {
-  id?: string;
-  icon: ComponentType<{ className?: string }>;
-  title: string;
-  description: string;
-  status: StatusKind;
-  children?: ReactNode;
-  actions?: ReactNode;
-  onCollapse?: () => void;
-  panelRef?: RefObject<HTMLElement | null>;
-}) {
-  return (
-    <section
-      id={id}
-      ref={panelRef}
-      className={cn(
-        "relative flex flex-col overflow-hidden rounded-xl border bg-card/60 backdrop-blur-[1px] transition-colors",
-        "hover:border-border/80",
-        status === "connected" && "border-primary/20",
-      )}
-    >
-      {status === "connected" && (
-        <span
-          aria-hidden
-          className="pointer-events-none absolute left-0 top-4 bottom-4 w-px bg-linear-to-b from-transparent via-primary to-transparent opacity-70"
-        />
-      )}
-
-      <header className="flex items-start gap-3 p-4 pb-3">
-        <span
-          className={cn(
-            "grid size-9 shrink-0 place-items-center rounded-lg border bg-background/40",
-            status === "connected" && "border-primary/30 text-primary",
-            status !== "connected" && "text-muted-foreground",
-          )}
-        >
-          <Icon className="size-4" />
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <h3 className="truncate text-sm font-semibold leading-tight tracking-tight">
-              {title}
-            </h3>
-            {status === "connected" && (
-              <span className="ml-auto flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-[0.08em] text-primary">
-                <StatusDot kind="connected" />
-                Live
-              </span>
-            )}
-            {status !== "connected" && onCollapse && (
-              <button
-                type="button"
-                aria-label="Cancel"
-                onClick={onCollapse}
-                className="ml-auto -m-1 grid size-6 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-              >
-                <X className="size-3.5" />
-              </button>
-            )}
-          </div>
-          <p className="mt-0.5 text-xs leading-snug text-muted-foreground">
-            {description}
-          </p>
-        </div>
-      </header>
-
-      {children != null && (
-        <div className="flex-1 space-y-3 px-4 pb-3 text-sm">{children}</div>
-      )}
-
-      {actions && (
-        <footer className="flex items-center justify-end gap-2 border-t border-border/50 bg-muted/20 px-4 py-2.5">
-          {actions}
-        </footer>
-      )}
-    </section>
-  );
-}
-
-function CompactRow({
-  icon: Icon,
-  title,
-  description,
-  status,
-  action,
-}: {
-  icon: ComponentType<{ className?: string }>;
-  title: string;
-  description: string;
-  status: StatusKind;
-  action?: ReactNode;
-}) {
-  return (
-    <div
-      className={cn(
-        "group flex items-center gap-3 rounded-xl border bg-card/40 px-3.5 py-2.5 transition-colors",
-        "hover:bg-card/70 hover:border-border/80",
-        status === "unavailable" && "opacity-60",
-      )}
-    >
-      <span className="grid size-8 shrink-0 place-items-center rounded-lg border bg-background/40 text-muted-foreground">
-        <Icon className="size-4" />
-      </span>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          <h3 className="truncate text-sm font-semibold leading-tight tracking-tight">
-            {title}
-          </h3>
-          <StatusDot kind={status} className="shrink-0" />
-          <span className="sr-only">Status: {STATUS_LABEL[status]}</span>
-        </div>
-        <p className="mt-0.5 truncate text-xs text-muted-foreground">
-          {description}
-        </p>
-      </div>
-      {action && <div className="shrink-0">{action}</div>}
-    </div>
-  );
-}
-
-function DetailRow({
-  label,
-  value,
-  mono,
-  truncate,
-}: {
-  label: string;
-  value: ReactNode;
-  mono?: boolean;
-  truncate?: boolean;
-}) {
-  return (
-    <div className="flex items-baseline justify-between gap-3 py-1 text-xs">
-      <span className="shrink-0 text-muted-foreground">{label}</span>
-      <span
-        className={cn(
-          "min-w-0 text-right",
-          mono && "font-mono text-[11px]",
-          truncate && "truncate",
-          !mono && "font-medium",
-        )}
-      >
-        {value}
-      </span>
-    </div>
-  );
-}
-
-function DetailList({ children }: { children: ReactNode }) {
-  return (
-    <div className="rounded-lg border bg-muted/20 px-3 py-1.5 divide-y divide-border/50">
-      {children}
-    </div>
-  );
-}
-
-function InlineError({ children }: { children: ReactNode }) {
-  if (!children) return null;
-  return (
-    <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-      {children}
-    </div>
-  );
-}
-
-function SectionHeading({
-  title,
-  description,
-}: {
-  title: string;
-  description: string;
-}) {
-  return (
-    <div className="mb-3">
-      <h2 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-        {title}
-      </h2>
-      <p className="mt-0.5 text-xs text-muted-foreground/80">{description}</p>
-    </div>
-  );
-}
-
-/**
- * Disclosure helper for progressive-disclosure rows. Moves focus into the
- * revealed panel on expand, restores it to the trigger on collapse, and
- * clears any owning mutation error when the user dismisses the panel.
- */
-function useDisclosure(onCollapseCleanup?: () => void) {
-  const [expanded, setExpanded] = useState(false);
-  const triggerRef = useRef<HTMLButtonElement | null>(null);
-  const panelRef = useRef<HTMLElement | null>(null);
-  const panelId = useId();
-  const prevExpanded = useRef(false);
-
-  useEffect(() => {
-    if (expanded && !prevExpanded.current) {
-      const panel = panelRef.current;
-      const first = panel?.querySelector<HTMLElement>(
-        'input:not([disabled]), textarea:not([disabled]), button[role="combobox"]:not([disabled])',
-      );
-      first?.focus();
-    } else if (!expanded && prevExpanded.current) {
-      triggerRef.current?.focus();
-    }
-    prevExpanded.current = expanded;
-  }, [expanded]);
-
-  const collapse = () => {
-    setExpanded(false);
-    onCollapseCleanup?.();
-  };
-
-  return { expanded, setExpanded, collapse, triggerRef, panelRef, panelId };
 }
 
 // ── Helpers ───────────────────────────────────────────────────────
@@ -543,7 +286,7 @@ function PlanShell({ data }: { data: BillingStatus }) {
   const status: StatusKind = subscription?.status === "active" ? "connected" : "disconnected";
 
   return (
-    <BillingShell
+    <Shell
       icon={CreditCard}
       title={plan.displayName}
       description={
@@ -627,7 +370,7 @@ function PlanShell({ data }: { data: BillingStatus }) {
           No active subscription — portal access opens after you subscribe.
         </p>
       )}
-    </BillingShell>
+    </Shell>
   );
 }
 
@@ -645,7 +388,7 @@ function UsageShell({ data }: { data: BillingStatus }) {
   };
 
   return (
-    <BillingShell
+    <Shell
       icon={Coins}
       title="Token usage"
       description={
@@ -701,7 +444,7 @@ function UsageShell({ data }: { data: BillingStatus }) {
           value={<ResourceValue count={connections.count} max={connections.max} />}
         />
       </DetailList>
-    </BillingShell>
+    </Shell>
   );
 }
 
@@ -738,7 +481,7 @@ function ModelRow({ data, onSaved }: { data: BillingStatus; onSaved: () => void 
   });
 
   const { expanded, setExpanded, collapse, triggerRef, panelRef, panelId } =
-    useDisclosure(clearError);
+    useDisclosure({ onCollapseCleanup: clearError });
 
   async function handleModelChange(value: string) {
     await mutate({ body: { value } });
@@ -768,7 +511,7 @@ function ModelRow({ data, onSaved }: { data: BillingStatus; onSaved: () => void 
   }
 
   return (
-    <BillingShell
+    <Shell
       id={panelId}
       panelRef={panelRef}
       icon={Bot}
@@ -797,7 +540,7 @@ function ModelRow({ data, onSaved }: { data: BillingStatus; onSaved: () => void 
         </p>
       )}
       <InlineError>{error}</InlineError>
-    </BillingShell>
+    </Shell>
   );
 }
 

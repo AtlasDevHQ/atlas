@@ -34,7 +34,7 @@ export function bulkFailureSummary(
   const reasonCounts = new Map<string, number>();
   for (const r of results) {
     if (r.status === "rejected") {
-      const msg = r.reason instanceof Error ? r.reason.message : "Unknown error";
+      const msg = r.reason instanceof Error ? r.reason.message : String(r.reason);
       reasonCounts.set(msg, (reasonCounts.get(msg) ?? 0) + 1);
     }
   }

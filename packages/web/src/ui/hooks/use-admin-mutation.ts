@@ -56,19 +56,48 @@ interface UseAdminMutationReturn<TResponse> {
   saving: boolean;
   /**
    * Last mutation error as a structured {@link FetchError}, or null.
-   * Cleared on next `mutate()` call. Feed into `friendlyError()` for banner
-   * copy, or branch on `code === "enterprise_required"` / `status` directly —
-   * the structured fields stay intact so `AdminContentWrapper` can route EE
-   * 403s into `EnterpriseUpsell` instead of a generic banner. Stays
-   * `FetchError` (not flattened to `string`) specifically so the `code`,
-   * `status`, and `requestId` fields survive the hook boundary — wrapping it
-   * as `{ message: error.message }` re-flattens and is guarded by an ESLint
+   * Feed into `friendlyError()` for banner copy, or branch on
+   * `code === "enterprise_required"` / `status` directly — the structured
+   * fields stay intact so `AdminContentWrapper` can route EE 403s into
+   * `EnterpriseUpsell` instead of a generic banner. Stays `FetchError`
+   * (not flattened to `string`) specifically so the `code`, `status`, and
+   * `requestId` fields survive the hook boundary — wrapping it as
+   * `{ message: error.message }` re-flattens and is guarded by an ESLint
    * rule in `eslint.config.mjs`.
+   *
+   * Clearing semantics intentionally differ for itemized vs non-itemized
+   * calls:
+   * - **Non-itemized** `mutate()` — cleared at the start of the next call
+   *   (stale error from a prior failed attempt is implicitly dismissed when
+   *   the user retries).
+   * - **Itemized** `mutate({ itemId })` — NOT cleared at the start of the
+   *   next call, so concurrent bulk fan-out (`Promise.all` / `allSettled`)
+   *   can't stomp a prior item's error via the start-of-mutate reset (#1629).
+   *   For bulk readers, prefer the per-item map via `errorFor(id)` — this
+   *   slot still surfaces a last-wins banner for single-row UX.
+   * - An itemized call that **succeeds** clears this slot only when it was
+   *   the same itemId that last populated it, so a successful retry of the
+   *   failed row dismisses its banner while failures on other rows persist.
    */
   error: FetchError | null;
-  /** Clear the error manually. */
+  /**
+   * Per-item error map — populated when `mutate({ itemId })` fails, cleared
+   * when the same itemId's next mutate call starts or succeeds. Reliable
+   * under concurrent fan-out (each itemId owns its own slot), unlike the
+   * shared hook-level `error`.
+   *
+   * Prefer `errorFor(id)` for lookup; the raw map is exposed for callers
+   * that need to render multiple per-item banners in one pass (e.g. bulk
+   * summaries) or iterate over failed ids.
+   */
+  errorsByItemId: Readonly<Record<string, FetchError>>;
+  /** Lookup helper for {@link errorsByItemId}. */
+  errorFor: (itemId: string) => FetchError | undefined;
+  /** Clear the hook-level error manually. */
   clearError: () => void;
-  /** Reset both error and saving state (e.g. when a dialog reopens). */
+  /** Clear a single itemId's error without touching other slots. */
+  clearErrorFor: (itemId: string) => void;
+  /** Reset all error slots and in-flight state (e.g. when a dialog reopens). */
   reset: () => void;
   /** Check whether a per-item mutation is in flight. */
   isMutating: (itemId: string) => boolean;
@@ -91,22 +120,59 @@ export function useAdminMutation<TResponse = unknown>(
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<FetchError | null>(null);
   const [inFlight, setInFlight] = useState<Set<string>>(new Set());
+  const [errorsByItemId, setErrorsByItemId] = useState<Record<string, FetchError>>({});
+
+  // Tracks which itemId (if any) last populated hook-level `error`. Kept in a
+  // ref so an itemized success can clear the hook-level slot only when IT was
+  // the one that last wrote to it — otherwise a newer failure on a DIFFERENT
+  // itemId stays visible in the banner. Null when the slot was last written
+  // by a non-itemized call (or is already empty).
+  const errorItemIdRef = useRef<string | null>(null);
 
   // Ref to read latest hook-level options inside mutationFn without recreating the mutation.
   const optionsRef = useRef(options);
   optionsRef.current = options;
 
-  const clearError = useCallback(() => setError(null), []);
+  const clearError = useCallback(() => {
+    setError(null);
+    errorItemIdRef.current = null;
+  }, []);
+
+  const clearErrorFor = useCallback((itemId: string) => {
+    setErrorsByItemId((prev) => {
+      if (!(itemId in prev)) return prev;
+      const next = { ...prev };
+      delete next[itemId];
+      return next;
+    });
+    // If this itemId also owns the hook-level slot, clear it — otherwise a
+    // caller dismissing a per-item banner would leave a stale shared banner
+    // behind.
+    if (errorItemIdRef.current === itemId) {
+      setError(null);
+      errorItemIdRef.current = null;
+    }
+  }, []);
 
   const reset = useCallback(() => {
     setError(null);
     setSaving(false);
     setInFlight(new Set());
+    setErrorsByItemId({});
+    errorItemIdRef.current = null;
   }, []);
 
   const isMutating = useCallback(
     (itemId: string) => inFlight.has(itemId),
     [inFlight],
+  );
+
+  // `errorsByItemId` is already a stable Record snapshot per render — a
+  // straight closure avoids an extra memo + dep and matches how `isMutating`
+  // reads `inFlight`.
+  const errorFor = useCallback(
+    (itemId: string): FetchError | undefined => errorsByItemId[itemId],
+    [errorsByItemId],
   );
 
   const mutation = useMutation<TResponse | undefined, Error, MutateOptions<TResponse> | undefined>({
@@ -170,17 +236,33 @@ export function useAdminMutation<TResponse = unknown>(
 
       if (!callOpts?.path && !opts?.path) {
         const fetchError: FetchError = { message: "useAdminMutation: no path provided" };
+        // A missing-path bug is a caller error and not itemized — always
+        // populate the hook-level slot so the surface notices it regardless
+        // of how the caller reads errors.
         setError(fetchError);
+        errorItemIdRef.current = null;
         return { ok: false, error: fetchError };
       }
 
-      // Track loading state
+      // Start-of-mutate clearing is deliberately asymmetric between itemized
+      // and non-itemized calls. Non-itemized: clear hook-level `error` so a
+      // new attempt dismisses the stale banner for this mutation slot.
+      // Itemized: clear ONLY this itemId's per-item slot. Touching the
+      // hook-level slot here is what caused concurrent bulk fan-out to
+      // stomp each other's errors (#1629).
       if (itemId) {
         setInFlight((prev) => new Set(prev).add(itemId));
+        setErrorsByItemId((prev) => {
+          if (!(itemId in prev)) return prev;
+          const next = { ...prev };
+          delete next[itemId];
+          return next;
+        });
       } else {
         setSaving(true);
+        setError(null);
+        errorItemIdRef.current = null;
       }
-      setError(null);
 
       let data: TResponse | undefined;
       try {
@@ -193,7 +275,16 @@ export function useAdminMutation<TResponse = unknown>(
         const fetchError =
           (err as { fetchError?: FetchError }).fetchError ??
           ({ message: msg || "Request failed" } satisfies FetchError);
+        if (itemId) {
+          setErrorsByItemId((prev) => ({ ...prev, [itemId]: fetchError }));
+        }
+        // Mirror to hook-level `error` in both cases so the many single-row
+        // callers that read `mutation.error` continue to surface failures
+        // without migration. Concurrent itemized failures are "last wins"
+        // here (documented on the `error` field) — bulk callers should read
+        // `errorsByItemId` / `errorFor(id)` for per-item resolution.
         setError(fetchError);
+        errorItemIdRef.current = itemId ?? null;
         return { ok: false, error: fetchError };
       } finally {
         if (itemId) {
@@ -204,6 +295,24 @@ export function useAdminMutation<TResponse = unknown>(
           });
         } else {
           setSaving(false);
+        }
+      }
+
+      // Successful itemized mutation: clear that itemId's per-item slot, and
+      // if this itemId also owns the hook-level slot (e.g. a retry of the
+      // failed row that just succeeded), clear the hook slot too so the
+      // banner doesn't linger on success. Failures on OTHER itemIds stay
+      // visible — their ownership of the hook slot is unchanged.
+      if (itemId) {
+        setErrorsByItemId((prev) => {
+          if (!(itemId in prev)) return prev;
+          const next = { ...prev };
+          delete next[itemId];
+          return next;
+        });
+        if (errorItemIdRef.current === itemId) {
+          setError(null);
+          errorItemIdRef.current = null;
         }
       }
 
@@ -242,5 +351,15 @@ export function useAdminMutation<TResponse = unknown>(
     [], // Stable — reads all mutable state via refs
   );
 
-  return { mutate, saving, error, clearError, reset, isMutating };
+  return {
+    mutate,
+    saving,
+    error,
+    errorsByItemId,
+    errorFor,
+    clearError,
+    clearErrorFor,
+    reset,
+    isMutating,
+  };
 }

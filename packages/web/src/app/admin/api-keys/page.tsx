@@ -155,9 +155,14 @@ export default function ApiKeysPage() {
     setRevokeTarget(apiKey);
   }
 
-  // Hero stat: "NN key(s) active" — active = not expired.
+  // Hero stat: "NN / NN active" — active = not expired.
+  //
+  // Gate on loaded, error-free, present data so "00 / 00 active" doesn't
+  // flash above the AdminContentWrapper loading/error UI during the initial
+  // fetch and every refetch. Mirrors the SCIM revamp (PR #1566).
   const activeCount = apiKeys.filter((k) => !isExpired(k.expiresAt)).length;
   const totalCount = apiKeys.length;
+  const showStat = !loading && !error && listData != null;
 
   return (
     <div className="mx-auto max-w-3xl px-6 py-10">
@@ -168,13 +173,15 @@ export default function ApiKeysPage() {
         </p>
         <div className="flex items-baseline justify-between gap-6">
           <h1 className="text-3xl font-semibold tracking-tight">API keys</h1>
-          <p className="shrink-0 font-mono text-sm tabular-nums text-muted-foreground">
-            <span className={cn(activeCount > 0 ? "text-primary" : "text-muted-foreground")}>
-              {String(activeCount).padStart(2, "0")}
-            </span>
-            <span className="opacity-50">{" / "}</span>
-            {String(totalCount).padStart(2, "0")} active
-          </p>
+          {showStat && (
+            <p className="shrink-0 font-mono text-sm tabular-nums text-muted-foreground">
+              <span className={cn(activeCount > 0 ? "text-primary" : "text-muted-foreground")}>
+                {String(activeCount).padStart(2, "0")}
+              </span>
+              <span className="opacity-50">{" / "}</span>
+              {String(totalCount).padStart(2, "0")} active
+            </p>
+          )}
         </div>
         <p className="max-w-xl text-sm text-muted-foreground">
           Create and manage API keys for programmatic access to the Atlas API.

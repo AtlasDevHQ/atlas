@@ -38,7 +38,7 @@ import {
 } from "@/ui/components/admin/compact";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
-import { friendlyError } from "@/ui/lib/fetch-error";
+import { friendlyError, friendlyErrorOrNull } from "@/ui/lib/fetch-error";
 import { combineMutationErrors } from "@/ui/lib/mutation-errors";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { useDeployMode } from "@/ui/hooks/use-deploy-mode";
@@ -220,7 +220,7 @@ export default function SandboxPage() {
           <div className="mx-auto max-w-3xl space-y-8">
             {mutationError && (
               <ErrorBanner
-                message={mutationError}
+                message={friendlyError(mutationError)}
                 onRetry={clearMutationError}
                 actionLabel="Dismiss"
               />
@@ -590,8 +590,8 @@ function ProviderRow({
         </div>
       )}
 
-      <InlineError>{validationError ?? connectMutation.error}</InlineError>
-      <InlineError>{disconnectMutation.error}</InlineError>
+      <InlineError>{validationError ?? friendlyErrorOrNull(connectMutation.error)}</InlineError>
+      <InlineError>{friendlyErrorOrNull(disconnectMutation.error)}</InlineError>
     </Shell>
   );
 }

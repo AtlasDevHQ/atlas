@@ -17,6 +17,7 @@ import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { Monitor, Search, X, Users, Activity, Trash2 } from "lucide-react";
 import { useAdminFetch, type FetchError } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { friendlyError } from "@/ui/lib/fetch-error";
 import { SessionStatsSchema } from "@/ui/lib/admin-schemas";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import {
@@ -217,7 +218,7 @@ export default function SessionsPage() {
           </div>
 
           {revokeError && (
-            <ErrorBanner message={revokeError} onRetry={() => setFetchKey((k) => k + 1)} />
+            <ErrorBanner message={friendlyError(revokeError)} onRetry={() => setFetchKey((k) => k + 1)} />
           )}
           <AdminContentWrapper
             loading={loading}

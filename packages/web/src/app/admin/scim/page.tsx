@@ -28,7 +28,7 @@ import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
-import { friendlyError } from "@/ui/lib/fetch-error";
+import { friendlyError, friendlyErrorOrNull } from "@/ui/lib/fetch-error";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import {
   CompactRow,
@@ -261,9 +261,9 @@ export default function SCIMPage() {
           emptyTitle="No SCIM configuration"
           isEmpty={false}
         >
-          {showTopMutationError && (
+          {showTopMutationError && mutationError && (
             <div className="mb-4">
-              <ErrorBanner message={mutationError} onRetry={clearMutationError} />
+              <ErrorBanner message={friendlyError(mutationError)} onRetry={clearMutationError} />
             </div>
           )}
 
@@ -587,7 +587,7 @@ function AddMappingDialog({
       onSubmit={handleSubmit}
       submitLabel="Create Mapping"
       saving={saveMutation.saving}
-      serverError={saveMutation.error}
+      serverError={friendlyErrorOrNull(saveMutation.error)}
     >
       {(form) => (
         <>

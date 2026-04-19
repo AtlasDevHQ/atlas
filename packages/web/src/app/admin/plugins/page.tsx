@@ -44,7 +44,7 @@ import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import {
   PluginListResponseSchema,
 } from "@/ui/lib/admin-schemas";
-import { extractFetchError, friendlyError } from "@/ui/lib/fetch-error";
+import { extractFetchError, friendlyError, friendlyErrorOrNull } from "@/ui/lib/fetch-error";
 import { useDeployMode } from "@/ui/hooks/use-deploy-mode";
 import type { DeployMode } from "@/ui/lib/types";
 
@@ -496,7 +496,7 @@ function PluginRow({
               {success}
             </div>
           )}
-          <InlineError>{saveMutation.error}</InlineError>
+          <InlineError>{friendlyErrorOrNull(saveMutation.error)}</InlineError>
         </div>
       ) : null}
     </Shell>

@@ -237,7 +237,7 @@ export function CreateProviderDialog({
               </DialogDescription>
             </DialogHeader>
 
-            {createError && <ErrorBanner message={createError} onRetry={clearError} />}
+            {createError && <ErrorBanner message={friendlyError(createError)} onRetry={clearError} />}
 
             <Tabs value={providerType} onValueChange={(v) => handleTypeChange(v as "saml" | "oidc")}>
               <TabsList className="w-full">

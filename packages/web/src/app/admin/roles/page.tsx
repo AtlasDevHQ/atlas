@@ -37,6 +37,7 @@ import {
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { friendlyError, friendlyErrorOrNull } from "@/ui/lib/fetch-error";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { KeyRound, Plus, Pencil, Trash2, Loader2, Lock, Users } from "lucide-react";
 
@@ -171,7 +172,7 @@ function RoleDialog({
       onSubmit={handleSubmit}
       submitLabel={isEditing ? "Save Changes" : "Create Role"}
       saving={saveMutation.saving}
-      serverError={saveMutation.error}
+      serverError={friendlyErrorOrNull(saveMutation.error)}
       className="max-w-lg"
     >
       {(form) => {
@@ -300,7 +301,7 @@ function DeleteRoleDialog({
 
         {error && (
           <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-            {error}
+            {friendlyError(error)}
           </div>
         )}
 

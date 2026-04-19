@@ -27,6 +27,7 @@ import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { LoadingState } from "@/ui/components/admin/loading-state";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { friendlyError, friendlyErrorOrNull } from "@/ui/lib/fetch-error";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { usePlatformAdminGuard } from "@/ui/hooks/use-platform-admin-guard";
 import { useDeployMode } from "@/ui/hooks/use-deploy-mode";
@@ -187,7 +188,7 @@ function EditDialog({
       defaultValues={{ value: setting.currentValue ?? setting.default ?? "" }}
       onSubmit={handleSubmit}
       saving={saveMutation.saving}
-      serverError={saveMutation.error}
+      serverError={friendlyErrorOrNull(saveMutation.error)}
       className="max-w-md"
     >
       {(form) => (
@@ -383,7 +384,7 @@ function BrandColorCard({
 
         {error && (
           <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-            {error}
+            {friendlyError(error)}
           </div>
         )}
 
@@ -469,7 +470,7 @@ function PlatformSettingsContent() {
 
       <div>
         {mutationError && (
-          <ErrorBanner message={mutationError} onRetry={clearMutationError} />
+          <ErrorBanner message={friendlyError(mutationError)} onRetry={clearMutationError} />
         )}
 
         <AdminContentWrapper

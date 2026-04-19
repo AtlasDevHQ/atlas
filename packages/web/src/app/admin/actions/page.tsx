@@ -718,7 +718,7 @@ export default function ActionsPage() {
           }
           onConfirm={confirmSingleDeny}
           loading={!!denyTarget && denyMutation.isMutating(denyTarget.id)}
-          error={denyMutation.error}
+          error={denyMutation.error ? friendlyError(denyMutation.error) : null}
         />
 
         <ReasonDialog

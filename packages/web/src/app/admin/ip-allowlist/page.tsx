@@ -24,6 +24,7 @@ import { z } from "zod";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { friendlyError, friendlyErrorOrNull } from "@/ui/lib/fetch-error";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import {
   CompactRow,
@@ -125,7 +126,7 @@ function AddEntryDialog({
       onSubmit={handleSubmit}
       submitLabel="Add Entry"
       saving={saveMutation.saving}
-      serverError={saveMutation.error}
+      serverError={friendlyErrorOrNull(saveMutation.error)}
       className="max-w-md"
     >
       {(form) => (
@@ -241,7 +242,7 @@ function DeleteEntryDialog({
 
             {error && (
               <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-                {error}
+                {friendlyError(error)}
               </div>
             )}
           </div>

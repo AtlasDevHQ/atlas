@@ -14,6 +14,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { friendlyError } from "@/ui/lib/fetch-error";
 import { AlertTriangle, Loader2 } from "lucide-react";
 import type { SSOProviderSummary } from "./sso-types";
 
@@ -88,7 +89,10 @@ export function DeleteProviderDialog({
         </AlertDialogHeader>
 
         {(deleteError ?? enforcementError) && (
-          <ErrorBanner message={deleteError ?? enforcementError ?? ""} onRetry={clearError} />
+          <ErrorBanner
+            message={friendlyError((deleteError ?? enforcementError)!)}
+            onRetry={clearError}
+          />
         )}
 
         {/* Provider details */}

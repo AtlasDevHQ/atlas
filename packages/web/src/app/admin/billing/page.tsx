@@ -26,6 +26,7 @@ import {
 } from "@/ui/components/admin/compact";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { friendlyError } from "@/ui/lib/fetch-error";
 import { BillingStatusSchema } from "@/ui/lib/admin-schemas";
 import { formatDate, formatNumber } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -282,7 +283,13 @@ function PlanShell({ data }: { data: BillingStatus }) {
     }
   }
 
-  const combinedError = portalMutationError ?? portalError;
+  // portalError covers the 200-but-missing-URL edge case (set locally when
+  // the server returns success but no portal link); portalMutationError
+  // covers all non-2xx responses. Use `||` so an empty-string
+  // friendlyError() result falls through to portalError rather than
+  // suppressing it.
+  const mutationCopy = portalMutationError ? friendlyError(portalMutationError) : "";
+  const combinedError = mutationCopy || portalError;
   const status: StatusKind = subscription?.status === "active" ? "connected" : "disconnected";
 
   return (
@@ -539,7 +546,7 @@ function ModelRow({ data, onSaved }: { data: BillingStatus; onSaved: () => void 
           Saving…
         </p>
       )}
-      <InlineError>{error}</InlineError>
+      <InlineError>{error ? friendlyError(error) : null}</InlineError>
     </Shell>
   );
 }
@@ -591,7 +598,7 @@ function ByotRow({
           </div>
         }
       />
-      <InlineError>{error}</InlineError>
+      <InlineError>{error ? friendlyError(error) : null}</InlineError>
     </div>
   );
 }

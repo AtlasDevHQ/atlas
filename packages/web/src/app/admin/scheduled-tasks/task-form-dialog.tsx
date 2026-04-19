@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import { useAtlasConfig } from "@/ui/context";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { friendlyError } from "@/ui/lib/fetch-error";
 import {
   Dialog,
   DialogContent,
@@ -597,7 +598,9 @@ export function TaskFormDialog({
         </div>
 
         {(validationError || submitMutation.error) && (
-          <p className="text-sm text-destructive">{validationError || submitMutation.error}</p>
+          <p className="text-sm text-destructive">
+            {validationError || (submitMutation.error ? friendlyError(submitMutation.error) : null)}
+          </p>
         )}
 
         <DialogFooter>

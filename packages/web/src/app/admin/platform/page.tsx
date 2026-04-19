@@ -687,7 +687,7 @@ function PlatformPageContent() {
               />
             </div>
           )}
-          {actionError && <ErrorBanner message={actionError} />}
+          {actionError && <ErrorBanner message={friendlyError(actionError)} />}
           <DialogFooter>
             <Button variant="outline" onClick={() => { setConfirmAction(null); clearActionError(); setPurgeConfirmName(""); }}>Cancel</Button>
             <Button
@@ -722,7 +722,7 @@ function PlatformPageContent() {
               Update the plan tier for &quot;{planChange?.workspace.name}&quot;.
             </DialogDescription>
           </DialogHeader>
-          {planError && <ErrorBanner message={planError} />}
+          {planError && <ErrorBanner message={friendlyError(planError)} />}
           <Select
             value={planChange?.newTier ?? "free"}
             onValueChange={(v) => planChange && setPlanChange({ ...planChange, newTier: v as PlanTier })}

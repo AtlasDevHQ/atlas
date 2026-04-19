@@ -240,7 +240,7 @@ function RulesSection() {
       feature="Approval Workflows"
       onRetry={refetch}
     >
-      {mutationError && <ErrorBanner message={mutationError} onRetry={clearMutationError} />}
+      {mutationError && <ErrorBanner message={friendlyError(mutationError)} onRetry={clearMutationError} />}
       <Card>
         <CardHeader className="flex flex-row items-center justify-between">
           <div>
@@ -841,7 +841,7 @@ function QueueSection() {
         }
         onConfirm={confirmSingleDeny}
         loading={!!denyTarget && denyMutation.isMutating(denyTarget.id)}
-        error={denyMutation.error}
+        error={denyMutation.error ? friendlyError(denyMutation.error) : null}
       />
 
       <ReasonDialog

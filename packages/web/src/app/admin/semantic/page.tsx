@@ -36,6 +36,7 @@ import {
 } from "@/ui/components/admin/semantic-file-tree";
 import { type FetchError } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { friendlyError, friendlyErrorOrNull } from "@/ui/lib/fetch-error";
 import { useDeployMode } from "@/ui/hooks/use-deploy-mode";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { EntityVersionHistory } from "@/ui/components/admin/entity-version-history";
@@ -839,7 +840,7 @@ export default function SemanticPage() {
         entity={editingEntity}
         entityName={editingEntityName}
         saving={savingEntity}
-        serverError={saveError}
+        serverError={friendlyErrorOrNull(saveError)}
         onSave={handleSaveEntity}
         isSaas={isSaas}
       />
@@ -856,7 +857,7 @@ export default function SemanticPage() {
           </AlertDialogHeader>
           {deleteError && (
             <div className="rounded-md bg-destructive/10 px-3 py-2 text-sm text-destructive">
-              {deleteError}
+              {friendlyError(deleteError)}
             </div>
           )}
           <AlertDialogFooter>

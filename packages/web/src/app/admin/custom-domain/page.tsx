@@ -29,6 +29,7 @@ import {
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { friendlyError } from "@/ui/lib/fetch-error";
 import { combineMutationErrors } from "@/ui/lib/mutation-errors";
 import { DomainResponseSchema } from "@/ui/lib/admin-schemas";
 import { cn } from "@/lib/utils";
@@ -80,8 +81,12 @@ function CustomDomainPageContent() {
   const [copied, setCopied] = useState(false);
 
   const domain = data?.domain ?? null;
+  // Plan-gating is encoded as a structured `code` on 403/402 responses. Match
+  // the machine-readable field, not the human message, so copy tweaks don't
+  // accidentally flip this branch.
   const isPlanGated =
-    addError?.includes("plan_required") || addError?.includes("Enterprise plan");
+    addError?.code === "plan_required" ||
+    addError?.code === "enterprise_required";
 
   async function handleAdd() {
     if (!newDomain) return;
@@ -198,7 +203,7 @@ function CustomDomainPageContent() {
         <div className="mx-auto max-w-3xl space-y-8">
           {mutationError && (
             <ErrorBanner
-              message={mutationError}
+              message={friendlyError(mutationError)}
               onRetry={clearMutationError}
               actionLabel="Dismiss"
             />
@@ -261,7 +266,7 @@ function CustomDomainPageContent() {
                     root domain.
                   </p>
                 </div>
-                {addError && <ErrorBanner message={addError} />}
+                {addError && <ErrorBanner message={friendlyError(addError)} />}
               </Shell>
             )}
 

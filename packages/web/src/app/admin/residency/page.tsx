@@ -268,7 +268,7 @@ function ResidencyPageContent() {
         <div className="mx-auto max-w-3xl space-y-8">
           {mutationError && (
             <ErrorBanner
-              message={mutationError}
+              message={friendlyError(mutationError)}
               onRetry={clearMutationError}
               actionLabel="Dismiss"
             />

@@ -24,6 +24,7 @@ import { SectionHeading } from "@/ui/components/admin/compact";
 import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
+import { friendlyError, friendlyErrorOrNull } from "@/ui/lib/fetch-error";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import { useDeployMode } from "@/ui/hooks/use-deploy-mode";
 import { cn } from "@/lib/utils";
@@ -239,7 +240,7 @@ function EditDialog({
       defaultValues={{ value: setting.currentValue ?? setting.default ?? "" }}
       onSubmit={handleSubmit}
       saving={saveMutation.saving}
-      serverError={saveMutation.error}
+      serverError={friendlyErrorOrNull(saveMutation.error)}
       className="max-w-md"
     >
       {(form) => (
@@ -460,7 +461,7 @@ export default function SettingsPage() {
         >
           <div className="mx-auto max-w-3xl space-y-8">
             {mutationError && (
-              <ErrorBanner message={mutationError} onRetry={clearMutationError} />
+              <ErrorBanner message={friendlyError(mutationError)} onRetry={clearMutationError} />
             )}
 
             {!manageable && !isSaas && (

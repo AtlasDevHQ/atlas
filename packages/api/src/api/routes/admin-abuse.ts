@@ -14,6 +14,10 @@ import {
   getAbuseConfig,
   getAbuseDetail,
 } from "@atlas/api/lib/security/abuse";
+import { getWorkspaceNamesByIds } from "@atlas/api/lib/db/internal";
+import { createLogger } from "@atlas/api/lib/logger";
+
+const log = createLogger("admin-abuse");
 import { ABUSE_LEVELS, ABUSE_TRIGGERS } from "@useatlas/types";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
@@ -249,13 +253,27 @@ adminAbuse.openapi(listFlaggedRoute, async (c) => {
   return runEffect(c, Effect.gen(function* () {
     const workspaces = listFlaggedWorkspaces();
 
-    // Enrich with recent events from DB
-    const enriched = yield* Effect.promise(() => Promise.all(
-      workspaces.map(async (ws) => {
-        const events = await getAbuseEvents(ws.workspaceId, 10);
-        return { ...ws, events };
-      }),
-    ));
+    // Enrich with recent events from DB + resolve workspace names so the
+    // admin table shows "Acme Corp" instead of "org_01K...". Names are a
+    // batch fetch to avoid N+1; missing/deleted orgs fall back to null.
+    const enriched = yield* Effect.promise(async () => {
+      const orgIds = workspaces.map((ws) => ws.workspaceId);
+      const [events, names] = await Promise.all([
+        Promise.all(workspaces.map((ws) => getAbuseEvents(ws.workspaceId, 10))),
+        getWorkspaceNamesByIds(orgIds).catch((err) => {
+          // Name resolution is advisory — if the DB hiccups, fall back to
+          // null so the page still renders with opaque ids rather than 500.
+          log.warn({ err: err instanceof Error ? err.message : String(err) },
+            "abuse list: workspace name resolution failed");
+          return new Map<string, string | null>();
+        }),
+      ]);
+      return workspaces.map((ws, i) => ({
+        ...ws,
+        workspaceName: names.get(ws.workspaceId) ?? null,
+        events: events[i],
+      }));
+    });
 
     return c.json({ workspaces: enriched, total: enriched.length }, 200);
   }), { label: "list flagged workspaces" });
@@ -303,7 +321,18 @@ adminAbuse.openapi(getDetailRoute, async (c) => {
       );
     }
 
-    return c.json(detail, 200);
+    // Resolve the workspace display name. Advisory — if the lookup fails
+    // we log and return the id-only shape rather than 500'ing the panel.
+    const nameMap = yield* Effect.promise(() =>
+      getWorkspaceNamesByIds([workspaceId]).catch((err) => {
+        log.warn({ err: err instanceof Error ? err.message : String(err) },
+          "abuse detail: workspace name resolution failed");
+        return new Map<string, string | null>();
+      }),
+    );
+    const enriched = { ...detail, workspaceName: nameMap.get(workspaceId) ?? null };
+
+    return c.json(enriched, 200);
   }), { label: "read abuse detail" });
 });
 

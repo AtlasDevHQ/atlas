@@ -44,13 +44,15 @@ import {
   SheetTitle,
   SheetDescription,
 } from "@/components/ui/sheet";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { StatCard } from "@/ui/components/admin/stat-card";
-import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import {
-  useInProgressSet,
-  type FetchError,
-} from "@/ui/hooks/use-admin-fetch";
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
+import { extractFetchError, type FetchError } from "@/ui/lib/fetch-error";
+import { useInProgressSet } from "@/ui/hooks/use-admin-fetch";
 import { useAdminMutation } from "@/ui/hooks/use-admin-mutation";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import {
@@ -67,8 +69,6 @@ import {
   Calendar,
 } from "lucide-react";
 
-// ── Types ─────────────────────────────────────────────────────────
-
 interface PatternStats {
   total: number;
   pending: number;
@@ -77,21 +77,51 @@ interface PatternStats {
 }
 
 const LIMIT = 50;
-const STATUS_TABS = ["", "pending", "approved", "rejected"] as const;
-const STATUS_LABELS: Record<string, string> = {
-  "": "All",
-  pending: "Pending",
-  approved: "Approved",
-  rejected: "Rejected",
-};
-const TYPE_TABS = ["", "query_pattern", "semantic_amendment"] as const;
-const TYPE_LABELS: Record<string, string> = {
-  "": "All",
-  query_pattern: "Query Patterns",
-  semantic_amendment: "Amendments",
-};
+const STATUS_FILTERS: { value: string; label: string }[] = [
+  { value: "", label: "All" },
+  { value: "pending", label: "Pending" },
+  { value: "approved", label: "Approved" },
+  { value: "rejected", label: "Rejected" },
+];
+const TYPE_FILTERS: { value: string; label: string }[] = [
+  { value: "", label: "Any type" },
+  { value: "query_pattern", label: "Query Patterns" },
+  { value: "semantic_amendment", label: "Amendments" },
+];
 
-// ── Page ──────────────────────────────────────────────────────────
+function absoluteTimestamp(iso: string): string {
+  return new Date(iso).toLocaleString(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+const RTF = new Intl.RelativeTimeFormat("en", { numeric: "auto" });
+
+function relativeTime(iso: string): string {
+  const diffMs = new Date(iso).getTime() - Date.now();
+  const absSec = Math.abs(Math.round(diffMs / 1000));
+  if (absSec < 60) return RTF.format(Math.round(diffMs / 1000), "second");
+  const absMin = Math.abs(Math.round(diffMs / 60000));
+  if (absMin < 60) return RTF.format(Math.round(diffMs / 60000), "minute");
+  const absHr = Math.abs(Math.round(diffMs / 3600000));
+  if (absHr < 24) return RTF.format(Math.round(diffMs / 3600000), "hour");
+  return RTF.format(Math.round(diffMs / 86400000), "day");
+}
+
+function RelativeTimestamp({ iso, label }: { iso: string; label?: string }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span>{label ? `${label}: ` : ""}{relativeTime(iso)}</span>
+      </TooltipTrigger>
+      <TooltipContent>{absoluteTimestamp(iso)}</TooltipContent>
+    </Tooltip>
+  );
+}
 
 export default function LearnedPatternsPage() {
   const { apiUrl, isCrossOrigin } = useAtlasConfig();
@@ -106,24 +136,15 @@ export default function LearnedPatternsPage() {
   const [params, setParams] = useQueryStates(learnedPatternsSearchParams);
   const offset = (params.page - 1) * LIMIT;
 
-  // Stats computed from full counts
   const [stats, setStats] = useState<PatternStats | null>(null);
-
-  // Detail sheet
   const [detailPattern, setDetailPattern] = useState<LearnedPattern | null>(null);
-
-  // Delete confirmation
   const [deleteTarget, setDeleteTarget] = useState<LearnedPattern | null>(null);
-
-  // Source entities for filter dropdown
   const [sourceEntities, setSourceEntities] = useState<string[]>([]);
 
   const inProgress = useInProgressSet();
-  const { mutate: statusMutate } = useAdminMutation({ method: "PATCH" });
-  const { mutate: deleteMutate } = useAdminMutation({ method: "DELETE" });
-  const { mutate: bulkMutate } = useAdminMutation({ path: "/api/v1/admin/learned-patterns/bulk", method: "POST" });
-
-  // ── Fetch patterns ──────────────────────────────────────────────
+  const statusMutation = useAdminMutation<LearnedPattern>({ method: "PATCH" });
+  const deleteMutation = useAdminMutation({ method: "DELETE" });
+  const bulkMutation = useAdminMutation({ path: "/api/v1/admin/learned-patterns/bulk", method: "POST" });
 
   useEffect(() => {
     let cancelled = false;
@@ -141,12 +162,9 @@ export default function LearnedPatternsPage() {
         if (params.source_entity) qs.set("source_entity", params.source_entity);
 
         const res = await fetch(`${apiUrl}/api/v1/admin/learned-patterns?${qs}`, { credentials });
+        if (cancelled) return;
         if (!res.ok) {
-          if (!cancelled) {
-            let msg = `HTTP ${res.status}`;
-            try { msg = (await res.json()).message ?? msg; } catch { /* intentionally ignored: response may not be JSON */ }
-            setError({ message: msg, status: res.status });
-          }
+          setError(await extractFetchError(res));
           return;
         }
         const data = await res.json();
@@ -167,14 +185,11 @@ export default function LearnedPatternsPage() {
     return () => { cancelled = true; };
   }, [apiUrl, offset, params.status, params.type, params.source_entity, credentials, fetchKey]);
 
-  // ── Fetch stats (all statuses, no filter) ───────────────────────
-
   useEffect(() => {
     let cancelled = false;
 
     async function fetchStats() {
       try {
-        // Fetch total counts for each status
         const [allRes, pendingRes, approvedRes, rejectedRes] = await Promise.all([
           fetch(`${apiUrl}/api/v1/admin/learned-patterns?limit=1&offset=0`, { credentials }),
           fetch(`${apiUrl}/api/v1/admin/learned-patterns?limit=1&offset=0&status=pending`, { credentials }),
@@ -202,12 +217,11 @@ export default function LearnedPatternsPage() {
           });
         }
       } catch {
-        // Stats are non-critical — don't block the page
+        // Stats are non-critical — don't block the page.
         console.debug("Failed to fetch learned pattern stats");
       }
     }
 
-    // Collect unique source entities from a broader unfiltered fetch
     async function fetchEntities() {
       try {
         const res = await fetch(`${apiUrl}/api/v1/admin/learned-patterns?limit=200&offset=0`, { credentials });
@@ -223,7 +237,6 @@ export default function LearnedPatternsPage() {
         }
         if (!cancelled) setSourceEntities([...entities].toSorted());
       } catch {
-        // Non-critical
         console.debug("Failed to fetch source entities");
       }
     }
@@ -233,37 +246,35 @@ export default function LearnedPatternsPage() {
     return () => { cancelled = true; };
   }, [apiUrl, credentials, fetchKey]);
 
-  // ── Actions ─────────────────────────────────────────────────────
-
   async function updatePatternStatus(id: string, status: LearnedPatternStatus) {
     setError(null);
     inProgress.start(id);
 
-    // Optimistic update
-    setPatterns((prev) =>
-      prev.map((p) => (p.id === id ? { ...p, status, updatedAt: new Date().toISOString() } : p)),
-    );
-    // Update detail sheet if viewing this pattern
-    setDetailPattern((prev) =>
-      prev?.id === id ? { ...prev, status, updatedAt: new Date().toISOString() } : prev,
-    );
+    // Snapshot before optimistic update so we can restore on failure.
+    const prevPatterns = patterns;
+    const prevDetail = detailPattern;
 
-    const result = await statusMutate({
+    const optimistic = (p: LearnedPattern) =>
+      p.id === id ? { ...p, status, updatedAt: new Date().toISOString() } : p;
+    setPatterns((prev) => prev.map(optimistic));
+    setDetailPattern((prev) => (prev?.id === id ? optimistic(prev) : prev));
+
+    const result = await statusMutation.mutate({
       path: `/api/v1/admin/learned-patterns/${id}`,
       body: { status },
       onSuccess: (updated) => {
-        // Update with server response
-        const data = updated as LearnedPattern;
-        setPatterns((prev) => prev.map((p) => (p.id === id ? data : p)));
-        setDetailPattern((prev) => (prev?.id === id ? data : prev));
+        if (!updated) return;
+        setPatterns((prev) => prev.map((p) => (p.id === id ? updated : p)));
+        setDetailPattern((prev) => (prev?.id === id ? updated : prev));
       },
     });
 
     if (!result.ok) {
-      // Revert optimistic update
-      setError({ message: "Failed to update pattern" });
+      // Real revert — restore the snapshot, surface the server message.
+      setPatterns(prevPatterns);
+      setDetailPattern(prevDetail);
+      setError({ message: result.error });
     }
-    // Refresh stats
     setFetchKey((k) => k + 1);
     inProgress.stop(id);
   }
@@ -272,7 +283,7 @@ export default function LearnedPatternsPage() {
     setError(null);
     inProgress.start(id);
 
-    const result = await deleteMutate({
+    const result = await deleteMutation.mutate({
       path: `/api/v1/admin/learned-patterns/${id}`,
     });
 
@@ -280,7 +291,7 @@ export default function LearnedPatternsPage() {
       if (detailPattern?.id === id) setDetailPattern(null);
       setFetchKey((k) => k + 1);
     } else {
-      setError({ message: "Failed to delete pattern" });
+      setError({ message: result.error });
     }
     setDeleteTarget(null);
     inProgress.stop(id);
@@ -291,23 +302,22 @@ export default function LearnedPatternsPage() {
     if (selected.length === 0) return;
     setError(null);
 
-    // Optimistic update
+    const prevPatterns = patterns;
     const ids = new Set(selected);
     setPatterns((prev) =>
       prev.map((p) => (ids.has(p.id) ? { ...p, status, updatedAt: new Date().toISOString() } : p)),
     );
 
-    const result = await bulkMutate({
+    const result = await bulkMutation.mutate({
       body: { ids: selected, status },
     });
     if (!result.ok) {
-      setError({ message: "Failed to bulk update" });
+      setPatterns(prevPatterns);
+      setError({ message: result.error });
     }
     table.resetRowSelection();
     setFetchKey((k) => k + 1);
   }
-
-  // ── Column definitions with actions ─────────────────────────────
 
   const columns: ColumnDef<LearnedPattern>[] = (() => {
     const base = getLearnedPatternColumns();
@@ -356,8 +366,6 @@ export default function LearnedPatternsPage() {
     return [...base, actionsCol];
   })();
 
-  // ── Data table ──────────────────────────────────────────────────
-
   const pageCount = Math.max(1, Math.ceil(total / LIMIT));
   const { table } = useDataTable({
     data: patterns,
@@ -371,91 +379,68 @@ export default function LearnedPatternsPage() {
   });
 
   const selectedCount = table.getSelectedRowModel().rows.length;
-
   const hasFilters = !!params.status || !!params.type || !!params.source_entity;
 
   return (
-    <div className="p-6">
-      {/* Header */}
-      <div className="mb-6 flex items-center justify-between">
-        <div>
+    <TooltipProvider>
+      <div className="p-6">
+        <div className="mb-6">
           <h1 className="text-2xl font-bold tracking-tight">Learned Patterns</h1>
           <p className="text-sm text-muted-foreground">Review and manage agent-proposed query patterns</p>
         </div>
-        {selectedCount > 0 && (
-          <div className="flex items-center gap-2">
-            <Button
-              size="sm"
-              onClick={() => bulkUpdateStatus("approved")}
-            >
-              <Check className="mr-1.5 size-3.5" />
-              Approve {selectedCount}
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => bulkUpdateStatus("rejected")}
-            >
-              <X className="mr-1.5 size-3.5" />
-              Reject {selectedCount}
-            </Button>
-          </div>
-        )}
-      </div>
 
-      <ErrorBoundary>
-        <div className="space-y-6">
-          {/* Stats */}
-          {stats && (
-            <div className="grid gap-4 sm:grid-cols-4">
-              <StatCard title="Total Patterns" value={stats.total.toLocaleString()} icon={<Brain className="size-4" />} />
-              <StatCard title="Pending Review" value={stats.pending.toLocaleString()} icon={<Clock className="size-4" />} />
-              <StatCard title="Approved" value={stats.approved.toLocaleString()} icon={<CheckCircle2 className="size-4" />} />
-              <StatCard title="Rejected" value={stats.rejected.toLocaleString()} icon={<XCircle className="size-4" />} />
-            </div>
-          )}
+        <ErrorBoundary>
+          <div className="space-y-4">
+            {stats && (
+              <div className="flex flex-wrap items-center gap-x-5 gap-y-1 text-sm text-muted-foreground">
+                <span className="inline-flex items-center gap-1.5">
+                  <Clock className="size-3.5" />
+                  <span className="font-medium tabular-nums text-foreground">{stats.pending.toLocaleString()}</span> pending
+                </span>
+                <span className="inline-flex items-center gap-1.5">
+                  <CheckCircle2 className="size-3.5" />
+                  <span className="font-medium tabular-nums text-foreground">{stats.approved.toLocaleString()}</span> approved
+                </span>
+                <span className="inline-flex items-center gap-1.5">
+                  <XCircle className="size-3.5" />
+                  <span className="font-medium tabular-nums text-foreground">{stats.rejected.toLocaleString()}</span> rejected
+                </span>
+                <span className="inline-flex items-center gap-1.5">
+                  <Brain className="size-3.5" />
+                  <span className="font-medium tabular-nums text-foreground">{stats.total.toLocaleString()}</span> total
+                </span>
+              </div>
+            )}
 
-          {/* Filters */}
-          <div className="flex flex-wrap items-end gap-3">
-            <div className="space-y-1">
-              <label className="text-xs font-medium text-muted-foreground">Status</label>
-              <Tabs
-                value={params.status}
-                onValueChange={(v) => {
-                  table.setPageIndex(0);
-                  setParams({ status: v, page: 1 });
-                }}
-              >
-                <TabsList>
-                  {STATUS_TABS.map((s) => (
-                    <TabsTrigger key={s || "all"} value={s}>
-                      {STATUS_LABELS[s]}
-                    </TabsTrigger>
-                  ))}
-                </TabsList>
-              </Tabs>
-            </div>
-            <div className="space-y-1">
-              <label className="text-xs font-medium text-muted-foreground">Type</label>
-              <Tabs
-                value={params.type}
-                onValueChange={(v) => {
-                  table.setPageIndex(0);
-                  setParams({ type: v, page: 1 });
-                }}
-              >
-                <TabsList>
-                  {TYPE_TABS.map((t) => (
-                    <TabsTrigger key={t || "all"} value={t}>
-                      {TYPE_LABELS[t]}
-                    </TabsTrigger>
-                  ))}
-                </TabsList>
-              </Tabs>
-            </div>
-            {sourceEntities.length > 0 && (
-              <div className="space-y-1">
-                <label className="text-xs font-medium text-muted-foreground">Entity</label>
+            <div className="flex flex-wrap items-center gap-2">
+              {STATUS_FILTERS.map((opt) => (
+                <Button
+                  key={opt.value || "all"}
+                  size="sm"
+                  variant={params.status === opt.value ? "secondary" : "ghost"}
+                  onClick={() => {
+                    table.setPageIndex(0);
+                    setParams({ status: opt.value, page: 1 });
+                  }}
+                >
+                  {opt.label}
+                </Button>
+              ))}
+              <div className="mx-1 h-4 w-px bg-border" />
+              {TYPE_FILTERS.map((opt) => (
+                <Button
+                  key={opt.value || "all-type"}
+                  size="sm"
+                  variant={params.type === opt.value ? "secondary" : "ghost"}
+                  onClick={() => {
+                    table.setPageIndex(0);
+                    setParams({ type: opt.value, page: 1 });
+                  }}
+                >
+                  {opt.label}
+                </Button>
+              ))}
+              {sourceEntities.length > 0 && (
                 <Select
                   value={params.source_entity || "all"}
                   onValueChange={(v) => {
@@ -463,7 +448,7 @@ export default function LearnedPatternsPage() {
                     setParams({ source_entity: v === "all" ? "" : v, page: 1 });
                   }}
                 >
-                  <SelectTrigger className="h-9 w-44">
+                  <SelectTrigger className="h-8 w-44 text-sm">
                     <SelectValue placeholder="All entities" />
                   </SelectTrigger>
                   <SelectContent>
@@ -475,241 +460,254 @@ export default function LearnedPatternsPage() {
                     ))}
                   </SelectContent>
                 </Select>
-              </div>
-            )}
-            {hasFilters && (
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-9"
-                onClick={() => {
-                  table.setPageIndex(0);
-                  setParams({ status: "", type: "", source_entity: "", page: 1 });
+              )}
+              {hasFilters && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => {
+                    table.setPageIndex(0);
+                    setParams({ status: "", type: "", source_entity: "", page: 1 });
+                  }}
+                >
+                  <X className="mr-1.5 size-3.5" />
+                  Clear
+                </Button>
+              )}
+
+              {selectedCount > 0 && (
+                <>
+                  <div className="mx-1 h-4 w-px bg-border" />
+                  <span className="text-sm text-muted-foreground">{selectedCount} selected</span>
+                  <Button
+                    size="sm"
+                    onClick={() => bulkUpdateStatus("approved")}
+                  >
+                    <Check className="mr-1.5 size-3.5" />
+                    Approve {selectedCount}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => bulkUpdateStatus("rejected")}
+                  >
+                    <X className="mr-1.5 size-3.5" />
+                    Reject {selectedCount}
+                  </Button>
+                </>
+              )}
+            </div>
+
+            <AdminContentWrapper
+              loading={loading}
+              error={error}
+              feature="Learned Patterns"
+              onRetry={() => setFetchKey((k) => k + 1)}
+              loadingMessage="Loading learned patterns..."
+              emptyIcon={Brain}
+              emptyTitle="No learned patterns"
+              emptyDescription="Patterns will appear here when the agent or atlas learn CLI proposes new query patterns."
+              isEmpty={patterns.length === 0}
+              hasFilters={hasFilters}
+              onClearFilters={() => setParams({ status: "", type: "", source_entity: "", page: 1 })}
+            >
+              <DataTable
+                table={table}
+                onRowClick={(row, e) => {
+                  if ((e.target as HTMLElement).closest('[role="checkbox"], button')) return;
+                  setDetailPattern(row.original);
                 }}
               >
-                <X className="mr-1.5 size-3.5" />
-                Clear filters
-              </Button>
-            )}
+                <DataTableToolbar table={table}>
+                  <DataTableSortList table={table} />
+                </DataTableToolbar>
+              </DataTable>
+            </AdminContentWrapper>
           </div>
+        </ErrorBoundary>
 
-          {/* Content */}
-          <AdminContentWrapper
-            loading={loading}
-            error={error}
-            feature="Learned Patterns"
-            onRetry={() => setFetchKey((k) => k + 1)}
-            loadingMessage="Loading learned patterns..."
-            emptyIcon={Brain}
-            emptyTitle="No learned patterns"
-            emptyDescription="Patterns will appear here when the agent or atlas learn CLI proposes new query patterns."
-            isEmpty={patterns.length === 0}
-            hasFilters={hasFilters}
-            onClearFilters={() => setParams({ status: "", type: "", source_entity: "", page: 1 })}
-          >
-            <DataTable
-              table={table}
-              onRowClick={(row, e) => {
-                if ((e.target as HTMLElement).closest('[role="checkbox"], button')) return;
-                setDetailPattern(row.original);
-              }}
-            >
-              <DataTableToolbar table={table}>
-                <DataTableSortList table={table} />
-              </DataTableToolbar>
-            </DataTable>
-          </AdminContentWrapper>
-        </div>
-      </ErrorBoundary>
+        <Sheet open={!!detailPattern} onOpenChange={(open) => { if (!open) setDetailPattern(null); }}>
+          <SheetContent className="sm:max-w-lg overflow-y-auto">
+            {detailPattern && (
+              <>
+                <SheetHeader>
+                  <SheetTitle className="flex items-center gap-2">
+                    Learned Pattern
+                    {(() => {
+                      const badge = statusBadge[detailPattern.status] ?? statusBadge.pending;
+                      return <Badge variant={badge.variant} className={badge.className}>{badge.label}</Badge>;
+                    })()}
+                  </SheetTitle>
+                  <SheetDescription>
+                    {detailPattern.description ?? "No description"}
+                  </SheetDescription>
+                </SheetHeader>
 
-      {/* Detail Sheet */}
-      <Sheet open={!!detailPattern} onOpenChange={(open) => { if (!open) setDetailPattern(null); }}>
-        <SheetContent className="sm:max-w-lg overflow-y-auto">
-          {detailPattern && (
-            <>
-              <SheetHeader>
-                <SheetTitle className="flex items-center gap-2">
-                  Learned Pattern
-                  {(() => {
-                    const badge = statusBadge[detailPattern.status] ?? statusBadge.pending;
-                    return <Badge variant={badge.variant} className={badge.className}>{badge.label}</Badge>;
-                  })()}
-                </SheetTitle>
-                <SheetDescription>
-                  {detailPattern.description ?? "No description"}
-                </SheetDescription>
-              </SheetHeader>
-
-              <div className="space-y-6 px-4">
-                {/* SQL or Diff */}
-                {detailPattern.type === "semantic_amendment" && detailPattern.amendmentPayload ? (
-                  <div className="space-y-2">
-                    <h3 className="text-sm font-medium">Proposed Change</h3>
-                    {detailPattern.amendmentPayload.rationale && (
-                      <p className="text-xs text-muted-foreground">{String(detailPattern.amendmentPayload.rationale)}</p>
-                    )}
-                    {detailPattern.amendmentPayload.diff ? (
-                      <pre className="rounded-md border bg-muted/50 p-3 text-xs font-mono whitespace-pre-wrap break-all overflow-x-auto max-h-96">
-                        {String(detailPattern.amendmentPayload.diff).split("\n").map((line, i) => {
-                          let className = "text-muted-foreground";
-                          if (line.startsWith("+") && !line.startsWith("+++")) {
-                            className = "text-green-700 bg-green-50 dark:text-green-400 dark:bg-green-950/30";
-                          } else if (line.startsWith("-") && !line.startsWith("---")) {
-                            className = "text-red-700 bg-red-50 dark:text-red-400 dark:bg-red-950/30";
-                          } else if (line.startsWith("@@")) {
-                            className = "text-cyan-700 dark:text-cyan-400";
-                          }
-                          return (
-                            <span key={i} className={className}>
-                              {line}
-                              {"\n"}
-                            </span>
-                          );
-                        })}
-                      </pre>
-                    ) : (
+                <div className="space-y-6 px-4">
+                  {detailPattern.type === "semantic_amendment" && detailPattern.amendmentPayload ? (
+                    <div className="space-y-2">
+                      <h3 className="text-sm font-medium">Proposed Change</h3>
+                      {detailPattern.amendmentPayload.rationale && (
+                        <p className="text-xs text-muted-foreground">{String(detailPattern.amendmentPayload.rationale)}</p>
+                      )}
+                      {detailPattern.amendmentPayload.diff ? (
+                        <pre className="rounded-md border bg-muted/50 p-3 text-xs font-mono whitespace-pre-wrap break-all overflow-x-auto max-h-96">
+                          {String(detailPattern.amendmentPayload.diff).split("\n").map((line, i) => {
+                            let className = "text-muted-foreground";
+                            if (line.startsWith("+") && !line.startsWith("+++")) {
+                              className = "text-green-700 bg-green-50 dark:text-green-400 dark:bg-green-950/30";
+                            } else if (line.startsWith("-") && !line.startsWith("---")) {
+                              className = "text-red-700 bg-red-50 dark:text-red-400 dark:bg-red-950/30";
+                            } else if (line.startsWith("@@")) {
+                              className = "text-cyan-700 dark:text-cyan-400";
+                            }
+                            return (
+                              <span key={i} className={className}>
+                                {line}
+                                {"\n"}
+                              </span>
+                            );
+                          })}
+                        </pre>
+                      ) : (
+                        <pre className="rounded-md border bg-muted/50 p-3 text-xs font-mono whitespace-pre-wrap break-all overflow-x-auto max-h-64">
+                          {detailPattern.patternSql}
+                        </pre>
+                      )}
+                    </div>
+                  ) : (
+                    <div className="space-y-2">
+                      <h3 className="text-sm font-medium">Pattern SQL</h3>
                       <pre className="rounded-md border bg-muted/50 p-3 text-xs font-mono whitespace-pre-wrap break-all overflow-x-auto max-h-64">
                         {detailPattern.patternSql}
                       </pre>
-                    )}
-                  </div>
-                ) : (
-                  <div className="space-y-2">
-                    <h3 className="text-sm font-medium">Pattern SQL</h3>
-                    <pre className="rounded-md border bg-muted/50 p-3 text-xs font-mono whitespace-pre-wrap break-all overflow-x-auto max-h-64">
-                      {detailPattern.patternSql}
-                    </pre>
-                  </div>
-                )}
-
-                {/* Metadata */}
-                <div className="grid grid-cols-2 gap-4 text-sm">
-                  <div className="space-y-1">
-                    <span className="text-xs font-medium text-muted-foreground flex items-center gap-1">
-                      <Database className="size-3" /> Entity
-                    </span>
-                    <p className="font-mono text-xs">{detailPattern.sourceEntity ?? "\u2014"}</p>
-                  </div>
-                  <div className="space-y-1">
-                    <span className="text-xs font-medium text-muted-foreground flex items-center gap-1">
-                      <Bot className="size-3" /> Source
-                    </span>
-                    <p className="text-xs">{detailPattern.proposedBy ?? "\u2014"}</p>
-                  </div>
-                  <div className="space-y-1">
-                    <span className="text-xs font-medium text-muted-foreground">Confidence</span>
-                    <p className="text-xs">{Math.round(detailPattern.confidence * 100)}%</p>
-                  </div>
-                  <div className="space-y-1">
-                    <span className="text-xs font-medium text-muted-foreground">Repetitions</span>
-                    <p className="text-xs tabular-nums">{detailPattern.repetitionCount}</p>
-                  </div>
-                  <div className="space-y-1">
-                    <span className="text-xs font-medium text-muted-foreground flex items-center gap-1">
-                      <Calendar className="size-3" /> Created
-                    </span>
-                    <p className="text-xs">{new Date(detailPattern.createdAt).toLocaleString()}</p>
-                  </div>
-                  <div className="space-y-1">
-                    <span className="text-xs font-medium text-muted-foreground">Last Updated</span>
-                    <p className="text-xs">{new Date(detailPattern.updatedAt).toLocaleString()}</p>
-                  </div>
-                </div>
-
-                {/* Review info */}
-                {detailPattern.reviewedAt && (
-                  <div className="space-y-2 border-t pt-4">
-                    <h3 className="text-sm font-medium">Review History</h3>
-                    <div className="text-xs text-muted-foreground space-y-1">
-                      <p>Reviewed by: {detailPattern.reviewedBy ?? "Unknown"}</p>
-                      <p>Reviewed at: {new Date(detailPattern.reviewedAt).toLocaleString()}</p>
                     </div>
-                  </div>
-                )}
-
-                {/* Source queries */}
-                {detailPattern.sourceQueries && detailPattern.sourceQueries.length > 0 && (
-                  <div className="space-y-2 border-t pt-4">
-                    <h3 className="text-sm font-medium">Source Queries</h3>
-                    <div className="space-y-2">
-                      {detailPattern.sourceQueries.map((q, i) => (
-                        <pre
-                          key={i}
-                          className="rounded-md border bg-muted/50 p-2 text-xs font-mono whitespace-pre-wrap break-all"
-                        >
-                          {q}
-                        </pre>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* Actions */}
-                <div className="flex gap-2 border-t pt-4">
-                  {detailPattern.status !== "approved" && (
-                    <Button
-                      size="sm"
-                      onClick={() => updatePatternStatus(detailPattern.id, "approved")}
-                      disabled={inProgress.has(detailPattern.id)}
-                    >
-                      <Check className="mr-1.5 size-3.5" />
-                      Approve
-                    </Button>
                   )}
-                  {detailPattern.status !== "rejected" && (
+
+                  <div className="grid grid-cols-2 gap-4 text-sm">
+                    <div className="space-y-1">
+                      <span className="text-xs font-medium text-muted-foreground flex items-center gap-1">
+                        <Database className="size-3" /> Entity
+                      </span>
+                      <p className="font-mono text-xs">{detailPattern.sourceEntity ?? "\u2014"}</p>
+                    </div>
+                    <div className="space-y-1">
+                      <span className="text-xs font-medium text-muted-foreground flex items-center gap-1">
+                        <Bot className="size-3" /> Source
+                      </span>
+                      <p className="text-xs">{detailPattern.proposedBy ?? "\u2014"}</p>
+                    </div>
+                    <div className="space-y-1">
+                      <span className="text-xs font-medium text-muted-foreground">Confidence</span>
+                      <p className="text-xs">{Math.round(detailPattern.confidence * 100)}%</p>
+                    </div>
+                    <div className="space-y-1">
+                      <span className="text-xs font-medium text-muted-foreground">Times seen</span>
+                      <p className="text-xs tabular-nums">{detailPattern.repetitionCount}</p>
+                    </div>
+                    <div className="space-y-1">
+                      <span className="text-xs font-medium text-muted-foreground flex items-center gap-1">
+                        <Calendar className="size-3" /> Created
+                      </span>
+                      <p className="text-xs"><RelativeTimestamp iso={detailPattern.createdAt} /></p>
+                    </div>
+                    <div className="space-y-1">
+                      <span className="text-xs font-medium text-muted-foreground">Last Updated</span>
+                      <p className="text-xs"><RelativeTimestamp iso={detailPattern.updatedAt} /></p>
+                    </div>
+                  </div>
+
+                  {detailPattern.reviewedAt && (
+                    <div className="space-y-2 border-t pt-4">
+                      <h3 className="text-sm font-medium">Review History</h3>
+                      <div className="text-xs text-muted-foreground space-y-1">
+                        <p>Reviewed by: {detailPattern.reviewedBy ?? "Unknown"}</p>
+                        <p><RelativeTimestamp iso={detailPattern.reviewedAt} label="Reviewed" /></p>
+                      </div>
+                    </div>
+                  )}
+
+                  {detailPattern.sourceQueries && detailPattern.sourceQueries.length > 0 && (
+                    <div className="space-y-2 border-t pt-4">
+                      <h3 className="text-sm font-medium">Source Queries</h3>
+                      <div className="space-y-2">
+                        {detailPattern.sourceQueries.map((q, i) => (
+                          <pre
+                            key={i}
+                            className="rounded-md border bg-muted/50 p-2 text-xs font-mono whitespace-pre-wrap break-all"
+                          >
+                            {q}
+                          </pre>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="flex gap-2 border-t pt-4">
+                    {detailPattern.status !== "approved" && (
+                      <Button
+                        size="sm"
+                        onClick={() => updatePatternStatus(detailPattern.id, "approved")}
+                        disabled={inProgress.has(detailPattern.id)}
+                      >
+                        <Check className="mr-1.5 size-3.5" />
+                        Approve
+                      </Button>
+                    )}
+                    {detailPattern.status !== "rejected" && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => updatePatternStatus(detailPattern.id, "rejected")}
+                        disabled={inProgress.has(detailPattern.id)}
+                      >
+                        <X className="mr-1.5 size-3.5" />
+                        Reject
+                      </Button>
+                    )}
                     <Button
                       variant="outline"
                       size="sm"
-                      onClick={() => updatePatternStatus(detailPattern.id, "rejected")}
+                      className="text-destructive hover:text-destructive"
+                      onClick={() => {
+                        setDetailPattern(null);
+                        setDeleteTarget(detailPattern);
+                      }}
                       disabled={inProgress.has(detailPattern.id)}
                     >
-                      <X className="mr-1.5 size-3.5" />
-                      Reject
+                      <Trash2 className="mr-1.5 size-3.5" />
+                      Delete
                     </Button>
-                  )}
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="text-destructive hover:text-destructive"
-                    onClick={() => {
-                      setDetailPattern(null);
-                      setDeleteTarget(detailPattern);
-                    }}
-                    disabled={inProgress.has(detailPattern.id)}
-                  >
-                    <Trash2 className="mr-1.5 size-3.5" />
-                    Delete
-                  </Button>
+                  </div>
                 </div>
-              </div>
-            </>
-          )}
-        </SheetContent>
-      </Sheet>
+              </>
+            )}
+          </SheetContent>
+        </Sheet>
 
-      {/* Delete confirmation */}
-      <AlertDialog
-        open={!!deleteTarget}
-        onOpenChange={(open) => { if (!open) setDeleteTarget(null); }}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete learned pattern?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This will permanently delete this pattern. This action cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-              onClick={() => { if (deleteTarget) deletePattern(deleteTarget.id); }}
-            >
-              Delete
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-    </div>
+        <AlertDialog
+          open={!!deleteTarget}
+          onOpenChange={(open) => { if (!open) setDeleteTarget(null); }}
+        >
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Delete learned pattern?</AlertDialogTitle>
+              <AlertDialogDescription>
+                This will permanently delete this pattern. This action cannot be undone.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                onClick={() => { if (deleteTarget) deletePattern(deleteTarget.id); }}
+              >
+                Delete
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
+      </div>
+    </TooltipProvider>
   );
 }

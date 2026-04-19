@@ -23,6 +23,11 @@ import {
   getActionExecutor,
   getActionConfig,
 } from "@atlas/api/lib/tools/actions/handler";
+import {
+  bulkApproveActions,
+  bulkDenyActions,
+  BULK_ACTIONS_MAX,
+} from "@atlas/api/lib/tools/actions/bulk";
 import { ACTION_STATUSES, type ActionStatus } from "@atlas/api/lib/action-types";
 import { canApprove } from "@atlas/api/lib/auth/permissions";
 import { ErrorSchema, parsePagination } from "./shared-schemas";
@@ -230,6 +235,71 @@ const denyActionRoute = createRoute({
     },
     409: {
       description: "Action has already been resolved",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const BulkActionsResponseSchema = z.object({
+  updated: z.array(z.string()),
+  notFound: z.array(z.string()),
+  forbidden: z.array(z.string()),
+  errors: z.array(z.object({ id: z.string(), error: z.string() })),
+});
+
+const BULK_REASON_MAX = 1000;
+
+const BulkActionsRequestSchema = z.object({
+  ids: z
+    .array(z.string().uuid("Each id must be a UUID"))
+    .min(1, "ids must be a non-empty array")
+    .max(BULK_ACTIONS_MAX, `Maximum ${BULK_ACTIONS_MAX} ids per bulk operation`),
+  action: z.enum(["approve", "deny"]),
+  reason: z.string().max(BULK_REASON_MAX).optional(),
+});
+
+const bulkActionsRoute = createRoute({
+  method: "post",
+  path: "/bulk",
+  tags: ["Actions"],
+  summary: "Bulk approve or deny pending actions",
+  description:
+    "Resolves many pending actions in a single request. Each id is pre-classified as eligible, " +
+    "not found, or forbidden; eligible ids are then approved or denied. Rows that race a " +
+    "conflicting resolution land in `errors`. Maximum 100 ids per request. Permission rules match " +
+    "the single-action endpoints: admin-only actions cannot be resolved by the requester.",
+  request: {
+    body: {
+      content: {
+        "application/json": {
+          schema: BulkActionsRequestSchema,
+        },
+      },
+    },
+  },
+  responses: {
+    200: {
+      description: "Bulk result — each id appears in exactly one bucket",
+      content: { "application/json": { schema: BulkActionsResponseSchema } },
+    },
+    400: {
+      description: "Invalid request body",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: z.record(z.string(), z.unknown()) } },
+    },
+    404: {
+      description: "Actions not available (no internal database or feature disabled)",
       content: { "application/json": { schema: ErrorSchema } },
     },
     429: {
@@ -487,6 +557,58 @@ actions.openapi(
     if (!result.success) {
       return c.json(
         { error: "validation_error", message: "Invalid request body.", details: result.error.issues },
+        400,
+      );
+    }
+  },
+);
+
+// ---------------------------------------------------------------------------
+// POST /bulk — mounted before /:id/* so Hono matches the literal segment.
+// ---------------------------------------------------------------------------
+
+actions.openapi(
+  bulkActionsRoute,
+  async (c) => {
+    return runEffect(c, Effect.gen(function* () {
+      const { requestId } = yield* RequestContext;
+      const { user } = yield* AuthContext;
+
+      if (!hasInternalDB()) {
+        return c.json(
+          {
+            error: "not_available",
+            message: "Action tracking is not available (no internal database configured).",
+            requestId,
+          },
+          404,
+        );
+      }
+
+      const { ids, action, reason } = c.req.valid("json");
+      const orgId = user?.activeOrganizationId ?? null;
+
+      const result = action === "approve"
+        ? yield* Effect.tryPromise({
+            try: () => bulkApproveActions({ ids, user, orgId, requestId }),
+            catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+          })
+        : yield* Effect.tryPromise({
+            try: () => bulkDenyActions({ ids, user, orgId, reason, requestId }),
+            catch: (err) => (err instanceof Error ? err : new Error(String(err))),
+          });
+
+      return c.json(result, 200);
+    }), { label: "bulk actions" });
+  },
+  (result, c) => {
+    if (!result.success) {
+      return c.json(
+        {
+          error: "validation_error",
+          message: "Invalid request body.",
+          details: result.error.issues,
+        },
         400,
       );
     }

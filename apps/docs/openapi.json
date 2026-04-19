@@ -11669,6 +11669,204 @@
         "operationId": "postActionsByIdDeny"
       }
     },
+    "/api/v1/actions/bulk": {
+      "post": {
+        "tags": [
+          "Actions"
+        ],
+        "summary": "Bulk approve or deny pending actions",
+        "description": "Resolves many pending actions in a single request. Each id is pre-classified as eligible, not found, or forbidden; eligible ids are then approved or denied. Rows that race a conflicting resolution land in `errors`. Maximum 100 ids per request. Permission rules match the single-action endpoints: admin-only actions cannot be resolved by the requester.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "ids": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "format": "uuid"
+                    },
+                    "minItems": 1,
+                    "maxItems": 100
+                  },
+                  "action": {
+                    "type": "string",
+                    "enum": [
+                      "approve",
+                      "deny"
+                    ]
+                  },
+                  "reason": {
+                    "type": "string",
+                    "maxLength": 1000
+                  }
+                },
+                "required": [
+                  "ids",
+                  "action"
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Bulk result — each id appears in exactly one bucket",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "updated": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "notFound": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "forbidden": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "errors": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "error": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "error"
+                        ]
+                      }
+                    }
+                  },
+                  "required": [
+                    "updated",
+                    "notFound",
+                    "forbidden",
+                    "errors"
+                  ]
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Actions not available (no internal database or feature disabled)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal server error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          }
+        },
+        "operationId": "postActionsBulk"
+      }
+    },
     "/api/v1/actions/{id}/rollback": {
       "post": {
         "tags": [
@@ -25091,12 +25289,18 @@
                         "string",
                         "null"
                       ]
+                    },
+                    "effectivelyEnforced": {
+                      "type": "boolean",
+                      "example": true,
+                      "description": "Whether the workspace's IP allowlist is actively gating requests. False when enterprise is disabled, internal DB is missing, or no entries exist."
                     }
                   },
                   "required": [
                     "entries",
                     "total",
-                    "callerIP"
+                    "callerIP",
+                    "effectivelyEnforced"
                   ]
                 }
               }
@@ -28282,11 +28486,11 @@
         "tags": [
           "Admin — Email Provider"
         ],
-        "summary": "Get platform email provider configuration",
-        "description": "Returns the platform's email provider configuration. Shows source: override (DB), env, or default.",
+        "summary": "Get workspace email provider configuration",
+        "description": "Returns the Resend baseline plus the workspace's BYOT override (if any). Baseline is locked; override supports Resend, SendGrid, Postmark, SMTP, and SES.",
         "responses": {
           "200": {
-            "description": "Platform email provider configuration",
+            "description": "Email provider configuration",
             "content": {
               "application/json": {
                 "schema": {
@@ -28295,39 +28499,75 @@
                     "config": {
                       "type": "object",
                       "properties": {
-                        "provider": {
-                          "type": "string",
-                          "enum": [
-                            "resend",
-                            "sendgrid",
-                            "postmark",
-                            "smtp",
-                            "ses"
+                        "baseline": {
+                          "type": "object",
+                          "properties": {
+                            "provider": {
+                              "type": "string",
+                              "enum": [
+                                "resend"
+                              ]
+                            },
+                            "fromAddress": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "provider",
+                            "fromAddress"
                           ]
                         },
-                        "fromAddress": {
-                          "type": "string"
-                        },
-                        "apiKeyMasked": {
+                        "override": {
                           "type": [
-                            "string",
+                            "object",
                             "null"
-                          ]
-                        },
-                        "source": {
-                          "type": "string",
-                          "enum": [
-                            "override",
-                            "env",
-                            "default"
+                          ],
+                          "properties": {
+                            "provider": {
+                              "type": "string",
+                              "enum": [
+                                "resend",
+                                "sendgrid",
+                                "postmark",
+                                "smtp",
+                                "ses"
+                              ]
+                            },
+                            "fromAddress": {
+                              "type": "string"
+                            },
+                            "secretLabel": {
+                              "type": "string"
+                            },
+                            "secretMasked": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "hints": {
+                              "type": "object",
+                              "additionalProperties": {
+                                "type": "string"
+                              }
+                            },
+                            "installedAt": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "provider",
+                            "fromAddress",
+                            "secretLabel",
+                            "secretMasked",
+                            "hints",
+                            "installedAt"
                           ]
                         }
                       },
                       "required": [
-                        "provider",
-                        "fromAddress",
-                        "apiKeyMasked",
-                        "source"
+                        "baseline",
+                        "override"
                       ]
                     }
                   },
@@ -28350,12 +28590,37 @@
             }
           },
           "403": {
-            "description": "Forbidden — platform admin required",
+            "description": "Forbidden — admin required",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
                   "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
                 }
               }
             }
@@ -28403,8 +28668,8 @@
         "tags": [
           "Admin — Email Provider"
         ],
-        "summary": "Set platform email provider configuration",
-        "description": "Configures the platform-level email provider. Stores as a settings override in the internal database.",
+        "summary": "Save workspace email provider override",
+        "description": "Stores the workspace's email provider override. Provider-specific config is validated server-side.",
         "requestBody": {
           "required": true,
           "content": {
@@ -28421,22 +28686,114 @@
                       "smtp",
                       "ses"
                     ],
-                    "description": "Email provider to use for platform email delivery.",
-                    "example": "resend"
-                  },
-                  "apiKey": {
-                    "type": "string",
-                    "minLength": 1,
-                    "description": "Provider API key. Omit to keep existing key on update."
+                    "description": "Email provider to use for this workspace."
                   },
                   "fromAddress": {
                     "type": "string",
-                    "description": "Sender address for platform emails.",
-                    "example": "Atlas <noreply@useatlas.dev>"
+                    "minLength": 1,
+                    "description": "Sender address (From header). Must be verified with the chosen provider.",
+                    "example": "Acme <noreply@acme.com>"
+                  },
+                  "config": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "host": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "port": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 65535
+                          },
+                          "username": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "password": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "tls": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "host",
+                          "port",
+                          "username",
+                          "password",
+                          "tls"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "apiKey": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "apiKey"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "serverToken": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "serverToken"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "region": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "accessKeyId": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "secretAccessKey": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "region",
+                          "accessKeyId",
+                          "secretAccessKey"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "apiKey": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "apiKey"
+                        ]
+                      }
+                    ],
+                    "description": "Provider-specific configuration (credentials + any non-secret fields)."
                   }
                 },
                 "required": [
-                  "provider"
+                  "provider",
+                  "fromAddress",
+                  "config"
                 ]
               }
             }
@@ -28444,7 +28801,7 @@
         },
         "responses": {
           "200": {
-            "description": "Email provider configuration saved",
+            "description": "Override saved",
             "content": {
               "application/json": {
                 "schema": {
@@ -28453,39 +28810,75 @@
                     "config": {
                       "type": "object",
                       "properties": {
-                        "provider": {
-                          "type": "string",
-                          "enum": [
-                            "resend",
-                            "sendgrid",
-                            "postmark",
-                            "smtp",
-                            "ses"
+                        "baseline": {
+                          "type": "object",
+                          "properties": {
+                            "provider": {
+                              "type": "string",
+                              "enum": [
+                                "resend"
+                              ]
+                            },
+                            "fromAddress": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "provider",
+                            "fromAddress"
                           ]
                         },
-                        "fromAddress": {
-                          "type": "string"
-                        },
-                        "apiKeyMasked": {
+                        "override": {
                           "type": [
-                            "string",
+                            "object",
                             "null"
-                          ]
-                        },
-                        "source": {
-                          "type": "string",
-                          "enum": [
-                            "override",
-                            "env",
-                            "default"
+                          ],
+                          "properties": {
+                            "provider": {
+                              "type": "string",
+                              "enum": [
+                                "resend",
+                                "sendgrid",
+                                "postmark",
+                                "smtp",
+                                "ses"
+                              ]
+                            },
+                            "fromAddress": {
+                              "type": "string"
+                            },
+                            "secretLabel": {
+                              "type": "string"
+                            },
+                            "secretMasked": {
+                              "type": [
+                                "string",
+                                "null"
+                              ]
+                            },
+                            "hints": {
+                              "type": "object",
+                              "additionalProperties": {
+                                "type": "string"
+                              }
+                            },
+                            "installedAt": {
+                              "type": "string"
+                            }
+                          },
+                          "required": [
+                            "provider",
+                            "fromAddress",
+                            "secretLabel",
+                            "secretMasked",
+                            "hints",
+                            "installedAt"
                           ]
                         }
                       },
                       "required": [
-                        "provider",
-                        "fromAddress",
-                        "apiKeyMasked",
-                        "source"
+                        "baseline",
+                        "override"
                       ]
                     }
                   },
@@ -28533,7 +28926,7 @@
             }
           },
           "403": {
-            "description": "Forbidden — platform admin required",
+            "description": "Forbidden — admin required",
             "content": {
               "application/json": {
                 "schema": {
@@ -28611,11 +29004,11 @@
         "tags": [
           "Admin — Email Provider"
         ],
-        "summary": "Reset platform email provider to defaults",
-        "description": "Removes DB overrides for email provider settings. Falls back to environment variables, then defaults.",
+        "summary": "Remove workspace email provider override",
+        "description": "Deletes the workspace's email override. Delivery falls back to the platform default.",
         "responses": {
           "200": {
-            "description": "Configuration reset to defaults",
+            "description": "Override removed",
             "content": {
               "application/json": {
                 "schema": {
@@ -28644,7 +29037,7 @@
             }
           },
           "403": {
-            "description": "Forbidden — platform admin required",
+            "description": "Forbidden — admin required",
             "content": {
               "application/json": {
                 "schema": {
@@ -28724,8 +29117,8 @@
         "tags": [
           "Admin — Email Provider"
         ],
-        "summary": "Test email provider configuration",
-        "description": "Sends a test email using the provided credentials. Does not save the configuration.",
+        "summary": "Send a test email",
+        "description": "Sends a test email using the supplied credentials (when given) or the saved override, falling back to the platform default.",
         "requestBody": {
           "required": true,
           "content": {
@@ -28733,6 +29126,10 @@
               "schema": {
                 "type": "object",
                 "properties": {
+                  "recipientEmail": {
+                    "type": "string",
+                    "format": "email"
+                  },
                   "provider": {
                     "type": "string",
                     "enum": [
@@ -28743,23 +29140,107 @@
                       "ses"
                     ]
                   },
-                  "apiKey": {
-                    "type": "string",
-                    "minLength": 1,
-                    "description": "Provider API key to test. Omit to test the currently saved key."
-                  },
                   "fromAddress": {
                     "type": "string",
                     "minLength": 1
                   },
-                  "recipientEmail": {
-                    "type": "string",
-                    "format": "email"
+                  "config": {
+                    "anyOf": [
+                      {
+                        "type": "object",
+                        "properties": {
+                          "host": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "port": {
+                            "type": "integer",
+                            "minimum": 1,
+                            "maximum": 65535
+                          },
+                          "username": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "password": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "tls": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "host",
+                          "port",
+                          "username",
+                          "password",
+                          "tls"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "apiKey": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "apiKey"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "serverToken": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "serverToken"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "region": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "accessKeyId": {
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "secretAccessKey": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "region",
+                          "accessKeyId",
+                          "secretAccessKey"
+                        ]
+                      },
+                      {
+                        "type": "object",
+                        "properties": {
+                          "apiKey": {
+                            "type": "string",
+                            "minLength": 1
+                          }
+                        },
+                        "required": [
+                          "apiKey"
+                        ]
+                      }
+                    ],
+                    "description": "Provider-specific config to test. Omit to test the saved override."
                   }
                 },
                 "required": [
-                  "provider",
-                  "fromAddress",
                   "recipientEmail"
                 ]
               }
@@ -28826,12 +29307,37 @@
             }
           },
           "403": {
-            "description": "Forbidden — platform admin required",
+            "description": "Forbidden — admin required",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
                   "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
                 }
               }
             }

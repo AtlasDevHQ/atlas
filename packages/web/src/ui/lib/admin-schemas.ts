@@ -19,8 +19,6 @@ import type {
   ConnectionHealth,
   WorkspaceBranding,
   WorkspaceModelConfig,
-  ApprovalRule,
-  ApprovalRequest,
   PIIColumnClassification,
   SemanticDiffResponse,
   PlatformStats,
@@ -29,7 +27,6 @@ import type {
   NoisyNeighbor,
   BackupEntry,
   BackupConfig,
-  CustomDomain,
   RegionMigration,
   RegionPickerItem,
   RegionStatus,
@@ -40,10 +37,14 @@ import type {
   SLAThresholds,
   SLAMetricPoint,
 } from "@/ui/lib/types";
+import { CustomDomainSchema } from "@useatlas/schemas";
 export {
   AbuseStatusSchema,
   AbuseThresholdConfigSchema,
   AbuseDetailSchema,
+  ApprovalRuleSchema,
+  ApprovalRequestSchema,
+  CustomDomainSchema,
 } from "@useatlas/schemas";
 
 // ── Connection ────────────────────────────────────────────────────
@@ -89,41 +90,6 @@ export const WorkspaceModelConfigSchema = z.object({
   createdAt: z.string(),
   updatedAt: z.string(),
 }) as z.ZodType<WorkspaceModelConfig>;
-
-// ── Approval ──────────────────────────────────────────────────────
-
-export const ApprovalRuleSchema = z.object({
-  id: z.string(),
-  orgId: z.string(),
-  name: z.string(),
-  ruleType: z.string(),
-  pattern: z.string(),
-  threshold: z.number().nullable(),
-  enabled: z.boolean(),
-  createdAt: z.string(),
-  updatedAt: z.string(),
-}) as z.ZodType<ApprovalRule>;
-
-export const ApprovalRequestSchema = z.object({
-  id: z.string(),
-  orgId: z.string(),
-  ruleId: z.string(),
-  ruleName: z.string(),
-  requesterId: z.string(),
-  requesterEmail: z.string().nullable(),
-  querySql: z.string(),
-  explanation: z.string().nullable(),
-  connectionId: z.string(),
-  tablesAccessed: z.array(z.string()),
-  columnsAccessed: z.array(z.string()),
-  status: z.string(),
-  reviewerId: z.string().nullable(),
-  reviewerEmail: z.string().nullable(),
-  reviewComment: z.string().nullable(),
-  reviewedAt: z.string().nullable(),
-  createdAt: z.string(),
-  expiresAt: z.string(),
-}) as z.ZodType<ApprovalRequest>;
 
 // ── Compliance ────────────────────────────────────────────────────
 
@@ -264,22 +230,7 @@ export const BackupsResponseSchema = z.object({
 });
 
 // ── Custom Domain ────────────────────────────────────────────────
-
-export const CustomDomainSchema = z.object({
-  id: z.string(),
-  workspaceId: z.string(),
-  domain: z.string(),
-  status: z.string(),
-  railwayDomainId: z.string().nullable(),
-  cnameTarget: z.string().nullable(),
-  certificateStatus: z.string().nullable(),
-  createdAt: z.string(),
-  verifiedAt: z.string().nullable(),
-  verificationToken: z.string().nullable(),
-  domainVerified: z.boolean(),
-  domainVerifiedAt: z.string().nullable(),
-  domainVerificationStatus: z.enum(["pending", "verified", "failed"]),
-}) as z.ZodType<CustomDomain>;
+// CustomDomainSchema re-exported above from @useatlas/schemas.
 
 export const DomainResponseSchema = z.object({
   domain: CustomDomainSchema.nullable(),

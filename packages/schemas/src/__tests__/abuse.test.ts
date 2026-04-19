@@ -103,7 +103,7 @@ describe("happy-path parses", () => {
 // level/trigger fails parse loudly — that is the intended behavior. The
 // real hardening gap is the DB: `abuse_events.level` / `trigger_type` are
 // unconstrained `TEXT` with no CHECK constraint and server code hydrates
-// via `as AbuseLevel` casts. #1649 tracks the long-term fix (DB
+// via `as AbuseLevel` casts. #1653 tracks the long-term fix (DB
 // constraint + server-side coercion with logging). The route layer relies
 // on the strict shape for OpenAPI spec fidelity; the web layer surfaces
 // parse failures as `schema_mismatch` banners via `useAdminFetch`.

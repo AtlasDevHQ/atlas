@@ -19,7 +19,7 @@
  * Level/trigger enums are strict `z.enum(TUPLE)` — they match the TS union
  * exactly and fail parse on drift. `abuse_events.level` + `trigger_type`
  * are unconstrained `TEXT` columns (no DB `CHECK`), which is the real
- * hardening gap; #1649 tracks that follow-up. Keeping the Zod layer
+ * hardening gap; #1653 tracks that follow-up. Keeping the Zod layer
  * strict here matches the `@hono/zod-openapi` extractor's expectations
  * (the extractor cannot serialize `ZodCatch` wrappers) and keeps the
  * OpenAPI spec describing the genuine output shape — `"none" | "warning"

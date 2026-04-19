@@ -216,9 +216,9 @@ export default function LearnedPatternsPage() {
             all: allRes.status, pending: pendingRes.status, approved: approvedRes.status, rejected: rejectedRes.status,
           });
         }
-      } catch {
+      } catch (err) {
         // Stats are non-critical — don't block the page.
-        console.debug("Failed to fetch learned pattern stats");
+        console.debug("Failed to fetch learned pattern stats", err);
       }
     }
 
@@ -236,8 +236,8 @@ export default function LearnedPatternsPage() {
           if (p.sourceEntity) entities.add(p.sourceEntity);
         }
         if (!cancelled) setSourceEntities([...entities].toSorted());
-      } catch {
-        console.debug("Failed to fetch source entities");
+      } catch (err) {
+        console.debug("Failed to fetch source entities", err);
       }
     }
 
@@ -250,14 +250,21 @@ export default function LearnedPatternsPage() {
     setError(null);
     inProgress.start(id);
 
-    // Snapshot before optimistic update so we can restore on failure.
-    const prevPatterns = patterns;
-    const prevDetail = detailPattern;
-
+    // Capture the *original* row inside the functional setState so concurrent
+    // updates can't pollute each other's snapshot via the closure.
+    let originalRow: LearnedPattern | undefined;
+    let originalDetail: LearnedPattern | null = null;
     const optimistic = (p: LearnedPattern) =>
       p.id === id ? { ...p, status, updatedAt: new Date().toISOString() } : p;
-    setPatterns((prev) => prev.map(optimistic));
-    setDetailPattern((prev) => (prev?.id === id ? optimistic(prev) : prev));
+    setPatterns((prev) => {
+      originalRow = prev.find((p) => p.id === id);
+      return prev.map(optimistic);
+    });
+    setDetailPattern((prev) => {
+      if (prev?.id !== id) return prev;
+      originalDetail = prev;
+      return optimistic(prev);
+    });
 
     const result = await statusMutation.mutate({
       path: `/api/v1/admin/learned-patterns/${id}`,
@@ -270,9 +277,10 @@ export default function LearnedPatternsPage() {
     });
 
     if (!result.ok) {
-      // Real revert — restore the snapshot, surface the server message.
-      setPatterns(prevPatterns);
-      setDetailPattern(prevDetail);
+      // Revert *only this row*, not the whole array — preserves any
+      // optimistic state from a concurrent mutation on another row.
+      setPatterns((curr) => curr.map((p) => (p.id === id && originalRow ? originalRow : p)));
+      setDetailPattern((curr) => (curr?.id === id ? originalDetail : curr));
       setError({ message: result.error });
     }
     setFetchKey((k) => k + 1);
@@ -302,20 +310,59 @@ export default function LearnedPatternsPage() {
     if (selected.length === 0) return;
     setError(null);
 
-    const prevPatterns = patterns;
     const ids = new Set(selected);
-    setPatterns((prev) =>
-      prev.map((p) => (ids.has(p.id) ? { ...p, status, updatedAt: new Date().toISOString() } : p)),
-    );
+    const optimistic = (p: LearnedPattern) =>
+      ids.has(p.id) ? { ...p, status, updatedAt: new Date().toISOString() } : p;
 
-    const result = await bulkMutation.mutate({
-      body: { ids: selected, status },
+    let originalRows = new Map<string, LearnedPattern>();
+    let originalDetail: LearnedPattern | null = null;
+    setPatterns((prev) => {
+      originalRows = new Map(prev.filter((p) => ids.has(p.id)).map((p) => [p.id, p]));
+      return prev.map(optimistic);
     });
+    setDetailPattern((prev) => {
+      if (!prev || !ids.has(prev.id)) return prev;
+      originalDetail = prev;
+      return optimistic(prev);
+    });
+
+    const result = await bulkMutation.mutate({ body: { ids: selected, status } });
+
     if (!result.ok) {
-      setPatterns(prevPatterns);
+      // Whole-request failure: revert only the rows we touched (preserve any
+      // concurrent single-row optimism on other rows) and keep selection so
+      // operator can retry.
+      setPatterns((curr) => curr.map((p) => originalRows.get(p.id) ?? p));
+      setDetailPattern((curr) => (curr && ids.has(curr.id) ? originalDetail : curr));
       setError({ message: result.error });
+      setFetchKey((k) => k + 1);
+      return;
     }
-    table.resetRowSelection();
+
+    // Partial-success: server returns 200 with { updated, notFound, errors? }
+    // even when individual rows fail. Detect and surface the discrepancy
+    // before clearing selection.
+    const data = (result.data ?? {}) as {
+      updated?: string[];
+      notFound?: string[];
+      errors?: Array<{ id: string; error: string }>;
+    };
+    const failedIds = new Set<string>([
+      ...(data.notFound ?? []),
+      ...(data.errors ?? []).map((e) => e.id),
+    ]);
+
+    if (failedIds.size > 0) {
+      // Revert only the rows the server didn't actually update.
+      setPatterns((curr) => curr.map((p) => (failedIds.has(p.id) && originalRows.has(p.id) ? originalRows.get(p.id)! : p)));
+      setDetailPattern((curr) => (curr && failedIds.has(curr.id) ? originalDetail : curr));
+      setError({ message: bulkPartialSummary(data, ids.size, status) });
+      // Narrow selection to failed IDs so retry hits exactly the unfinished work.
+      table.setRowSelection(Object.fromEntries([...failedIds].map((id) => [id, true])));
+    } else {
+      table.resetRowSelection();
+    }
+
     setFetchKey((k) => k + 1);
   }
 
@@ -710,4 +757,32 @@ export default function LearnedPatternsPage() {
       </div>
     </TooltipProvider>
   );
+}
+
+/** "3 of 10 approvals failed: 2 not found; 1 server error: foo" */
+function bulkPartialSummary(
+  data: {
+    updated?: string[];
+    notFound?: string[];
+    errors?: Array<{ id: string; error: string }>;
+  },
+  total: number,
+  status: LearnedPatternStatus,
+): string {
+  const noun = status === "approved" ? "approvals" : status === "rejected" ? "rejections" : "updates";
+  const notFoundCount = data.notFound?.length ?? 0;
+  const errorCount = data.errors?.length ?? 0;
+  const failed = notFoundCount + errorCount;
+  const parts: string[] = [];
+  if (notFoundCount > 0) parts.push(`${notFoundCount} not found`);
+  if (errorCount > 0) {
+    const errReasons = new Map<string, number>();
+    for (const e of data.errors ?? []) {
+      errReasons.set(e.error, (errReasons.get(e.error) ?? 0) + 1);
+    }
+    parts.push(
+      [...errReasons.entries()].map(([msg, n]) => `${n}× ${msg}`).join("; "),
+    );
+  }
+  return `${failed} of ${total} ${noun} failed: ${parts.join("; ")}`;
 }

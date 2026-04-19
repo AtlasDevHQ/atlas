@@ -870,13 +870,16 @@ function SelfHostedPlugins() {
 export default function PluginsPage() {
   const { deployMode } = useDeployMode();
   const router = useRouter();
+  const isSaas = deployMode === "saas";
 
   // SaaS mode: plugins are managed via dedicated admin pages (Connections,
-  // Integrations, Sandbox, etc.) — redirect to admin overview.
-  if (deployMode === "saas") {
-    router.replace("/admin");
-    return null;
-  }
+  // Integrations, Sandbox, etc.) — redirect to admin overview. Must live in
+  // an effect so we don't setState on Router during render.
+  useEffect(() => {
+    if (isSaas) router.replace("/admin");
+  }, [isSaas, router]);
+
+  if (isSaas) return null;
 
   return (
     <div className="mx-auto max-w-3xl px-6 py-10">

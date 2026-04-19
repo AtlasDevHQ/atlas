@@ -49,9 +49,6 @@ jobs:
       - name: Check template drift
         run: bash scripts/check-template-drift.sh
 
-      - name: Check OpenAPI ↔ api-reference drift
-        run: bash scripts/check-openapi-drift.sh
-
       - name: Check Drizzle schema ↔ migration drift
         run: bash scripts/check-schema-drift.sh
 
@@ -63,6 +60,11 @@ jobs:
 
       - name: Build
         run: bun run build
+
+      - name: Check OpenAPI ↔ api-reference drift
+        # Runs after SDK + widget + app builds so extract-openapi.ts can resolve
+        # @useatlas/types and other built dependencies at import time.
+        run: bash scripts/check-openapi-drift.sh
 
       - name: Type check
         run: bun run type

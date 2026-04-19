@@ -24,10 +24,10 @@ ROOT="$SCRIPT_DIR/.."
 cd "$ROOT"
 
 echo ":: Extracting OpenAPI spec from packages/api..."
-bun run --filter '@atlas/api' openapi:extract >/dev/null
+bun run --filter '@atlas/api' openapi:extract
 
 echo ":: Regenerating api-reference MDX from apps/docs/openapi.json..."
-bun run --filter '@atlas/docs' generate:api >/dev/null
+bun run --filter '@atlas/docs' generate:api
 
 echo ":: Checking for drift..."
 # No `|| true` — if git fails (missing binary, corrupt repo, bad pathspec), fail the gate

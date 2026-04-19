@@ -14,7 +14,15 @@
 
 import { createLogger } from "@atlas/api/lib/logger";
 import { hasInternalDB, internalExecute, internalQuery } from "@atlas/api/lib/db/internal";
-import type { AbuseLevel, AbuseTrigger, AbuseEvent, AbuseStatus, AbuseThresholdConfig } from "@useatlas/types";
+import type {
+  AbuseLevel,
+  AbuseTrigger,
+  AbuseEvent,
+  AbuseStatus,
+  AbuseThresholdConfig,
+  AbuseDetail,
+} from "@useatlas/types";
+import { splitIntoInstances } from "./abuse-instances";
 
 const log = createLogger("abuse");
 
@@ -275,6 +283,55 @@ export function listFlaggedWorkspaces(): AbuseStatus[] {
     });
   }
   return results.toSorted((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+}
+
+/**
+ * Read the full investigation context for a single flagged workspace:
+ * current in-memory counters, thresholds, and the split of persisted events
+ * into current/prior instances.
+ *
+ * Returns `null` when the workspace is not currently flagged (level = "none"
+ * or unknown workspace) — callers should 404. DB persistence failures degrade
+ * to empty `events` rather than throwing: the in-memory status is still worth
+ * returning even if the audit trail is momentarily unreachable.
+ */
+export async function getAbuseDetail(
+  workspaceId: string,
+  priorLimit = 5,
+  eventLimit = 50,
+): Promise<AbuseDetail | null> {
+  const state = workspaceState.get(workspaceId);
+  if (!state || state.level === "none") return null;
+
+  const config = getAbuseConfig();
+  const w = state.window;
+  const queryCount = w.timestamps.length;
+  // Mirrors the check in `checkThresholds` — error rate is only meaningful
+  // once we've got a small baseline. Surface `null` so the UI can show
+  // "baseline pending" rather than a misleading 0% / 100%.
+  const errorRatePct = queryCount >= 10 ? (w.errorCount / queryCount) * 100 : null;
+
+  const events = await getAbuseEvents(workspaceId, eventLimit);
+  const { currentInstance, priorInstances } = splitIntoInstances(events, priorLimit);
+
+  return {
+    workspaceId,
+    workspaceName: null, // Resolved by the admin route (same as listFlaggedWorkspaces).
+    level: state.level,
+    trigger: state.trigger,
+    message: state.message,
+    updatedAt: new Date(state.updatedAt).toISOString(),
+    counters: {
+      queryCount,
+      errorCount: w.errorCount,
+      errorRatePct,
+      uniqueTablesAccessed: w.tables.size,
+      escalations: state.escalations,
+    },
+    thresholds: config,
+    currentInstance,
+    priorInstances,
+  };
 }
 
 /** Manually reinstate a suspended or throttled workspace. */

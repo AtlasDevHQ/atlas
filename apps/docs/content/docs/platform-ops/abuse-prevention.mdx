@@ -46,9 +46,18 @@ All thresholds are configurable via environment variables:
 
 The **Abuse Prevention** page in the admin console (`/admin/abuse`) shows:
 
-- **Detection Thresholds** — Current configuration values
-- **Flagged Workspaces** — Table of workspaces with active flags (warning, throttled, or suspended)
-- **Reinstate** — Button to clear abuse flags and restore normal access
+- **Detection Thresholds** — Current configuration values (read-only; edit via env vars)
+- **Filter chips** — All / Warning / Throttled / Suspended
+- **Flagged Workspaces** — Row per active flag (warning, throttled, or suspended)
+
+### Investigation panel
+
+Click a workspace row to expand an inline investigation panel. The panel is lazy-loaded so opening one workspace doesn't refetch another. It shows:
+
+- **Current counters** — Live sliding-window stats annotated against thresholds (e.g. "147 / 200 queries in 300s"). The counter turns red once it's over the line.
+- **Current flag timeline** — Every escalation event for the active flag instance, newest-first, with relative timestamps.
+- **Prior flag history** — Up to 5 previous flag instances this workspace has gone through, with peak level and reinstatement time.
+- **Reinstate button** — In the panel footer, *after* the evidence. Investigate first, then decide.
 
 ### Reinstatement
 
@@ -75,6 +84,14 @@ GET /api/v1/admin/abuse
 ```
 
 Returns all workspaces with active abuse flags, including recent events.
+
+### Investigation detail
+
+```
+GET /api/v1/admin/abuse/:workspaceId/detail
+```
+
+Returns the live counters, thresholds, current flag timeline, and up to 5 prior flag instances for a single flagged workspace. Returns `404 not_flagged` if the workspace is not currently flagged.
 
 ### Reinstate a workspace
 

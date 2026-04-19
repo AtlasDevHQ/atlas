@@ -637,6 +637,7 @@ export function createApiTestMocks(
       uniqueTablesLimit: 50,
       throttleDelayMs: 2000,
     })),
+    getAbuseDetail: mock(async () => null),
     checkAbuseStatus: mock(() => ({ level: "none" })),
     recordQueryEvent: mock(() => {}),
     restoreAbuseState: mock(async () => {}),

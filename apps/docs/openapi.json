@@ -33029,7 +33029,7 @@
           "Admin — Custom Domain"
         ],
         "summary": "Add a custom domain",
-        "description": "Register a custom domain for the current workspace. Business plan required (self-hosted is always allowed). One domain per workspace.",
+        "description": "Register a custom domain for the current workspace. Pro or Business plan required (self-hosted is always allowed). One domain per workspace.",
         "requestBody": {
           "required": true,
           "content": {
@@ -33189,7 +33189,7 @@
             }
           },
           "403": {
-            "description": "Business plan required",
+            "description": "Pro or Business plan required",
             "content": {
               "application/json": {
                 "schema": {
@@ -33473,7 +33473,7 @@
           "Admin — Custom Domain"
         ],
         "summary": "Check domain verification status",
-        "description": "Checks DNS propagation and TLS certificate status for the workspace's custom domain. Does not require Business plan — only adding a domain is plan-gated.",
+        "description": "Checks DNS propagation and TLS certificate status for the workspace's custom domain. Does not require Pro or Business plan — only adding a domain is plan-gated.",
         "responses": {
           "200": {
             "description": "Verification result",

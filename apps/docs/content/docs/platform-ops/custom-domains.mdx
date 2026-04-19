@@ -1,6 +1,6 @@
 ---
 title: Custom Domains
-description: Configure custom domains for enterprise workspaces so users access Atlas at your own URL.
+description: Configure custom domains for Pro and Business plan workspaces so users access Atlas at your own URL.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
@@ -8,11 +8,11 @@ import { Callout } from "fumadocs-ui/components/callout";
 Custom domains let workspaces use their own URL (e.g. `data.acme.com`) instead of the default `app.useatlas.dev`. Atlas integrates with Railway's custom domain API for provisioning and automatic TLS certificate management via Let's Encrypt.
 
 <Callout type="info" title="SaaS Feature">
-  Custom domains are available on [app.useatlas.dev](https://app.useatlas.dev) Business plans. Self-hosted deployments configure domains directly in their hosting provider. Workspace admins can self-serve via **Admin Console → Configuration → Custom Domain**. Platform admins retain cross-workspace management at **Admin Console → Platform → Custom Domains**.
+  Custom domains are available on [app.useatlas.dev](https://app.useatlas.dev) Pro and Business plans. Self-hosted deployments configure domains directly in their hosting provider. Workspace admins can self-serve via **Admin Console → Configuration → Custom Domain**. Platform admins retain cross-workspace management at **Admin Console → Platform → Custom Domains**.
 </Callout>
 
 <Callout title="Prerequisites">
-- Active Business plan on [app.useatlas.dev](https://app.useatlas.dev) (or self-hosted "free" tier)
+- Active Pro or Business plan on [app.useatlas.dev](https://app.useatlas.dev) (or self-hosted "free" tier)
 - Internal database configured (`DATABASE_URL`)
 - Admin role (workspace admin for self-serve, platform admin for cross-workspace management)
 - Railway deployment with API token configured
@@ -52,7 +52,7 @@ RAILWAY_WEB_SERVICE_ID=your-web-service-id
 
 ## Workspace Admin (Self-Serve)
 
-Workspace admins on Business plans can manage their own custom domain at **Admin Console → Configuration → Custom Domain**. One domain per workspace (MVP).
+Workspace admins on Pro or Business plans can manage their own custom domain at **Admin Console → Configuration → Custom Domain**. One domain per workspace (MVP).
 
 ### Adding a Domain
 
@@ -83,7 +83,7 @@ Click **Remove Domain** and confirm. This removes the domain from both Railway a
 
 ### Plan Gating
 
-Non-enterprise workspaces see an upgrade prompt instead of the domain form. Self-hosted deployments (which default to the "free" tier) can use custom domains without plan restrictions.
+Workspaces on the trial or starter plan see an upgrade prompt instead of the domain form. Self-hosted deployments (which default to the "free" tier) can use custom domains without plan restrictions.
 
 ## Platform Admin (Cross-Workspace)
 
@@ -127,7 +127,7 @@ When a request arrives on a custom domain, Atlas:
 
 ### Workspace Admin Endpoints
 
-Require `admin` role and active organization. Business plan required for adding a domain (`POST /api/v1/admin/domain`).
+Require `admin` role and active organization. Pro or Business plan required for adding a domain (`POST /api/v1/admin/domain`).
 
 | Method | Path | Description |
 |--------|------|-------------|

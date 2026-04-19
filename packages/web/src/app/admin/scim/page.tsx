@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type ComponentType, type ReactNode } from "react";
+import { useEffect, useState, type ComponentType, type ReactNode } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -39,6 +39,7 @@ import {
   Plus,
   Trash2,
   KeyRound,
+  AlertTriangle,
 } from "lucide-react";
 
 // ── Schemas ───────────────────────────────────────────────────────
@@ -257,6 +258,15 @@ function DetailList({ children }: { children: ReactNode }) {
   );
 }
 
+function InlineError({ children }: { children: ReactNode }) {
+  if (!children) return null;
+  return (
+    <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+      {children}
+    </div>
+  );
+}
+
 function SectionHeading({
   title,
   description,
@@ -276,9 +286,19 @@ function SectionHeading({
 
 // ── Main Page ─────────────────────────────────────────────────────
 
+type RowError = {
+  message: string;
+  id: string;
+  kind: "connection" | "mapping";
+};
+
 export default function SCIMPage() {
   const [addMappingOpen, setAddMappingOpen] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<{ type: "connection" | "mapping"; id: string; label: string } | null>(null);
+  // Per-row delete error — pinned to the specific shell whose Revoke/Remove
+  // click failed, so the cue sits in the footer of the failing row instead of
+  // 800px up at the top banner.
+  const [rowError, setRowError] = useState<RowError | null>(null);
 
   const { data: statusData, loading: statusLoading, error: statusError, refetch: refetchStatus } =
     useAdminFetch("/api/v1/admin/scim", {
@@ -308,17 +328,59 @@ export default function SCIMPage() {
       ? `/api/v1/admin/scim/connections/${deleteTarget.id}`
       : `/api/v1/admin/scim/group-mappings/${deleteTarget.id}`;
 
+    // Capture the target before we clear it — if the mutation fails we need
+    // the id/kind to pin the InlineError to the right row.
+    const target = deleteTarget;
+    // Clear any stale per-row error on a new attempt so a previous failure
+    // can't linger next to a now-successful row.
+    setRowError(null);
+
     const result = await deleteMutate({ path });
     setDeleteTarget(null);
-    // error is captured by the hook
-    void result;
+    if (!result.ok) {
+      setRowError({ message: result.error, id: target.id, kind: target.type });
+    }
   }
 
+  // Source of truth for the count is the connections list we actually render.
+  // If the list and syncStatus diverge we surface it below instead of hiding
+  // via Math.max(list, sync) — silently masking drift left admins asking
+  // "where are the other two?".
   const liveCount = connections.length;
-  const totalCount = Math.max(connections.length, syncStatus.connections);
+  const totalCount = connections.length;
+  const syncDivergence = statusData
+    ? syncStatus.connections - connections.length
+    : 0;
   const lastSyncLabel = syncStatus.lastSyncAt
     ? formatDateTime(syncStatus.lastSyncAt)
     : "Never";
+  // Gate the hero stat chip on loaded, error-free, present data so the chip
+  // doesn't peek out above AdminContentWrapper's loading / error / EE-gated
+  // early returns (otherwise a non-EE deployment sees "00 / 00 active" above
+  // the 404 FeatureGate screen, reading like an empty feature rather than a
+  // disabled one).
+  const showStat = !loading && !error && statusData != null;
+  // If the underlying mutation error clears (explicit dismiss, or a later
+  // successful mutation), drop the pinned row error too — otherwise a stale
+  // InlineError could survive against the wrong row after invalidation.
+  useEffect(() => {
+    if (mutationError == null && rowError != null) {
+      setRowError(null);
+    }
+  }, [mutationError, rowError]);
+
+  // A pinned row error is only useful if the row it points to still exists
+  // in the rendered list. If the row has been invalidated out (e.g. the
+  // delete half-succeeded on the server but the hook surfaced an error),
+  // fall back to the top-level banner so the admin isn't left without a cue.
+  const rowErrorIsVisible =
+    rowError != null &&
+    (rowError.kind === "connection"
+      ? connections.some((c) => c.id === rowError.id)
+      : mappings.some((m) => m.id === rowError.id));
+  // Top-level error shows only if the mutation failed but we couldn't pin it
+  // to a visible row — prevents a double-render of the same error.
+  const showTopMutationError = mutationError != null && !rowErrorIsVisible;
 
   return (
     <div className="mx-auto max-w-3xl px-6 py-10">
@@ -329,13 +391,15 @@ export default function SCIMPage() {
         </p>
         <div className="flex items-baseline justify-between gap-6">
           <h1 className="text-3xl font-semibold tracking-tight">SCIM</h1>
-          <p className="shrink-0 font-mono text-sm tabular-nums text-muted-foreground">
-            <span className={cn(liveCount > 0 ? "text-primary" : "text-muted-foreground")}>
-              {String(liveCount).padStart(2, "0")}
-            </span>
-            <span className="opacity-50">{" / "}</span>
-            {String(totalCount).padStart(2, "0")} active
-          </p>
+          {showStat && (
+            <p className="shrink-0 font-mono text-sm tabular-nums text-muted-foreground">
+              <span className={cn(liveCount > 0 ? "text-primary" : "text-muted-foreground")}>
+                {String(liveCount).padStart(2, "0")}
+              </span>
+              <span className="opacity-50">{" / "}</span>
+              {String(totalCount).padStart(2, "0")} active
+            </p>
+          )}
         </div>
         <p className="max-w-xl text-sm text-muted-foreground">
           Directory sync for automated user provisioning from your identity provider.
@@ -353,7 +417,7 @@ export default function SCIMPage() {
           emptyTitle="No SCIM configuration"
           isEmpty={false}
         >
-          {mutationError && (
+          {showTopMutationError && (
             <div className="mb-4">
               <ErrorBanner message={mutationError} onRetry={clearMutationError} />
             </div>
@@ -366,25 +430,43 @@ export default function SCIMPage() {
                 title="Sync"
                 description="Directory activity for this workspace"
               />
-              <DetailList>
-                <DetailRow
-                  label="Active connections"
-                  value={
-                    <span className="font-mono tabular-nums">
-                      {String(syncStatus.connections).padStart(2, "0")}
+              <div className="space-y-2">
+                <DetailList>
+                  <DetailRow
+                    label="Active connections"
+                    value={
+                      <span className="font-mono tabular-nums">
+                        {String(syncStatus.connections).padStart(2, "0")}
+                      </span>
+                    }
+                  />
+                  <DetailRow
+                    label="Provisioned users"
+                    value={
+                      <span className="font-mono tabular-nums">
+                        {String(syncStatus.provisionedUsers).padStart(2, "0")}
+                      </span>
+                    }
+                  />
+                  <DetailRow label="Last sync" value={lastSyncLabel} />
+                </DetailList>
+                {syncDivergence !== 0 && (
+                  <div className="flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
+                    <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+                    <span>
+                      Sync reports{" "}
+                      <span className="font-mono tabular-nums">
+                        {syncStatus.connections}
+                      </span>
+                      , list shows{" "}
+                      <span className="font-mono tabular-nums">
+                        {connections.length}
+                      </span>
+                      . Refresh may resolve the drift.
                     </span>
-                  }
-                />
-                <DetailRow
-                  label="Provisioned users"
-                  value={
-                    <span className="font-mono tabular-nums">
-                      {String(syncStatus.provisionedUsers).padStart(2, "0")}
-                    </span>
-                  }
-                />
-                <DetailRow label="Last sync" value={lastSyncLabel} />
-              </DetailList>
+                  </div>
+                )}
+              </div>
             </section>
 
             {/* Connections */}
@@ -394,50 +476,59 @@ export default function SCIMPage() {
                 description="Identity provider bearer tokens that can sync users"
               />
               <div className="space-y-2">
-                {connections.map((conn) => (
-                  <IntegrationShell
-                    key={conn.id}
-                    icon={KeyRound}
-                    title={conn.providerId}
-                    description="Bearer token issued via the SCIM token API"
-                    status="connected"
-                    titleAccessory={
-                      <Badge variant="secondary" className="shrink-0 font-mono text-[10px] uppercase">
-                        SCIM
-                      </Badge>
-                    }
-                    actions={
-                      <Button
-                        variant="ghost"
-                        size="xs"
-                        className="text-destructive hover:text-destructive"
-                        onClick={() => setDeleteTarget({ type: "connection", id: conn.id, label: conn.providerId })}
-                        aria-label={`Revoke ${conn.providerId} connection`}
-                      >
-                        <Trash2 className="size-3" />
-                        Revoke
-                      </Button>
-                    }
-                  >
-                    <DetailList>
-                      <DetailRow label="Provider" value={conn.providerId} mono truncate />
-                      <DetailRow
-                        label="Connection ID"
-                        value={conn.id}
-                        mono
-                        truncate
-                      />
-                      {conn.organizationId && (
+                {connections.map((conn) => {
+                  const rowHasError =
+                    rowError?.kind === "connection" && rowError.id === conn.id;
+                  return (
+                    <IntegrationShell
+                      key={conn.id}
+                      icon={KeyRound}
+                      title={conn.providerId}
+                      description="Bearer token issued via the SCIM token API"
+                      status="connected"
+                      titleAccessory={
+                        <Badge variant="secondary" className="shrink-0 font-mono text-[10px] uppercase">
+                          SCIM
+                        </Badge>
+                      }
+                      actions={
+                        <Button
+                          variant="ghost"
+                          size="xs"
+                          className="text-destructive hover:text-destructive"
+                          onClick={() => setDeleteTarget({ type: "connection", id: conn.id, label: conn.providerId })}
+                          aria-label={`Revoke ${conn.providerId} connection`}
+                        >
+                          <Trash2 className="size-3" />
+                          Revoke
+                        </Button>
+                      }
+                    >
+                      <DetailList>
+                        <DetailRow label="Provider" value={conn.providerId} mono truncate />
                         <DetailRow
-                          label="Organization"
-                          value={conn.organizationId}
+                          label="Connection ID"
+                          value={conn.id}
                           mono
                           truncate
                         />
+                        {conn.organizationId && (
+                          <DetailRow
+                            label="Organization"
+                            value={conn.organizationId}
+                            mono
+                            truncate
+                          />
+                        )}
+                      </DetailList>
+                      {rowHasError && (
+                        <InlineError>
+                          Revoke failed — {rowError.message}
+                        </InlineError>
                       )}
-                    </DetailList>
-                  </IntegrationShell>
-                ))}
+                    </IntegrationShell>
+                  );
+                })}
 
                 <CompactRow
                   icon={Plus}
@@ -467,38 +558,47 @@ export default function SCIMPage() {
                 description="Map IdP group names to Atlas custom roles"
               />
               <div className="space-y-2">
-                {mappings.map((mapping) => (
-                  <IntegrationShell
-                    key={mapping.id}
-                    icon={ArrowRightLeft}
-                    title={mapping.scimGroupName}
-                    description={`→ ${mapping.roleName}`}
-                    status="connected"
-                    titleAccessory={
-                      <Badge variant="secondary" className="shrink-0 text-[10px]">
-                        {mapping.roleName}
-                      </Badge>
-                    }
-                    actions={
-                      <Button
-                        variant="ghost"
-                        size="xs"
-                        className="text-destructive hover:text-destructive"
-                        onClick={() => setDeleteTarget({ type: "mapping", id: mapping.id, label: mapping.scimGroupName })}
-                        aria-label={`Remove mapping for ${mapping.scimGroupName}`}
-                      >
-                        <Trash2 className="size-3" />
-                        Remove
-                      </Button>
-                    }
-                  >
-                    <DetailList>
-                      <DetailRow label="SCIM group" value={mapping.scimGroupName} mono truncate />
-                      <DetailRow label="Atlas role" value={mapping.roleName} mono truncate />
-                      <DetailRow label="Added" value={formatDateTime(mapping.createdAt)} />
-                    </DetailList>
-                  </IntegrationShell>
-                ))}
+                {mappings.map((mapping) => {
+                  const rowHasError =
+                    rowError?.kind === "mapping" && rowError.id === mapping.id;
+                  return (
+                    <IntegrationShell
+                      key={mapping.id}
+                      icon={ArrowRightLeft}
+                      title={mapping.scimGroupName}
+                      description={`→ ${mapping.roleName}`}
+                      status="connected"
+                      titleAccessory={
+                        <Badge variant="secondary" className="shrink-0 text-[10px]">
+                          {mapping.roleName}
+                        </Badge>
+                      }
+                      actions={
+                        <Button
+                          variant="ghost"
+                          size="xs"
+                          className="text-destructive hover:text-destructive"
+                          onClick={() => setDeleteTarget({ type: "mapping", id: mapping.id, label: mapping.scimGroupName })}
+                          aria-label={`Remove mapping for ${mapping.scimGroupName}`}
+                        >
+                          <Trash2 className="size-3" />
+                          Remove
+                        </Button>
+                      }
+                    >
+                      <DetailList>
+                        <DetailRow label="SCIM group" value={mapping.scimGroupName} mono truncate />
+                        <DetailRow label="Atlas role" value={mapping.roleName} mono truncate />
+                        <DetailRow label="Added" value={formatDateTime(mapping.createdAt)} />
+                      </DetailList>
+                      {rowHasError && (
+                        <InlineError>
+                          Remove failed — {rowError.message}
+                        </InlineError>
+                      )}
+                    </IntegrationShell>
+                  );
+                })}
 
                 <CompactRow
                   icon={mappings.length === 0 ? Users : Plus}

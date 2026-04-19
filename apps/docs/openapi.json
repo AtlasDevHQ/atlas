@@ -33189,32 +33189,7 @@
             }
           },
           "403": {
-            "description": "Pro or Business plan required",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "error": {
-                      "type": "string"
-                    },
-                    "message": {
-                      "type": "string"
-                    },
-                    "requestId": {
-                      "type": "string"
-                    }
-                  },
-                  "required": [
-                    "error",
-                    "message"
-                  ]
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Enterprise features not available",
+            "description": "Pro or Business plan required, or enterprise features not available",
             "content": {
               "application/json": {
                 "schema": {
@@ -33378,18 +33353,32 @@
             }
           },
           "403": {
-            "description": "Admin role required",
+            "description": "Admin role required or enterprise features not available",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "additionalProperties": {}
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
                 }
               }
             }
           },
           "404": {
-            "description": "No custom domain configured or enterprise features not available",
+            "description": "No custom domain configured",
             "content": {
               "application/json": {
                 "schema": {
@@ -33612,18 +33601,32 @@
             }
           },
           "403": {
-            "description": "Admin role required",
+            "description": "Admin role required or enterprise features not available",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "additionalProperties": {}
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
                 }
               }
             }
           },
           "404": {
-            "description": "No custom domain configured or enterprise features not available",
+            "description": "No custom domain configured",
             "content": {
               "application/json": {
                 "schema": {
@@ -33846,18 +33849,32 @@
             }
           },
           "403": {
-            "description": "Admin role required",
+            "description": "Admin role required or enterprise features not available",
             "content": {
               "application/json": {
                 "schema": {
                   "type": "object",
-                  "additionalProperties": {}
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
                 }
               }
             }
           },
           "404": {
-            "description": "No custom domain configured or enterprise features not available",
+            "description": "No custom domain configured",
             "content": {
               "application/json": {
                 "schema": {

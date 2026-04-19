@@ -7,8 +7,12 @@
  *
  * Wraps the existing EE domain module used by platform-domains.ts, scoping
  * operations to the caller's active organization. When the EE module is
- * unavailable (e.g. open-source builds), all routes return 404 with a
- * "not_available" error code.
+ * unavailable (e.g. open-source builds), write endpoints (POST /, DELETE /,
+ * POST /verify, POST /verify-dns) emit 403 `enterprise_required` via
+ * `EnterpriseError` so the admin page can route them through
+ * `EnterpriseUpsell` / the `isPlanGated` CompactRow (see #1622 / #1623).
+ * Read endpoints (GET /, GET /domain-check) return 404 `not_available`
+ * unchanged.
  */
 
 import { Effect } from "effect";
@@ -17,6 +21,7 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { AuthContext, RequestContext } from "@atlas/api/lib/effect/services";
 import { hasInternalDB, getWorkspaceDetails } from "@atlas/api/lib/db/internal";
+import { EnterpriseError } from "@atlas/ee/index";
 import { ErrorSchema, AuthErrorSchema } from "./shared-schemas";
 import { createAdminRouter, requireOrgContext } from "./admin-router";
 import {
@@ -86,8 +91,7 @@ const addDomainRoute = createRoute({
     },
     400: { description: "Invalid domain or no active organization", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
-    403: { description: "Pro or Business plan required", content: { "application/json": { schema: ErrorSchema } } },
-    404: { description: "Enterprise features not available", content: { "application/json": { schema: ErrorSchema } } },
+    403: { description: "Pro or Business plan required, or enterprise features not available", content: { "application/json": { schema: ErrorSchema } } },
     409: { description: "Domain already registered", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
     503: { description: "Internal database or Railway not configured", content: { "application/json": { schema: ErrorSchema } } },
@@ -107,8 +111,8 @@ const removeDomainRoute = createRoute({
     },
     400: { description: "No active organization", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
-    403: { description: "Admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
-    404: { description: "No custom domain configured or enterprise features not available", content: { "application/json": { schema: ErrorSchema } } },
+    403: { description: "Admin role required or enterprise features not available", content: { "application/json": { schema: ErrorSchema } } },
+    404: { description: "No custom domain configured", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
     503: { description: "Internal database or Railway not configured", content: { "application/json": { schema: ErrorSchema } } },
   },
@@ -127,8 +131,8 @@ const verifyDomainRoute = createRoute({
     },
     400: { description: "No active organization", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
-    403: { description: "Admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
-    404: { description: "No custom domain configured or enterprise features not available", content: { "application/json": { schema: ErrorSchema } } },
+    403: { description: "Admin role required or enterprise features not available", content: { "application/json": { schema: ErrorSchema } } },
+    404: { description: "No custom domain configured", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
     503: { description: "Internal database or Railway not configured", content: { "application/json": { schema: ErrorSchema } } },
   },
@@ -147,8 +151,8 @@ const verifyDnsTxtRoute = createRoute({
     },
     400: { description: "No active organization", content: { "application/json": { schema: ErrorSchema } } },
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
-    403: { description: "Admin role required", content: { "application/json": { schema: AuthErrorSchema } } },
-    404: { description: "No custom domain configured or enterprise features not available", content: { "application/json": { schema: ErrorSchema } } },
+    403: { description: "Admin role required or enterprise features not available", content: { "application/json": { schema: ErrorSchema } } },
+    404: { description: "No custom domain configured", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
     503: { description: "Internal database or Railway not configured", content: { "application/json": { schema: ErrorSchema } } },
   },
@@ -237,6 +241,18 @@ async function checkPlanGate(
 // Helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * Fail write endpoints with a 403 `enterprise_required` when the EE domains
+ * module can't be loaded, so AdminContentWrapper's EnterpriseUpsell and the
+ * page.tsx `isPlanGated` branch (see #1622 / #1623) render instead of a
+ * generic 404. Read endpoints intentionally keep their 404 `not_available`
+ * response — the issue scope is the dead `enterprise_required` branch on
+ * the write path. `EnterpriseError` is mapped to 403 by the shared
+ * classifier in `lib/effect/hono.ts`.
+ */
+const EE_REQUIRED_MESSAGE =
+  "Custom domains require enterprise features to be enabled.";
+
 // ---------------------------------------------------------------------------
 // Router
 // ---------------------------------------------------------------------------
@@ -277,7 +293,7 @@ adminDomains.openapi(addDomainRoute, async (c) => {
 
     const mod = yield* Effect.promise(() => loadDomains());
     if (!mod) {
-      return c.json({ error: "not_available", message: "Custom domains require enterprise features to be enabled.", requestId }, 404);
+      return yield* Effect.fail(new EnterpriseError(EE_REQUIRED_MESSAGE));
     }
 
     // Business plan gate
@@ -320,7 +336,7 @@ adminDomains.openapi(verifyDomainRoute, async (c) => {
 
     const mod = yield* Effect.promise(() => loadDomains());
     if (!mod) {
-      return c.json({ error: "not_available", message: "Custom domains require enterprise features to be enabled.", requestId }, 404);
+      return yield* Effect.fail(new EnterpriseError(EE_REQUIRED_MESSAGE));
     }
 
     // MVP: one domain per workspace, so we always operate on the first result
@@ -346,7 +362,7 @@ adminDomains.openapi(verifyDnsTxtRoute, async (c) => {
 
     const mod = yield* Effect.promise(() => loadDomains());
     if (!mod) {
-      return c.json({ error: "not_available", message: "Custom domains require enterprise features to be enabled.", requestId }, 404);
+      return yield* Effect.fail(new EnterpriseError(EE_REQUIRED_MESSAGE));
     }
 
     const domains = yield* mod.listDomains(orgId);
@@ -396,7 +412,7 @@ adminDomains.openapi(removeDomainRoute, async (c) => {
 
     const mod = yield* Effect.promise(() => loadDomains());
     if (!mod) {
-      return c.json({ error: "not_available", message: "Custom domains require enterprise features to be enabled.", requestId }, 404);
+      return yield* Effect.fail(new EnterpriseError(EE_REQUIRED_MESSAGE));
     }
 
     // MVP: one domain per workspace, so we always operate on the first result

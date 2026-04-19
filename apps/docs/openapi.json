@@ -30298,6 +30298,25 @@
         ],
         "summary": "List approval requests",
         "description": "Returns approval requests for the organization. Filterable by status via query parameter.",
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "pending",
+                "approved",
+                "denied",
+                "expired"
+              ],
+              "description": "Filter requests by status.",
+              "example": "pending"
+            },
+            "required": false,
+            "description": "Filter requests by status.",
+            "name": "status",
+            "in": "query"
+          }
+        ],
         "responses": {
           "200": {
             "description": "Approval requests list",
@@ -30475,6 +30494,31 @@
           },
           "404": {
             "description": "Internal database not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "message": {
+                      "type": "string"
+                    },
+                    "requestId": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "error",
+                    "message"
+                  ]
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid query parameters",
             "content": {
               "application/json": {
                 "schema": {

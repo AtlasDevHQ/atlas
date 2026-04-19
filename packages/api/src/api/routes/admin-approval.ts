@@ -18,7 +18,7 @@
 
 import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
-import { APPROVAL_RULE_TYPES } from "@useatlas/types";
+import { APPROVAL_RULE_TYPES, APPROVAL_STATUSES } from "@useatlas/types";
 import { ApprovalRuleSchema, ApprovalRequestSchema } from "@useatlas/schemas";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { runEffect, domainError } from "@atlas/api/lib/effect/hono";
@@ -158,12 +158,24 @@ const deleteRuleRoute = createRoute({
   },
 });
 
+const ListQueueQuerySchema = z.object({
+  status: z
+    .enum(APPROVAL_STATUSES)
+    .optional()
+    .openapi({
+      description: "Filter requests by status.",
+      example: "pending",
+      param: { name: "status", in: "query" },
+    }),
+});
+
 const listQueueRoute = createRoute({
   method: "get",
   path: "/queue",
   tags: ["Admin — Approval Workflows"],
   summary: "List approval requests",
   description: "Returns approval requests for the organization. Filterable by status via query parameter.",
+  request: { query: ListQueueQuerySchema },
   responses: {
     200: {
       description: "Approval requests list",
@@ -173,6 +185,7 @@ const listQueueRoute = createRoute({
     401: { description: "Authentication required", content: { "application/json": { schema: AuthErrorSchema } } },
     403: { description: "Forbidden", content: { "application/json": { schema: AuthErrorSchema } } },
     404: { description: "Internal database not configured", content: { "application/json": { schema: ErrorSchema } } },
+    422: { description: "Invalid query parameters", content: { "application/json": { schema: ErrorSchema } } },
     500: { description: "Internal server error", content: { "application/json": { schema: ErrorSchema } } },
   },
 });
@@ -334,12 +347,9 @@ adminApproval.openapi(deleteRuleRoute, async (c) => {
 
 // GET /queue — list approval requests
 adminApproval.openapi(listQueueRoute, async (c) => {
+  const { status } = c.req.valid("query");
   return runEffect(c, Effect.gen(function* () {
     const { orgId } = yield* AuthContext;
-
-    const statusParam = new URL(c.req.raw.url).searchParams.get("status") as import("@useatlas/types").ApprovalStatus | null;
-    const validStatuses = ["pending", "approved", "denied", "expired"];
-    const status = statusParam && validStatuses.includes(statusParam) ? statusParam as import("@useatlas/types").ApprovalStatus : undefined;
     const requests = yield* listApprovalRequests(orgId!, status);
     return c.json({ requests }, 200);
   }), { label: "list approval requests", domainErrors: [approvalDomainError] });

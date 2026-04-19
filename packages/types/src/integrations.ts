@@ -3,24 +3,23 @@
  *
  * The admin integrations page aggregates per-platform connection status for
  * Slack, Teams, Discord, Telegram, Google Chat, GitHub, Linear, WhatsApp,
- * Email, and webhooks. Each platform has its own connect/disconnect routes
+ * Email, and webhooks. Each platform owns its own connect/disconnect routes
  * and store, but they share a status shape that the admin page renders
- * uniformly. Before #1648, the route layer + web layer kept their own Zod
- * copies of every per-platform schema; consolidating them in
- * `@useatlas/schemas` requires a shared TS type here so `satisfies
- * z.ZodType<T>` has a target to lock against.
+ * uniformly. Consolidating per-platform Zod schemas in `@useatlas/schemas`
+ * needs a shared TS target so `satisfies z.ZodType<T>` has something to
+ * lock against; that target lives here.
  *
- * `INTEGRATION_PLATFORMS` is the runtime tuple — keep in lockstep with the
- * `IntegrationStatus` keys (the schema's structural-rejection test enforces
- * this at parse time). `DELIVERY_CHANNELS` is the runtime tuple for the
- * scheduled-tasks delivery surface, which lives on the same response.
+ * `INTEGRATION_PLATFORMS` is the runtime mirror of the `IntegrationStatus`
+ * platform keys. Compile-time guards below assert the two stay in lockstep
+ * — adding a key on one side without the other is a `tsc` error, not a
+ * runtime parse failure.
  */
 
 import type { DeployMode } from "./platform";
 import type { DeliveryChannel } from "./scheduled-task";
 
 // ---------------------------------------------------------------------------
-// Platform identifiers (object keys on IntegrationStatus + drift discriminator)
+// Platform identifiers
 // ---------------------------------------------------------------------------
 
 export const INTEGRATION_PLATFORMS = [
@@ -40,85 +39,64 @@ export type IntegrationPlatform = (typeof INTEGRATION_PLATFORMS)[number];
 // ---------------------------------------------------------------------------
 // Per-platform status shapes
 //
-// Most platforms share `connected` / `installedAt` / `configurable`; identity
-// columns vary per platform. Webhooks is the structural outlier — it tracks
-// `activeCount` instead of a single connection.
+// Webhooks is the structural outlier — it tracks `activeCount` instead of a
+// single connection, so it does not extend `ConnectedPlatformBase`.
 // ---------------------------------------------------------------------------
 
-export interface SlackStatus {
+/** Shared shape for the 9 single-connection platforms. */
+interface ConnectedPlatformBase {
   connected: boolean;
-  teamId: string | null;
-  workspaceName: string | null;
   installedAt: string | null;
-  /** Whether Slack OAuth env vars are configured (SLACK_CLIENT_ID etc.). */
-  oauthConfigured: boolean;
-  /** Whether env-based token is set (single-workspace mode). */
-  envConfigured: boolean;
   /** Whether the workspace admin can connect/disconnect (true) or it's platform-level only (false). */
   configurable: boolean;
 }
 
-export interface TeamsStatus {
-  connected: boolean;
+export interface SlackStatus extends ConnectedPlatformBase {
+  teamId: string | null;
+  workspaceName: string | null;
+  /** Whether Slack OAuth env vars are configured (SLACK_CLIENT_ID etc.). */
+  oauthConfigured: boolean;
+  /** Whether env-based token is set (single-workspace mode). */
+  envConfigured: boolean;
+}
+
+export interface TeamsStatus extends ConnectedPlatformBase {
   tenantId: string | null;
   tenantName: string | null;
-  installedAt: string | null;
-  configurable: boolean;
 }
 
-export interface DiscordStatus {
-  connected: boolean;
+export interface DiscordStatus extends ConnectedPlatformBase {
   guildId: string | null;
   guildName: string | null;
-  installedAt: string | null;
-  configurable: boolean;
 }
 
-export interface TelegramStatus {
-  connected: boolean;
+export interface TelegramStatus extends ConnectedPlatformBase {
   botId: string | null;
   botUsername: string | null;
-  installedAt: string | null;
-  configurable: boolean;
 }
 
-export interface GChatStatus {
-  connected: boolean;
+export interface GChatStatus extends ConnectedPlatformBase {
   projectId: string | null;
   serviceAccountEmail: string | null;
-  installedAt: string | null;
-  configurable: boolean;
 }
 
-export interface GitHubStatus {
-  connected: boolean;
+export interface GitHubStatus extends ConnectedPlatformBase {
   username: string | null;
-  installedAt: string | null;
-  configurable: boolean;
 }
 
-export interface LinearStatus {
-  connected: boolean;
+export interface LinearStatus extends ConnectedPlatformBase {
   userName: string | null;
   userEmail: string | null;
-  installedAt: string | null;
-  configurable: boolean;
 }
 
-export interface WhatsAppStatus {
-  connected: boolean;
+export interface WhatsAppStatus extends ConnectedPlatformBase {
   phoneNumberId: string | null;
   displayPhone: string | null;
-  installedAt: string | null;
-  configurable: boolean;
 }
 
-export interface EmailStatus {
-  connected: boolean;
+export interface EmailStatus extends ConnectedPlatformBase {
   provider: string | null;
   senderAddress: string | null;
-  installedAt: string | null;
-  configurable: boolean;
 }
 
 export interface WebhookStatus {
@@ -148,3 +126,19 @@ export interface IntegrationStatus {
   /** Whether the internal database is available (enables BYOT credential storage). */
   hasInternalDB: boolean;
 }
+
+// ---------------------------------------------------------------------------
+// Compile-time tuple/keys lockstep
+//
+// Bidirectional check: every IntegrationStatus platform key must appear in
+// INTEGRATION_PLATFORMS, and every INTEGRATION_PLATFORMS value must appear as
+// a key on IntegrationStatus. Drift on either side is a `tsc` error.
+// ---------------------------------------------------------------------------
+
+type PlatformKeysOnly = Exclude<
+  keyof IntegrationStatus,
+  "deliveryChannels" | "deployMode" | "hasInternalDB"
+>;
+
+type _PlatformKeysCoveredByTuple = PlatformKeysOnly extends IntegrationPlatform ? true : never;
+type _TupleCoveredByPlatformKeys = IntegrationPlatform extends PlatformKeysOnly ? true : never;

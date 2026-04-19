@@ -606,9 +606,6 @@ export const ListApiKeysResponseSchema = z.object({
   total: z.number(),
 });
 
-// ── Integrations ─────────────────────────────────────────────────
-// IntegrationStatusSchema re-exported above from @useatlas/schemas.
-
 // ── Plugins ──────────────────────────────────────────────────────
 
 const PluginDescriptionSchema = z.object({

@@ -2,14 +2,8 @@
  * Integration-status wire-format schemas.
  *
  * Single source of truth for the admin integrations surface
- * (`/api/v1/admin/integrations/status`). The route layer imports these for
- * OpenAPI response validation; the web layer imports them for
- * `useAdminFetch` response parsing. Before #1648, each layer kept its own
- * Zod copy of every per-platform schema — 10 platforms × 2 layers = 20
- * schema definitions that drifted independently. The web copy silently
- * relaxed `deployMode` and `deliveryChannels` to `z.string()` /
- * `z.array(z.string())` while the route enforced strict `z.enum(...)`.
- * That asymmetry is the drift surface this package exists to close.
+ * (`/api/v1/admin/integrations/status`) — used by both route-layer OpenAPI
+ * validation and web-layer response parsing.
  *
  * The enum tuples (`INTEGRATION_PLATFORMS`, `DELIVERY_CHANNELS`) and the
  * `DeployMode` literal union all come from `@useatlas/types` so adding a
@@ -23,8 +17,8 @@
  * instead of passing through to runtime.
  *
  * Strict `z.enum(TUPLE)` matches the `@hono/zod-openapi` extractor's
- * expectations — it cannot serialize `ZodCatch` wrappers (#1653) — and
- * keeps the generated OpenAPI spec describing the genuine output shape.
+ * expectations — it cannot serialize `ZodCatch` wrappers — and keeps the
+ * generated OpenAPI spec describing the genuine output shape.
  */
 import { z } from "zod";
 import {

@@ -14,15 +14,6 @@ import {
   WebhookStatusSchema,
 } from "../integrations";
 
-// ---------------------------------------------------------------------------
-// Per-platform golden payloads — one realistic shape per platform.
-//
-// Each payload reflects a "connected" state with the identity columns the
-// store actually populates after a successful install. The drift-rejection
-// tests below mutate these to prove the strict-enum + structural guards
-// catch wire-shape regressions at parse time.
-// ---------------------------------------------------------------------------
-
 const slack = {
   connected: true,
   teamId: "T01ABCD2EF",
@@ -117,12 +108,6 @@ const validIntegrationStatus = {
   hasInternalDB: true,
 };
 
-// ---------------------------------------------------------------------------
-// Per-platform golden parses — proves each sub-schema accepts a real-world
-// shape. Each test holds a single platform; a future field addition that
-// breaks one platform fails its specific case instead of the aggregate.
-// ---------------------------------------------------------------------------
-
 describe("per-platform golden parses", () => {
   test("SlackStatusSchema parses a connected workspace", () => {
     expect(SlackStatusSchema.parse(slack)).toEqual(slack);
@@ -165,11 +150,6 @@ describe("per-platform golden parses", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Aggregate parse — proves the composed shape round-trips and rejects
-// disconnected-state shapes that the route + web layers actually emit.
-// ---------------------------------------------------------------------------
-
 describe("IntegrationStatusSchema happy-path", () => {
   test("parses the fully-connected aggregate response", () => {
     expect(IntegrationStatusSchema.parse(validIntegrationStatus)).toEqual(
@@ -207,16 +187,9 @@ describe("IntegrationStatusSchema happy-path", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Drift / strict-enum rejection — the point of moving this schema.
-//
-// Web previously relaxed `deployMode` and `deliveryChannels` to z.string() /
-// z.array(z.string()). A drifted backend (new deploy mode, new fan-out
-// target) sailed past parse and surfaced as undefined UI behavior. Strict
-// `z.enum(TUPLE)` from `@useatlas/types` now fails loudly at `useAdminFetch`
-// time and the admin page's `schema_mismatch` banner picks it up.
-// ---------------------------------------------------------------------------
-
+// Strict `z.enum(TUPLE)` rejects unknown deploy modes and delivery channels at
+// parse time so a drifted backend surfaces in the admin page's
+// `schema_mismatch` banner instead of as undefined UI behavior.
 describe("strict-enum rejection", () => {
   test("unknown deployMode fails parse", () => {
     const drifted = { ...validIntegrationStatus, deployMode: "hybrid" };
@@ -245,12 +218,28 @@ describe("strict-enum rejection", () => {
       ).toBe(deployMode);
     }
   });
-});
 
-// ---------------------------------------------------------------------------
-// Structural rejection — drops a required field per surface, proves the
-// schema doesn't silently coerce missing values into undefined.
-// ---------------------------------------------------------------------------
+  // `installedAt` is `z.string().datetime()` — non-ISO timestamps fail parse.
+  // Without this, a future relaxation back to `z.string()` would silently revert
+  // the tightening introduced when the schemas were consolidated.
+  test("non-ISO installedAt fails parse on every connection-bearing platform", () => {
+    const cases = [
+      [SlackStatusSchema, slack],
+      [TeamsStatusSchema, teams],
+      [DiscordStatusSchema, discord],
+      [TelegramStatusSchema, telegram],
+      [GChatStatusSchema, gchat],
+      [GitHubStatusSchema, github],
+      [LinearStatusSchema, linear],
+      [WhatsAppStatusSchema, whatsapp],
+      [EmailStatusSchema, email],
+    ] as const;
+    for (const [schema, payload] of cases) {
+      const drifted = { ...payload, installedAt: "yesterday" };
+      expect(schema.safeParse(drifted).success).toBe(false);
+    }
+  });
+});
 
 describe("structural rejection", () => {
   test("missing platform key (slack) fails parse", () => {
@@ -262,6 +251,24 @@ describe("structural rejection", () => {
     const { configurable: _c, ...slackMissing } = slack;
     const drifted = { ...validIntegrationStatus, slack: slackMissing };
     expect(IntegrationStatusSchema.safeParse(drifted).success).toBe(false);
+  });
+
+  // Per-platform parity — each platform's first identity field stripped. Catches
+  // a future "I copy-pasted the schema and forgot to keep field X" regression
+  // that the satisfies-guard would only catch if the type was also wrong.
+  test.each([
+    ["teams", TeamsStatusSchema, teams, "tenantId"],
+    ["discord", DiscordStatusSchema, discord, "guildId"],
+    ["telegram", TelegramStatusSchema, telegram, "botId"],
+    ["gchat", GChatStatusSchema, gchat, "projectId"],
+    ["github", GitHubStatusSchema, github, "username"],
+    ["linear", LinearStatusSchema, linear, "userName"],
+    ["whatsapp", WhatsAppStatusSchema, whatsapp, "phoneNumberId"],
+    ["email", EmailStatusSchema, email, "provider"],
+  ] as const)("%s platform rejects payload missing %s", (_name, schema, payload, field) => {
+    const drifted: Record<string, unknown> = { ...payload };
+    delete drifted[field];
+    expect(schema.safeParse(drifted).success).toBe(false);
   });
 
   test("non-boolean hasInternalDB fails parse", () => {
@@ -284,5 +291,15 @@ describe("structural rejection", () => {
     expect(
       WebhookStatusSchema.safeParse({ activeCount: 1.5, configurable: true }).success,
     ).toBe(false);
+  });
+
+  // Webhook is the structural outlier — no `connected` field. A copy-paste
+  // mistake that shapes webhooks like the other platforms must fail loudly.
+  test("aggregate rejects webhooks shaped like a connection-bearing platform", () => {
+    const drifted = {
+      ...validIntegrationStatus,
+      webhooks: { connected: true, configurable: true },
+    };
+    expect(IntegrationStatusSchema.safeParse(drifted).success).toBe(false);
   });
 });

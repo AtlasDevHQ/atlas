@@ -9,27 +9,13 @@ import { createLogger } from "@atlas/api/lib/logger";
 import { domainError } from "@atlas/api/lib/effect/hono";
 import { DomainError } from "@atlas/ee/platform/domains";
 
+// Re-export the shared wire shape so existing callers (admin-domains,
+// platform-domains) keep their `./shared-domains` import path. The single
+// source of truth lives in @useatlas/schemas — this module now owns only
+// the domain-error mapping and the EE module loader.
+export { CustomDomainSchema } from "@useatlas/schemas";
+
 const log = createLogger("domains-shared");
-
-// ---------------------------------------------------------------------------
-// Schemas
-// ---------------------------------------------------------------------------
-
-export const CustomDomainSchema = z.object({
-  id: z.string(),
-  workspaceId: z.string(),
-  domain: z.string(),
-  status: z.enum(["pending", "verified", "failed"]),
-  railwayDomainId: z.string().nullable(),
-  cnameTarget: z.string().nullable(),
-  certificateStatus: z.enum(["PENDING", "ISSUED", "FAILED"]).nullable(),
-  verificationToken: z.string().nullable(),
-  domainVerified: z.boolean(),
-  domainVerifiedAt: z.string().nullable(),
-  domainVerificationStatus: z.enum(["pending", "verified", "failed"]),
-  createdAt: z.string(),
-  verifiedAt: z.string().nullable(),
-});
 
 // ---------------------------------------------------------------------------
 // Error mapping

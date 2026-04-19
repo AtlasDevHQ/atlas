@@ -10,7 +10,9 @@
   },
   "exports": {
     ".": "./src/index.ts",
-    "./abuse": "./src/abuse.ts"
+    "./abuse": "./src/abuse.ts",
+    "./approval": "./src/approval.ts",
+    "./custom-domain": "./src/custom-domain.ts"
   },
   "main": "./src/index.ts",
   "types": "./src/index.ts",

@@ -18,6 +18,8 @@
 
 import { Effect } from "effect";
 import { createRoute, z } from "@hono/zod-openapi";
+import { APPROVAL_RULE_TYPES } from "@useatlas/types";
+import { ApprovalRuleSchema, ApprovalRequestSchema } from "@useatlas/schemas";
 import { logAdminAction, ADMIN_ACTIONS } from "@atlas/api/lib/audit";
 import { runEffect, domainError } from "@atlas/api/lib/effect/hono";
 import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
@@ -39,27 +41,15 @@ import { createAdminRouter, requireOrgContext } from "./admin-router";
 const approvalDomainError = domainError(ApprovalError, { validation: 400, not_found: 404, conflict: 409, expired: 410 });
 
 // ---------------------------------------------------------------------------
-// Schemas
+// Request body schemas — response shapes live in @useatlas/schemas.
 // ---------------------------------------------------------------------------
-
-const ApprovalRuleSchema = z.object({
-  id: z.string(),
-  orgId: z.string(),
-  name: z.string(),
-  ruleType: z.enum(["table", "column", "cost"]),
-  pattern: z.string(),
-  threshold: z.number().nullable(),
-  enabled: z.boolean(),
-  createdAt: z.string(),
-  updatedAt: z.string(),
-});
 
 const CreateRuleBodySchema = z.object({
   name: z.string().min(1).openapi({
     description: "Human-readable rule name.",
     example: "Require approval for PII tables",
   }),
-  ruleType: z.enum(["table", "column", "cost"]).openapi({
+  ruleType: z.enum(APPROVAL_RULE_TYPES).openapi({
     description: "Type of rule: table name match, column name match, or cost threshold.",
     example: "table",
   }),
@@ -82,27 +72,6 @@ const UpdateRuleBodySchema = z.object({
   pattern: z.string().optional(),
   threshold: z.number().nullable().optional(),
   enabled: z.boolean().optional(),
-});
-
-const ApprovalRequestSchema = z.object({
-  id: z.string(),
-  orgId: z.string(),
-  ruleId: z.string(),
-  ruleName: z.string(),
-  requesterId: z.string(),
-  requesterEmail: z.string().nullable(),
-  querySql: z.string(),
-  explanation: z.string().nullable(),
-  connectionId: z.string(),
-  tablesAccessed: z.array(z.string()),
-  columnsAccessed: z.array(z.string()),
-  status: z.enum(["pending", "approved", "denied", "expired"]),
-  reviewerId: z.string().nullable(),
-  reviewerEmail: z.string().nullable(),
-  reviewComment: z.string().nullable(),
-  reviewedAt: z.string().nullable(),
-  createdAt: z.string(),
-  expiresAt: z.string(),
 });
 
 const ReviewBodySchema = z.object({

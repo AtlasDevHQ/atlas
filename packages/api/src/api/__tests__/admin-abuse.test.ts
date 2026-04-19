@@ -162,6 +162,10 @@ describe("Admin Abuse API", () => {
       expect(mockGetWorkspaceNamesByIds.mock.calls[0]?.[0]).toEqual(["org-1", "org-2"]);
       const byId = Object.fromEntries(body.workspaces.map((w) => [w.workspaceId, w.workspaceName]));
       expect(byId).toEqual({ "org-1": "Acme Corp", "org-2": null });
+      // Admin table expects most-recent-first ordering from listFlaggedWorkspaces.
+      // Enrichment must preserve input order — a refactor that traversed
+      // Map.keys() on names instead of workspaces would scramble this silently.
+      expect(body.workspaces.map((w) => w.workspaceId)).toEqual(["org-1", "org-2"]);
     });
 
     it("falls back to null when name resolution rejects (#1640)", async () => {

@@ -1,8 +1,23 @@
-import { describe, expect, test, afterEach } from "bun:test";
+import { describe, expect, test, beforeEach, afterEach, mock, type Mock } from "bun:test";
 import { render, screen, fireEvent, waitFor, cleanup, act } from "@testing-library/react";
 import { ReasonDialog } from "../reason-dialog";
 
-afterEach(() => cleanup());
+// Silence + assert the observability log the component fires when
+// onConfirm throws. Without a spy, each test that triggers the throw
+// path emits the stack to stderr and muddles CI output. Spying also
+// enforces the "log so observability still sees it" contract.
+let consoleWarnSpy: Mock<(...args: unknown[]) => void>;
+const originalConsoleWarn = console.warn;
+
+beforeEach(() => {
+  consoleWarnSpy = mock(() => {});
+  console.warn = consoleWarnSpy as unknown as typeof console.warn;
+});
+
+afterEach(() => {
+  console.warn = originalConsoleWarn;
+  cleanup();
+});
 
 function errorText(): string | null {
   // Radix Dialog portals outside `container` — query from document.body.
@@ -62,6 +77,11 @@ describe("ReasonDialog error precedence (#1612)", () => {
     await waitFor(() => {
       expect(errorText() ?? "").toContain("Unexpected error");
     });
+
+    // Component promises to log when onConfirm throws — enforce that contract.
+    expect(consoleWarnSpy).toHaveBeenCalled();
+    const firstCallArgs = consoleWarnSpy.mock.calls[0] ?? [];
+    expect(firstCallArgs[0]).toBe("ReasonDialog: onConfirm threw");
 
     rerender(<Harness error="server rejected the retry" />);
 

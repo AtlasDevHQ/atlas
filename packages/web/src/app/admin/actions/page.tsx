@@ -4,7 +4,7 @@ import { Fragment, useEffect, useState } from "react";
 import { useQueryStates } from "nuqs";
 import { actionsSearchParams } from "./search-params";
 import { ACTION_TYPE_LABELS, actionTypeIcon, actionTypeLabel } from "./labels";
-import { coerceRollbackWarning } from "./rollback-warning";
+import { coerceRollbackWarning, logUnsurfacedRollbackWarning } from "./rollback-warning";
 import { useAtlasConfig } from "@/ui/context";
 import {
   Table,
@@ -304,24 +304,13 @@ export default function ActionsPage() {
       onSuccess: (data) => {
         // Server returns { warning } on 200 when the rollback persisted but the
         // side-effect may not have actually reversed (e.g. external API has no
-        // true undo). Surface to a dismissible warning, not an error.
+        // true undo). Surface to a dismissible warning, not an error; log
+        // anything we couldn't surface verbatim for schema-drift detection.
         const body = data as Record<string, unknown> | undefined;
         const raw = body?.warning;
         const warning = coerceRollbackWarning(raw);
         if (warning) setMutationWarning(warning);
-        // Observability: log any non-null raw value we couldn't surface
-        // verbatim (non-string shapes, whitespace-only/empty strings, or
-        // object shapes that forced the generic fallback). Catches server-
-        // side schema drift that would otherwise silently drop the
-        // compliance signal — a whitespace-only "   " used to slip through
-        // the prior `typeof !== "string"` gate.
-        if (raw != null) {
-          if (typeof raw !== "string") {
-            console.warn("handleRollback: non-string warning shape", raw);
-          } else if (raw.trim().length === 0) {
-            console.warn("handleRollback: blank warning string", JSON.stringify(raw));
-          }
-        }
+        logUnsurfacedRollbackWarning(raw);
       },
     });
     if (!result.ok) setMutationError(friendlyError(result.error));

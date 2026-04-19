@@ -19,10 +19,9 @@ export interface BulkPartialResult {
 
 /**
  * Rejection carrying the server's user-facing message and its requestId as
- * separate fields. Callers in fan-out bulk flows should throw this instead
- * of `new Error("${message} (Request ID: ${requestId})")` — that embedded
- * form causes `bulkFailureSummary` to group every row into its own bucket
- * (one per unique requestId) instead of collapsing identical failures.
+ * separate fields so `bulkFailureSummary` groups rejections by message
+ * alone. Embedding the requestId into `message` would splinter each group
+ * into a bucket of one, since no two requestIds repeat.
  */
 export class BulkRequestError extends Error {
   readonly requestId?: string;
@@ -31,6 +30,27 @@ export class BulkRequestError extends Error {
     this.name = "BulkRequestError";
     this.requestId = requestId;
   }
+}
+
+/**
+ * Extract a correlated requestId from a Promise-rejection value. Accepts
+ * BulkRequestError instances, `useAdminMutation`-style `{ fetchError:
+ * { requestId } }` attachments, and direct `.requestId` string properties.
+ * Returns undefined when no recognizable id is present. Exported so tests
+ * can pin the union of accepted shapes.
+ */
+export function extractBulkRequestId(reason: unknown): string | undefined {
+  if (reason instanceof BulkRequestError) return reason.requestId;
+  if (reason != null && typeof reason === "object") {
+    const fetchError = (reason as { fetchError?: unknown }).fetchError;
+    if (fetchError != null && typeof fetchError === "object") {
+      const id = (fetchError as { requestId?: unknown }).requestId;
+      if (typeof id === "string") return id;
+    }
+    const direct = (reason as { requestId?: unknown }).requestId;
+    if (typeof direct === "string") return direct;
+  }
+  return undefined;
 }
 
 /** Indices of `results` that rejected, mapped back to their input ids. */
@@ -44,10 +64,11 @@ export function failedIdsFrom(
 /**
  * "3 of 5 denials failed: 2× Forbidden (IDs: abc, def); 1× Internal error (ID: ghi)"
  *
- * Groups by message (so N identical failures collapse to one line). When any
- * grouped rejection carries a requestId, appends a trailing `(ID: …)` slot
- * per group so on-call still has the correlation token without splintering
- * the grouping.
+ * Groups rejections by message; appends requestIds per group so identical
+ * failures stay collapsed. RequestIds are extracted via
+ * `extractBulkRequestId` so any rejection shape carrying a correlated id
+ * (BulkRequestError, mutation fetchError attachment, direct .requestId)
+ * contributes it.
  */
 export function bulkFailureSummary(
   results: PromiseSettledResult<unknown>[],
@@ -59,7 +80,7 @@ export function bulkFailureSummary(
     if (r.status !== "rejected") continue;
     const reason = r.reason;
     const msg = reason instanceof Error ? reason.message : String(reason);
-    const requestId = reason instanceof BulkRequestError ? reason.requestId : undefined;
+    const requestId = extractBulkRequestId(reason);
     const group = groups.get(msg) ?? { count: 0, requestIds: [] };
     group.count += 1;
     if (requestId) group.requestIds.push(requestId);
@@ -80,8 +101,8 @@ export function bulkFailureSummary(
  * Summarize a partial-success bulk response.
  * "3 of 10 approvals failed: 2 not found; 1× db timeout"
  *
- * `total` is the number of rows originally requested (so the ratio shows
- * "failed / requested", not "failed / touched").
+ * `total` is the caller-supplied request count — pass in the input size,
+ * not the server's touched count.
  */
 export function bulkPartialSummary(
   data: BulkPartialResult,

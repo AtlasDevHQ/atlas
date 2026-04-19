@@ -13,8 +13,9 @@ The plugins admin page lets workspace admins view, configure, health-check, enab
 - A user with the `admin` role
 </Callout>
 
+{/* When self-service browse ships (marketplace catalog UI + plan-required badge), update both this callout AND the "no web consumer yet" note under API endpoints below. */}
 <Callout type="warn" title="Self-service browse is not shipped yet">
-Earlier drafts of this guide described an **Available** tab and **Enterprise badge** on a browse-and-install surface. That UI does **not** exist in the admin console today — the page renders only the **Installed** list. Install/uninstall happens through `atlas.config.ts` (self-hosted) or platform admin (SaaS). The marketplace API exists but has no web consumer; self-service browse is tracked as a future enhancement.
+The admin console renders only the **Installed** list today — there is no Available/browse tab and no separate tier badges on plugin cards. Install/uninstall happens through `atlas.config.ts` (self-hosted) or platform admin (SaaS). The marketplace API exists but has no web consumer; self-service browse is tracked as a future enhancement.
 </Callout>
 
 ---
@@ -116,7 +117,7 @@ The endpoints consumed by the admin page today:
 | `GET` | `/api/v1/admin/plugins/:id/schema` | Get config schema and current values |
 | `PUT` | `/api/v1/admin/plugins/:id/config` | Update plugin config |
 
-The marketplace catalog API (`GET /api/v1/admin/plugins/marketplace/available`, etc.) exists on the server but has no web consumer yet. Programmatic clients can still call it — responses honor the same `minPlan` gating.
+The marketplace catalog API (`GET /api/v1/admin/plugins/marketplace/available`, etc.) has no web consumer yet — see the callout at the top of this page. Programmatic clients can still call it directly; responses honor the same `minPlan` gating.
 
 ---
 

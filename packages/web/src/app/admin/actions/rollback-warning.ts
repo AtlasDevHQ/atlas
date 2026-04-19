@@ -1,21 +1,33 @@
 /**
- * Normalize the `warning` field on a rollback 200 response into a banner
- * string. The server currently emits `{ warning: string }` when a rollback
- * persisted but the side-effect may not have actually reversed. Operators
- * rely on this signal for compliance — silently dropping a non-string
- * shape would hide "rollback may not have fully reversed" from the audit
- * trail.
- *
- * Returns `null` when the field is absent/null/undefined/empty — there's
- * genuinely no warning to show.
- *
- * For unknown shapes (object, array, number, boolean), returns a generic
- * fallback string so the operator still sees that something warned, and
- * the raw value is logged for follow-up. Callers should surface the
- * returned string in the warning banner as-is.
+ * Normalize the server's rollback `warning` field into a banner string.
+ * The signal is compliance-critical — a rollback may have persisted
+ * without actually reversing the side-effect — so unknown shapes fall
+ * back to a generic "something warned" banner rather than silently
+ * returning null. Absent/empty values return null (no warning to show).
  */
 const GENERIC_FALLBACK =
   "Rollback persisted, but the server returned a warning in an unrecognized shape. Check logs for details.";
+
+/**
+ * Log any non-null raw `warning` value that the caller couldn't surface
+ * verbatim — non-string shapes, whitespace-only strings, or empty strings.
+ * Called alongside `coerceRollbackWarning` so server-side schema drift is
+ * observable even when the UI gracefully degrades. Accepts a logger so
+ * tests can assert the call without wiring up console interception.
+ */
+export function logUnsurfacedRollbackWarning(
+  raw: unknown,
+  logger: (message: string, value: unknown) => void = console.warn,
+): void {
+  if (raw == null) return;
+  if (typeof raw !== "string") {
+    logger("handleRollback: non-string warning shape", raw);
+    return;
+  }
+  if (raw.trim().length === 0) {
+    logger("handleRollback: blank warning string", JSON.stringify(raw));
+  }
+}
 
 export function coerceRollbackWarning(raw: unknown): string | null {
   if (raw === null || raw === undefined) return null;
@@ -23,9 +35,9 @@ export function coerceRollbackWarning(raw: unknown): string | null {
     const trimmed = raw.trim();
     return trimmed.length > 0 ? trimmed : null;
   }
-  // Best-effort extraction from the most common object shape the server
-  // might grow into: `{ message: string, code?: string }`. Everything
-  // else falls back to the generic banner; the caller logs the raw value.
+  // If the server grows the warning field into an object, prefer a string
+  // `message` field. Other keys are ignored; unknown shapes fall through
+  // to the generic fallback below.
   if (typeof raw === "object" && !Array.isArray(raw)) {
     const message = (raw as { message?: unknown }).message;
     if (typeof message === "string" && message.trim().length > 0) {

@@ -37,11 +37,11 @@ interface ReasonDialogProps {
  * Compliance-grade reason capture dialog shared across queue/moderation
  * surfaces. Records the reason in the audit log alongside the reviewer.
  *
- * **Never substitutes a hardcoded placeholder** — if the reason is empty
- * and `required: false`, the audit log must reflect "no reason given"
- * rather than fabricating one. Passing `onConfirm(reason || "Denied")`
- * silently corrupts the audit trail; callers must receive exactly what
- * the user typed (whitespace-trimmed), including the empty string.
+ * **Caller contract:** pass the `reason` through to the audit log
+ * unchanged. Substituting a hardcoded fallback (e.g. `reason || "Denied"`)
+ * corrupts the trail — the empty string is semantically distinct from
+ * "no reason given" only if callers preserve it. The dialog emits exactly
+ * what the user typed, whitespace-trimmed, including the empty string.
  */
 export function ReasonDialog({
   open,

@@ -14,17 +14,69 @@
 
 import { createLogger } from "@atlas/api/lib/logger";
 import { hasInternalDB, internalExecute, internalQuery } from "@atlas/api/lib/db/internal";
-import type {
-  AbuseLevel,
-  AbuseTrigger,
-  AbuseEvent,
-  AbuseStatus,
-  AbuseThresholdConfig,
-  AbuseDetail,
+import {
+  ABUSE_LEVELS,
+  ABUSE_TRIGGERS,
+  type AbuseLevel,
+  type AbuseTrigger,
+  type AbuseEvent,
+  type AbuseStatus,
+  type AbuseThresholdConfig,
+  type AbuseDetail,
 } from "@useatlas/types";
 import { splitIntoInstances } from "./abuse-instances";
 
 const log = createLogger("abuse");
+
+// ---------------------------------------------------------------------------
+// Enum drift coercion
+// ---------------------------------------------------------------------------
+// A drifted abuse_events row must never crash the admin page, so we validate
+// level / trigger_type against the canonical tuples, coerce unknowns to safe
+// defaults, and warn on drift. Callers that care about the *distinction*
+// between a genuine `none` and a drift-coerced `none` (e.g. restoreAbuseState
+// — where the difference is fail-open vs fail-safe) read `levelDrifted`.
+
+const LEVEL_SET: ReadonlySet<string> = new Set(ABUSE_LEVELS);
+const TRIGGER_SET: ReadonlySet<string> = new Set(ABUSE_TRIGGERS);
+
+function isAbuseLevel(v: unknown): v is AbuseLevel {
+  return typeof v === "string" && LEVEL_SET.has(v);
+}
+
+function isAbuseTrigger(v: unknown): v is AbuseTrigger {
+  return typeof v === "string" && TRIGGER_SET.has(v);
+}
+
+interface CoercedAbuseEnums {
+  level: AbuseLevel;
+  trigger: AbuseTrigger;
+  /** True when `rawLevel` was not a member of `ABUSE_LEVELS` — caller may skip or escalate. */
+  levelDrifted: boolean;
+  /** True when `rawTrigger` was not a member of `ABUSE_TRIGGERS`. */
+  triggerDrifted: boolean;
+}
+
+function coerceAbuseEnums(
+  rowId: string,
+  rawLevel: unknown,
+  rawTrigger: unknown,
+): CoercedAbuseEnums {
+  const levelOk = isAbuseLevel(rawLevel);
+  const triggerOk = isAbuseTrigger(rawTrigger);
+  if (!levelOk || !triggerOk) {
+    log.warn(
+      { rowId, rawLevel, rawTrigger },
+      "abuse event with drifted enum",
+    );
+  }
+  return {
+    level: levelOk ? rawLevel : "none",
+    trigger: triggerOk ? rawTrigger : "manual",
+    levelDrifted: !levelOk,
+    triggerDrifted: !triggerOk,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Configuration — env var thresholds
@@ -425,16 +477,19 @@ export async function getAbuseEvents(
       [workspaceId, limit],
     );
 
-    return rows.map((r) => ({
-      id: r.id,
-      workspaceId: r.workspace_id,
-      level: r.level as AbuseLevel,
-      trigger: r.trigger_type as AbuseTrigger,
-      message: r.message,
-      metadata: typeof r.metadata === "string" ? JSON.parse(r.metadata) as Record<string, unknown> : (r.metadata as Record<string, unknown>),
-      createdAt: r.created_at,
-      actor: r.actor,
-    }));
+    return rows.map((r) => {
+      const { level, trigger } = coerceAbuseEnums(r.id, r.level, r.trigger_type);
+      return {
+        id: r.id,
+        workspaceId: r.workspace_id,
+        level,
+        trigger,
+        message: r.message,
+        metadata: typeof r.metadata === "string" ? JSON.parse(r.metadata) as Record<string, unknown> : (r.metadata as Record<string, unknown>),
+        createdAt: r.created_at,
+        actor: r.actor,
+      };
+    });
   } catch (err) {
     log.warn(
       { err: err instanceof Error ? err.message : String(err), workspaceId },
@@ -462,13 +517,26 @@ export async function restoreAbuseState(): Promise<void> {
        ORDER BY workspace_id, created_at DESC`,
     );
 
+    let driftSkipped = 0;
     for (const row of rows) {
-      const level = row.level as AbuseLevel;
+      const { level, trigger, levelDrifted } = coerceAbuseEnums(
+        row.workspace_id,
+        row.level,
+        row.trigger_type,
+      );
+      // A drifted level collapses to "none" — we can't trust that as "already
+      // reinstated" because the stored enforcement state is ambiguous. Skip,
+      // but count separately so the restore summary surfaces potential lost
+      // enforcement rather than silently dropping it.
+      if (levelDrifted) {
+        driftSkipped++;
+        continue;
+      }
       if (level === "none") continue; // Already reinstated
 
       const state = getState(row.workspace_id);
       state.level = level;
-      state.trigger = row.trigger_type as AbuseTrigger;
+      state.trigger = trigger;
       state.message = row.message;
       state.updatedAt = new Date(row.created_at).getTime();
       // Set escalations based on current level to maintain correct position in the ladder
@@ -476,8 +544,13 @@ export async function restoreAbuseState(): Promise<void> {
     }
 
     const restored = [...workspaceState.values()].filter((s) => s.level !== "none").length;
-    if (restored > 0) {
-      log.info({ count: restored }, "Restored abuse state for %d workspaces", restored);
+    if (restored > 0 || driftSkipped > 0) {
+      log.info(
+        { count: restored, driftSkipped },
+        "Restored abuse state for %d workspaces (%d skipped due to enum drift)",
+        restored,
+        driftSkipped,
+      );
     }
   } catch (err) {
     log.warn(

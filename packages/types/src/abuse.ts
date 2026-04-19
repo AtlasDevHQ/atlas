@@ -2,6 +2,10 @@
 // Abuse prevention types — wire format for API + admin UI
 // ---------------------------------------------------------------------------
 
+// Adding a value here requires a matching migration to extend the DB
+// CHECK in `packages/api/src/lib/db/migrations/*_abuse_events_enum_checks.sql`
+// — otherwise `persistAbuseEvent` will fail at INSERT time.
+
 /** Graduated abuse response levels (escalation order). */
 export const ABUSE_LEVELS = ["none", "warning", "throttled", "suspended"] as const;
 export type AbuseLevel = (typeof ABUSE_LEVELS)[number];

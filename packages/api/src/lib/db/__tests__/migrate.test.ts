@@ -78,7 +78,7 @@ describe("runMigrations", () => {
 
     const count = await runMigrations(pool);
 
-    expect(count).toBe(31);
+    expect(count).toBe(32);
 
     // Advisory lock acquired before anything else
     expect(queries[0]).toContain("pg_advisory_lock");
@@ -138,6 +138,7 @@ describe("runMigrations", () => {
         "0028_fix_semantic_entity_uniqueness.sql",
         "0029_user_favorite_prompts.sql",
         "0030_starter_prompt_approval.sql",
+        "0031_abuse_events_enum_checks.sql",
       ],
     });
 
@@ -343,6 +344,58 @@ describe("0027_organization_saas_columns.sql", () => {
     expect(sql).toMatch(/RAISE\s+EXCEPTION/i);
     expect(sql).toContain("organization");
     expect(sql).toContain("1472");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests: 0031_abuse_events_enum_checks.sql
+// ---------------------------------------------------------------------------
+
+describe("0031_abuse_events_enum_checks.sql", () => {
+  const filePath = path.join(MIGRATIONS_DIR, "0031_abuse_events_enum_checks.sql");
+
+  it("file exists in the migrations directory", () => {
+    expect(fs.existsSync(filePath)).toBe(true);
+  });
+
+  it("cleans pre-drifted rows before adding CHECK constraints", () => {
+    const sql = fs.readFileSync(filePath, "utf-8");
+
+    const updateLevelIdx = sql.search(/UPDATE\s+abuse_events\s+SET\s+level\s*=\s*'none'/i);
+    const updateTriggerIdx = sql.search(/UPDATE\s+abuse_events\s+SET\s+trigger_type\s*=\s*'manual'/i);
+    const checkLevelIdx = sql.search(/CHECK\s*\(\s*level\s+IN\b/i);
+    const checkTriggerIdx = sql.search(/CHECK\s*\(\s*trigger_type\s+IN\b/i);
+
+    // All four statements must exist
+    expect(updateLevelIdx).toBeGreaterThan(-1);
+    expect(updateTriggerIdx).toBeGreaterThan(-1);
+    expect(checkLevelIdx).toBeGreaterThan(-1);
+    expect(checkTriggerIdx).toBeGreaterThan(-1);
+
+    // Ordering: cleanup UPDATEs must come before the ADD CONSTRAINTs,
+    // otherwise pre-drifted rows block the migration from applying.
+    expect(updateLevelIdx).toBeLessThan(checkLevelIdx);
+    expect(updateTriggerIdx).toBeLessThan(checkTriggerIdx);
+  });
+
+  it("enumerates all canonical values for both columns", () => {
+    const sql = fs.readFileSync(filePath, "utf-8");
+
+    for (const v of ["none", "warning", "throttled", "suspended"]) {
+      expect(sql).toContain(`'${v}'`);
+    }
+    for (const v of ["query_rate", "error_rate", "unique_tables", "manual"]) {
+      expect(sql).toContain(`'${v}'`);
+    }
+  });
+
+  it("wraps both ADD CONSTRAINTs in idempotent DO $$ … EXCEPTION guards", () => {
+    const sql = fs.readFileSync(filePath, "utf-8");
+
+    // Two DO $$ blocks — one per constraint — each catching duplicate_object
+    // so re-running the migration on an already-constrained DB is a no-op.
+    const doBlocks = sql.match(/DO\s*\$\$\s*BEGIN[\s\S]*?EXCEPTION\s+WHEN\s+duplicate_object\s+THEN\s+NULL;\s*END\s*\$\$\s*;/gi) ?? [];
+    expect(doBlocks.length).toBe(2);
   });
 });
 

@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { useQueryStates } from "nuqs";
 import { z } from "zod";
 import { usersSearchParams } from "./search-params";
+import { ROLES, isDemotion, type Role } from "./roles";
 import type { ColumnDef } from "@tanstack/react-table";
 import { useAtlasConfig } from "@/ui/context";
 import { useUserRole } from "@/ui/hooks/use-platform-admin-guard";
@@ -100,19 +101,10 @@ type ConfirmAction =
   | { type: "delete"; user: User }
   | { type: "revoke-sessions"; user: User }
   | { type: "revoke-invitation"; invitation: Invitation }
-  | { type: "role-demote"; user: User; newRole: (typeof ROLES)[number] }
+  | { type: "role-demote"; user: User; newRole: Role }
   | null;
 
 const LIMIT = 50;
-const ROLES = ["member", "admin", "owner"] as const;
-// Rank for detecting demotions — higher is more privileged. Promotions skip
-// the confirm step; demotions route through AlertDialog so an accidental
-// click doesn't strip a coworker's access.
-const ROLE_RANK: Record<(typeof ROLES)[number], number> = {
-  member: 0,
-  admin: 1,
-  owner: 2,
-};
 
 const inviteSchema = z.object({
   email: z.string().email("Valid email address is required"),
@@ -186,14 +178,11 @@ export default function UsersPage() {
             <DropdownMenuContent align="end">
               {ROLES.map((r) => {
                 if (r === user.role) return null;
-                const fromRank = ROLE_RANK[user.role as keyof typeof ROLE_RANK] ?? 0;
-                const toRank = ROLE_RANK[r];
-                const isDemotion = toRank < fromRank;
                 return (
                   <DropdownMenuItem
                     key={r}
                     onClick={() =>
-                      isDemotion
+                      isDemotion(user.role, r)
                         ? setConfirmAction({ type: "role-demote", user, newRole: r })
                         : handleRoleChange(user.id, r)
                     }
@@ -365,22 +354,29 @@ export default function UsersPage() {
     setParams({ search: searchInput, page: 1 });
   }
 
-  async function handleRoleChange(userId: string, newRole: string) {
-    await adminAction.mutate({
+  // Destructive-action handlers return `ok` so the confirm AlertDialog stays
+  // open on failure (keeping the inline context visible while the mutation
+  // error surfaces via MutationErrorSurface above the table). Closing the
+  // dialog unconditionally on await would dismiss the operator back to a
+  // list where a failure banner may be off-screen.
+
+  async function handleRoleChange(userId: string, newRole: string): Promise<boolean> {
+    const result = await adminAction.mutate({
       path: `/api/v1/admin/users/${userId}/role`,
       method: "PATCH",
       body: { role: newRole },
       itemId: userId,
     });
+    return result.ok;
   }
 
-  async function handleBan(user: User) {
-    await adminAction.mutate({
+  async function handleBan(user: User): Promise<boolean> {
+    const result = await adminAction.mutate({
       path: `/api/v1/admin/users/${user.id}/ban`,
       method: "POST",
       itemId: user.id,
     });
-    setConfirmAction(null);
+    return result.ok;
   }
 
   async function handleUnban(userId: string) {
@@ -391,21 +387,22 @@ export default function UsersPage() {
     });
   }
 
-  async function handleRevoke(userId: string) {
-    await adminAction.mutate({
+  async function handleRevoke(userId: string): Promise<boolean> {
+    const result = await adminAction.mutate({
       path: `/api/v1/admin/users/${userId}/revoke`,
       method: "POST",
       itemId: userId,
     });
+    return result.ok;
   }
 
-  async function handleDelete(user: User) {
-    await adminAction.mutate({
+  async function handleDelete(user: User): Promise<boolean> {
+    const result = await adminAction.mutate({
       path: `/api/v1/admin/users/${user.id}`,
       method: "DELETE",
       itemId: user.id,
     });
-    setConfirmAction(null);
+    return result.ok;
   }
 
   // -- Invite handlers --
@@ -437,11 +434,12 @@ export default function UsersPage() {
     }
   }
 
-  async function handleRevokeInvitation(id: string) {
-    await revokeInvitation.mutate({
+  async function handleRevokeInvitation(id: string): Promise<boolean> {
+    const result = await revokeInvitation.mutate({
       path: `/api/v1/admin/users/invitations/${id}`,
       onSuccess: () => setInvitationsVersion((v) => v + 1),
     });
+    return result.ok;
   }
 
   const pendingInvitations = invitations.filter((i) => i.status === "pending");
@@ -733,7 +731,11 @@ export default function UsersPage() {
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
-              onClick={() => { if (confirmAction?.type === "ban") handleBan(confirmAction.user); }}
+              onClick={async () => {
+                if (confirmAction?.type !== "ban") return;
+                const ok = await handleBan(confirmAction.user);
+                if (ok) setConfirmAction(null);
+              }}
             >
               Ban user
             </AlertDialogAction>
@@ -758,7 +760,11 @@ export default function UsersPage() {
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-              onClick={() => { if (confirmAction?.type === "delete") handleDelete(confirmAction.user); }}
+              onClick={async () => {
+                if (confirmAction?.type !== "delete") return;
+                const ok = await handleDelete(confirmAction.user);
+                if (ok) setConfirmAction(null);
+              }}
             >
               Delete user
             </AlertDialogAction>
@@ -782,11 +788,10 @@ export default function UsersPage() {
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
-              onClick={() => {
-                if (confirmAction?.type === "revoke-sessions") {
-                  handleRevoke(confirmAction.user.id);
-                  setConfirmAction(null);
-                }
+              onClick={async () => {
+                if (confirmAction?.type !== "revoke-sessions") return;
+                const ok = await handleRevoke(confirmAction.user.id);
+                if (ok) setConfirmAction(null);
               }}
             >
               Sign out
@@ -811,11 +816,10 @@ export default function UsersPage() {
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
-              onClick={() => {
-                if (confirmAction?.type === "revoke-invitation") {
-                  handleRevokeInvitation(confirmAction.invitation.id);
-                  setConfirmAction(null);
-                }
+              onClick={async () => {
+                if (confirmAction?.type !== "revoke-invitation") return;
+                const ok = await handleRevokeInvitation(confirmAction.invitation.id);
+                if (ok) setConfirmAction(null);
               }}
             >
               Revoke
@@ -844,11 +848,13 @@ export default function UsersPage() {
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
-              onClick={() => {
-                if (confirmAction?.type === "role-demote") {
-                  handleRoleChange(confirmAction.user.id, confirmAction.newRole);
-                  setConfirmAction(null);
-                }
+              onClick={async () => {
+                if (confirmAction?.type !== "role-demote") return;
+                const ok = await handleRoleChange(
+                  confirmAction.user.id,
+                  confirmAction.newRole,
+                );
+                if (ok) setConfirmAction(null);
               }}
             >
               Change role

@@ -123,6 +123,7 @@
         "@opentelemetry/resources": "^2.6.1",
         "@opentelemetry/sdk-node": "^0.214.0",
         "@opentelemetry/semantic-conventions": "^1.40.0",
+        "@useatlas/schemas": "workspace:*",
         "@useatlas/types": "workspace:*",
         "ai": "^6.0.141",
         "better-auth": "^1.5.6",
@@ -281,6 +282,14 @@
         "@atlas/api": "workspace:*",
       },
     },
+    "packages/schemas": {
+      "name": "@useatlas/schemas",
+      "version": "0.0.1",
+      "dependencies": {
+        "@useatlas/types": "workspace:*",
+        "zod": "^4.3.6",
+      },
+    },
     "packages/sdk": {
       "name": "@useatlas/sdk",
       "version": "0.0.11",
@@ -314,6 +323,7 @@
         "@tanstack/react-query-devtools": "^5.96.2",
         "@tanstack/react-table": "^8.21.3",
         "@useatlas/react": "workspace:*",
+        "@useatlas/schemas": "workspace:*",
         "@useatlas/sdk": "workspace:*",
         "@useatlas/types": "workspace:*",
         "ai": "^6.0.141",
@@ -2045,6 +2055,8 @@
     "@useatlas/react": ["@useatlas/react@workspace:packages/react"],
 
     "@useatlas/salesforce": ["@useatlas/salesforce@workspace:plugins/salesforce"],
+
+    "@useatlas/schemas": ["@useatlas/schemas@workspace:packages/schemas"],
 
     "@useatlas/sdk": ["@useatlas/sdk@workspace:packages/sdk"],
 

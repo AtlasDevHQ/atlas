@@ -42,6 +42,7 @@
     "@opentelemetry/resources": "^2.6.1",
     "@opentelemetry/sdk-node": "^0.214.0",
     "@opentelemetry/semantic-conventions": "^1.40.0",
+    "@useatlas/schemas": "workspace:*",
     "@useatlas/types": "workspace:*",
     "ai": "^6.0.141",
     "better-auth": "^1.5.6",

@@ -18,42 +18,25 @@ import { getWorkspaceNamesByIds } from "@atlas/api/lib/db/internal";
 import { createLogger } from "@atlas/api/lib/logger";
 
 const log = createLogger("admin-abuse");
-import { ABUSE_LEVELS, ABUSE_TRIGGERS } from "@useatlas/types";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
+import {
+  AbuseStatusSchema,
+  AbuseDetailSchema,
+  AbuseThresholdConfigSchema,
+} from "@useatlas/schemas";
 import { ErrorSchema, AuthErrorSchema, createListResponseSchema } from "./shared-schemas";
 import { createAdminRouter } from "./admin-router";
 
 // ---------------------------------------------------------------------------
 // Schemas
 // ---------------------------------------------------------------------------
-
-// Sourced from `@useatlas/types` so the enum values stay structurally
-// coupled to the TS unions — adding a new level or trigger in `types/abuse.ts`
-// propagates here without manual duplication.
-const LevelEnum = z.enum(ABUSE_LEVELS);
-const TriggerEnum = z.enum(ABUSE_TRIGGERS);
-
-const AbuseEventSchema = z.object({
-  id: z.string(),
-  workspaceId: z.string(),
-  level: LevelEnum,
-  trigger: TriggerEnum,
-  message: z.string(),
-  metadata: z.record(z.string(), z.unknown()),
-  createdAt: z.string(),
-  actor: z.string(),
-});
-
-const AbuseStatusSchema = z.object({
-  workspaceId: z.string(),
-  workspaceName: z.string().nullable(),
-  level: LevelEnum,
-  trigger: TriggerEnum.nullable(),
-  message: z.string().nullable(),
-  updatedAt: z.string(),
-  events: z.array(AbuseEventSchema),
-});
+//
+// Wire-format schemas (AbuseStatus / AbuseDetail / AbuseThresholdConfig /
+// nested Event/Instance/Counters) live in `@useatlas/schemas` — one source
+// shared with the web client so renames can't silently drift. Route-local
+// schemas below are the ones that wrap the shared shapes (list envelope)
+// or describe route-only responses (reinstate).
 
 const ListResponseSchema = createListResponseSchema("workspaces", AbuseStatusSchema);
 
@@ -61,42 +44,6 @@ const ReinstateResponseSchema = z.object({
   success: z.boolean(),
   workspaceId: z.string(),
   message: z.string(),
-});
-
-const ConfigResponseSchema = z.object({
-  queryRateLimit: z.number(),
-  queryRateWindowSeconds: z.number(),
-  errorRateThreshold: z.number(),
-  uniqueTablesLimit: z.number(),
-  throttleDelayMs: z.number(),
-});
-
-const AbuseCountersSchema = z.object({
-  queryCount: z.number(),
-  errorCount: z.number(),
-  errorRatePct: z.number().nullable(),
-  uniqueTablesAccessed: z.number(),
-  escalations: z.number(),
-});
-
-const AbuseInstanceSchema = z.object({
-  startedAt: z.string(),
-  endedAt: z.string().nullable(),
-  peakLevel: LevelEnum,
-  events: z.array(AbuseEventSchema),
-});
-
-const AbuseDetailResponseSchema = z.object({
-  workspaceId: z.string(),
-  workspaceName: z.string().nullable(),
-  level: LevelEnum,
-  trigger: TriggerEnum.nullable(),
-  message: z.string().nullable(),
-  updatedAt: z.string(),
-  counters: AbuseCountersSchema,
-  thresholds: ConfigResponseSchema,
-  currentInstance: AbuseInstanceSchema,
-  priorInstances: z.array(AbuseInstanceSchema),
 });
 
 // ---------------------------------------------------------------------------
@@ -187,7 +134,7 @@ const getDetailRoute = createRoute({
   responses: {
     200: {
       description: "Investigation detail",
-      content: { "application/json": { schema: AbuseDetailResponseSchema } },
+      content: { "application/json": { schema: AbuseDetailSchema } },
     },
     404: {
       description: "Workspace not flagged",
@@ -221,7 +168,7 @@ const getConfigRoute = createRoute({
   responses: {
     200: {
       description: "Threshold configuration",
-      content: { "application/json": { schema: ConfigResponseSchema } },
+      content: { "application/json": { schema: AbuseThresholdConfigSchema } },
     },
     401: {
       description: "Authentication required",

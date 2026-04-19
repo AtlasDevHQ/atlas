@@ -58,6 +58,28 @@ export default tseslint.config(
       ],
     },
   },
+  // `@useatlas/schemas` is the one-source-of-truth wire-format package. Its
+  // whole point is to sit below `@atlas/api` and `@atlas/web` in the
+  // dependency graph so both layers import a shared validator. Allowing
+  // an upward import inverts that graph and re-opens the drift window the
+  // package closes — so enforce the boundary as a build failure.
+  {
+    files: ["packages/schemas/**/*.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              group: ["@atlas/api", "@atlas/api/*", "@atlas/web", "@atlas/web/*", "@atlas/ee", "@atlas/ee/*"],
+              message:
+                "@useatlas/schemas must not depend on @atlas/* packages. Wire-format schemas sit below the app layer; keep the dependency direction types → schemas → api/web.",
+            },
+          ],
+        },
+      ],
+    },
+  },
   {
     ignores: [".next/", "node_modules/", "packages/web/.next/", "**/dist/"],
   }

@@ -728,7 +728,6 @@ A pre-existing bug also hid in the hook: `invalidates()` callbacks ran inside th
 
 **Category:** Completion pass on a two-phase data-structure migration. Win #29 unblocked the primary code path (`result.error`); win #30 sweeps the ~40 pages that read the *secondary* hook-level surface the first pass left flattened, plus adds ESLint enforcement so the invariant survives churn. The #1617 callback-isolation fix rides along because silent-failure-hunter flagged it during #1614 review — cheap to fix atomically with the hook widening, since both touch the same `mutate()` body. Generalizes: when you're partway through a migration and the follow-up is "same class of bug, different surface," do the full sweep plus a lint rule; the ESLint `no-restricted-syntax` AST selector is a cheap safety net for any `X.something` shape you need to prevent callers from re-flattening.
 
-
 ---
 
 ## 31. `<MutationErrorSurface>` — write-path parity with `AdminContentWrapper` feature-gate routing
@@ -760,3 +759,57 @@ Phase 1 migration (this PR) covers 5 highest-value pages — the ones called out
 - **Phase 2 is mechanical.** ~35 admin pages still write `<ErrorBanner message={friendlyError(mutation.error)} />` or the equivalent. Follow-up issue enumerates the full list so the second PR can sweep them in one pass without re-analysis.
 
 **Category:** Render-boundary completion of the structured-error migration line (wins #29 → #30 → #31). Each win moves the invariant one step further through the stack: hook result → hook state → render output. The pattern generalizes — if a UI primitive accepts a flattened type (`string`, `number`) where the caller has a structured type (`FetchError`, `Money`, `Duration`), the decision tree *on* the structured fields belongs in a dedicated component, not at every call site. Call sites otherwise drop the structure before gating can fire.
+
+---
+
+## 32. `@useatlas/schemas` — shared Zod wire-format package (AbuseDetail first)
+
+**Date:** 2026-04-19
+**Issue:** #1642
+**PR:** TBD
+
+**Problem:** Type-design-analyzer review of PR #1641 surfaced parallel Zod schemas describing the same wire shapes — one inside the API route (for `@hono/zod-openapi` response validation) and one inside the web admin client (for `useAdminFetch` runtime parsing). A field rename on either side type-checked cleanly while the other kept the old key, so drift went undetected until a runtime response arrived shaped differently than the parser expected. The abuse surface alone had six duplicated schemas (`AbuseEvent`, `AbuseStatus`, `AbuseThresholdConfig`, `AbuseCounters`, `AbuseInstance`, `AbuseDetail`); the issue mapped 15+ comparable pairs across the admin surface (approval, custom-domain, integrations, billing, SLA, backups, regions, audit analytics).
+
+The two Zod copies weren't even *behaviorally* equivalent: the route used `z.enum(ABUSE_LEVELS)` (tight — imported the tuple from `@useatlas/types`), while the web used `z.string()` with a `z.ZodType<AbuseStatus>` cast (loose — deliberately weakened so "API adds a new level" wouldn't break the web parser). In practice the API and web read the *same* tuple via `@useatlas/types`, so the looseness was a comment-only justification, not a real forward-compatibility story.
+
+**Solution:** New workspace package `@useatlas/schemas` that owns the wire-format Zod validators. First migrated schema: the six abuse shapes. Both API (`packages/api/src/api/routes/admin-abuse.ts`) and web (`packages/web/src/ui/lib/admin-schemas.ts`) import from it.
+
+Structure:
+- `packages/schemas/package.json` — `@useatlas/schemas`, `private: true`, depends on `@useatlas/types` + `zod`. Subpath exports: `"."` → `./src/index.ts`, `"./abuse"` → `./src/abuse.ts`.
+- `packages/schemas/src/abuse.ts` — single source with `satisfies z.ZodType<AbuseEvent>` / `AbuseStatus` / etc., so a TS union rename in `@useatlas/types` breaks the schema file at compile time. `AbuseDetailSchema` uses `AbuseStatusSchema.omit({ events: true }).extend({...})` to structurally mirror the TS `AbuseDetail extends Omit<AbuseStatus, "events">` relationship; identity-field drift between status and detail is caught at the Zod layer.
+- Plain `zod` (not `@hono/zod-openapi`'s `z`) — compatible with both sides since `@hono/zod-openapi` just adds `.openapi()` helpers; the OpenAPI spec diff was zero (verified by `scripts/check-openapi-drift.sh`).
+- Exports point at `./src/*.ts` directly — no build step, same convention as `@atlas/api`. When we eventually publish for the SDK/react external consumers, we'll add a `build` script mirroring `@useatlas/types`.
+
+Dependency direction enforced by README **and** ESLint `no-restricted-imports`:
+
+```
+@useatlas/types      (pure TS, zero runtime — ABUSE_LEVELS / ABUSE_TRIGGERS tuples)
+        ↓
+@useatlas/schemas    (Zod validators; re-exports type tuples)
+        ↓
+@atlas/api    @atlas/web
+```
+
+`@useatlas/schemas` cannot depend on `@atlas/api` / `@atlas/web` / `@atlas/ee` — the `no-restricted-imports` rule in `eslint.config.mjs` scoped to `packages/schemas/**` fails lint on the first upward import. Verified with a probe file before shipping. `@useatlas/types` must stay Zod-free (pulling Zod in would bloat the SDK surface for consumers that only want the types).
+
+Route-level changes:
+- Deleted `AbuseEventSchema` / `AbuseStatusSchema` / `AbuseCountersSchema` / `AbuseInstanceSchema` / `AbuseDetailResponseSchema` / `ConfigResponseSchema` (renamed from `ConfigResponseSchema` → `AbuseThresholdConfigSchema` via shared import).
+- Kept `ListResponseSchema` local (it wraps the shared `AbuseStatusSchema` via `createListResponseSchema("workspaces", ...)` — route-envelope concern, not a wire shape).
+- Kept `ReinstateResponseSchema` local (route-only, not shared with web).
+
+Web-level changes:
+- Deleted local `AbuseEventSchema` / `AbuseCountersSchema` / `AbuseInstanceSchema`, plus tightened `AbuseStatusSchema` / `AbuseThresholdConfigSchema` / `AbuseDetailSchema` by re-exporting from `@useatlas/schemas`.
+- Web callers (`detail-panel.tsx`, `page.tsx`, existing `useAdminFetch` sites) keep using `AbuseStatusSchema` / `AbuseDetailSchema` by name — the re-export preserves the import path so no caller needed touching.
+- Tightening note: the shared schema uses `z.enum(ABUSE_LEVELS)` where the web copy used `z.string()`. Safe because both sides read the *same* `@useatlas/types` tuple as a workspace dep — but silent-failure-hunter review flagged that `abuse_events.level` / `trigger_type` are unconstrained `TEXT` DB columns (no `CHECK`), and the server casts `r.level as AbuseLevel` without validation. Attempted fix: `.catch("none")` / `.catch("manual")` fallbacks on the enum wrappers so drifted rows degrade to safe defaults. Abandoned: the `@hono/zod-openapi` extractor throws `UnknownZodTypeError` on `ZodCatch` wrappers and refuses to generate the spec. Shipped shape: strict enums. Real hardening deferred to #1653 where it belongs — DB `CHECK` constraint on `abuse_events.level` + `trigger_type` so drift can't reach the admin page in the first place, plus server-side coercion in `getAbuseEvents` / `restoreAbuseState` with `log.warn` for already-persisted drift. Strict enums match the TS type exactly and match the OpenAPI spec's documented `enum` values — drift surfaces as a loud `schema_mismatch` banner in `useAdminFetch` rather than silent rendering. In practice, reaching this failure mode requires a manual DB INSERT or an out-of-band tuple rename; both are caught earlier than the admin-page boundary.
+
+**Impact:**
+- **~+250 net lines after all review passes** (new package scaffold + parse-boundary test suite + ESLint boundary rule). Route + web migration alone was net −30 lines; the test (~150 lines) and ESLint rule (~20 lines) are additive safety rails, not shape-echoing code.
+- **Abuse surface drift window closed.** A future rename like `errorRatePct → errorRatePercent` now has to happen in one place; the other import site fails `tsc` via `satisfies z.ZodType<AbuseCounters>`. Identity-field drift between `AbuseStatus` and `AbuseDetail` is also caught via `.omit().extend()`.
+- **OpenAPI spec diff: zero bytes.** `scripts/check-openapi-drift.sh` re-generated the 72-tag `apps/docs/openapi.json` without producing a change, confirming plain-zod interoperates identically with `@hono/zod-openapi`.
+- **Template drift: zero.** `scripts/check-template-drift.sh` passes — the new package isn't being synced into the nextjs-standalone or docker templates (both templates only bundle runtime-required packages).
+- **15/15 abuse route tests + 14/14 new schema parse-boundary tests pass.** Full API suite: 242/242 files green. Web suite: 70/70 files green. Syncpack clean (zod version already aligned at `^4.3.6` across the workspace).
+- **Enforcement beyond documentation.** The ESLint boundary rule converts the README's dependency-direction invariant from doctrine into a build failure. Verified firing via temporary probe before shipping.
+- **Strict enum drift detection.** `z.enum(ABUSE_LEVELS)` + OpenAPI spec describing the exact union means drift surfaces as a loud `schema_mismatch` banner, not silent rendering. `@hono/zod-openapi` refuses `ZodCatch` wrappers so the graceful-degradation alternative was abandoned; #1653 tracks the real hardening (DB `CHECK` + server-side coercion).
+- **Follow-up map recorded in README + issue #1648.** Next drift-prone schemas (ApprovalRule, CustomDomain, IntegrationStatus, PlatformWorkspace family) to migrate one PR at a time so each OpenAPI diff is inspectable at merge.
+
+**Category:** Cross-package consolidation of duplicated runtime validators. This is the "extract a shared interface" move in its API-boundary form: when two packages independently encode the same wire shape, pull both encodings into a third package the others depend on. The `satisfies z.ZodType<T>` pattern marries Zod's runtime check to TypeScript's compile-time check without the loose `as` cast; if `@useatlas/types` renames a field, the schema file fails to compile *before* the drift hits production. Generalizes: for any project with an admin surface mirror-typed across API and client, a shared schemas package pays for itself after the second wire shape and scales cleanly through the first dozen.

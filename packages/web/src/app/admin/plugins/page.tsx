@@ -1,14 +1,6 @@
 "use client";
 
-import {
-  useEffect,
-  useId,
-  useRef,
-  useState,
-  type ComponentType,
-  type ReactNode,
-  type RefObject,
-} from "react";
+import { useEffect, useState, type ComponentType } from "react";
 import { useRouter } from "next/navigation";
 import { useAtlasConfig } from "@/ui/context";
 import { Button } from "@/components/ui/button";
@@ -26,6 +18,16 @@ import { AdminContentWrapper } from "@/ui/components/admin-content-wrapper";
 import { ErrorBanner } from "@/ui/components/admin/error-banner";
 import { ErrorBoundary } from "@/ui/components/error-boundary";
 import {
+  CompactRow,
+  DetailList,
+  DetailRow,
+  InlineError,
+  SectionHeading,
+  Shell,
+  type StatusKind,
+  useDisclosure,
+} from "@/ui/components/admin/compact";
+import {
   Puzzle,
   Loader2,
   FileCode2,
@@ -35,7 +37,6 @@ import {
   Zap,
   Box,
   Activity,
-  X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useAdminFetch } from "@/ui/hooks/use-admin-fetch";
@@ -100,278 +101,20 @@ function switchTitle(manageable: boolean, enabled: boolean, deployMode: DeployMo
   return enabled ? "Disable plugin" : "Enable plugin";
 }
 
-// ── Shared design primitives ──────────────────────────────────────
-// Intentionally duplicated in several admin pages until the shape is stable
-// enough to extract. Tracked in #1551.
+// ── Status mapping ────────────────────────────────────────────────
 
-type StatusKind = "connected" | "transitioning" | "disconnected" | "unavailable";
-
+// Plugin-specific sr-only label override: this page prefers enabled-semantics
+// (Enabled/Disabled) over the default connected-semantics (Connected/Not
+// connected) used by most other admin surfaces. Passed inline to CompactRow /
+// Shell via their `statusLabel` prop.
 const STATUS_LABEL: Record<StatusKind, string> = {
   connected: "Enabled",
   transitioning: "Transitioning",
   disconnected: "Disabled",
   unavailable: "Unavailable",
+  ready: "Ready",
+  unhealthy: "Unhealthy",
 };
-
-function StatusDot({ kind, className }: { kind: StatusKind; className?: string }) {
-  return (
-    <span
-      aria-hidden
-      className={cn(
-        "relative inline-flex size-1.5 shrink-0 rounded-full",
-        kind === "connected" &&
-          "bg-primary shadow-[0_0_0_3px_color-mix(in_oklch,_var(--primary)_15%,_transparent)]",
-        // `--warning` isn't part of the shadcn neutral base — hardcode amber-500
-        // to keep this primitive self-contained (same convention as the other
-        // inline-duplicated primitives in this page; see #1551).
-        kind === "transitioning" &&
-          "bg-amber-500 shadow-[0_0_0_3px_color-mix(in_oklch,_oklch(0.75_0.17_70)_15%,_transparent)]",
-        kind === "disconnected" && "bg-muted-foreground/40",
-        kind === "unavailable" &&
-          "bg-destructive/70 outline-1 outline-dashed outline-destructive/40",
-        className,
-      )}
-    >
-      {kind === "connected" && (
-        <span className="absolute inset-0 rounded-full bg-primary/60 motion-safe:animate-ping" />
-      )}
-    </span>
-  );
-}
-
-function SectionHeading({
-  title,
-  description,
-}: {
-  title: string;
-  description: string;
-}) {
-  return (
-    <div className="mb-3">
-      <h2 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
-        {title}
-      </h2>
-      <p className="mt-0.5 text-xs text-muted-foreground/80">{description}</p>
-    </div>
-  );
-}
-
-function CompactRow({
-  icon: Icon,
-  title,
-  description,
-  status,
-  action,
-}: {
-  icon: ComponentType<{ className?: string }>;
-  title: string;
-  description: ReactNode;
-  status: StatusKind;
-  action?: ReactNode;
-}) {
-  return (
-    <div
-      className={cn(
-        "group flex items-center gap-3 rounded-xl border bg-card/40 px-3.5 py-2.5 transition-colors",
-        "hover:bg-card/70 hover:border-border/80",
-        status === "transitioning" && "border-amber-500/20",
-        status === "unavailable" && "border-destructive/20",
-      )}
-    >
-      <span className="grid size-8 shrink-0 place-items-center rounded-lg border bg-background/40 text-muted-foreground">
-        <Icon className="size-4" />
-      </span>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-center gap-2">
-          <h3 className="truncate text-sm font-semibold leading-tight tracking-tight">
-            {title}
-          </h3>
-          <StatusDot kind={status} />
-          <span className="sr-only">Status: {STATUS_LABEL[status]}</span>
-        </div>
-        <p className="mt-0.5 truncate text-xs text-muted-foreground">{description}</p>
-      </div>
-      {action && <div className="shrink-0">{action}</div>}
-    </div>
-  );
-}
-
-function PluginShell({
-  id,
-  icon: Icon,
-  title,
-  description,
-  status,
-  trailing,
-  onCollapse,
-  children,
-  actions,
-  panelRef,
-}: {
-  id?: string;
-  icon: ComponentType<{ className?: string }>;
-  title: string;
-  description: ReactNode;
-  status: StatusKind;
-  trailing?: ReactNode;
-  onCollapse?: () => void;
-  children?: ReactNode;
-  actions?: ReactNode;
-  panelRef?: RefObject<HTMLElement | null>;
-}) {
-  // Live pill is the default trailing ornament when the shell is `connected`
-  // and the caller didn't provide its own trailing node. When the caller does
-  // provide `trailing` (e.g. a Switch + status caption), we still render the X
-  // collapse button alongside it so the user is never stuck with no way out.
-  const defaultTrailing =
-    status === "connected" ? (
-      <span className="flex items-center gap-1.5 text-[10px] font-medium uppercase tracking-[0.08em] text-primary">
-        <StatusDot kind="connected" />
-        Live
-      </span>
-    ) : null;
-
-  return (
-    <section
-      id={id}
-      ref={panelRef}
-      className={cn(
-        "relative flex flex-col overflow-hidden rounded-xl border bg-card/60 transition-colors",
-        status === "connected" && "border-primary/20",
-        status === "transitioning" && "border-amber-500/30",
-        status === "unavailable" && "border-destructive/20",
-      )}
-    >
-      {status === "connected" && (
-        <span
-          aria-hidden
-          className="pointer-events-none absolute left-0 top-4 bottom-4 w-px bg-linear-to-b from-transparent via-primary to-transparent opacity-70"
-        />
-      )}
-      <header className="flex items-start gap-3 p-4 pb-3">
-        <span
-          className={cn(
-            "grid size-9 shrink-0 place-items-center rounded-lg border bg-background/40",
-            status === "connected" && "border-primary/30 text-primary",
-            status === "transitioning" && "border-amber-500/30 text-amber-600 dark:text-amber-400",
-            status === "disconnected" && "text-muted-foreground",
-            status === "unavailable" && "border-destructive/30 text-destructive",
-          )}
-        >
-          <Icon className="size-4" />
-        </span>
-        <div className="min-w-0 flex-1">
-          <div className="flex items-center gap-2">
-            <h3 className="truncate text-sm font-semibold leading-tight tracking-tight">
-              {title}
-            </h3>
-            <div className="ml-auto flex items-center gap-1.5">
-              {trailing ?? defaultTrailing}
-              {onCollapse && (
-                <button
-                  type="button"
-                  aria-label="Collapse"
-                  onClick={onCollapse}
-                  className="-m-1 grid size-6 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                >
-                  <X className="size-3.5" />
-                </button>
-              )}
-            </div>
-          </div>
-          <p className="mt-0.5 text-xs leading-snug text-muted-foreground">{description}</p>
-        </div>
-      </header>
-      {children != null && (
-        <div className="flex-1 space-y-4 px-4 pb-3 text-sm">{children}</div>
-      )}
-      {actions && (
-        <footer className="flex flex-wrap items-center justify-end gap-2 border-t border-border/50 bg-muted/20 px-4 py-2.5">
-          {actions}
-        </footer>
-      )}
-    </section>
-  );
-}
-
-function DetailRow({
-  label,
-  value,
-  mono,
-}: {
-  label: string;
-  value: ReactNode;
-  mono?: boolean;
-}) {
-  return (
-    <div className="flex items-baseline justify-between gap-3 py-1 text-xs">
-      <span className="shrink-0 text-muted-foreground">{label}</span>
-      <span className={cn("min-w-0 text-right", mono ? "font-mono text-[11px]" : "font-medium")}>
-        {value}
-      </span>
-    </div>
-  );
-}
-
-function DetailList({ children }: { children: ReactNode }) {
-  return (
-    <div className="rounded-lg border bg-muted/20 px-3 py-1.5 divide-y divide-border/50">
-      {children}
-    </div>
-  );
-}
-
-function InlineError({ children }: { children: ReactNode }) {
-  if (!children) return null;
-  return (
-    <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-      {children}
-    </div>
-  );
-}
-
-/**
- * Progressive-disclosure helper for plugin rows.
- *
- * Encapsulates four concerns that would otherwise repeat per row:
- *   - expand/collapse state + a stable id to hang `aria-controls` on
- *   - moving focus into the panel's first input on expand
- *   - returning focus to the trigger button on collapse
- *   - running a caller-provided cleanup on explicit collapse so the X button
- *     can't silently hide a mutation error or leave stale form state
- *
- * Note: auto-collapse on external state changes (e.g. successful save) is
- * handled by the caller via an effect on `setExpanded(false)` — not here —
- * because the trigger varies per row.
- */
-function useDisclosure(onCollapseCleanup?: () => void) {
-  const [expanded, setExpanded] = useState(false);
-  const triggerRef = useRef<HTMLButtonElement | null>(null);
-  const panelRef = useRef<HTMLElement | null>(null);
-  const panelId = useId();
-  const prev = useRef(false);
-
-  useEffect(() => {
-    if (expanded && !prev.current) {
-      const first = panelRef.current?.querySelector<HTMLElement>(
-        'input:not([disabled]), textarea:not([disabled]), button[role="combobox"]:not([disabled])',
-      );
-      first?.focus();
-    } else if (!expanded && prev.current) {
-      triggerRef.current?.focus();
-    }
-    prev.current = expanded;
-  }, [expanded]);
-
-  const collapse = () => {
-    setExpanded(false);
-    onCollapseCleanup?.();
-  };
-
-  return { expanded, setExpanded, collapse, triggerRef, panelRef, panelId };
-}
-
-// ── Status mapping ────────────────────────────────────────────────
 
 /**
  * Maps a plugin's (enabled, status) pair to a StatusKind for visual treatment.
@@ -469,17 +212,19 @@ function PluginRow({
   });
 
   const { expanded, setExpanded, collapse, triggerRef, panelRef, panelId } =
-    useDisclosure(() => {
-      // Full reset on collapse — re-expanding should be a clean fetch rather
-      // than reviving a stale edit buffer from a prior session. The old modal
-      // Dialog behaved this way (loadSchema ran on every open); keep parity.
-      saveMutation.reset();
-      setLoadError(null);
-      setSuccess(null);
-      setSchema([]);
-      setValues({});
-      setSchemaLoaded(false);
-      setConfigManageable(false);
+    useDisclosure({
+      onCollapseCleanup: () => {
+        // Full reset on collapse — re-expanding should be a clean fetch rather
+        // than reviving a stale edit buffer from a prior session. The old modal
+        // Dialog behaved this way (loadSchema ran on every open); keep parity.
+        saveMutation.reset();
+        setLoadError(null);
+        setSuccess(null);
+        setSchema([]);
+        setValues({});
+        setSchemaLoaded(false);
+        setConfigManageable(false);
+      },
     });
 
   async function loadSchema() {
@@ -554,6 +299,7 @@ function PluginRow({
             : description
         }
         status={status}
+        statusLabel={STATUS_LABEL[status]}
         action={
           <Button
             ref={triggerRef}
@@ -571,17 +317,20 @@ function PluginRow({
   }
 
   return (
-    <PluginShell
+    <Shell
       id={panelId}
       panelRef={panelRef}
       icon={Icon}
       title={plugin.name}
       description={description}
       status={status}
+      statusLabel={STATUS_LABEL[status]}
       onCollapse={collapse}
       trailing={
-        // PluginShell's header already wraps `trailing` in a flex container,
-        // so we stay flat here — just the caption + Switch pair.
+        // Shell's header already wraps `trailing` in a flex container, so we
+        // stay flat here — just the caption + Switch pair. Shell also renders
+        // the X collapse button alongside trailing when `onCollapse` is
+        // provided (the fixer pattern from #1560), so the user is never stuck.
         <>
           <span
             className={cn(
@@ -750,7 +499,7 @@ function PluginRow({
           <InlineError>{saveMutation.error}</InlineError>
         </div>
       ) : null}
-    </PluginShell>
+    </Shell>
   );
 }
 

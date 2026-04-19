@@ -536,7 +536,7 @@ export default function ActionsPage() {
                             {actionTypeLabel(action.action_type)}
                           </Badge>
                         </TableCell>
-                        <TableCell className="max-w-[220px] truncate font-mono text-xs">
+                        <TableCell className="max-w-55 truncate font-mono text-xs">
                           <Tooltip>
                             <TooltipTrigger asChild>
                               <span className="block truncate">{action.target}</span>

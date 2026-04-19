@@ -12,7 +12,9 @@ import {
   reinstateWorkspace,
   getAbuseEvents,
   getAbuseConfig,
+  getAbuseDetail,
 } from "@atlas/api/lib/security/abuse";
+import { ABUSE_LEVELS, ABUSE_TRIGGERS } from "@useatlas/types";
 import { runEffect } from "@atlas/api/lib/effect/hono";
 import { RequestContext, AuthContext } from "@atlas/api/lib/effect/services";
 import { ErrorSchema, AuthErrorSchema, createListResponseSchema } from "./shared-schemas";
@@ -22,11 +24,17 @@ import { createAdminRouter } from "./admin-router";
 // Schemas
 // ---------------------------------------------------------------------------
 
+// Sourced from `@useatlas/types` so the enum values stay structurally
+// coupled to the TS unions — adding a new level or trigger in `types/abuse.ts`
+// propagates here without manual duplication.
+const LevelEnum = z.enum(ABUSE_LEVELS);
+const TriggerEnum = z.enum(ABUSE_TRIGGERS);
+
 const AbuseEventSchema = z.object({
   id: z.string(),
   workspaceId: z.string(),
-  level: z.enum(["none", "warning", "throttled", "suspended"]),
-  trigger: z.enum(["query_rate", "error_rate", "unique_tables", "manual"]),
+  level: LevelEnum,
+  trigger: TriggerEnum,
   message: z.string(),
   metadata: z.record(z.string(), z.unknown()),
   createdAt: z.string(),
@@ -36,8 +44,8 @@ const AbuseEventSchema = z.object({
 const AbuseStatusSchema = z.object({
   workspaceId: z.string(),
   workspaceName: z.string().nullable(),
-  level: z.enum(["none", "warning", "throttled", "suspended"]),
-  trigger: z.enum(["query_rate", "error_rate", "unique_tables", "manual"]).nullable(),
+  level: LevelEnum,
+  trigger: TriggerEnum.nullable(),
   message: z.string().nullable(),
   updatedAt: z.string(),
   events: z.array(AbuseEventSchema),
@@ -57,6 +65,34 @@ const ConfigResponseSchema = z.object({
   errorRateThreshold: z.number(),
   uniqueTablesLimit: z.number(),
   throttleDelayMs: z.number(),
+});
+
+const AbuseCountersSchema = z.object({
+  queryCount: z.number(),
+  errorCount: z.number(),
+  errorRatePct: z.number().nullable(),
+  uniqueTablesAccessed: z.number(),
+  escalations: z.number(),
+});
+
+const AbuseInstanceSchema = z.object({
+  startedAt: z.string(),
+  endedAt: z.string().nullable(),
+  peakLevel: LevelEnum,
+  events: z.array(AbuseEventSchema),
+});
+
+const AbuseDetailResponseSchema = z.object({
+  workspaceId: z.string(),
+  workspaceName: z.string().nullable(),
+  level: LevelEnum,
+  trigger: TriggerEnum.nullable(),
+  message: z.string().nullable(),
+  updatedAt: z.string(),
+  counters: AbuseCountersSchema,
+  thresholds: ConfigResponseSchema,
+  currentInstance: AbuseInstanceSchema,
+  priorInstances: z.array(AbuseInstanceSchema),
 });
 
 // ---------------------------------------------------------------------------
@@ -110,6 +146,46 @@ const reinstateRoute = createRoute({
       content: { "application/json": { schema: ReinstateResponseSchema } },
     },
     400: {
+      description: "Workspace not flagged",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+    401: {
+      description: "Authentication required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    403: {
+      description: "Forbidden — admin role required",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    429: {
+      description: "Rate limit exceeded",
+      content: { "application/json": { schema: AuthErrorSchema } },
+    },
+    500: {
+      description: "Internal server error",
+      content: { "application/json": { schema: ErrorSchema } },
+    },
+  },
+});
+
+const getDetailRoute = createRoute({
+  method: "get",
+  path: "/{workspaceId}/detail",
+  tags: ["Admin — Abuse Prevention"],
+  summary: "Investigation detail for a flagged workspace",
+  description:
+    "SaaS only. Returns live counters, thresholds, the current flag instance, and up to 5 prior flag instances so operators can investigate without leaving the page.",
+  request: {
+    params: z.object({
+      workspaceId: z.string(),
+    }),
+  },
+  responses: {
+    200: {
+      description: "Investigation detail",
+      content: { "application/json": { schema: AbuseDetailResponseSchema } },
+    },
+    404: {
       description: "Workspace not flagged",
       content: { "application/json": { schema: ErrorSchema } },
     },
@@ -207,6 +283,28 @@ adminAbuse.openapi(reinstateRoute, async (c) => {
       message: "Workspace reinstated successfully.",
     }, 200);
   }), { label: "reinstate workspace" });
+});
+
+// GET /:workspaceId/detail — investigation detail for a flagged workspace
+adminAbuse.openapi(getDetailRoute, async (c) => {
+  return runEffect(c, Effect.gen(function* () {
+    const { requestId } = yield* RequestContext;
+    const { workspaceId } = c.req.valid("param");
+
+    const detail = yield* Effect.promise(() => getAbuseDetail(workspaceId));
+    if (!detail) {
+      return c.json(
+        {
+          error: "not_flagged",
+          message: "Workspace is not currently flagged for abuse.",
+          requestId,
+        },
+        404,
+      );
+    }
+
+    return c.json(detail, 200);
+  }), { label: "read abuse detail" });
 });
 
 // GET /config — current threshold configuration

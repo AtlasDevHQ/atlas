@@ -31,12 +31,14 @@ const mockGetAbuseConfig: Mock<() => unknown> = mock(() => ({
   uniqueTablesLimit: 50,
   throttleDelayMs: 2000,
 }));
+const mockGetAbuseDetail: Mock<(wsId: string) => Promise<unknown | null>> = mock(async () => null);
 
 mock.module("@atlas/api/lib/security/abuse", () => ({
   listFlaggedWorkspaces: mockListFlagged,
   reinstateWorkspace: mockReinstateWorkspace,
   getAbuseEvents: mockGetAbuseEvents,
   getAbuseConfig: mockGetAbuseConfig,
+  getAbuseDetail: mockGetAbuseDetail,
   checkAbuseStatus: mock(() => ({ level: "none" })),
   recordQueryEvent: mock(() => {}),
   restoreAbuseState: mock(async () => {}),
@@ -152,6 +154,75 @@ describe("Admin Abuse API", () => {
       );
       const res = await app.fetch(
         adminRequest("POST", "/api/v1/admin/abuse/org-1/reinstate"),
+      );
+      expect(res.status).toBe(403);
+    });
+  });
+
+  // --- GET /api/v1/admin/abuse/:id/detail ---
+
+  describe("GET /api/v1/admin/abuse/:id/detail", () => {
+    it("returns detail for a flagged workspace", async () => {
+      mockGetAbuseDetail.mockImplementation(async () => ({
+        workspaceId: "org-1",
+        workspaceName: null,
+        level: "warning",
+        trigger: "query_rate",
+        message: "Excessive queries",
+        updatedAt: "2026-03-23T00:00:00.000Z",
+        counters: {
+          queryCount: 250,
+          errorCount: 0,
+          errorRatePct: 0,
+          uniqueTablesAccessed: 3,
+          escalations: 1,
+        },
+        thresholds: {
+          queryRateLimit: 200,
+          queryRateWindowSeconds: 300,
+          errorRateThreshold: 0.5,
+          uniqueTablesLimit: 50,
+          throttleDelayMs: 2000,
+        },
+        currentInstance: {
+          startedAt: "2026-03-23T00:00:00.000Z",
+          endedAt: null,
+          peakLevel: "warning",
+          events: [],
+        },
+        priorInstances: [],
+      }));
+      const res = await app.fetch(
+        adminRequest("GET", "/api/v1/admin/abuse/org-1/detail"),
+      );
+      expect(res.status).toBe(200);
+      const body = await res.json() as Record<string, unknown>;
+      expect(body.workspaceId).toBe("org-1");
+      expect((body.counters as Record<string, unknown>).queryCount).toBe(250);
+    });
+
+    it("returns 404 when workspace is not flagged", async () => {
+      mockGetAbuseDetail.mockImplementation(async () => null);
+      const res = await app.fetch(
+        adminRequest("GET", "/api/v1/admin/abuse/org-clean/detail"),
+      );
+      expect(res.status).toBe(404);
+      const body = await res.json() as Record<string, unknown>;
+      expect(body.error).toBe("not_flagged");
+      // 4xx responses must carry requestId for log correlation.
+      expect(typeof body.requestId).toBe("string");
+    });
+
+    it("returns 403 for non-admin", async () => {
+      mocks.mockAuthenticateRequest.mockImplementation(() =>
+        Promise.resolve({
+          authenticated: true,
+          mode: "simple-key",
+          user: { id: "user-1", mode: "simple-key", label: "User", role: "member", activeOrganizationId: "org-1" },
+        }),
+      );
+      const res = await app.fetch(
+        adminRequest("GET", "/api/v1/admin/abuse/org-1/detail"),
       );
       expect(res.status).toBe(403);
     });

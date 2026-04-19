@@ -114,6 +114,9 @@ export type {
   AbuseEvent,
   AbuseStatus,
   AbuseThresholdConfig,
+  AbuseCounters,
+  AbuseInstance,
+  AbuseDetail,
 } from "@useatlas/types";
 export type {
   WorkspaceSLASummary,
